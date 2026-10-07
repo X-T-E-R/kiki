@@ -1412,6 +1412,23 @@ describe('SessionController transcript authority', () => {
     return { controller, client, socket, flushAll };
   }
 
+  async function openEntityController(entities: NonNullable<SessionViewFacade['transcript']['entities']>) {
+    let signal: Parameters<SessionViewFacade['subscribe']>[1] | undefined;
+    const view = {
+      snapshot: vi.fn(async () => snapshot()),
+      transcript: { page: vi.fn(), catchUp: vi.fn(), entities },
+      subscribe: (_input: unknown, onSignal: Parameters<SessionViewFacade['subscribe']>[1]) => {
+        signal = onSignal;
+        return { updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} };
+      },
+    } as unknown as SessionViewFacade;
+    const { scheduler, flushAll } = manualScheduler();
+    const controller = new SessionController({} as KikiClient, view, 'session_test', { scheduler });
+    await controller.open();
+    const deliver = (event: TranscriptEvent) => { signal!({ type: 'transcript', event, generation: 1 }); };
+    return { controller, entities, deliver, flushAll };
+  }
+
   it.each([
     { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
     { origin: { kind: 'other' as const, payload: { kind: 'agent_message', senderAgentId: 'peer' } }, promptId: 'p-mailbox' },
@@ -1806,6 +1823,11 @@ describe('SessionController transcript authority', () => {
       expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
       expect(controller.getState().olderError).toBeUndefined();
       expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+      expect(client.getAgentTranscript.mock.calls.map((call) => call[2])).toEqual([
+        expect.objectContaining({ beforeTurn: 'history-2' }),
+        expect.objectContaining({ beforeTurn: 'history-2' }),
+        expect.objectContaining({ beforeTurn: 'history-1' }),
+      ]);
     } finally { controller.close(); }
   });
 
@@ -1841,6 +1863,139 @@ describe('SessionController transcript authority', () => {
       expect(historyTexts(controller)).toEqual(Array.from({ length: 6 }, (_, ordinal) => `History ${ordinal}`));
       expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: '5' });
     } finally { controller.close(); }
+  });
+
+  it('keeps a delivered row visible across a bounded same-epoch reset and loads it once from cold tail history', async () => {
+    const deliveredPrompt = {
+      promptId: 'prompt-111', userMessageId: 'user-111', status: 'completed' as const,
+      content: [{ type: 'text' as const, text: 'row 111 full text' }], createdAt: '2026-01-01T00:01:51.000Z',
+      finishedAt: '2026-01-01T00:01:52.000Z',
+    };
+    const deliveredTurn = {
+      kind: 'turn' as const, turnId: 'turn-111', ordinal: 111, state: 'completed' as const,
+      origin: { kind: 'user' as const, payload: { promptId: deliveredPrompt.promptId, userMessageId: deliveredPrompt.userMessageId } },
+      prompt: 'row 111 full text', startedAt: deliveredPrompt.createdAt, endedAt: deliveredPrompt.finishedAt, steps: [],
+    };
+    const tailTurn = (ordinal: 113 | 114) => ({
+      kind: 'turn' as const, turnId: `turn-${ordinal}`, ordinal, state: 'completed' as const,
+      origin: { kind: 'other' as const }, prompt: `tail ${ordinal}`, startedAt: `2026-01-01T00:01:${ordinal}.000Z`, steps: [],
+    });
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [deliveredTurn], prompts: [deliveredPrompt] }), 1, true));
+    expect(historyTexts(controller)).toEqual(['row 111 full text']);
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [tailTurn(113), tailTurn(114)] }), 2, true));
+    expect(historyTexts(controller)).toEqual(['row 111 full text']);
+    controller.close();
+    const cold = await openTranscriptController();
+    cold.controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [tailTurn(113), tailTurn(114)] }), 1, true));
+    cold.client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [deliveredTurn], has_more: false });
+    await expect(cold.controller.loadOlderMessages()).resolves.toBe(true);
+    const users = cold.controller.getState().blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === deliveredPrompt.userMessageId);
+    expect(users).toHaveLength(1);
+    expect(users[0]?.text).toBe('row 111 full text');
+    expect(cold.client.getAgentTranscript).toHaveBeenCalledExactlyOnceWith('session_test', 'main', expect.objectContaining({ beforeTurn: 'turn-113' }));
+    cold.controller.close();
+  });
+
+  it('loads a partial global prompt collection through one entity page without overwriting a live upsert', async () => {
+    const prompt = (promptId: string, text: string) => ({
+      promptId, userMessageId: `user-${promptId}`, status: 'queued' as const,
+      content: [{ type: 'text' as const, text }], createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const initial = Array.from({ length: 8 }, (_, index) => prompt(`p-${index}`, `initial ${index}`));
+    const stale = prompt('p-0', 'stale page text');
+    const page = [stale, ...Array.from({ length: 4 }, (_, index) => prompt(`p-${index + 8}`, `page ${index + 8}`))];
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>();
+    const held = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    entities.mockImplementationOnce(() => held.promise);
+    const { controller, deliver, flushAll } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({
+      prompts: initial,
+      globalCoverage: {
+        version: 1,
+        tasks: { returned: 0, total: 0, hasMore: false },
+        attachments: { returned: 0, total: 0, hasMore: false },
+        prompts: { returned: 8, total: 12, hasMore: true },
+      },
+    }), 1, true));
+    const loading = controller.loadTranscriptEntities('main', 'prompt');
+    expect(entities).toHaveBeenCalledExactlyOnceWith({ agentId: 'main', kind: 'prompt', cursor: undefined, limit: 20 }, { signal: expect.any(AbortSignal) });
+    deliver(opsEvent('main', [{ op: 'prompt.upsert', prompt: prompt('p-0', 'live full text') }], 2));
+    flushAll();
+    held.resolve({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: page, has_more: false, total: 12 });
+    await expect(loading).resolves.toBe(true);
+    expect(controller.getState().globalCoverage?.prompts).toEqual({ returned: 12, total: 12, hasMore: false });
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'live full text')).toBe(true);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'stale page text')).toBe(false);
+    controller.close();
+  });
+
+  it.each([undefined, '', 'same'] as const)('keeps entity pagination retryable after a network failure and rejects %s cursor progress', async (invalidCursor) => {
+    const prompt = (promptId: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const page = (promptId: string, hasMore: boolean, nextCursor?: string) => ({
+      session_id: 'session_test', agent_id: 'main', kind: 'prompt' as const, items: [prompt(promptId)], has_more: hasMore, total: 2,
+      next_cursor: nextCursor,
+    }) as Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>;
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockRejectedValueOnce(new Error('entity network down'));
+    if (invalidCursor === 'same') {
+      entities
+        .mockResolvedValueOnce(page('p-0', true, 'cursor-1'))
+        .mockResolvedValueOnce(page('p-invalid', true, 'cursor-1'))
+        .mockResolvedValueOnce(page('p-recovered', false));
+    } else {
+      entities
+        .mockResolvedValueOnce(page('p-invalid', true, invalidCursor === undefined ? undefined : invalidCursor))
+        .mockResolvedValueOnce(page('p-recovered', false));
+    }
+    const { controller, deliver } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({ prompts: [], globalCoverage: {
+      version: 1,
+      tasks: { returned: 0, total: 0, hasMore: false },
+      attachments: { returned: 0, total: 0, hasMore: false },
+      prompts: { returned: 0, total: 2, hasMore: true },
+    } }), 1, true));
+    await expect(controller.loadTranscriptEntities('main', 'prompt')).resolves.toBe(false);
+    expect(controller.getState().detailLoads['entities:prompt']).toEqual({ status: 'error', message: 'entity network down' });
+    const firstPage = await controller.loadTranscriptEntities('main', 'prompt');
+    let invalidPage = firstPage;
+    if (invalidCursor === 'same') {
+      expect(firstPage).toBe(true);
+      expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+      expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'p-0')).toBe(true);
+      invalidPage = await controller.loadTranscriptEntities('main', 'prompt');
+    }
+    expect(invalidPage).toBe(false);
+    expect(controller.getState().detailLoads['entities:prompt']).toEqual({ status: 'error', message: 'Transcript entity page did not advance its cursor' });
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'p-invalid')).toBe(false);
+    const expectedRetryCursor = invalidCursor === 'same' ? 'cursor-1' : undefined;
+    expect(entities.mock.calls.at(-1)?.[0]).toMatchObject({ cursor: expectedRetryCursor });
+    await expect(controller.loadTranscriptEntities('main', 'prompt')).resolves.toBe(true);
+    expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+    expect(entities.mock.calls.at(-1)?.[0]).toMatchObject({ cursor: expectedRetryCursor });
+    controller.close();
+  });
+
+  it('ignores an old entity page and error after a reset while allowing the new generation to load', async () => {
+    const prompt = (promptId: string, text: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const oldPage = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    const freshPage = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockImplementationOnce(() => oldPage.promise)
+      .mockImplementationOnce(() => freshPage.promise);
+    const { controller, deliver } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({ prompts: [prompt('old', 'old text')] }), 1, true));
+    const oldLoad = controller.loadTranscriptEntities('main', 'prompt');
+    deliver(resetEvent('main', emptySnapshot({ prompts: [prompt('new', 'new text')] }), 2, true));
+    const freshLoad = controller.loadTranscriptEntities('main', 'prompt');
+    expect(entities).toHaveBeenCalledTimes(2);
+    freshPage.resolve({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('fresh', 'fresh text')], has_more: false, total: 2 });
+    expect(await freshLoad).toBe(true);
+    oldPage.reject(new Error('old entity network down'));
+    expect(await oldLoad).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'new text')).toBe(true);
+    expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+    controller.close();
   });
 
   it('keeps unknown coverage partial after requested pagination reaches its source boundary', async () => {

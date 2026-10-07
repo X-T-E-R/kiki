@@ -36,8 +36,10 @@
  * the user never queued cannot be re-timed like one they did, and Remove stays
  * on every row because the record is real work that can be withdrawn.
  *
- * The parent renders nothing for an empty queue; rows leave by reconcile
- * (promotion, steer, abort) — never by local removal.
+ * An empty queue keeps its disclosure when prompt coverage is partial. The
+ * continuation reads one canonical entity page per press, including completed
+ * records, without counting them as pending or discarding existing rows.
+ * Queue rows leave by reconcile (promotion, steer, abort), never locally.
  */
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
@@ -45,11 +47,12 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type P
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
-import type { QueuedPromptPreview } from '@kiki/session-core/session';
-import { isOrdinaryQueueItem } from '@kiki/session-core/session';
+import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
+import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
 import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
+import { ContinuationRow } from './ContentContinuation';
 import { Icon } from './icons';
 
 /** The armed remove falls back to idle after this long without the second click. */
@@ -80,7 +83,7 @@ export const TIMING_HINT_KEY = {
  * when it is the only thing waiting, it stands alone rather than sitting
  * behind a "0 queued" that reads as nothing to send.
  */
-export function QueueHeaderSummary({ count, heldCount = 0 }: { readonly count: number; readonly heldCount?: number }) {
+export function QueueHeaderSummary({ count, heldCount = 0, hasMoreRecords = false }: { readonly count: number; readonly heldCount?: number; readonly hasMoreRecords?: boolean }) {
   const { t, tp } = useI18n();
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -99,9 +102,17 @@ export function QueueHeaderSummary({ count, heldCount = 0 }: { readonly count: n
             : t('queue.heldOnlySummary', { count: heldCount })}
         </span>
       ) : null}
+      {hasMoreRecords ? <span data-queue-more-records className="min-w-0 truncate text-[12px] text-ink-soft">{t('queue.moreRecords')}</span> : null}
       <Icon name="chevron" size={12} className="ml-auto -rotate-90 text-ink-faint" />
     </span>
   );
+}
+
+/** Canonical prompt collection coverage and one-page read state, separate from the pending queue count. */
+export interface QueuePromptContinuation {
+  readonly coverage: TranscriptGlobalEntityCoverage;
+  readonly status?: TranscriptDetailStatus;
+  readonly onRequest: () => void;
 }
 
 export function QueueStrip({
@@ -120,8 +131,10 @@ export function QueueStrip({
   onCancelModelSwitch,
   sendNowDisabled = false,
   timingReady,
+  promptContinuation,
 }: {
   readonly items: readonly QueuedPromptPreview[];
+  readonly promptContinuation?: QueuePromptContinuation;
   /**
    * Queued model-switch control items. They share this list's drain order and
    * never render as messages: each keeps its own row with edit/cancel while
@@ -224,7 +237,9 @@ export function QueueStrip({
     [],
   );
 
-  if (rows.length === 0) return null;
+  const hasPromptContinuation = promptContinuation !== undefined
+    && (promptContinuation.coverage.hasMore || promptContinuation.status !== undefined);
+  if (rows.length === 0 && !hasPromptContinuation) return null;
 
   // An in-flight action locks drag reordering: a second move computed against
   // the pre-move order would land on a stale slot.
@@ -631,21 +646,22 @@ export function QueueStrip({
     <section
       data-queue-strip
       data-queue-edit-hold={editIndex >= 0 ? '' : undefined}
-      aria-label={t('sv.queueAria')}
+      aria-label={t(rows.length === 0 ? 'queue.records' : 'sv.queueAria')}
       aria-describedby={editIndex >= 0 ? noticeId : undefined}
     >
-      <header className="flex min-h-7 items-center gap-2 pl-1.5">
-        {/* The row already names the count; the header reads as drain order. */}
-        <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{t('queue.drainOrder')}</span>
-        <button
-          type="button"
-          onClick={onClearAll}
-          title={t('sv.queueClearAllTitle')}
-          className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          {t('sv.queueClearAll')}
-        </button>
-      </header>
+      {rows.length > 0 ? (
+        <header className="flex min-h-7 items-center gap-2 pl-1.5">
+          <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{t('queue.drainOrder')}</span>
+          <button
+            type="button"
+            onClick={onClearAll}
+            title={t('sv.queueClearAllTitle')}
+            className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+          >
+            {t('sv.queueClearAll')}
+          </button>
+        </header>
+      ) : null}
       {editIndex >= 0 ? (
         <p id={noticeId} role="status" data-queue-hold-notice className="flex items-center gap-1.5 px-1.5 pb-1 text-[12px] text-ink-soft">
           <Icon name="hold" size={12} className="shrink-0 text-ink-faint" />
@@ -657,6 +673,17 @@ export function QueueStrip({
       <ol ref={listRef} className="flex flex-col gap-0.5 pb-1">
         {rowNodes}
       </ol>
+      {hasPromptContinuation && promptContinuation !== undefined ? (
+        <ContinuationRow
+          kind="prompt"
+          state={promptContinuation.status?.status ?? 'idle'}
+          progress={t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })}
+          error={t('queue.recordsFailed')}
+          label={t('queue.records')}
+          onRequest={promptContinuation.onRequest}
+          className="px-1.5 py-1"
+        />
+      ) : null}
     </section>
   );
 }

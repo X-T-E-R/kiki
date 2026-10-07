@@ -1439,6 +1439,12 @@ export class SessionController {
     const retainedBodies = [...this.contentBodies.entries()].filter(([, entry]) => entry.agentId === agentId);
     this.bumpHistoryGeneration(agentId);
     for (const key of this.entityPageCursors.keys()) if (key.startsWith(`${agentId}/`)) this.entityPageCursors.delete(key);
+    for (const kind of ['task', 'attachment', 'prompt', 'interaction', 'todo'] as const) {
+      const key = `entities:${kind}`;
+      const requestKey = `${agentId}/${key}`;
+      this.detailReads.delete(requestKey);
+      this.setDetailLoad(agentId, key, undefined);
+    }
     const previousCursor = this.transcriptCursors.get(agentId);
     if (coverage.kind === 'full' || (previousCursor !== undefined && previousCursor.epoch !== cursor.epoch)) {
       this.olderPages.delete(agentId);
@@ -1989,13 +1995,15 @@ export class SessionController {
     const pending = this.detailReads.get(requestKey);
     if (pending !== undefined) return pending;
     const generation = this.historyGeneration.get(agentId) ?? 0;
+    const cursor = this.entityPageCursors.get(requestKey) ?? undefined;
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
-        const page = await read({ agentId, kind, cursor: this.entityPageCursors.get(requestKey) ?? undefined, limit: 20 }, { signal: controller.signal });
+        const page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
         if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        if (page.has_more && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) throw new Error('Transcript entity page did not advance its cursor');
         const store = this.ensureAgentTranscript(agentId);
         const ops: TranscriptOperation[] = [];
         switch (page.kind) {
@@ -2017,15 +2025,18 @@ export class SessionController {
         this.publishProjectedAgent(agentId, store);
         return page.items.length > 0;
       } catch (error) {
-        if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
+        if (!this.closed && !controller.signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
         const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-        if (!this.closed && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
+        if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
       }
-    })().finally(() => { this.detailReads.delete(requestKey); });
+    })();
     this.detailReads.set(requestKey, run);
+    void run.finally(() => {
+      if (this.detailReads.get(requestKey) === run) this.detailReads.delete(requestKey);
+    });
     return run;
   }
 

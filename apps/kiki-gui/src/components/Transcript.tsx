@@ -4475,7 +4475,14 @@ export function Transcript({
 
   if (!loaded) return <TranscriptLoading />;
 
-  if (timelineBlocks.length === 0 && !state.busy) {
+  // An unknown cold read and a failed anchor restore keep their existing
+  // Retry action in the blank shell. Known tail coverage, an in-flight older
+  // read, and an older-page failure otherwise let TopEdge own the state.
+  const showTopEdgeForEmptyHistory =
+    readingRestoreFailed === null &&
+    (state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) &&
+    (state.historyCoverageKind !== 'unknown' || state.loadingOlder || state.olderError !== undefined);
+  if (timelineBlocks.length === 0 && !state.busy && !showTopEdgeForEmptyHistory) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />

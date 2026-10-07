@@ -3581,6 +3581,10 @@ boundExecution,
   const heldCronItems = useMemo(() => queuedItems.filter((item) => !isOrdinaryQueueItem(item)), [queuedItems]);
   const queuedItemCount = ordinaryQueuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
   const queueRowCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  const promptCoverage = state.globalCoverage?.prompts;
+  const promptEntityLoad = state.detailLoads['entities:prompt'];
+  const hasPromptContinuation = promptCoverage !== undefined && (promptCoverage.hasMore || promptEntityLoad !== undefined);
+  const handleLoadPromptEntities = useCallback(() => { void controller?.loadTranscriptEntities(MAIN_AGENT_ID, 'prompt'); }, [controller]);
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
@@ -3970,13 +3974,13 @@ boundExecution,
     // control row can be changed or cancelled before it runs. A scheduled
     // prompt held ahead of the send order counts too — otherwise a session
     // waiting only on one would show nothing at all.
-    if (queueRowCount === 0) return undefined;
+    if (queueRowCount === 0 && !hasPromptContinuation) return undefined;
     const total = queueRowCount;
     return {
       summary: (
-        <QueueHeaderSummary count={queuedItemCount} heldCount={heldCronItems.length} />
+        <QueueHeaderSummary count={queuedItemCount} heldCount={heldCronItems.length} hasMoreRecords={hasPromptContinuation} />
       ),
-      ariaLabel: t('composer.queueStack.openAria'),
+      ariaLabel: t(queueRowCount === 0 ? 'queue.records' : 'composer.queueStack.openAria'),
       count: total,
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
@@ -3991,6 +3995,7 @@ boundExecution,
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
           timingReady={queueTimingReady}
+          promptContinuation={promptCoverage === undefined ? undefined : { coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }}
         />
       ),
     };
@@ -3999,6 +4004,7 @@ boundExecution,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
+    hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />

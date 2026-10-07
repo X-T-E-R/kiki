@@ -754,3 +754,43 @@ describe('QueueStrip pending switch labels', () => {
     expect(row.textContent).not.toContain('Switching to');
   });
 });
+
+
+describe('QueueStrip prompt collection continuation', () => {
+  it('offers one page when no loaded message is queued and does not pretend the collection is a queue', async () => {
+    const onRequest = vi.fn();
+    const { container } = await renderStrip({ items: [], promptContinuation: { coverage: { returned: 8, total: 12, hasMore: true }, onRequest } });
+    expect(container.textContent).toContain('8 / 12 message records loaded');
+    expect(container.textContent).not.toContain('In send order');
+    expect(container.textContent).not.toContain('Clear all');
+    expect(rows(container)).toHaveLength(0);
+    const action = container.querySelector('[data-content-continuation-action]')!;
+    await click(action);
+    expect(onRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['loading', 'error'] as const)('keeps queue rows while collection continuation is %s', async (status) => {
+    const onRequest = vi.fn();
+    const { container } = await renderStrip({ promptContinuation: {
+      coverage: { returned: 8, total: 12, hasMore: true },
+      status: status === 'loading' ? { status } : { status, message: 'fixture failure' }, onRequest,
+    } });
+    expect(rows(container)).toHaveLength(3);
+    const action = container.querySelector<HTMLButtonElement>('[data-content-continuation-action]')!;
+    expect(action.disabled).toBe(status === 'loading');
+    if (status === 'error') {
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe('Could not load more message records.');
+      expect(action.textContent).toBe('Try again');
+      await click(action);
+      expect(onRequest).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('removes the collection control at the actual end without dropping queued rows', async () => {
+    const { container } = await renderStrip({ promptContinuation: { coverage: { returned: 12, total: 12, hasMore: false }, onRequest: vi.fn() } });
+    expect(container.querySelector('[data-content-continuation]')).toBeNull();
+    expect(rows(container)).toHaveLength(3);
+    const empty = await renderStrip({ items: [], promptContinuation: { coverage: { returned: 12, total: 12, hasMore: false }, onRequest: vi.fn() } });
+    expect(empty.container.querySelector('[data-queue-strip]')).toBeNull();
+  });
+});

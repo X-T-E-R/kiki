@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptTask } from '@kiki/transcript';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
+import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService {
@@ -130,5 +131,53 @@ describe('bounded session-view canonical reads', () => {
     expect(todos?.total).toBe(1);
     expect(todos?.has_more).toBe(false);
     expect(transcriptDetailListResponseSchema.safeParse(todos).success).toBe(true);
+  });
+
+  it('prioritizes the visible tail and old active prompt while keeping omitted prompts recoverable', async () => {
+    const oldTurns = Array.from({ length: 10 }, (_, index) => ({
+      kind: 'turn' as const, turnId: `old-turn-${index}`, ordinal: index, state: 'completed' as const,
+      origin: { kind: 'user' as const }, promptId: `p-old-${index}`, prompt: 'old turn body '.repeat(1000), steps: [],
+    }));
+    const visibleTurn = { kind: 'turn' as const, turnId: 'visible-turn', ordinal: 10, state: 'completed' as const,
+      origin: { kind: 'user' as const }, promptId: 'visible', prompt: 'newest visible turn', steps: [] };
+    const prompts = [
+      { promptId: 'p0', status: 'queued' as const, createdAt: '2026-01-01T00:00:00.000Z', content: 'queued prompt' },
+      ...Array.from({ length: 10 }, (_, index) => ({ promptId: `p-old-${index}`, status: 'completed' as const, createdAt: '2026-01-01T00:00:01.000Z', content: `old prompt ${index}` })),
+      { promptId: 'visible', status: 'completed' as const, createdAt: '2026-01-01T00:00:02.000Z', content: 'visible prompt' },
+      ...Array.from({ length: 10 }, (_, index) => ({ promptId: `p-new-${index}`, status: 'completed' as const, createdAt: '2026-01-01T00:00:03.000Z', content: `new prompt ${index}` })),
+    ];
+    const source: AgentTranscriptSnapshot = { ...empty(), items: [...oldTurns, visibleTurn], prompts };
+    const bounded = boundedTranscriptSnapshot(source, 'main', 'tail', 16 * 1024);
+    expect(bounded.items).toEqual([expect.objectContaining({ turnId: 'visible-turn', promptId: 'visible' })]);
+    expect(bounded.prompts.map((prompt) => prompt.promptId)).toEqual(expect.arrayContaining(['p0', 'visible']));
+    expect(bounded.prompts.map((prompt) => prompt.promptId)).not.toContain('p-old-0');
+    expect(bounded.prompts).toHaveLength(8);
+    expect(jsonBytes(bounded.prompts)).toBeLessThanOrEqual(4 * 1024);
+    expect(jsonBytes(bounded)).toBeLessThanOrEqual(16 * 1024);
+    expect(bounded.globalCoverage?.prompts).toEqual({ returned: 8, total: 22, hasMore: true });
+
+    const wide = boundedTranscriptSnapshot(source, 'main');
+    expect(wide.items).toHaveLength(oldTurns.length + 1);
+    expect(wide.prompts.map((prompt) => prompt.promptId)).toEqual(expect.arrayContaining(['p0', 'visible']));
+    expect(wide.prompts.map((prompt) => prompt.promptId)).not.toContain('p-old-0');
+    expect(wide.prompts).toHaveLength(8);
+    expect(jsonBytes(wide.prompts)).toBeLessThanOrEqual(4 * 1024);
+
+    const service = canonicalService(source);
+    const recovered = new Map<string, string>();
+    let cursor: string | undefined;
+    do {
+      const page = await readSessionViewTranscriptDetails(service, 'fixture-session', { agentId: 'main', kind: 'prompt', limit: 8, cursor });
+      expect(page?.kind).toBe('prompt');
+      if (page?.kind !== 'prompt') throw new Error('Expected prompt page');
+      expect(transcriptDetailListResponseSchema.safeParse(page).success).toBe(true);
+      expect(jsonBytes({ code: 0, msg: 'ok', data: page, request_id: 'fixture' })).toBeLessThan(48 * 1024);
+      for (const prompt of page.items) recovered.set(prompt.promptId, String(prompt.content));
+      cursor = page.next_cursor;
+    } while (cursor !== undefined);
+    expect(recovered.size).toBe(prompts.length);
+    expect(recovered.get('p0')).toBe('queued prompt');
+    expect(recovered.get('p-old-0')).toBe('old prompt 0');
+    expect(recovered.get('visible')).toBe('visible prompt');
   });
 });

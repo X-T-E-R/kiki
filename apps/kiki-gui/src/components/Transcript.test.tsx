@@ -1095,6 +1095,66 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([]);
     expect(container.querySelector('[data-transcript-loading]')).toBeNull();
     expect(container.textContent).toContain('A blank page');
+    expect(container.querySelector('[data-top-edge]')).toBeNull();
+  });
+
+  it('exposes the older-page action when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-only', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    expect(container.textContent).not.toContain('A blank page');
+    await act(async () => { click(loadButton!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+  });
+
+  it('renders a stable delivered user row after the older page fills the filtered tail', async () => {
+    const queued = userBlock({ id: 'stable-user', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    const initial = transcriptState([queued], { historyCoverageKind: 'tail', hasMoreHistory: true });
+    await renderSettled(root, virtualTranscript(initial, onLoadOlder));
+    await settleVirtualizer();
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    await act(async () => { click(loadButton!); });
+
+    const delivered = { ...queued, text: 'delivered prompt', promptStatus: undefined };
+    await renderSettled(root, virtualTranscript({
+      ...initial,
+      blocks: [delivered],
+      hasMoreHistory: false,
+      fetchedOlder: true,
+      historyCoverageKind: 'full',
+    }, onLoadOlder));
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="stable-user"]')?.textContent).toContain('delivered prompt');
+  });
+
+  it('keeps an older-page failure retryable when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-error', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true, olderError: 'page unavailable',
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    expect(container.textContent).toContain('Could not load earlier messages');
+    expect(container.textContent).toContain('page unavailable');
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    await act(async () => { click(retry!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
   });
 
   it('does not certify an unverified empty cold read as a blank session', async () => {

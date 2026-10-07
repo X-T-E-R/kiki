@@ -11,7 +11,7 @@ import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, resetDraftMemoryForTests, readComposerState } from '@kiki/session-core/composer';
 import { createViewState } from '@kiki/session-core/session';
 
-const fixture = vi.hoisted(() => ({ autoCompact: true, queued: true }));
+const fixture = vi.hoisted(() => ({ autoCompact: true, queued: true, partialPrompts: false, loadEntities: vi.fn(async () => true) }));
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
@@ -46,7 +46,12 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       session: { id: 'session-example', title: 'Queue recovery example', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
       blocks: fixture.queued ? [{ kind: 'user' as const, id: 'queued-example', promptId: 'queued-example', promptStatus: 'queued' as const, text: 'retain this queued message', createdAt: '2026-01-01T00:00:00Z' }] : [],
       queuedPromptIds: fixture.queued ? ['queued-example'] : [],
+      globalCoverage: fixture.partialPrompts ? { version: 1 as const,
+        tasks: { returned: 0, total: 0, hasMore: false }, attachments: { returned: 0, total: 0, hasMore: false },
+        prompts: { returned: 8, total: 12, hasMore: true },
+      } : undefined,
     };
+    loadTranscriptEntities = fixture.loadEntities;
     getState = () => this.state;
     getAgentState = () => this.state;
     setFocusedAgent() {}
@@ -66,6 +71,9 @@ vi.mock('./RightRail', () => ({ RightRail: () => null }));
 let root: Root | undefined;
 let container: HTMLDivElement;
 beforeEach(() => {
+  fixture.queued = true;
+  fixture.partialPrompts = false;
+  fixture.loadEntities.mockClear();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   resetDraftMemoryForTests();
@@ -107,4 +115,28 @@ it('keeps unknown sends recoverable through an empty snapshot, restores only by 
   await act(async () => root!.render(<I18nProvider><SubmissionRecovery sessionId="session-example" state={{ ...state, queuedPromptIds: ['one'] }} /></I18nProvider>));
   expect(container.querySelector('[data-submission-recovery]')).toBeNull();
   expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+});
+
+
+it('keeps partial prompt records reachable with no loaded queued row and requests exactly one main-agent page', async () => {
+  fixture.queued = false;
+  fixture.partialPrompts = true;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const disclosure = container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]');
+  expect(disclosure?.textContent).toContain('More message records');
+  expect(container.querySelector('[data-queue-count]')).toBeNull();
+  expect(fixture.loadEntities).not.toHaveBeenCalled();
+  await act(async () => disclosure!.click());
+  const action = container.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
+  expect(container.textContent).toContain('8 / 12 message records loaded');
+  await act(async () => action!.click());
+  expect(fixture.loadEntities).toHaveBeenCalledExactlyOnceWith('main', 'prompt');
+  expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
 });

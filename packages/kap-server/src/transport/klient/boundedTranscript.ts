@@ -22,13 +22,23 @@ const GLOBAL_COLLECTION_BYTES = 4 * 1024;
 
 export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
   const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId);
-  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId,
-    (prompt) => boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 2048, agentId));
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
   const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
-  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES - jsonBytes({ tasks, prompts, interactions, todos, meta });
+  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES * 2 - jsonBytes({ tasks, interactions, todos, meta });
   const items = boundedItems(snapshot.items, budget, direction, agentId);
+  const referencedPromptOrder = new Map<string, number>();
+  for (const item of items.toReversed()) {
+    if (item.kind !== 'turn' || item.promptId === undefined || referencedPromptOrder.has(item.promptId)) continue;
+    referencedPromptOrder.set(item.promptId, referencedPromptOrder.size);
+  }
+  const referencedPromptIds = new Set(referencedPromptOrder.keys());
+  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId,
+    (prompt) => boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 2048, agentId),
+    referencedPromptIds,
+    (prompt) => prompt.status === 'running' || prompt.status === 'queued' || prompt.status === 'blocked',
+    8,
+    referencedPromptOrder);
   const required = new Set<string>();
   for (const item of items) {
     if (item.kind !== 'turn') continue;
@@ -122,14 +132,33 @@ function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, d
   return direction === 'head' ? selected : selected.reverse();
 }
 
-function boundedCollection<T extends object>(values: readonly T[], kind: 'task' | 'attachment' | 'prompt' | 'interaction' | 'todo', id: (value: T) => string, project?: (value: T) => T, required: ReadonlySet<string> = new Set()): T[] {
+function boundedCollection<T extends object>(
+  values: readonly T[],
+  kind: 'task' | 'attachment' | 'prompt' | 'interaction' | 'todo',
+  id: (value: T) => string,
+  project?: (value: T) => T,
+  required: ReadonlySet<string> = new Set(),
+  priority?: (value: T) => boolean,
+  maxItems?: number,
+  requiredOrder?: ReadonlyMap<string, number>,
+): T[] {
   const selected = new Map<string, T>();
   const entityBytes = kind === 'todo' ? ENTITY_BYTES : 2048;
   const collectionBytes = kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES;
+  const requiredValues = values.filter((value) => required.has(id(value)));
+  const orderedRequired = requiredOrder === undefined ? requiredValues : requiredValues.toSorted((left, right) =>
+    (requiredOrder.get(id(left)) ?? Number.MAX_SAFE_INTEGER) - (requiredOrder.get(id(right)) ?? Number.MAX_SAFE_INTEGER));
   let bytes = 2;
-  const candidates = [...values.filter((value) => required.has(id(value))), ...values.filter((value) => !required.has(id(value))).toReversed()];
+  const candidates = priority === undefined
+    ? [...orderedRequired, ...values.filter((value) => !required.has(id(value))).toReversed()]
+    : [
+        ...values.filter((value) => priority(value) === true),
+        ...orderedRequired.filter((value) => priority(value) !== true),
+        ...values.filter((value) => !required.has(id(value)) && priority(value) !== true).toReversed(),
+      ];
   for (const value of candidates) {
-    if (!required.has(id(value)) && selected.size >= 8) break;
+    if (maxItems !== undefined && selected.size >= maxItems) break;
+    if (!required.has(id(value)) && priority === undefined && selected.size >= 8) break;
     const projected = (value as import('@kiki/transcript').ContentWindow).contentRefs !== undefined ? value
       : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, entityBytes);
     const size = jsonBytes(projected) + 1;
