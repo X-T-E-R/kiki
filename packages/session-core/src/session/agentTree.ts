@@ -1171,7 +1171,7 @@ function isActiveStatus(status: AgentStatus): boolean {
 /** Terminal statuses are never busy; running/suspended/background stay active. */
 function busyFromStatus(status: AgentStatus, hinted?: boolean): boolean {
   if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost' || status === 'idle') return false;
-  return hinted ?? isActiveStatus(status);
+  return isActiveStatus(status) || hinted === true;
 }
 
 function normalizeLiveInput(input: AgentLiveTranscriptInput): AgentLiveTranscript {

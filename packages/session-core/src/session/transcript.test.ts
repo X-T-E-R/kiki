@@ -1051,6 +1051,29 @@ describe('transcript authority projection', () => {
     expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...rows[0]!, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
   });
 
+  it.each(['running', 'suspended'] as const)('keeps a runtime %s child busy before its transcript catches up', (activityStatus) => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', emptySnapshot()],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { phase: { kind: 'idle' } } } })],
+    ]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, parent_agent_id: 'main',
+      status: 'running', activity_status: activityStatus, status_source: 'runtime', live: true,
+      started_at: FIXED_AT_1, subagent_phase: activityStatus === 'suspended' ? 'suspended' : 'working',
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [row]);
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ status: activityStatus, busy: true });
+    expect(forest.byId['main']?.busy).toBe(false);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row, run_in_background: true }]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ status: activityStatus === 'running' ? 'background' : 'suspended', busy: true });
+    for (const status of ['idle', 'completed', 'failed', 'cancelled'] as const) {
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+        status: status === 'idle' ? 'running' : status, activity_status: status,
+        completed_at: FIXED_AT_2, subagent_phase: undefined,
+      }]).byId[CHILD_AGENT_ID]).toMatchObject({ status, busy: false });
+    }
+  });
+
   it('keeps durable task completion over cold identity-only metadata without locking a later run', () => {
     const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
       taskId: 'completed-dispatch', kind: 'subagent', state: 'completed', detached: true,

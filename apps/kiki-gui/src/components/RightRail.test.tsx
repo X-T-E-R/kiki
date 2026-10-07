@@ -32,6 +32,10 @@ vi.mock('./persona/PersonaSettingsUpdate', () => ({
   PersonaSettingsUpdate: () => <div data-rail-persona-settings />,
 }));
 
+vi.mock('./capabilities/WorkspacePluginsSection', () => ({
+  WorkspacePluginsSection: () => null,
+}));
+
 vi.mock('./AgentPanelContainer', () => ({
   AgentPanelContainer: ({ part = 'all', agentId, overviewMode, renderOverview }: {
     part?: string; agentId: string; overviewMode?: string;
@@ -157,6 +161,29 @@ function sharedChapters(container: Element) {
       className: section.className,
     }));
 }
+
+it('shows runtime activity instead of an idle child transcript and returns to idle after settlement', async () => {
+  const agentForest = (status: 'running' | 'idle') => buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'idle', busy: false },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'unknown', busy: false },
+    { agentId: 'agent-1', parentAgentId: 'main', status, statusSource: 'runtime' },
+  ]);
+  const subagent: SubagentRailContext = {
+    agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+    block: {
+      id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'idle',
+      parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+      thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+      toolCallCount: 0, transcript: [],
+    },
+  };
+  const running = await renderRail({ subagent, empty: true, agentForest: agentForest('running') });
+  expect(running.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('working');
+  expect(running.querySelector('[data-inspector-now]')?.textContent).toContain('Working');
+  const settled = await renderRail({ subagent, empty: true, agentForest: agentForest('idle') });
+  expect(settled.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(settled.querySelector('[data-inspector-now]')?.textContent).toContain('Idle');
+});
 
 describe('RightRail fixed and switchable parts', () => {
   /** Every rail part outside the overview block, as data hooks, in page order. */
