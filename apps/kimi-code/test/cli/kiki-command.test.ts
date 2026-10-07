@@ -1,13 +1,14 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { delegationProcedureTable } from '@kiki/klient/procedures';
 import type { SeatKlient } from '@kiki/klient/procedures/http';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { RunningServer, ServerStartOptions } from '@kiki/kap-server';
+import { startServer, type RunningServer, type ServerStartOptions } from '@kiki/kap-server';
 
 import {
   KIKI_CLI_PRINCIPAL,
@@ -21,7 +22,7 @@ import type { DoctorDeps, DoctorOptions } from '../../src/cli/sub/doctor';
 import { doctor, registerDoctorCommand } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
-import { createSeatOnConnection } from '../../src/kiki/seat';
+import { createSeatOnConnection, resolveSeatOnConnection } from '../../src/kiki/seat';
 import { mcpPrincipal, registerMcpCommand } from '../../src/kiki/mcp';
 import { registerKikiCommands } from '../../src/kiki/register';
 import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
@@ -29,10 +30,12 @@ import { parseDuration, startServeServer, registerServeCommand, findReachableSer
 import * as nativeAssets from '../../src/native/native-assets';
 
 const roots: string[] = [];
+const servers: RunningServer[] = [];
 
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -409,6 +412,21 @@ describe('kiki delegation CLI', () => {
       'cancel',
     ]);
     expect(program.commands.map((command) => command.name())).toEqual(projected.map((entry) => entry.command.split(/[ <[]/u)[0]));
+    expect(Object.fromEntries(projected.map((entry) => [entry.procedure.name, entry.sessionRequirement]))).toMatchObject({
+      profiles: 'catalog',
+      list: 'existing',
+      dispatch: 'create',
+      continue: 'existing',
+      send: 'existing',
+      interactions: 'existing',
+      respond: 'existing',
+      status: 'existing',
+      wait: 'existing',
+      result: 'existing',
+      events: 'existing',
+      transcript: 'existing',
+      cancel: 'existing',
+    });
   });
 
   it('describes every delegation command and option with procedure-specific help', () => {
@@ -427,6 +445,59 @@ describe('kiki delegation CLI', () => {
     expect(helpFor('result')).toContain('bytes per page');
     expect(helpFor('respond')).toContain('bare key means true');
   });
+
+  it('shares a non-materializing metadata bootstrap across the real CLI and preserves explicit create paths', async () => {
+    const fixture = await createCliServerFixture();
+    const emptyHome = await readCliCatalog(fixture);
+    expect(emptyHome).toEqual({ sessions: [], workspaces: [], seats: [] });
+    const firstAgents = await runRealCli(fixture, ['agents', '--home', fixture.home, '--workspace', fixture.workspace, '--json']);
+    expect(firstAgents.timedOut, firstAgents.stderr || firstAgents.stdout || 'CLI subprocess timed out').toBe(false);
+    expect(firstAgents.code).toBe(0);
+    expect(await readCliCatalog(fixture)).toEqual(emptyHome);
+    const firstSnapshot = await readAgentsSnapshot(fixture);
+    expectAgentsJson(firstAgents.stdout, firstSnapshot);
+
+    const sessionId = await createUserSession(fixture);
+    const existingEmptySession = await readCliCatalog(fixture);
+    expect(existingEmptySession.sessions).toHaveLength(1);
+    expect(existingEmptySession.workspaces).toHaveLength(1);
+    expect(existingEmptySession.seats).toHaveLength(0);
+    const secondAgents = await runLiveDelegation(fixture, 'profiles', [], { json: true });
+    expect(secondAgents.code).toBe(KIKI_EXIT.success);
+    const afterExistingSession = await readCliCatalog(fixture);
+    expect(afterExistingSession).toEqual(existingEmptySession);
+    expectAgentsJson(secondAgents.stdout, await readAgentsSnapshot(fixture));
+    expect(afterExistingSession.sessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: sessionId, message_count: 0 })]));
+
+    for (const command of [['list', []], ['interactions', []], ['status', ['missing-dispatch']]] as const) {
+      const beforeReadOnly = await readCliCatalog(fixture);
+      const [name, positionals] = command;
+      const result = await runLiveDelegation(fixture, name, positionals, { json: true });
+      expect([KIKI_EXIT.success, KIKI_EXIT.notFound]).toContain(result.code);
+      if (result.code === KIKI_EXIT.success && result.stdout.trim() !== '') parseSingleJsonLine(result.stdout);
+      expect(await readCliCatalog(fixture)).toEqual(beforeReadOnly);
+    }
+
+    const beforeCreate = await readCliCatalog(fixture);
+    expect(beforeCreate.sessions).toHaveLength(1);
+    expect(beforeCreate.workspaces).toHaveLength(1);
+    expect(beforeCreate.seats).toHaveLength(0);
+    const created = await runRealCli(fixture, [
+      'seat', 'create',
+      '--workspace', fixture.seatWorkspace,
+      '--principal', 'fixture-client',
+      '--home', fixture.home,
+      '--json',
+    ]);
+    expect(created.timedOut, created.stderr || 'CLI subprocess timed out').toBe(false);
+    expect(created.code).toBe(0);
+    expect(parseSingleJsonLine(created.stdout)).toMatchObject({ principal: 'fixture-client', workspace: fixture.seatWorkspace });
+    const afterCreate = await readCliCatalog(fixture);
+    expect(afterCreate.sessions).toHaveLength(beforeCreate.sessions.length + 1);
+    expect(afterCreate.sessions).toEqual(expect.arrayContaining([expect.objectContaining({ message_count: 0, metadata: { cwd: fixture.seatWorkspace } })]));
+    expect(afterCreate.workspaces).toHaveLength(beforeCreate.workspaces.length + 1);
+    expect(afterCreate.seats).toHaveLength(beforeCreate.seats.length + 1);
+  }, 180_000);
 
   it.each([['list', '--help'], ['dispatch', '--help']])(
     'terminates help parsing without startup, seat, RPC, or root action: %s %s',
@@ -519,6 +590,8 @@ describe('kiki delegation CLI', () => {
       dispatchKey: 'explicit-key',
       message: 'inspect this',
     } }]);
+    expect(harness.createSeat).toHaveBeenCalledTimes(1);
+    expect(harness.resolveSeat).not.toHaveBeenCalled();
   });
 
   it('maps positionals and options through the procedure codec into canonical input', () => {
@@ -685,15 +758,18 @@ describe('kiki delegation CLI', () => {
     });
 
     await runDelegationCommand('list', [], { home, workspace, json: true }, harness.dependencies);
+    expect(harness.resolveSeat).toHaveBeenCalledTimes(1);
+    expect(harness.createSeat).not.toHaveBeenCalled();
     await runDelegationCommand('list', [], { home, workspace, json: true }, harness.dependencies);
 
     expect(harness.ensure).toHaveBeenCalledTimes(2);
     expect(harness.ensure).toHaveBeenCalledWith({ homeDir: home, workspace });
-    expect(harness.createSeat).toHaveBeenCalledTimes(2);
-    expect(harness.createSeat).toHaveBeenCalledWith(expect.anything(), {
+    expect(harness.resolveSeat).toHaveBeenCalledTimes(2);
+    expect(harness.resolveSeat).toHaveBeenCalledWith(expect.anything(), {
       workspace,
       principal: KIKI_CLI_PRINCIPAL,
     });
+    expect(harness.createSeat).not.toHaveBeenCalled();
     expect(harness.createClient).toHaveBeenCalledWith({
       endpoint: 'http://127.0.0.1:58627',
       token: 'DELEGATION_SECRET',
@@ -703,6 +779,178 @@ describe('kiki delegation CLI', () => {
   });
 });
 
+interface CliServerFixture {
+  readonly root: string;
+  readonly home: string;
+  readonly workspace: string;
+  readonly seatWorkspace: string;
+  readonly server: RunningServer;
+}
+
+interface CliProcessResult {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
+}
+
+async function createCliServerFixture(): Promise<CliServerFixture> {
+  const root = await mkdtemp(join(tmpdir(), 'kiki-cli-metadata-test-'));
+  roots.push(root);
+  const home = join(root, 'home');
+  const workspace = join(root, 'workspace');
+  const seatWorkspace = join(root, 'seat-workspace');
+  await mkdir(home);
+  await mkdir(workspace);
+  await mkdir(seatWorkspace);
+  const server = await startServer({
+    host: '127.0.0.1',
+    port: 0,
+    homeDir: home,
+    logLevel: 'silent',
+    hostIdentity: { productName: 'test-host', version: '0.0.0-test', platform: 'test_platform' },
+  });
+  servers.push(server);
+  return { root, home, workspace, seatWorkspace, server };
+}
+
+async function createUserSession(fixture: CliServerFixture): Promise<string> {
+  const response = await fetch(`${serverBase(fixture)}/api/sessions`, {
+    method: 'POST',
+    headers: ownerHeaders(fixture),
+    body: JSON.stringify({ metadata: { cwd: fixture.workspace } }),
+  });
+  const body = await response.json() as { readonly code: number; readonly msg: string; readonly data?: { readonly id: string } };
+  expect(body.code, body.msg).toBe(0);
+  expect(body.data?.id).toEqual(expect.any(String));
+  return body.data!.id;
+}
+
+async function readCliCatalog(fixture: CliServerFixture): Promise<{
+  readonly sessions: readonly unknown[];
+  readonly workspaces: readonly unknown[];
+  readonly seats: readonly unknown[];
+}> {
+  const [sessions, workspaces, seats] = await Promise.all([
+    readStableData(fixture, '/api/sessions?include_archive=true'),
+    readStableData(fixture, '/api/workspaces'),
+    readStableData(fixture, '/api/external-delegation/seats'),
+  ]);
+  return {
+    sessions: recordData(sessions)['items'] as readonly unknown[],
+    workspaces: recordData(workspaces)['items'] as readonly unknown[],
+    seats: seats as readonly unknown[],
+  };
+}
+
+async function readAgentsSnapshot(fixture: CliServerFixture): Promise<unknown> {
+  const query = `/api/agents?cwd=${encodeURIComponent(fixture.workspace)}&effective=true`;
+  return recordData(await readStableData(fixture, query));
+}
+
+async function readStableData(fixture: CliServerFixture, path: string): Promise<unknown> {
+  let last: { readonly code: number; readonly msg: string; readonly data?: unknown } | undefined;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const response = await fetch(`${serverBase(fixture)}${path}`, { headers: ownerHeaders(fixture) });
+    const body = await response.json() as { readonly code: number; readonly msg: string; readonly data?: unknown };
+    if (body.code !== 40939) {
+      expect(body.code, body.msg).toBe(0);
+      return body.data;
+    }
+    last = body;
+    await new Promise<void>((resolvePromise) => globalThis.setTimeout(resolvePromise, 100));
+  }
+  throw new Error(`Timed out waiting for catalog route ${path}: ${last?.msg ?? 'no response'}`);
+}
+
+async function runLiveDelegation(
+  fixture: CliServerFixture,
+  procedure: Parameters<typeof runDelegationCommand>[0],
+  positionals: readonly string[],
+  options: Record<string, unknown>,
+): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
+  let stdout = '';
+  let stderr = '';
+  const code = await runDelegationCommand(procedure, positionals, {
+    ...options,
+    home: fixture.home,
+    workspace: fixture.workspace,
+  }, {
+    stdout: { write: (text) => { stdout += String(text); return true; } },
+    stderr: { write: (text) => { stderr += String(text); return true; } },
+  });
+  return { code, stdout, stderr };
+}
+
+async function runRealCli(fixture: CliServerFixture, args: readonly string[]): Promise<CliProcessResult> {
+  const repoRoot = resolve(import.meta.dirname, '../../../..');
+  return new Promise<CliProcessResult>((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [
+      '--import', 'tsx',
+      '--import', './build/register-raw-text-loader.mjs',
+      'apps/kimi-code/src/main.ts',
+      ...args,
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        KIKI_HOME: fixture.home,
+        KIKI_LOG_LEVEL: 'off',
+        TSX_TSCONFIG_PATH: 'apps/kimi-code/tsconfig.dev.json',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = globalThis.setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 60_000);
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      globalThis.clearTimeout(timer);
+      resolvePromise({ code, signal, stdout, stderr, timedOut });
+    });
+  });
+}
+
+function parseSingleJsonLine(stdout: string): unknown {
+  const lines = stdout.trim().split(/\r?\n/u).filter((line) => line.length > 0);
+  expect(lines).toHaveLength(1);
+  return JSON.parse(lines[0]!);
+}
+
+function expectAgentsJson(stdout: string, snapshot: unknown): void {
+  const output = recordData(parseSingleJsonLine(stdout));
+  const outputItems = Array.isArray(output['profiles']) ? output['profiles'] : output['items'];
+  const snapshotItems = recordData(snapshot)['items'];
+  expect(outputItems).toEqual(expect.any(Array));
+  expect(snapshotItems).toEqual(expect.any(Array));
+  const names = (items: unknown[]) => items.map((item) => {
+    const record = recordData(item);
+    return record['profileName'] ?? record['name'];
+  }).filter((name): name is string => typeof name === 'string');
+  expect(names(outputItems as unknown[]).toSorted()).toEqual(names(snapshotItems as unknown[]).toSorted());
+}
+
+function serverBase(fixture: CliServerFixture): string {
+  return `http://127.0.0.1:${fixture.server.port}`;
+}
+
+function ownerHeaders(fixture: CliServerFixture): Record<string, string> {
+  return { authorization: `Bearer ${fixture.server.localOwnerToken}`, 'content-type': 'application/json' };
+}
+
+function recordData(value: unknown): Record<string, unknown> {
+  expect(value).toBeTypeOf('object');
+  expect(value).not.toBeNull();
+  return value as Record<string, unknown>;
+}
+
 function runtimeHarness(
   workspace: string,
   calls: { name: string; input: unknown }[],
@@ -711,6 +959,7 @@ function runtimeHarness(
   dependencies: DelegationRuntimeDependencies;
   ensure: ReturnType<typeof vi.fn>;
   createSeat: ReturnType<typeof vi.fn>;
+  resolveSeat: ReturnType<typeof vi.fn>;
   createClient: ReturnType<typeof vi.fn>;
   stdout(): string;
   closed(): number;
@@ -718,14 +967,16 @@ function runtimeHarness(
   let stdout = '';
   let closed = 0;
   const ensure = vi.fn(async () => ({ url: 'http://127.0.0.1:58627', token: 'server-token', serverId: 'server' }));
-  const createSeat = vi.fn(async () => ({
+  const seat = {
     seatId: 'seat-1',
     sessionId: 'session-1',
     delegationToken: 'DELEGATION_SECRET',
     principal: KIKI_CLI_PRINCIPAL,
     workspace,
     mode: 'manual',
-  }));
+  };
+  const createSeat = vi.fn(async () => seat);
+  const resolveSeat = vi.fn(async () => seat);
   const client = {
     call: async (name: string, input: unknown) => {
       calls.push({ name, input });
@@ -742,6 +993,7 @@ function runtimeHarness(
     dependencies: {
       ensureServer: ensure as never,
       createSeat: createSeat as never,
+      resolveSeat: resolveSeat as never,
       createSeatKlient: createClient as never,
       stdout: { write: (value) => { stdout += String(value); return true; } },
       stderr: { write: () => true },
@@ -749,6 +1001,7 @@ function runtimeHarness(
     },
     ensure,
     createSeat,
+    resolveSeat,
     createClient,
     stdout: () => stdout,
     closed: () => closed,

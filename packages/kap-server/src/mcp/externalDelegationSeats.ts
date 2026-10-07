@@ -123,6 +123,25 @@ export class ExternalDelegationSeatManager {
     });
   }
 
+  find(input: {
+    readonly workspace: string;
+    readonly principal: string;
+  }): Promise<ExternalDelegationSeat | undefined> {
+    return this.serialize(async () => {
+      const workspace = normalize(await realpath(resolve(input.workspace)));
+      const document = await this.read();
+      const seat = document.seats.find((candidate) =>
+        pathKey(candidate.workspace) === pathKey(workspace) && candidate.principal === input.principal,
+      );
+      if (seat === undefined) return undefined;
+      const provision = await this.readSeatProvision(seat.sessionId);
+      if (provision === undefined || provision.principalId !== seat.principal) {
+        throw new Error('External delegation seat provision is unavailable.');
+      }
+      return { ...toView(seat), delegationToken: provision.delegationToken };
+    });
+  }
+
   async list(): Promise<readonly ExternalDelegationSeatView[]> {
     const document = await this.read();
     return document.seats.map(toView);

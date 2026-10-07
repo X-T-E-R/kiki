@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -112,5 +112,39 @@ describe('ExternalDelegationSeatManager', () => {
     expect(await restored.revoke(first.seatId)).toMatchObject({ seatId: first.seatId });
     expect(await restored.resolve(first.sessionId, first.delegationToken)).toBeUndefined();
     expect(mocks.acquire.mock.calls.length).toBe(mocks.release.mock.calls.length);
+  });
+
+  it('finds an existing seat with its true token without provisioning or touching the catalog', async () => {
+    const onWorkspaceServed = vi.fn();
+    const core = { accessor: { get: (id: unknown) => id === ISessionManager ? { acquire: mocks.acquire } : undefined } } as never;
+    const manager = new ExternalDelegationSeatManager(core, homeDir, onWorkspaceServed);
+    const first = await manager.create({ workspace, principal: 'cursor', mode: 'auto' });
+    const catalogPath = join(homeDir, 'server', 'external-delegation-seats.json');
+    const before = readFileSync(catalogPath, 'utf8');
+    mocks.provision.mockClear();
+    mocks.acquire.mockClear();
+    mocks.release.mockClear();
+
+    const found = await manager.find({ workspace, principal: 'cursor' });
+
+    expect(found).toMatchObject({
+      seatId: first.seatId,
+      sessionId: first.sessionId,
+      delegationToken: first.delegationToken,
+      principal: first.principal,
+      workspace: first.workspace,
+      updatedAt: first.updatedAt,
+    });
+    expect(found?.delegationToken).toBe(first.delegationToken);
+    expect(found?.seatId).toBe(first.seatId);
+    expect(readFileSync(catalogPath, 'utf8')).toBe(before);
+    expect(mocks.provision).not.toHaveBeenCalled();
+    expect(onWorkspaceServed).toHaveBeenCalledOnce();
+    expect(mocks.acquire).toHaveBeenCalledOnce();
+    expect(mocks.release).toHaveBeenCalledOnce();
+    await expect(manager.find({ workspace, principal: 'missing' })).resolves.toBeUndefined();
+
+    mocks.documents.delete(first.sessionId);
+    await expect(manager.find({ workspace, principal: 'cursor' })).rejects.toThrow('External delegation seat provision is unavailable.');
   });
 });

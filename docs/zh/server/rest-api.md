@@ -499,6 +499,7 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/usage` | 按有界筛选与分页汇总各会话用量 |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | 查询模型价格来源或按键修改用户价格覆盖，见下节 |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | 创建或列出外部委派席位 |
+| `POST /api/external-delegation/seats:resolve` | 按 `{ workspace, principal }` 查找已有席位，返回含委派 token 的席位或 `null`；不创建席位、会话或工作区 |
 | `DELETE /api/external-delegation/seats/{seat_id}` | 撤销外部委派席位 |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | 调用已获准的外部委派过程 |
 | `GET /api/sessions/query` | 新一代会话列表，见下节 |

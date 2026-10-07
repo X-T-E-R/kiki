@@ -114,6 +114,18 @@ export function createSeatOnConnection(
   );
 }
 
+export function resolveSeatOnConnection(
+  connection: ServerConnection,
+  input: { readonly workspace: string; readonly principal: string },
+): Promise<SeatConnection | null> {
+  return daemonRequest<SeatConnection | null>(
+    connection,
+    'POST',
+    '/api/external-delegation/seats:resolve',
+    input,
+  );
+}
+
 export async function daemonRequest<T>(
   connection: ServerConnection,
   method: 'GET' | 'POST' | 'DELETE',

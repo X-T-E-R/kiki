@@ -78,6 +78,22 @@ export function registerV2ExternalDelegationSeatRoutes(
   );
   app.post(createRoute.path, createRoute.options, createRoute.handler as never);
 
+  const resolveRoute = defineRoute(
+    {
+      method: 'POST',
+      path: '/external-delegation/seats::resolve',
+      body: seatCreateSchema.pick({ workspace: true, principal: true }),
+      success: { data: seatCreateResponseSchema.nullable() },
+      description: 'Resolve an existing external delegation seat without creating one',
+      tags: ['v2-sessions'],
+    },
+    async (req, reply) => {
+      if (sendDisabled(reply, req.id, state)) return;
+      reply.send(okEnvelope(await manager.find(req.body) ?? null, req.id));
+    },
+  );
+  app.post(resolveRoute.path, resolveRoute.options, resolveRoute.handler as never);
+
   const listRoute = defineRoute(
     {
       method: 'GET',

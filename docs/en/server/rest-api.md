@@ -503,6 +503,7 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `GET /api/usage` | Aggregate usage across sessions with bounded filters and pagination |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | Inspect model price sources or patch user price overrides, see below |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | Create or list external-delegation seats |
+| `POST /api/external-delegation/seats:resolve` | Resolve an existing seat by `{ workspace, principal }`; returns the seat with its delegation token, or `null`, without creating a seat, session, or workspace |
 | `DELETE /api/external-delegation/seats/{seat_id}` | Revoke an external-delegation seat |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | Call an admitted external-delegation procedure |
 | `GET /api/sessions/query` | Next-generation session list, see below |

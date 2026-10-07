@@ -273,6 +273,12 @@ The collector stays responsible for `<T` and native for `>=T`; offline catch-up 
 
 Receiver developers can run the repository's local example with `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts` (Node 24). It binds only `127.0.0.1:9080`, persists replacements and deletion tombstones in `usage-receiver.sqlite`, and exposes `POST /usage`. Approve the exact loopback HTTP grant when testing it. A production receiver needs TLS, durable storage, and authentication; the example is not a hosted dashboard.
 
+### `kiki agents` and delegation commands
+
+`kiki agents --json` reads the workspace's effective profile catalog and returns `items` and `complete` without creating a conversation or registering a workspace. Use `--workspace <dir>` to inspect another directory.
+
+`kiki dispatch <message>` creates or reuses the CLI delegation seat when starting work. Other delegation commands, including `list`, `interactions`, `status`, `wait`, `result`, `events`, and `transcript`, require an existing seat; if none exists, they return exit code `3` without creating one. Start work with `dispatch` or explicitly create a seat with `--principal kiki-cli` before using them.
+
 ### `kiki seat`
 
 Manage fixed external-caller seats used by Cursor, Claude Code, Codex, and other inbound MCP clients. A seat fixes the workspace, principal, permission mode, model, and thinking effort before an external caller connects:

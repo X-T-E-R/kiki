@@ -273,6 +273,12 @@ Vibe 目的端使用 `{ "kind": "vibe", "endpoint": "https://example.com/api/usa
 
 接收端开发者可在仓库中运行 `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts`（Node 24）。示例只监听 `127.0.0.1:9080`，在 `usage-receiver.sqlite` 持久保存替换版本和删除墓碑，提供 `POST /usage`。测试时须批准准确的 loopback HTTP grant。生产接收端应提供 TLS、持久存储和鉴权；示例不是托管看板。
 
+### `kiki agents` 与委派命令
+
+`kiki agents --json` 读取工作区的有效智能体档目录，返回 `items` 和 `complete`，不创建对话，也不注册工作区。使用 `--workspace <目录>` 查看其他目录。
+
+`kiki dispatch <message>` 在启动工作时创建或复用 CLI 委派席位。其他委派命令，包括 `list`、`interactions`、`status`、`wait`、`result`、`events` 和 `transcript`，要求已有席位；没有席位时返回退出码 `3`，不会新建。先通过 `dispatch` 启动工作，或使用 `--principal kiki-cli` 显式创建席位，再使用这些命令。
+
 ### `kiki seat`
 
 管理 Cursor、Claude Code、Codex 等外部 MCP 调用方使用的固定席位。外部调用方连接前，席位会固定 workspace、principal、权限模式、模型和 thinking effort：
