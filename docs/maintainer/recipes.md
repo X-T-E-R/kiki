@@ -1,6 +1,6 @@
 # Recipe model presets
 
-Recipes aggregate reusable prompt and model-setting overrides referenced by a model or profile, while preserving the agent role and host authority. The feature is registered in `packages/agent-core-v2/src/app/recipes/configSection.ts` and defaults off. Enable `KIKI_EXPERIMENTAL_RECIPES=true` for development. The package format and SDK workflow live in [Prompt field overrides](../en/customization/prompt-fields.md#recipe-model-presets) and its [Chinese mirror](../zh/customization/prompt-fields.md#recipe-模型配方).
+Recipes aggregate reusable prompt and model-setting overrides referenced by a model or profile, while preserving the agent role and host authority. The feature is registered in `packages/agent-core-v2/src/app/recipes/configSection.ts` and defaults on. Explicit per-flag environment or `[experimental]` config overrides still take precedence. The package format and SDK workflow live in [Prompt field overrides](../en/customization/prompt-fields.md#recipe-model-presets) and its [Chinese mirror](../zh/customization/prompt-fields.md#recipe-模型配方).
 
 ## Sources and validation
 
@@ -28,7 +28,7 @@ Markets are configured in `[recipes]` as `markets`. There is no built-in officia
 
 ## Model selection and runtime binding
 
-The shared protocol is `packages/protocol/src/recipe.ts`; klient exposes `global.recipes`, and KAP exposes `/api/recipes` and `/api/recipe-markets`. Apply through `global.kosong.updateModel(id, { recipe: installation_id, base_revision })`, not a separate settings API. Clear with `recipe: null`. Selection validates the installation before mutating the model record, and stale model revisions fail without overwriting other edits.
+The shared protocol is `packages/protocol/src/recipe.ts`; klient exposes `global.recipes`, and KAP exposes `/api/recipes` and `/api/recipe-markets`. Apply through `global.kosong.updateModel(id, { recipe: installation_id, base_revision })`, not a separate settings API. Clear with `recipe: null`. The GUI model editor owns that CAS: Apply, Restore manual settings and Install and apply commit the reference together with pending model fields and native prompt bodies; Install only and author saves never bind a model. Accepted entities advance the editor drafts, baselines and query cache together before refetch. Selection validates the installation before mutating the model record, and stale model revisions fail without overwriting other edits.
 
 Model entity `parameters` and `usage` remain the saved manual record. `effective_parameters`/`parameter_sources` and `usage_effective`/`usage_sources` report actual composition. `recipe_model_binding` carries `{ installation_id, revision, model, model_origins, references? }`; mark a source as Recipe only if its leaf actually wins the existing model-resolution trace. An unavailable installation yields a model issue so editing can recover, while execution refuses an invalid new binding.
 
