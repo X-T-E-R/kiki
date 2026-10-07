@@ -55,7 +55,7 @@ interface SessionMediaRequest {
 }
 
 interface SessionMediaReply extends Pick<FastifyReply, 'then'> {
-  readonly raw: { once(event: 'finish' | 'close', listener: () => void): unknown };
+  readonly raw: { readonly destroyed: boolean; once(event: 'finish' | 'close', listener: () => void): unknown };
   type(mime: string): SessionMediaReply;
   header(name: string, value: string | number): SessionMediaReply;
   code(status: number): SessionMediaReply;
@@ -177,6 +177,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       r.header('etag', etag).header('accept-ranges', 'bytes');
       if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(null) as void;
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));
+      if (r.raw.destroyed) return;
       r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
       const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
@@ -184,8 +185,9 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       else r.code(200);
       return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
     } catch (error) {
+      if (r.raw.destroyed) return;
       if (!(error instanceof MediaPreviewUnavailableError)) throw error;
-      return r.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
+      return r.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
     } finally {
       await opened.operation?.dispose();
     }

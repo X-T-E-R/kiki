@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
+import { get } from 'node:http';
+import * as mediaPreview from '../src/services/mediaPreview';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
@@ -470,6 +472,112 @@ describe('server-v2 /api fs:content', () => {
     const res = await getContent('/dev/null');
     const body = (await res.json()) as Envelope<null>;
     expect(body.code).toBe(40001);
+  });
+
+  it('ends only the cancelled preview request and closes its source iterator', async () => {
+    const file = join(dir!, 'cancelled.png');
+    await writeFile(file, Buffer.alloc(1024));
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    let sourceClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { sourceClosed = resolve; });
+    const createPreview = mediaPreview.createMediaPreview;
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockImplementationOnce((source, mime, signal) => createPreview({
+      ...source,
+      stream: async function* () {
+        try {
+          yield new Uint8Array(512);
+          started();
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener('abort', () => { resolve(); }, { once: true });
+          });
+          signal.throwIfAborted();
+        } finally {
+          sourceClosed();
+        }
+      },
+    }, mime, signal));
+    const request = get(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+    request.on('error', () => {});
+    try {
+      await reading;
+      request.destroy();
+      await closed;
+      const normal = await getContent(file);
+      expect(normal.status).toBe(200);
+      expect(new Uint8Array(await normal.arrayBuffer())).toEqual(new Uint8Array(1024));
+      expect(server!.app.server.listening).toBe(true);
+    } finally {
+      request.destroy();
+      preview.mockRestore();
+    }
+  });
+
+  it('does not start source reads when the client closes before preview setup', async () => {
+    const file = join(dir!, 'early-close.png');
+    await writeFile(file, Buffer.alloc(1024));
+    let entered!: () => void;
+    const resolving = new Promise<void>((resolve) => { entered = resolve; });
+    let proceed!: () => void;
+    const gate = new Promise<void>((resolve) => { proceed = resolve; });
+    const hostFs = server!.core.accessor.get(IHostFileSystem);
+    const resolvePath = hostFs.realpath.bind(hostFs);
+    const path = vi.spyOn(hostFs, 'realpath').mockImplementationOnce(async (value) => {
+      entered();
+      await gate;
+      return resolvePath(value);
+    });
+    let finished!: () => void;
+    const handled = new Promise<void>((resolve) => { finished = resolve; });
+    let wasAborted = false;
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockImplementationOnce(async (_source, _mime, signal) => {
+      wasAborted = signal.aborted;
+      try {
+        signal.throwIfAborted();
+        throw new Error('disconnected preview was not aborted');
+      } finally { finished(); }
+    });
+    const closed = new Promise<void>((resolve) => {
+      server!.app.server.once('request', (_req, response) => { response.once('close', resolve); });
+    });
+    const request = get(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+    request.on('error', () => {});
+    try {
+      await resolving;
+      request.destroy();
+      await closed;
+      proceed();
+      await handled;
+      expect(wasAborted).toBe(true);
+      const normal = await getContent(file);
+      expect(normal.status).toBe(200);
+      await normal.arrayBuffer();
+      expect(preview).toHaveBeenCalledTimes(1);
+    } finally {
+      proceed();
+      request.destroy();
+      preview.mockRestore();
+      path.mockRestore();
+    }
+  });
+
+  it.each([
+    [new mediaPreview.MediaPreviewUnavailableError('preview unavailable'), 415, 40001],
+    [new Error('source read failed'), 500, 50001],
+  ])('serializes a rejected preview as JSON without losing the next request', async (error, status, code) => {
+    const file = join(dir!, 'rejected.png');
+    await writeFile(file, Buffer.alloc(1024));
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockRejectedValueOnce(error);
+    try {
+      const response = await fetch(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+      expect(response.status).toBe(status);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      expect(await response.json()).toMatchObject({ code, msg: error.message, data: null });
+      const normal = await getContent(file, { range: 'bytes=2-5' });
+      expect(normal.status).toBe(206);
+      expect((await normal.arrayBuffer()).byteLength).toBe(4);
+    } finally { preview.mockRestore(); }
   });
 
   it('generates a bounded source media preview under the existing host-file authorization and preserves original bytes', async () => {

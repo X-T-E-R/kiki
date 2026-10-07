@@ -38,6 +38,7 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
 
 interface FsContentReply {
+  readonly raw: { readonly destroyed: boolean };
   type(mime: string): FsContentReply;
   header(name: string, value: string | number): FsContentReply;
   code(status: number): FsContentReply;
@@ -126,6 +127,7 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
         403: contentErrorSchema,
         404: contentErrorSchema,
         409: contentErrorSchema,
+        415: contentErrorSchema,
         500: contentErrorSchema,
       },
       description:
@@ -138,8 +140,9 @@ export function registerWorkspaceFsRoutes(app: WorkspaceFsRouteHost, core: Scope
       try {
         await handleFsContent(core, req, response);
       } catch (error) {
+        if (response.raw.destroyed) return;
         requestLog(req)?.error({ err: error }, 'fs content failed');
-        response.code(500).send(errEnvelope(
+        response.type('application/json').code(500).send(errEnvelope(
           ErrorCode.INTERNAL_ERROR,
           error instanceof Error ? error.message : 'file download failed',
           req.id,
@@ -264,13 +267,13 @@ async function handleFsContent(
 
   reply.header('etag', etag);
   reply.header('last-modified', new Date(st.mtimeMs ?? 0).toUTCString());
-  reply.type(guessMime(abs, isBinary));
   if (req.query.preview === 'media') {
     try {
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview({
         name: abs, size: st.size, mediaType: guessMime(abs, isBinary),
         stream: (range) => createReadStream(abs, range),
       }, undefined, signal));
+      if (reply.raw.destroyed) return;
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
       const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
       reply.type(result.mime).header('accept-ranges', 'bytes');
@@ -278,12 +281,14 @@ async function handleFsContent(
       else reply.code(200);
       reply.header('content-length', bytes.byteLength).send(Buffer.from(bytes));
     } catch (error) {
+      if (reply.raw.destroyed) return;
       if (!(error instanceof MediaPreviewUnavailableError)) throw error;
-      reply.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, requestId));
+      reply.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, requestId));
     }
     return;
   }
 
+  reply.type(guessMime(abs, isBinary));
   const log = requestLog(req);
   const onStreamError = (stream: ReadStream) => (error: unknown) => {
     log?.warn({ path, err: error }, 'fs content stream error');

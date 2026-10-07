@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'node:http';
+import * as sessionOperation from '../src/lib/sessionOperationLease';
+import { installErrorHandler } from '../src/error-handler';
 import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
 import { AgentTranscript, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
@@ -21,6 +24,57 @@ const servers: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); });
 
 describe('canonical inline media original', () => {
+  it('closes a cancelled session preview source and releases its operation without affecting the next download', async () => {
+    const app = Fastify(); servers.push(app);
+    installErrorHandler(app);
+    app.addHook('onSend', async (_req, _reply, payload) => payload);
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    let proceed!: () => void;
+    const gate = new Promise<void>((resolve) => { proceed = resolve; });
+    let sourceClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { sourceClosed = resolve; });
+    let released!: () => void;
+    const disposed = new Promise<void>((resolve) => { released = resolve; });
+    let slow = true;
+    const bytes = new Uint8Array(1024);
+    const dispose = vi.fn(async () => { released(); });
+    const file = { name: 'fixture.png', mediaType: 'image/png', size: bytes.byteLength,
+      stream: async function* (range?: { start: number; end: number }) {
+        try {
+          if (slow) { started(); await gate; }
+          yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
+        } finally { sourceClosed(); }
+      },
+    };
+    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
+      handle: { accessor: { get: () => ({ open: async () => file }) } }, dispose,
+    } as unknown as sessionOperation.SessionOperationLease);
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope); }, { prefix: '/api' });
+    const base = await app.listen({ host: '127.0.0.1', port: 0 });
+    const disconnected = new Promise<void>((resolve) => { app.server.once('request', (_req, response) => { response.once('close', resolve); }); });
+    const request = get(`${base}/api/sessions/fixture/media/file/preview`);
+    request.on('error', () => {});
+    try {
+      await reading;
+      request.destroy();
+      await disconnected;
+      proceed();
+      await closed;
+      await disposed;
+      expect(dispose).toHaveBeenCalledTimes(1);
+      slow = false;
+      const normal = await fetch(`${base}/api/sessions/fixture/media/file`, { headers: { range: 'bytes=0-15' } });
+      expect(normal.status).toBe(206);
+      expect(new Uint8Array(await normal.arrayBuffer())).toEqual(bytes.subarray(0, 16));
+      await vi.waitFor(() => { expect(dispose).toHaveBeenCalledTimes(2); });
+      expect(app.server.listening).toBe(true);
+    } finally {
+      proceed();
+      request.destroy();
+      acquire.mockRestore();
+    }
+  });
   it('keeps delivered prompt images whole in baseline, live operations and content continuations without resuming a cold session', async () => {
     const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
     const { pictures } = await import(fixture);

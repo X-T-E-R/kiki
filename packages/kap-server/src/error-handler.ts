@@ -2,14 +2,14 @@ import { ErrorCodes, isError2 } from '@kiki/agent-core-v2';
 
 import { errEnvelope } from './envelope';
 import { ErrorCode } from './protocol/error-codes';
-import type { FastifyError } from 'fastify';
+import type { FastifyError, FastifyReply } from 'fastify';
 
 interface ErrorHandlerHost {
   setErrorHandler(
     handler: (
       err: FastifyError,
       req: { id: string; log: { error: (obj: object | string, msg?: string) => void } },
-      reply: { status(code: number): { send(payload: unknown): void } },
+      reply: Pick<FastifyReply, 'status' | 'send' | 'type' | 'serializer' | 'removeHeader'>,
     ) => void,
   ): unknown;
 }
@@ -20,6 +20,10 @@ interface ErrorHandlerHost {
 export function installErrorHandler(app: ErrorHandlerHost): void {
   app.setErrorHandler((err, req, reply) => {
     const requestId = req.id;
+    reply.type('application/json').serializer(JSON.stringify);
+    reply.removeHeader('content-length');
+    reply.removeHeader('content-range');
+    reply.removeHeader('content-disposition');
     if (err.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
       reply
         .status(413)

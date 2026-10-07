@@ -1,6 +1,7 @@
 import { APIProviderRateLimitError, Error2, ErrorCodes } from '@kiki/agent-core-v2';
 import { ErrorCode } from '../src/protocol/error-codes';
 import { describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
 
 import { mapError } from '../src/transport/errors';
 import { installErrorHandler } from '../src/error-handler';
@@ -57,11 +58,14 @@ describe('installErrorHandler (catch-all)', () => {
       reply: { status: (code: number) => { send: (p: unknown) => void } },
     ) => void;
     let payload: { code: number; msg: string } | undefined;
-    handler(
-      err,
-      { id: 'req-1', log: { error: () => {} } },
-      { status: () => ({ send: (p: unknown) => void (payload = p as typeof payload) }) },
-    );
+    const reply = {
+      type: () => reply,
+      serializer: () => reply,
+      removeHeader: () => reply,
+      status: () => reply,
+      send: (p: unknown) => void (payload = p as typeof payload),
+    };
+    handler(err, { id: 'req-1', log: { error: () => {} } }, reply);
     return payload!;
   }
 
@@ -75,6 +79,28 @@ describe('installErrorHandler (catch-all)', () => {
     const env = run(new Error2(ErrorCodes.STORAGE_LOCKED, 'held by pid 1234'));
     expect(env.code).toBe(ErrorCode.SESSION_LOCKED);
     expect(env.msg).toContain('held by pid 1234');
+  });
+
+  it('replaces binary response framing and its success serializer when sending an error', async () => {
+    const app = Fastify();
+    installErrorHandler(app);
+    app.addHook('onSend', async (_req, _reply, payload) => payload);
+    app.get('/media', { schema: { response: { 200: { type: 'string', format: 'binary' } } } }, async (_req, reply) => {
+      reply.type('image/png').header('content-length', 100).header('content-range', 'bytes 0-99/100').header('content-disposition', 'inline');
+      throw new Error('preview failed');
+    });
+    app.get('/healthy', async () => ({ alive: true }));
+    try {
+      await app.listen({ host: '127.0.0.1', port: 0 });
+      const { port } = app.server.address() as { port: number };
+      const response = await fetch(`http://127.0.0.1:${port}/media`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      expect(response.headers.get('content-range')).toBeNull();
+      expect(response.headers.get('content-disposition')).toBeNull();
+      expect(await response.json()).toMatchObject({ code: 50001, msg: 'preview failed', data: null });
+      expect(await (await fetch(`http://127.0.0.1:${port}/healthy`)).json()).toEqual({ alive: true });
+    } finally { await app.close(); }
   });
 
   it('keeps unknown exceptions at INTERNAL_ERROR', () => {
