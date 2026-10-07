@@ -1183,6 +1183,21 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
+  it('prefills the exact Chinese first-task welcome without submitting a prompt', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    await mount();
+    await click(buttonByText('下一步'));
+    await flush();
+    await click(buttonByText('暂时跳过'));
+    await click(buttonByText('下一步'));
+    await flush();
+    await click(buttonByText('让 Kiki 带你上手'));
+    await flush();
+    expect(createSession).toHaveBeenCalledExactlyOnceWith({});
+    expect(readDraft('s_onboarding_1')).toBe('/kiki-ops 用两三句话告诉我你能做什么，再问我现在最想完成哪件事，带我真做一次：这一步需要哪个能力就顺手配上，已经能用的设置保持原样。一次只问一个问题。');
+    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
+  });
+
   it('never overwrites a draft the user already typed elsewhere', async () => {
     const { writeDraft } = await import('@kiki/session-core/composer');
     writeDraft('new', 'half-typed thought');
