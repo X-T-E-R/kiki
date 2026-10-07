@@ -798,6 +798,39 @@ describe('AgentLifecycleService', () => {
     expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
   });
 
+  it('publishes a settled cleanup receipt after the agent owner closes its scope', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const receipts: unknown[] = [];
+    disposables.add(svc.onDidCleanup!((receipt) => receipts.push(receipt)));
+    await svc.create({ agentId: 'main' });
+
+    await svc.remove('main', 'preserve-pending');
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      agentId: 'main', mode: 'preserve-pending', callerOutcome: 'resolved',
+      terminalOwner: 'agent', cleanupOutcome: 'closed', resourcesBefore: 1, resourcesAfter: 0,
+    }));
+  });
+
+  it('rejects the original durable flush error after disposing the agent and reports persistence failure', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
+    const flush = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush').mockRejectedValue(durableFailure);
+    const dispose = vi.spyOn(handle, 'dispose');
+    const receipts: unknown[] = [];
+    disposables.add(svc.onDidCleanup!((receipt) => receipts.push(receipt)));
+
+    await expect(svc.remove('main')).rejects.toBe(durableFailure);
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(receipts).toContainEqual(expect.objectContaining({
+      agentId: 'main', callerOutcome: 'rejected', cleanupOutcome: 'cleanup_failed',
+      failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+    }));
+  });
+
   it('preserves only pending prompts when removal explicitly requests shutdown mode', async () => {
     const svc = ix.get(IAgentLifecycleService);
     await svc.create({ agentId: 'main' });

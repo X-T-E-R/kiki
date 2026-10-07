@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
@@ -50,6 +52,10 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
+  type AgentCallerOutcome,
+  type AgentCleanupOutcome,
+  type AgentCleanupReceipt,
+  type AgentFailureDomain,
   type AgentListFilter,
   type AgentRemovalMode,
   type AgentRestoreBinding,
@@ -80,6 +86,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onWillCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
+  private readonly onDidCleanupEmitter = this._register(new Emitter<AgentCleanupReceipt>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly usageDisposables = new Map<string, IDisposable>();
 
@@ -91,6 +98,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
   get onDidDispose() {
     return this.onDidDisposeEmitter.event;
+  }
+  get onDidCleanup() {
+    return this.onDidCleanupEmitter.event;
   }
 
   constructor(
@@ -735,29 +745,78 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   private async doRemove(agentId: string, handle: IAgentScopeHandle, mode: AgentRemovalMode): Promise<void> {
-    await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
-    const execution = handle.accessor.get(IAgentExecutionService);
-    const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
-    const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
-    const reason = abortError('Agent removed');
-    execution.cancel(reason);
-    const loop = handle.accessor.get(IAgentLoopService);
-    for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
-    loop.cancel(undefined, reason);
-    const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
-    if (compaction !== null && !compaction.abortController.signal.aborted) {
-      compaction.abortController.abort(reason);
-    }
-    await Promise.all([execution.shutdown(reason), compactionSettled, promptDrain]);
-    await loop.settled();
+    const operationId = randomUUID();
+    let callerOutcome: AgentCallerOutcome = 'rejected';
+    let cleanupOutcome: AgentCleanupOutcome = 'cleanup_failed';
+    let failureDomain: AgentFailureDomain | undefined;
+    let cleanupError: unknown;
+    let persistenceError: unknown;
+    let disposed = false;
     try {
-      await handle.accessor.get(IEventDispatcher).flush();
-      await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+      await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
+      const execution = handle.accessor.get(IAgentExecutionService);
+      const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
+      const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
+      const reason = abortError('Agent removed');
+      execution.cancel(reason);
+      const loop = handle.accessor.get(IAgentLoopService);
+      for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
+      loop.cancel(undefined, reason);
+      const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
+      if (compaction !== null && !compaction.abortController.signal.aborted) {
+        compaction.abortController.abort(reason);
+      }
+      await Promise.all([execution.shutdown(reason), compactionSettled, promptDrain]);
+      await loop.settled();
+      try {
+        await handle.accessor.get(IEventDispatcher).flush();
+      } catch (error) {
+        persistenceError = error;
+        onUnexpectedError(error);
+      }
+      try {
+        await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+      } catch (error) {
+        persistenceError ??= error;
+        onUnexpectedError(error);
+      }
+      try {
+        await handle.dispose();
+        disposed = true;
+      } catch (error) {
+        cleanupError = error;
+        onUnexpectedError(error);
+      }
+      if (disposed) this.onDidDisposeEmitter.fire(agentId);
+      if (persistenceError !== undefined || cleanupError !== undefined) {
+        const primary = persistenceError ?? cleanupError;
+        failureDomain = persistenceError === undefined ? 'cleanup' : 'persistence';
+        throw primary;
+      }
+      cleanupOutcome = 'closed';
+      callerOutcome = 'resolved';
     } catch (error) {
-      onUnexpectedError(error);
+      cleanupError ??= error;
+      failureDomain ??= 'cleanup';
+      throw error;
+    } finally {
+      const error = cleanupError instanceof Error ? cleanupError : persistenceError instanceof Error ? persistenceError : undefined;
+      const errorCode = error === undefined ? undefined : (error as { readonly code?: unknown }).code;
+      this.onDidCleanupEmitter.fire({
+        operationId,
+        agentId,
+        mode,
+        callerOutcome,
+        terminalOwner: 'agent',
+        cleanupOutcome,
+        resourcesBefore: 1,
+        resourcesAfter: disposed ? 0 : 1,
+        ...(failureDomain === undefined ? {} : { failureDomain }),
+        ...(typeof errorCode === 'string' ? { errorCode } : {}),
+        ...(error === undefined ? {} : { errorName: error.name, errorMessage: error.message }),
+        settledAt: Date.now(),
+      });
     }
-    await handle.dispose();
-    this.onDidDisposeEmitter.fire(agentId);
   }
 }
 

@@ -1659,8 +1659,8 @@ describe('AgentPromptService', () => {
       model: 'replacement-model',
       thinking: undefined,
       strictThinking: false,
-    }, undefined);
-    expect(profile.setModel).toHaveBeenCalledWith('replacement-model', undefined);
+    }, expect.any(Function));
+    expect(profile.setModel).toHaveBeenCalledWith('replacement-model', expect.any(Function));
     expect(inputs[1]).toEqual([{ type: 'text', text: 'new text' }]);
   });
 
@@ -1760,7 +1760,7 @@ describe('AgentPromptService', () => {
     const [selected] = await prompt.steer([selectedId]);
     expect((await selected!.launched)?.id).toBe(0);
     expect(loop.launches).toEqual([0]);
-    expect(profile.bind).toHaveBeenCalledWith(expect.objectContaining({ profile: `profile-${count - 1}` }), undefined);
+    expect(profile.bind).toHaveBeenCalledWith(expect.objectContaining({ profile: `profile-${count - 1}` }), expect.any(Function));
     expect(prompt.list().active?.id).toBe(selectedId);
     expect(states.get(promptQueueKey).order).not.toContain(selectedId);
     expect(prompt.list().pending).toHaveLength(count - 1);
@@ -1902,13 +1902,13 @@ describe('AgentPromptService', () => {
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    }, undefined);
+    }, expect.any(Function));
     expect(profile.bind).toHaveBeenNthCalledWith(2, {
       profile: 'B',
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    }, undefined);
+    }, expect.any(Function));
 
     loop.settleActive();
     await second.completion;
@@ -1960,7 +1960,7 @@ describe('AgentPromptService', () => {
       model: undefined,
       thinking: undefined,
       strictThinking: false,
-    }, undefined);
+    }, expect.any(Function));
     expect(loop.launches).toEqual([0]);
   });
 
@@ -1982,7 +1982,7 @@ describe('AgentPromptService', () => {
     await queued.launched;
 
     expect(profile.bind).not.toHaveBeenCalled();
-    expect(profile.setModel).toHaveBeenCalledWith('override-model', undefined);
+    expect(profile.setModel).toHaveBeenCalledWith('override-model', expect.any(Function));
     expect(profile.setThinking).toHaveBeenCalledWith('override-thinking');
     expect(profile.data()).toMatchObject({
       profileName: 'initial',
@@ -2154,8 +2154,8 @@ describe('AgentPromptService', () => {
       model: 'later-model',
       thinking: 'later-thinking',
       strictThinking: true,
-    }, undefined);
-    expect(profile.setModel).toHaveBeenCalledWith('later-model', undefined);
+    }, expect.any(Function));
+    expect(profile.setModel).toHaveBeenCalledWith('later-model', expect.any(Function));
     expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledExactlyOnceWith(['Write']);
   });
 

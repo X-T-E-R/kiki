@@ -174,6 +174,17 @@ describe('KimiHarness.createSession transport link', () => {
     }
   });
 
+  it('publishes an SDK instance cleanup receipt after close', async () => {
+    const homeDir = await makeTempDir();
+    const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
+
+    await harness.close();
+
+    await expect(harness.exitReceipt).resolves.toMatchObject({
+      owner: 'sdk_instance', callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
+    });
+  });
+
   it('uses the configured UI mode for session_started attribution', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();

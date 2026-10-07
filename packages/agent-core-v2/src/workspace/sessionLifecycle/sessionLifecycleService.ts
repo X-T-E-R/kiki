@@ -115,6 +115,7 @@ import {
   type ForkSessionOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
+  type SessionCleanupReceipt,
   type SessionClosedEvent,
   type SessionCreatedEvent,
   type SessionForkedEvent,
@@ -150,6 +151,12 @@ function addUsageByModel(
     total = total === undefined ? { ...usage } : addUsage(total, usage);
   }
   return total;
+}
+
+function isPersistenceFailure(error: unknown): boolean {
+  if (error instanceof AggregateError) return error.errors.some(isPersistenceFailure);
+  const code = (error as { readonly code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && (code.startsWith('storage.') || code.startsWith('persistence.'));
 }
 
 function aggregateSessionUsage(handle: ISessionScopeHandle): SessionUsageSummary | undefined {
@@ -193,6 +200,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this._onWillCloseSession.event;
   private readonly _onDidCloseSession = this._register(new Emitter<SessionClosedEvent>());
   readonly onDidCloseSession: Event<SessionClosedEvent> = this._onDidCloseSession.event;
+  private readonly _onDidCleanup = this._register(new Emitter<SessionCleanupReceipt>());
+  readonly onDidCleanup: Event<SessionCleanupReceipt> = this._onDidCleanup.event;
   private readonly _onDidArchiveSession = this._register(new Emitter<SessionArchivedEvent>());
   readonly onDidArchiveSession: Event<SessionArchivedEvent> = this._onDidArchiveSession.event;
   private readonly _onDidForkSession = this._register(new Emitter<SessionForkedEvent>());
@@ -688,20 +697,69 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   async close(sessionId: string, mode: AgentRemovalMode = 'preserve-pending'): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
-    await this.announceWillClose({ sessionId, handle, reason: 'exit' });
-    await this.saveReplayCheckpoints(sessionId, handle);
-    this.disposeCheckpointScheduling(sessionId);
-    const usageFallback = aggregateSessionUsage(handle);
-    this.sessions.delete(sessionId);
-    await this.drainAgents(handle, mode);
-    await this.persistUsage(handle, usageFallback);
-    await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites(false);
-    await this.indexMirror.drain();
-    await handle.dispose();
-    await drainLogCloses();
-    await this.releaseSessionLock(sessionId);
-    this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
+    let sessionDisposed = false;
+    let lockReleased = false;
+    let failureDomain: SessionCleanupReceipt['failureDomain'];
+    try {
+      const failures: Array<{ readonly error: unknown; readonly domain: SessionCleanupReceipt['failureDomain'] }> = [];
+      const collect = async (
+        operation: () => void | Promise<void>,
+        domain: SessionCleanupReceipt['failureDomain'],
+      ): Promise<void> => {
+        try {
+          await operation();
+        } catch (error) {
+          failures.push({ error, domain });
+        }
+      };
+      await collect(() => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
+      await collect(async () => { await this.saveReplayCheckpoints(sessionId, handle); }, 'persistence');
+      await collect(() => this.disposeCheckpointScheduling(sessionId), 'cleanup');
+      let usageFallback: SessionUsageSummary | undefined;
+      await collect(() => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
+      this.sessions.delete(sessionId);
+      await collect(() => this.drainAgents(handle, mode), undefined);
+      if (failures.length > 0 && failures.at(-1)?.domain === undefined) {
+        const failure = failures.at(-1)!;
+        failures[failures.length - 1] = {
+          error: failure.error,
+          domain: isPersistenceFailure(failure.error) ? 'persistence' : 'cleanup',
+        };
+      }
+      await collect(() => this.persistUsage(handle, usageFallback), 'persistence');
+      await collect(() => this.appendLogStore.drainRetirements(), 'persistence');
+      await collect(() => drainSessionMetadataWrites(false), 'persistence');
+      await collect(() => this.indexMirror.drain(), 'persistence');
+      await collect(async () => {
+        await handle.dispose();
+        sessionDisposed = true;
+      }, 'cleanup');
+      await collect(() => drainLogCloses(), 'cleanup');
+      await collect(async () => {
+        await this.releaseSessionLock(sessionId);
+        lockReleased = true;
+      }, 'cleanup');
+      const cleanupReason = mode === 'cancel' ? 'delete' : 'exit';
+      this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
+      if (failures.length > 0) {
+        const persistenceFailure = failures.find((failure) => failure.domain === 'persistence');
+        const primary = persistenceFailure ?? failures[0]!;
+        failureDomain = primary.domain;
+        throw primary.error;
+      }
+      this.emitCleanupReceipt(sessionId, cleanupReason, 'resolved', 'closed');
+    } catch (error) {
+      this.emitCleanupReceipt(
+        sessionId,
+        mode === 'cancel' ? 'delete' : 'exit',
+        'rejected',
+        'cleanup_failed',
+        error,
+        failureDomain ?? (isPersistenceFailure(error) ? 'persistence' : 'cleanup'),
+        sessionDisposed && lockReleased ? 0 : 1,
+      );
+      throw error;
+    }
   }
 
   async unload(sessionId: string, canCommit: () => boolean = () => true): Promise<boolean> {
@@ -736,6 +794,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
+    this.emitCleanupReceipt(sessionId, 'evict', 'resolved', 'closed');
     return true;
   }
 
@@ -770,6 +829,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
+    this.emitCleanupReceipt(sessionId, 'archive', 'resolved', 'closed');
   }
 
   async restore(
@@ -853,6 +913,33 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
+  private emitCleanupReceipt(
+    sessionId: string,
+    reason: SessionCleanupReceipt['reason'],
+    callerOutcome: SessionCleanupReceipt['callerOutcome'],
+    cleanupOutcome: SessionCleanupReceipt['cleanupOutcome'],
+    error?: unknown,
+    failureDomain?: SessionCleanupReceipt['failureDomain'],
+    resourcesAfter = cleanupOutcome === 'closed' ? 0 : 1,
+  ): void {
+    const normalized = error instanceof Error ? error : undefined;
+    const errorCode = normalized === undefined ? undefined : (normalized as { readonly code?: unknown }).code;
+    this._onDidCleanup.fire({
+      operationId: randomUUID(),
+      sessionId,
+      reason,
+      callerOutcome,
+      terminalOwner: 'session',
+      cleanupOutcome,
+      resourcesBefore: 1,
+      resourcesAfter,
+      ...(failureDomain === undefined ? {} : { failureDomain }),
+      ...(typeof errorCode === 'string' ? { errorCode } : {}),
+      ...(normalized === undefined ? {} : { errorName: normalized.name, errorMessage: normalized.message }),
+      settledAt: Date.now(),
+    });
+  }
+
   private async announceWillClose(event: SessionWillCloseEvent): Promise<void> {
     await this._onWillCloseSession.fireAsync(event, NO_ABORT);
   }
@@ -870,8 +957,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async drainAgents(handle: ISessionScopeHandle, mode: AgentRemovalMode = 'cancel'): Promise<void> {
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
+    const failures: unknown[] = [];
     for (const agent of agentLifecycle.list()) {
-      await agentLifecycle.remove(agent.id, mode);
+      try {
+        await agentLifecycle.remove(agent.id, mode);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      const persistence = failures.find((failure) => isPersistenceFailure(failure));
+      throw persistence ?? new AggregateError(failures, 'Failed to drain one or more agents.');
     }
   }
 

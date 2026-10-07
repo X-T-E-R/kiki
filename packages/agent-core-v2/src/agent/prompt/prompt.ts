@@ -246,6 +246,13 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
+  /**
+   * Stops admission and settles owned launch preparation and recovery hydration.
+   * The default cancels durable pending requests. Normal owner shutdown uses
+   * `preserve-pending`: local waiters settle without a durable cancellation for
+   * unlaunched requests. Restore holds those requests until explicit resume;
+   * launched or outcome-unknown requests are never automatically resent.
+   */
   drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;

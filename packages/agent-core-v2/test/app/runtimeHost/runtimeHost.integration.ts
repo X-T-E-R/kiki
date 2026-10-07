@@ -253,6 +253,29 @@ describe('home runtime broker', () => {
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('keeps a direct call receipt on its admitted generation after an in-process epoch change', async () => {
+    const fixture = service(homeDir);
+    instantiations.push(fixture.ix);
+    runtimes.push(fixture.runtime);
+    const internal = fixture.runtime as unknown as { role: 'owner'; readyState: boolean; epoch: number };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    fixture.runtime.registerMethod('example.gated', async () => { await gate; return 'done'; });
+    internal.role = 'owner';
+    internal.readyState = true;
+    internal.epoch = 5;
+    const receipts: unknown[] = [];
+    fixture.runtime.onDidReceipt(receipt => receipts.push(receipt));
+    const pending = fixture.runtime.call('example.gated', undefined, { requestId: 'example-generation-call' });
+    internal.epoch = 6;
+    release();
+    await expect(pending).resolves.toBe('done');
+    expect(receipts).toContainEqual(expect.objectContaining({
+      kind: 'call', requestId: 'example-generation-call', epoch: 5,
+      callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
+    }));
+  });
+
   it('finishes owner-loss cleanup when server detach rejects', async () => {
     const fixture = service(homeDir);
     instantiations.push(fixture.ix);
@@ -486,6 +509,22 @@ describe('home runtime broker', () => {
     });
     await closeRuntimeWorker(client);
   }, 30_000);
+
+  it('settles runtime call receipts after the handler releases its owner resources', async () => {
+    const created = service(homeDir);
+    instantiations.push(created.ix);
+    runtimes.push(created.runtime);
+    const receipts: Array<{ readonly kind: string; readonly callerOutcome?: string; readonly resourcesBefore?: number; readonly resourcesAfter?: number }> = [];
+    created.runtime.onDidReceipt((receipt) => receipts.push(receipt));
+    created.runtime.registerMethod('echo', (payload) => payload);
+    await created.runtime.ready();
+
+    await expect(created.runtime.call('echo', { ok: true }, { requestId: 'receipt-call' })).resolves.toEqual({ ok: true });
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      kind: 'call', callerOutcome: 'resolved', resourcesBefore: 1, resourcesAfter: 0,
+    }));
+  });
 
   it('serves owner calls directly and keeps timed-out request fences until handler settlement', async () => {
     const created = service(homeDir);

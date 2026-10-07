@@ -24,11 +24,35 @@ export interface SshKnownHostsInspection {
   readonly files: readonly { readonly path: string; readonly state: 'read' | 'missing' | 'unavailable'; readonly reason?: string }[];
 }
 
+export type SshKnownHostVerificationReason =
+  | 'key_changed'
+  | 'key_algorithm_unrecorded'
+  | 'revoked'
+  | 'certificate_authority_unsupported';
+
+export type SshKnownHostVerificationStatus = 'matching' | 'unknown' | SshKnownHostVerificationReason;
+
+export class SshKnownHostVerificationError extends Error {
+  readonly code: SshKnownHostVerificationReason;
+  readonly reason: SshKnownHostVerificationReason;
+  readonly status: SshKnownHostVerificationReason;
+
+  constructor(reason: SshKnownHostVerificationReason, message: string) {
+    super(message);
+    this.name = 'SshKnownHostVerificationError';
+    this.code = reason;
+    this.reason = reason;
+    this.status = reason;
+  }
+}
+
 export interface UnknownSshKey {
   readonly hostname: string;
   readonly port: number;
   readonly algorithm: string;
   readonly fingerprint: string;
+  readonly reason?: 'key_algorithm_unrecorded';
+  readonly status?: 'unknown' | 'key_algorithm_unrecorded';
 }
 
 export type TrustUnknownKey = (key: UnknownSshKey) => Promise<boolean>;
@@ -138,17 +162,34 @@ export class SshKnownHosts {
     if (!/^[a-zA-Z0-9@._+-]+$/.test(algorithm)) throw new Error('Invalid SSH key algorithm');
     const label = hostLabel(hostname, port);
     const fingerprint = `SHA256:${createHash('sha256').update(rawKey).digest('base64').replace(/=+$/, '')}`;
-    const check = async (): Promise<'matching' | 'changed' | 'unknown'> => {
+    const encodedKey = rawKey.toString('base64');
+    const check = async (): Promise<SshKnownHostVerificationStatus> => {
       const entries = await this.entries(label);
-      if (entries.some((entry) => entry.marker === '@revoked')) return 'changed';
-      if (entries.some((entry) => entry.marker === '@cert-authority')) return 'changed';
-      if (entries.some((entry) => entry.algorithm === algorithm && entry.key === rawKey.toString('base64'))) return 'matching';
-      return entries.length > 0 ? 'changed' : 'unknown';
+      const exact = entries.filter((entry) => entry.algorithm === algorithm && entry.key === encodedKey);
+      if (exact.some((entry) => entry.marker === '@revoked')) return 'revoked';
+      if (exact.some((entry) => entry.marker === '@cert-authority')) return 'certificate_authority_unsupported';
+      if (exact.some((entry) => entry.marker === undefined)) return 'matching';
+      if (entries.some((entry) => entry.marker === '@cert-authority')) return 'certificate_authority_unsupported';
+      if (entries.some((entry) => entry.algorithm === algorithm)) return 'key_changed';
+      return entries.length > 0 ? 'key_algorithm_unrecorded' : 'unknown';
     };
     const existing = await check();
     if (existing === 'matching') return true;
-    if (existing === 'changed') throw new Error(`SSH host key changed for ${label}; verify it out of band before editing known_hosts`);
-    if (!await trustUnknown({ hostname, port, algorithm, fingerprint })) return false;
+    if (existing === 'revoked') throw new SshKnownHostVerificationError('revoked', `SSH host key is revoked for ${label}`);
+    if (existing === 'certificate_authority_unsupported') {
+      throw new SshKnownHostVerificationError(
+        'certificate_authority_unsupported',
+        `SSH certificate-authority known_hosts records are unsupported for ${label}`,
+      );
+    }
+    if (existing === 'key_changed') {
+      throw new SshKnownHostVerificationError(
+        'key_changed',
+        `SSH host key changed for ${label}; verify it out of band before editing known_hosts`,
+      );
+    }
+    const reason = existing === 'key_algorithm_unrecorded' ? 'key_algorithm_unrecorded' : undefined;
+    if (!await trustUnknown({ hostname, port, algorithm, fingerprint, reason, status: reason ?? 'unknown' })) return false;
     const target = this.files[0]!;
     const previous = SshKnownHosts.pendingByFile.get(target) ?? Promise.resolve();
     let release!: () => void;
@@ -158,7 +199,16 @@ export class SshKnownHosts {
     try {
       const current = await check();
       if (current === 'matching') return true;
-      if (current === 'changed') throw new Error(`SSH host key changed for ${label}`);
+      if (current === 'revoked') throw new SshKnownHostVerificationError('revoked', `SSH host key is revoked for ${label}`);
+      if (current === 'certificate_authority_unsupported') {
+        throw new SshKnownHostVerificationError(
+          'certificate_authority_unsupported',
+          `SSH certificate-authority known_hosts records are unsupported for ${label}`,
+        );
+      }
+      if (current === 'key_changed') {
+        throw new SshKnownHostVerificationError('key_changed', `SSH host key changed for ${label}`);
+      }
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
       await appendFile(target, `${label} ${algorithm} ${rawKey.toString('base64')}\n`, { mode: 0o600 });
       return true;

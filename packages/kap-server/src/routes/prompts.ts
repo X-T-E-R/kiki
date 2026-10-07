@@ -87,6 +87,9 @@ import {
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
+import type { TranscriptService } from '../services/transcript/transcriptService';
 import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
@@ -379,7 +382,7 @@ async function validateProfileSelection(
   );
 }
 
-export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
+export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcriptService?: TranscriptService): void {
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
   const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
@@ -509,10 +512,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         }
         if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
-        const submittedContent = await resolvePromptSessionMediaRefs(
+        const submittedContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
-        );
+          transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+        ));
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined, retryFingerprint);
         await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
@@ -749,10 +753,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
           lease = await acquireSessionOperation(core, session_id, 'operation');
           const session = requireSession(lease.handle, session_id);
-          const replacementContent = await resolvePromptSessionMediaRefs(
+          const replacementContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             replacement.data.content,
             session.accessor.get(ISessionMediaStore),
-          );
+            transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+          ));
           const resolved = await resolvePromptFromSession(core, session);
           preparedMedia = await resolvePromptMediaFiles(
             replacementContent,

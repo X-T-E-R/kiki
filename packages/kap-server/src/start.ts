@@ -65,6 +65,7 @@ import {
   type ServerLogger,
   type ServerLogLevel,
 } from './services/pinoLoggerService';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Socket } from 'node:net';
 import type { IncomingMessage } from 'node:http';
@@ -257,6 +258,51 @@ export interface ServerStartOptions {
   readonly buildChannel?: string;
 }
 
+export interface ServerExitReceipt {
+  readonly operationId: string;
+  readonly owner: 'backend';
+  readonly exitReason: 'normal' | 'idle' | 'requested' | 'cleanup_failed';
+  readonly callerOutcome: 'resolved' | 'rejected';
+  readonly cleanupOutcome: 'closed' | 'cleanup_failed' | 'unknown';
+  readonly resourcesBefore?: number;
+  readonly resourcesAfter?: number;
+  readonly failureDomain?: 'persistence' | 'cleanup';
+  readonly errorCode?: string;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly settledAt: number;
+}
+
+export interface ServerCleanupStep {
+  readonly run: () => void | Promise<void>;
+  readonly durable?: boolean;
+}
+
+export interface ServerCleanupFailure {
+  readonly error: unknown;
+  readonly durable: boolean;
+}
+
+export async function collectServerCleanupFailures(
+  steps: readonly ServerCleanupStep[],
+): Promise<readonly ServerCleanupFailure[]> {
+  const failures: ServerCleanupFailure[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (error) {
+      failures.push({ error, durable: step.durable === true });
+    }
+  }
+  return failures;
+}
+
+function isServerPersistenceFailure(error: unknown): boolean {
+  if (error instanceof AggregateError) return error.errors.some(isServerPersistenceFailure);
+  const code = (error as { readonly code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && (code.startsWith('storage.') || code.startsWith('persistence.'));
+}
+
 export interface RunningServer {
   readonly app: FastifyInstance;
   readonly core: Scope;
@@ -269,6 +315,7 @@ export interface RunningServer {
   readonly host: string;
   readonly port: number;
   readonly closed: Promise<void>;
+  readonly exitReceipt: Promise<ServerExitReceipt>;
   close(): Promise<void>;
 }
 
@@ -540,116 +587,142 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
+  let resolveExitReceipt!: (receipt: ServerExitReceipt) => void;
+  const exitReceipt = new Promise<ServerExitReceipt>((resolve) => {
+    resolveExitReceipt = resolve;
+  });
+  let closeReason: ServerExitReceipt['exitReason'] = 'requested';
+  const resourceCount = (): number | undefined => {
+    try {
+      return core.accessor.get(ISessionManager).list().length + admission.activeCount() +
+        remoteConnections.activeCount() + connectionRegistry.size() + Number(!shutdownController.signal.aborted);
+    } catch {
+      return undefined;
+    }
+  };
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
     if (authMonitor !== undefined) clearInterval(authMonitor);
-    const closeErrors: unknown[] = [];
-    try { await web.close(); } catch (error) { closeErrors.push(error); }
-    try { await externalClientListener.close(); await externalClients.close(); } catch (error) { closeErrors.push(error); }
+    const steps: ServerCleanupStep[] = [
+      { run: () => web.close() },
+      { run: async () => { await externalClientListener.close(); await externalClients.close(); } },
+      { run: () => leaseRegistry.dispose() },
+      { run: () => app.close() },
+      { run: () => notifications?.close() },
+      { run: () => core.accessor.get(IThreadCommunicationService).shutdown() },
+    ];
+    let sessionManager: ISessionManager | undefined;
+    let sessions: ReturnType<ISessionManager['list']> = [];
     try {
-      leaseRegistry.dispose();
+      sessionManager = core.accessor.get(ISessionManager);
+      sessions = sessionManager.list();
     } catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'lease_registry_dispose_failed' }, 'lease registry dispose failed; continuing server cleanup');
+      steps.push({ run: async () => { throw error; } });
     }
-    let appClosing: Promise<void>;
-    try {
-      appClosing = app.close().catch((error) => {
-        closeErrors.push(error);
-        logger.warn({ event_type: 'http_listener_close_failed' }, 'http listener close failed; continuing server cleanup');
-      });
-    } catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'http_listener_close_failed' }, 'http listener close failed; continuing server cleanup');
-      appClosing = Promise.resolve();
-    }
-    await appClosing;
-    try { await notifications?.close(); }
-    catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'notifications_close_failed' }, 'notification service close failed');
-    }
-    try {
-      await core.accessor.get(IThreadCommunicationService).shutdown();
-    } catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'thread_communication_shutdown_failed' }, 'thread communication shutdown failed; continuing server cleanup');
-    }
-    const sessionManager = core.accessor.get(ISessionManager);
-    for (const session of sessionManager.list()) {
-      try {
-        const ephemeral = sessionManager.isEphemeral(session.id);
-        const worktreeId = ephemeral
-          ? (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId
-          : undefined;
-        await sessionManager.close(session.id);
-        if (worktreeId !== undefined) {
-          const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
-          if (outcome !== 'removed') logger.warn({ sessionId: session.id, worktreeId, outcome }, 'temporary session worktree retained on shutdown');
-        }
-      } catch (error) {
-        closeErrors.push(error);
-        logger.warn({ sessionId: session.id, event_type: 'session_close_failed' }, 'session close failed; continuing server cleanup');
+    const worktreeIds = new Map<string, string | undefined>();
+    if (sessionManager !== undefined) {
+      for (const session of sessions) {
+        steps.push({
+          run: async () => {
+            const ephemeral = sessionManager!.isEphemeral(session.id);
+            worktreeIds.set(session.id, ephemeral
+              ? (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId
+              : undefined);
+            await sessionManager!.close(session.id);
+          },
+        });
+        steps.push({
+          run: async () => {
+            const worktreeId = worktreeIds.get(session.id);
+            if (worktreeId === undefined) return;
+            const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
+            if (outcome !== 'removed') logger.warn({ sessionId: session.id, worktreeId, outcome }, 'temporary session worktree retained on shutdown');
+          },
+        });
       }
     }
-    try {
-      await core.accessor.get(IThreadMailboxStore).close();
-    } catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'thread_mailbox_close_failed' }, 'thread mailbox close failed; continuing server cleanup');
-    }
-    try {
-      await core.accessor.get(IHomeRuntimeService).close();
-    } catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'home_runtime_close_failed' }, 'home runtime close failed; continuing server cleanup');
-    }
-    roomChangeSubscription.dispose();
-    configWarningSubscription.dispose();
-    pluginChangeSubscription.dispose();
-    pluginUsageChangeSubscription.dispose();
-    pluginUsageApplySubscription.dispose();
-    capabilityInstallSubscription.dispose();
-    authFailureLimiter?.dispose();
-    transcriptService.dispose();
-    try { await navigationDb.close(); }
-    catch (error) {
-      closeErrors.push(error);
-      logger.warn({ event_type: 'history_navigation_close_failed' }, 'history navigation close failed');
-    }
-    try {
-      await drainSessionMetadataWrites();
-      await core.accessor.get(ISessionIndexMirror).drain();
-      await core.accessor.get(IMcpOAuthService).shutdown();
-      await core.accessor.get(IPluginHostService).stopAll();
-      fsWatchBridge.dispose();
-      const appendLogStore = core.accessor.get(IAppendLogStore);
-      await core.dispose();
-      await appendLogStore.drainRetirements();
-      await drainSessionIndexMirror();
-      await drainModelPricingDisposals();
-      await drainGlobalSearchDisposals();
-      await drainQueryStoreDisposals();
-      await drainSessionMetadataWrites();
-      await drainLogCloses();
-    } catch (error) {
-      closeErrors.push(error);
-    } finally {
-      try {
-        await registration.release();
-      } catch (error) {
-        closeErrors.push(error);
-      }
-    }
-    if (closeErrors.length === 1) throw closeErrors[0];
-    if (closeErrors.length > 1) throw new AggregateError(closeErrors, 'server close failed');
+    steps.push(
+      { run: () => core.accessor.get(IThreadMailboxStore).close() },
+      { run: () => core.accessor.get(IHomeRuntimeService).close() },
+      { run: () => roomChangeSubscription.dispose() },
+      { run: () => configWarningSubscription.dispose() },
+      { run: () => pluginChangeSubscription.dispose() },
+      { run: () => pluginUsageChangeSubscription.dispose() },
+      { run: () => pluginUsageApplySubscription.dispose() },
+      { run: () => capabilityInstallSubscription.dispose() },
+      { run: () => authFailureLimiter?.dispose() },
+      { run: () => transcriptService.dispose() },
+      { run: () => navigationDb.close() },
+      { run: () => drainSessionMetadataWrites(), durable: true },
+      { run: () => core.accessor.get(ISessionIndexMirror).drain(), durable: true },
+      { run: () => core.accessor.get(IMcpOAuthService).shutdown(), durable: true },
+      { run: () => core.accessor.get(IPluginHostService).stopAll() },
+      { run: () => fsWatchBridge.dispose() },
+    );
+    let appendLogStore: IAppendLogStore | undefined;
+    steps.push({
+      run: () => { appendLogStore = core.accessor.get(IAppendLogStore); },
+      durable: true,
+    });
+    steps.push({ run: () => core.dispose() });
+    steps.push(
+      { run: () => appendLogStore?.drainRetirements(), durable: true },
+      { run: () => drainSessionIndexMirror(), durable: true },
+      { run: () => drainModelPricingDisposals(), durable: true },
+      { run: () => drainGlobalSearchDisposals(), durable: true },
+      { run: () => drainQueryStoreDisposals(), durable: true },
+      { run: () => drainSessionMetadataWrites(), durable: true },
+      { run: () => drainLogCloses(), durable: true },
+      { run: () => registration.release() },
+    );
+    const failures = await collectServerCleanupFailures(steps);
+    if (failures.length === 0) return;
+    const primary = failures.find((failure) => failure.durable) ?? failures[0]!;
+    throw primary.error;
   };
   let closeFlight: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (closeFlight === undefined) {
+      const operationId = randomUUID();
+      const resourcesBefore = resourceCount();
       closeFlight = doClose();
-      void closeFlight.then(resolveClosed, resolveClosed);
+      void closeFlight.then(
+        () => {
+          const resourcesAfter = resourceCount();
+          resolveExitReceipt({
+            operationId,
+            owner: 'backend',
+            exitReason: closeReason,
+            callerOutcome: 'resolved',
+            cleanupOutcome: resourcesAfter === undefined ? 'unknown' : 'closed',
+            ...(resourcesBefore === undefined ? {} : { resourcesBefore }),
+            ...(resourcesAfter === undefined ? {} : { resourcesAfter }),
+            settledAt: Date.now(),
+          });
+          resolveClosed();
+        },
+        (error: unknown) => {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          const errorCode = (normalized as { readonly code?: unknown }).code;
+          const resourcesAfter = resourceCount();
+          resolveExitReceipt({
+            operationId,
+            owner: 'backend',
+            exitReason: 'cleanup_failed',
+            callerOutcome: 'rejected',
+            cleanupOutcome: 'cleanup_failed',
+            ...(resourcesBefore === undefined ? {} : { resourcesBefore }),
+            ...(resourcesAfter === undefined ? {} : { resourcesAfter }),
+            ...(isServerPersistenceFailure(normalized) ? { failureDomain: 'persistence' as const } : { failureDomain: 'cleanup' as const }),
+            ...(typeof errorCode === 'string' ? { errorCode } : {}),
+            errorName: normalized.name,
+            errorMessage: normalized.message,
+            settledAt: Date.now(),
+          });
+          resolveClosed();
+        },
+      );
     }
     return closeFlight;
   };
@@ -1065,6 +1138,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
         return;
       }
       if (Date.now() - idleSince >= idleExitMs) {
+        closeReason = 'idle';
         void close().catch(() => logger.error({ event_type: 'idle_server_close_failed' }, 'idle server close failed'));
       }
     }, intervalMs);
@@ -1083,6 +1157,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     host,
     port: boundPort,
     closed,
+    exitReceipt,
     close,
   };
 }

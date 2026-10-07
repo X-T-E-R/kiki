@@ -282,6 +282,10 @@ async function runServeForeground(
   process.once('SIGTERM', shutdown);
   try {
     await running.closed;
+    const receipt = await running.exitReceipt;
+    if (receipt.callerOutcome === 'rejected') {
+      throw new Error(`Kiki server cleanup failed: ${receipt.errorMessage ?? 'unknown cleanup error'}`);
+    }
   } finally {
     process.off('SIGINT', shutdown);
     process.off('SIGTERM', shutdown);

@@ -41,6 +41,25 @@ export interface AgentListFilter {
 }
 
 export type AgentRemovalMode = 'cancel' | 'preserve-pending';
+export type AgentCallerOutcome = 'resolved' | 'rejected';
+export type AgentCleanupOutcome = 'closed' | 'cleanup_failed';
+export type AgentFailureDomain = 'persistence' | 'cleanup';
+
+export interface AgentCleanupReceipt {
+  readonly operationId: string;
+  readonly agentId: string;
+  readonly mode: AgentRemovalMode;
+  readonly callerOutcome: AgentCallerOutcome;
+  readonly terminalOwner: 'agent';
+  readonly cleanupOutcome: AgentCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly failureDomain?: AgentFailureDomain;
+  readonly errorCode?: string;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly settledAt: number;
+}
 
 export interface IAgentLifecycleService {
   readonly _serviceBrand: undefined;
@@ -50,6 +69,7 @@ export interface IAgentLifecycleService {
   /** Fires after restore, binding, activation, and durable identity registration complete. */
   readonly onDidCreate: Event<IAgentScopeHandle>;
   readonly onDidDispose: Event<string>;
+  readonly onDidCleanup?: Event<AgentCleanupReceipt>;
 
   /** Generated identities never reuse an existing wire journal; explicit agentId enables restoration. */
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;

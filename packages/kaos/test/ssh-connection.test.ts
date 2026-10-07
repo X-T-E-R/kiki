@@ -8,7 +8,12 @@ import { join } from 'pathe';
 import { Server, utils } from 'ssh2';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SshConnectionManager, type SshConnectionHost } from '#/ssh-connection';
+import { SSHKaos } from '#/ssh';
+import {
+  SshConnectionManager,
+  SshKnownHostVerificationError,
+  type SshConnectionHost,
+} from '#/ssh-connection';
 import { SshKnownHosts } from '#/ssh-known-hosts';
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -192,6 +197,71 @@ describe('SSH proxy teardown with an isolated child', () => {
     expect(manager.status('proxy').state).toBe(event === 'disconnect' ? 'idle' : 'failed');
     expect(proxy.kill).toHaveBeenCalledOnce();
     expect([proxy.stdin, proxy.stdout, proxy.stderr].every((stream) => stream.destroyed)).toBe(true);
+  });
+});
+
+describe('SSH connection receipts', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('keeps the caller failure and notifies other observers when a receipt observer throws', async () => {
+    const failure = new Error('Example host resolution failed');
+    const manager = new SshConnectionManager(async () => { throw failure; });
+    managers.push(manager);
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+    const unsubscribe = manager.onReceipt(() => { throw new Error('Example observer failed'); });
+    const receipts: unknown[] = [];
+    manager.onReceipt(receipt => receipts.push(receipt));
+    try {
+      await expect(manager.get('example-host')).rejects.toBe(failure);
+      expect(receipts).toContainEqual(expect.objectContaining({ callerOutcome: 'rejected', errorMessage: failure.message }));
+      expect(warning).toHaveBeenCalledWith('SSH receipt observer threw an exception', { code: 'SSH_RECEIPT_OBSERVER_FAILED' });
+    } finally { unsubscribe(); }
+  });
+
+  it('preserves verification reason in the connection receipt and stops retrying fatal verification errors', async () => {
+    const verification = new SshKnownHostVerificationError('revoked', 'SSH host key is revoked for examplehost');
+    const create = vi.spyOn(SSHKaos, 'create').mockRejectedValue(verification);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({
+      hostname: 'examplehost', port: 22, username: 'tester', agent: 'none', knownHostsFiles: [path],
+    }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    await expect(manager.get('verification')).rejects.toBe(verification);
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect', callerOutcome: 'rejected', errorCode: 'revoked', cleanupOutcome: 'closed',
+    }));
+    await expect(manager.get('verification')).rejects.toThrow(/manual intervention/);
+    create.mockRestore();
+  });
+
+  it('reports the caller, proxy owner, and settled proxy resources after setup failure', async () => {
+    const proxy = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      kill: vi.fn(() => true),
+    });
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({
+      ...host(22, path), keyContents: ['invalid-private-key'], passphrase: 'invalid-passphrase',
+      proxyCommand: 'isolated-proxy',
+    }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    await expect(manager.get('proxy')).rejects.toThrow('SSH private key or passphrase is invalid');
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect',
+      callerOutcome: 'rejected',
+      terminalOwner: 'ssh_proxy',
+      cleanupOutcome: 'closed',
+      resourcesBefore: 5,
+      resourcesAfter: 0,
+    }));
   });
 });
 
@@ -394,6 +464,68 @@ describe('S5 read-only known_hosts inspection', () => {
     await writeFile(path, '|2|salt|hash ssh-rsa bad-key\n');
     expect(await known.inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ reason: 'unsupported-host-hash:line:1' }] });
     expect(await new SshKnownHosts([home]).inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ state: 'unavailable' }] });
+  });
+
+  it('classifies exact revoked keys, unrelated revoked markers, and unrecorded algorithms without network writes', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const other = publicKey();
+    const trust = vi.fn(async () => false);
+    const known = new SshKnownHosts([path]);
+
+    await writeFile(path, `@revoked examplehost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({
+      reason: 'revoked', status: 'revoked', code: 'revoked',
+    });
+    expect(trust).not.toHaveBeenCalled();
+
+    await writeFile(path, `@revoked otherhost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+
+    trust.mockClear();
+    await writeFile(path, `@revoked examplehost ssh-rsa ${other.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({ reason: 'key_changed' });
+    expect(trust).not.toHaveBeenCalled();
+
+    trust.mockClear();
+    await writeFile(path, `examplehost ssh-ed25519 ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'key_algorithm_unrecorded', status: 'key_algorithm_unrecorded',
+    }));
+    expect(await readFile(path, 'utf8')).toContain('ssh-ed25519');
+  });
+
+  it('rejects matching certificate-authority records as unsupported and ignores other hosts', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const known = new SshKnownHosts([path]);
+    const trust = vi.fn(async () => false);
+
+    await writeFile(path, `@cert-authority examplehost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({
+      reason: 'certificate_authority_unsupported', status: 'certificate_authority_unsupported',
+    });
+    expect(trust).not.toHaveBeenCalled();
+
+    await writeFile(path, `@cert-authority otherhost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledOnce();
+  });
+
+  it('accepts an exact host key even when an unrelated revoked marker shares the label', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const other = publicKey();
+    const known = new SshKnownHosts([path]);
+    const trust = vi.fn(async () => { throw new Error('unexpected trust prompt'); });
+
+    await writeFile(path,
+      `@revoked examplehost ssh-rsa ${other.toString('base64')}\n` +
+      `examplehost ssh-rsa ${raw.toString('base64')}\n`);
+
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(true);
   });
 
   it('keeps matching, changed, revoked and unknown verification across two files without network or writes', async () => {

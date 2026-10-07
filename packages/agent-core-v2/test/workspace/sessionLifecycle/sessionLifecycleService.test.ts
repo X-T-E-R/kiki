@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createDecorator, type IInstantiationService, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
+import { Error2, ErrorCodes } from '#/errors';
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { getScopedServiceDescriptors, type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -84,7 +85,14 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
       ISessionActivityView,
       { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) },
     ],
-    [IAgentLifecycleService, { countPendingBackgroundTasks: () => 0, list: () => agentAccessor === undefined ? [] : [{ id: 'main', accessor: agentAccessor }], remove: () => { throw new Error('unload must not cancel logical work'); } }],
+    [IAgentLifecycleService, {
+      countPendingBackgroundTasks: () => 0,
+      list: () => agentAccessor === undefined ? [] : [{ id: 'main', accessor: agentAccessor }],
+      remove: (...args: unknown[]) => {
+        const candidate = agentAccessor as unknown as { remove?: (...values: unknown[]) => unknown } | undefined;
+        return candidate?.remove?.(...args) ?? Promise.reject(new Error('unload must not cancel logical work'));
+      },
+    }],
     [ISessionTerminalService, terminalService ?? { countLiveTerminals: () => terminals.live }],
     [ISessionMetadata, { usage: () => undefined, update: async () => {}, setArchived: async () => {} }],
   ]);
@@ -316,6 +324,66 @@ describe('SessionLifecycleService unload', () => {
     expect(fx.dispose).not.toHaveBeenCalled();
     expect(fx.closed).toEqual([]);
     expect(fx.service.get('session-1')).toBe(fx.handle);
+  });
+
+  it('publishes a settled cleanup receipt after close disposes the session owner', async () => {
+    const fx = fixture();
+    const receipts: unknown[] = [];
+    fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
+
+    await fx.service.close('session-1');
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      sessionId: 'session-1', reason: 'exit', callerOutcome: 'resolved',
+      terminalOwner: 'session', cleanupOutcome: 'closed', resourcesBefore: 1, resourcesAfter: 0,
+    }));
+  });
+
+  it('closes all resources when the preliminary replay checkpoint fails', async () => {
+    const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Example checkpoint storage is full');
+    const remove = vi.fn(async () => {});
+    const agentAccessor = Object.assign(accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: async () => { throw durableFailure; } }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    const release = vi.fn(async () => {});
+    const internals = fx.service as unknown as { sessionLocks: Map<string, { release(): Promise<void> }> };
+    internals.sessionLocks.set('session-1', { release });
+    const receipts: unknown[] = [];
+    fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
+    await expect(fx.service.close('session-1')).rejects.toBe(durableFailure);
+    expect(remove).toHaveBeenCalledOnce();
+    expect(fx.dispose).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(receipts).toContainEqual(expect.objectContaining({
+      callerOutcome: 'rejected', failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+    }));
+  });
+
+  it('rejects the original durable agent failure after session disposal and lock release', async () => {
+    const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
+    const remove = vi.fn(async () => { throw durableFailure; });
+    const agentAccessor = Object.assign(accessor([
+      [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
+    ]), { remove });
+    const fx = fixture(undefined, agentAccessor);
+    const release = vi.fn(async () => {});
+    const internals = fx.service as unknown as {
+      sessionLocks: Map<string, { release(): Promise<void> }>;
+    };
+    internals.sessionLocks.set('session-1', { release });
+    const receipts: unknown[] = [];
+    fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
+
+    await expect(fx.service.close('session-1')).rejects.toBe(durableFailure);
+
+    expect(remove).toHaveBeenCalledOnce();
+    expect(fx.dispose).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(receipts).toContainEqual(expect.objectContaining({
+      sessionId: 'session-1', callerOutcome: 'rejected', cleanupOutcome: 'cleanup_failed',
+      failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+    }));
   });
 
   it.each(['close', 'archive', 'delete'] as const)('preserves durable pending only for normal exit, not %s cancellation', async (operation) => {

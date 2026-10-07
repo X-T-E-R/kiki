@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { join } from 'pathe';
 import type { SSHKaos } from '@kiki/kaos/ssh';
-import { SshConnectionManager, SshKnownHosts, type SshKnownHostsInspection, type SshConnectionHost, type SshConnectionStatus, type TrustUnknownKey } from '@kiki/kaos/ssh-connection';
+import {
+  SshConnectionManager,
+  SshKnownHosts,
+  type SshKnownHostsInspection,
+  type SshConnectionHost,
+  type SshConnectionReceipt,
+  type SshConnectionStatus,
+  type TrustUnknownKey,
+} from '@kiki/kaos/ssh-connection';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
@@ -20,6 +28,10 @@ import { parseTransientSshTarget, resolveSshConfig, type ResolvedSshConfig } fro
 import type { SshCredentialSubmission } from '#/session/approval/approval';
 
 export interface SshHostStatus extends SshConnectionStatus {
+  readonly workspaceId?: string;
+}
+
+export interface SshHostReceipt extends SshConnectionReceipt {
   readonly workspaceId?: string;
 }
 
@@ -51,6 +63,7 @@ export interface ISshHostService {
   disconnect(id: string, workspaceId?: string): Promise<void>;
   status(id: string, workspaceId?: string): SshHostStatus;
   onStatus(listener: (status: SshHostStatus) => void): () => void;
+  onReceipt(listener: (receipt: SshHostReceipt) => void): () => void;
   onHostsChanged(listener: (workspaceId?: string) => void | Promise<void>): () => void;
 }
 
@@ -296,6 +309,13 @@ export class SshHostService extends Disposable implements ISshHostService {
     return this.connections.onStatus(({ hostId: key, ...status }) => {
       const [workspace, hostId] = JSON.parse(key) as [string, string];
       listener({ hostId, workspaceId: workspace || undefined, ...status });
+    });
+  }
+
+  onReceipt(listener: (receipt: SshHostReceipt) => void): () => void {
+    return this.connections.onReceipt(({ hostId: key, ...receipt }) => {
+      const [workspace, hostId] = JSON.parse(key) as [string, string];
+      listener({ hostId, workspaceId: workspace || undefined, ...receipt });
     });
   }
 

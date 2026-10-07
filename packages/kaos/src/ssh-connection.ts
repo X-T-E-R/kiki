@@ -1,12 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Duplex } from 'node:stream';
 import type { HostVerifier } from 'ssh2';
 
 import { SSHKaos } from './ssh';
-import { SshKnownHosts, type TrustUnknownKey } from './ssh-known-hosts';
+import {
+  SshKnownHostVerificationError,
+  SshKnownHosts,
+  type TrustUnknownKey,
+} from './ssh-known-hosts';
 
-export { SshKnownHosts } from './ssh-known-hosts';
-export type { TrustUnknownKey, UnknownSshKey, SshKnownHostsInspection, SshKnownHostRecord } from './ssh-known-hosts';
+export { SshKnownHostVerificationError, SshKnownHosts } from './ssh-known-hosts';
+export type {
+  SshKnownHostVerificationReason,
+  SshKnownHostVerificationStatus,
+  TrustUnknownKey,
+  UnknownSshKey,
+  SshKnownHostsInspection,
+  SshKnownHostRecord,
+} from './ssh-known-hosts';
 
 export interface SshConnectionHost {
   readonly hostname: string;
@@ -32,6 +44,25 @@ export interface SshConnectionStatus {
   readonly generation: number;
 }
 
+export type SshCallerOutcome = 'resolved' | 'rejected' | 'cancelled' | 'unknown';
+export type SshCleanupOutcome = 'closed' | 'killed' | 'already_closed' | 'cleanup_failed';
+
+export interface SshConnectionReceipt {
+  readonly operationId: string;
+  readonly hostId: string;
+  readonly generation: number;
+  readonly stage: 'connect' | 'disconnect' | 'dispose';
+  readonly callerOutcome: SshCallerOutcome;
+  readonly terminalOwner: 'ssh_proxy' | 'ssh_connection';
+  readonly cleanupOutcome: SshCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly errorCode?: string | number;
+  readonly settledAt: number;
+}
+
 interface ConnectionSlot {
   generation: number;
   state: SshConnectionStatus['state'];
@@ -39,7 +70,9 @@ interface ConnectionSlot {
   current?: SSHKaos;
   pending?: Promise<SSHKaos>;
   unsubscribe?: () => void;
-  proxy?: { dispose(): void };
+  proxy?: { dispose(): void; resources(): { readonly before: number; readonly after: number } };
+  lastResources?: { readonly before: number; readonly after: number };
+  lastTerminalOwner?: 'ssh_proxy' | 'ssh_connection';
   controller?: AbortController;
   retryAfter: number;
   failures: number;
@@ -52,7 +85,11 @@ function sshAgent(explicit?: string): string | undefined {
   return explicit ?? process.env['SSH_AUTH_SOCK'] ?? (process.platform === 'win32' ? '\\\\.\\pipe\\openssh-ssh-agent' : undefined);
 }
 
-function openProxy(host: SshConnectionHost): { socket: Duplex; dispose(): void } | undefined {
+function openProxy(host: SshConnectionHost): {
+  socket: Duplex;
+  dispose(): void;
+  resources(): { readonly before: number; readonly after: number };
+} | undefined {
   let proxy: ChildProcessWithoutNullStreams;
   if (host.proxyCommand && host.proxyCommand !== 'none') {
     const values: Record<string, string> = { h: host.hostname, p: String(host.port), r: host.username };
@@ -81,6 +118,11 @@ function openProxy(host: SshConnectionHost): { socket: Duplex; dispose(): void }
   proxy.stderr.on('error', (error) => { socket.destroy(error); });
   proxy.stderr.resume();
   let disposed = false;
+  const resources = (): { readonly before: number; readonly after: number } => ({
+    before: 5,
+    after: Number(!socket.destroyed) + Number(!proxy.stdin.destroyed) + Number(!proxy.stdout.destroyed) +
+      Number(!proxy.stderr.destroyed) + Number(proxy.exitCode === null && proxy.signalCode === null && !proxy.killed),
+  });
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -93,13 +135,27 @@ function openProxy(host: SshConnectionHost): { socket: Duplex; dispose(): void }
   socket.once('close', dispose);
   proxy.once('exit', () => { socket.destroy(); });
   proxy.once('error', (error) => { socket.destroy(error); });
-  return { socket, dispose };
+  return { socket, dispose, resources };
+}
+
+function errorDetails(error: unknown): Pick<SshConnectionReceipt, 'errorName' | 'errorMessage' | 'errorCode'> {
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason = (error as { readonly reason?: unknown }).reason;
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+      ...(code === undefined ? reason === undefined ? {} : { errorCode: String(reason) } : { errorCode: code }),
+    };
+  }
+  return { errorName: 'Error', errorMessage: String(error) };
 }
 
 export class SshConnectionManager {
   private readonly slots = new Map<string, ConnectionSlot>();
   private readonly generations = new Map<string, number>();
   private readonly listeners = new Set<(status: SshConnectionStatus) => void>();
+  private readonly receiptListeners = new Set<(receipt: SshConnectionReceipt) => void>();
   private readonly timer: ReturnType<typeof setInterval>;
   private disposed = false;
 
@@ -116,9 +172,21 @@ export class SshConnectionManager {
     return () => { this.listeners.delete(listener); };
   }
 
+  onReceipt(listener: (receipt: SshConnectionReceipt) => void): () => void {
+    this.receiptListeners.add(listener);
+    return () => { this.receiptListeners.delete(listener); };
+  }
+
   private emit(hostId: string, slot: ConnectionSlot, state: SshConnectionStatus['state']): void {
     slot.state = state;
     for (const listener of this.listeners) listener({ hostId, state, generation: slot.generation });
+  }
+
+  private emitReceipt(receipt: SshConnectionReceipt): void {
+    for (const listener of this.receiptListeners) {
+      try { listener(receipt); }
+      catch { process.emitWarning('SSH receipt observer threw an exception', { code: 'SSH_RECEIPT_OBSERVER_FAILED' }); }
+    }
   }
 
   status(hostId: string): SshConnectionStatus {
@@ -127,23 +195,94 @@ export class SshConnectionManager {
   }
 
   async get(hostId: string): Promise<SSHKaos> {
-    if (this.disposed) throw new Error('SSH connection manager is disposed');
+    const operationId = randomUUID();
+    if (this.disposed) {
+      const error = new Error('SSH connection manager is disposed');
+      this.emitReceipt({
+        operationId, hostId, generation: this.generations.get(hostId) ?? 0, stage: 'connect',
+        callerOutcome: 'rejected', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+        resourcesBefore: 0, resourcesAfter: 0, ...errorDetails(error), settledAt: Date.now(),
+      });
+      throw error;
+    }
     let slot = this.slots.get(hostId);
     if (slot === undefined) {
       slot = { generation: this.generations.get(hostId) ?? 0, state: 'idle', lastUsed: Date.now(), retryAfter: 0, failures: 0 };
       this.slots.set(hostId, slot);
     }
     slot.lastUsed = Date.now();
-    if (slot.current) return slot.current;
-    if (slot.pending) return slot.pending;
-    if (slot.retryAfter === Infinity) throw new Error(`SSH host ${hostId} requires manual intervention before retrying`);
-    if (Date.now() < slot.retryAfter) throw new Error(`SSH host ${hostId} is retrying after a connection failure`);
+    if (slot.current) {
+      this.emitReceipt({
+        operationId, hostId, generation: slot.generation, stage: 'connect',
+        callerOutcome: 'resolved', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+        resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+        settledAt: Date.now(),
+      });
+      return slot.current;
+    }
+    if (slot.pending) {
+      try {
+        const connection = await slot.pending;
+        this.emitReceipt({
+          operationId, hostId, generation: slot.generation, stage: 'connect',
+          callerOutcome: 'resolved', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+          resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+          settledAt: Date.now(),
+        });
+        return connection;
+      } catch (error) {
+        this.emitReceipt({
+          operationId, hostId, generation: slot.generation, stage: 'connect',
+          callerOutcome: 'rejected', terminalOwner: slot.lastTerminalOwner ?? 'ssh_connection',
+          cleanupOutcome: slot.lastResources === undefined || slot.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+          resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+          ...errorDetails(error), settledAt: Date.now(),
+        });
+        throw error;
+      }
+    }
+    if (slot.retryAfter === Infinity) {
+      const error = new Error(`SSH host ${hostId} requires manual intervention before retrying`);
+      this.emitReceipt({
+        operationId, hostId, generation: slot.generation, stage: 'connect',
+        callerOutcome: 'rejected', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+        resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+        ...errorDetails(error), settledAt: Date.now(),
+      });
+      throw error;
+    }
+    if (Date.now() < slot.retryAfter) {
+      const error = new Error(`SSH host ${hostId} is retrying after a connection failure`);
+      this.emitReceipt({
+        operationId, hostId, generation: slot.generation, stage: 'connect',
+        callerOutcome: 'rejected', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+        resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+        ...errorDetails(error), settledAt: Date.now(),
+      });
+      throw error;
+    }
     const owner = slot;
     this.emit(hostId, owner, 'connecting');
     const pending = this.connect(hostId, owner);
     owner.pending = pending;
     try {
-      return await pending;
+      const connection = await pending;
+      this.emitReceipt({
+        operationId, hostId, generation: owner.generation, stage: 'connect',
+        callerOutcome: 'resolved', terminalOwner: 'ssh_connection', cleanupOutcome: 'already_closed',
+        resourcesBefore: owner.lastResources?.before ?? 0, resourcesAfter: owner.lastResources?.after ?? 0,
+        settledAt: Date.now(),
+      });
+      return connection;
+    } catch (error) {
+      this.emitReceipt({
+        operationId, hostId, generation: owner.generation, stage: 'connect',
+        callerOutcome: 'rejected', terminalOwner: owner.lastTerminalOwner ?? 'ssh_connection',
+        cleanupOutcome: owner.lastResources === undefined || owner.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+        resourcesBefore: owner.lastResources?.before ?? 0, resourcesAfter: owner.lastResources?.after ?? 0,
+        ...errorDetails(error), settledAt: Date.now(),
+      });
+      throw error;
     } finally {
       if (owner.pending === pending) owner.pending = undefined;
     }
@@ -200,24 +339,39 @@ export class SshConnectionManager {
       slot.retryAfter = 0;
       slot.current = connection;
       slot.proxy = proxy;
+      slot.lastTerminalOwner = 'ssh_connection';
+      slot.lastResources = proxy?.resources();
       slot.unsubscribe = connection.onDidDisconnect(() => {
         if (slot.current !== connection) return;
         slot.current = undefined;
         slot.unsubscribe?.();
         slot.unsubscribe = undefined;
+        const resourcesBefore = slot.proxy?.resources();
         slot.proxy?.dispose();
+        slot.lastResources = slot.proxy?.resources() ?? slot.lastResources;
         slot.proxy = undefined;
+        this.emitReceipt({
+          operationId: randomUUID(), hostId, generation: slot.generation, stage: 'disconnect',
+          callerOutcome: 'unknown', terminalOwner: slot.lastTerminalOwner ?? 'ssh_connection',
+          cleanupOutcome: slot.lastResources === undefined || slot.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+          resourcesBefore: resourcesBefore?.before ?? slot.lastResources?.before ?? 0,
+          resourcesAfter: slot.lastResources?.after ?? 0, settledAt: Date.now(),
+        });
         this.emit(hostId, slot, 'disconnected');
       });
       this.emit(hostId, slot, 'ready');
       return connection;
     } catch (error) {
+      slot.lastTerminalOwner = proxy === undefined ? 'ssh_connection' : 'ssh_proxy';
+      slot.lastResources = proxy?.resources();
       proxy?.dispose();
+      if (proxy !== undefined) slot.lastResources = proxy.resources();
       if (slot.proxy === proxy) slot.proxy = undefined;
       if (this.slots.get(hostId) === slot && !this.disposed) {
         slot.failures += 1;
         const message = error instanceof Error ? error.message : String(error);
-        const fatal = /host key changed|Host key verification failed|All configured authentication methods failed/i.test(message);
+        const fatal = error instanceof SshKnownHostVerificationError ||
+          /host key changed|Host key verification failed|All configured authentication methods failed/i.test(message);
         slot.retryAfter = fatal || slot.failures >= 8
           ? Infinity
           : Date.now() + BACKOFF_MS[Math.min(slot.failures - 1, BACKOFF_MS.length - 1)]!;
@@ -238,12 +392,36 @@ export class SshConnectionManager {
   async disconnect(hostId: string): Promise<void> {
     const slot = this.slots.get(hostId);
     if (!slot) return;
+    const operationId = randomUUID();
+    const resourcesBefore = slot.proxy?.resources() ?? slot.lastResources;
+    const terminalOwner = slot.proxy === undefined ? slot.lastTerminalOwner ?? 'ssh_connection' : 'ssh_proxy';
+    const pending = slot.pending;
+    const current = slot.current;
+    slot.current = undefined;
     this.slots.delete(hostId);
     slot.controller?.abort(new Error(`SSH host ${hostId} was disconnected`));
     slot.unsubscribe?.();
+    slot.unsubscribe = undefined;
     slot.proxy?.dispose();
-    await slot.current?.close();
+    slot.lastResources = slot.proxy?.resources() ?? slot.lastResources;
+    slot.proxy = undefined;
+    let failure: unknown;
+    try {
+      await pending?.catch(() => undefined);
+      await current?.close();
+    } catch (error) {
+      failure = error;
+    }
+    const resourcesAfter = slot.lastResources?.after ?? 0;
+    this.emitReceipt({
+      operationId, hostId, generation: slot.generation, stage: 'disconnect',
+      callerOutcome: failure === undefined ? 'resolved' : 'rejected', terminalOwner,
+      cleanupOutcome: failure === undefined && resourcesAfter === 0 ? 'closed' : 'cleanup_failed',
+      resourcesBefore: resourcesBefore?.before ?? 0, resourcesAfter,
+      ...(failure === undefined ? {} : errorDetails(failure)), settledAt: Date.now(),
+    });
     this.emit(hostId, slot, 'idle');
+    if (failure !== undefined) throw failure;
   }
 
   private async reapIdle(): Promise<void> {
@@ -260,5 +438,6 @@ export class SshConnectionManager {
     clearInterval(this.timer);
     await Promise.all([...this.slots.keys()].map((id) => this.disconnect(id)));
     this.listeners.clear();
+    this.receiptListeners.clear();
   }
 }

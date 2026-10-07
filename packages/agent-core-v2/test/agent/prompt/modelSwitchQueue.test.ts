@@ -445,14 +445,14 @@ describe('model switch control queue with real engine', () => {
       return scripted.generate(...args);
     });
     ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
-      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['image_in', 'thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
     } };
     const svc = ctx.get(IAgentPromptService);
     scripted.mockNextResponse({ type: 'text', text: 'Selected request completed.' });
     try {
       const active = await svc.enqueue({ id: 'interrupted-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing request.' }], toolCalls: [] } });
       await entered.promise;
-      const input = { id: 'interrupted-selected', userMessageId: 'interrupted-logical', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Preserve the original immediate request.', presentation: { title: 'Original attachment' } }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } };
+      const input = { id: 'interrupted-selected', userMessageId: 'interrupted-logical', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Preserve the original immediate request.', presentation: { title: 'Original attachment' } }, { type: 'image_url' as const, imageUrl: { url: 'https://example.test/original.png', id: 'original-image', name: 'original.png' } }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } };
       const selected = await svc.enqueue(input);
       await svc.steer([selected.id]);
       if (interruption === 'stop') expect(svc.abort(active.id)).toBe(true);
@@ -464,6 +464,8 @@ describe('model switch control queue with real engine', () => {
       const journal = await records(ctx);
       expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW, thinkingEffort: 'max' }]);
       expect(journal.filter(record => (record.type === 'turn.steer' || record.type === 'turn.prompt') && record['promptId'] === input.id)).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'prompt.enqueued' && record['promptId'] === input.id)).toMatchObject([{ userMessageId: input.userMessageId, message: { content: input.message.content }, execution: input.execution }]);
+      expect(JSON.stringify(scripted.calls)).toContain('https://example.test/original.png');
       const cold = await host();
       await cold.restore(journal);
       expect(cold.get(IAgentPromptService).list().pending).toEqual([]);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IAgentLifecycleService, IAgentTaskService, ISessionManager } from '@kiki/agent-core-v2';
 import { desktopLifecycleStateSchema, metaResponseSchema } from '@kiki/protocol';
-import { startServer, type RunningServer } from '../src/start';
+import { collectServerCleanupFailures, startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
 
@@ -27,6 +27,21 @@ async function createTask(server: RunningServer, root: string, onCancel: () => v
   return { session, cancelled };
 }
 
+describe('server cleanup collection', () => {
+  it('continues ordered owner cleanup after a durable failure and preserves the original error', async () => {
+    const events: string[] = [];
+    const durableFailure = Object.assign(new Error('no space left on device'), { code: 'storage.disk_full' });
+    const failures = await collectServerCleanupFailures([
+      { run: async () => { events.push('metadata'); throw durableFailure; }, durable: true },
+      { run: () => { events.push('index'); } },
+      { run: async () => { events.push('core'); } },
+    ]);
+
+    expect(events).toEqual(['metadata', 'index', 'core']);
+    expect(failures).toEqual([{ error: durableFailure, durable: true }]);
+  });
+});
+
 describe('desktop-managed shared lifecycle', () => {
   it('exposes a typed flag map and refuses external services and stale instance consent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-'));
@@ -37,7 +52,13 @@ describe('desktop-managed shared lifecycle', () => {
       expect(meta.experimental_flags?.['work_presets']).toBe(true); expect(meta.desktop_managed).toBe(false);
       const result = await call(server, '/api/desktop-lifecycle', { action: 'restart', server_id: meta.server_id, consent: true, interrupt_work: true });
       expect(result.code).not.toBe(0); expect((await call(server, '/api/meta')).code).toBe(0);
-    } finally { await server?.close(); await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+    } finally {
+      await server?.close();
+      if (server !== undefined) await expect(server.exitReceipt).resolves.toMatchObject({
+        owner: 'backend', callerOutcome: 'resolved', cleanupOutcome: 'closed', resourcesAfter: 0,
+      });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
   it('retains unconfirmed work, drains confirmed cancellation, and leaves another home running', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-lifecycle-pair-'));
