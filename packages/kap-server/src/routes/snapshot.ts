@@ -272,7 +272,7 @@ function enrichSnapshotSubagents(
     const terminalAt = meta?.completedAt;
     const currentOutcome = meta?.status !== undefined && terminalAt !== undefined &&
       Number.isFinite(terminalAt) &&
-      Date.parse(subagent.started_at ?? subagent.created_at) <= terminalAt &&
+      Date.parse(subagent.started_at ?? '') <= terminalAt &&
       (subagent.completed_at === undefined || Date.parse(subagent.completed_at) <= terminalAt);
     const status = currentOutcome ? meta.status : subagent.status;
     return {

@@ -50,6 +50,7 @@ export interface AgentUsageSummary {
  */
 export interface AgentLiveSource {
   readonly subagentId: string;
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name: string;
@@ -83,6 +84,7 @@ export interface AgentLiveSource {
  */
 export interface AgentRosterDescriptor {
   readonly agentId: string;
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name?: string;
@@ -155,6 +157,8 @@ export interface AgentTurnOutcome {
 
 export interface AgentTreeNode {
   readonly agentId: string;
+  /** Immutable entity birth; unknown for legacy agents, independent of the current run. */
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name: string;
@@ -244,6 +248,7 @@ export interface AgentHistoryCursor {
 
 interface DraftNode {
   agentId: string;
+  createdAt: string | undefined;
   parentAgentId: string | undefined;
   rosterParentAgentId: string | undefined;
   parentToolCallId: string | undefined;
@@ -350,6 +355,7 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
   if (a === b) return true;
   return (
     a.agentId === b.agentId &&
+    a.createdAt === b.createdAt &&
     a.parentAgentId === b.parentAgentId &&
     a.parentToolCallId === b.parentToolCallId &&
     a.name === b.name &&
@@ -534,6 +540,7 @@ export function buildAgentForest(
     const status = draft.status ?? 'unknown';
     const node: AgentTreeNode = {
       agentId: draft.agentId,
+      createdAt: draft.createdAt,
       parentAgentId,
       parentToolCallId: draft.parentToolCallId,
       name,
@@ -730,6 +737,7 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
   if (existing !== undefined) return existing;
   const created: DraftNode = {
     agentId,
+    createdAt: undefined,
     parentAgentId: undefined,
     rosterParentAgentId: undefined,
     parentToolCallId: undefined,
@@ -808,6 +816,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
 }
 
 function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
+  draft.createdAt ??= firstPresent(entry.createdAt);
   const rosterParent = cleanId(entry.parentAgentId);
   if (rosterParent !== undefined) draft.rosterParentAgentId = rosterParent;
   draft.parentAgentId = rosterParent ?? draft.parentAgentId;
@@ -881,6 +890,7 @@ function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: 
 }
 
 function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
+  draft.createdAt ??= firstPresent(block.createdAt);
   draft.parentAgentId = draft.parentAgentId ?? cleanId(block.parentAgentId);
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
   if (block.name !== block.subagentId || draft.name === undefined) draft.name = firstPresent(block.name) ?? draft.name;

@@ -607,6 +607,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
       expect(result).toBe(target);
       expect(materialize).toHaveBeenCalledWith({ sessionId: target.id, workDir: '/workspace' });
       expect(createAgent).toHaveBeenCalledOnce();
+      if (kind !== 'child') expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ copiedIdentity: true }));
       expect(announce).toHaveBeenCalledOnce();
       expect(save).not.toHaveBeenCalled();
       expect(removeTask).not.toHaveBeenCalled();

@@ -189,6 +189,10 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
 
+Snapshot `subagents` roster rows carry an optional `created_at` UTC ISO timestamp for the agent's immutable creation time. A newly created agent has it before its first run starts, including while queued; resuming the same agent, restoring its scope, restarting the server, or switching its model does not change it. A fork that creates a new agent records a new creation time. The separate optional `started_at` identifies the run described by the row and may change on a later run.
+
+An agent whose saved metadata has no creation time omits `created_at`; treat it as unknown, not as the session creation time, run start, attachment time, or a value inferred from its ID. Creation timestamps use the host's wall clock, not a dispatch or turn identity: equal timestamps, clock changes, or missing comparison boundaries do not establish which dispatch created an agent.
+
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
 
 Set `agent_config.execution` at creation to select a harness independently of a profile:
@@ -231,6 +235,8 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode plan content, path, and review outcome |
 
 Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
+
+The transcript response's `agents` descriptors use camelCase: `{ agentId, type?, parentAgentId?, delegator?, label?, createdAt?, disposedAt? }`. Their optional `createdAt` carries the same immutable UTC ISO creation time and [unknown-time rules](#sessions) as snapshot `subagents[].created_at`, for both live and closed sessions. It is not the transcript turn's `startedAt` or the snapshot run's `started_at`.
 
 ### Prompts
 

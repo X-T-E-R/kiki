@@ -1059,6 +1059,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         const sourceAgent = sourceAgents[agentId] ?? { type: 'main' as const };
         await target.accessor.get(IAgentLifecycleService).create({
           agentId,
+          copiedIdentity: true,
           forkedFrom: sourceAgent.forkedFrom,
           labels: labelsFromAgentMeta(sourceAgent),
           delegator: sourceAgent.delegator,

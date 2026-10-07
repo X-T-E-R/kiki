@@ -564,6 +564,7 @@ export interface SessionStateSnapshot {
     };
     readonly forkedFrom?: string;
     readonly agents?: Readonly<Record<string, /* AgentMeta — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
+      readonly createdAt?: number;
       readonly execution?: {
         version: 1;
         selection: {

@@ -52,6 +52,19 @@ describe('session agent metadata counts', () => {
 
 
 describe('lightweight metadata roster', () => {
+  it('uses immutable metadata birth for queued and resumed runs and leaves legacy unknown', () => {
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 2, archived: false,
+      agents: { child: { createdAt: 100 }, legacy: {} } };
+    for (const runStart of [200, 300]) {
+      const roster = sessionAgentRoster(meta.id, meta, [
+        { ...row('child', 'running'), created_at: new Date(runStart).toISOString(), started_at: new Date(runStart).toISOString(), subagent_phase: 'queued' },
+        row('legacy', 'running'),
+      ]);
+      expect(roster[0]).toMatchObject({ created_at: new Date(100).toISOString(), started_at: new Date(runStart).toISOString() });
+      expect(roster[1]?.created_at).toBeUndefined();
+    }
+    expect(sessionAgentRoster(meta.id, meta)[0]?.created_at).toBe(new Date(100).toISOString());
+  });
   it('unions every registered identity with the smaller replay roster and records real name/state provenance', () => {
     const agents: Record<string, AgentMeta> = { main: {} };
     for (let index = 0; index < 706; index += 1) agents[`child-${index}`] = {

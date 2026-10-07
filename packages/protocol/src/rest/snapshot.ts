@@ -76,6 +76,8 @@ export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
  * (non-replayed) `subagent.spawned` WS event.
  */
 export const snapshotSubagentSchema = taskSchema.extend({
+  /** Immutable agent birth, not task/run start; absent for legacy identities. */
+  created_at: taskSchema.shape.created_at.optional(),
   live: z.boolean().optional(),
   activity_status: z.enum(['unknown', 'idle', 'running', 'suspended', 'completed', 'failed', 'cancelled', 'lost']).optional(),
   status_source: z.enum(['metadata', 'runtime']).optional(),

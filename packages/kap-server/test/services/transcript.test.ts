@@ -51,7 +51,7 @@ import {
 } from '@kiki/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
-import { streamWireRecords, type LiveAdapterBusEvent } from '@kiki/transcript-live';
+import { descriptorFromMeta, streamWireRecords, type LiveAdapterBusEvent } from '@kiki/transcript-live';
 
 import {
   TranscriptService,
@@ -179,6 +179,22 @@ describe('transcript memory config', () => {
 });
 
 describe('TranscriptService projection', () => {
+  it('projects persisted births identically for live and closed cold rosters without legacy backfill', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'agent-birth-'));
+    const meta = { agents: { child: { type: 'sub' as const, createdAt: 1234 }, legacy: { type: 'sub' as const } } };
+    await mkdir(join(home, 'sessions', 'ws', 's1'), { recursive: true });
+    await writeFile(join(home, 'sessions', 'ws', 's1', 'state.json'), JSON.stringify(meta));
+    const service = new TranscriptService({ core: coldCore(), homeDir: home });
+    try {
+      const cold = await service.readColdRoster('s1');
+      expect(cold).toEqual(Object.entries(meta.agents).map(([id, agent]) => descriptorFromMeta(id, agent)));
+      expect(cold?.find((agent) => agent.agentId === 'child')?.createdAt).toBe(new Date(1234).toISOString());
+      expect(cold?.find((agent) => agent.agentId === 'legacy')?.createdAt).toBeUndefined();
+    } finally {
+      await service.dispose();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it('snapshotToOps anchors standalone items so backfill keeps history order against live turns', () => {
     const snapshot: AgentTranscriptSnapshot = {
       interactions: [],

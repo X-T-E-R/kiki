@@ -721,6 +721,64 @@ describe('AgentLifecycleService', () => {
     expect(interaction.listPending().map((entry) => entry.id)).toEqual(['main-approval']);
   });
 
+  it('persists birth before publishing a queued child and preserves it across scope restart and fork', async () => {
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    const metadata = ix.get(ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const child = await svc.create({ agentId: 'child', deferCreateEvent: true,
+      delegator: { kind: 'external', delegationId: 'external-example' } });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBe(10_000);
+    expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: { createdAt: 10_000 } } });
+    svc.commitCreate(child.id);
+    vi.spyOn(Date, 'now').mockReturnValue(20_000);
+    expect(await svc.create({ agentId: 'child' })).toBe(child);
+    await svc.remove('child');
+    await svc.create({ agentId: 'child' });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBe(10_000);
+    const fork = await svc.fork('child');
+    expect((await metadata.read()).agents?.[fork.id]?.createdAt).toBe(20_000);
+  });
+
+  it('leaves legacy metadata and orphan restored journals birth unknown but dates copied new identities', async () => {
+    const { metadata } = installStoredTerminalChild('completed');
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    await svc.create({ agentId: 'child' });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBeUndefined();
+    const storage = ix.get(IFileSystemStorageService);
+    const ctx = ix.get(ISessionContext);
+    await storage.write(ctx.scope('agents/orphan'), AGENT_WIRE_RECORD_KEY, new TextEncoder().encode('{}\n'));
+    await svc.create({ agentId: 'orphan' });
+    expect((await metadata.read()).agents?.['orphan']?.createdAt).toBeUndefined();
+    await storage.write(ctx.scope('agents/copied'), AGENT_WIRE_RECORD_KEY, new TextEncoder().encode('{}\n'));
+    vi.spyOn(Date, 'now').mockReturnValue(30_000);
+    await svc.create({ agentId: 'copied', copiedIdentity: true });
+    expect((await metadata.read()).agents?.['copied']?.createdAt).toBe(30_000);
+  });
+
+  it('dates a fresh ACP entity and keeps its birth on executor scope restoration', async () => {
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    ix.stub(IAppendLogStore, recordingAppendLog([createWireMetadataRecord(1), {
+      type: 'profile.bind', modelAlias: 'external-model', profileName: 'explore', thinkingEffort: 'high',
+      executorId: 'example-acp', executorProtocol: 'acp-v1', systemPrompt: '', disallowedTools: [], time: 2,
+    }]).store);
+    const metadata = ix.get(ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const child = await svc.create({ agentId: 'acp-child' });
+    expect(child.accessor.get(IAgentProfileService).data().executorProtocol).toBe('acp-v1');
+    expect((await metadata.read()).agents?.[child.id]?.createdAt).toBe(10_000);
+    await svc.remove(child.id);
+    vi.spyOn(Date, 'now').mockReturnValue(20_000);
+    await svc.create({ agentId: child.id });
+    expect((await metadata.read()).agents?.[child.id]?.createdAt).toBe(10_000);
+  });
+
   it('create / getHandle / list / remove', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const main = await svc.create({ agentId: 'main' });
@@ -1126,6 +1184,7 @@ describe('AgentLifecycleService', () => {
 
     expect(child.id).toBe('child');
     expect(registerAgent).toHaveBeenCalledWith('child', {
+      createdAt: expect.any(Number),
       homedir: '/tmp/kimi-agentLifecycle-home/sessions/ws_test/sess_test/agents/child',
       type: 'sub',
       parentAgentId: 'main',

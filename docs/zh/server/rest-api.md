@@ -189,6 +189,10 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
 
+快照的 `subagents` 名册条目包含可选的 `created_at`，以 UTC ISO 时间表示 Agent 不变的创建时刻。新建 Agent 在首次运行前就带有该值，包括仍在排队时；续跑同一 Agent、恢复其作用域、重启服务或切换模型均不会改变它。fork 若创建了新的 Agent 实体，则记录新的创建时间。另一个可选字段 `started_at` 表示该条目所描述的运行开始时间，后续运行可以更新它。
+
+Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客户端应保留未知状态，不借用会话创建时间、运行开始时间、附着时间，也不从 ID 推断。创建时间使用主机时钟，不是派遣或轮次标识：时间戳相同、时钟变化或缺少比较边界时，不能据此确认 Agent 属于哪次派遣。
+
 要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
 
 创建时设置 `agent_config.execution`，即可独立于 profile 选择 harness：
@@ -231,6 +235,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
 
 转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
+
+转录响应的 `agents` 描述符使用 camelCase：`{ agentId, type?, parentAgentId?, delegator?, label?, createdAt?, disposedAt? }`。其中可选的 `createdAt` 与快照 `subagents[].created_at` 表示同一个不变的 UTC ISO 创建时间，活跃会话和已关闭会话均遵循相同的[未知时间规则](#会话)。它不是转录轮次的 `startedAt`，也不是快照运行的 `started_at`。
 
 ### 提示词
 

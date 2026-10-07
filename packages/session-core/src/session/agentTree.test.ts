@@ -23,6 +23,7 @@ import {
 } from './agentTree';
 import {
   liveSourcesFromAgentSnapshots,
+  rosterFromTranscriptAgents,
   sessionAgentForestFromAgentSnapshots,
 } from './transcript/forest';
 
@@ -103,6 +104,28 @@ function page(
 function snapshotJson<T>(value: T): string {
   return JSON.stringify(value);
 }
+
+describe('agent birth projection', () => {
+  it('keeps birth independent of resumed run generations and never guesses legacy birth', () => {
+    const birth = new Date(100).toISOString();
+    const oldRun = new Date(200).toISOString();
+    const resumedRun = new Date(400).toISOString();
+    const forest = buildAgentForest([live({ subagentId: 'child', startedAt: resumedRun })], [
+      roster({ agentId: 'child', createdAt: birth, startedAt: oldRun, endedAt: new Date(300).toISOString(), status: 'completed' }),
+      roster({ agentId: 'agent-999', startedAt: resumedRun }),
+    ]);
+    expect(forest.byId['child']).toMatchObject({ createdAt: birth, startedAt: resumedRun, status: 'running' });
+    expect(forest.byId['agent-999']?.createdAt).toBeUndefined();
+    const transcriptRoster = rosterFromTranscriptAgents([{ agentId: 'child', createdAt: birth }]);
+    expect(buildAgentForest([], transcriptRoster).byId['child']).toMatchObject({ createdAt: birth, startedAt: undefined });
+    const queued = sessionAgentForestFromAgentSnapshots(new Map(), [compactSnapshot({ id: 'child',
+      created_at: birth, started_at: resumedRun, status: 'running', activity_status: 'running', subagent_phase: 'queued', live: true })]);
+    expect(queued.byId['child']).toMatchObject({ createdAt: birth, startedAt: resumedRun });
+    const changed = buildAgentForest([], [roster({ agentId: 'child', createdAt: birth })]);
+    const unknown = buildAgentForest([], [roster({ agentId: 'child' })]);
+    expect(stabilizeAgentForest(unknown, changed).byId['child']).not.toBe(unknown.byId['child']);
+  });
+});
 
 describe('compareAgentIds', () => {
   it('puts main first and sorts agent-N numerically', () => {

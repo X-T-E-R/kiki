@@ -26,7 +26,7 @@ export function rosterFromTranscriptAgents(
       name: agent.label ?? agent.agentId,
       label: agent.label,
       status: agent.agentId === MAIN_AGENT_ID ? undefined : 'unknown',
-      startedAt: agent.createdAt,
+      createdAt: agent.createdAt,
       disposedAt: agent.disposedAt,
     };
   });
@@ -181,6 +181,7 @@ export function rosterFromSnapshotSubagents(
     return [
       {
         agentId,
+        createdAt: subagent.created_at,
         parentAgentId: presentSnapshotText(subagent.parent_agent_id),
         parentToolCallId: presentSnapshotText(subagent.parent_tool_call_id),
         name,
@@ -237,6 +238,7 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       : mergeKnown(source.toolCallCountKnown, snapshot.toolCallCountKnown);
     return {
       ...source,
+      createdAt: presentSnapshotText(source.createdAt) ?? snapshot.createdAt,
       parentAgentId: source.parentAgentId ?? snapshot.parentAgentId,
       parentToolCallId: source.parentToolCallId ?? snapshot.parentToolCallId,
       name: source.name !== source.subagentId ? source.name : snapshot.name ?? source.name,

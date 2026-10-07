@@ -16,6 +16,8 @@ export interface CreateAgentOptions {
   readonly delegator?: DelegatorRef;
   readonly userLabel?: string;
   readonly restoreBinding?: AgentRestoreBinding;
+  /** Internal session-fork hook: copied journals belong to a new entity, not a restored identity. */
+  readonly copiedIdentity?: boolean;
   /** Internal transaction hook: publish onDidCreate only after the caller commits. */
   readonly deferCreateEvent?: boolean;
 }

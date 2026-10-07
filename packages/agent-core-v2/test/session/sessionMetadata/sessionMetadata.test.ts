@@ -83,6 +83,29 @@ describe('SessionMetadata', () => {
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
   });
 
+  it('keeps birth immutable through registration, agent updates, bulk patches and reload', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { createdAt: 100, model: 'first' });
+    await meta.registerAgent('child', { createdAt: 200, model: 'second' });
+    await meta.updateAgent('child', () => ({ model: 'third' }));
+    await meta.update({ agents: { child: { createdAt: 300, model: 'fourth' } } });
+    expect((await meta.read()).agents?.['child']).toEqual({ createdAt: 100, model: 'fourth' });
+    expect((await createFreshMetadata(ix).read()).agents?.['child']).toEqual({ createdAt: 100, model: 'fourth' });
+  });
+
+  it('does not backfill a legacy agent birth when loading or updating metadata', async () => {
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 2,
+      archived: false, agents: { legacy: { model: 'old' } }, custom: {}, isCustomTitle: false });
+    const writes = vi.spyOn(store, 'set');
+    const meta = ix.get(ISessionMetadata);
+    await meta.read();
+    expect(writes).not.toHaveBeenCalled();
+    await meta.registerAgent('legacy', { createdAt: 500, model: 'new' });
+    await meta.updateAgent('legacy', (current) => ({ ...current, createdAt: 600 }));
+    expect((await createFreshMetadata(ix).read()).agents?.['legacy']?.createdAt).toBeUndefined();
+  });
+
   it('persists activity recency without rewriting main prompt time or custom title', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });

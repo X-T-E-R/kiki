@@ -526,6 +526,7 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
   const type = meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub');
   return {
     agentId,
+    createdAt: meta?.createdAt === undefined ? undefined : new Date(meta.createdAt).toISOString(),
     type,
     parentAgentId,
     delegator,

@@ -50,6 +50,7 @@ import {
   queuedPromptPreviews,
   resolveActiveFloorId,
   rosterFromSnapshotSubagents,
+  sessionAgentForest,
   sessionAgentForestFromAgentSnapshots,
   splitSystemReminders,
   turnExecutionFromItem,
@@ -921,6 +922,54 @@ describe('transcript authority projection', () => {
         name: 'Inspect the protocol',
       }),
     ]);
+  });
+
+  it('preserves immutable birth through the live-source snapshot overlay', () => {
+    const source = { subagentId: CHILD_AGENT_ID, name: CHILD_AGENT_ID, status: 'running', startedAt: FIXED_AT_2 };
+    const row = compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, started_at: FIXED_AT_2 });
+    const fallback = overlayLiveSourcesWithSnapshotSubagents([source], [row]);
+    expect(fallback[0]).toMatchObject({ createdAt: FIXED_AT, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(fallback).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+
+    const knownSource = { ...source, createdAt: FIXED_AT_1 };
+    for (const created_at of [FIXED_AT, undefined]) {
+      const overlaid = overlayLiveSourcesWithSnapshotSubagents([knownSource], [{ ...row, created_at }]);
+      expect(overlaid[0]).toMatchObject({ createdAt: FIXED_AT_1, startedAt: FIXED_AT_2 });
+      expect(buildAgentForest(overlaid).byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    }
+    expect(overlayLiveSourcesWithSnapshotSubagents([{ ...source, createdAt: '' }], [row])[0]?.createdAt).toBe(FIXED_AT);
+    const inactiveRoster = [{ agentId: CHILD_AGENT_ID, status: 'idle', statusSource: 'runtime' as const }];
+    expect(buildAgentForest(fallback, inactiveRoster).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, status: 'idle', startedAt: undefined,
+    });
+    expect(buildAgentForest(fallback, [{ ...inactiveRoster[0]!, createdAt: FIXED_AT_1 }])
+      .byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    const legacy = overlayLiveSourcesWithSnapshotSubagents([source], [{ ...row, created_at: undefined }]);
+    expect(legacy[0]).toMatchObject({ createdAt: undefined, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(legacy).byId[CHILD_AGENT_ID]?.createdAt).toBeUndefined();
+  });
+
+  it('projects immutable birth from SessionView snapshots without a separate roster', () => {
+    const queued = {
+      ...createViewState('session_test'),
+      blocks: [unknownChildBlock()],
+      snapshotSubagents: [compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, status: undefined, subagent_phase: 'queued' })],
+    };
+    expect(sessionAgentForest(queued).byId[CHILD_AGENT_ID]).toMatchObject({ createdAt: FIXED_AT, startedAt: undefined });
+    const resumed = {
+      ...queued,
+      blocks: [{ ...unknownChildBlock(), status: 'running' as const, startedAt: FIXED_AT_2 }],
+      snapshotSubagents: [{ ...queued.snapshotSubagents[0]!, status: 'running' as const, subagent_phase: 'working' as const, started_at: FIXED_AT_2 }],
+    };
+    expect(sessionAgentForest(resumed).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+    const legacy = { ...resumed, snapshotSubagents: [{ ...resumed.snapshotSubagents[0]!, created_at: undefined }] };
+    expect(sessionAgentForest(legacy).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: undefined, startedAt: FIXED_AT_2,
+    });
   });
 
   it('stops a retained snapshot row from claiming a live run in the forest', () => {

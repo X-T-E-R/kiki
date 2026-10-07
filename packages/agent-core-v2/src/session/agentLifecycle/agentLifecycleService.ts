@@ -320,6 +320,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     slot: AgentSlot,
     generation: number,
   ): Promise<IAgentScopeHandle> {
+    const creationTime = Date.now();
+    let createdAt: number | undefined;
     let priorAgentMeta: AgentMeta | undefined;
     let appliedAgentMeta: AgentMeta | undefined;
     let bootstrapBinding: AgentMeta | undefined;
@@ -351,6 +353,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     ) as IAgentScopeHandle;
     try {
       priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
+      if (priorAgentMeta === undefined && opts.restoreBinding === undefined &&
+        (opts.copiedIdentity === true || await this.storage.size(agentScope, AGENT_WIRE_RECORD_KEY) === undefined)) {
+        createdAt = creationTime;
+      }
       const wire = handle.accessor.get(IWireService);
       await wire.seal();
       await wire.beginTranscriptEpoch?.();
@@ -401,7 +407,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         return appliedAgentMeta;
       };
       if (priorAgentMeta === undefined) {
-        await this.sessionMetadata.registerAgent(agentId, applyIdentity({}));
+        await this.sessionMetadata.registerAgent(agentId, applyIdentity({ createdAt }));
       } else {
         await this.sessionMetadata.updateAgent(agentId, applyIdentity);
         if (appliedAgentMeta === undefined) throw new Error2(ErrorCodes.AGENT_REMOVED,

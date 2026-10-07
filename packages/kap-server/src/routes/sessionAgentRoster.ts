@@ -40,7 +40,7 @@ export function sessionAgentRoster(
       : registration?.labels?.['collaborationTaskName'] ? 'collaboration_task'
       : profile ? 'profile' : row?.description && row.description !== id ? 'task' : 'unreported';
     const outcomeAt = registration?.completedAt;
-    const trackedStart = Date.parse(row?.started_at ?? row?.created_at ?? '');
+    const trackedStart = Date.parse(row?.started_at ?? '');
     const newerRun = Number.isFinite(trackedStart) && outcomeAt !== undefined && trackedStart > outcomeAt;
     const outcome = registration?.status !== undefined && !newerRun ? registration.status : undefined;
     const trackedOutcome = row?.status === 'completed' || row?.status === 'failed' || row?.status === 'cancelled' ? row.status : undefined;
@@ -66,7 +66,7 @@ export function sessionAgentRoster(
       activity_status: activityStatus,
       status_source: current && activity.turn !== undefined || outcome === undefined && (current || trackedActive) ? 'runtime' : 'metadata',
       live: current || trackedActive && outcome === undefined,
-      created_at: row?.created_at ?? new Date(meta.createdAt).toISOString(),
+      created_at: registration?.createdAt === undefined ? undefined : new Date(registration.createdAt).toISOString(),
       started_at: current && activity.turn !== undefined && (row?.started_at === undefined || outcomeAt !== undefined && trackedStart <= outcomeAt)
         ? new Date(activity.turn.since).toISOString() : row?.started_at,
       completed_at: activityStatus === 'running' || activityStatus === 'suspended' ? undefined

@@ -21,6 +21,7 @@ import {
   LifecycleScope,
   SessionInteractionService,
   StateRegistry,
+  type AgentMeta,
   type Event2,
   type ISessionScopeHandle,
   type ISessionStateService,
@@ -51,6 +52,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   AgentTranscriptLiveAdapter,
   bindSessionTranscript,
+  descriptorFromMeta,
   type LiveAdapterBusEvent,
 } from '../src';
 
@@ -84,6 +86,14 @@ function normalizedBlocks(
     ),
   ) as ReadonlyArray<Record<string, unknown>>;
 }
+
+describe('descriptor birth', () => {
+  it('projects immutable metadata birth and leaves legacy and absent metadata unknown', () => {
+    expect(descriptorFromMeta('child', { createdAt: 1000 }).createdAt).toBe(new Date(1000).toISOString());
+    expect(descriptorFromMeta('legacy', { completedAt: 2000 }).createdAt).toBeUndefined();
+    expect(descriptorFromMeta('agent-999', undefined).createdAt).toBeUndefined();
+  });
+});
 
 describe('bindSessionTranscript', () => {
   class FakeBus {
@@ -171,6 +181,7 @@ describe('bindSessionTranscript', () => {
   function fakeSession(
     interactions: SessionInteractionService,
     agents?: FakeAgents,
+    metaAgents: Readonly<Record<string, AgentMeta>> = {},
   ): ISessionScopeHandle {
     return {
       accessor: {
@@ -185,12 +196,28 @@ describe('bindSessionTranscript', () => {
             );
           }
           if (token === ISessionInteractionService) return interactions;
-          if (token === ISessionMetadata) return { read: async () => ({ agents: {} }) };
+          if (token === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
           return undefined;
         },
       },
     } as unknown as ISessionScopeHandle;
   }
+
+  it('publishes birth for a newborn queued live child and preserves it when the same handle identity returns', async () => {
+    const agents = new FakeAgents();
+    const metadata = { child: { createdAt: 1000, type: 'sub' as const }, legacy: { type: 'sub' as const } };
+    const store = new TranscriptStore('birth-session');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents, metadata));
+    onTestFinished(() => binding.dispose());
+    agents.add('child', { prompts: { pending: [{ id: 'queued', createdAt: new Date(2000).toISOString(), message: { content: [{ type: 'text', text: 'queued request' }] } }] } });
+    agents.add('legacy');
+    await vi.waitFor(() => expect(store.agents().find((agent) => agent.agentId === 'child')?.createdAt).toBe(new Date(1000).toISOString()));
+    expect(store.agents().find((agent) => agent.agentId === 'legacy')?.createdAt).toBeUndefined();
+    agents.remove('child');
+    await vi.waitFor(() => expect(store.agents().find((agent) => agent.agentId === 'child')?.disposedAt).toBeDefined());
+    agents.add('child');
+    await vi.waitFor(() => expect(store.agents().find((agent) => agent.agentId === 'child')?.createdAt).toBe(new Date(1000).toISOString()));
+  });
 
   it('hydrates running compaction from the durable checkpoint and completes the same row without live duplicates', () => {
     const agents = new FakeAgents();

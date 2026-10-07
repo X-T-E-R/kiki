@@ -133,7 +133,13 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
     const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
       : Math.max(this.data.activityUpdatedAt ?? 0, patch.activityUpdatedAt);
-    this.data = { ...this.data, ...patch, updatedAt, activityUpdatedAt };
+    const agents = patch.agents === undefined ? this.data.agents : Object.fromEntries(
+      Object.entries(patch.agents).map(([agentId, meta]) => {
+        const existing = this.data.agents?.[agentId];
+        return [agentId, existing === undefined ? meta : { ...meta, createdAt: existing.createdAt }];
+      }),
+    );
+    this.data = { ...this.data, ...patch, agents, updatedAt, activityUpdatedAt };
     await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
     if (this.disposed) return false;
     this.mirrorToReadModel();
@@ -288,6 +294,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
 function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
   return (
+    a.createdAt === b.createdAt &&
     a.homedir === b.homedir &&
     a.type === b.type &&
     (a.parentAgentId ?? null) === (b.parentAgentId ?? null) &&
