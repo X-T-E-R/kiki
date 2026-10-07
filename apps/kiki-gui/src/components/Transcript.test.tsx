@@ -6055,11 +6055,9 @@ describe('semantic tool cards', () => {
       const { container } = await renderCard(semanticTool(name, { query: 'memory query', scope: 'global' }, output));
       await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
       expect(container.querySelector('[data-tool-show-full]')).toBeNull();
-      expect(container.querySelector('pre')?.textContent).toContain('memory result tail');
-      expect(container.querySelector('pre')?.textContent).toBe(output);
-      await openRaw(container);
-      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"query": "memory query"');
-      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('memory result tail');
+      expect(container.querySelector('[data-tool-record-field="output"] pre')?.textContent).toBe(output);
+      expect(container.querySelector('[data-tool-record-field="input"]')?.textContent).toContain('"query": "memory query"');
+      expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
     } finally { localStorage.removeItem('kiki.locale'); }
   });
 
@@ -6070,9 +6068,9 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
     await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
     expect(container.textContent).toContain('User preference');
-    await openRaw(container);
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('operation-example');
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"body": "Remember this"');
+    expect(container.querySelector('[data-tool-record-field="output"]')?.textContent).toContain('operation-example');
+    expect(container.querySelector('[data-tool-record-field="input"]')?.textContent).toContain('"body": "Remember this"');
+    expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
   });
 
   it('tells a stored write, a proposal and a no-op apart, and only offers Undo for a real operation', async () => {

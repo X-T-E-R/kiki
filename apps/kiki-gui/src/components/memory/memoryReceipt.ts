@@ -122,6 +122,11 @@ export function memoryApplicability(validity: MemoryValidity | undefined, now: n
   return isExpired(validity, now) ? 'expired' : 'recheck';
 }
 
+function receiptValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
 
@@ -238,13 +243,7 @@ const asOutcome = (value: unknown): MemoryWriteOutcome | undefined =>
  * operation id, so the row has no Undo to offer.
  */
 export function parseMemoryWriteResult(output: unknown): MemoryWriteReceipt | undefined {
-  if (typeof output !== 'string') return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return undefined;
-  }
+  const parsed = receiptValue(output);
   const record = asRecord(parsed);
   const id = asString(record?.['id']);
   const title = asString(record?.['title']);
@@ -293,13 +292,7 @@ export interface MemorySearchSummary {
  * nothing about coverage, so it reads as one complete page.
  */
 export function parseMemorySearchSummary(output: unknown): MemorySearchSummary | undefined {
-  if (typeof output !== 'string') return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return undefined;
-  }
+  const parsed = receiptValue(output);
   if (Array.isArray(parsed)) return { count: parsed.length, hasMore: false, partial: false, warnings: [] };
   const record = asRecord(parsed);
   const items = record?.['items'];
@@ -329,13 +322,7 @@ export interface MemoryReadResult {
  * older payload is a plain array of entries.
  */
 export function parseMemoryReadResult(output: unknown): MemoryReadResult | undefined {
-  if (typeof output !== 'string') return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return undefined;
-  }
+  const parsed = receiptValue(output);
   const envelope = asRecord(parsed);
   const list = Array.isArray(parsed)
     ? parsed

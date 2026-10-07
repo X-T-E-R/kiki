@@ -23,7 +23,6 @@ export function LoadedToolText({
 }: {
   text: string;
   prepareCopy?: (signal: AbortSignal) => Promise<string>;
-  limit?: number;
   copy?: boolean;
   /** Body named in the copy tooltip (e.g. "Input"). */
   copyLabel?: string;

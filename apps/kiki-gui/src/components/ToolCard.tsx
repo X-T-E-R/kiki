@@ -17,7 +17,7 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { toolDisplayName } from '../lib/pluginCatalog';
-import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS } from './ContentContinuation';
+import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { MediaJobView, readMediaJobFromToolResult } from './media/MediaJobView';
@@ -32,11 +32,9 @@ import {
   SemanticJumpSlot,
   useSemanticContext,
 } from './timeline/ToolSemanticParts';
-import { describeTool, toolPayloadIncomplete } from './toolSemantics';
-import { toolRecordCopy } from './toolRecordCopy';
+import { describeTool } from './toolSemantics';
 import { LoadedToolText, ReadableToolText, recordText } from './timeline/LoadedToolText';
-import { CopyButton } from './timeline/ContentCopyButton';
-import { useTranscriptController } from './transcriptDetail';
+import { ToolRecordField } from './timeline/ToolRecordField';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -394,9 +392,6 @@ export const ToolCard = memo(function ToolCard({
   // continue them belong to this frame, and the reading areas below ask only
   // for the field roots they actually show.
   const frameSource = frameContentSource(block);
-  const detailController = useTranscriptController();
-  const prepareCopy = (field: string) => detailController === undefined || frameSource === undefined ? undefined : (signal: AbortSignal) => field === 'output' ? detailController.copyToolCallField(agentId, block.toolCallId, 'output', signal) : detailController.copyContentField(agentId, frameSource, [field], signal);
-  const rangeField = (field: string) => detailController !== undefined && frameSource !== undefined && detailController.contentRefsFor(agentId, frameSource).some((ref) => ref.path.length === 1 && ref.path[0] === field && detailController.isContentRange(agentId, ref));
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
   const memoryRow = isMemoryToolName(block.name);
@@ -433,7 +428,7 @@ ${engineError}`;
     [memoryRow, bridged, realName, block, semanticContext],
   );
 
-  if (memoryRow) return <MemoryToolRow block={block} />;
+  if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
 
   const target = keepCommandSummary ? (
     <span className="font-mono">{summary}</span>
@@ -476,33 +471,8 @@ ${engineError}`;
       : block.status === 'done' && frameDuration < DURATION_WORTH_SHOWING_MS
         ? undefined
         : time.formatDuration(frameDuration);
-  const inputWell = (
-    <div>
-      <p className={label}>{t('tc.input')}</p>
-      {rangeField(block.args === undefined ? 'inputText' : 'input') ? <div className="flex justify-end"><CopyButton label={t('tc.input')} text="" prepare={prepareCopy(block.args === undefined ? 'inputText' : 'input')} /></div> : <LoadedToolText copyLabel={t('tc.input')} text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} prepareCopy={prepareCopy(block.args === undefined ? 'inputText' : 'input')} />}
-      {/* The well shows the parsed args when they exist and the streamed text
-          otherwise, so it continues whichever of the two it is showing. */}
-      <ContentContinuation
-        source={frameSource}
-        roots={block.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS}
-        label={t('tc.input')}
-        headingPresent
-        className="mt-1"
-      />
-    </div>
-  );
-  const outputWell = (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
-        <span>{t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}</span>
-        {block.output === undefined ? null : <CopyButton label={t('tc.output')} text={recordText(block.output)} prepare={prepareCopy('output')} />}
-      </div>
-      {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
-      {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
-        : rangeField('output') || rangeField('error') ? null : <OutputView output={block.output} agentId={agentId} />}
-      <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} headingPresent className="mt-1" />
-    </div>
-  );
+  const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} agentId={agentId} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the

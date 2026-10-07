@@ -4,9 +4,9 @@
  * A `MemoryWrite` result reads `Remembered · <title> · View · Undo`: the verb
  * says what happened, View opens the entry on /memory, and Undo replays the
  * journal's before-image through `POST /memory/{scope}/undo`. Reads and
- * searches use the same line with their own verb and no actions. The row
- * expands to the write's reason (and the raw payload for a read), because the
- * reason is the only part a user may want to check without leaving the turn.
+ * searches use the same line with their own verb and no actions. One expansion
+ * reads the recorded input and receipt through the shared frame reader; View
+ * remains a separate action for the entry's current state.
  *
  * Three outcomes read differently, because they are different facts: a write
  * that stored something, a proposal waiting in the inbox, and a write whose
@@ -29,12 +29,14 @@ import { useOptionalConnection } from '../state/connection';
 import { DisclosureChevron, Icon } from './icons';
 import { useGuardedNavigate } from './dirtyGuard';
 import { useMediaPreview } from './mediaPreviewContext';
-import { LoadedToolText, recordText } from './timeline/LoadedToolText';
-import { toolRecordCopy } from './toolRecordCopy';
+import { frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
+import { useContentContinuation } from './transcriptDetail';
+import { ToolRecordField } from './timeline/ToolRecordField';
+import { useFindReveal } from './timeline/findReveal';
+import { useMemoryWriteReceipt } from './memory/useMemoryWriteReceipt';
 import {
   parseMemoryReadResult,
   parseMemorySearchSummary,
-  parseMemoryWriteResult,
   type MemoryOwnerScope,
 } from './memory/memoryReceipt';
 
@@ -63,21 +65,20 @@ function resultSummary(output: unknown, name: string | undefined): { readonly te
   return { text: String(read.items.length), partial: !read.complete, hasMore: false };
 }
 
-export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
+export function MemoryToolRow({ block, agentId = 'main' }: { readonly block: ToolBlock; readonly agentId?: string }) {
   const { t, tp, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const connection = useOptionalConnection();
   const sessionId = useMediaPreview()?.sessionId;
   const [expanded, setExpanded] = useState(false);
-  const [rawOpen, setRawOpen] = useState(false);
+  useFindReveal(block.id, expanded, setExpanded);
   const [undone, setUndone] = useState(false);
   const [undoing, setUndoing] = useState(false);
 
-  const write = block.name === 'MemoryWrite' ? parseMemoryWriteResult(block.output) : undefined;
+  const { receipt: write, failed: receiptFailed, retry: retryReceipt } = useMemoryWriteReceipt(block, agentId, expanded);
   const failed = block.status === 'error' || block.isError === true;
   const running = block.status === 'running';
   const args = (block.args ?? {}) as Record<string, unknown>;
-  const reason = typeof args['reason'] === 'string' ? args['reason'] : undefined;
 
   // The verb carries the whole meaning of the line, so it is the one thing
   // that changes per action and state.
@@ -100,7 +101,8 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
           ? t('memory.tool.read')
           : t('memory.tool.searched');
 
-  const summary = write === undefined && !failed && !running ? resultSummary(block.output, block.name) : undefined;
+  const { pending } = useContentContinuation(frameContentSource(block), OUTPUT_ROOTS, agentId);
+  const summary = write === undefined && !failed && !running && pending.length === 0 ? resultSummary(block.output, block.name) : undefined;
   const hits = summary === undefined
     ? undefined
     : summary.partial ? t('memory.tool.hitsPartial', { count: summary.text })
@@ -228,22 +230,7 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
         ) : null}
       </div>
       {expanded ? (
-        <div className="space-y-1 pt-0.5 pb-1.5 pl-6 text-[12px] leading-relaxed">
-          {typeof args['query'] === 'string' && args['query'] !== '' ? (
-            <p className="text-ink-soft">
-              <span className="text-ink-faint">{t('memory.tool.query')}: </span>
-              {args['query']}
-            </p>
-          ) : null}
-          {reason !== undefined ? (
-            <p className="text-ink-soft">
-              <span className="text-ink-faint">{t('memory.tool.reason')}: </span>
-              {reason}
-            </p>
-          ) : null}
-          {typeof args['body'] === 'string' ? (
-            <p className="text-ink-soft">{args['body']}</p>
-          ) : null}
+        <div className="space-y-2 pt-0.5 pb-1.5 pl-6 text-[12px] leading-relaxed">
           {write !== undefined && write.warnings.length > 0 ? (
             <ul data-memory-tool-warnings className="space-y-0.5 text-amber-ink">
               {write.warnings.map((warning) => (<li key={warning} className="break-words">{warning}</li>))}
@@ -258,29 +245,9 @@ export function MemoryToolRow({ block }: { readonly block: ToolBlock }) {
                 : t('memory.tool.pendingUpdate')}
             </p>
           ) : null}
-          {!failed && block.name !== 'MemoryWrite' && typeof block.output === 'string' && block.output !== '' ? (
-            <LoadedToolText text={block.output} limit={2000}
-              className="max-h-40 overflow-auto rounded-md bg-panel px-3 py-1.5 font-mono text-[12px] whitespace-pre-wrap text-ink-soft" />
-          ) : null}
-          {failed && typeof block.output === 'string' ? (
-            <p className="text-danger">{block.output}</p>
-          ) : null}
-          <button type="button" data-tool-raw-toggle aria-expanded={rawOpen}
-            onClick={() => { setRawOpen((value) => !value); }}
-            className="flex min-h-7 items-center gap-1.5 rounded-md px-2 -ml-2 text-[12px] text-ink-faint transition-colors hover:text-ink">
-            <DisclosureChevron open={rawOpen} className="text-ink-faint" />{t('tc.sem.raw')}
-          </button>
-          {rawOpen ? (
-            <div data-tool-raw className="space-y-2 pt-1.5">
-              <div><p className="text-ink-faint">{t('tc.input')}</p>
-                <LoadedToolText copyLabel={t('tc.input')} text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
-              </div>
-              <div><p className="text-ink-faint">{t('tc.output')}</p>
-                {block.output === undefined ? <p className="text-ink-faint">{toolRecordCopy('notLoaded', locale)}</p>
-                  : <LoadedToolText copyLabel={t('tc.output')} text={recordText(block.output)} />}
-              </div>
-            </div>
-          ) : null}
+          {receiptFailed ? <p data-memory-receipt-error role="status" className="text-danger">{t('transcript.content.failed')}<button type="button" onClick={retryReceipt} className="ml-2 underline">{t('common.retry')}</button></p> : null}
+          <ToolRecordField block={block} agentId={agentId} field="input" />
+          <ToolRecordField block={block} agentId={agentId} field="output" />
         </div>
       ) : null}
     </div>

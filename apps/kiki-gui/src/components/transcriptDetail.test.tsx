@@ -858,3 +858,76 @@ it('omits a range heading only when its caller already labels the field, keeping
   expect(container.querySelector('[data-standalone] p')?.textContent).toBe('Output');
   expect(container.querySelector('[data-headed] [aria-label="Output"]')).not.toBeNull();
 });
+
+
+it.each(['MemoryRead', 'MemoryWrite', 'MemorySearch', 'ExampleTool'])('%s reads structured historical fields on first expansion and retries the original ref', async (name) => {
+  const reason = 'Historical reason '.repeat(80) + 'REASON_TAIL';
+  const output = { items: Array.from({ length: 10 }, (_, i) => ({ id: `entry-${i}`, body: 'Recorded body '.repeat(100) + `BODY_TAIL_${i}`, status: 'archived', revision: 'old-revision' })), next_cursor: 'actual-next-page', coverage: { exhausted: false, complete: true } };
+  const inputRef = boundedRef(FRAME_SOURCE, ['input', 'reason'], 'text', 3, reason.length);
+  const outputRef = boundedRef(FRAME_SOURCE, ['output', 'items'], 'array', 0, 10);
+  let fail = true;
+  const read = vi.fn(async ({ ref }: { ref: ContentRef }) => {
+    if (ref.path[0] === 'input') {
+      if (fail) { fail = false; throw new Error('fixture refused'); }
+      return { ref, value: reason.slice(ref.offset), contentRefs: [] };
+    }
+    return { ref, value: output.items.slice(ref.offset, ref.offset + 2), next: ref.offset + 2 < 10 ? { ...ref, offset: ref.offset + 2 } : undefined, contentRefs: [] };
+  });
+  const view = { snapshot: async () => ({ session: { id: 'test', title: 'Historical receipt' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  const copied = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(undefined);
+  try {
+    await controller.open();
+    controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'reader', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 't1.1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: FRAME_SOURCE.id, toolCallId: 'call-1', name, state: 'done', input: { reason: reason.slice(0, 3) }, output: { ...output, items: [] }, contentRefs: [inputRef, outputRef] }] }] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+    const subscribe = controller.subscribeAgent.bind(controller, 'reader');
+    const snapshot = controller.getAgentState.bind(controller, 'reader');
+    function HistoricalTool() {
+      const state = useSyncExternalStore(subscribe, snapshot);
+      const tool = state.blocks.find((block): block is Tool => block.kind === 'tool')!;
+      return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="reader"><ToolCard block={tool} agentId="reader" /></TranscriptDetailProvider>;
+    }
+    const container = await render(<HistoricalTool />);
+    expect(read).not.toHaveBeenCalled();
+    if (name === 'MemorySearch') expect(container.textContent).not.toContain('0 matches');
+    await click(container.querySelector('[data-tool] button'));
+    if (name === 'ExampleTool') expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
+    await act(async () => { await vi.waitFor(() => expect(container.querySelector('[data-content-continuation="error"]')).not.toBeNull()); });
+    await click(container.querySelector('[data-content-continuation="error"] button'));
+    await act(async () => { await vi.waitFor(() => expect(controller.getAgentState('reader').contentRefs).toEqual([])); });
+    expect(container.textContent).toContain('REASON_TAIL');
+    expect(container.textContent).toContain('BODY_TAIL_9');
+    expect(container.textContent).toContain('actual-next-page');
+    expect(container.textContent).toContain('old-revision');
+    expect(read.mock.calls.every(([request]) => request.ref.revision === inputRef.revision)).toBe(true);
+    await click(container.querySelector('[data-tool-record-field="output"] [data-copy-state]'));
+    expect(copied).toHaveBeenCalledWith(JSON.stringify(output, null, 2));
+    const calls = read.mock.calls.length;
+    await click(container.querySelector('[data-tool] button'));
+    await click(container.querySelector('[data-tool] button'));
+    expect(container.textContent).toContain('BODY_TAIL_9');
+    expect(read).toHaveBeenCalledTimes(calls);
+  } finally { copied.mockRestore(); controller.close(); }
+});
+
+
+it('restores a range-backed write receipt action metadata from the original, retaining scope and revision', async () => {
+  const output = { id: 'memory-example', title: 'Original title', scope: 'persona_workspace', owner_scope: { kind: 'persona_workspace', personaId: 'persona-example', workspaceId: 'workspace-example' }, target: { scope: 'persona_workspace', id: 'memory-example', expected_revision: 'original-revision' }, revision: 'original-revision', status: 'pending', outcome: 'pending', operation_id: 'original-operation', proposed_target: { scope: 'persona_workspace', id: 'target-example', expected_revision: 'older-revision' } };
+  const ref = boundedRef(FRAME_SOURCE, ['output'], 'text', 3, 600_000);
+  const copy = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(JSON.stringify(output));
+  const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead: () => ({ release() {}, retry() {} }), copyToolCallField: copy, readContentRange: async () => 'original receipt range' } as unknown as SessionController;
+  const block = { kind: 'tool', id: 'range-write', frameId: FRAME_SOURCE.id, turnId: FRAME_SOURCE.turnId, stepId: FRAME_SOURCE.stepId, toolCallId: 'range-write', name: 'MemoryWrite', status: 'done', argsText: '', args: { action: 'update' }, output: '{"i' } as Tool;
+  const container = await render(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="test" agentId="reader"><ToolCard block={block} agentId="reader" /></TranscriptDetailProvider>);
+  expect(copy).not.toHaveBeenCalled();
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  expect(container.querySelector('[data-memory-receipt-error]')).not.toBeNull();
+  await click(container.querySelector('[data-memory-receipt-error] button'));
+  expect(copy).toHaveBeenCalledWith('reader', 'range-write', 'output', expect.any(AbortSignal));
+  expect(container.querySelector('[data-memory-tool-view]')).not.toBeNull();
+  expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+  expect(container.querySelector('[data-memory-tool-scope]')?.getAttribute('data-memory-scope-kind')).toBe('persona_workspace');
+  expect(container.textContent).toContain('Sent to the memory inbox');
+  expect(container.textContent).toContain('original entry is unchanged');
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  expect(copy).toHaveBeenCalledTimes(2);
+});
