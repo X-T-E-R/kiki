@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useDirtyGuard, useDirtyReporter } from '../dirtyGuard';
@@ -28,12 +29,12 @@ import { useI18n } from '../../i18n';
 import {
   RECIPE_MANIFEST, RecipeManifestError, manifestWouldReformat, parseRecipeManifest,
   readDeclaration, referencedFiles, renderManifest, writeSlot, type RecipeDeclarationView,
-  type SlotDeclaration,
+  type SlotDeclaration, type SegmentDeclaration,
 } from '../../lib/recipeFiles';
 import { recipeRevisionShort, type RecipeDetail } from '../../lib/recipes';
 import { useRecipeMutation } from '../../lib/recipeQueries';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, type Feedback } from '../controls';
 import { CodeEditor } from '../CodeEditor';
 import { SMALL_INPUT } from '../ui';
 
@@ -55,6 +56,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   // The returned detail is the editor's source of truth after any write: its
   // revision and files are what the next save must carry, and a stale cache
   // would make the next save fail against a revision that no longer exists.
@@ -108,6 +110,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
         // case `generation` exists for.
         setGeneration((current) => current + 1);
         setFeedback({ tone: 'success', text: t('st.recipe.savedNewBinding') });
+        queryClient.setQueryData(['recipe', saved.summary.installation_id], saved);
         onApplied(saved);
       },
       onError: (error) => { setFeedback({ tone: 'error', text: t('st.recipe.saveFailed', { detail: errorText(locale, error) }) }); },
@@ -170,7 +173,6 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
             </div>
           ) : (
             <>
-              <Hint>{t('st.recipe.proseFirstHint')}</Hint>
               {PROSE_SLOTS.map(({ slot, label }) => (
                 <ProseSlot
                   key={slot}
@@ -179,6 +181,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
                   declaration={declaration}
                   files={files}
                   onInline={(text) => { setSlot('prompts', slot, { kind: 'inline', text }); }}
+                  onSegments={(parts) => { setSlot('prompts', slot, { kind: 'segments', parts }); }}
                   onFile={(file, text) => { setFileText(file, text); }}
                 />
               ))}
@@ -276,12 +279,13 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
  * here, because editing inherited text by saving it back is how a child package
  * quietly stops tracking its parent.
  */
-function ProseSlot({ slot, label, declaration, files, onInline, onFile }: {
+function ProseSlot({ slot, label, declaration, files, onInline, onSegments, onFile }: {
   slot: 'system' | 'steering';
   label: string;
   declaration: RecipeDeclarationView | undefined;
   files: Readonly<Record<string, string>>;
   onInline: (text: string) => void;
+  onSegments: (parts: readonly SegmentDeclaration[]) => void;
   onFile: (file: string, text: string) => void;
 }) {
   const { t } = useI18n();
@@ -332,27 +336,45 @@ function ProseSlot({ slot, label, declaration, files, onInline, onFile }: {
     );
   }
 
-  const text = declared.kind === 'inline' ? declared.text
-    : declared.kind === 'segments' ? declared.parts.map((part) => part.text ?? '').join('\n\n')
-      : '';
+  if (declared.kind === 'segments') {
+    return (
+      <div className="space-y-3" data-recipe-prose-slot={slot}>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+          <h4 className="text-[13px] font-medium text-ink">{label}</h4>
+          <span className="font-mono text-[11px] text-ink-faint" data-recipe-prose-kind={slot}>
+            {t('st.recipe.segmentCount', { count: String(declared.parts.length) })}
+          </span>
+        </div>
+        {declared.parts.map((part, index) => {
+          const origin = part.kind === 'file' ? part.file ?? '' : t('st.recipe.inlineKind');
+          return (
+            <div key={index} className="space-y-1.5" data-recipe-prose-segment={index} data-recipe-segment-kind={part.kind}>
+              <p className="break-all font-mono text-[11px] text-ink-faint">{index + 1} · {origin}</p>
+              <textarea rows={4} spellCheck={false} aria-label={`${label} ${index + 1}: ${origin}`}
+                className={`${SMALL_INPUT} h-auto w-full resize-y font-mono text-[12px] leading-5`}
+                value={part.kind === 'file' ? files[part.file ?? ''] ?? '' : part.text ?? ''}
+                onChange={(event) => {
+                  if (part.kind === 'file') onFile(part.file ?? '', event.target.value);
+                  else onSegments(declared.parts.map((existing, position) => position === index
+                    ? { ...existing, text: event.target.value } : existing));
+                }} />
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1.5" data-recipe-prose-slot={slot}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <h4 className="text-[13px] font-medium text-ink">{label}</h4>
-        <span className="font-mono text-[11px] text-ink-faint" data-recipe-prose-kind={slot}>
-          {declared.kind === 'segments' ? t('st.recipe.segmentCount', { count: String(declared.parts.length) }) : t('st.recipe.inlineKind')}
-        </span>
+        <span className="font-mono text-[11px] text-ink-faint" data-recipe-prose-kind={slot}>{t('st.recipe.inlineKind')}</span>
       </div>
       <textarea rows={8} spellCheck={false} aria-label={label}
         className={`${SMALL_INPUT} h-auto w-full resize-y font-mono text-[12px] leading-5`}
-        value={text}
-        onChange={(event) => {
-          // A segment list keeps its shape: editing the joined text rewrites the
-          // inline segments and leaves a file segment as a reference, rather
-          // than collapsing the group into one string.
-          onInline(event.target.value);
-        }} />
+        value={declared.text}
+        onChange={(event) => { onInline(event.target.value); }} />
     </div>
   );
 }

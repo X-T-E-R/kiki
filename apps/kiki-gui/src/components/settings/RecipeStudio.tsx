@@ -199,7 +199,7 @@ export function RecipeStudio({
 
       {tab === 'market' ? <RecipeMarketList onPicked={(id) => { setSelectedId(id); setNarrowPane('detail'); }} /> : null}
       {tab === 'import' ? (
-        <RecipeImportForm onInstalled={(id) => { setSelectedId(id); setNarrowPane('detail'); }} />
+        <RecipeImportForm onInstalled={(id) => { setSelectedId(id); setNarrowPane('detail'); }} onApply={apply} />
       ) : null}
     </div>
   );
@@ -360,7 +360,10 @@ function useRecipeMarketInstall(
 }
 
 /** Import by link or local path; a ZIP additionally carries its digest. */
-function RecipeImportForm({ onInstalled }: { onInstalled: (installationId: string) => void }) {
+function RecipeImportForm({ onInstalled, onApply }: {
+  onInstalled: (installationId: string) => void;
+  onApply: (installationId: string) => Promise<void>;
+}) {
   const { t, locale } = useI18n();
   const [locator, setLocator] = useState('');
   const [sha256, setSha256] = useState('');
@@ -373,9 +376,14 @@ function RecipeImportForm({ onInstalled }: { onInstalled: (installationId: strin
     { onSuccess: setPreviewed, onError: (error) => { setPreviewed(null); setFailure(t('st.recipe.previewFailed', { detail: errorText(locale, error) })); } },
   );
   const install = useRecipeMutation(
-    async (input: { previewId: string }) => client.installRecipe({ preview_id: input.previewId }),
+    async (input: { previewId: string; applyAfterInstall: boolean }) => client.installRecipe({ preview_id: input.previewId }),
     {
-      onSuccess: (summary) => { setFailure(null); onInstalled(summary.installation_id); },
+      onSuccess: (summary, input) => {
+        setFailure(null);
+        setPreviewed(null);
+        onInstalled(summary.installation_id);
+        if (input.applyAfterInstall) void onApply(summary.installation_id);
+      },
       onError: (error) => { setFailure(t('st.recipe.installFailed', { detail: errorText(locale, error) })); },
     },
   );
@@ -431,12 +439,12 @@ function RecipeImportForm({ onInstalled }: { onInstalled: (installationId: strin
           <div className="flex flex-wrap gap-2">
             <button type="button" className={PRIMARY} disabled={install.isPending}
               data-recipe-install-apply
-              onClick={() => { install.mutate({ previewId: previewed.preview_id }); }}>
+              onClick={() => { install.mutate({ previewId: previewed.preview_id, applyAfterInstall: true }); }}>
               {t('st.recipe.installAndApply')}
             </button>
             <button type="button" className={SECONDARY} disabled={install.isPending}
               data-recipe-install-only
-              onClick={() => { install.mutate({ previewId: previewed.preview_id }); }}>
+              onClick={() => { install.mutate({ previewId: previewed.preview_id, applyAfterInstall: false }); }}>
               {t('st.recipe.installOnly')}
             </button>
           </div>

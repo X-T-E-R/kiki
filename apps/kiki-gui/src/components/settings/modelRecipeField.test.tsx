@@ -16,6 +16,7 @@ import { afterAll, afterEach, assert, beforeAll, beforeEach, describe, expect, i
 import type { RecipeDetail } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
+import { parseRecipeManifest, readDeclaration } from '../../lib/recipeFiles';
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
@@ -129,7 +130,7 @@ async function render(appliedId: string | undefined): Promise<void> {
             <ModelRecipeField
               modelId={MODEL_ID}
               modelName="Kimi K2"
-              modelRevision="rev-1"
+              onCommitRecipe={async (recipe) => { updateModelCalls.push([MODEL_ID, { recipe }]); }}
               appliedId={appliedId}
               onDraftChange={(dirty) => { dirtyReports.push(dirty); }}
             />
@@ -281,5 +282,53 @@ describe('the model page Recipe field', () => {
     // What was saved is the fork, not the package it came from.
     expect(saveCalls).toHaveLength(1);
     expect(saveCalls[0]?.installation_id).toBe('inst-clear-work-local');
+  });
+
+  it('reads and saves mixed inline/file segments without flattening or changing the parent and other files', async () => {
+    const manifest = 'schema_version = 1\nid = "mixed-work"\n\n[extends]\nsource = "https://example.com/recipes/parent/recipe.toml"\nrevision = "sha256:parent"\n\n[prompts]\nsystem = [{ text = "First inline." }, { file = "middle.md" }, { text = "Last inline." }]\nindependent = "off"\n';
+    const mixed: RecipeDetail = {
+      ...READ_ONLY, editable: true,
+      files: { 'recipe.toml': manifest, 'middle.md': 'Middle file body.\n', 'other.md': 'Other file stays unchanged.\n' },
+    };
+    packages.set(mixed.summary.installation_id, mixed);
+    await render(mixed.summary.installation_id);
+    await click('[data-recipe-open-package]');
+    await vi.waitFor(async () => { await settle(); expect(count('[data-recipe-prose-segment]')).toBe(3); });
+    const segments = () => [...container.querySelectorAll<HTMLTextAreaElement>('[data-recipe-prose-segment] textarea')];
+    expect(segments().map((field) => field.value)).toEqual(['First inline.', 'Middle file body.\n', 'Last inline.']);
+    expect(container.querySelector('[data-recipe-prose-slot="steering"] [data-recipe-prose-inherited]')).not.toBeNull();
+    const edit = async (index: number, text: string) => {
+      await act(async () => {
+        const field = segments()[index]!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, text);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+
+    await edit(1, 'Only the file buffer changed.\n');
+    await click('[data-recipe-save-package]');
+    expect(saveCalls[0]?.files['recipe.toml'], 'editing a file segment must not reserialize TOML').toBe(manifest);
+    expect(saveCalls[0]?.files['middle.md']).toBe('Only the file buffer changed.\n');
+    await click('[data-recipe-open-package]');
+    await vi.waitFor(async () => { await settle(); expect(count('[data-recipe-prose-segment]')).toBe(3); });
+    expect(segments().map((field) => field.value)).toEqual(['First inline.', 'Only the file buffer changed.\n', 'Last inline.']);
+    await edit(0, 'Changed first inline.');
+    await edit(1, 'Changed middle file.\n');
+    await click('[data-recipe-save-package]');
+    expect(saveCalls).toHaveLength(2);
+    const saved = saveCalls[1]!.files;
+    const declaration = readDeclaration(parseRecipeManifest(saved['recipe.toml']!));
+    expect(declaration.prompts?.system).toEqual({ kind: 'segments', parts: [
+      { kind: 'inline', text: 'Changed first inline.' }, { kind: 'file', file: 'middle.md' }, { kind: 'inline', text: 'Last inline.' },
+    ] });
+    expect(declaration.extends).toEqual({ source: 'https://example.com/recipes/parent/recipe.toml', revision: 'sha256:parent' });
+    expect(declaration.independent).toBe('off');
+    expect(declaration.prompts?.steering).toBeUndefined();
+    expect(saved['middle.md']).toBe('Changed middle file.\n');
+    expect(saved['other.md']).toBe('Other file stays unchanged.\n');
+    expect(updateModelCalls).toHaveLength(0);
+    await click('[data-recipe-open-package]');
+    await vi.waitFor(async () => { await settle(); expect(count('[data-recipe-prose-segment]')).toBe(3); });
+    expect(segments().map((field) => field.value)).toEqual(['Changed first inline.', 'Changed middle file.\n', 'Last inline.']);
   });
 });

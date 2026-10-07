@@ -40,13 +40,16 @@ const setSubagentDefaultModel = vi.fn();
 const setFastModel = vi.fn();
 const listRecipes = vi.fn();
 const getRecipe = vi.fn();
+const reportDirty = vi.fn();
+const previewRecipe = vi.fn();
+const installRecipe = vi.fn();
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listDiscoveredModels, refreshAllProviders, createModel, listModels,
       getConfig, listProviders, setDefaultModel, patchConfig, getModel,
-      updateModel, setSubagentDefaultModel, setFastModel, listRecipes, getRecipe,
+      updateModel, setSubagentDefaultModel, setFastModel, listRecipes, getRecipe, previewRecipe, installRecipe,
     },
     config: CONNECTION,
   }),
@@ -141,6 +144,19 @@ const ENTITY: GetModelResponse = {
   prompt_overrides: { fields: { 'system.language': 'Answer in the language they used.' } },
 };
 
+const PACKAGE = {
+  summary: {
+    installation_id: 'inst-imported', manifest_id: 'clear-work', name: 'Clear work', version: '1.0.0',
+    revision: 'sha256:accepted', source: { locator: 'https://example.com/recipes/clear-work/recipe.toml' }, update_mode: 'follow', health: 'ready',
+  },
+  resolved: {
+    revision: 'sha256:accepted', branches: { main: { fields: {} }, sub: { fields: {} }, independent: { fields: {} } },
+    model: {}, model_origins: {}, dependencies: [], origins: [],
+  },
+  files: { 'recipe.toml': 'schema_version = 1\nid = "clear-work"\n\n[prompts]\nsystem = { text = "Work clearly." }\n' },
+  editable: false, used_by: [], history: [],
+};
+
 const { ModelCatalogCard } = await import('./ModelsSection');
 
 let container: HTMLElement;
@@ -149,6 +165,7 @@ let root: Root;
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() });
 });
 
 beforeEach(() => {
@@ -167,7 +184,13 @@ beforeEach(() => {
   setFastModel.mockReset();
   getModel.mockReset().mockResolvedValue(ENTITY);
   listRecipes.mockReset().mockResolvedValue([]);
-  getRecipe.mockReset();
+  getRecipe.mockReset().mockResolvedValue(PACKAGE);
+  previewRecipe.mockReset().mockResolvedValue({ preview_id: 'preview-1', summary: PACKAGE.summary, resolved: PACKAGE.resolved, diagnostics: [] });
+  installRecipe.mockReset().mockImplementation(async () => {
+    listRecipes.mockResolvedValue([PACKAGE.summary]);
+    return PACKAGE.summary;
+  });
+  reportDirty.mockReset();
   updateModel.mockReset().mockImplementation((_id: string, patch: Record<string, unknown>) => Promise.resolve({ ...ENTITY, ...patch }));
 });
 
@@ -186,7 +209,7 @@ async function renderCard(): Promise<HTMLElement> {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
               <ModelCatalogCard />
             </DirtyGuardContext.Provider>
           </I18nProvider>
@@ -236,8 +259,16 @@ async function pressSave(): Promise<void> {
 
 describe('the model editor saves the prompt prose a person typed', () => {
   it('offers Save for a body-only edit and commits it through the one model transaction', async () => {
+    const inline = structuredClone(ENTITY);
+    (inline.cognition as Record<string, unknown>)['overlay'] = { text: 'Stored overlay.' };
+    inline.cognition_bodies!.branches.common.slots.overlay = {
+      channel: 'cognition_overlay', source: 'inline', text: 'Stored overlay.', writable: true, source_read_only: false,
+    };
+    getModel.mockResolvedValue(inline);
     await renderCard();
     const fields = await openEditor();
+    expect([...fields.querySelectorAll('p')].filter((label) => label.textContent === 'Prompt words'),
+      'inline overlay has one slot label, not a repeated group heading').toHaveLength(1);
 
     // Nothing else on the page has changed, so the whole edit is the prose.
     expect(saveButton().disabled, 'Save starts disabled while the page is clean').toBe(true);
@@ -254,6 +285,47 @@ describe('the model editor saves the prompt prose a person typed', () => {
     const cognition = patch['cognition'] as Record<string, unknown>;
     expect(cognition['overlay']).toEqual({ text: 'Words typed into the shared overlay.\n' });
     expect(patch['base_revision']).toBe('rev-7');
+  });
+
+  it('stays clean after a body-only save refetch and preserves that body on the next legal Save', async () => {
+    let stored = structuredClone(ENTITY);
+    getModel.mockImplementation(async () => structuredClone(stored));
+    updateModel.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      const { base_revision: _baseRevision, ...changed } = patch;
+      stored = { ...stored, ...changed, revision: `rev-${8 + updateModel.mock.calls.length}` };
+      const overlay = (stored.cognition as Record<string, unknown>)['overlay'] as { text: string };
+      stored.cognition_bodies = {
+        ...stored.cognition_bodies!, revision: stored.revision,
+        branches: { ...stored.cognition_bodies!.branches, common: {
+          ...stored.cognition_bodies!.branches.common,
+          slots: { ...stored.cognition_bodies!.branches.common.slots, overlay: {
+            channel: 'cognition_overlay', source: 'inline', text: overlay.text, writable: true, source_read_only: false,
+          } },
+        } },
+      };
+      return structuredClone(stored);
+    });
+    await renderCard();
+    const fields = await openEditor();
+    await act(async () => { typeIn(bodyEditor('overlay')!, 'Accepted native body.\n'); });
+    await pressSave();
+    expect(getModel.mock.calls.length).toBeGreaterThan(1);
+    expect(saveButton().disabled, 'refetch must not revive an old engine baseline').toBe(true);
+    expect(reportDirty.mock.calls.findLast(([id]) => id === `catalog-model:${ENTITY.id}`)?.[1]).toBe(false);
+    expect(bodyEditor('overlay')!.value).toBe('Accepted native body.\n');
+
+    const name = fields.querySelector<HTMLInputElement>('input[aria-label="Display name for kimi-code/kimi-k2"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Kimi K2 renamed');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(saveButton().disabled).toBe(false);
+    await pressSave();
+    expect(updateModel).toHaveBeenCalledTimes(2);
+    expect(updateModel.mock.calls[1]?.[1].cognition, 'a name-only Save must not reconstruct cognition').toBeUndefined();
+    expect(stored.cognition).toEqual({ ...ENTITY.cognition as Record<string, unknown>, overlay: { text: 'Accepted native body.\n' } });
+    expect(saveButton().disabled).toBe(true);
+    expect(reportDirty.mock.calls.findLast(([id]) => id === `catalog-model:${ENTITY.id}`)?.[1]).toBe(false);
   });
 
   it('keeps both bodies when two slots are edited before one Save', async () => {
@@ -529,5 +601,156 @@ describe('the model editor saves the prompt prose a person typed', () => {
     await act(async () => { document.body.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     expect(document.body.querySelector('[data-model-row-editor]')).toBeNull();
     expect(updateModel).not.toHaveBeenCalled();
+  });
+});
+function modelWriteStore(initial: GetModelResponse = ENTITY) {
+  let stored = structuredClone(initial);
+  getModel.mockImplementation(async () => structuredClone(stored));
+  updateModel.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+    const { base_revision: _baseRevision, ...changed } = patch;
+    stored = { ...stored, ...changed, revision: `accepted-${updateModel.mock.calls.length}` };
+    if (patch['recipe'] === null) delete stored.recipe;
+    const overlay = (stored.cognition as Record<string, unknown>)?.['overlay'];
+    if (typeof overlay === 'object' && overlay !== null && 'text' in overlay) {
+      stored.cognition_bodies!.branches.common.slots.overlay = {
+        channel: 'cognition_overlay', source: 'inline', text: String(overlay.text), writable: true, source_read_only: false,
+      };
+    }
+    return structuredClone(stored);
+  });
+  return () => stored;
+}
+
+async function clickControl(selector: string) {
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(document.body.querySelector(selector)).not.toBeNull();
+  });
+  await act(async () => {
+    document.body.querySelector<HTMLButtonElement>(selector)!.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+
+async function openImportPreview() {
+  await clickControl('[data-recipe-open-studio]');
+  await clickControl('[data-recipe-studio-tab="import"]');
+  await act(async () => {
+    const locator = document.body.querySelector<HTMLInputElement>('[data-recipe-import-locator]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(locator, PACKAGE.summary.source.locator);
+    locator.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await clickControl('button[data-recipe-preview]');
+}
+
+describe('the model page owns every Recipe reference commit', () => {
+  it('applies with pending raw, body and prompt-field intents in one model CAS', async () => {
+    const stored = modelWriteStore();
+    listRecipes.mockResolvedValue([PACKAGE.summary]);
+    await renderCard();
+    const fields = await openEditor();
+    await act(async () => {
+      typeIn(bodyEditor('overlay')!, 'Body saved with the binding.\n');
+      typeIn(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="cognition"]')!,
+        JSON.stringify({ steering: { text: 'Raw reminder.' }, main: 'off' }));
+      typeIn(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="promptOverrides"]')!, '');
+    });
+    await clickControl('[data-recipe-open-studio]');
+    await clickControl('[data-recipe-studio-row="inst-imported"]');
+    await clickControl('[data-recipe-apply="inst-imported"]');
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel.mock.calls[0]?.[1]).toMatchObject({
+      recipe: 'inst-imported', base_revision: 'rev-7', prompt_overrides: null,
+      cognition: { overlay: { text: 'Body saved with the binding.\n' }, steering: { text: 'Raw reminder.' }, main: 'off' },
+    });
+    expect((stored().cognition as Record<string, unknown>)['independent']).toBeUndefined();
+    expect(saveButton().disabled).toBe(true);
+    expect(document.body.querySelector('[data-recipe-state-bound]')).not.toBeNull();
+  });
+
+  it('detaches with pending body edits through that same page owner', async () => {
+    const stored = modelWriteStore({ ...ENTITY, recipe: 'inst-imported' });
+    listRecipes.mockResolvedValue([PACKAGE.summary]);
+    await renderCard();
+    await openEditor();
+    await act(async () => { typeIn(bodyEditor('anchor')!, 'Saved when returning to manual.\n'); });
+    await clickControl('[data-recipe-restore]');
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel.mock.calls[0]?.[1]).toMatchObject({
+      recipe: null, base_revision: 'rev-7', cognition: { anchor: { text: 'Saved when returning to manual.\n' } },
+    });
+    expect(stored().recipe).toBeUndefined();
+    expect(saveButton().disabled).toBe(true);
+    expect(document.body.querySelector('[data-recipe-state-manual]')).not.toBeNull();
+  });
+
+  it('only installs when Install only is pressed, retaining model drafts without binding', async () => {
+    modelWriteStore();
+    await renderCard();
+    await openEditor();
+    await act(async () => { typeIn(bodyEditor('overlay')!, 'Not submitted by installing.\n'); });
+    await openImportPreview();
+    await clickControl('[data-recipe-install-only]');
+    expect(installRecipe).toHaveBeenCalledTimes(1);
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-recipe-studio-detail="inst-imported"]')).not.toBeNull();
+    expect(bodyEditor('overlay')!.value).toBe('Not submitted by installing.\n');
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('installs and explicitly applies the new package together with page drafts', async () => {
+    const stored = modelWriteStore();
+    await renderCard();
+    await openEditor();
+    await act(async () => { typeIn(bodyEditor('overlay')!, 'Saved in Install and apply.\n'); });
+    await openImportPreview();
+    await clickControl('[data-recipe-install-apply]');
+    expect(installRecipe).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel.mock.calls[0]?.[1]).toMatchObject({ recipe: 'inst-imported', cognition: { overlay: { text: 'Saved in Install and apply.\n' } } });
+    expect(stored().recipe).toBe('inst-imported');
+    expect(document.body.querySelector('[data-recipe-state-bound]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('keeps the installed candidate and every model draft on a CAS refusal, then retries without reinstalling', async () => {
+    const stored = modelWriteStore();
+    updateModel.mockRejectedValueOnce(new Error('model_catalog.revision_conflict'));
+    await renderCard();
+    const fields = await openEditor();
+    await act(async () => {
+      typeIn(bodyEditor('overlay')!, 'Keep all these words.\n');
+      typeIn(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="promptOverrides"]')!, JSON.stringify({ fields: { 'system.language': 'New language.' } }));
+    });
+    await openImportPreview();
+    await clickControl('[data-recipe-install-apply]');
+    expect(installRecipe).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(stored().recipe).toBeUndefined();
+    expect(bodyEditor('overlay')!.value).toBe('Keep all these words.\n');
+    expect(document.body.querySelector('[data-recipe-studio-detail="inst-imported"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-recipe-install-apply]')).toBeNull();
+    expect(document.body.querySelector('[data-recipe-state-bound]')).toBeNull();
+    await clickControl('[data-recipe-apply="inst-imported"]');
+    expect(installRecipe).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledTimes(2);
+    expect(updateModel.mock.calls[1]?.[1]).toEqual(updateModel.mock.calls[0]?.[1]);
+    expect(stored().recipe).toBe('inst-imported');
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('keeps a selected package unapplied when a pending raw model object is invalid', async () => {
+    modelWriteStore();
+    listRecipes.mockResolvedValue([PACKAGE.summary]);
+    await renderCard();
+    const fields = await openEditor();
+    await act(async () => { typeIn(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="cognition"]')!, '{ invalid'); });
+    await clickControl('[data-recipe-open-studio]');
+    await clickControl('[data-recipe-studio-row="inst-imported"]');
+    await clickControl('[data-recipe-apply="inst-imported"]');
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-recipe-studio-detail="inst-imported"]')).not.toBeNull();
+    expect(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="cognition"]')!.value).toBe('{ invalid');
+    expect(document.body.querySelector('[data-recipe-state-bound]')).toBeNull();
   });
 });

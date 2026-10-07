@@ -1244,6 +1244,7 @@ function ModelCatalogRowEditor({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const entityQuery = useQuery({
     queryKey: ['model-entity', item.id],
     queryFn: () => client.getModel(item.id),
@@ -1521,14 +1522,18 @@ function ModelCatalogRowEditor({
     setUsageIssue(null);
   };
 
-  const save = async () => {
+  const save = async (recipeReference?: string | null) => {
+    const refuse = (text: string) => {
+      setFeedback({ tone: 'error', text });
+      if (recipeReference !== undefined) throw new Error(text);
+    };
     if (draft.remoteId.trim() === '') {
-      setFeedback({ tone: 'error', text: issueText(locale, { key: 'val.modelIdEmpty' }) });
+      refuse(issueText(locale, { key: 'val.modelIdEmpty' }));
       return;
     }
     const imageIssue = validateImagePolicyDraft(draft, inheritedImageTypes);
     if (imageIssue !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, imageIssue) });
+      refuse(issueText(locale, imageIssue));
       return;
     }
     // The request-identity layer validates inside the patch body (and throws a
@@ -1540,7 +1545,7 @@ function ModelCatalogRowEditor({
     try {
       const identityIssue = validateRequestIdentityLayerDraft(draft);
       if (identityIssue !== null) {
-        setFeedback({ tone: 'error', text: issueText(locale, identityIssue) });
+        refuse(issueText(locale, identityIssue));
         return;
       }
       let enginePatch;
@@ -1548,7 +1553,9 @@ function ModelCatalogRowEditor({
         enginePatch = modelEnginePatch(engine, engineBaseline);
       } catch (error) {
         if (!(error instanceof ModelEngineFieldError)) throw error;
-        setEngineIssue({ field: error.field, text: t(error.key === 'count' ? 'st.modelEngine.issueCount' : error.key === 'json' ? 'st.modelEngine.issueJson' : 'st.modelEngine.issueObject') });
+        const text = t(error.key === 'count' ? 'st.modelEngine.issueCount' : error.key === 'json' ? 'st.modelEngine.issueJson' : 'st.modelEngine.issueObject');
+        setEngineIssue({ field: error.field, text });
+        if (recipeReference !== undefined) throw new Error(text, { cause: error });
         return;
       }
       setEngineIssue(null);
@@ -1559,18 +1566,25 @@ function ModelCatalogRowEditor({
         : USAGE_POSITIONS.map((position) => ({ position, field: usageBranchProblem(usage[position] ?? EMPTY_USAGE_BRANCH) }))
           .find((entry) => entry.field !== undefined);
       setUsageIssue(usageProblem?.field === undefined ? null : { position: usageProblem.position, field: usageProblem.field });
-      if (usageProblem?.field !== undefined) return;
+      if (usageProblem?.field !== undefined) {
+        if (recipeReference !== undefined) throw new Error(t('st.usagePolicy.issueCount'));
+        return;
+      }
       const usagePatch = usage === null || usageBaseline === null ? {} : usagePolicyPatch(usage, usageBaseline);
       const generationPatch = generationParametersPatch(sharedGeneration, sharedGenerationBaseline);
       // A half-typed threshold must not ride along with an otherwise valid
       // PATCH, so the guard refuses the whole save the same way the row above
       // refuses a half-typed token count.
-      if (guardDraftProblem(behavior, (field) => rangeTextFor(t, field)) !== null) return;
+      const guardProblem = guardDraftProblem(behavior, (field) => rangeTextFor(t, field));
+      if (guardProblem !== null) {
+        if (recipeReference !== undefined) throw new Error(guardProblem.text);
+        return;
+      }
       const behaviorPatch = questionGuardModelPatch(behavior, behaviorBaseline);
       const fieldPatch = modelPatchBody(draft, baseline);
       if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
         && Object.keys(usagePatch).length === 0 && generationPatch === null
-        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty) return;
+        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty && recipeReference === undefined) return;
       // A changed Advanced object is the complete target, including deletions
       // and null clears. Otherwise the stored object is the base. The prompt
       // editor contributes only fields changed against its own baseline.
@@ -1599,22 +1613,40 @@ function ModelCatalogRowEditor({
         ...(behaviorPatch === undefined ? {} : { behavior: behaviorPatch }),
       };
       if (bodySavesDirty) patch.cognition = cognition;
-      await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
-      await onSaved();
-      await entityQuery.refetch();
-      setBaseline(draft);
-      setAutoCompactBaseline(autoCompact);
-      setEngineBaseline(engine);
-      setUsageBaseline(usage);
-      setSharedGenerationBaseline(sharedGeneration);
-      setBehaviorBaseline(behavior);
-      // Only now is the prose stored: a rejected write above keeps every draft,
-      // because the person would otherwise have to retype it.
+      if (recipeReference !== undefined) patch.recipe = recipeReference;
+      const saved = await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
+      // Drafts and baselines advance together to the accepted entity before a
+      // refresh can replace them. Never restore pre-save closure values after
+      // the fresh entity has already reached the clean-draft effects.
+      const savedDraft = providerModelDraftFromCatalog(saved);
+      const savedEngine = modelEngineDraft(saved);
+      const savedPrompts = modelPromptsDraft(saved);
+      const savedUsage = Object.fromEntries(USAGE_POSITIONS.map((position) => [position, usageBranchDraft(saved, position)])) as UsagePolicyDraft;
+      const savedGeneration = saved.parameters ?? {};
+      const savedBehavior = guardDraftFromModelBehavior(saved.behavior);
+      setDraft(savedDraft);
+      setBaseline(savedDraft);
+      setAutoCompact(saved.auto_compact);
+      setAutoCompactBaseline(saved.auto_compact);
+      setEngine(savedEngine);
+      setEngineBaseline(savedEngine);
+      setPrompts(savedPrompts);
+      setPromptsBaseline(savedPrompts);
+      setUsage(savedUsage);
+      setUsageBaseline(savedUsage);
+      setSharedGeneration(savedGeneration);
+      setSharedGenerationBaseline(savedGeneration);
+      setBehavior(savedBehavior);
+      setBehaviorBaseline(savedBehavior);
       setBodyDraft({});
       setBodySaves({});
+      queryClient.setQueryData(['model-entity', item.id], saved);
+      await onSaved();
+      await entityQuery.refetch();
       pingDetailSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      if (recipeReference !== undefined) throw error;
     } finally {
       setSaving(false);
     }
@@ -1684,7 +1716,6 @@ function ModelCatalogRowEditor({
         file-backed slot saves its text onto the model without touching the file.
       */}
       <div className="border-t border-hairline pt-4">
-        <p className="mb-2 text-[13px] font-medium text-ink">{t('st.modelPrompt.promptWords')}</p>
         <ModelPromptBodies
           modelId={entity.id}
           bodies={entity.cognition_bodies}
@@ -1761,7 +1792,7 @@ function ModelCatalogRowEditor({
       <ModelRecipeField
         modelId={entity.id}
         modelName={draft.displayName.trim() === '' ? entity.id : draft.displayName.trim()}
-        modelRevision={entity.revision}
+        onCommitRecipe={save}
         appliedId={entity.recipe}
         disabled={saving}
         onDraftChange={setRecipeDraftDirty}

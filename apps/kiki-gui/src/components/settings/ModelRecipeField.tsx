@@ -3,10 +3,9 @@
  *
  * Two objects meet here and the field keeps them apart. A Recipe package is
  * something a person reads, compares and edits; a model is something the server
- * stores a reference to. The field therefore offers both, and only one of them
- * writes the model: `applyRecipe`. Choosing "manual settings" writes
- * `recipe: null` through the same path, which is how the reference is removed
- * without touching anything the model had saved.
+ * stores a reference to. Applying or detaching requests a commit from the model
+ * page, where the reference and every pending model edit share one transaction.
+ * Installing or browsing a package never writes the model.
  *
  * What the field never does is edit a package on the model's behalf. A bound
  * package's prose is shown read-only here; changing it happens in the author
@@ -35,12 +34,12 @@ type RecipeView =
   | { kind: 'author'; installationId: string }
   | { kind: 'fork'; installationId: string };
 
-export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId, disabled = false, onDraftChange }: {
+export function ModelRecipeField({ modelId, modelName, onCommitRecipe, appliedId, disabled = false, onDraftChange }: {
   modelId: string;
   /** Named wherever a commit would otherwise be anonymous. */
   modelName: string;
-  /** The revision a patch must carry; fixed for the life of the editor. */
-  modelRevision: string;
+  /** Commit the reference with every pending model edit through the page owner. */
+  onCommitRecipe: (recipe: string | null) => Promise<void>;
   /** The bound installation, or undefined when the model has none. */
   appliedId: string | undefined;
   disabled?: boolean;
@@ -53,7 +52,6 @@ export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId,
   onDraftChange?: (dirty: boolean) => void;
 }) {
   const { t, locale } = useI18n();
-  const { client } = useConnection();
   const [view, setView] = useState<RecipeView>({ kind: 'summary' });
   const [forked, setForked] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -67,19 +65,10 @@ export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId,
   // would be a false statement about what runs.
   const dangling = appliedId !== undefined && bound === undefined && !listQuery.isPending;
 
-  /**
-   * The only model write this field performs.
-   *
-   * It carries the revision the editor opened with, so a concurrent change
-   * surfaces as a conflict instead of overwriting whatever else moved. The
-   * installed package is untouched either way: installing and binding are two
-   * commits, and a failed binding does not undo a successful install.
-   */
+  // Apply and detach are explicit commits, owned by the model page so its
+  // pending fields and the reference share one revision-checked write.
   const apply = useRecipeMutation(
-    (installationId: string) => client.updateModel(modelId, {
-      recipe: installationId,
-      base_revision: modelRevision,
-    }),
+    (installationId: string) => onCommitRecipe(installationId),
     {
       alsoModelId: modelId,
       onSuccess: () => {
@@ -93,7 +82,7 @@ export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId,
   );
 
   const restoreManual = useRecipeMutation(
-    (_none: undefined) => client.updateModel(modelId, { recipe: null, base_revision: modelRevision }),
+    (_none: undefined) => onCommitRecipe(null),
     {
       alsoModelId: modelId,
       onSuccess: () => {
@@ -116,7 +105,7 @@ export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId,
         onApply={async (installationId) => { await apply.mutateAsync(installationId); }}
         onClose={() => { setView({ kind: 'summary' }); }}
         onCustomize={(installationId) => { setView({ kind: 'fork', installationId }); }}
-        onShowManual={() => { void restoreManual.mutateAsync(undefined); }}
+        onShowManual={() => { restoreManual.mutate(undefined); }}
       />
     );
   }
@@ -201,7 +190,7 @@ export function ModelRecipeField({ modelId, modelName, modelRevision, appliedId,
             </button>
             <button type="button" className={SECONDARY} disabled={disabled || restoreManual.isPending}
               data-recipe-restore
-              onClick={() => { void restoreManual.mutateAsync(undefined); }}>
+              onClick={() => { restoreManual.mutate(undefined); }}>
               {t('st.recipe.restoreManual')}
             </button>
           </>
