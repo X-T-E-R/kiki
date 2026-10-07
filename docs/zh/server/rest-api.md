@@ -229,10 +229,16 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | 消息分页（`before_id` / `after_id` / `role`） |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | 读取单条消息 |
+| `POST /api/sessions/{session_id}/messages/{message_id}:edit` | 替换用户消息，并从该消息重新运行 |
+| `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | 按最新终态 Assistant 消息对应的用户输入重新运行 |
 | `GET /api/sessions/{session_id}/transcript` | 转录按轮次分页（需 `agent_id` 和 `transcript_coverage_version=2`），全局状态不分页随响应返回 |
 | `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（需 `agent_id`、`since_seq` 和 `transcript_coverage_version=2`），`complete: false` 时需全量刷新 |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，不分页 |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
+
+编辑和重新生成都要求会话空闲，并携带当前会话视图的 `expected_cursor: { seq, epoch }`。编辑会替换完整 `content` 数组，包括附件；重新生成沿用所选终态 Assistant 回复对应的原用户输入。预检拒绝不会改变对话历史；成功受理的改写保留 `user_message_id`，并取得新的 `prompt_id`。
+
+需要恢复丢失的响应时，可提供 `operation_id`，并在重试同一次操作时保持该 ID 和完整请求体不变。与已受理请求匹配的重试返回原回执，不再启动一次运行，即使原上传文件已经过期也能恢复。修改请求体或开始新操作时应使用新 ID。同一 ID 携带不同输入会返回 `40938`；游标过期会返回 `40937`，应先刷新会话视图，再开始新操作。响应状态不确定时，手动重试原操作，不要自动提交另一操作。
 
 转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
 
@@ -247,6 +253,8 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 | `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
+
+提交提示词后若响应丢失，重试时保持可选的 `prompt_id` 和完整请求体不变。匹配的重试返回原受理回执，不会重复提交，main agent、附件和内嵌 Skill 提交也遵循此规则。输入改变时须使用新 `prompt_id`；复用已受理 ID 携带不同输入会返回 `40938`。较早的受理请求若没有可重放回执，应检查队列或历史，不要自动再次发送。
 
 提示词可在顶层 `execution` 携带同一份 [execution 选择](#会话)。选择随该提示词保存，到启动时才应用，而不是入队就生效；当前轮次保持已提交的绑定。execution 代际变化时新建远端会话，不恢复或 fork 旧远端，也不发送旧 Kiki 对话的交接文本；Kiki 中可见的历史仍保留。冷恢复继续使用已提交的代际及其自身保存的远端引用。
 

@@ -18,7 +18,7 @@ export class PromptOutcomeCommitted extends Event2<{ terminal: PromptTerminalRes
 }
 registerEvent2Class(PromptOutcomeCommitted);
 
-type PromptRequest = Pick<PromptInput, 'message' | 'execution' | 'appendTiming' | 'alreadyMaterialized' | 'deferredDisabledTools'>;
+type PromptRequest = Pick<PromptInput, 'id' | 'message' | 'userMessageId' | 'execution' | 'appendTiming' | 'alreadyMaterialized' | 'deferredDisabledTools'> & { readonly promptId?: string };
 
 export interface PromptRequestFingerprint {
   readonly message: string;
@@ -26,6 +26,7 @@ export interface PromptRequestFingerprint {
   readonly appendTiming: string;
   readonly alreadyMaterialized: string;
   readonly deferredDisabledTools: string;
+  readonly userMessageId?: string;
 }
 
 /** Keeps the immutable admission hash and field hashes of the latest authorized queued request, without retaining message content. */
@@ -35,9 +36,12 @@ export interface PromptIdentity extends PromptLookup {
 }
 
 function normalizedPromptRequest(input: PromptRequest) {
+  const requestId = input.id ?? input.promptId ?? input.message.id;
+  const logicalId = input.userMessageId ?? (input.alreadyMaterialized === true ? input.message.id : undefined);
   return { message: { ...input.message, id: undefined }, execution: input.execution,
     appendTiming: input.appendTiming ?? 'agent_idle', alreadyMaterialized: input.alreadyMaterialized === true,
-    deferredDisabledTools: input.deferredDisabledTools };
+    deferredDisabledTools: input.deferredDisabledTools,
+    userMessageId: input.alreadyMaterialized === true || logicalId !== requestId ? logicalId : undefined };
 }
 
 function hashValue(value: unknown): string {
@@ -58,7 +62,8 @@ export function promptRequestFingerprint(input: PromptRequest): PromptRequestFin
   const request = normalizedPromptRequest(input);
   return { message: hashValue(request.message), execution: hashValue(request.execution),
     appendTiming: hashValue(request.appendTiming), alreadyMaterialized: hashValue(request.alreadyMaterialized),
-    deferredDisabledTools: hashValue(request.deferredDisabledTools) };
+    deferredDisabledTools: hashValue(request.deferredDisabledTools),
+    userMessageId: request.userMessageId === undefined ? undefined : hashValue(request.userMessageId) };
 }
 
 export function updatePromptRequestFingerprint(current: PromptRequestFingerprint, input: Partial<Pick<PromptRequest, 'message' | 'execution' | 'appendTiming'>>): PromptRequestFingerprint {

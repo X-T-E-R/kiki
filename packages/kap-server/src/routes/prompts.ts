@@ -39,6 +39,7 @@ import {
   type PromptWithSkillsResult,
   reservePrompt,
   promptRetryFor,
+  bundledSkillActivations,
   ISessionContext,
   ITelemetryService,
   applyPromptMetadataUpdate,
@@ -53,7 +54,6 @@ import { turnAbortResponseSchema } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
-import { bundledSkillActivations } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -134,6 +134,16 @@ function promptPayloadFingerprint(payload: z.infer<typeof promptSubmissionSchema
       : value,
   );
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function projectPromptRetryReceipt(id: string, receipt: import('@kiki/agent-core-v2').PromptRetryReceipt, fallbackContent: z.infer<typeof promptSubmissionSchema>['content']) {
+  return promptSubmitResultSchema.parse({
+    prompt_id: id, user_message_id: receipt.userMessageId ?? id, status: receipt.status,
+    origin: receipt.message?.origin,
+    content: receipt.message === undefined ? fallbackContent : projectPromptContentParts(
+      receipt.message.content.slice(bundledSkillActivations(receipt.message.origin).length)),
+    created_at: receipt.createdAt, append_timing: receipt.appendTiming, revision: receipt.revision,
+  });
 }
 
 function requireSession(session: ISessionScopeHandle | undefined, sessionId: string): ISessionScopeHandle {
@@ -473,7 +483,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Submit a prompt; text-only native child requests with a client prompt_id replay an accepted matching receipt',
+      description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
       operationId: 'submitPrompt',
     },
@@ -484,48 +494,26 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
       try {
-        await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
         lease = await acquireSessionOperation(core, session_id, 'operation');
         const session = requireSession(lease.handle, session_id);
-        if (req.body.skills !== undefined) {
-          if (req.body.prompt_id !== undefined) {
-            throw new Error2(
-              ErrorCodes.REQUEST_INVALID,
-              'prompt_id cannot be combined with a bundled skill submission',
-            );
-          }
-          await assertActivatableSkills(
-            session.accessor.get(ISessionSkillCatalog),
-            req.body.skills,
-          );
+        if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
+          await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         }
         const resolved = await resolvePromptFromSession(core, session, req.body.agent_id);
-        const retryPromptId = resolved.agentId !== MAIN_AGENT_ID &&
-          req.body.content.every((part) => part.type === 'text') &&
-          req.body.skills === undefined
-          ? req.body.prompt_id
-          : undefined;
+        const retryPromptId = req.body.prompt_id;
         const retryFingerprint = retryPromptId === undefined ? undefined : promptPayloadFingerprint(req.body);
+        const submit = async () => {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
           const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
-          if (receipt !== undefined) {
-            reply.send(okEnvelope({
-              prompt_id: retryPromptId,
-              user_message_id: retryPromptId,
-              status: receipt.status,
-              content: req.body.content,
-              created_at: receipt.createdAt,
-              append_timing: receipt.appendTiming,
-              revision: receipt.revision,
-            }, req.id));
-            return;
-          }
+          if (receipt !== undefined) return projectPromptRetryReceipt(retryPromptId, receipt, req.body.content);
         }
+        if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
+        await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
         const submittedContent = await resolvePromptSessionMediaRefs(
           req.body.content,
           session.accessor.get(ISessionMediaStore),
         );
-        reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined);
+        reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined, retryFingerprint);
         await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
@@ -617,7 +605,12 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             }
             enqueued = true;
             settlement.settle(result.prompt_id, () => preparedMedia?.discard());
-            reply.send(okEnvelope({
+            if (retryFingerprint !== undefined) {
+              const receipt = await promptRetryFor(resolved.prompt).lookup(result.prompt_id, retryFingerprint);
+              if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
+              return projectPromptRetryReceipt(result.prompt_id, receipt, req.body.content);
+            }
+            return {
               prompt_id: result.prompt_id,
               user_message_id: result.prompt_id,
               status: result.state,
@@ -625,8 +618,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               created_at: result.created_at,
               append_timing: result.append_timing,
               revision: result.revision,
-            }, req.id));
-            return;
+            };
           }
           const handle = await admission.reservation.submit({
             role: 'user',
@@ -640,20 +632,20 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             () => staging?.discard(),
             () => staging?.discard(),
           );
-          const result = promptSubmitResultSchema.parse(projectPromptHandle(handle));
           if (retryFingerprint !== undefined) {
-            await promptRetryFor(resolved.prompt).commit(handle.id, retryFingerprint, {
-              status: result.status,
-              createdAt: result.created_at,
-              appendTiming: result.append_timing ?? 'agent_idle',
-              revision: result.revision ?? 0,
-            });
+            const receipt = await promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint);
+            if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
+            return projectPromptRetryReceipt(handle.id, receipt, req.body.content);
           }
-          reply.send(okEnvelope(result, req.id));
+          return promptSubmitResultSchema.parse(projectPromptHandle(handle));
         } catch (error) {
           if (!enqueued) admission.fail(error);
           throw error;
         }
+        };
+        const result = retryPromptId === undefined || retryFingerprint === undefined ? await submit()
+          : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submit);
+        reply.send(okEnvelope(result, req.id));
       } catch (error) {
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, error);

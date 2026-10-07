@@ -117,8 +117,11 @@ class FoldContextImpl implements FoldContext {
     this.pendingClear = true;
   }
 
-  undoToCheckpoint(count: number): void {
+  afterUndo: ((state: any) => any) | undefined;
+
+  undoToCheckpoint(count: number, afterUndo?: (state: any) => any): void {
     this.pendingUndo = count;
+    this.afterUndo = afterUndo;
   }
 
   emit(event: Event2<any>): void {
@@ -299,7 +302,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       for (const { key, fold } of folds) {
         const meta = this.ensureMeta(key);
         const ctx = new FoldContextImpl(this, silent);
-        const [next, patches, inversePatches] = produceWithPatches<any>(
+        let [next, patches, inversePatches] = produceWithPatches<any>(
           this.agentState.get(key),
           (draft: any) => fold(draft, event, ctx) as any,
         );
@@ -315,6 +318,14 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
             meta.checkpoints.length < ctx.pendingUndo)
         ) {
           ctx.pendingUndo = undefined;
+        }
+        if (ctx.pendingUndo !== undefined && ctx.afterUndo !== undefined) {
+          const targetId = meta.checkpoints[meta.checkpoints.length - ctx.pendingUndo]!;
+          let restored = this.agentState.get(key);
+          for (let index = meta.history.length - 1; index >= 0 && meta.history[index]!.id > targetId; index--) {
+            restored = applyPatches(restored, [...meta.history[index]!.inversePatches]);
+          }
+          [next, patches, inversePatches] = produceWithPatches<any>(restored, ctx.afterUndo);
         }
         prepared.push({ key, meta, ctx, next, patches, inversePatches });
       }
@@ -349,7 +360,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const targetId = meta.checkpoints[targetIndex]!;
       this.rollback(key, meta, targetId);
       meta.checkpoints = meta.checkpoints.slice(0, targetIndex);
-      return;
+      if (ctx.afterUndo === undefined) return;
     }
     this.agentState.set(key, next);
     if (ctx.pendingClear) {

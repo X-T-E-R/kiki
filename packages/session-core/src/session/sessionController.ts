@@ -2557,10 +2557,8 @@ export class SessionController {
       planGate?: PromptPlanGate;
     },
   ): Promise<void> {
-    assertSessionWritable(this.state);
-    await this.client.editMessage(this.sessionId, messageId, {
+    await this.runMessageRewrite('edit', messageId, {
       content: input.content ?? [{ type: 'text', text: input.text }],
-      expected_cursor: this.expectedCursor(),
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
@@ -2587,9 +2585,7 @@ export class SessionController {
       planGate?: PromptPlanGate;
     } = {},
   ): Promise<void> {
-    assertSessionWritable(this.state);
-    await this.client.regenerateMessage(this.sessionId, messageId, {
-      expected_cursor: this.expectedCursor(),
+    await this.runMessageRewrite('regenerate', messageId, {
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
@@ -2597,6 +2593,51 @@ export class SessionController {
       plan_mode: input.planMode === true ? true : undefined,
     });
     void this.resync({ rewrite: true });
+  }
+
+  private readonly messageRewrites = new Map<string, {
+    fingerprint: string;
+    body: import('../transport').EditMessageRequest | import('../transport').RegenerateMessageRequest;
+    flight?: Promise<PromptSubmitResult>;
+    result?: PromptSubmitResult;
+  }>();
+
+  private async runMessageRewrite(
+    action: 'edit' | 'regenerate',
+    messageId: string,
+    input: Omit<import('../transport').EditMessageRequest, 'expected_cursor'> | Omit<import('../transport').RegenerateMessageRequest, 'expected_cursor'>,
+  ): Promise<PromptSubmitResult> {
+    const key = `${action}:${messageId}`;
+    const fingerprint = JSON.stringify(input);
+    let operation = this.messageRewrites.get(key);
+    if (operation?.fingerprint !== fingerprint) operation = undefined;
+    if (operation?.result !== undefined) {
+      if (JSON.stringify(operation.body.expected_cursor) === JSON.stringify(this.expectedCursor())) return operation.result;
+      operation = undefined;
+    }
+    if (operation?.flight !== undefined) return operation.flight;
+    assertSessionWritable(this.state);
+    if (operation === undefined) {
+      operation = { fingerprint, body: { ...input, operation_id: newSteerPromptId(), expected_cursor: this.expectedCursor() } };
+      this.messageRewrites.set(key, operation);
+    }
+    const retained = operation;
+    const request = action === 'edit'
+      ? this.client.editMessage(this.sessionId, messageId, retained.body as import('../transport').EditMessageRequest)
+      : this.client.regenerateMessage(this.sessionId, messageId, retained.body);
+    retained.flight = request;
+    try {
+      retained.result = await request;
+      return retained.result;
+    } catch (error) {
+      const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      if (code !== undefined && code > 0 && code !== 50001 && this.messageRewrites.get(key) === retained) {
+        this.messageRewrites.delete(key);
+      }
+      throw error;
+    } finally {
+      retained.flight = undefined;
+    }
   }
 
   /**
@@ -2844,6 +2885,8 @@ export class SessionController {
     readonly content?: MessageContent[];
     readonly media?: PendingSteer['media'];
     readonly promptId?: string;
+    readonly profile?: string;
+    readonly execution?: ExecutionSelection;
     readonly model?: string;
     readonly thinking?: string;
     readonly permissionMode?: PermissionMode;
@@ -2873,6 +2916,8 @@ export class SessionController {
         content,
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
+        profile: input.profile,
+        execution: input.execution,
         model: input.model,
         thinking: input.thinking,
         permission_mode: input.permissionMode,

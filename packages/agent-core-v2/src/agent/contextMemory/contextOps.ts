@@ -59,6 +59,13 @@ async function dehydrateRecord(
     if (parts === message.content) return record;
     return { ...record, message: { ...message, content: [...parts] } };
   }
+  if (record.type === 'context.undo') {
+    const prompt = record['replacementPrompt'] as import('#/agent/prompt/promptService').PromptEnqueuedPayload | undefined;
+    if (prompt === undefined) return record;
+    const parts = await transform(prompt.message.content);
+    if (parts === prompt.message.content) return record;
+    return { ...record, replacementPrompt: { ...prompt, message: { ...prompt.message, content: [...parts] } } };
+  }
   if (record.type === 'context.append_loop_event') {
     const event = record['event'] as LoopRecordedEvent | undefined;
     if (event === undefined) return record;

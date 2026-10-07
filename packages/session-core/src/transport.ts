@@ -111,11 +111,13 @@ export interface MessageRunOverrides {
 }
 
 export interface EditMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly content: MessageContent[];
   readonly expected_cursor: SessionCursor;
 }
 
 export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly expected_cursor: SessionCursor;
 }
 

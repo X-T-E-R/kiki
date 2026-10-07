@@ -63,6 +63,8 @@ export interface IAgentContextMemoryService {
 
   undo(count: number): UndoCut;
 
+  undoAndReplace(count: number, replacementPrompt: import('#/agent/prompt/promptService').PromptEnqueuedPayload): Promise<UndoCut>;
+
   applyCompaction(input: ContextCompactionInput): ContextCompactionResult;
 }
 

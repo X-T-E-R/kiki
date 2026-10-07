@@ -92,6 +92,7 @@ export class AgentConversationUndoService
   async undo(
     turns: number,
     historyMutationLease?: SessionHistoryMutationLease,
+    replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload,
   ): Promise<number> {
     if (!isValidUndoCount(turns)) {
       throw new Error2(
@@ -101,7 +102,7 @@ export class AgentConversationUndoService
       );
     }
     return this.historyMutation.runAdmission(historyMutationLease, async () => {
-      const run = this.undoQueue.then(() => this.undoNow(turns));
+      const run = this.undoQueue.then(() => this.undoNow(turns, replacementPrompt));
       this.undoQueue = run.then(
         () => undefined,
         () => undefined,
@@ -110,7 +111,7 @@ export class AgentConversationUndoService
     });
   }
 
-  private async undoNow(turns: number): Promise<number> {
+  private async undoNow(turns: number, replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload): Promise<number> {
     let quiescence: IDisposable | undefined;
     try {
       quiescence = this.loop.tryAcquireQuiescence();
@@ -122,7 +123,8 @@ export class AgentConversationUndoService
       }
       this.assertUndoAvailable(turns);
       const fromTurnId = this.removedFromTurnId(turns);
-      this.context.undo(turns);
+      if (replacementPrompt === undefined) this.context.undo(turns);
+      else await this.context.undoAndReplace(turns, replacementPrompt);
       await this.flushAfterCommit('context cut');
       await this.reconcileParticipants();
       await this.flushAfterCommit('state reconciliation');

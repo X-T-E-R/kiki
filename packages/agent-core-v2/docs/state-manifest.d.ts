@@ -6695,9 +6695,9 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/prompt/promptOps.ts
-  // replayable · durable — folds: PromptAccepted
+  // replayable · durable — folds: PromptAccepted, ContextUndo
   'promptAdmission': Map<string, true>;
-  // replayable · durable — folds: PromptRetryCommitted
+  // replayable · durable — folds: PromptRetryCommitted, ContextUndo
   'promptRetryReceipt': Map<string, {
     readonly fingerprint: string;
     readonly receipt: {
@@ -6705,10 +6705,482 @@ export interface AgentStateSnapshot {
       createdAt: string;
       appendTiming: 'subagents_done' | 'tasks_done' | 'agent_idle';
       revision: number;
+      userMessageId?: string;
+      message?: /* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly role: /* Role — packages/agent-core-v2/src/kosong/contract/message.ts */ 'user' | 'assistant' | 'system' | 'tool';
+        readonly name?: string;
+        readonly content: (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'text';
+          text: string;
+          presentation?: unknown;
+        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'think';
+          think: string;
+          encrypted?: string;
+        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'image_url';
+          imageUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'audio_url';
+          audioUrl: {
+            url: string;
+            id?: string;
+          };
+        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'video_url';
+          videoUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+          };
+        })[];
+        readonly toolCalls: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'function';
+          id: string;
+          name: string;
+          arguments: string | null;
+          extras?: Record<string, unknown>;
+          _streamIndex?: string | number;
+        }[];
+        readonly toolCallId?: string;
+        readonly partial?: boolean;
+        readonly tools?: readonly /* Tool — packages/agent-core-v2/src/kosong/contract/tool.ts */ {
+          name: string;
+          description: string;
+          parameters: Record<string, unknown>;
+          deferred?: true;
+        }[];
+      } & {
+        readonly id?: string;
+        readonly providerMessageId?: string;
+        readonly origin?: /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'merged';
+          readonly origins: readonly (/* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'unknown';
+          } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'external_thread';
+            readonly messageId: string;
+            readonly acceptedAt: number;
+          } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'user';
+            readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+              readonly activationId: string;
+              readonly skillName: string;
+              readonly skillArgs?: string;
+              readonly skillType?: string;
+              readonly skillPath?: string;
+              readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+            }[];
+            readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              type: 'text';
+              text: string;
+              presentation?: unknown;
+            } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              type: 'think';
+              think: string;
+              encrypted?: string;
+            } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              type: 'image_url';
+              imageUrl: {
+                url: string;
+                id?: string;
+                name?: string;
+              };
+            } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              type: 'audio_url';
+              audioUrl: {
+                url: string;
+                id?: string;
+              };
+            } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              type: 'video_url';
+              videoUrl: {
+                url: string;
+                id?: string;
+                name?: string;
+              };
+            })[];
+          } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'skill_activation';
+            readonly activationId: string;
+            readonly skillName: string;
+            readonly skillArgs?: string;
+            readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+            readonly userInput?: string;
+            readonly skillType?: string;
+            readonly skillPath?: string;
+            readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+          } | /* PluginCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'plugin_command';
+            readonly activationId: string;
+            readonly pluginId: string;
+            readonly commandName: string;
+            readonly commandArgs?: string;
+            readonly trigger: 'user-slash';
+          } | /* InjectionOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'injection';
+            readonly variant: string;
+            readonly ownerPromptId?: string;
+            readonly disclosure?: unknown;
+          } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'shell_command';
+            readonly phase: 'input' | 'output';
+            readonly isError?: boolean;
+          } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'compaction_summary';
+          } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'system_trigger';
+            readonly name: string;
+          } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'external_client';
+            readonly connectionId: string;
+            readonly clientName: string;
+            readonly sessionRef: string;
+            readonly driver: 'external';
+          } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'external_record';
+            readonly recordId: string;
+            readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+            readonly title?: string;
+            readonly connectionId: string;
+            readonly clientName: string;
+            readonly sessionRef: string;
+            readonly driver: 'external';
+          } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'task';
+            readonly taskId: string;
+            readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
+            readonly notificationId: string;
+          } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'cron_job';
+            readonly deliveryMode?: 'queue' | 'steer' | 'idle';
+            readonly jobId: string;
+            readonly cron: string;
+            readonly recurring: boolean;
+            readonly coalescedCount: number;
+            readonly stale: boolean;
+          } | /* CronMissedOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'cron_missed';
+            readonly count: number;
+          } | /* HookResultOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'hook_result';
+            readonly event: string;
+            readonly blocked?: boolean;
+          } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'retry';
+            readonly trigger?: string;
+          } | /* PeerThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'peer_thread';
+            readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+              readonly hostId: string;
+              readonly workspaceId: string;
+              readonly sessionId: string;
+              readonly personaId?: string;
+              readonly name?: string;
+              readonly bridgeId?: string;
+              readonly connectionId?: string;
+            };
+            readonly messageId: string;
+            readonly acceptedAt: number;
+          } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'bridged_peer';
+            readonly messageId: string;
+            readonly acceptedAt: number;
+            readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+              readonly hostId: string;
+              readonly workspaceId: string;
+              readonly sessionId: string;
+              readonly personaId?: string;
+              readonly name?: string;
+              readonly bridgeId?: string;
+              readonly connectionId?: string;
+            };
+            readonly sourceHomeId: string;
+            readonly targetHomeId: string;
+            readonly bridgeId: string;
+            readonly revision: number;
+            readonly location: 'local' | 'network';
+            readonly createdAt: number;
+            readonly expiresAt: number;
+            readonly sourceSeq: number;
+            readonly causeId: string;
+            readonly hop: number;
+          } | /* AgentMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'agent_message';
+            readonly messageId: string;
+            readonly senderAgentId: string;
+            readonly senderTaskName: string;
+          } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'persona_greeting';
+            readonly personaId: string;
+          } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly kind: 'room_message';
+            readonly roomId: string;
+            readonly messageId: string;
+            readonly targeted: boolean;
+            readonly generation?: number;
+          })[];
+        } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'unknown';
+        } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_thread';
+          readonly messageId: string;
+          readonly acceptedAt: number;
+        } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'user';
+          readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly activationId: string;
+            readonly skillName: string;
+            readonly skillArgs?: string;
+            readonly skillType?: string;
+            readonly skillPath?: string;
+            readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+          }[];
+          readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'text';
+            text: string;
+            presentation?: unknown;
+          } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'think';
+            think: string;
+            encrypted?: string;
+          } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'image_url';
+            imageUrl: {
+              url: string;
+              id?: string;
+              name?: string;
+            };
+          } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'audio_url';
+            audioUrl: {
+              url: string;
+              id?: string;
+            };
+          } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'video_url';
+            videoUrl: {
+              url: string;
+              id?: string;
+              name?: string;
+            };
+          })[];
+        } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'skill_activation';
+          readonly activationId: string;
+          readonly skillName: string;
+          readonly skillArgs?: string;
+          readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+          readonly userInput?: string;
+          readonly skillType?: string;
+          readonly skillPath?: string;
+          readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+        } | /* PluginCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'plugin_command';
+          readonly activationId: string;
+          readonly pluginId: string;
+          readonly commandName: string;
+          readonly commandArgs?: string;
+          readonly trigger: 'user-slash';
+        } | /* InjectionOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'injection';
+          readonly variant: string;
+          readonly ownerPromptId?: string;
+          readonly disclosure?: unknown;
+        } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'shell_command';
+          readonly phase: 'input' | 'output';
+          readonly isError?: boolean;
+        } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'compaction_summary';
+        } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'system_trigger';
+          readonly name: string;
+        } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_client';
+          readonly connectionId: string;
+          readonly clientName: string;
+          readonly sessionRef: string;
+          readonly driver: 'external';
+        } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_record';
+          readonly recordId: string;
+          readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+          readonly title?: string;
+          readonly connectionId: string;
+          readonly clientName: string;
+          readonly sessionRef: string;
+          readonly driver: 'external';
+        } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'task';
+          readonly taskId: string;
+          readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
+          readonly notificationId: string;
+        } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'cron_job';
+          readonly deliveryMode?: 'queue' | 'steer' | 'idle';
+          readonly jobId: string;
+          readonly cron: string;
+          readonly recurring: boolean;
+          readonly coalescedCount: number;
+          readonly stale: boolean;
+        } | /* CronMissedOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'cron_missed';
+          readonly count: number;
+        } | /* HookResultOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'hook_result';
+          readonly event: string;
+          readonly blocked?: boolean;
+        } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'retry';
+          readonly trigger?: string;
+        } | /* PeerThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'peer_thread';
+          readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+            readonly hostId: string;
+            readonly workspaceId: string;
+            readonly sessionId: string;
+            readonly personaId?: string;
+            readonly name?: string;
+            readonly bridgeId?: string;
+            readonly connectionId?: string;
+          };
+          readonly messageId: string;
+          readonly acceptedAt: number;
+        } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'bridged_peer';
+          readonly messageId: string;
+          readonly acceptedAt: number;
+          readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+            readonly hostId: string;
+            readonly workspaceId: string;
+            readonly sessionId: string;
+            readonly personaId?: string;
+            readonly name?: string;
+            readonly bridgeId?: string;
+            readonly connectionId?: string;
+          };
+          readonly sourceHomeId: string;
+          readonly targetHomeId: string;
+          readonly bridgeId: string;
+          readonly revision: number;
+          readonly location: 'local' | 'network';
+          readonly createdAt: number;
+          readonly expiresAt: number;
+          readonly sourceSeq: number;
+          readonly causeId: string;
+          readonly hop: number;
+        } | /* AgentMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'agent_message';
+          readonly messageId: string;
+          readonly senderAgentId: string;
+          readonly senderTaskName: string;
+        } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'persona_greeting';
+          readonly personaId: string;
+        } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'room_message';
+          readonly roomId: string;
+          readonly messageId: string;
+          readonly targeted: boolean;
+          readonly generation?: number;
+        };
+        readonly isError?: boolean;
+        readonly note?: string;
+        readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
+          readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
+            readonly path: string;
+            readonly version: string;
+            readonly scope: string;
+            readonly runtimeId: string;
+          };
+          readonly startLine: number;
+          readonly endLine: number;
+          readonly totalLines?: number;
+          readonly truncated: boolean;
+        };
+        readonly memoryReceipt?: /* MemoryWriteReceipt — packages/agent-core-v2/src/tool/toolContract.ts */ {
+          readonly action: 'create' | 'update' | 'supersede' | 'archive';
+          readonly id: string;
+          readonly revision: string;
+          readonly status: string;
+          readonly operationId?: string;
+          readonly outcome?: 'applied' | 'pending' | 'unchanged';
+          readonly ownerScope?: {
+            readonly kind: 'global';
+          } | {
+            readonly kind: 'workspace';
+            readonly workspaceId: string;
+          } | {
+            readonly kind: 'persona';
+            readonly personaId: string;
+          } | {
+            readonly kind: 'persona_workspace';
+            readonly workspaceId: string;
+            readonly personaId: string;
+          };
+          readonly target?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+            readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+            readonly id: string;
+            readonly expected_revision: string;
+          };
+          readonly proposedTarget?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+            readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+            readonly id: string;
+            readonly expected_revision: string;
+          };
+        };
+        readonly source?: /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly ref?: string;
+          readonly turnId?: number;
+          readonly stepId?: string;
+          readonly step?: number;
+          readonly frameId?: string;
+          readonly toolCallId?: string;
+        };
+        readonly toolCallSources?: Readonly<Record<string, /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly ref?: string;
+          readonly turnId?: number;
+          readonly stepId?: string;
+          readonly step?: number;
+          readonly frameId?: string;
+          readonly toolCallId?: string;
+        }>>;
+      };
+      execution?: /* PromptExecutionBinding — packages/agent-core-v2/src/agent/prompt/prompt.ts */ {
+        readonly execution?: {
+          executor: string;
+          profile?: string;
+          overrides?: {
+            model?: string | null;
+            thinking?: string | null;
+            permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+            kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
+            allow_kiki_subagents?: boolean | null;
+          };
+        };
+        readonly afterModelSwitch?: string;
+        readonly personaGreetingReply?: boolean;
+        readonly profile?: string;
+        readonly model?: string;
+        readonly thinking?: string;
+        readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
+        readonly planGate?: 'free' | 'gated';
+        readonly planMode?: boolean;
+        readonly goalObjective?: string;
+        readonly goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
+        readonly goalInitialStatus?: 'active' | 'paused';
+        readonly goalControl?: 'resume' | 'pause' | 'cancel';
+      };
+      deferredDisabledTools?: string[];
     };
   }>;
   // src/agent/prompt/promptService.ts
-  // replayable · durable — folds: PromptEnqueued, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, PromptOutcomeCommitted
+  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, PromptOutcomeCommitted
   'prompt.identity': Map<string, /* PromptIdentity — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
     readonly fingerprint: string;
     readonly currentRequest?: /* PromptRequestFingerprint — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
@@ -6717,6 +7189,7 @@ export interface AgentStateSnapshot {
       readonly appendTiming: string;
       readonly alreadyMaterialized: string;
       readonly deferredDisabledTools: string;
+      readonly userMessageId?: string;
     };
     readonly promptId: string;
     readonly phase: 'pending' | 'terminal' | 'launched';
@@ -6755,7 +7228,7 @@ export interface AgentStateSnapshot {
     };
   }>;
   'prompt.launching': boolean;
-  // replayable · durable — folds: PromptEnqueued, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
+  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
   'prompt.queue': /* PersistedPromptQueueState — packages/agent-core-v2/src/agent/prompt/promptService.ts */ {
     readonly entries: Map<string, unknown>;
     readonly order: string[];

@@ -52,7 +52,11 @@ export interface PromptExecutionBinding {
 
 export interface PromptInput {
   readonly id?: string;
+  readonly userMessageId?: string;
+  readonly retryFingerprint?: string;
   readonly message: ContextMessage;
+  /** Commits an admitted history rewrite after prompt preparation, before queue publication. */
+  readonly commitHistoryRewrite?: (prompt: import('./promptService').PromptEnqueuedPayload) => Promise<void>;
   readonly execution?: PromptExecutionBinding;
   readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
@@ -162,17 +166,18 @@ export interface PromptReservation extends IDisposable {
 
 export const promptAdmission = Symbol('promptAdmission');
 
-type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean) => PromptReservation;
+type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string) => PromptReservation;
 
-export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false): PromptReservation {
+export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false, retryFingerprint?: string): PromptReservation {
   return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
     promptAdmission
-  ](promptId, durableAcceptance);
+  ](promptId, durableAcceptance, retryFingerprint);
 }
 
 export const promptRetry = Symbol('promptRetry');
 
 export interface PromptRetryHook {
+  run<T>(promptId: string, fingerprint: string, submit: () => Promise<T>): Promise<T>;
   lookup(promptId: string, fingerprint: string): Promise<import('./promptOps').PromptRetryReceipt | undefined>;
   commit(promptId: string, fingerprint: string, receipt: import('./promptOps').PromptRetryReceipt): Promise<void>;
 }
@@ -235,7 +240,7 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
-  drain(reason?: Error): Promise<void>;
+  drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
   clear(): void;

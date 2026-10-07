@@ -229,10 +229,16 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | Page messages (`before_id` / `after_id` / `role`) |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | Read one message |
+| `POST /api/sessions/{session_id}/messages/{message_id}:edit` | Replace a user message and rerun from it |
+| `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | Rerun the user turn behind the latest final assistant message |
 | `GET /api/sessions/{session_id}/transcript` | Turn-paged transcript (requires `agent_id` and `transcript_coverage_version=2`); global state rides along unpaginated |
 | `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (requires `agent_id`, `since_seq`, and `transcript_coverage_version=2`); `complete: false` means a full refresh is needed |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | Turn-opening user inputs, unpaginated |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode plan content, path, and review outcome |
+
+Editing and regenerating require an idle session and `expected_cursor: { seq, epoch }` from the current session view. An edit replaces the complete `content` array, including attachments; regeneration reuses the original user input behind the selected final assistant response. Preflight rejection leaves conversation history unchanged. An accepted rewrite retains `user_message_id` and receives a new `prompt_id`.
+
+For response-loss recovery, send an optional `operation_id` and keep that ID and the entire request body unchanged when retrying the same action. A matching accepted retry returns the original receipt without another run, even after an uploaded source file has expired. Use a new ID for a different body or a new action. Reusing an ID with different input returns `40938`; a stale cursor returns `40937`, so refresh the session view before starting a new action. If the response is uncertain, retry manually rather than automatically submitting another action.
 
 Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
 
@@ -247,6 +253,8 @@ The transcript response's `agents` descriptors use camelCase: `{ agentId, type?,
 | `POST /api/sessions/{session_id}/prompts:steer` | Send selected queued prompts now |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
+
+To retry a submission whose response was lost, keep its optional `prompt_id` and complete request body unchanged. Matching retries return the original accepted receipt without resubmitting the prompt, including main-agent, attachment, and bundled-skill submissions. Changed input needs a new `prompt_id`; reusing an accepted ID for different input returns `40938`. If an older accepted request has no replayable receipt, inspect its queue or history rather than automatically sending it again.
 
 A prompt can carry the same [execution selection](#sessions) in its top-level `execution` field. It is captured with that prompt and applied when the prompt launches, not when it enters the queue. The current turn keeps its committed binding. A changed execution generation starts a fresh remote session without resuming or forking the old one or sending a handoff of the old Kiki conversation; visible Kiki history is retained. Cold recovery reuses the committed generation and its own saved remote reference.
 

@@ -10,7 +10,7 @@ export interface IAgentConversationUndoService {
   readonly _serviceBrand: undefined;
 
   availability(): UndoAvailability;
-  undo(turns: number, historyMutationLease?: SessionHistoryMutationLease): Promise<number>;
+  undo(turns: number, historyMutationLease?: SessionHistoryMutationLease, replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload): Promise<number>;
 }
 
 export const IAgentConversationUndoService: ServiceIdentifier<IAgentConversationUndoService> =

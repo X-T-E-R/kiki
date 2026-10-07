@@ -80,6 +80,7 @@ interface PromptItemWire {
   prompt_id: string;
   user_message_id: string;
   status: 'running' | 'queued';
+  origin?: unknown;
   content: unknown;
   created_at: string;
 }
@@ -597,7 +598,7 @@ describe('server-v2 /api prompts', () => {
       expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
       expect(provider).not.toHaveBeenCalled();
     } finally {
-      await main.accessor.get(IAgentPromptService).drain();
+      await main.accessor.get(IAgentPromptService).drain(new Error('test cleanup'));
       provider.mockRestore();
       await client.close();
     }
@@ -1282,7 +1283,7 @@ describe('server-v2 /api prompts', () => {
       .accessor.get(IAgentLifecycleService)
       .get('main')!
       .accessor.get(IAgentPromptService)
-      .drain();
+      .drain(new Error('test cleanup'));
   });
 
   it('rejects Send now when a queued model or thinking selection differs from the active turn', async () => {
@@ -1437,7 +1438,7 @@ describe('server-v2 /api prompts', () => {
       .accessor.get(IAgentLifecycleService)
       .get('main')!
       .accessor.get(IAgentPromptService)
-      .drain();
+      .drain(new Error('test cleanup'));
   });
 
   it('honors a client-chosen prompt_id on submit', async () => {
@@ -1745,19 +1746,62 @@ describe('server-v2 /api prompts', () => {
     expect(session!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
   });
 
-  it('rejects a bundled prompt_id combination before any override or agent materialization', async () => {
+  it('accepts a bundled prompt_id and replays the matching receipt without another model request', async () => {
+    await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
     const id = await createSession(home as string, false);
-
-    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+    await createMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
+    await main.accessor.get(IAgentLoopService).settled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const hold = main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-bundled-retry', async ({ signal }) => {
+      await gate;
+      signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const requester = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(() => ({
+      trace: { traceId: 'bundled-prompt-retry' },
+      result: Promise.resolve({
+        message: { role: 'assistant', content: [{ type: 'text', text: 'bundled completion' }], toolCalls: [] },
+        usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+        providerFinishReason: 'completed',
+      }),
+    }));
+    const payload = {
       content: [{ type: 'text', text: 'Review this change.' }],
-      permission_mode: 'yolo',
       prompt_id: 'submission-1',
       skills: [{ name: 'kiki-ops' }],
-    });
-    expect(submitted.body.code).toBe(40001);
+    };
 
-    const session = getLiveSessionById(server!.core.accessor, id);
-    expect(session!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    const submittedPromise = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    await vi.waitFor(() => {
+      const list = main.accessor.get(IAgentPromptService).list();
+      expect(list.pending.length + (list.active === undefined ? 0 : 1)).toBeGreaterThan(0);
+    });
+    release();
+    const submitted = await submittedPromise;
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data).toMatchObject({ prompt_id: payload.prompt_id, content: payload.content });
+    expect(submitted.body.data.origin).toMatchObject({
+      kind: 'user',
+      skillActivations: [{ skillName: 'kiki-ops' }],
+    });
+    await vi.waitFor(() => expect(requester).toHaveBeenCalledTimes(1));
+    await main.accessor.get(IAgentLoopService).settled();
+
+    const retry = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code, retry.body.msg).toBe(0);
+    expect(retry.body.data).toEqual(submitted.body.data);
+    expect(requester).toHaveBeenCalledTimes(1);
+
+    const changed = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+      ...payload,
+      content: [{ type: 'text', text: 'Changed bundled content.' }],
+    });
+    expect(changed.body.code).toBe(40938);
+    expect(requester).toHaveBeenCalledTimes(1);
+    hold.dispose();
+    requester.mockRestore();
   });
 
   it('cleans bundled staging through the settlement tracker', async () => {

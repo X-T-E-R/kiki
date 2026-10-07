@@ -128,6 +128,13 @@ class UndoEvent extends Event2<{ count: number }> {
 }
 interface UndoEvent extends z.infer<typeof UndoEvent.schema> {}
 
+class UndoAppendEvent extends Event2<{ count: number; item: string; anchor?: boolean; fail?: boolean }> {
+  static override readonly type = 'state.test.undo_append';
+  static override readonly durable = true;
+  static override readonly schema = z.object({ count: z.number(), item: z.string(), anchor: z.boolean().optional(), fail: z.boolean().optional() });
+}
+interface UndoAppendEvent extends z.infer<typeof UndoAppendEvent.schema> {}
+
 const checkpointedKey = defineState(
   'state.test.checkpointed',
   (): CheckpointedState => ({ items: [] }),
@@ -140,6 +147,13 @@ const checkpointedKey = defineState(
   })
   .on(UndoEvent, (s, e, ctx) => {
     ctx.undoToCheckpoint(e.count);
+  })
+  .on(UndoAppendEvent, (s, e, ctx) => {
+    if (e.anchor === true) ctx.checkpoint();
+    ctx.undoToCheckpoint(e.count, (state) => {
+      if (e.fail === true) throw new Error('after undo failed');
+      state.items.push(e.item);
+    });
   });
 
 let disposables: DisposableStore;
@@ -331,6 +345,45 @@ describe('EventDispatcherService', () => {
 
     await dispatcher.dispatch(new UndoEvent({ count: 1 }));
     expect(agentState.get(checkpointedKey).items).toEqual(['a']);
+  });
+
+  it('leaves every state, checkpoint, history, and wire record unchanged when afterUndo throws', async () => {
+    await dispatcher.dispatch(new CounterAdd({ by: 2 }));
+    await dispatcher.dispatch(new ItemAdd({ item: 'before' }));
+    await dispatcher.dispatch(new AnchorEvent({}));
+    await dispatcher.dispatch(new ItemAdd({ item: 'removed' }));
+    const beforeCounter = structuredClone(agentState.get(counterKey));
+    const beforeOther = structuredClone(agentState.get(otherKey));
+    const beforeCheckpointed = structuredClone(agentState.get(checkpointedKey));
+    const beforeCounterHistory = structuredClone(dispatcher.history(counterKey));
+    const beforeCheckpointHistory = structuredClone(dispatcher.history(checkpointedKey));
+    const beforeDepth = dispatcher.checkpointDepth(checkpointedKey);
+    const beforeJournal = structuredClone(journal);
+
+    await expect(dispatcher.dispatch(new UndoAppendEvent({ count: 1, item: 'replacement', fail: true }))).rejects.toThrow('after undo failed');
+
+    expect(agentState.get(counterKey)).toEqual(beforeCounter);
+    expect(agentState.get(otherKey)).toEqual(beforeOther);
+    expect(agentState.get(checkpointedKey)).toEqual(beforeCheckpointed);
+    expect(dispatcher.history(counterKey)).toEqual(beforeCounterHistory);
+    expect(dispatcher.history(checkpointedKey)).toEqual(beforeCheckpointHistory);
+    expect(dispatcher.checkpointDepth(checkpointedKey)).toBe(beforeDepth);
+    expect(journal).toEqual(beforeJournal);
+  });
+
+  it('cuts to a checkpoint, appends replacement state, and supports a later ordinary undo', async () => {
+    await dispatcher.dispatch(new ItemAdd({ item: 'before' }));
+    await dispatcher.dispatch(new AnchorEvent({}));
+    await dispatcher.dispatch(new ItemAdd({ item: 'removed' }));
+
+    await dispatcher.dispatch(new UndoAppendEvent({ count: 1, item: 'replacement', anchor: true }));
+    expect(agentState.get(checkpointedKey).items).toEqual(['before', 'replacement']);
+    expect(dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
+    expect(journal.at(-1)).toMatchObject({ type: 'state.test.undo_append', item: 'replacement' });
+
+    await dispatcher.dispatch(new UndoEvent({ count: 1 }));
+    expect(agentState.get(checkpointedKey).items).toEqual(['before']);
+    expect(dispatcher.checkpointDepth(checkpointedKey)).toBe(0);
   });
 
   it('restores silently from the journal: folds run, nothing published or appended', async () => {

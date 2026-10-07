@@ -450,7 +450,15 @@ export class TranscriptWireAdapter {
       return event === undefined ? [] : this.loopEvent(event, ordinal, record.time);
     }
     if (record.type === 'turn.ended') return this.turnEnded(record);
-    if (record.type === 'context.undo') return this.undo(numberOf(record['count']) ?? 1);
+    if (record.type === 'context.undo') {
+      const operations = this.undo(numberOf(record['count']) ?? 1);
+      const prompt = objectOf(record['replacementPrompt']);
+      if (prompt !== undefined) {
+        operations.push(...this.legacyMessage({ ...record, type: 'context.append_message', message: prompt['message'] }, ordinal));
+        operations.push(...this.promptRecord({ ...prompt, type: 'prompt.enqueued', time: record.time }));
+      }
+      return operations;
+    }
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
     const compaction = this.#compaction.project(record, ordinal);
     if (compaction !== undefined) return compaction;

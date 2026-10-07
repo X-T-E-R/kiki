@@ -32,6 +32,7 @@ import type { SessionArchivedEvent, SessionDeletedEvent } from '#/workspace/sess
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
+import { computeUndoCut } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -2234,6 +2235,13 @@ function agentHandle(
     publishTrailingRemoval: () => false,
     clear: () => {},
     undo: () => { throw new Error('unexpected undo'); },
+    undoAndReplace: async (count, replacementPrompt) => {
+      const cut = computeUndoCut(messages, count);
+      if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+        messages.splice(cut.cutIndex, messages.length - cut.cutIndex, replacementPrompt.message);
+      }
+      return cut;
+    },
     applyCompaction: () => { throw new Error('unexpected compaction'); },
   };
   const execution = {

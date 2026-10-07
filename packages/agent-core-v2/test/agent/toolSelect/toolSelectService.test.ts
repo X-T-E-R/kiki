@@ -11,7 +11,7 @@ import { IModelCatalog } from '#/kosong/model/catalog';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
-import type { UndoCut } from '#/agent/contextMemory/contextOps';
+import { computeUndoCut, type UndoCut } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
@@ -306,6 +306,17 @@ class FakeContextMemory implements IAgentContextMemoryService {
 
   undo(): UndoCut {
     throw new Error('unused in this suite');
+  }
+
+  async undoAndReplace(
+    count: number,
+    replacementPrompt: import('#/agent/prompt/promptService').PromptEnqueuedPayload,
+  ): Promise<UndoCut> {
+    const cut = computeUndoCut(this.history, count);
+    if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+      this.history.splice(cut.cutIndex, this.history.length - cut.cutIndex, replacementPrompt.message);
+    }
+    return cut;
   }
 
   applyCompaction(): never {

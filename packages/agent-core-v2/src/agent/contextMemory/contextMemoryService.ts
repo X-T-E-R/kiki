@@ -141,11 +141,18 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
     if (isFullyUndoable(cut, count)) {
       void this.dispatcher.dispatch(new ContextUndo({ count }));
       this.dispatchCutEvents(cut.cutIndex);
-      this.publishSplice({
-        start: cut.cutIndex,
-        deleteCount: history.length - cut.cutIndex,
-        messages: [],
-      });
+      this.publishSplice({ start: cut.cutIndex, deleteCount: history.length - cut.cutIndex, messages: [] });
+    }
+    return cut;
+  }
+
+  async undoAndReplace(count: number, replacementPrompt: import('#/agent/prompt/promptService').PromptEnqueuedPayload): Promise<UndoCut> {
+    const history = this.get();
+    const cut = computeUndoCut(history, count);
+    if (isFullyUndoable(cut, count)) {
+      await this.dispatcher.dispatch(new ContextUndo({ count, replacementPrompt }));
+      this.dispatchCutEvents(cut.cutIndex);
+      this.publishSplice({ start: cut.cutIndex, deleteCount: history.length - cut.cutIndex, messages: [replacementPrompt.message] });
     }
     return cut;
   }

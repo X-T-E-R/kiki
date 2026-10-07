@@ -35,6 +35,7 @@ import { parseActionSuffix } from './action-suffix';
 import {
   editAndResendMessage,
   regenerateMessage,
+  replayMessageOperation,
 } from '../services/messages/messageActions';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
@@ -180,6 +181,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         [ErrorCode.SESSION_UNDO_UNAVAILABLE]: {},
         [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: {},
         [ErrorCode.SESSION_CURSOR_MISMATCH]: {},
+        [ErrorCode.PROMPT_ID_CONFLICT]: {},
       },
       description: 'Edit-resend or regenerate a message',
       tags: ['messages'],
@@ -207,6 +209,11 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         const agent = await ensureMainAgent(session);
         if (parsed.action === 'edit') {
           const body = editMessageRequestSchema.parse(req.body);
+          const replay = await replayMessageOperation(agent, parsed.id, body);
+          if (replay !== undefined) {
+            reply.send(okEnvelope(projectPromptHandle(replay), req.id));
+            return;
+          }
           await assertPromptFileRefs(body.content, core.accessor.get(IFileService));
           preparedMedia = await resolvePromptMediaFiles(
             body.content,
@@ -284,6 +291,7 @@ function sendMappedError(
         case 'session.undo_unavailable': return ErrorCode.SESSION_UNDO_UNAVAILABLE;
         case 'message.action_unavailable': return ErrorCode.MESSAGE_ACTION_UNAVAILABLE;
         case 'session.cursor_mismatch': return ErrorCode.SESSION_CURSOR_MISMATCH;
+        case 'prompt.id_conflict': return ErrorCode.PROMPT_ID_CONFLICT;
         case 'request.invalid':
         case 'validation.failed': return ErrorCode.VALIDATION_FAILED;
         default: return undefined;

@@ -303,6 +303,26 @@ describe('send now (steer) — main agent', () => {
     controller.close();
   });
 
+  it('captures profile and execution controls with the send-now message identity', async () => {
+    const { controller, client } = await open();
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
+      ...queuedReceipt(body.prompt_id), status: 'running' as const,
+    }));
+    const execution = { executor: 'external-example', profile: 'selected-runtime' };
+    await expect(controller.sendPromptNow({ text: STEER_TEXT, promptId: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual', planMode: true, planGate: 'gated' }))
+      .resolves.toEqual({ promptId: 'selected-message', outcome: 'started' });
+    expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', {
+      content: [{ type: 'text', text: STEER_TEXT }], prompt_id: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permission_mode: 'manual', plan_mode: true, plan_gate: 'gated',
+    });
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('retires the echo as an ordinary send when the agent was already idle', async () => {
     const { controller, client } = await open();
     client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({

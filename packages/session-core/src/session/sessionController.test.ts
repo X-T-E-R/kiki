@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
+import type { MessageContent, PromptSubmitResult, Session, SessionSnapshotResponse } from '@kiki/protocol';
 import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
@@ -1265,6 +1265,7 @@ describe('SessionController message closure', () => {
     const before = calls();
     await controller.editMessage('m-user', { text: 'rewritten' });
     expect(client.editMessage).toHaveBeenCalledWith('session_test', 'm-user', {
+      operation_id: expect.any(String),
       content: [{ type: 'text', text: 'rewritten' }],
       expected_cursor: { seq: 10, epoch: 'epoch-1' },
       model: undefined,
@@ -1284,6 +1285,7 @@ describe('SessionController message closure', () => {
     const before = calls();
     await controller.regenerateMessage('m-assistant');
     expect(client.regenerateMessage).toHaveBeenCalledWith('session_test', 'm-assistant', {
+      operation_id: expect.any(String),
       expected_cursor: { seq: 10, epoch: 'epoch-1' },
       model: undefined,
       thinking: undefined,
@@ -1292,6 +1294,148 @@ describe('SessionController message closure', () => {
       plan_mode: undefined,
     });
     await waitFor(() => calls() > before);
+    controller.close();
+  });
+
+  it('shares one edit flight for concurrent identical clicks', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<PromptSubmitResult>();
+    const receipt: PromptSubmitResult = {
+      prompt_id: 'p-flight', user_message_id: 'm-flight', status: 'running',
+      content: [{ type: 'text', text: 'flight body' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockReturnValueOnce(held.promise);
+    const input = { text: 'flight body' };
+    const first = controller.editMessage('m-user', input);
+    const second = controller.editMessage('m-user', input);
+    await waitFor(() => client.editMessage.mock.calls.length === 1);
+    held.resolve(receipt);
+    await Promise.all([first, second]);
+    expect(client.editMessage).toHaveBeenCalledExactlyOnceWith('session_test', 'm-user', expect.objectContaining({
+      operation_id: expect.any(String),
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+    }));
+    controller.close();
+  });
+
+  it('shares an edit flight and preserves the full operation body after an unknown transport error', async () => {
+    const { controller, client } = await openController();
+    const attachment = { type: 'file' as const, file_id: 'f-retry', name: 'retry.txt', media_type: 'text/plain', size: 4 };
+    const receipt = {
+      prompt_id: 'p-retry', user_message_id: 'm-retry', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'retry body' }, attachment], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockRejectedValueOnce(new TypeError('response body unavailable')).mockResolvedValueOnce(receipt);
+    const input = { text: 'retry body', content: receipt.content };
+
+    await expect(controller.editMessage('m-user', input)).rejects.toThrow('response body unavailable');
+    await controller.editMessage('m-user', input);
+
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody).toEqual({
+      operation_id: expect.any(String),
+      content: receipt.content,
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      model: undefined,
+      thinking: undefined,
+      permission_mode: undefined,
+      plan_gate: undefined,
+      plan_mode: undefined,
+    });
+    expect(secondBody).toEqual(firstBody);
+    controller.close();
+  });
+
+  it('retains a newer edit retry identity when an older overlapping edit is rejected', async () => {
+    const { controller, client } = await openController();
+    const older = deferred<PromptSubmitResult>();
+    const newer = deferred<PromptSubmitResult>();
+    const presentation = { spans: [{ start: 0, end: 7, kind: 'selection' as const, quote: 'context', comment: 'keep' }] };
+    const content = [
+      { type: 'text' as const, text: 'context\nnew body', presentation },
+      { type: 'file' as const, file_id: 'f-overlap', name: 'draft.txt', media_type: 'text/plain', size: 4 },
+      { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/draft.png' }, name: 'draft.png' },
+    ];
+    const receipt: PromptSubmitResult = {
+      prompt_id: 'p-overlap', user_message_id: 'm-user', status: 'running',
+      content, created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise).mockResolvedValueOnce(receipt);
+    const first = controller.editMessage('m-user', { text: 'old body' });
+    const input = { text: 'context\nnew body', content, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual' as const, planMode: true, planGate: 'gated' as const };
+    const second = controller.editMessage('m-user', input);
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody).toEqual({ operation_id: expect.any(String), content,
+      expected_cursor: { seq: 10, epoch: 'epoch-1' }, model: 'selected-model', thinking: 'high',
+      permission_mode: 'manual', plan_mode: true, plan_gate: 'gated' });
+
+    const validation = new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'invalid old content', data: null });
+    const rejectedFirst = expect(first).rejects.toBe(validation);
+    older.reject(validation);
+    await rejectedFirst;
+    const unknown = new TypeError('new response body unavailable');
+    const rejectedSecond = expect(second).rejects.toBe(unknown);
+    newer.reject(unknown);
+    await rejectedSecond;
+
+    await controller.editMessage('m-user', input);
+    expect(client.editMessage).toHaveBeenCalledTimes(3);
+    expect(client.editMessage.mock.calls[2]![2]).toEqual(secondBody);
+    controller.close();
+  });
+
+  it('drops a rejected validation operation so a corrected retry receives a new operation id', async () => {
+    const { controller, client } = await openController();
+    const validation = new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'invalid content', data: null });
+    const receipt = {
+      prompt_id: 'p-valid', user_message_id: 'm-valid', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'valid retry' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockRejectedValueOnce(validation).mockResolvedValueOnce(receipt);
+    const input = { text: 'valid retry' };
+
+    await expect(controller.editMessage('m-user', input)).rejects.toBe(validation);
+    await controller.editMessage('m-user', input);
+
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody.expected_cursor).toEqual({ seq: 10, epoch: 'epoch-1' });
+    controller.close();
+  });
+
+  it('assigns a new operation id after the cursor advances for the next rewrite', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const receipt = {
+      prompt_id: 'p-cursor', user_message_id: 'm-cursor', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'cursor retry' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockResolvedValue(receipt);
+    const input = { text: 'cursor retry' };
+    await controller.editMessage('m-user', input);
+    await waitFor(() => calls() > 1);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+
+    deliverFrame(controller, frame({ type: 'turn.ended', turnId: 1, reason: 'completed' } as never, { seq: 14 }));
+    await controller.editMessage('m-user', input);
+
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody.expected_cursor).toEqual({ seq: 14, epoch: 'epoch-1' });
     controller.close();
   });
 
@@ -1320,6 +1464,7 @@ describe('SessionController message closure', () => {
     expect(socket.updateCursor).toHaveBeenCalledWith('session_test', { seq: 14, epoch: 'epoch-1' });
     await controller.regenerateMessage('m-assistant');
     expect(client.regenerateMessage).toHaveBeenCalledWith('session_test', 'm-assistant', {
+      operation_id: expect.any(String),
       expected_cursor: { seq: 14, epoch: 'epoch-1' },
       model: undefined,
       thinking: undefined,

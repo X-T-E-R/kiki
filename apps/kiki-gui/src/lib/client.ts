@@ -243,12 +243,14 @@ export interface MessageRunOverrides {
 
 /** `POST /sessions/{sid}/messages/{mid}:edit` body — full replacement semantics. */
 export interface EditMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly content: MessageContent[];
   readonly expected_cursor: SessionCursor;
 }
 
 /** `POST /sessions/{sid}/messages/{mid}:regenerate` body. */
 export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly expected_cursor: SessionCursor;
 }
 

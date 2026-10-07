@@ -140,6 +140,13 @@ function stubContextMemory(): IAgentContextMemoryService & {
       }
       return cut;
     },
+    undoAndReplace: async (count, replacementPrompt) => {
+      const cut = computeUndoCut(messages, count);
+      if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+        messages.splice(cut.cutIndex, messages.length - cut.cutIndex, replacementPrompt.message);
+      }
+      return cut;
+    },
     applyCompaction: (input: ContextCompactionInput): ContextCompactionResult => {
       const shape = buildContextCompactionShape(messages, input);
       messages.splice(0, messages.length, ...shape.messages);

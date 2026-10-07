@@ -36,6 +36,7 @@ import {
   PromptSubmitted,
   promptQueueKey,
   promptResolutionKey,
+  type PromptEnqueuedPayload,
 } from '#/agent/prompt/promptService';
 import {
   IAgentProfileService,
@@ -642,6 +643,51 @@ describe('AgentPromptService', () => {
     await reservation.dispose();
   });
 
+  it('shares direct submitAndWait flights, reuses terminal receipts, and rejects a different payload', async () => {
+    const { prompt, loop, context } = harness({ manualTurnResult: true });
+    const payload = {
+      promptId: 'opaque-submit-and-wait',
+      input: [{ type: 'text' as const, text: 'same opaque payload' }],
+    };
+    const first = prompt.submitAndWait(payload);
+    const second = prompt.submitAndWait(payload);
+    await vi.waitFor(() => expect(loop.launches).toHaveLength(1));
+    expect(loop.drainNextBatch(context)).toBeDefined();
+    loop.settleActive();
+    const [left, right] = await Promise.all([first, second]);
+    expect(left).toMatchObject({ promptId: payload.promptId, state: 'completed', turnId: 0 });
+    expect(right).toEqual(left);
+    expect(context.get().filter((entry) => entry.role === 'user')).toHaveLength(1);
+    expect(loop.launches).toEqual([0]);
+
+    const retry = await prompt.submitAndWait(payload);
+    expect(retry).toEqual(left);
+    expect(loop.launches).toEqual([0]);
+    expect(context.get().filter((entry) => entry.role === 'user')).toHaveLength(1);
+
+    await expect(prompt.submitAndWait({
+      ...payload,
+      input: [{ type: 'text', text: 'different opaque payload' }],
+    })).rejects.toMatchObject({ code: ErrorCodes.PROMPT_ID_CONFLICT });
+    expect(loop.launches).toEqual([0]);
+  });
+
+  it('keeps the request fingerprint separate from an independent logical user message id', async () => {
+    const { prompt, loop, context } = harness({ manualTurnResult: true });
+    const input = { role: 'user' as const, content: [{ type: 'text' as const, text: 'fingerprint fixture' }], toolCalls: [] };
+    const first = await prompt.enqueue({ id: 'request-fingerprint', userMessageId: 'logical-fingerprint', message: input });
+    expect(first.userMessageId).toBe('logical-fingerprint');
+    expect(loop.drainNextBatch(context)).toBeDefined();
+    loop.settleActive();
+    await first.completion;
+
+    const replay = await prompt.enqueue({ id: 'request-fingerprint', userMessageId: 'logical-fingerprint', message: input });
+    expect(replay.id).toBe('request-fingerprint');
+    expect(replay.userMessageId).toBe('logical-fingerprint');
+    await expect(prompt.enqueue({ id: 'request-fingerprint', userMessageId: 'different-logical-id', message: input }))
+      .rejects.toMatchObject({ code: ErrorCodes.PROMPT_ID_CONFLICT });
+  });
+
   it.each([false, true])('steers GUI plan echoes without rebinding the active turn: %s', async (enabled) => {
     const { prompt, plan } = harness();
     plan.status.mockResolvedValue(enabled ? { id: 'plan', path: '/plan', content: '' } : null);
@@ -743,6 +789,155 @@ describe('AgentPromptService', () => {
     await drain;
     expect(aborted).toEqual(['active']);
     expect(prompt.list().active).toBeUndefined();
+  });
+
+  it('preserves queued durable requests during shutdown while settling only local waiters', async () => {
+    const { prompt, loop, states, eventBus } = harness({ manualTurnResult: true });
+    const aborted: string[] = [];
+    const completed: string[] = [];
+    eventBus.subscribe(PromptAborted, (event) => aborted.push(event.promptId));
+    eventBus.subscribe(PromptCompleted, (event) => completed.push(event.promptId));
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const presentation = { spans: [{ start: 0, end: 11, kind: 'quote' as const, quote: 'queued one' }] };
+    const origin = {
+      kind: 'merged' as const,
+      origins: [
+        { kind: 'user' as const, skillActivations: [{ activationId: 'skill-1', skillName: 'review' }] },
+        { kind: 'external_client' as const, connectionId: 'connection-1', clientName: 'fixture', sessionRef: 'session-1', driver: 'external' as const },
+      ],
+    };
+    const content: ContentPart[] = [
+      { type: 'text', text: 'queued one', presentation },
+      { type: 'image_url', imageUrl: { url: 'https://example.test/queued.png', id: 'file-1', name: 'queued.png' } },
+    ];
+    const first = await prompt.enqueue({
+      id: 'request-one', userMessageId: 'logical-one', message: { role: 'user', content, toolCalls: [], origin }, appendTiming: 'tasks_done',
+    });
+    const second = await prompt.enqueue({
+      id: 'request-two', userMessageId: 'logical-two', message: { role: 'user', content: [{ type: 'text', text: 'queued two', presentation }], toolCalls: [], origin }, appendTiming: 'tasks_done',
+    });
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['request-one', 'request-two']);
+
+    const reason = new Error('session closing');
+    const draining = prompt.drain(reason, 'preserve-pending');
+    await vi.waitFor(() => expect(loop.cancels).toHaveLength(1));
+    loop.settleActive({ type: 'cancelled', steps: 0, reason });
+    await draining;
+
+    await expect(first.completion).resolves.toMatchObject({ promptId: 'request-one', state: 'cancelled', result: undefined });
+    await expect(second.completion).resolves.toMatchObject({ promptId: 'request-two', state: 'cancelled', result: undefined });
+    await vi.waitFor(() => expect(aborted).toEqual(['active']));
+    expect(completed).toEqual([]);
+    expect(prompt.list()).toMatchObject({ active: undefined, pending: [] });
+    const persisted = states.get(promptQueueKey);
+    expect(persisted.order).toEqual(['request-one', 'request-two']);
+    expect(persisted.entries.get('request-one')).toMatchObject({
+      promptId: 'request-one',
+      userMessageId: 'logical-one',
+      message: { id: 'logical-one', content, origin },
+    });
+    expect(persisted.entries.get('request-two')).toMatchObject({ promptId: 'request-two', userMessageId: 'logical-two' });
+    expect(states.get(promptResolutionKey).has('request-one')).toBe(false);
+    expect(states.get(promptResolutionKey).has('request-two')).toBe(false);
+  });
+
+  it('detaches a request admitted across a preserve-close dispatch race without an outcome', async () => {
+    const { prompt, dispatcher, states, eventBus } = harness({ manualTurnResult: true });
+    const dispatched: string[] = [];
+    eventBus.subscribe(PromptAborted, (event) => dispatched.push(event.promptId));
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    const entered = deferred<void>();
+    const gate = deferred<void>();
+    vi.spyOn(dispatcher, 'dispatch').mockImplementation(async (event) => {
+      const result = await dispatch(event);
+      if (event instanceof PromptEnqueued && event.promptId === 'closing-race') {
+        entered.resolve();
+        await gate.promise;
+      }
+      return result;
+    });
+
+    const submitted = prompt.enqueue({ id: 'closing-race', message: message('close during admission') });
+    await entered.promise;
+    const draining = prompt.drain(new Error('race close'), 'preserve-pending');
+    gate.resolve();
+    const handle = await submitted;
+    await draining;
+    await expect(handle.completion).resolves.toMatchObject({ promptId: 'closing-race', state: 'cancelled', result: undefined });
+    expect(dispatched).toEqual([]);
+    expect(states.get(promptQueueKey).order).toEqual(['closing-race']);
+    expect(states.get(promptResolutionKey).has('closing-race')).toBe(false);
+    expect(prompt.list()).toMatchObject({ active: undefined, pending: [] });
+  });
+
+  it('cancels queued requests by default and records terminal outcomes that cannot recover', async () => {
+    const { prompt, loop, states } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({ id: 'cancelled-queue', userMessageId: 'cancelled-logical', message: message('queued') });
+    const reason = new Error('explicit shutdown');
+    const draining = prompt.drain(reason);
+    await vi.waitFor(() => expect(loop.cancels).toHaveLength(1));
+    loop.settleActive({ type: 'cancelled', steps: 0, reason });
+    await draining;
+
+    await expect(queued.completion).resolves.toMatchObject({ promptId: 'cancelled-queue', state: 'cancelled' });
+    await vi.waitFor(() => expect(prompt.lookup('cancelled-queue')).toMatchObject({
+      phase: 'terminal', terminal: { state: 'cancelled' },
+    }));
+    expect(states.get(promptQueueKey).order).toEqual([]);
+    expect(states.get(promptQueueKey).entries.has('cancelled-queue')).toBe(false);
+    expect(prompt.list()).toMatchObject({ active: undefined, pending: [] });
+    expect(prompt.list().hold).toBeUndefined();
+  });
+
+  it('cold-restores preserved queued requests with request and logical identities under recovery hold', async () => {
+    const source = harness({ manualTurnResult: true });
+    const active = await source.prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const presentation = { spans: [{ start: 0, end: 12, kind: 'quote' as const, quote: 'restore me' }] };
+    const origin = {
+      kind: 'merged' as const,
+      origins: [
+        { kind: 'user' as const },
+        { kind: 'external_client' as const, connectionId: 'connection-restore', clientName: 'fixture', sessionRef: 'session-restore', driver: 'external' as const },
+      ],
+    };
+    const content: ContentPart[] = [
+      { type: 'text', text: 'restore me', presentation },
+      { type: 'image_url', imageUrl: { url: 'https://example.test/restore.png', id: 'restore-file' } },
+    ];
+    await source.prompt.enqueue({
+      id: 'request-restore-one', userMessageId: 'logical-restore-one', message: { role: 'user', content, toolCalls: [], origin },
+    });
+    await source.prompt.enqueue({
+      id: 'request-restore-two', userMessageId: 'logical-restore-two', message: { role: 'user', content: [{ type: 'text', text: 'second', presentation }], toolCalls: [], origin },
+    });
+    const entries = source.states.get(promptQueueKey).order.map((id) => {
+      const entry = source.states.get(promptQueueKey).entries.get(id);
+      expect(entry).toBeDefined();
+      return entry as PromptEnqueuedPayload;
+    });
+    const sourceDrain = source.prompt.drain(new Error('source closing'), 'preserve-pending');
+    source.loop.settleActive({ type: 'cancelled', steps: 0, reason: new Error('source closing') });
+    await sourceDrain;
+
+    const cold = harness({ manualTurnResult: true });
+    for (const entry of entries) await cold.dispatcher.dispatch(new PromptEnqueued(entry));
+    await cold.dispatcher.hooks.onDidRestore.run({});
+    expect(cold.prompt.list().hold).toEqual({ reason: 'recovery', count: 2 });
+    expect(cold.prompt.list().pending.map((item) => [item.id, item.userMessageId])).toEqual([
+      ['request-restore-one', 'logical-restore-one'],
+      ['request-restore-two', 'logical-restore-two'],
+    ]);
+    expect(cold.prompt.list().pending[0]?.message).toEqual({ role: 'user', content, toolCalls: [], origin, id: 'logical-restore-one' });
+
+    const same = await cold.prompt.enqueue({ id: 'request-restore-one', userMessageId: 'logical-restore-one', message: { role: 'user', content, toolCalls: [], origin } });
+    expect(same.id).toBe('request-restore-one');
+    expect(same.userMessageId).toBe('logical-restore-one');
+    expect(cold.prompt.list().pending).toHaveLength(2);
+    await cold.prompt.drain(new Error('cold cleanup'));
   });
 
   it('settles queued prompts when Loop admission closes during teardown', async () => {
@@ -2236,6 +2431,31 @@ describe('AgentPromptService', () => {
     expect(fresh.state).toBe('running');
     expect(loop.launches).toEqual([0]);
     expect(prompt.list()).toMatchObject({ active: { id: 'fresh' }, pending: [], hold: undefined });
+  });
+
+  it('keeps opaque origin and text presentation while launching a separate request identity', async () => {
+    const { prompt, loop, context } = harness({ manualTurnResult: true });
+    const presentation = { spans: [{ start: 0, end: 6, kind: 'quote' as const, quote: 'quoted' }] };
+    const origin = { kind: 'merged' as const, origins: [
+      { kind: 'unknown' as const },
+      { kind: 'external_thread' as const, messageId: 'external-source', acceptedAt: 1 },
+    ] };
+    const input = { role: 'user' as const, content: [{ type: 'text' as const, text: 'quoted reply', presentation }], toolCalls: [], origin };
+    const seeds: Array<import('#/agent/loop/stepRequest').TurnSeed> = [];
+    const original = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      if (request instanceof PromptStepRequest) seeds.push(request.turnSeed);
+      return original(request, options);
+    });
+    const handle = await prompt.enqueue({ id: 'new-request', userMessageId: 'logical-message', message: input });
+    expect(seeds).toEqual([{ input: input.content, origin, promptId: 'new-request' }]);
+    expect(loop.drainNextBatch(context)).toBeDefined();
+    expect(context.get().find((entry) => entry.id === 'logical-message')).toEqual({ ...input, id: 'logical-message' });
+    loop.settleActive();
+    await handle.completion;
+    const retry = await prompt.enqueue({ id: 'new-request', userMessageId: 'logical-message', message: input });
+    expect(retry.userMessageId).toBe('logical-message');
+    expect(loop.launches).toEqual([0]);
   });
 
   it.each([

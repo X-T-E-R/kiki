@@ -34,7 +34,7 @@
 //   context.append_message             agentCollaboration.materializedMessages, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction           contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                       src/agent/contextMemory/contextEvents.ts
 //   context.clear                      contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
-//   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
+//   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                     src/agent/contextMemory/contextEvents.ts
 //   executor.plan.remove               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.prompt.delivery           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
@@ -71,7 +71,7 @@
 //   prompt.aborted                     promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
 //   prompt.accepted                    promptAdmission                                                                                                                                                                      src/agent/prompt/promptOps.ts
 //   prompt.completed                   promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
-//   prompt.enqueued                    prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
+//   prompt.enqueued                    prompt.identity, promptAdmission, promptRetryReceipt                                                                                                                                 src/agent/prompt/promptService.ts
 //   prompt.launch_committed            prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.model_switch_queued         prompt.modelSwitches                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
 //   prompt.model_switch_status         prompt.modelSwitches                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
@@ -282,12 +282,13 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
+ * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, promptRetryReceipt
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {
   _name: 'context.undo';
   count: number;
+  replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload;
 }
 
 /**
@@ -899,7 +900,7 @@ interface PromptCompletedPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.identity, promptAdmission, promptRetryReceipt · blobs: promptRetryReceipt
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptEnqueuedPayload {
@@ -959,6 +960,8 @@ interface PromptEnqueuedPayload {
   appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
   revision: number;
   queueIndex: number;
+  retryFingerprint?: string;
+  retryStatus?: 'running' | 'queued';
 }
 
 /**
@@ -1128,7 +1131,7 @@ interface PromptReplacedPayload {
 }
 
 /**
- * states: promptRetryReceipt
+ * states: promptRetryReceipt · blobs: promptRetryReceipt
  * owner: src/agent/prompt/promptOps.ts
  */
 interface PromptRetryCommittedPayload {
@@ -1140,6 +1143,10 @@ interface PromptRetryCommittedPayload {
     createdAt: string;
     appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
     revision: number;
+    userMessageId?: string;
+    message?: ContextMessage;
+    execution?: import('./prompt').PromptExecutionBinding;
+    deferredDisabledTools?: string[];
   };
 }
 
