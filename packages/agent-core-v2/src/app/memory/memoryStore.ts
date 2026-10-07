@@ -206,7 +206,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     @IMemoryScopes private readonly scopes: IMemoryScopes,
   ) { super(); }
 
-  private async serializedWrite<T>(base: string, action: () => Promise<T>): Promise<T> {
+  private async serializedWrite<T>(base: string, action: () => Promise<T>, changesActive = true): Promise<T> {
     const previous = this.writeQueues.get(base) ?? Promise.resolve();
     let done!: () => void;
     const current = new Promise<void>((resolve) => { done = resolve; });
@@ -221,7 +221,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         return await action();
       } finally {
         try {
-          if (await this.storage.size(base, 'journal.jsonl') !== before) await this.rebuildCatalog(base);
+          if (changesActive && await this.storage.size(base, 'journal.jsonl') !== before) await this.rebuildCatalog(base);
         } finally { await lock.release(); }
       }
     } finally {
@@ -413,7 +413,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       if (!isCreate && !isProposal && target!.key !== key) await this.storage.delete(base, target!.key);
       if (accepted !== undefined) await this.commit(scope, base, accepted.key, accepted, undefined, 'accept_proposal', candidate!.id, input.source.writer, op);
       return { entry: decode(encoded), operationId: op, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings };
-    });
+    }, input.pending !== true);
   }
 
   async delete(scope: MemoryScope, id: string, expectedRevision: string, writer: MemoryWriter = 'user'): Promise<string> {
@@ -473,17 +473,22 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     const { request, position } = parsed;
     const sources: { scope: MemoryScope; base: string; key: string }[] = [];
     const directoryProof: unknown[] = [];
+    const directoryChecks: (() => Promise<unknown>)[] = [];
     for (const scope of scopes) {
       if (request.scope !== undefined && scope.kind !== request.scope) continue;
       const base = await this.scopes.resolve(scope);
       const statuses = request.statuses ?? ['active'];
       const folders = statuses.every((status) => status === 'pending') ? ['inbox'] : statuses.includes('pending') ? ['entries', 'inbox'] : ['entries'];
       for (const folder of folders) {
-        const names = (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted();
-        directoryProof.push([scope, folder, names, await this.storage.mtime(base, folder)]);
-        for (const name of names) sources.push({ scope, base, key: `${folder}/${name}` });
+        const proof = async () => [scope, folder, (await this.storage.list(`${base}/${folder}`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted(), await this.storage.mtime(base, folder)] as const;
+        const current = await proof();
+        directoryProof.push(current);
+        directoryChecks.push(proof);
+        for (const name of current[2]) sources.push({ scope, base, key: `${folder}/${name}` });
       }
-      directoryProof.push([scope, await this.storage.mtime(base, 'journal.jsonl'), await this.storage.size(base, 'journal.jsonl')]);
+      const proof = async () => [scope, await this.storage.mtime(base, 'journal.jsonl'), await this.storage.size(base, 'journal.jsonl')];
+      directoryProof.push(await proof());
+      directoryChecks.push(proof);
     }
     const namesFingerprint = revision(JSON.stringify(directoryProof));
     const invalidated = (): never => { throw new MemoryDomainError('cursor_invalidated', 'Memory source changed during pagination', 'Restart the original query and reconcile scope plus ID across pages.'); };
@@ -503,18 +508,24 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     let validationHash = position.validationHash;
     let validationEnd = position.validationOffset;
     let validationBytes = 0;
+    const validated = new Map<number, { bytes: Uint8Array; size: number; mtime: number }>();
     while (validationEnd < sources.length && validationEnd - position.validationOffset < this.queryBudget.records) {
       const { base, key } = sources[validationEnd]!;
       const size = await this.storage.size(base, key).catch(() => undefined);
       if (size !== undefined && size <= 64 * 1024 && validationBytes + size > this.queryBudget.bytes && validationEnd > position.validationOffset) break;
+      const beforeMtime = await this.storage.mtime(base, key).catch(() => undefined);
       let contentHash: string | undefined;
+      let bytes: Uint8Array | undefined;
       if (size !== undefined && size <= 64 * 1024) {
         try {
-          const bytes = await readBytes(base, key, (count) => { validationBytes += count; });
+          bytes = await readBytes(base, key, (count) => { validationBytes += count; });
           contentHash = createHash('sha256').update(bytes).digest('hex');
         } catch { contentHash = 'unavailable'; }
       }
-      validationHash = revision(JSON.stringify([validationHash, key, size, await this.storage.mtime(base, key).catch(() => undefined), contentHash]));
+      const mtime = await this.storage.mtime(base, key).catch(() => undefined);
+      if (bytes !== undefined && beforeMtime !== mtime) invalidated();
+      if (bytes !== undefined && size !== undefined && mtime !== undefined && validationEnd >= position.sourceOffset && validationEnd - position.sourceOffset < this.queryBudget.records) validated.set(validationEnd, { bytes, size, mtime });
+      validationHash = revision(JSON.stringify([validationHash, key, size, mtime, contentHash]));
       validationEnd++;
     }
     if (validationEnd < sources.length) {
@@ -528,19 +539,29 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     let skipped = 0;
     let nextSourceOffset = position.sourceOffset;
     let chunkHash = '';
+    let reused = false;
     while (nextSourceOffset < sources.length && nextSourceOffset - position.sourceOffset < this.queryBudget.records) {
       const { base, key, scope } = sources[nextSourceOffset]!;
+      const cached = validated.get(nextSourceOffset);
       const size = await this.storage.size(base, key).catch(() => undefined);
+      if (cached !== undefined && (size !== cached.size || await this.storage.mtime(base, key).catch(() => undefined) !== cached.mtime)) invalidated();
       if (size !== undefined && size <= 64 * 1024 && bytesRead + size > this.queryBudget.bytes && nextSourceOffset > position.sourceOffset) break;
       nextSourceOffset++;
       if (size === undefined || size > 64 * 1024) { skipped++; chunkHash = revision(JSON.stringify([chunkHash, key, size])); continue; }
       try {
-        const bytes = await readBytes(base, key, (count) => { bytesRead += count; });
-        chunkHash = revision(JSON.stringify([chunkHash, key, revision(decoder.decode(bytes))]));
-        const entry = decode(decoder.decode(bytes));
+        const bytes = cached?.bytes ?? await readBytes(base, key, (count) => { bytesRead += count; });
+        if (cached !== undefined) { bytesRead += bytes.byteLength; reused = true; }
+        const text = decoder.decode(bytes);
+        chunkHash = revision(JSON.stringify([chunkHash, key, revision(text)]));
+        const entry = decode(text);
         if (entry.id !== key.slice(key.lastIndexOf('/') + 1, -3)) throw new Error('Memory identity mismatch');
         entries.push({ ...entry, scope });
       } catch { skipped++; }
+    }
+    if (reused) {
+      const currentProof: unknown[] = [];
+      for (const check of directoryChecks) currentProof.push(await check());
+      if (revision(JSON.stringify(currentProof)) !== namesFingerprint) invalidated();
     }
     if (position.chunkHash !== undefined && position.chunkHash !== chunkHash) invalidated();
     position.chunkHash = chunkHash;

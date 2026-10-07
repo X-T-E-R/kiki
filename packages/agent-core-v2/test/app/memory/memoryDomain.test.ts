@@ -524,3 +524,88 @@ it('bounds streamed records and charges actual bytes when source size grows afte
   expect(reads.mock.calls).toHaveLength(2);
   for (const call of reads.mock.calls) expect(call[2]).toEqual({ start: 0, end: 64 * 1024 });
 });
+
+
+describe('memory query read reuse and pending-only writes', () => {
+  it('reads each unchanged source once per call and still reads fresh bytes across pages', async () => {
+    for (let index = 0; index < 3; index++) await save(`Read reuse ${index}`, global);
+    const reads = vi.spyOn(storage, 'readStream');
+    const first = await store.query([global], { mode: 'list', page_size: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(reads).toHaveBeenCalledTimes(3);
+    reads.mockClear();
+    const next = await store.query([global], { cursor: first.next_cursor! });
+    expect(next.items).toHaveLength(1);
+    expect(next.items[0]!.id).not.toBe(first.items[0]!.id);
+    expect(reads).toHaveBeenCalledTimes(3);
+  });
+
+  it('retains the second read when source modification metadata is unavailable', async () => {
+    const saved = await save('Unverifiable metadata', global);
+    const mtime = storage.mtime.bind(storage);
+    vi.spyOn(storage, 'mtime').mockImplementation((scope, key) => key === `entries/${saved.entry.id}.md` ? Promise.resolve(undefined) : mtime(scope, key));
+    const reads = vi.spyOn(storage, 'readStream');
+    const page = await store.query([global], { mode: 'list' });
+    expect(page.items).toHaveLength(1);
+    expect(page.coverage.complete).toBe(true);
+    expect(reads).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['addition', 'journal'] as const)('invalidates a concurrent %s discovered by the final directory proof', async (change) => {
+    const saved = await save('Directory proof', global);
+    const base = pathFor(global);
+    const raw = (await storage.read(base, `entries/${saved.entry.id}.md`))!;
+    const list = storage.list.bind(storage);
+    let checks = 0;
+    vi.spyOn(storage, 'list').mockImplementation(async (scope) => {
+      if (scope === `${base}/entries` && ++checks === 2) {
+        if (change === 'addition') await storage.write(base, 'entries/m_added.md', encoder.encode(new TextDecoder().decode(raw).replaceAll(saved.entry.id, 'm_added')));
+        else await storage.append(base, 'journal.jsonl', encoder.encode('{}\n'));
+      }
+      return list(scope);
+    });
+    await expect(store.query([global], { mode: 'list' })).rejects.toMatchObject({ code: 'cursor_invalidated' });
+  });
+
+  it.each(['edit', 'delete'] as const)('invalidates a source %s between validation and materialization instead of returning retained bytes', async (change) => {
+    const saved = await save('Concurrent source', global);
+    const base = pathFor(global);
+    const key = `entries/${saved.entry.id}.md`;
+    const raw = (await storage.read(base, key))!;
+    const size = storage.size.bind(storage);
+    let checks = 0;
+    vi.spyOn(storage, 'size').mockImplementation(async (scope, file) => {
+      if (scope === base && file === key && ++checks === 2) {
+        if (change === 'delete') await storage.delete(base, key);
+        else await storage.write(base, key, encoder.encode(new TextDecoder().decode(raw).replace('Concurrent source', 'Changed source')));
+      }
+      return size(scope, file);
+    });
+    await expect(store.query([global], { mode: 'list' })).rejects.toMatchObject({ code: 'cursor_invalidated' });
+  });
+
+  it('edits pending entries without scanning active records or rewriting their catalog, while preserving CAS and journal order', async () => {
+    const active = await save('Retained active', global);
+    const pending = await store.put({ action: 'create', scope: global, type: 'feedback', title: 'Pending rule', body: 'Awaiting review.', reason: 'Propose', source, pending: true });
+    const base = pathFor(global);
+    const catalog = await storage.read(base, 'MEMORY.md');
+    const lists = vi.spyOn(storage, 'list');
+    const writes = vi.spyOn(storage, 'write');
+    const append = vi.spyOn(storage, 'append');
+    const locks = vi.spyOn(storage, 'acquireLock');
+    const changed = await store.put({ action: 'update', scope: global, id: pending.entry.id, expectedRevision: pending.entry.revision, type: pending.entry.type, title: pending.entry.title, body: 'Revised proposal.', reason: 'Edit proposal', source, pending: true });
+    expect(changed.outcome).toBe('pending');
+    expect(lists).not.toHaveBeenCalled();
+    expect(writes.mock.calls.map((call) => call[1])).toEqual([`inbox/${pending.entry.id}.md`]);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(locks).toHaveBeenCalledTimes(1);
+    expect(append.mock.invocationCallOrder[0]).toBeLessThan(writes.mock.invocationCallOrder[0]!);
+    expect(writes.mock.calls[0]![3]).toEqual({ atomic: true });
+    expect(await storage.read(base, 'MEMORY.md')).toEqual(catalog);
+    expect(await store.get(global, active.entry.id)).toEqual(active.entry);
+    await expect(store.put({ action: 'update', scope: global, id: pending.entry.id, expectedRevision: pending.entry.revision, type: pending.entry.type, title: pending.entry.title, body: 'Stale proposal.', reason: 'Stale edit', source, pending: true })).rejects.toMatchObject({ code: 'revision_conflict' });
+    expect(await store.get(global, pending.entry.id)).toEqual(changed.entry);
+    await store.undo(global, changed.operationId);
+    expect(await store.get(global, pending.entry.id)).toEqual(pending.entry);
+  });
+});
