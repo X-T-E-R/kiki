@@ -587,14 +587,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     desktopCancelledRef.current = false;
     let unlisten: (() => void) | undefined;
 
-    /**
-     * @param authoritative Set by the stage event, which is itself the current
-     *   word on this window's backend and deliberately clears the selection on
-     *   its way to re-resolving. A resolve started behind the user's back — a
-     *   dropped socket — has no such standing and can be stale when it answers.
-     */
-    const resolveDesktopConnection = (authoritative = false) => {
+    let resolving = false;
+    const resolveDesktopConnection = () => {
+      if (cancelled || resolving || desktopCancelledRef.current) return;
+      resolving = true;
       const generation = ++resolveGeneration;
+      if (isDesktopSelection(selectionRef.current)) {
+        connectionEpochRef.current += 1;
+        selectionRef.current = null;
+        setSelection(null);
+        setMeta(null);
+      }
+      updateLocalSelection(null);
+      if (selectionRef.current === null) setDesktopBoot((boot) => ({ stage: 'waiting', startedAtMs: boot?.startedAtMs ?? Date.now() }));
       // What this resolution was started FOR. Discovery is asynchronous, so by
       // the time it answers the user may have pointed this window somewhere
       // else; the answer then describes a selection that no longer exists and
@@ -602,7 +607,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // connection, and the source catches a re-selection that kept the epoch.
       const startedFor = selectionRef.current;
       const startedEpoch = connectionEpochRef.current;
-      const stillWanted = () => authoritative || (
+      const stillWanted = () => !desktopCancelledRef.current && (
         selectionRef.current === startedFor && connectionEpochRef.current === startedEpoch
       );
       const resume = reloadSelectionRef.current;
@@ -615,7 +620,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       }).catch(() => null);
       void Promise.all([host.connection.discover(), resume.consumed ? Promise.resolve(null) : resume.promise]).then(
         ([connection, handoff]) => {
-          if (cancelled || generation !== resolveGeneration) return;
+          if (cancelled || desktopCancelledRef.current || generation !== resolveGeneration) return;
           // An SSH hand-off is the window being told to continue somewhere it
           // was already going; that is not this resolution's decision to make.
           if (handoff === null && !stillWanted()) return;
@@ -668,17 +673,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           if (desktopCancelledRef.current) return;
           setDesktopFailure(normalizeDesktopFailure(error));
         },
-      );
+      ).finally(() => { resolving = false; });
     };
 
-    // A dropped local socket is the other half of that recovery. When the
-    // backend this window attached to is replaced — the usual cause is another
-    // window on this home restarting it — the old socket closes and the new one
-    // listens on a different random port, so the selection still points at an
-    // address nothing serves. Re-running discovery is what picks up the new
-    // one. It is the same call, with the same generation guard, and it is
-    // debounced because a closing socket and the stage event that explains it
-    // arrive as a pair: without that, one restart would discover twice.
+    // Recovery is triggered by a lost owned connection, not by startup progress.
+    // Repeated socket notifications share the outstanding discovery; the short
+    // timer only groups socket events and is not process admission control.
     let rediscovery: ReturnType<typeof setTimeout> | undefined;
     rediscoverRef.current = undefined;
     const rediscoverLocal = () => {
@@ -686,54 +686,41 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       rediscovery = setTimeout(() => {
         rediscovery = undefined;
         if (cancelled) return;
-        // Exactly one selection is this window's own desktop backend, so exactly
-        // that one may be re-resolved. Everything else in the union is a place
-        // the user pointed this window on purpose — a hand-entered address, a
-        // stored entry, an SSH tunnel, a remote peer, a web entry link, or an
-        // address this window merely detected — and overwriting any of those
-        // with a local discovery would silently move their session elsewhere.
-        if (!isDesktopSelection(selectionRef.current)) return;
+        // Desktop sockets and the retained local-control socket may request
+        // recovery. The resolver preserves an SSH/remote active selection.
+        const source = selectionRef.current?.source;
+        if (!isDesktopSelection(selectionRef.current) && source !== 'ssh' && source !== 'remote') return;
         if (scopePreparingRef.current) return;
         resolveDesktopConnection();
       }, 250);
     };
     rediscoverRef.current = rediscoverLocal;
 
-    // Runtime recovery reuses the boot stage event. Each waiting stage resolves
-    // the newly spawned sidecar connection because its random port may change.
-    //
-    // The stage describes this window's OWN desktop backend starting or failing.
-    // A window on an SSH tunnel or a remote peer keeps its active selection but
-    // still needs its local control connection re-resolved, which is what the
-    // resolver does for it. Every OTHER source is somewhere the user or the host
-    // put this window on purpose — a hand-entered address, a stored entry, a
-    // detected one, a web entry link — and must be left alone: clearing it or
-    // re-resolving it onto a local port would move the user off a working
-    // connection because an unrelated local process restarted. A window with no
-    // selection yet is the ordinary boot case and still resolves.
+    // Stage events describe work owned by native, never request more work.
+    // Native recovery supplies its authenticated ready endpoint directly.
+    // SSH/remote windows only refresh local control; manual sources stay put.
     const stageKeepsActiveSelection = () => selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote';
     const stageMayRetarget = () => selectionRef.current === null || isDesktopSelection(selectionRef.current);
     void host.connection.onBackendStage((payload) => {
-      if (scopePreparingRef.current) return;
+      if (cancelled || desktopCancelledRef.current || scopePreparingRef.current) return;
       if (payload === 'waiting') {
-        // Only the local control connection is re-resolved for a peer window;
-        // the active selection stays exactly as the user left it.
-        if (!stageMayRetarget() && !stageKeepsActiveSelection()) return;
-        updateLocalSelection(null);
-        if (stageKeepsActiveSelection()) {
-          resolveDesktopConnection(true);
-          return;
-        }
+        if (!resolving || !stageMayRetarget()) return;
+        setDesktopBoot((boot) => ({ stage: 'waiting', startedAtMs: boot?.startedAtMs ?? Date.now() }));
+        return;
+      }
+      if (payload !== null && typeof payload === 'object' && 'stage' in payload && payload.stage === 'ready' && 'connection' in payload) {
+        if (resolving || (!stageMayRetarget() && !stageKeepsActiveSelection())) return;
+        const config = payload.connection;
+        if (config === null || typeof config !== 'object' || !('url' in config) || typeof config.url !== 'string' || !('token' in config) || typeof config.token !== 'string') return;
+        const local: ConnectionSelection = { config: { url: config.url, token: config.token }, persist: false, source: 'desktop', scopeId: 'local' };
+        updateLocalSelection(local);
+        if (stageKeepsActiveSelection()) return;
         connectionEpochRef.current += 1;
+        selectionRef.current = local;
+        setSelection(local);
+        setDesktopBoot(null);
         setDesktopFailure(null);
         setConnectError(null);
-        setSelection(null);
-        setMeta(null);
-        setDesktopBoot((boot) => ({
-          stage: 'waiting',
-          startedAtMs: boot?.startedAtMs ?? Date.now(),
-        }));
-        resolveDesktopConnection(true);
         return;
       }
       if (
@@ -813,6 +800,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setLocalControl({ selection: localSelection, client: instance });
     return () => { void instance.klient.close(); };
   }, [localSelection, localEndpoint, localToken, requestTimeoutMs]);
+
+  useEffect(() => {
+    if (host.kind !== 'tauri' || localClient === null || (selection?.source !== 'ssh' && selection?.source !== 'remote')) return;
+    return localClient.klient.terminal.onStatus((status) => {
+      if (status === 'closed') rediscoverRef.current?.();
+    });
+  }, [host, localClient, selection?.source]);
 
   const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
   const token = config?.token.trim() ?? null;

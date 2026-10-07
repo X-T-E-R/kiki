@@ -14,6 +14,7 @@ import type {
   TauriHostAdapter,
   HostFileDrop,
   HostSelectedFile,
+  LocalConnection,
 } from './host';
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
@@ -117,13 +118,24 @@ function onFileDrop(callback: (drop: HostFileDrop) => void): () => void {
   };
 }
 
+let desktopDiscovery: Promise<LocalConnection> | null = null;
+let desktopCancellation: Promise<void> | null = null;
+
+async function discoverDesktop(): Promise<LocalConnection> {
+  if (desktopCancellation !== null) await desktopCancellation;
+  if (desktopDiscovery === null) {
+    const flight = invoke<ConnectionConfig>('desktop_connection').then((config): LocalConnection => ({ config, persist: false }));
+    desktopDiscovery = flight;
+    const release = () => { if (desktopDiscovery === flight) desktopDiscovery = null; };
+    void flight.then(release, release);
+  }
+  return desktopDiscovery;
+}
+
 export const tauriHost: TauriHostAdapter = {
   kind: 'tauri',
   connection: {
-    async discover() {
-      const config = await invoke<ConnectionConfig>('desktop_connection');
-      return { config, persist: false };
-    },
+    discover: discoverDesktop,
     listSshProfiles: () => invoke('list_ssh_profiles'),
     saveSshProfile: (profile) => invoke('save_ssh_profile', { profile }),
     removeSshProfile: (id) => invoke('remove_ssh_profile', { id }),
@@ -136,7 +148,12 @@ export const tauriHost: TauriHostAdapter = {
     disconnectSshProfile: (id, tunnelId) => invoke('disconnect_ssh_profile', { id, tunnelId }),
     setWorkspaceScope: (scope) => { remoteWorkspaceActive = scope === 'ssh'; },
     async cancelStartup() {
-      await invoke('cancel_desktop_startup');
+      if (desktopCancellation !== null) return desktopCancellation;
+      const pending = desktopDiscovery;
+      const cancellation = invoke<void>('cancel_desktop_startup').then(async () => { await pending?.catch(() => undefined); });
+      desktopCancellation = cancellation;
+      try { await cancellation; }
+      finally { if (desktopCancellation === cancellation) desktopCancellation = null; }
     },
     async onBackendStage(callback) {
       return listen<unknown>('kiki://desktop-backend-stage', (event) => {

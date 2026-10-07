@@ -101,46 +101,77 @@ export async function ensureServer(options: {
   readonly port?: number;
   readonly idleExit?: string;
   readonly workspace?: string;
+  readonly signal?: AbortSignal;
 }): Promise<ServerConnection> {
   const homeDir = resolve(options.homeDir);
-  const workspace = options.workspace === undefined
-    ? undefined
-    : normalize(await realpath(resolve(options.workspace)));
+  const workspace = options.workspace === undefined ? undefined : normalize(await realpath(resolve(options.workspace)));
+  options.signal?.throwIfAborted();
   const existing = await findReachableServer(homeDir, workspace);
   if (existing !== undefined) return existing;
-
-  return withEnsureLock(homeDir, async () => {
-    const raced = await findReachableServer(homeDir, workspace);
-    if (raced !== undefined) return raced;
-    if ((await listLiveServerInstances(homeDir)).length > 0) {
+  const cancellation = new AbortController();
+  const signal = options.signal === undefined ? cancellation.signal : AbortSignal.any([options.signal, cancellation.signal]);
+  const cancel = () => { cancellation.abort(new Error('Server startup was cancelled')); };
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
+  try {
+    return await withEnsureLock(homeDir, async (lease) => {
+      const raced = await findReachableServer(homeDir, workspace);
+      if (raced !== undefined) return raced;
       const drainDeadline = Date.now() + ENSURE_TIMEOUT_MS;
       while ((await listLiveServerInstances(homeDir)).length > 0) {
+        signal.throwIfAborted();
         const recovered = await findReachableServer(homeDir, workspace);
         if (recovered !== undefined) return recovered;
         if (Date.now() >= drainDeadline) {
           throw new Error(`A live Kiki service in this home is still draining or unreachable. Keep its windows open and retry after it stops; no second service was started. See log: ${resolveGlobalLogPath(homeDir)}`);
         }
-        await sleep(250);
+        await sleep(250, undefined, { signal });
       }
-    }
-    spawnDetachedServer({
-      homeDir,
-      port: options.port,
-      idleExit: options.idleExit ?? '30m',
-    });
-    const deadline = Date.now() + ENSURE_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      await sleep(250);
-      const ready = await findReachableServer(homeDir, workspace);
-      if (ready !== undefined) return ready;
-    }
-    throw new Error([
-      'Kiki server did not become ready before the startup deadline.',
-      `See log: ${resolveGlobalLogPath(homeDir)}`,
-      `Check daemon status: kiki doctor --home "${homeDir}"`,
-      `Validate configuration: kiki doctor agents --home "${homeDir}"`,
-    ].join('\n'));
-  });
+      signal.throwIfAborted();
+      const child = spawnDetachedServer({ homeDir, port: options.port, idleExit: options.idleExit ?? '30m' });
+      let spawnError: Error | undefined;
+      child.on('error', (error: Error) => { spawnError = error; });
+      let ready = false;
+      try {
+        if (child.pid === undefined) throw new Error('The server process could not be started');
+        // The child PID protects the pre-registration window if this launcher
+        // disappears. Only this ChildProcess is eligible for failure cleanup.
+        await lease.transferTo(child.pid);
+        const deadline = Date.now() + ENSURE_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+          await sleep(250, undefined, { signal });
+          if (spawnError !== undefined) throw spawnError;
+          if (child.exitCode !== null || child.signalCode !== null) throw new Error('The server exited during startup');
+          const token = await readLocalOwnerToken(homeDir);
+          const instance = (await listLiveServerInstances(homeDir)).find((item) => item.pid === child.pid);
+          const connection = token === undefined || instance === undefined ? undefined : await probeInstance(instance, token);
+          if (connection !== undefined) {
+            signal.throwIfAborted();
+            ready = true;
+            child.unref();
+            return connection;
+          }
+        }
+        throw new Error([
+          'Kiki server did not become ready before the startup deadline.',
+          `See log: ${resolveGlobalLogPath(homeDir)}`,
+          `Check daemon status: kiki doctor --home "${homeDir}"`,
+          `Validate configuration: kiki doctor agents --home "${homeDir}"`,
+        ].join('\n'));
+      } catch (error) {
+        if (!ready && !await stopStartingChild(child)) {
+          // Keep the child PID lease: cleanup uncertainty cannot authorize a
+          // replacement daemon, even before an instance record exists.
+          lease.retain();
+          throw new Error(`The starting server could not be stopped; its PID lease was retained. See log: ${resolveGlobalLogPath(homeDir)}`, { cause: error });
+        }
+        throw error;
+      }
+    }, signal, () => findReachableServer(homeDir, workspace));
+  } finally {
+    process.off('SIGINT', cancel);
+    process.off('SIGTERM', cancel);
+  }
 }
 
 export async function findReachableServer(
@@ -271,7 +302,7 @@ function spawnDetachedServer(options: {
   readonly homeDir: string;
   readonly port?: number;
   readonly idleExit: string;
-}): void {
+}): ReturnType<typeof spawn> {
   const entryArgs = isSea() ? [] : [...process.execArgv, process.argv[1]!];
   const args = [
     ...entryArgs,
@@ -295,51 +326,98 @@ function spawnDetachedServer(options: {
     'KIKI_EXTERNAL_PERMISSION_CEILING',
     'KIKI_EXTERNAL_SESSION_TITLE',
   ]) delete env[name];
-  const child = spawn(process.execPath, args, {
+  return spawn(process.execPath, args, {
     detached: true,
     env,
     stdio: 'ignore',
     windowsHide: true,
   });
-  child.unref();
 }
 
-async function withEnsureLock<T>(homeDir: string, work: () => Promise<T>): Promise<T> {
+async function stopStartingChild(child: ReturnType<typeof spawn>): Promise<boolean> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return true;
+  let exited!: () => void;
+  const exit = new Promise<boolean>((resolve) => { exited = () => resolve(true); });
+  child.once('exit', exited);
+  try {
+    if (process.platform === 'win32') {
+      // Same tree-termination mechanism as kaos LocalProcess. The PID comes
+      // only from this retained ChildProcess, never from a registry peer.
+      const killer = spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
+      const killed = await new Promise<boolean>((resolve) => {
+        killer.once('error', () => resolve(false));
+        killer.once('close', (code) => resolve(code === 0));
+      });
+      if (!killed) return false;
+    } else {
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    }
+    if (child.exitCode !== null || child.signalCode !== null) return true;
+    return await Promise.race([exit, sleep(2_000).then(() => false)]);
+  } finally { child.off('exit', exited); }
+}
+
+interface EnsureLease {
+  transferTo(pid: number): Promise<void>;
+  retain(): void;
+}
+
+async function withEnsureLock<T>(homeDir: string, work: (lease: EnsureLease) => Promise<T>, signal: AbortSignal, onWait: () => Promise<T | undefined>): Promise<T> {
   const serverDir = join(homeDir, 'server');
   const lockPath = join(serverDir, 'ensure.lock');
   await mkdir(serverDir, { recursive: true });
   const deadline = Date.now() + 120_000;
   for (;;) {
+    signal.throwIfAborted();
     if (Date.now() >= deadline) throw new Error('This space is still starting or updating. Keep its owner running and retry when it finishes; its lifecycle lock was not removed.');
-    try {
-      const handle = await open(lockPath, 'wx');
-      await handle.writeFile(String(process.pid));
-      await handle.close();
-      try {
-        return await work();
-      } finally {
-        await unlink(lockPath).catch(() => {});
-      }
-    } catch (error) {
+    let handle;
+    try { handle = await open(lockPath, 'wx'); }
+    catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const ready = await onWait();
+      signal.throwIfAborted();
+      if (ready !== undefined) return ready;
       let info;
-      try {
-        info = await stat(lockPath);
-      } catch (statError) {
+      try { info = await stat(lockPath); }
+      catch (statError) {
         if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
         throw statError;
       }
-      const owner = Number(await readFile(lockPath, 'utf8').catch(() => ''));
+      const ownerText = await readFile(lockPath, 'utf8').catch(() => '');
+      const owner = Number(ownerText);
       let ownerAlive = Number.isInteger(owner) && owner > 0;
       if (ownerAlive) {
         try { process.kill(owner, 0); }
         catch (probeError) { ownerAlive = (probeError as NodeJS.ErrnoException).code !== 'ESRCH'; }
       }
-      if (!ownerAlive && (owner > 0 || Date.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS)) {
+      if (!ownerAlive && (owner > 0 || Date.now() - info.mtimeMs >= ENSURE_LOCK_STALE_MS)
+        && await readFile(lockPath, 'utf8').catch(() => '') === ownerText) {
         await unlink(lockPath).catch(() => {});
-      } else {
-        await sleep(100);
-      }
+      } else { await sleep(100, undefined, { signal }); }
+      continue;
+    }
+    let owner = String(process.pid);
+    let release = true;
+    try {
+      await handle.writeFile(owner);
+      await handle.close();
+      return await work({
+        async transferTo(pid) {
+          if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('The starting server has no valid PID');
+          if (await readFile(lockPath, 'utf8') !== owner) throw new Error('The service startup lease changed ownership');
+          const lease = await open(lockPath, 'r+');
+          try {
+            await lease.truncate(0);
+            await lease.write(String(pid), 0, 'utf8');
+            owner = String(pid);
+          } finally { await lease.close(); }
+        },
+        retain() { release = false; },
+      });
+    } finally {
+      await handle.close().catch(() => {});
+      if (release && await readFile(lockPath, 'utf8').catch(() => '') === owner) await unlink(lockPath).catch(() => {});
     }
   }
 }
