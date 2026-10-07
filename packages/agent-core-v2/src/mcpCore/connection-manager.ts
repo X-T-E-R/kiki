@@ -37,7 +37,7 @@ interface InternalEntry {
   error?: string;
   client?: RuntimeMcpClient;
   connectedAt?: number;
-  toolRefresh?: { queued: boolean };
+  toolRefresh?: { queued: boolean; work?: Promise<void> };
 }
 
 export type McpStatusListener = (entry: McpServerEntry) => void;
@@ -69,6 +69,7 @@ export interface McpConnectionView {
   reconnect(name: string): Promise<void>;
   readonly connect?: (name: string, config: McpServerConfig) => Promise<void>;
   reconnectAndJoin(name: string): Promise<void>;
+  readonly refreshToolList?: (name: string) => Promise<void>;
   waitForInitialLoad(signal?: AbortSignal): Promise<void>;
   initialLoadDurationMs(): number;
   onStatusChange(listener: McpStatusListener): () => void;
@@ -456,34 +457,44 @@ export class McpConnectionManager implements McpConnectionView {
     client: RuntimeMcpClient,
     attemptId: number,
   ): void {
-    client.onToolsListChanged?.(() => this.scheduleToolsRefresh(entry, client, attemptId));
+    client.onToolsListChanged?.(() => {
+      void this.scheduleToolsRefresh(entry, client, attemptId).catch((error: unknown) => {
+        this.log.warn('mcp tool list refresh failed', {
+          server: entry.name,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      });
+    });
+  }
+
+  refreshToolList(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (entry?.client === undefined || entry.status !== 'connected') return Promise.resolve();
+    return this.scheduleToolsRefresh(entry, entry.client, entry.attemptId);
   }
 
   private scheduleToolsRefresh(
     entry: InternalEntry,
     client: RuntimeMcpClient,
     attemptId: number,
-  ): void {
-    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return;
+  ): Promise<void> {
+    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return Promise.resolve();
     const pending = entry.toolRefresh;
     if (pending !== undefined) {
       pending.queued = true;
-      return;
+      return pending.work ?? Promise.resolve();
     }
-    const next = { queued: false };
+    const next: NonNullable<InternalEntry['toolRefresh']> = { queued: false };
     entry.toolRefresh = next;
-    void this.refreshTools(entry, client, attemptId)
-      .catch((error: unknown) => {
-        this.log.warn('mcp tool list refresh failed', {
-          server: entry.name,
-          errorType: error instanceof Error ? error.name : typeof error,
-        });
-      })
-      .finally(() => {
-        if (entry.toolRefresh !== next) return;
-        entry.toolRefresh = undefined;
-        if (next.queued) this.scheduleToolsRefresh(entry, client, attemptId);
-      });
+    next.work = (async () => {
+      do {
+        next.queued = false;
+        await this.refreshTools(entry, client, attemptId);
+      } while (next.queued && this.isCurrent(entry, attemptId) && entry.client === client && entry.status === 'connected');
+    })().finally(() => {
+      if (entry.toolRefresh === next) entry.toolRefresh = undefined;
+    });
+    return next.work;
   }
 
   private async refreshTools(

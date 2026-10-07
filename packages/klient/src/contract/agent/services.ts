@@ -10,6 +10,11 @@ import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
+import {
+  mcpServerAuthStateSchema,
+  mcpServerConfigDataSchema,
+  mcpServerLocatorSchema,
+} from '../global/mcpManagement.js';
 import type { ServiceContract } from '../types.js';
 import { goalSnapshotSchema } from './events.js';
 import { modelSwitchInputSchema, modelSwitchModeSchema, modelSwitchReceiptSchema, queuedModelSwitchSchema } from './modelSwitch.js';
@@ -213,6 +218,26 @@ export const mcpServerEntrySchema = z.object({
   error: z.string().optional(),
 });
 
+export const mcpSessionOverrideSchema = z.object({
+  locator: mcpServerLocatorSchema,
+  override: z.enum(['on', 'off', 'inherit']),
+});
+
+export const mcpSessionCapabilitySchema = z.object({
+  locator: mcpServerLocatorSchema,
+  runtimeName: z.string(),
+  origin: z.enum(['global', 'plugin', 'caller']),
+  config: z.discriminatedUnion('transport', [
+    mcpServerConfigDataSchema.options[0].omit({ env: true }),
+    mcpServerConfigDataSchema.options[1].omit({ headers: true }),
+    mcpServerConfigDataSchema.options[2].omit({ headers: true }),
+  ]),
+  authStatus: mcpServerAuthStateSchema,
+  connection: z.enum(['enabled', 'disabled', 'connecting', 'connected', 'failed', 'unavailable']),
+  override: z.enum(['on', 'off', 'inherit']),
+  error: z.string().optional(),
+});
+
 export const agentMcpContract = {
   list: { input: z.tuple([]), output: z.array(mcpServerEntrySchema) },
   waitForInitialLoad: { input: z.tuple([]), output: noResult },
@@ -221,6 +246,11 @@ export const agentMcpContract = {
   connect: {
     input: z.tuple([z.string(), mcpServerConfigSchema]),
     output: noResult,
+  },
+  listMcpSessionCapabilities: { input: z.tuple([]), output: z.array(mcpSessionCapabilitySchema) },
+  setMcpSessionOverride: {
+    input: z.tuple([mcpSessionOverrideSchema]),
+    output: mcpSessionCapabilitySchema,
   },
 } satisfies ServiceContract;
 

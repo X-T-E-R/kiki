@@ -39,6 +39,7 @@ import type { PlanData } from '@kiki/agent-core-v2/features/plan/plan';
 import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { SkillSummary } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import type { McpServerEntry } from '@kiki/agent-core-v2/mcpCore/connection-manager';
+import type { McpSessionCapability, McpSessionOverride } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import type {
   GlobalMcpServerConfig,
   McpAuthStatusQuery,
@@ -265,6 +266,8 @@ import {
 import {
   fullCompactionInputSchema,
   mcpServerEntrySchema,
+  mcpSessionCapabilitySchema,
+  mcpSessionOverrideSchema,
 } from '../src/contract/agent/services.js';
 import {
   createChildSessionOptionsSchema,
@@ -834,6 +837,8 @@ const _getTaskOutputPayload: AssertWire<typeof getTaskOutputPayloadSchema, GetTa
 
 // agent/services.ts (mcp / fullCompaction)
 const _mcpServerEntry: AssertWire<typeof mcpServerEntrySchema, McpServerEntry> = true;
+const _mcpSessionCapability: AssertWire<typeof mcpSessionCapabilitySchema, McpSessionCapability> = true;
+const _mcpSessionOverride: AssertWire<typeof mcpSessionOverrideSchema, McpSessionOverride> = true;
 const _fullCompactionInput: AssertWire<typeof fullCompactionInputSchema, FullCompactionInput> =
   true;
 const _contextStrategyStatus: AssertWire<

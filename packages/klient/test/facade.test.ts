@@ -674,6 +674,43 @@ describe('agent mcp / compaction routing', () => {
     expect(channel.calls).toHaveLength(1);
   });
 
+  it('routes locator-addressed MCP session capability reads and overrides', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    const capability = {
+      locator: { source: 'global', name: 'mock' },
+      runtimeName: 'mock',
+      origin: 'global',
+      config: { transport: 'stdio', command: 'mock-mcp' },
+      authStatus: 'not-applicable',
+      connection: 'connected',
+      override: 'inherit',
+    };
+    channel.results.set('agentMcpService.listMcpSessionCapabilities', [capability]);
+    channel.results.set('agentMcpService.setMcpSessionOverride', { ...capability, override: 'off', connection: 'disabled' });
+
+    await expect(agent.listMcpSessionCapabilities()).resolves.toEqual([capability]);
+    await expect(agent.setMcpSessionOverride({
+      locator: { source: 'global', name: 'mock' },
+      override: 'off',
+    })).resolves.toMatchObject({ connection: 'disabled', override: 'off' });
+    expect(channel.calls.slice(-2)).toEqual([
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentMcpService',
+        method: 'listMcpSessionCapabilities',
+        args: [],
+      },
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentMcpService',
+        method: 'setMcpSessionOverride',
+        args: [{ locator: { source: 'global', name: 'mock' }, override: 'off' }],
+      },
+    ]);
+  });
+
   it('compact issues a manual begin with the optional instruction', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -765,9 +802,10 @@ describe('agent domain routing', () => {
     channel.results.set('agentTaskService.detach', undefined);
     channel.results.set('agentFullCompactionService.isCompacting', false);
     channel.results.set('agentContextRebuildService.rebuild', {
-      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       changed: true,
-      changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, injections: false },
+      changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, mcp: false, injections: false },
+      readiness: { mcp: [], plugins: { state: 'ready', errors: [] } },
     });
 
     await agent.activatePluginCommand({ pluginId: 'plugin', commandName: 'command', args: 'arg' });

@@ -167,6 +167,30 @@ describe('McpConnectionManager', () => {
     }
   });
 
+  it('refreshes the current client explicitly without reconnecting or replacing it', async () => {
+    const tools = [{ name: 'initial', description: '', inputSchema: { type: 'object', properties: {} } }];
+    const connect = vi.spyOn(StdioMcpClient.prototype, 'connect').mockResolvedValue();
+    const listTools = vi.spyOn(StdioMcpClient.prototype, 'listTools').mockImplementation(async () => [...tools]);
+    const cm = createManager();
+    try {
+      await cm.connectAll({ current: stdioConfig(), disabled: { ...stdioConfig(), enabled: false } });
+      const client = cm.resolved('current')?.client;
+      tools.push({ name: 'added', description: '', inputSchema: { type: 'object', properties: {} } });
+      await cm.refreshToolList('current');
+      expect(cm.resolved('current')?.rawTools.map((tool) => tool.name)).toEqual(['initial', 'added']);
+      expect(cm.resolved('current')?.client).toBe(client);
+      expect(connect).toHaveBeenCalledOnce();
+      const calls = listTools.mock.calls.length;
+      await cm.refreshToolList('disabled');
+      await cm.refreshToolList('missing');
+      expect(listTools).toHaveBeenCalledTimes(calls);
+    } finally {
+      await cm.shutdown();
+      listTools.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
   it('isolates failures: a bad server is marked failed without blocking the rest', async () => {
     const cm = createManager();
     try {

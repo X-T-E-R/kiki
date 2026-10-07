@@ -120,6 +120,8 @@ export type {
   AgentFacade,
   AgentTaskInfo,
   McpServerEntry,
+  McpSessionCapability,
+  McpSessionOverride,
   PlanData,
   PromptLaunchResult,
   PromptWithSkillsInput,

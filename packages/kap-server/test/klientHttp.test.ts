@@ -222,7 +222,7 @@ describe('klient HTTP host', () => {
       await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'keep me' }], toolCalls: [] });
       const before = await agent.getContext();
       await expect(agent.rebuildContext()).resolves.toMatchObject({
-        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       });
       await expect(agent.getContext()).resolves.toEqual(before);
 

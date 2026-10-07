@@ -10,6 +10,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import {
   McpConnectionManager,
+  mcpServerConfigsEqual,
   type McpConnectionView,
   type McpServerEntry,
 } from '#/mcpCore/connection-manager';
@@ -65,8 +66,8 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @ref(ISessionManager) sessionLifecycle: LiveRef<ISessionManager>,
-    private readonly plugins?: IPluginService,
-    private readonly usage?: IPluginUsageService,
+    @IPluginService private readonly plugins?: IPluginService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
     super();
     this.sessionLifecycle = sessionLifecycle;
@@ -128,12 +129,13 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         );
         const overlayServers = { ...pluginOverlay, ...servers };
         const sessionId = event.readSeed(ISessionContext).sessionId;
-        if (Object.keys(overlayServers).length === 0 && this.plugins === undefined) return;
         const overlay = this.plugins === undefined
-          ? this.sessionOverlay(overlayServers, { stdioCwd: event.readSeed(ISessionContext).cwd })
+          ? this.sessionOverlay(overlayServers, { stdioCwd: event.readSeed(ISessionContext).cwd, sessionId })
           : this.sessionOverlay(overlayServers, {
               stdioCwd: event.readSeed(ISessionContext).cwd,
+              sessionId,
             }, baseline.connectionManager);
+        overlay.setCallerServers?.(new Set(Object.keys(servers)));
         this.sessionOverlays.set(sessionId, {
           overlay,
           explicit: servers,
@@ -159,12 +161,18 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       : new Set(pluginServers.allNames.filter((name) =>
         !Object.hasOwn(pluginServers.enabled, name) && !this.mcpConfig.isFileServer?.(name),
       ));
-    const view: McpConnectionView = new FilteredMcpConnectionView(this.manager, hidden);
+    const view = new FilteredMcpConnectionView(this.manager, hidden);
+    const baseline = this.sessionBaseline(view, this.ready);
+    const selection = { overrides: new Map<string, 'on' | 'off'>() };
     return {
       _serviceBrand: undefined,
       ready: this.ready,
       connectionManager: view,
-      isBaselineServer: this.sessionBaseline(view, this.ready),
+      selection,
+      isBaselineServer: baseline.isBaselineServer,
+      admitCurrentServers: baseline.admitCurrentServers,
+      setServerEnabled: (name, enabled) => view.setServerEnabled(name, enabled),
+      clearServerEnabledOverride: (name) => view.clearServerOverride(name),
     };
   }
 
@@ -173,6 +181,11 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     opts?: SessionMcpOverlayOptions,
     baseView: McpConnectionView = this.manager,
   ): ISessionMcpOverlay {
+    const callerNames = new Set(Object.keys(servers));
+    const initialCallerNames = new Set(Object.keys(servers));
+    const configuredSources = new Map<string, 'global' | 'plugin' | 'caller'>();
+    const selection = { overrides: new Map<string, 'on' | 'off'>() };
+    const configuredGlobalNames = new Set<string>();
     const sessionManager = new McpConnectionManager({
       log: this.log,
       oauthService: this.oauthService,
@@ -181,10 +194,29 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       workspaceId: this.workspaceId,
       runtimeId: 'local',
       requireStdioRuntimeId: true,
+      allowsCall: async (name) => {
+        if (configuredGlobalNames.has(name) || callerNames.has(name)) return true;
+        if (opts?.sessionId !== undefined && this.plugins !== undefined && this.usage?.enabled()) {
+          const owner = (await this.plugins.mcpServerEntries()).find((entry) => entry.name === name);
+          return owner !== undefined && owner.config.enabled !== false &&
+            await this.usage.allows(this.workspaceId, owner.pluginId, opts.sessionId);
+        }
+        return this.mcpConfig.allowsCall?.(name) ?? true;
+      },
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
     let overlayNames = new Set(Object.keys(servers));
+    const initialOverlayNames = new Set(overlayNames);
+    const admittedOverlayNames = new Set(overlayNames);
+    const configuredOverrides = new Map<string, McpServerConfig>();
+    const configuredOverlayNames = new Set<string>();
+    let mutationTail: Promise<void> = Promise.resolve();
+    const mutate = (work: () => Promise<void>): Promise<void> => {
+      const next = mutationTail.catch(() => undefined).then(work);
+      mutationTail = next.then(() => undefined, () => undefined);
+      return next;
+    };
     const connect = Promise.all([this.mcpConfig.ready, this.identity.resolved()])
       .then(() => sessionManager.connectAll({ ...servers }))
       .catch((error: unknown) => {
@@ -196,28 +228,126 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       sessionManager,
       overlayNames,
     );
-    const update = async (next: Readonly<Record<string, McpServerConfig>>): Promise<void> => {
-      await connect;
-      const nextNames = new Set(Object.keys(next));
-      for (const name of overlayNames) {
-        if (nextNames.has(name)) continue;
-        const config = sessionManager.configOf(name);
-        if (config === undefined) await sessionManager.remove(name);
-        else await sessionManager.connect(name, { ...config, enabled: false });
-      }
-      for (const [name, config] of Object.entries(next)) await sessionManager.connect(name, config);
-      overlayNames = nextNames;
+    const canReuseBase = (name: string, config: McpServerConfig): boolean => {
+      const entry = baseView.get(name);
+      const baseConfig = baseView.configOf(name);
+      return entry !== undefined && entry.status !== 'disabled' && entry.status !== 'removed' && baseConfig !== undefined &&
+        sessionMcpConfigsEqual(baseConfig, config);
+    };
+    const removeConfiguredOverlay = async (name: string): Promise<void> => {
+      if (!configuredOverlayNames.has(name) || initialOverlayNames.has(name)) return;
+      await sessionManager.remove(name);
+      configuredOverlayNames.delete(name);
+      overlayNames.delete(name);
       view.replaceOverlayNames(overlayNames);
     };
+    const update = (next: Readonly<Record<string, McpServerConfig>>): Promise<void> => mutate(async () => {
+      await connect;
+      const previousNames = overlayNames;
+      const nextNames = new Set(Object.keys(next));
+      for (const name of nextNames) admittedOverlayNames.add(name);
+      overlayNames = nextNames;
+      view.replaceOverlayNames(overlayNames);
+      for (const name of previousNames) {
+        if (nextNames.has(name)) continue;
+        const config = sessionManager.configOf(name);
+        if (config !== undefined) await sessionManager.connect(name, { ...config, enabled: false });
+        else await sessionManager.remove(name);
+        configuredOverlayNames.delete(name);
+      }
+      for (const [name, config] of Object.entries(next)) {
+        if (
+          configuredOverrides.has(name) &&
+          baseView instanceof FilteredMcpConnectionView &&
+          baseView.isBaselineHidden(name)
+        ) {
+          const activeConfig = sessionManager.configOf(name);
+          if (activeConfig !== undefined) await sessionManager.connect(name, { ...activeConfig, enabled: false });
+          await removeConfiguredOverlay(name);
+          continue;
+        }
+        if (!initialOverlayNames.has(name) && canReuseBase(name, config)) {
+          await removeConfiguredOverlay(name);
+          continue;
+        }
+        await sessionManager.connect(name, config);
+      }
+    });
+    const enableConfiguredServer = (
+      runtimeName: string,
+      config: McpServerConfig,
+      source?: 'global' | 'plugin' | 'caller',
+    ): Promise<void> => mutate(async () => {
+      await connect;
+      if (baseView instanceof FilteredMcpConnectionView && baseView.isBaselineHidden(runtimeName)) return;
+      if (baseView instanceof FilteredMcpConnectionView && baseView.isSessionHidden(runtimeName)) {
+        baseView.clearServerOverride(runtimeName);
+      }
+      const enabledConfig = configuredSessionMcpConfig(config);
+      if (source !== undefined) {
+        const previousSource = configuredSources.get(runtimeName);
+        configuredSources.set(runtimeName, source);
+        if (source === 'global') configuredGlobalNames.add(runtimeName);
+        else configuredGlobalNames.delete(runtimeName);
+        if (previousSource === 'caller' && source !== 'caller' && !initialCallerNames.has(runtimeName)) {
+          callerNames.delete(runtimeName);
+        }
+        if (source === 'caller') callerNames.add(runtimeName);
+      }
+      configuredOverrides.set(runtimeName, enabledConfig);
+      if (canReuseBase(runtimeName, enabledConfig)) {
+        await removeConfiguredOverlay(runtimeName);
+        view.setServerEnabled(runtimeName, true);
+        return;
+      }
+      overlayNames.add(runtimeName);
+      admittedOverlayNames.add(runtimeName);
+      view.replaceOverlayNames(overlayNames);
+      await sessionManager.connect(runtimeName, enabledConfig);
+      configuredOverlayNames.add(runtimeName);
+      view.setServerEnabled(runtimeName, true);
+    });
+    const clearConfiguredServer = (runtimeName: string): Promise<void> => mutate(async () => {
+      await connect;
+      configuredOverrides.delete(runtimeName);
+      const source = configuredSources.get(runtimeName);
+      configuredSources.delete(runtimeName);
+      if (source === 'global') configuredGlobalNames.delete(runtimeName);
+      if (source === 'caller' && !initialCallerNames.has(runtimeName)) callerNames.delete(runtimeName);
+      await removeConfiguredOverlay(runtimeName);
+      view.clearServerOverride(runtimeName);
+      if (baseView instanceof FilteredMcpConnectionView) baseView.clearServerOverride(runtimeName);
+    });
     const ready = Promise.all([this.ready, connect]).then(() => undefined);
+    const baseline = this.sessionBaseline(baseView, this.ready, Object.keys(servers));
     return {
       handle: {
         _serviceBrand: undefined,
         ready,
         connectionManager: view,
-        isBaselineServer: this.sessionBaseline(baseView, this.ready, Object.keys(servers)),
+        selection,
+        isBaselineServer: (name) => admittedOverlayNames.has(name) || baseline.isBaselineServer(name),
+        admitCurrentServers: () => {
+          const admitted = new Set(baseline.admitCurrentServers());
+          for (const name of overlayNames) admitted.add(name);
+          return admitted;
+        },
+        setServerEnabled: (name, enabled) => view.setServerEnabled(name, enabled),
+        clearServerEnabledOverride: (name) => clearConfiguredServer(name).then(() => true),
+        enableConfiguredServer,
       },
       update,
+      enableConfiguredServer,
+      clearConfiguredServer,
+      configuredServers: () => Object.fromEntries(configuredOverrides),
+      setCallerServers: (names) => {
+        callerNames.clear();
+        initialCallerNames.clear();
+        for (const name of names) {
+          callerNames.add(name);
+          initialCallerNames.add(name);
+        }
+      },
       shutdown: () => {
         unsubscribeOAuth();
         return sessionManager.shutdown();
@@ -241,7 +371,11 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       Object.entries(enabled).filter(([name]) =>
         !this.mcpConfig.isFileServer?.(name) && this.manager.get(name) === undefined),
     );
-    await entry.overlay.update?.({ ...pluginOverlay, ...entry.explicit });
+    await entry.overlay.update?.({
+      ...pluginOverlay,
+      ...entry.explicit,
+      ...entry.overlay.configuredServers?.(),
+    });
   }
 
   private oauthEventSubscription(manager: McpConnectionManager): () => void {
@@ -306,7 +440,10 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     view: McpConnectionView,
     ready: Promise<void>,
     extra?: readonly string[],
-  ): (name: string) => boolean {
+  ): {
+    readonly isBaselineServer: (name: string) => boolean;
+    readonly admitCurrentServers: () => ReadonlySet<string>;
+  } {
     let baseline: Set<string> | undefined;
     let frozen = false;
     const snapshot = (): Set<string> => {
@@ -328,7 +465,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         frozen = true;
       },
     );
-    return (name) => {
+    const isBaselineServer = (name: string): boolean => {
       const names = snapshot();
       if (names.has(name)) return true;
       if (frozen) return false;
@@ -336,6 +473,17 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       names.add(name);
       return true;
     };
+    const admitCurrentServers = (): ReadonlySet<string> => {
+      const names = snapshot();
+      const admitted = new Set<string>();
+      for (const entry of view.list()) {
+        if (names.has(entry.name)) continue;
+        names.add(entry.name);
+        admitted.add(entry.name);
+      }
+      return admitted;
+    };
+    return { isBaselineServer, admitCurrentServers };
   }
 
   private mutate(work: () => Promise<void>): Promise<void> {
@@ -392,4 +540,26 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       });
     }
   }
+}
+
+function configuredSessionMcpConfig(config: McpServerConfig): McpServerConfig {
+  if (config.transport === 'stdio' && config.runtime_id === undefined) {
+    return { ...config, enabled: true, runtime_id: 'local' };
+  }
+  return { ...config, enabled: true };
+}
+
+function sessionMcpConfigsEqual(left: McpServerConfig, right: McpServerConfig): boolean {
+  if (left.enabled === false || right.enabled === false) return false;
+  return mcpServerConfigsEqual(
+    normalizeSessionConfig(left),
+    normalizeSessionConfig(right),
+  );
+}
+
+function normalizeSessionConfig(config: McpServerConfig): McpServerConfig {
+  if (config.transport === 'stdio' && config.runtime_id === undefined) {
+    return { ...config, enabled: true, runtime_id: 'local' };
+  }
+  return { ...config, enabled: true };
 }
