@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- [`a425f90`](https://github.com/X-T-E-R/kiki/commit/a425f90121c82cc666ac3569a984f114657ff9e7) - Prevent repeated background process launches during desktop startup.
+
 - [`9257358`](https://github.com/X-T-E-R/kiki/commit/9257358f487839fd1e45f1f14b1ad00efe80656e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show active subagents as running instead of idle.
 
 - [`ef4232e`](https://github.com/X-T-E-R/kiki/commit/ef4232e2a1b570f8a275c899a5ff20ec5e9f5186) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Archive attached conversations together and show progress while archiving.
