@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- [`dd1e0da`](https://github.com/X-T-E-R/kiki/commit/dd1e0daa9cdd1a475d3c8ada6bc4cdec28fd0253) - Introduce Kiki through a first real task, with configuration offered only when needed.
+
 - [`a425f90`](https://github.com/X-T-E-R/kiki/commit/a425f90121c82cc666ac3569a984f114657ff9e7) - Prevent repeated background process launches during desktop startup.
 
 - [`9257358`](https://github.com/X-T-E-R/kiki/commit/9257358f487839fd1e45f1f14b1ad00efe80656e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show active subagents as running instead of idle.
