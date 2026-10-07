@@ -158,8 +158,10 @@
 }
 /* Routed page roots sit on the sheet wash, rather than covering it with a
  * second paper fill. Board has one more full-size paper wrapper. Controls,
- * cards and dialogs inside the page keep their own fills. */
+ * cards and dialogs inside the page keep their own fills. Page headers are
+ * chrome on that same ground, not a second paper band. */
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .bg-paper,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .bg-paper > header.bg-paper,
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-task-board-page] [data-task-board-container] {
   background-color: transparent;
 }
@@ -178,8 +180,11 @@
   background-color: var(--kiki-surface-panel);
   isolation: isolate;
 }
-/* Rail chrome follows the same wash/frost as sidebar sticky group headers. */
-:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky.bg-panel {
+/* Rail chrome follows the same wash/frost as sidebar sticky group headers.
+ * The slash-opacity form is used by the pinned board footer; it is still rail
+ * chrome, not a second ground for the status text beneath it. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky.bg-panel,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky[class*='bg-panel/'] {
   background-color: var(--kiki-surface-panel);
   -webkit-backdrop-filter: var(--kiki-surface-filter);
   backdrop-filter: var(--kiki-surface-filter);
@@ -242,13 +247,10 @@
   mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent), linear-gradient(180deg, #000 calc(100% - 36px), transparent);
   mask-composite: intersect;
 }
-/* The composer card, the session header and the settings reading column. */
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > header.bg-paper,
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center > * > header.bg-paper,
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-tab-workspace] header.bg-paper,
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-relations-surface] {
-  background: var(--kiki-text-paper);
-}
+/* The composer card and the settings reading column. The session header is
+ * NOT listed here: it is the top of the reading column and inherits that
+ * column's own ground, so raising it separately would draw a second band over
+ * the pane the transcript below already reads on. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-scroll] > .mx-auto {
   position: relative;
   isolation: isolate;
@@ -298,31 +300,64 @@
   -webkit-backdrop-filter: var(--kiki-reading-filter);
   backdrop-filter: var(--kiki-reading-filter);
 }
-/* Sticky chrome reads on the rail's wash/frost; do not stack a second wash. */
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky.bg-panel {
-  background-color: transparent;
+/* Sticky chrome keeps the rail's own wash while scrolled, so content cannot
+ * show through its status text. It does not add a second blur or material. */
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky.bg-panel,
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-rail .sticky[class*='bg-panel/'] {
+  background-color: var(--kiki-surface-panel);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* Sidebar: rows of text sit on blocks that share one geometry: an 8px inset
- * from both sidebar edges (the rows' own px-2 gutter), a 10px radius, and an
- * 8px gap between blocks. The ground between blocks, and below the sessions,
- * stays canvas so the picture shows through there. Blocks, top to bottom:
- *   wordmark row · primary nav · sessions (header + filters + list, one
- *   block) · Settings. "New session" is a raised chip of its own already.
- * Geometry only changes while the layer is on; with no background (or the
- * assist off) the sidebar is untouched. */
+/* ---- sidebar ground ----
+ * The sidebar is one column read top to bottom, so it holds ONE ground rather
+ * than a card per group. The wordmark, the nav, the session list and the
+ * Settings row used to each stack the text layer on the sidebar's canvas wash,
+ * which drew a bright slab with a hard top edge at the footer and cut it off
+ * from the column above.
+ *
+ * That ground is the dial wash alone (`.app-sidebar` already carries
+ * `--kiki-surface-canvas`), not the readability floor: the requested opacity
+ * stays visible at every dial, and a low dial is allowed to read faintly. The
+ * rows therefore stop declaring any fill of their own and the column composites
+ * once. The rail keeps its own rule above — one wash plus frost, never raised
+ * to the solved floor.
+ *
+ * Geometry only changes while the layer is on; with no background, or the
+ * assist off, the sidebar is untouched. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar {
   --kiki-block-inset: 8px;
   --kiki-block-radius: 10px;
 }
+/* ---- chrome ink over a picture ----
+ * The faint tier holds AA on every step of the surface ladder, canvas included
+ * (index.css). A pane over a picture is not a ladder step: the wash lets the
+ * media's own light and dark areas sit directly behind a row, and no dial keeps
+ * the lighter tiers at 4.5:1 against them — the faint tier reads 2.4:1 over a
+ * saturated picture at the shipped dial.
+ *
+ * The ground stays the wash the user asked for, so this is the ink: the chrome's
+ * secondary text rises toward the primary ink while a picture is behind it, the
+ * same way the reading column's body text stays readable over its own picture.
+ * The tiers keep their order, they return with the skin off, and a dial the user
+ * lowers still trades readability by their own choice.
+ *
+ * The base tiers are captured under their own names first: a pane that redefines
+ * `--color-ink-faint` in terms of itself is a cycle, and the declaration drops. */
+:root[data-kiki-bg] {
+  --kiki-ink-faint-base: var(--color-ink-faint);
+}
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar,
+:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, [data-preview-workspace]) {
+  --color-ink-soft: var(--color-ink);
+  /* A bright picture under a dark theme is the tightest case measured: 92% of
+   * the ink clears 4.5:1 there with room, and still leaves the tier a trace. */
+  --color-ink-faint: color-mix(in srgb, var(--color-ink) 92%, var(--kiki-ink-faint-base));
+}
 /* Wordmark row: flush to the edges by default; inset to the shared column. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> [data-search-toggle]) {
-  margin: var(--kiki-block-inset) var(--kiki-block-inset) var(--kiki-block-inset);
+  margin: var(--kiki-block-inset) var(--kiki-block-inset) 0;
   padding-left: 8px;
   padding-right: 0;
-  border-radius: var(--kiki-block-radius);
-  background: var(--kiki-text-canvas);
 }
 /* Primary nav: its list is the block (the nav's px-2 is the inset). */
 /* The "New session" chip row: one shared gap below it (was pb-3). */
@@ -334,50 +369,35 @@
 }
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-primary-nav] > ul {
   border-radius: var(--kiki-block-radius);
-  background: var(--kiki-text-canvas);
 }
-/* Sessions: the header row, any filter chips and the list are one block. The
- * header row is flush by default, so it is inset to the column and rounded
- * on top; the list continues it and is rounded at the bottom of its rows. */
+/* Sessions: the header row keeps the column's inset and radius so the list
+ * reads as one block on the shared ground. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > div:has(> h2) {
   margin: 0 var(--kiki-block-inset);
   padding-left: 8px;
   padding-right: 0;
   border-radius: var(--kiki-block-radius) var(--kiki-block-radius) 0 0;
-  background: var(--kiki-text-canvas);
 }
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-filters] {
   margin: 0 var(--kiki-block-inset);
   padding-left: 4px;
   padding-right: 4px;
-  background: var(--kiki-text-canvas);
 }
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] {
   padding-bottom: var(--kiki-block-inset);
 }
-/* The list body: one surface under all groups, sized to its rows (not the
- * scroller), so empty space below the last session stays canvas. */
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > :is([data-session-group-block], [data-sidebar-empty]) {
-  background: var(--kiki-text-canvas);
-}
-/* Groups are spaced by a top margin (mt-3/mt-4); inside the block that gap
- * moves into padding, so the surface runs unbroken from group to group. */
+/* Groups keep their spacing rhythm; the surface runs unbroken from group to
+ * group on the sidebar's single ground. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > [data-session-group-block] + [data-session-group-block] {
   margin-top: 0;
   padding-top: 12px;
 }
-:root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-session-list] > :is([data-session-group-block], [data-sidebar-empty]):last-of-type {
-  border-radius: 0 0 var(--kiki-block-radius) var(--kiki-block-radius);
-}
-/* Footer: the whole row (Settings + connection dot) is the block, so it has
- * the column's full width, and the Settings button inside fills it. Same
- * 48px row as without a background, so the list above ends at the same line. */
+/* Footer: the row keeps the sidebar's ground, so it reads as the last row of
+ * the column rather than a panel of its own. Only the row's own height and
+ * inset are set, to match the column the list above ends on. */
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-footer] {
-  height: 40px;
   margin: 0 var(--kiki-block-inset) var(--kiki-block-inset);
   padding: 0 2px;
-  border-radius: var(--kiki-block-radius);
-  background: var(--kiki-text-canvas);
 }
 :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar > [data-sidebar-footer] [data-connection-status] {
   right: 6px;

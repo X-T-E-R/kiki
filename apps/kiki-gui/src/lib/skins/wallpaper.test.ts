@@ -116,11 +116,70 @@ describe('wallpaper material', () => {
     const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
     expect(rule(`${scope} [data-agent-tab-workspace]`)).toContain('background: var(--kiki-surface-paper);');
     expect(rule(`${scope} [data-agent-relations-surface]`)).toContain('background-color: transparent;');
-    expect(rule(`${assist} [data-agent-relations-surface]`)).toContain('background: var(--kiki-text-paper);');
+    expect(rule(`${scope} [data-agent-tab-workspace] header.bg-paper`)).toContain('background-color: transparent;');
     expect(rule(`${scope} .app-rail .sticky.bg-panel`)).toContain('background-color: var(--kiki-surface-panel);');
-    expect(rule(`${assist} .app-rail .sticky.bg-panel`)).toContain('background-color: transparent;');
+    expect(rule(`${assist} .app-rail .sticky.bg-panel`)).toContain('background-color: var(--kiki-surface-panel);');
     expect(css).toContain(`${scope} [data-agent-tab-workspace] header.bg-paper,`);
-    expect(css).toContain(`${assist} [data-agent-tab-workspace] header.bg-paper,`);
+  });
+
+  it('gives the sidebar one ground that follows the dial, instead of a card per row', () => {
+    const sidebarAssist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='sidebar'])";
+    // The column keeps the dial wash `.app-sidebar` already carries; the skin
+    // layer must not raise it to the solved readability floor, so the requested
+    // opacity stays visible at every dial.
+    expect(rule(`${sidebarAssist} .app-sidebar`)).not.toMatch(/background(?:-color)?:/);
+    expect(rule(":root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar"))
+      .toContain('background-color: var(--kiki-surface-canvas);');
+    // No row inside the column may raise a slab of its own: the doubled
+    // layering is what drew the hard-edged Settings band.
+    for (const selector of [
+      '.app-sidebar > div:has(> [data-search-toggle])',
+      '.app-sidebar [data-primary-nav] > ul',
+      '.app-sidebar > div:has(> h2)',
+      '.app-sidebar > [data-sidebar-filters]',
+      '.app-sidebar > [data-sidebar-footer]',
+    ]) {
+      expect(rule(`${sidebarAssist} ${selector}`), selector).not.toMatch(/background(?:-color)?:/);
+    }
+    // The session list body lost its rule entirely, rather than keeping one
+    // with the fill taken out.
+    expect(css).not.toContain(`${sidebarAssist} .app-sidebar > [data-session-list] > :is([data-session-group-block], [data-sidebar-empty]) {`);
+  });
+
+  it('keeps the rail on its dial wash plus frost, never raised to the text floor', () => {
+    const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    expect(rule(`${scope} :is(.app-rail, [data-preview-workspace])`)).toContain('background-color: var(--kiki-surface-panel);');
+    // The assist rule adds frost, and no opacity of its own, so the dial the
+    // user asked for is the one that reaches the rail.
+    const rail = rule(`${assist} :is(.app-rail, [data-preview-workspace])`);
+    expect(rail).toContain('backdrop-filter: var(--kiki-reading-filter);');
+    expect(rail).not.toMatch(/background(?:-color)?:/);
+  });
+
+  it('lets the session header inherit its reading column instead of re-declaring a ground', () => {
+    const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    // With no background the header is transparent on the sheet, and the skin
+    // layer must not add a second ground over the column the transcript reads
+    // on, which is what banded it.
+    expect(rule(`${scope} .conversation-center > header.bg-paper`)).toContain('background-color: transparent;');
+    expect(css).not.toContain(`${assist} .conversation-center > header.bg-paper {`);
+    expect(css).not.toContain(`${assist} [data-agent-relations-surface] {`);
+  });
+
+  it('keeps a card only where the app means one action or one place', () => {
+    // The two raised marks in the sidebar column are real surfaces and keep
+    // their own fill from the app's own classes: "New session" is a paper
+    // chip and the selected conversation a paper card. The pane rule above is
+    // about ground, so it does not touch either.
+    const sidebar = readFileSync(resolve(import.meta.dirname, '../../components/Sidebar.tsx'), 'utf8');
+    expect(sidebar).toContain('data-new-session');
+    expect(sidebar).toContain('data-session-selected');
+    expect(sidebar).toMatch(/data-new-session[\s\S]{0,400}bg-paper/);
+    // The skin layer never restyles the app's own cards.
+    expect(css).not.toMatch(/\[data-new-session\][^{]*\{[^}]*background/);
+    expect(css).not.toMatch(/\[data-session-selected\][^{]*\{[^}]*background/);
   });
 });
 

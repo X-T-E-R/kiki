@@ -36,7 +36,7 @@ Settings → Appearance → Background puts a picture or a short video behind th
 - **Panel opacity** and **Panel blur**: how much the sidebar and the conversation let the picture through.
 - **Separate for light and dark**: off by default. Turn it on to pick a different background for each theme.
 
-Text stays readable whatever you pick. Kiki measures the picture and raises **Panel opacity** as far as it needs to keep the faintest text at WCAG AA (4.5:1) against the picture's lightest and darkest areas, and the setting tells you when it did that. Menus, dialogs, approval prompts and the composer card always keep a solid background.
+Readability assist keeps text readable at the shipped **Panel opacity**. It measures the picture and answers it where text reads: the conversation and the settings pages keep a soft layer of their own, and the sidebar and rail carry their secondary text at body-ink weight, so the faintest text holds WCAG AA (4.5:1) against the picture's lightest and darkest areas. **Panel opacity** itself stays where you set it — lowering it is your own trade, and a busy picture can then make text hard to read. Menus, dialogs, approval prompts and the composer card always keep a solid background.
 
 Video plays muted and on a loop. It holds on its first frame — or the pack's poster — while the window is hidden or not focused, when reduced motion is on, and when the battery is low and you are unplugged. Kiki warns about videos above 1440p or 40 MB: they cost a lot of memory and you cannot see the difference behind the panels.
 
