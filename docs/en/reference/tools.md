@@ -78,7 +78,7 @@ The default `sort: "relevance"` ranks lexical match scores only among the hits c
 
 A new scan cursor pins the historical range this query started over. Normal appends to the source still allow paging, but the newly added content is not in this result set — re-run the query to see it. If the pinned source content changes, the query conditions change, or the shared navigation advances past this range, restart the query as the response instructs. Older scan cursors continue to read under their original compatibility rules.
 
-`HistorySearch` returns `source_changed` when it finds the source changing while a read is running; restart the query once its writer settles. That is distinct from a cursor you passed that no longer matches its source or query, which asks you to restart without it.
+Normal appends during a transcript search do not require the writer to stop: the read finishes over its captured range, not the latest content. `HistorySearch` returns `source_changed` if that range changes or the source is replaced or truncated; follow `error.next_call` to restart without a cursor. A cursor that no longer matches its source, shared navigation, or query likewise requires a fresh query. Neither error reuses an old location against different content.
 
 Calls that omit the newer scope and mode arguments use the current session and `auto` matching. Read `scope_used` and `mode_used` in the response rather than assuming a historical default; when the result is too narrow, follow `expand_hint.next_call` and retry with `scope: "workspace"`.
 

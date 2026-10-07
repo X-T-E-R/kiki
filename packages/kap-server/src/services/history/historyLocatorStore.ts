@@ -416,6 +416,9 @@ export class HistoryLocatorStore {
     const sourceMatches = saved !== undefined && stateDb?.hasCanonicalSources(input.key) === true && cursor?.ordinal === saved.ordinal &&
       saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset)
         .then((proof) => matchesNavigationProof(saved.source, proof), sourceMutationOrThrow);
+    const through = input.stopAt ?? input.search?.asOf ?? (await stat(input.wirePath)).size;
+    const source = await historyNavigationProof(input.wirePath, through);
+    if (source.identity !== input.incarnation) throw new Error('history_source_changed');
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
     const rebuild = stateDb === undefined
       ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
@@ -468,7 +471,7 @@ export class HistoryLocatorStore {
     const readOptions: AwaitedWireRecordsStreamOptions = {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
       maxBytes: HISTORY_NAV_SCAN_BYTES,
-      endByteOffset: input.stopAt ?? input.search?.asOf,
+      endByteOffset: through,
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
@@ -707,8 +710,10 @@ export class HistoryLocatorStore {
     }
     await flushPending();
     const nextOrdinal = scanner.ordinal + read.recordCount;
+    const currentSource = await historyNavigationProof(input.wirePath, through);
+    if (!matchesNavigationProof(source, currentSource)) throw new Error('history_source_changed');
     if (stateDb !== undefined) {
-      const proof = await historyNavigationProof(input.wirePath, read.nextByteOffset);
+      const proof = read.nextByteOffset === through ? currentSource : await historyNavigationProof(input.wirePath, read.nextByteOffset);
       input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
       stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,

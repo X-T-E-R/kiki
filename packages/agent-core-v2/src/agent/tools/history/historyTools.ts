@@ -349,7 +349,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
               mode_used: request.mode ?? 'auto', target: { workspace_id: target.id, session_id: sessionId,
                 agent_id: agentId, all_agents: request.include_subagents === true ? true : undefined },
               error: { code: sourceChanged ? 'source_changed' : error.message,
-                message: sourceChanged ? 'The transcript changed during this read; restart the query after its writer settles.' :
+                message: sourceChanged ? 'The transcript was replaced or its captured range changed; restart the query without cursor.' :
                   'HistorySearch scan cursor no longer matches its source or query; restart without cursor.',
                 retryable: true, next_call: { tool: 'HistorySearch', arguments: request },
               } }) };

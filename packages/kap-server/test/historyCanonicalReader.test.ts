@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { IConfigService, ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2';
-import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, applyContentSegment, TRANSCRIPT_COVERAGE_VERSION, type ContentSegment, type TranscriptResponse, type TranscriptTurn } from '@kiki/transcript';
+import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, applyContentSegment, projectPresentedText, TRANSCRIPT_COVERAGE_VERSION, type ContentSegment, type TranscriptResponse, type TranscriptTurn } from '@kiki/transcript';
 import Fastify from 'fastify';
 import { registerSessionViewHttp, SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
 import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
@@ -239,6 +239,55 @@ describe('source-backed canonical detail', () => {
     } finally { coldRead.mockRestore(); controller.abort(); await f.close(); }
   }, 60_000);
 
+  it('replays an accepted canonical range during append then incorporates the later result on the next read', async () => {
+    const body = 'typed body '.repeat(1000);
+    const generated = '\n\n<thread_refs>generated context</thread_refs>';
+    const raw = `${body}${generated}`;
+    const presentation = { spans: [{ start: body.length, end: raw.length, kind: 'context' as const }] };
+    const records = turnRecords(100, 'saved response');
+    records[0] = { ...records[0], input: [{ type: 'text', text: raw, presentation }] };
+    const f = await fixture(records);
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    let appended = false;
+    const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      if (args[0] !== f.wirePath) return handle;
+      const read = handle.read.bind(handle);
+      Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const result = await read(buffer, offset, length, position);
+        if (!appended) {
+          appended = true;
+          await actual.appendFile(f.wirePath, line(event({ type: 'tool.result', toolCallId: 'call-100', result: { output: 'later result', isError: false } })));
+        }
+        return result;
+      } });
+      return handle;
+    });
+    try {
+      expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { output: 'saved response' } });
+      gate.mockRestore();
+      expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { output: 'later result' } });
+      expect(f.nav.canonicalReadReport()).toMatchObject({ replays: 2, replayRecords: 17 });
+      const source = { kind: 'turn' as const, id: 't100' };
+      const turn = await f.service.readCanonicalEntity('s', 'main', source) as TranscriptTurn;
+      expect(turn).toMatchObject({ prompt: raw, presentation });
+      let ref = boundedEntity(turn, source, 4096).contentRefs?.find((item) => item.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt continuation');
+      const revision = ref.revision;
+      const visible: string[] = [projectPresentedText(raw.slice(0, ref.offset), presentation)];
+      while (ref !== undefined) {
+        const offset = ref.offset;
+        const segment = await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref, range: true });
+        if (typeof segment?.value !== 'string') throw new Error('missing raw prompt range');
+        expect(segment.ref.revision).toBe(revision);
+        expect(segment.value).toBe(raw.slice(offset, offset + segment.value.length));
+        visible.push(projectPresentedText(segment.value, presentation, offset));
+        ref = segment.next;
+      }
+      expect(visible.join('')).toBe(body);
+    } finally { gate.mockRestore(); await f.close(); }
+  });
+
   it('keeps a cold detail prefix valid during a live append without caching it as the newer source', async () => {
     const f = await fixture(turnRecords(100, 'saved response'));
     const read = f.service.readColdSnapshot.bind(f.service);
@@ -340,7 +389,10 @@ describe('source-backed canonical detail', () => {
         const stat = handle.stat.bind(handle);
         let streamingHandle = 0;
         Object.assign(handle, {
-          stat: async () => { streamingHandle = ++streamingHandles; return stat(); },
+          stat: async (options?: { bigint?: boolean }) => {
+            if (options?.bigint !== true) streamingHandle = ++streamingHandles;
+            return stat(options);
+          },
           read: async (buffer: Buffer, offset: number, length: number, position: number) => {
             const result = await read(buffer, offset, length, position);
             if (streamingHandle === 2) {

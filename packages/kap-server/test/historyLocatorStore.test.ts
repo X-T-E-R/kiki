@@ -1,5 +1,6 @@
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { appendFileSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +19,8 @@ import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/his
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
+
+vi.mock('node:fs/promises', { spy: true });
 
 function memoryStore(): IQueryStore {
   const rows = new Map<string, unknown>();
@@ -316,7 +319,7 @@ describe('history navigation source rows', () => {
         input: [{ type: 'text', text: 'X'.repeat((8 << 20) + 1024) }], time: 1000 }));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(memoryStore(), transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const page = await archive.search({ query: 'needle', mode: 'auto', workspaceId: 'ws',
         sessionId: 's', agentId: 'main', pageSize: 5 });
@@ -340,7 +343,7 @@ describe('history navigation source rows', () => {
       await writeFile(wirePath, wire);
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const request = { query: 'needle', mode: 'auto' as const, workspaceId: 'ws',
         sessionId: 's', agentId: 'main', pageSize: 1 };
@@ -391,7 +394,7 @@ describe('history navigation source rows', () => {
         promptId: `p${turnId}`, time: turnId + 1000, input: [{ type: 'text', text: `${turnId === 5 ? 'tailmarker ' : ''}${filler}` }] })).join(''));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const page = await archive.search({ query: 'tailmarker', mode: 'auto', sort: 'newest', workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 });
       expect(page.items).toMatchObject([{ turn: 5, time: 1005 }]);
@@ -411,7 +414,7 @@ describe('history navigation source rows', () => {
       await writeFile(wirePath, wire);
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const request = { query: 'needle', mode: 'auto' as const, workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 };
       for (const sort of ['newest', 'oldest'] as const) {
@@ -442,7 +445,7 @@ describe('history navigation source rows', () => {
       const reopenedDb = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
       try {
         const reopenedNav = new HistoryLocatorStore(reopenedDb, transcript);
-        const reopenedArchive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+        const reopenedArchive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
           () => transcript, () => reopenedNav)[0]![1] as IHistoryArchive;
         expect((await reopenedArchive.search({ ...request, sort: 'newest', pageToken: newest.pageToken })).items.map((hit) => hit.turn)).toEqual([0]);
       } finally { await reopenedDb.close(); }
@@ -471,7 +474,7 @@ describe('history navigation source rows', () => {
         origin: { kind: 'user' }, time: 1000 + turnId, input: [{ type: 'text', text: 'needle' }] })).join('') + line({ type: 'context.undo', count: 1 }));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const, workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 5 };
       expect((await archive.search(request)).items.map((item) => item.turn)).toEqual([0]);
@@ -498,7 +501,7 @@ describe('history navigation source rows', () => {
       });
       expect(result?.hits).toEqual([expect.objectContaining({ role: 'tool', turn: 4, stepId: 't4.1', ref: expect.any(String) })]);
       const row = await nav.row('ws', 's', 'main', 'frame', 4, 't4.1', 'uuid-1.call-1:output', 'output');
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const page = await archive.search({ query: 'needle𠮷', mode: 'auto', workspaceId: 'ws',
         sessionId: 's', agentId: 'main', pageSize: 5 });
@@ -736,7 +739,7 @@ describe('history navigation source rows', () => {
       const transcript = { historyWireLocation: async (_session: string, agent: string) =>
         agent === 'missing' ? undefined : { workspaceId: 'ws', wirePath } } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(db, transcript);
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       ix.set(HistoryArchiveToken, archive);
       ix.set(SessionContextToken, { sessionId: 's', workspaceId: 'ws' } as ISessionContext);
@@ -803,6 +806,91 @@ describe('history navigation source rows', () => {
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
+  it('keeps two serial live searches and their refs on fixed ranges while proof IO races real appends', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-append-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    let nextTurn = 3;
+    const prompt = (turnId: number) => line({ type: 'turn.prompt', turnId, time: 1000 + turnId,
+      input: [{ type: 'text', text: `needle ${turnId} 汉😀` }], origin: { kind: 'user' } });
+    await writeFile(wirePath, [0, 1, 2].map(prompt).join(''));
+    const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      if (args[0] !== wirePath) return handle;
+      const read = handle.read.bind(handle);
+      Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const result = await read(buffer, offset, length, position);
+        await actual.appendFile(wirePath, prompt(nextTurn++));
+        return result;
+      } });
+      return handle;
+    });
+    try {
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', source: 'transcript' as const, mode: 'auto' as const, sort: 'newest' as const,
+        workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 2 };
+      const first = await archive.search(request);
+      expect(first.items.map((hit) => hit.turn)).toEqual([2, 1]);
+      const continued = await archive.search({ ...request, pageToken: first.pageToken });
+      expect(continued.items.map((hit) => hit.turn)).toEqual([0]);
+      expect(continued.hasMore).toBe(false);
+      const capturedTurns = nextTurn;
+      const second = await archive.search({ ...request, pageSize: 100 });
+      expect(second.items.map((hit) => hit.turn)).toEqual(Array.from({ length: capturedTurns }, (_, index) => capturedTurns - 1 - index));
+      expect(second.hasMore).toBe(false);
+      gate.mockRestore();
+      const fresh = await archive.search(request);
+      expect(fresh.items[0]?.turn).toBe(nextTurn - 1);
+      const page = await archive.search({ ...request, pageToken: fresh.pageToken });
+      expect(page.items.map((hit) => hit.turn)).toEqual([nextTurn - 3, nextTurn - 4]);
+      for (const hit of [...first.items, ...second.items, ...fresh.items, ...page.items]) {
+        expect(await archive.readRef?.(hit.ref!)).toMatchObject({ status: 'ok', text: `needle ${hit.turn} 汉😀` });
+      }
+    } finally { gate.mockRestore(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps rewrite recovery explicit when the accepted search prefix is truncated during proof IO', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-truncate-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const,
+        workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 1 };
+      const first = await archive.search(request);
+      expect(first.items).toHaveLength(1);
+      let changed = false;
+      const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+        const handle = await actual.open(...args);
+        if (args[0] !== wirePath) return handle;
+        const read = handle.read.bind(handle);
+        Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await read(buffer, offset, length, position);
+          if (!changed) { changed = true; writeFileSync(wirePath, lines[0]!); }
+          return result;
+        } });
+        return handle;
+      });
+      try { await expect(archive.search(request)).rejects.toThrow('history_source_changed'); }
+      finally { gate.mockRestore(); }
+      expect(await archive.readRef?.(first.items[0]!.ref!)).toMatchObject({ status: 'stale_ref' });
+      expect(await archive.search(request)).toMatchObject({ items: [], hasMore: false });
+      await writeFile(wirePath, lines.map((record) => record.replace('needle', 'repaired')).join(''));
+      const recovered = await archive.search({ ...request, query: 'repaired' });
+      expect(recovered.items).toHaveLength(1);
+      expect(await archive.readRef?.(recovered.items[0]!.ref!)).toMatchObject({ status: 'ok', text: 'repaired 𠮷 suffix' });
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('pins Search preparation and query pages despite append during and between calls', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-search-self-append-'));
     const wirePath = join(dir, 'wire.jsonl');
@@ -820,7 +908,7 @@ describe('history navigation source rows', () => {
         commit(...args);
         if (!appended) { appended = true; appendFileSync(wirePath, line({ type: 'metadata' })); }
       });
-      const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
       const request = { query: 'needle', mode: 'auto' as const, sort: 'newest' as const,
         workspaceId: 'ws', sessionId: 's', agentId: 'main', pageSize: 2 };

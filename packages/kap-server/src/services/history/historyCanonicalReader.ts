@@ -180,7 +180,7 @@ export class HistoryCanonicalReader {
     if (manifest === undefined || !db.hasCanonicalSources(scope)) throw new Error('history_canonical_locator_incomplete');
     const proof = await historyNavigationProof(location.wirePath, manifest.offset);
     signal?.throwIfAborted();
-    if (!manifest.complete || manifest.offset !== proof.size || !matchesNavigationProof(manifest.source, proof)) {
+    if (!manifest.complete || !matchesNavigationProof(manifest.source, proof)) {
       throw new Error('history_source_changed');
     }
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
@@ -410,7 +410,7 @@ export class HistoryCanonicalReader {
       }
       const proof = await historyNavigationProof(input.wirePath, input.manifest.offset);
       signal.throwIfAborted();
-      if (!matchesNavigationProof(input.manifest.source, proof) || proof.size !== input.manifest.offset ||
+      if (!matchesNavigationProof(input.manifest.source, proof) ||
           input.db.readManifest(input.scope)?.generation !== input.manifest.generation ||
           input.db.readManifest(input.scope)?.offset !== input.manifest.offset) throw new Error('history_source_changed');
       const turn = draft.getTurn(turnId);

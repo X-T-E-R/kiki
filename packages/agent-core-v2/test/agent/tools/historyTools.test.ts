@@ -56,7 +56,7 @@ interface HistoryToolData {
   };
 }
 
-async function run(tool: HistorySearchTool | HistoryReadTool, input: Record<string, unknown>) {
+async function run(tool: Pick<HistorySearchTool | HistoryReadTool, 'resolveExecution'>, input: Record<string, unknown>) {
   const execution = await tool.resolveExecution(input as never);
   if (!('execute' in execution)) throw new Error('Expected executable tool');
   const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'c' });
@@ -157,6 +157,33 @@ describe('history tools', () => {
     const wrong = await run(tool, { cursor: first.data.next_cursor, mode: 'terms' });
     expect(wrong.result.isError).toBe(true);
     expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
+  });
+
+  it('returns a cursor-free recovery call after a captured source range changes', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    const search = vi.fn(source.search);
+    source.search = search;
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistorySearchTool, new SyncDescriptor(HistorySearchTool));
+    try {
+      const tool = ix.get(IHistorySearchTool);
+      const input = { query: 'needle', source: 'transcript', session_id: 'older' };
+      search.mockRejectedValueOnce(new Error('history_source_changed'));
+      const failed = await run(tool, input);
+      expect(failed.result.isError).toBe(true);
+      const data = JSON.parse(failed.result.output as string);
+      expect(data).toMatchObject({ target: { session_id: 'older', agent_id: 'main' }, error: {
+        code: 'source_changed', message: 'The transcript was replaced or its captured range changed; restart the query without cursor.',
+        retryable: true, next_call: { tool: 'HistorySearch', arguments: input },
+      } });
+      expect(data.error.next_call.arguments).not.toHaveProperty('cursor');
+      expect((await run(tool, data.error.next_call.arguments)).result.isError).not.toBe(true);
+    } finally { await ix.dispose(); }
   });
 
   it('surfaces an unavailable index alongside bounded fallback metadata', async () => {
