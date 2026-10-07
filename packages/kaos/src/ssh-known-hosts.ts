@@ -170,8 +170,9 @@ export class SshKnownHosts {
       if (exact.some((entry) => entry.marker === '@cert-authority')) return 'certificate_authority_unsupported';
       if (exact.some((entry) => entry.marker === undefined)) return 'matching';
       if (entries.some((entry) => entry.marker === '@cert-authority')) return 'certificate_authority_unsupported';
-      if (entries.some((entry) => entry.algorithm === algorithm)) return 'key_changed';
-      return entries.length > 0 ? 'key_algorithm_unrecorded' : 'unknown';
+      const trusted = entries.filter((entry) => entry.marker === undefined);
+      if (trusted.some((entry) => entry.algorithm === algorithm)) return 'key_changed';
+      return trusted.length > 0 ? 'key_algorithm_unrecorded' : 'unknown';
     };
     const existing = await check();
     if (existing === 'matching') return true;

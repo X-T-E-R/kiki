@@ -749,58 +749,97 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     let callerOutcome: AgentCallerOutcome = 'rejected';
     let cleanupOutcome: AgentCleanupOutcome = 'cleanup_failed';
     let failureDomain: AgentFailureDomain | undefined;
-    let cleanupError: unknown;
-    let persistenceError: unknown;
     let disposed = false;
+    const failures: Array<{ readonly error: unknown; readonly domain: AgentFailureDomain }> = [];
+    const collect = async (
+      operation: () => unknown | Promise<unknown>,
+      domain: AgentFailureDomain,
+    ): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push({ error, domain });
+      }
+    };
     try {
-      await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
-      const execution = handle.accessor.get(IAgentExecutionService);
-      const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
-      const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
+      await collect(() => handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed'), 'cleanup');
       const reason = abortError('Agent removed');
-      execution.cancel(reason);
-      const loop = handle.accessor.get(IAgentLoopService);
-      for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
-      loop.cancel(undefined, reason);
-      const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
-      if (compaction !== null && !compaction.abortController.signal.aborted) {
-        compaction.abortController.abort(reason);
-      }
-      await Promise.all([execution.shutdown(reason), compactionSettled, promptDrain]);
-      await loop.settled();
+      let execution: IAgentExecutionService | undefined;
+      let loop: IAgentLoopService | undefined;
+      let compaction: IAgentFullCompactionService['compacting'] | null | undefined;
+      let promptDrain: Promise<void> | undefined;
       try {
-        await handle.accessor.get(IEventDispatcher).flush();
+        execution = handle.accessor.get(IAgentExecutionService);
       } catch (error) {
-        persistenceError = error;
-        onUnexpectedError(error);
+        failures.push({ error, domain: 'cleanup' });
       }
       try {
-        await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+        compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
       } catch (error) {
-        persistenceError ??= error;
-        onUnexpectedError(error);
+        failures.push({ error, domain: 'cleanup' });
       }
       try {
+        loop = handle.accessor.get(IAgentLoopService);
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      if (execution !== undefined) await collect(() => execution!.cancel(reason), 'cleanup');
+      if (loop !== undefined) {
+        let pendingTurnIds: readonly number[] = [];
+        try {
+          pendingTurnIds = loop.status().pendingTurnIds;
+        } catch (error) {
+          failures.push({ error, domain: 'cleanup' });
+        }
+        for (const turnId of pendingTurnIds) await collect(() => loop!.cancel(turnId, reason), 'cleanup');
+        await collect(() => loop!.cancel(undefined, reason), 'cleanup');
+      }
+      try {
+        promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      if (compaction !== null && compaction !== undefined && !compaction.abortController.signal.aborted) {
+        await collect(() => compaction!.abortController.abort(reason), 'cleanup');
+      }
+      if (execution !== undefined) await collect(() => execution!.shutdown(reason), 'cleanup');
+      if (compaction?.promise !== undefined) await collect(() => compaction!.promise.catch(() => undefined), 'cleanup');
+      if (promptDrain !== undefined) await collect(() => promptDrain!, 'cleanup');
+      if (loop !== undefined) await collect(() => loop!.settled(), 'cleanup');
+      await collect(async () => {
+        try {
+          await handle.accessor.get(IEventDispatcher).flush();
+        } catch (error) {
+          onUnexpectedError(error);
+          throw error;
+        }
+      }, 'persistence');
+      await collect(async () => {
+        try {
+          await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+        } catch (error) {
+          onUnexpectedError(error);
+          throw error;
+        }
+      }, 'persistence');
+      await collect(async () => {
         await handle.dispose();
         disposed = true;
-      } catch (error) {
-        cleanupError = error;
-        onUnexpectedError(error);
-      }
+      }, 'cleanup');
       if (disposed) this.onDidDisposeEmitter.fire(agentId);
-      if (persistenceError !== undefined || cleanupError !== undefined) {
-        const primary = persistenceError ?? cleanupError;
-        failureDomain = persistenceError === undefined ? 'cleanup' : 'persistence';
-        throw primary;
+      if (failures.length > 0) {
+        const primary = failures.find((failure) => failure.domain === 'persistence') ?? failures[0]!;
+        failureDomain = primary.domain;
+        throw primary.error;
       }
       cleanupOutcome = 'closed';
       callerOutcome = 'resolved';
     } catch (error) {
-      cleanupError ??= error;
       failureDomain ??= 'cleanup';
       throw error;
     } finally {
-      const error = cleanupError instanceof Error ? cleanupError : persistenceError instanceof Error ? persistenceError : undefined;
+      const primary = failures.find((failure) => failure.domain === 'persistence') ?? failures[0];
+      const error = primary?.error instanceof Error ? primary.error : undefined;
       const errorCode = error === undefined ? undefined : (error as { readonly code?: unknown }).code;
       this.onDidCleanupEmitter.fire({
         operationId,

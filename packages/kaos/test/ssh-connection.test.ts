@@ -530,6 +530,18 @@ describe('S5 read-only known_hosts inspection', () => {
     expect(await new SshKnownHosts([home]).inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ state: 'unavailable' }] });
   });
 
+  it('does not infer a changed host key from a different revoked key alone', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const revoked = publicKey();
+    await writeFile(path, `@revoked examplehost ssh-rsa ${revoked.toString('base64')}\n`);
+    const trust = vi.fn(async () => false);
+    const known = new SshKnownHosts([path]);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+    expect(await readFile(path, 'utf8')).toBe(`@revoked examplehost ssh-rsa ${revoked.toString('base64')}\n`);
+  });
+
   it('classifies exact revoked keys, unrelated revoked markers, and unrecorded algorithms without network writes', async () => {
     const { path } = await fixture();
     const raw = publicKey();
@@ -549,6 +561,11 @@ describe('S5 read-only known_hosts inspection', () => {
 
     trust.mockClear();
     await writeFile(path, `@revoked examplehost ssh-rsa ${other.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+
+    trust.mockClear();
+    await writeFile(path, `examplehost ssh-rsa ${other.toString('base64')}\n`);
     await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({ reason: 'key_changed' });
     expect(trust).not.toHaveBeenCalled();
 

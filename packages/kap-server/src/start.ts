@@ -291,7 +291,7 @@ export async function collectServerCleanupFailures(
     try {
       await step.run();
     } catch (error) {
-      failures.push({ error, durable: step.durable === true });
+      failures.push({ error, durable: step.durable === true || isServerPersistenceFailure(error) });
     }
   }
   return failures;
@@ -301,6 +301,50 @@ function isServerPersistenceFailure(error: unknown): boolean {
   if (error instanceof AggregateError) return error.errors.some(isServerPersistenceFailure);
   const code = (error as { readonly code?: unknown } | undefined)?.code;
   return typeof code === 'string' && (code.startsWith('storage.') || code.startsWith('persistence.'));
+}
+
+function flattenServerCleanupErrors(error: unknown): readonly unknown[] {
+  return error instanceof AggregateError
+    ? error.errors.flatMap((nested) => flattenServerCleanupErrors(nested))
+    : [error];
+}
+
+export function selectServerCleanupError(failures: readonly ServerCleanupFailure[]): unknown {
+  const errors = failures.flatMap((failure) => flattenServerCleanupErrors(failure.error));
+  const durableFailure = failures.find((failure) => failure.durable);
+  return errors.find(isServerPersistenceFailure) ??
+    (durableFailure === undefined ? errors[0] : flattenServerCleanupErrors(durableFailure.error)[0]);
+}
+
+export interface ServerSessionCleanupInput {
+  readonly listSessions: () => readonly { readonly id: string }[];
+  readonly isEphemeral: (sessionId: string) => boolean;
+  readonly readWorktreeId: (sessionId: string) => Promise<string | undefined>;
+  readonly closeSession: (sessionId: string) => Promise<void>;
+  readonly removeWorktree: (worktreeId: string) => Promise<void>;
+}
+
+export async function cleanupServerSessions(
+  input: ServerSessionCleanupInput,
+): Promise<readonly ServerCleanupFailure[]> {
+  const failures: ServerCleanupFailure[] = [];
+  for (const session of input.listSessions()) {
+    let worktreeId: string | undefined;
+    try {
+      if (input.isEphemeral(session.id)) worktreeId = await input.readWorktreeId(session.id);
+      await input.closeSession(session.id);
+    } catch (error) {
+      failures.push({ error, durable: isServerPersistenceFailure(error) });
+      continue;
+    }
+    if (worktreeId === undefined) continue;
+    try {
+      await input.removeWorktree(worktreeId);
+    } catch (error) {
+      failures.push({ error, durable: isServerPersistenceFailure(error) });
+    }
+  }
+  return failures;
 }
 
 export interface RunningServer {
@@ -592,6 +636,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     resolveExitReceipt = resolve;
   });
   let closeReason: ServerExitReceipt['exitReason'] = 'requested';
+  let closeFailureDomain: ServerExitReceipt['failureDomain'];
   const resourceCount = (): number | undefined => {
     try {
       return core.accessor.get(ISessionManager).list().length + admission.activeCount() +
@@ -606,42 +651,34 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (authMonitor !== undefined) clearInterval(authMonitor);
     const steps: ServerCleanupStep[] = [
       { run: () => web.close() },
-      { run: async () => { await externalClientListener.close(); await externalClients.close(); } },
+      { run: () => externalClientListener.close() },
+      { run: () => externalClients.close() },
       { run: () => leaseRegistry.dispose() },
       { run: () => app.close() },
       { run: () => notifications?.close() },
       { run: () => core.accessor.get(IThreadCommunicationService).shutdown() },
+      {
+        run: async () => {
+          const sessionManager = core.accessor.get(ISessionManager);
+          const failures = await cleanupServerSessions({
+            listSessions: () => sessionManager.list(),
+            isEphemeral: (sessionId) => sessionManager.isEphemeral(sessionId),
+            readWorktreeId: async (sessionId) => {
+              const session = sessionManager.get(sessionId);
+              return session === undefined
+                ? undefined
+                : (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId;
+            },
+            closeSession: (sessionId) => sessionManager.close(sessionId),
+            removeWorktree: async (worktreeId) => {
+              const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
+              if (outcome !== 'removed') logger.warn({ worktreeId, outcome }, 'temporary session worktree retained on shutdown');
+            },
+          });
+          if (failures.length > 0) throw new AggregateError(failures.map((failure) => failure.error), 'session cleanup failed');
+        },
+      },
     ];
-    let sessionManager: ISessionManager | undefined;
-    let sessions: ReturnType<ISessionManager['list']> = [];
-    try {
-      sessionManager = core.accessor.get(ISessionManager);
-      sessions = sessionManager.list();
-    } catch (error) {
-      steps.push({ run: async () => { throw error; } });
-    }
-    const worktreeIds = new Map<string, string | undefined>();
-    if (sessionManager !== undefined) {
-      for (const session of sessions) {
-        steps.push({
-          run: async () => {
-            const ephemeral = sessionManager!.isEphemeral(session.id);
-            worktreeIds.set(session.id, ephemeral
-              ? (await session.accessor.get(ISessionMetadata).read().catch(() => undefined))?.worktree?.worktreeId
-              : undefined);
-            await sessionManager!.close(session.id);
-          },
-        });
-        steps.push({
-          run: async () => {
-            const worktreeId = worktreeIds.get(session.id);
-            if (worktreeId === undefined) return;
-            const { outcome } = await core.accessor.get(IWorktreeService).remove(worktreeId);
-            if (outcome !== 'removed') logger.warn({ sessionId: session.id, worktreeId, outcome }, 'temporary session worktree retained on shutdown');
-          },
-        });
-      }
-    }
     steps.push(
       { run: () => core.accessor.get(IThreadMailboxStore).close() },
       { run: () => core.accessor.get(IHomeRuntimeService).close() },
@@ -656,7 +693,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { run: () => navigationDb.close() },
       { run: () => drainSessionMetadataWrites(), durable: true },
       { run: () => core.accessor.get(ISessionIndexMirror).drain(), durable: true },
-      { run: () => core.accessor.get(IMcpOAuthService).shutdown(), durable: true },
+      { run: () => core.accessor.get(IMcpOAuthService).shutdown() },
       { run: () => core.accessor.get(IPluginHostService).stopAll() },
       { run: () => fsWatchBridge.dispose() },
     );
@@ -678,8 +715,21 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     );
     const failures = await collectServerCleanupFailures(steps);
     if (failures.length === 0) return;
-    const primary = failures.find((failure) => failure.durable) ?? failures[0]!;
-    throw primary.error;
+    const primary = selectServerCleanupError(failures);
+    closeFailureDomain = failures.some((failure) => failure.durable && flattenServerCleanupErrors(failure.error).includes(primary)) ? 'persistence' : 'cleanup';
+    for (const failure of failures) {
+      for (const error of flattenServerCleanupErrors(failure.error)) {
+        if (error === primary) continue;
+        const code = (error as { readonly code?: unknown } | undefined)?.code;
+        logger.warn({
+          event_type: 'server_cleanup_step_failed',
+          durable: failure.durable,
+          error_code: typeof code === 'string' ? code : undefined,
+          error: error instanceof Error ? error.message : String(error),
+        }, 'server cleanup step failed after primary cleanup error');
+      }
+    }
+    throw primary;
   };
   let closeFlight: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -695,9 +745,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
             owner: 'backend',
             exitReason: closeReason,
             callerOutcome: 'resolved',
-            cleanupOutcome: resourcesAfter === undefined ? 'unknown' : 'closed',
-            ...(resourcesBefore === undefined ? {} : { resourcesBefore }),
-            ...(resourcesAfter === undefined ? {} : { resourcesAfter }),
+            cleanupOutcome: resourcesAfter === undefined ? 'unknown' : resourcesAfter === 0 ? 'closed' : 'cleanup_failed',
+            resourcesBefore,
+            resourcesAfter,
             settledAt: Date.now(),
           });
           resolveClosed();
@@ -712,10 +762,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
             exitReason: 'cleanup_failed',
             callerOutcome: 'rejected',
             cleanupOutcome: 'cleanup_failed',
-            ...(resourcesBefore === undefined ? {} : { resourcesBefore }),
-            ...(resourcesAfter === undefined ? {} : { resourcesAfter }),
-            ...(isServerPersistenceFailure(normalized) ? { failureDomain: 'persistence' as const } : { failureDomain: 'cleanup' as const }),
-            ...(typeof errorCode === 'string' ? { errorCode } : {}),
+            resourcesBefore,
+            resourcesAfter,
+            failureDomain: closeFailureDomain ?? (isServerPersistenceFailure(normalized) ? 'persistence' : 'cleanup'),
+            errorCode: typeof errorCode === 'string' ? errorCode : undefined,
             errorName: normalized.name,
             errorMessage: normalized.message,
             settledAt: Date.now(),

@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IAgentLifecycleService, IAgentTaskService, ISessionManager } from '@kiki/agent-core-v2';
 import { desktopLifecycleStateSchema, metaResponseSchema } from '@kiki/protocol';
-import { collectServerCleanupFailures, startServer, type RunningServer } from '../src/start';
+import {
+  cleanupServerSessions,
+  collectServerCleanupFailures,
+  selectServerCleanupError,
+  startServer,
+  type RunningServer,
+} from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
 
@@ -28,17 +34,52 @@ async function createTask(server: RunningServer, root: string, onCancel: () => v
 }
 
 describe('server cleanup collection', () => {
-  it('continues ordered owner cleanup after a durable failure and preserves the original error', async () => {
+  it('enumerates sessions at cleanup time and never removes a worktree after close fails', async () => {
     const events: string[] = [];
+    const removed: string[] = [];
     const durableFailure = Object.assign(new Error('no space left on device'), { code: 'storage.disk_full' });
+    let sessions: readonly { readonly id: string }[] = [];
     const failures = await collectServerCleanupFailures([
-      { run: async () => { events.push('metadata'); throw durableFailure; }, durable: true },
-      { run: () => { events.push('index'); } },
-      { run: async () => { events.push('core'); } },
+      { run: () => { events.push('http-closed'); sessions = [{ id: 'late-session' }]; } },
+      {
+        run: async () => {
+          const nested = await cleanupServerSessions({
+            listSessions: () => { events.push('inventory'); return sessions; },
+            isEphemeral: () => true,
+            readWorktreeId: async () => { events.push('worktree-read'); return 'late-worktree'; },
+            closeSession: async () => { events.push('session-close'); throw durableFailure; },
+            removeWorktree: async (id) => { events.push('worktree-remove'); removed.push(id); },
+          });
+          if (nested.length > 0) throw new AggregateError(nested.map((failure) => failure.error), 'session cleanup failed');
+        },
+      },
     ]);
 
-    expect(events).toEqual(['metadata', 'index', 'core']);
-    expect(failures).toEqual([{ error: durableFailure, durable: true }]);
+    expect(events).toEqual(['http-closed', 'inventory', 'worktree-read', 'session-close']);
+    expect(removed).toEqual([]);
+    expect(failures[0]?.durable).toBe(true);
+    expect(selectServerCleanupError(failures)).toBe(durableFailure);
+  });
+
+  it('preserves the known durable failure domain when a writer error has no registered code', async () => {
+    const cleanupFailure = new Error('Example listener close failed');
+    const durableFailure = new Error('Example checkpoint write failed');
+    const failures = await collectServerCleanupFailures([
+      { run: () => { throw cleanupFailure; } },
+      { run: () => { throw durableFailure; }, durable: true },
+    ]);
+    expect(selectServerCleanupError(failures)).toBe(durableFailure);
+  });
+
+  it('prefers an earlier recognized persistence error over a later cleanup error', async () => {
+    const persistenceFailure = Object.assign(new Error('storage unavailable'), { code: 'persistence.disk_full' });
+    const cleanupFailure = new Error('later cleanup failed');
+    const failures = await collectServerCleanupFailures([
+      { run: async () => { throw persistenceFailure; } },
+      { run: async () => { throw cleanupFailure; }, durable: true },
+    ]);
+
+    expect(selectServerCleanupError(failures)).toBe(persistenceFailure);
   });
 });
 
