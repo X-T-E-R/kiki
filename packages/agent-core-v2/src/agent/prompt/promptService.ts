@@ -753,6 +753,7 @@ export class AgentPromptService implements IAgentPromptService {
   private launchingPrompt: {
     readonly record: Record;
     readonly controller: AbortController;
+    readonly settled: Promise<void>;
     receipt?: EnqueueReceipt;
   } | undefined;
   private readonly promptIds = new KeyReservationRegistry<string>();
@@ -2154,6 +2155,7 @@ export class AgentPromptService implements IAgentPromptService {
         launching.controller.abort(reason);
       } else this.abort(launching.record.id, reason);
     }
+    await launching?.settled;
     const active = this.active;
     if (active !== undefined) {
       this.abort(active.id, reason);
@@ -2257,12 +2259,18 @@ export class AgentPromptService implements IAgentPromptService {
     const immediate = this.immediatePromptIds.delete(item.id);
     this.syncRecoveryHold();
     const controller = new AbortController();
-    const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller };
+    const launchSettled = deferred<void>();
+    const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller, settled: launchSettled.promise };
     this.launchingPrompt = launching;
     this.launching = true;
     try {
       this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
-      await this.applyExecutionBinding(this.resolveExecutionBinding(item.execution));
+      let bindingCommitted = false;
+      await this.applyExecutionBinding(this.resolveExecutionBinding(item.execution), () => {
+        if (bindingCommitted) return;
+        controller.signal.throwIfAborted();
+        bindingCommitted = true;
+      });
       controller.signal.throwIfAborted();
       if (item.deferredDisabledTools !== undefined) {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
@@ -2348,10 +2356,13 @@ export class AgentPromptService implements IAgentPromptService {
         this.publishCompleted(item, 'failed');
       }
     } finally {
-      await admission.dispose();
-      this.launchingPrompt = undefined;
-      this.launching = false;
-      if (this.active === undefined) void this.startNext();
+      try { await admission.dispose(); }
+      finally {
+        this.launchingPrompt = undefined;
+        this.launching = false;
+        launchSettled.resolve();
+        if (this.active === undefined) void this.startNext();
+      }
     }
   }
 

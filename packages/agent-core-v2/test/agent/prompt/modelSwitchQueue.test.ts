@@ -393,6 +393,212 @@ describe('model switch control queue with real engine', () => {
     else expect(JSON.stringify(scripted.calls[1])).toContain('Continue on the selected binding.');
   });
 
+  it.each([false, true])('ordinary launch guards the prepared binding commit; cancel during preparation=%s', async cancel => {
+    const scripted = createScriptedGenerate();
+    const prepared = deferred<void>();
+    const releasePrepare = deferred<void>();
+    const ctx = await host(scripted.generate);
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+    } };
+    const profile = ctx.get(IAgentProfileService);
+    profile.update({ profileName: 'example-profile' });
+    const prepare = profile.prepareModelSwitchBinding.bind(profile);
+    vi.spyOn(profile, 'prepareModelSwitchBinding').mockImplementation(async (...args) => {
+      const binding = await prepare(...args);
+      prepared.resolve();
+      await releasePrepare.promise;
+      return binding;
+    });
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'Selected message completed.' });
+    try {
+      const admission = svc.enqueue({ id: 'ordinary-prepare-selected', message: { role: 'user', content: [{ type: 'text', text: 'Original selected message.' }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } });
+      await prepared.promise;
+      expect(profile.data()).toMatchObject({ modelAlias: OLD, thinkingLevel: 'off' });
+      if (cancel) expect(svc.abort('ordinary-prepare-selected')).toBe(true);
+      releasePrepare.resolve();
+      const selected = await admission;
+      expect((await selected.completion).state).toBe(cancel ? 'cancelled' : 'completed');
+      await ctx.get(IAgentLoopService).settled();
+      expect(profile.data()).toMatchObject(cancel ? { modelAlias: OLD, thinkingLevel: 'off' } : { modelAlias: NEW, thinkingLevel: 'max' });
+      expect((await ctx.get(ISessionMetadata).read()).agents?.['main']).toMatchObject(cancel ? { model: OLD, thinkingEffort: 'off' } : { model: NEW, thinkingEffort: 'max' });
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject(cancel ? [] : [{ modelAlias: NEW, thinkingEffort: 'max' }]);
+      expect(journal.filter(record => record.type === 'turn.prompt' && record['promptId'] === selected.id)).toHaveLength(cancel ? 0 : 1);
+      expect(journal.filter(record => record.type === 'prompt.model_switch_queued')).toEqual([]);
+      expect(scripted.calls).toHaveLength(cancel ? 0 : 1);
+    } finally { releasePrepare.resolve(); }
+  });
+
+  it.each(['stop', 'provider-failure'] as const)('accepted Send now survives %s before its binding boundary', async interruption => {
+    const scripted = createScriptedGenerate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) {
+        entered.resolve();
+        await release.promise;
+        if (interruption === 'provider-failure') throw new Error('Example provider failed');
+      }
+      return scripted.generate(...args);
+    });
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+    } };
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'Selected request completed.' });
+    try {
+      const active = await svc.enqueue({ id: 'interrupted-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing request.' }], toolCalls: [] } });
+      await entered.promise;
+      const input = { id: 'interrupted-selected', userMessageId: 'interrupted-logical', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Preserve the original immediate request.', presentation: { title: 'Original attachment' } }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } };
+      const selected = await svc.enqueue(input);
+      await svc.steer([selected.id]);
+      if (interruption === 'stop') expect(svc.abort(active.id)).toBe(true);
+      release.resolve();
+      expect((await active.completion).state).toBe(interruption === 'stop' ? 'cancelled' : 'failed');
+      expect((await selected.completion).state).toBe('completed');
+      expect(selected).toMatchObject({ id: input.id, userMessageId: input.userMessageId, execution: input.execution, message: { content: input.message.content } });
+      expect(ctx.get(IAgentProfileService).data()).toMatchObject({ modelAlias: NEW, thinkingLevel: 'max' });
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW, thinkingEffort: 'max' }]);
+      expect(journal.filter(record => (record.type === 'turn.steer' || record.type === 'turn.prompt') && record['promptId'] === input.id)).toHaveLength(1);
+      const cold = await host();
+      await cold.restore(journal);
+      expect(cold.get(IAgentPromptService).list().pending).toEqual([]);
+      await expect((await cold.get(IAgentPromptService).enqueue(input)).completion).resolves.toMatchObject({ state: 'completed' });
+      expect(cold.llmCalls).toEqual([]);
+    } finally { release.resolve(); }
+  });
+
+  it.each(['stop', 'provider-failure'] as const)('launched Send now records %s and cold recovery does not replay an unknown launch', async interruption => {
+    const scripted = createScriptedGenerate();
+    const firstEntered = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondEntered = deferred<void>();
+    const releaseSecond = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) { firstEntered.resolve(); await releaseFirst.promise; }
+      else {
+        args[5]?.onRequestStart?.();
+        secondEntered.resolve();
+        await releaseSecond.promise;
+        if (interruption === 'provider-failure') throw new Error('Example provider failed');
+      }
+      return scripted.generate(...args);
+    });
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+    } };
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'Existing request completed.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Selected request completed.' });
+    try {
+      const active = await svc.enqueue({ id: 'launched-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing request.' }], toolCalls: [] } });
+      await firstEntered.promise;
+      const input = { id: 'launched-selected', userMessageId: 'launched-logical', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Keep my selected request identity.' }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } };
+      const selected = await svc.enqueue(input);
+      await svc.steer([selected.id]);
+      releaseFirst.resolve();
+      await secondEntered.promise;
+      const interruptedJournal = await records(ctx);
+      const coldUnknown = await host();
+      await coldUnknown.restore(interruptedJournal);
+      expect(coldUnknown.get(IAgentPromptService).list().pending).toEqual([]);
+      await expect(coldUnknown.get(IAgentPromptService).enqueue(input)).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+      expect(coldUnknown.llmCalls).toEqual([]);
+      if (interruption === 'stop') expect(svc.abort(selected.id)).toBe(true);
+      releaseSecond.resolve();
+      await active.completion;
+      expect((await selected.completion).state).toBe(interruption === 'stop' ? 'cancelled' : 'failed');
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW, thinkingEffort: 'max' }]);
+      expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === input.userMessageId)).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'prompt.steered')).toMatchObject([{ promptIds: [input.id] }]);
+      const coldTerminal = await host();
+      await coldTerminal.restore(journal);
+      await expect((await coldTerminal.get(IAgentPromptService).enqueue(input)).completion).resolves.toMatchObject({ state: interruption === 'stop' ? 'cancelled' : 'failed' });
+      expect(coldTerminal.llmCalls).toEqual([]);
+    } finally { releaseFirst.resolve(); releaseSecond.resolve(); }
+  });
+
+  it.each(['cancel', 'preserve-pending'] as const)('ordinary launch settles owned preparation before %s close', async mode => {
+    const scripted = createScriptedGenerate();
+    const prepared = deferred<void>();
+    const releasePrepare = deferred<void>();
+    const ctx = await host(scripted.generate);
+    const profile = ctx.get(IAgentProfileService);
+    profile.update({ profileName: 'example-profile' });
+    const prepare = profile.prepareModelSwitchBinding.bind(profile);
+    vi.spyOn(profile, 'prepareModelSwitchBinding').mockImplementation(async (...args) => {
+      const binding = await prepare(...args);
+      prepared.resolve();
+      await releasePrepare.promise;
+      return binding;
+    });
+    const svc = ctx.get(IAgentPromptService);
+    const input = { id: 'ordinary-close-selected', userMessageId: 'ordinary-close-logical', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Original message survives a normal close.' }], toolCalls: [] }, execution: { model: NEW } };
+    try {
+      const admission = svc.enqueue(input);
+      await prepared.promise;
+      let drained = false;
+      const closing = svc.drain(new Error('Example owner closed'), mode).then(() => { drained = true; });
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(drained).toBe(false);
+      releasePrepare.resolve();
+      await closing;
+      const selected = await admission;
+      expect((await selected.completion).state).toBe('cancelled');
+      expect(profile.getModel()).toBe(OLD);
+      await ctx.get(IWireService).flush();
+      const identity = ctx.get(IAgentStateService).get(promptIdentityKey).get(input.id);
+      expect(identity).toMatchObject(mode === 'cancel' ? { phase: 'terminal', terminal: { state: 'cancelled' } } : { phase: 'pending' });
+      const cold = await host();
+      await cold.restore(await records(ctx));
+      expect(cold.get(IAgentPromptService).list().pending).toMatchObject(mode === 'cancel' ? [] : [{ id: input.id, userMessageId: input.userMessageId, execution: input.execution, message: { content: input.message.content } }]);
+      expect(cold.llmCalls).toEqual([]);
+    } finally { releasePrepare.resolve(); }
+  });
+
+  it('ordinary launch retains a binding committed before cancellation without launching its message', async () => {
+    const scripted = createScriptedGenerate();
+    const committed = deferred<void>();
+    const releaseMetadata = deferred<void>();
+    const ctx = await host(scripted.generate);
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' },
+    } };
+    const profile = ctx.get(IAgentProfileService);
+    profile.update({ profileName: 'example-profile' });
+    const prepare = profile.prepareModelSwitchBinding.bind(profile);
+    vi.spyOn(profile, 'prepareModelSwitchBinding').mockImplementation(async (...args) => {
+      const binding = await prepare(...args);
+      return { ...binding, syncMetadata: async () => {
+        committed.resolve();
+        await releaseMetadata.promise;
+        await binding.syncMetadata();
+      } };
+    });
+    const svc = ctx.get(IAgentPromptService);
+    try {
+      const admission = svc.enqueue({ id: 'ordinary-commit-selected', message: { role: 'user', content: [{ type: 'text', text: 'Original committed message.' }], toolCalls: [] }, execution: { model: NEW, thinking: 'max' } });
+      await committed.promise;
+      expect(profile.getModel()).toBe(NEW);
+      expect(svc.abort('ordinary-commit-selected')).toBe(true);
+      releaseMetadata.resolve();
+      const selected = await admission;
+      expect((await selected.completion).state).toBe('cancelled');
+      await ctx.get(IAgentLoopService).settled();
+      expect(profile.data()).toMatchObject({ modelAlias: NEW, thinkingLevel: 'max' });
+      expect((await ctx.get(ISessionMetadata).read()).agents?.['main']).toMatchObject({ model: NEW, thinkingEffort: 'max' });
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request' || record.type === 'turn.prompt')).toEqual([]);
+      expect(scripted.calls).toEqual([]);
+    } finally { releaseMetadata.resolve(); }
+  });
+
   it.each([false, true])('safe Send now guards the real prepared binding commit; cancel during preparation=%s', async cancel => {
     const scripted = createScriptedGenerate();
     const streaming = deferred<void>();
