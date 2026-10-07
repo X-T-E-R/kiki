@@ -560,7 +560,7 @@ export class TranscriptWireAdapter {
       if (terminalPromptId === undefined) return [];
       const state = stringOf(terminal?.['state']);
       const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
-        : state === 'failed' ? 'failed' : 'completed';
+        : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
       const prior = this.#prompts.get(terminalPromptId);
       return [
         this.storePrompt({

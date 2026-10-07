@@ -1988,6 +1988,8 @@ describe('AgentTranscriptLiveAdapter', () => {
     const tx = new AgentTranscript('main');
     tx.apply(liveAdapter.map(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:01.000Z'), terminal: { promptId: 'p-outcome', state: 'cancelled' } })));
     expect(tx.getPrompt('p-outcome')).toMatchObject({ status: 'aborted', finishedAt: '2026-01-01T00:00:01.000Z' });
+    tx.apply(liveAdapter.map(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:02.000Z'), terminal: { promptId: 'p-outcome-blocked', state: 'blocked' } })));
+    expect(tx.getPrompt('p-outcome-blocked')).toMatchObject({ status: 'blocked', finishedAt: '2026-01-01T00:00:02.000Z' });
   });
 
   it('projects prompt moves as queue positions and preserves before-start aborts', () => {
