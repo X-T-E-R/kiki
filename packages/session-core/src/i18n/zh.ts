@@ -1131,6 +1131,8 @@ export const zh = {
   'composer.execution.bareHint': '按这个引擎原样运行：使用它自己的配置、凭据和工作目录，不套用 Kiki 配置档。',
   'composer.execution.bareNote': '原样运行时引擎使用自己的配置。要给它 Kiki 的提示词、工具和上下文，请选择一个配置档。',
   'composer.execution.notInstalled': '未找到',
+  'composer.execution.needsSetup': '{engine} 尚不可用。会话仍使用这个引擎，请在设置中完成配置或检查连接。',
+  'composer.execution.configure': '配置或检查引擎',
   'composer.execution.profileGroupAria': '{engine} 的配置档',
   'composer.execution.fact.subagents': '子智能体',
   'composer.execution.fact.memory': '记忆',

@@ -1145,6 +1145,8 @@ export const en = {
   'composer.execution.bareHint': 'Run this engine as it is: its own configuration, credentials and working directory, with no Kiki profile.',
   'composer.execution.bareNote': 'A bare engine runs with its own configuration. Add a profile to give it Kiki’s prompt, tools and context.',
   'composer.execution.notInstalled': 'not found',
+  'composer.execution.needsSetup': '{engine} is not ready. This session still uses it; configure or check the connection in Settings.',
+  'composer.execution.configure': 'Configure or check engine',
   'composer.execution.profileGroupAria': 'Profiles for {engine}',
   'composer.execution.fact.subagents': 'subagents',
   'composer.execution.fact.memory': 'memory',

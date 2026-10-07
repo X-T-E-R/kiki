@@ -32,8 +32,10 @@ import {
 } from '@kiki/session-core/composer';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
+import { useNavigate } from 'react-router-dom';
+
 import { useI18n } from '../../i18n';
-import { visibleEngines } from '../settings/profileEditor/engines';
+import { isRunnableEngine, visibleEngines } from '../settings/profileEditor/engines';
 import { COMPOSER_PANEL_START, STATUS_SEGMENT_CLASS, STATUS_SEGMENT_ICON_CLASS, STATUS_SEGMENT_SET, useComposerPanelAnchor, usePopover, MENU_ROW_CLASS, MENU_ROW_SELECTED_CLASS } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
@@ -254,21 +256,14 @@ export function ExecutionSelect({
     return map;
   }, [profiles, pickableProfile]);
 
-  /**
-   * Engines this panel may list: native, plus the external engines the machine
-   * is actually set up for and the display choice still allows.
-   *
-   * The engine the session is currently bound to is added back whatever the
-   * filter decided, because the trigger is already naming it: a panel that
-   * lists everything *except* the engine this session runs cannot say what it
-   * is showing or offer a way back. Hiding is a choice about what to be
-   * *offered* next, never about what is already in flight.
-   */
+  const navigate = useNavigate();
+  const engineNeedsSetup = !isNativeExecutor(choice.executor) &&
+    (engineItem === undefined || !isRunnableEngine(engineItem, engineOverrides, engineDescriptors));
   const listedEngines = useMemo(() => {
     const listed = visibleEngines(catalog, profiles, engineOverrides, engineDisplay, engineDescriptors);
     if (listed.some((item) => item.id === choice.executor)) return listed;
     const bound = catalog.find((item) => item.id === choice.executor);
-    return bound === undefined ? listed : [...listed, bound];
+    return bound === undefined || !isRunnableEngine(bound, engineOverrides, engineDescriptors) ? listed : [...listed, bound];
   }, [catalog, profiles, engineOverrides, engineDisplay, engineDescriptors, choice.executor]);
 
   /**
@@ -401,6 +396,19 @@ export function ExecutionSelect({
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            {engineNeedsSetup ? (
+              <div data-execution-restore={choice.executor} className="mb-1 rounded-md bg-paper px-3 py-2">
+                <p className="text-[12px] leading-snug text-ink-soft">{t('composer.execution.needsSetup', { engine: engineLabel })}</p>
+                <button
+                  type="button"
+                  data-execution-configure
+                  onClick={() => { close(); void navigate('/settings/ai?tab=engines#st-card-engines'); }}
+                  className="mt-1 text-[12px] font-medium text-selected-ink underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                >
+                  {t('composer.execution.configure')}
+                </button>
+              </div>
+            ) : null}
             {nothingMatches ? (
               <p data-execution-empty className="px-2 py-4 text-center text-[12px] text-ink-faint">
                 {t('composer.execution.noMatch', { query: query.trim() })}

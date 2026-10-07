@@ -155,42 +155,36 @@ describe('engineVisibilityPatch', () => {
 });
 
 describe('visibleEngines', () => {
-  it('offers an installed bare harness without a Kiki profile or override', () => {
+  const ready = (id: string): ExecutorCatalogItem => ({ ...engine(id), status: 'ready', connection: { login_status: 'logged_in', default_args: [] } });
+  it('offers a ready authenticated bare harness without a Kiki profile or model', () => {
+    const catalog = [engine('native'), ready('claude-acp')];
+    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'claude-acp']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native']);
+  });
+  it('hides an installed harness without its own configuration despite a profile or launch override', () => {
     const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const }];
-    expect(visibleEngines(catalog, [], undefined).map((item) => item.id)).toEqual(['native', 'claude-acp']);
-    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map((item) => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [profile('lead', 'claude-acp')], { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'native-default' } } }).map(item => item.id)).toEqual(['native']);
   });
-  it('keeps native and lists an engine the machine is set up for', () => {
-    const profiles = [profile('lead-claude', 'claude-acp')];
-    expect(visibleEngines(CATALOG, profiles, undefined).map((item) => item.id))
-      .toEqual(['native', 'claude-acp']);
+  it('never revives a missing binary through a configured descriptor or profile', () => {
+    expect(visibleEngines(CATALOG, [profile('lead', 'claude-acp')], undefined, undefined, { 'claude-acp': { protocol: 'acp-v1', command: 'claude' } }).map(item => item.id)).toEqual(['native']);
   });
-
-  it('lists nothing external on a machine that set nothing up', () => {
-    expect(visibleEngines(CATALOG, [], undefined).map((item) => item.id)).toEqual(['native']);
+  it('accepts a ready user-authored anonymous local descriptor but not an empty object', () => {
+    const catalog = [engine('native'), { ...engine('local-acp'), status: 'ready' as const }];
+    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': {} }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', command: 'local-server' } }).map(item => item.id)).toEqual(['native', 'local-acp']);
+    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', sources: [{ id: 'local', kind: 'path-lookup', command: 'local-server' }] } }).map(item => item.id)).toEqual(['native', 'local-acp']);
+    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', sources: [{}] } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', source: 'missing', sources: [{ id: 'local', kind: 'path-lookup', command: 'local-server' }] } }).map(item => item.id)).toEqual(['native']);
   });
-
-  it('drops an engine the user hid, and every engine when the global switch is off', () => {
-    const profiles = [profile('lead-claude', 'claude-acp'), profile('lead-codex', 'codex-app-server')];
-    const hidden = { 'claude-acp': { show_in_profile_list: false } };
-    expect(visibleEngines(CATALOG, profiles, hidden).map((item) => item.id))
-      .toEqual(['native', 'codex-app-server']);
-    expect(visibleEngines(CATALOG, profiles, undefined, { externals_visible: false }).map((item) => item.id))
-      .toEqual(['native']);
+  it('accepts only the declared vendor API-key environment rather than arbitrary launch settings', () => {
+    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'unknown' as const, default_args: [], api_key_env: 'VENDOR_API_KEY' } }];
+    expect(visibleEngines(catalog, [], { 'claude-acp': { env: { OTHER_SETTING: 'fixture' } } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { env: { VENDOR_API_KEY: 'fixture' } } }).map(item => item.id)).toEqual(['native', 'claude-acp']);
   });
-
-  it('lists an engine configured only by a user-authored descriptor', () => {
-    const descriptors = { 'grok-acp': { protocol: 'acp', command: 'grok' } };
-    expect(visibleEngines(CATALOG, [], undefined, undefined, descriptors).map((item) => item.id))
-      .toEqual(['native', 'grok-acp']);
-  });
-
-  it('still lists a hidden engine that has a profile, because that profile needs it', () => {
-    // Hiding is a display preference over *unconfigured* engines; a profile
-    // bound to it is the reason the engine is here at all.
-    const profiles = [profile('lead-claude', 'claude-acp')];
-    const hidden = { 'claude-acp': { show_in_profile_list: false } };
-    expect(visibleEngines(CATALOG, profiles, hidden).map((item) => item.id)).toEqual(['native']);
+  it('keeps visibility preferences separate from readiness', () => {
+    const catalog = [engine('native'), ready('claude-acp'), ready('codex-app-server')];
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native', 'codex-app-server']);
+    expect(visibleEngines(catalog, [], undefined, { externals_visible: false }).map(item => item.id)).toEqual(['native']);
   });
 });
 

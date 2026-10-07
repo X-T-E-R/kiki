@@ -139,7 +139,7 @@ show_in_profile_list = false
 externals_visible = false
 ```
 
-Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. The picker includes detected ready engines as well as engines named by a profile, launch override or configured descriptor; explicit hide settings take precedence. A display flag alone does not install or configure an engine. An existing session's bound engine remains identifiable when hidden.
+Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. Bare engine entries appear only when the executable is ready and the engine has confirmed login or usable configuration of its own, such as its declared API-key environment or an anonymous local descriptor. A profile, launch preference or native Kiki model alone does not make an engine runnable; explicit hide settings still take precedence. Settings retains every engine for configuration and Check. If a bound engine becomes unavailable, its session keeps that identity and offers configuration recovery instead of silently switching engines.
 
 ## Continuity reminder cues
 

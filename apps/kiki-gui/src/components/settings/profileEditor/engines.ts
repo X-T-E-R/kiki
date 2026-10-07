@@ -183,19 +183,41 @@ export function isConfiguredEngine(
   return Object.keys(entry).some((key) => key !== 'show_in_profile_list');
 }
 
-/**
- * The engines a profile / execution picker may show, in catalog order.
- *
- * Native always comes first and is never hidden — it is Kiki itself, not
- * something the user opted into. An external engine appears only when the
- * catalog found its binary or the user configured it, and the display choice
- * still allows it. The picker lists runnable or configured engines, not every engine Kiki knows
- * about. An engine the user hid is not removed from the catalog: Settings still
- * lists and checks it, and an existing session bound to it still runs it.
- */
+/** Executable picker eligibility; launch preferences and profiles are not credentials. */
+export function isRunnableEngine(
+  item: ExecutorCatalogItem,
+  overrides: Readonly<Record<string, unknown>> | undefined,
+  descriptors?: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  if (isNativeExecutor(item.id)) return true;
+  if (item.status !== 'ready') return false;
+  if (item.connection?.login_status === 'logged_in') return true;
+  const descriptor = asConfigRecord(descriptors?.[item.id]);
+  const apiKeyEnv = item.connection?.api_key_env;
+  const env = { ...asConfigRecord(descriptor?.['env']), ...asConfigRecord(asConfigRecord(overrides?.[item.id])?.['env']) };
+  const value = apiKeyEnv === undefined ? undefined : env[apiKeyEnv];
+  if (typeof value === 'string' && value.trim() !== '') return true;
+  if (item.connection?.login_status === 'logged_out') return false;
+  const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim() !== '';
+  const sourceFields: Record<string, string> = { 'explicit-path': 'path', env: 'name', glob: 'pattern', 'path-lookup': 'command', 'node-script': 'path' };
+  const sources = descriptor?.['sources'];
+  const hasSource = Array.isArray(sources) && sources.some((value) => {
+    const source = asConfigRecord(value);
+    const field = typeof source?.['kind'] === 'string' ? sourceFields[source['kind']] : undefined;
+    return source !== undefined && field !== undefined && nonEmpty(source['id']) && nonEmpty(source[field]) &&
+      (descriptor?.['source'] === undefined || descriptor['source'] === source['id']);
+  });
+  return descriptor !== undefined && descriptor['protocol'] === item.protocol &&
+    (nonEmpty(descriptor['command']) || hasSource) &&
+    descriptor['auth'] === undefined && descriptor['loginCommand'] === undefined &&
+    descriptor['apiKeyEnv'] === undefined && item.connection?.login_command === undefined &&
+    apiKeyEnv === undefined;
+}
+
+/** Runnable engines offered for a new choice; Settings retains the full catalog. */
 export function visibleEngines(
   catalog: readonly ExecutorCatalogItem[],
-  profiles: readonly NamedAgentProfile[],
+  _profiles: readonly NamedAgentProfile[],
   overrides: Readonly<Record<string, unknown>> | undefined,
   display?: Readonly<Record<string, unknown>> | undefined,
   descriptors?: Readonly<Record<string, unknown>> | undefined,
@@ -204,6 +226,6 @@ export function visibleEngines(
   return catalog.filter((item) => {
     if (item.id === NATIVE_EXECUTOR) return true;
     if (!prefs.externalsVisible || prefs.hidden.has(item.id)) return false;
-    return item.status === 'ready' || isConfiguredEngine(item.id, profiles, overrides, descriptors);
+    return isRunnableEngine(item, overrides, descriptors);
   });
 }

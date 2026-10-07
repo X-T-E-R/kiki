@@ -46,7 +46,7 @@ const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', host
 /** The engine catalog the execution panel offers. */
 const EXECUTOR_ITEMS = [
   { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready' as const, model_binding: 'mapped' as const, thinking_binding: 'mapped' as const },
-  { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready' as const, version: '2.1.0', model_binding: 'mapped' as const, thinking_binding: 'unavailable' as const },
+  { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready' as const, version: '2.1.0', model_binding: 'mapped' as const, thinking_binding: 'unavailable' as const, connection: { login_status: 'logged_in' as const, default_args: [] } },
 ];
 /** The native engine with the default main profile: an ordinary new session. */
 const NATIVE_AGENT = { executor: 'native', profile: 'agent', overrides: undefined } as const;
@@ -623,6 +623,27 @@ describe('Composer non-text sends', () => {
 });
 
 describe('Composer execution control', () => {
+  it.each([undefined, 'saved-session'])('hides unconfigured bare harnesses in the executable picker (%s)', async sessionId => {
+    listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, connection: { login_status: 'unknown', default_args: [] } }) });
+    getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'fixture/kiki-pro' } } } } });
+    const { container } = await renderComposer({ sessionId, execution: NATIVE_AGENT, onChangeExecution: () => {} });
+    await click(container.querySelector('#composer-execution-select')!);
+    expect(container.querySelector('[data-execution-bare="claude-acp"]')).toBeNull();
+  });
+
+  it('preserves a bound unavailable engine identity and offers configuration rather than an executable bare entry', async () => {
+    listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, status: 'unavailable' }) });
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: { executor: 'claude-acp', profile: undefined, overrides: undefined }, onChangeExecution });
+    const trigger = container.querySelector('#composer-execution-select')!;
+    expect(trigger.textContent).toContain('Claude Code');
+    await click(trigger);
+    expect(container.querySelector('[data-execution-bare="claude-acp"]')).toBeNull();
+    expect(container.querySelector('[data-execution-restore="claude-acp"]')?.textContent).toContain('This session still uses it');
+    expect(container.querySelector('[data-execution-configure]')).not.toBeNull();
+    expect(onChangeExecution).not.toHaveBeenCalled();
+  });
+
   it('keeps the picked persona name on the chip at any toolbar width', async () => {
     const { container } = await renderComposer({
       agentProfile: 'agent',

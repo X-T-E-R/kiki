@@ -139,7 +139,7 @@ show_in_profile_list = false
 externals_visible = false
 ```
 
-向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。选择列表包含已检测到且就绪的引擎，以及 profile、启动覆盖或已配置描述符所引用的引擎；显式隐藏设置优先。只有显示字段不会安装或配置引擎。已有会话仍可辨认当前绑定的隐藏引擎。
+向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有可执行程序就绪，且引擎已确认登录或具有自身可用配置（如它声明的 API 密钥环境变量或匿名本地描述符）时，选择列表才显示裸引擎入口。只有 profile、启动偏好或 Kiki 原生模型，不代表引擎可运行；显式隐藏设置仍优先。设置页保留全部引擎，可继续配置或 Check。已绑定引擎变为不可用时，会话保留原身份并提供配置恢复入口，不会悄悄切换引擎。
 
 ## 连续性提醒词表
 
