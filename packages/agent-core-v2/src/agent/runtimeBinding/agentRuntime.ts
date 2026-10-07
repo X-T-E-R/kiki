@@ -126,7 +126,7 @@ export class AgentRuntimeService implements IAgentRuntimeService {
 
   private bindingFor(host?: string): RuntimeBinding {
     if (host === undefined) return this.binding.current;
-    if (!this.nativeSshEnabled()) throw new Error('Native SSH is disabled');
+    if (host !== 'local' && !this.nativeSshEnabled()) throw new Error('Native SSH is disabled');
     return {
       workspaceId: this.binding.current.workspaceId,
       runtimeId: host === 'local' ? 'local' : `ssh:${host}`,
