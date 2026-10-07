@@ -3884,6 +3884,39 @@ describe('external executor badge', () => {
     expect(diff?.textContent).toContain('a.ts');
     expect(diff?.textContent).toContain('+1');
   });
+
+  it('names the engine’s own context reading and a dropped image instead of the marker', async () => {
+    const note = (id: string, executor: NonNullable<Extract<Block, { kind: 'notice' }>['executor']>): Block =>
+      ({ kind: 'notice', id, text: 'executor', tone: 'neutral', turnId: 't1', executor });
+    const container = await renderWithExecutions(
+      [
+        userBlock({ id: 'user-t1', text: 'read this image and fix the limit', turnId: 't1' }),
+        note('n-usage', { kind: 'usage', used: 61_700, size: 200_000 }),
+        note('n-image', { kind: 'session', droppedImage: { reason: 'image exceeds the engine limit', notes: ['Dropped before upload'] } }),
+        note('n-model', { kind: 'session', observed: { source: 'claude-acp', model: 'claude-sonnet-4.5', version: '0.84.0' } }),
+        note('n-hint', { kind: 'hint', method: 'native_steer', status: 'delivered' }),
+      ],
+      {},
+    );
+    const fold = container.querySelector('[data-history-fold] [data-activity-toggle]');
+    expect(fold).not.toBeNull();
+    await act(async () => { click(fold!); });
+
+    const usage = container.querySelector('[data-executor-note="usage"]');
+    // The number is labelled as the engine's, so it is never read as Kiki's
+    // own context meter.
+    expect(usage?.textContent).toContain('Engine context: 61.7k of 200.0k tokens');
+
+    const dropped = container.querySelector('[data-executor-note="session"]');
+    expect(dropped?.textContent).toContain('dropped an image you sent: image exceeds the engine limit');
+    expect(dropped?.getAttribute('title')).toBe('Dropped before upload');
+
+    // The engine's own identity: the observed model is stated as the engine's,
+    // never as the session's Kiki model, with source and version as support.
+    const observed = container.querySelector('[data-executor-note="session-model"]');
+    expect(observed?.textContent).toContain('The engine is running claude-sonnet-4.5');
+    expect(observed?.getAttribute('title')).toBe('claude-acp · 0.84.0');
+  });
 });
 
 

@@ -671,6 +671,8 @@ export class TranscriptWireAdapter {
       }
       const marker = record['kind'] === 'diff' ? 'executor.diff'
         : record['kind'] === 'compaction' ? 'executor.compaction'
+        : record['kind'] === 'session' ? 'executor.session'
+        : record['kind'] === 'usage' ? 'executor.usage'
         : record['kind'] === 'unknown' ? 'executor.degradation' : undefined;
       return marker === undefined ? [] : [this.marker(record, ordinal, marker)];
     }

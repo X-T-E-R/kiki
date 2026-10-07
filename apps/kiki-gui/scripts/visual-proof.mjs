@@ -187,7 +187,7 @@ const SOURCES = {
   onboardingNext: { key: 'onboarding.next' },
   onboardingBack: { key: 'onboarding.back' },
   onboardingSaveNext: { key: 'onboarding.saveNext' },
-  onboardingFinish: { key: 'onboarding.finish' },
+  onboardingFinish: { key: 'onboarding.finishFirstRun' },
   onboardingSkipForNow: { key: 'onboarding.skipForNow' },
   onboardingSkip: { key: 'onboarding.skip' },
   onboardingRecommended: { key: 'onboarding.permissions.recommended' },
@@ -1558,6 +1558,72 @@ async function scenarioExternalHarness() {
   await page.locator('[role="radio"]:has-text("Always allow pnpm test")').click();
   await page.waitForTimeout(600);
   await shot('external-harness-resolved');
+}
+
+/**
+ * The engine's own facts inside an external turn: Claude Code reporting a
+ * dropped pasted image and reading its context twice, and Codex reading its
+ * own context once. Each is a quiet row in the engine's turn, the image drop
+ * is stated rather than swallowed, and a superseded reading is not a second
+ * row. Runs against fixtures/external-main.
+ */
+async function scenarioCodexClaudeEngineFacts() {
+  const openSettledActivity = async () => {
+    const fold = page.locator('[data-history-fold] [data-activity-toggle]').first();
+    if ((await fold.count()) > 0) await fold.click();
+  };
+  const rows = (note) => page.locator(`[data-executor-note="${note}"]`);
+
+  await selectSession('Fixture: Claude main');
+  await openSettledActivity();
+  await page.waitForSelector('[data-executor-note="usage"]', { timeout: 10_000 });
+  const claudeUsage = rows('usage');
+  if ((await claudeUsage.count()) !== 1) {
+    throw new Error(`a turn shows one context reading, saw ${await claudeUsage.count()}`);
+  }
+  const claudeText = await claudeUsage.first().innerText();
+  if (!claudeText.includes('Engine context: 61.7k of 200.0k tokens')) {
+    throw new Error(`the Claude context row reads ${JSON.stringify(claudeText)}`);
+  }
+  const dropped = rows('session').first();
+  const droppedText = await dropped.innerText();
+  if (!droppedText.includes('dropped an image you sent: the image is larger than Claude Code accepts')) {
+    throw new Error(`the dropped-image row reads ${JSON.stringify(droppedText)}`);
+  }
+  const droppedTitle = await dropped.getAttribute('title');
+  if (droppedTitle === null || !droppedTitle.includes('Pasted screenshot.png')) {
+    throw new Error(`the dropped-image tooltip reads ${JSON.stringify(droppedTitle)}`);
+  }
+  // The engine's own identity: the observed model, once, with its source and
+  // agent version kept in the tooltip rather than read as a Kiki model choice.
+  const claudeModel = rows('session-model');
+  if ((await claudeModel.count()) !== 1) {
+    throw new Error(`a session shows one engine identity, saw ${await claudeModel.count()}`);
+  }
+  const claudeModelText = await claudeModel.first().innerText();
+  if (!claudeModelText.includes('The engine is running claude-sonnet-4.5')) {
+    throw new Error(`the Claude identity row reads ${JSON.stringify(claudeModelText)}`);
+  }
+  const claudeModelTitle = await claudeModel.first().getAttribute('title');
+  if (claudeModelTitle === null || !claudeModelTitle.includes('claude-acp') || !claudeModelTitle.includes('0.84.0')) {
+    throw new Error(`the Claude identity tooltip reads ${JSON.stringify(claudeModelTitle)}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('codex-claude-engine-facts-claude');
+
+  await selectSession('Fixture: Codex main');
+  await openSettledActivity();
+  await page.waitForSelector('[data-executor-note="usage"]', { timeout: 10_000 });
+  const codexText = await rows('usage').first().innerText();
+  if (!codexText.includes('Engine context: 6.1k of 272.0k tokens')) {
+    throw new Error(`the Codex context row reads ${JSON.stringify(codexText)}`);
+  }
+  const codexModelText = await rows('session-model').first().innerText();
+  if (!codexModelText.includes('The engine is running gpt-5.5-codex')) {
+    throw new Error(`the Codex identity row reads ${JSON.stringify(codexModelText)}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('codex-claude-engine-facts-codex');
 }
 
 async function scenarioReconnect() {
@@ -6262,6 +6328,8 @@ function scenario(name, run, extra = {}) {
 const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
+  // Two engines' own facts, read from the one fixture that carries both.
+  'codex-claude-engine-facts': { fixture: 'external-main' },
 };
 
 /** Walk order. `responsive` shrinks the viewport, so it stays last. */
@@ -6290,6 +6358,7 @@ const BODIES = [
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['external-harness', scenarioExternalHarness],
+  ['codex-claude-engine-facts', scenarioCodexClaudeEngineFacts],
   ['external-main', scenarioExternalMain],
   ['reconnect', scenarioReconnect],
   ['reconnect-mid-turn', scenarioReconnectMidTurn],

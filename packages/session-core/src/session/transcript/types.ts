@@ -428,7 +428,37 @@ export type ExecutorNote =
     }
   | { readonly kind: 'compaction' }
   | { readonly kind: 'diff'; readonly diff: string }
-  | { readonly kind: 'unknown'; readonly updateType?: string; readonly method?: string; readonly payload?: unknown };
+  | { readonly kind: 'unknown'; readonly updateType?: string; readonly method?: string; readonly payload?: unknown }
+  | {
+      /**
+       * The engine's own context accounting for its turn
+       * (`executor.runtime.update` kind `usage`). It stays inside the engine's
+       * turn and is labelled as the engine's, because the numbers describe the
+       * engine's window, not Kiki's.
+       */
+      readonly kind: 'usage';
+      readonly used: number;
+      readonly size?: number;
+    }
+  | {
+      /**
+       * A session fact the engine reported that nothing else in the UI carries:
+       * the identity it is actually running, or an image it dropped instead of
+       * sending on. `observed` is the engine's own report — shown as what the
+       * engine is running, never written back as a Kiki model choice.
+       */
+      readonly kind: 'session';
+      readonly observed?: {
+        readonly source?: string;
+        readonly model?: string;
+        readonly provider?: string;
+        readonly version?: string;
+      };
+      readonly droppedImage?: {
+        readonly reason?: string;
+        readonly notes?: readonly string[];
+      };
+    };
 
 /**
  * A text record an external client saved on purpose. `kind` is the client's

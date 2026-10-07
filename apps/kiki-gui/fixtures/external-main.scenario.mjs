@@ -9,7 +9,10 @@
  *   session: SessionStart, UserPromptSubmit and a prepare-only PreCompact.
  * - Session "Claude main": a finished turn with native-shaped tool cards, a
  *   Kiki dispatch through the injected MCP bridge, the engine's plan as the
- *   Todo list, usage, then a failed turn (sign-in lapsed) to recover from.
+ *   Todo list, usage, the engine reporting a dropped pasted image and its own
+ *   context reading (twice — only the newest belongs in the turn) plus the
+ *   identity it is actually running, then a failed turn (sign-in lapsed) to
+ *   recover from.
  * - Session "Grok main": a pending `plan_review` interaction from
  *   `_x.ai/exit_plan_mode`.
  * - Session "Codex main" in YOLO: the MCP-approval limitation applies.
@@ -139,6 +142,8 @@ const turn = (n, prompt, frames, { state = 'completed', startAt, endAt, exec, er
 });
 
 const CLAUDE_EXEC = execution('claude-acp', 'acp-v1');
+/** A durable engine marker as the wire records it: `payload` is the record. */
+const marker = (id, markerName, payload, seconds) => ({ kind: 'marker', markerId: id, marker: markerName, payload, at: at(seconds) });
 const PLAN = [
   { title: 'Read the limit parser and its callers', status: 'done' },
   { title: 'Dispatch a Kiki reviewer on the fix', status: 'in_progress' },
@@ -155,7 +160,7 @@ const HOOK_PROMPT = ['[Kiki todo_state]', 'Working notes:', 'next: cover negativ
 const HOOK_COMPACT = ['[Handoff prepared; not injected by this hook]', '[Kiki handoff]',
   'Preserve the current goal, working notes, constraints, decisions, and next action in the compaction handoff.'].join('\n');
 const claudeItems = [
-  turn(1, 'Fix /api/items?limit=0 and get an independent review.', [
+  turn(1, 'Fix /api/items?limit=0 (I pasted a screenshot of the response) and get an independent review.', [
     hookFrame('cl-t1-hook-start', 'kiki:claude:SessionStart', HOOK_START),
     { kind: 'thinking', frameId: 'cl-t1-think', text: 'The limit parser treats 0 as falsy. I will read it, fix it, then ask a Kiki reviewer for a second read.' },
     { kind: 'tool', frameId: 'cl-t1-read', toolCallId: 'external:claude:read', name: 'Read src/limits.ts', state: 'done',
@@ -169,6 +174,26 @@ const claudeItems = [
       output: '{"dispatchId":"dsp_fixture_01","status":"running","agentId":"agent-review-limit-fix"}' },
     { kind: 'text', frameId: 'cl-t1-a', role: 'assistant', text: '`parseLimit` now rejects anything below 1 and the route answers 400. I dispatched a Kiki reviewer; its report comes back to this session when it finishes.' },
   ], { startAt: 0, endAt: 74, exec: CLAUDE_EXEC, stepUsage: usage(18_400, 2_300, 41_000) }),
+  // The engine's own report of what it is running (`session.info` → runtime
+  // kind `session`): an observation, never a Kiki model choice.
+  marker('cl-t1-model', 'executor.session', {
+    turnId: 1, executorId: 'claude-acp', kind: 'session',
+    value: { meta: { source: 'claude-acp', actualModel: 'claude-sonnet-4.5', agentVersion: '0.84.0' } },
+  }, 2),
+  // The engine reported the pasted screenshot as dropped, then read its own
+  // context twice; only the newest reading belongs in the turn.
+  marker('cl-t1-image-dropped', 'executor.session', {
+    turnId: 1, executorId: 'claude-acp', kind: 'session',
+    value: { meta: { imageDropped: { reason: 'the image is larger than Claude Code accepts', notes: ['Pasted screenshot.png · 6.2 MB'] } } },
+  }, 6),
+  marker('cl-t1-usage-early', 'executor.usage', {
+    turnId: 1, executorId: 'claude-acp', kind: 'usage',
+    value: { type: 'usage', used: 18_400, size: 200_000 },
+  }, 20),
+  marker('cl-t1-usage-late', 'executor.usage', {
+    turnId: 1, executorId: 'claude-acp', kind: 'usage',
+    value: { type: 'usage', used: 61_700, size: 200_000 },
+  }, 60),
   turn(2, 'Also cover negative values.', [
     hookFrame('cl-t2-hook-prompt', 'kiki:claude:UserPromptSubmit', HOOK_PROMPT),
     hookFrame('cl-t2-hook-compact', 'kiki:claude:PreCompact', HOOK_COMPACT),
@@ -211,6 +236,15 @@ const codexItems = [
       error: 'MCP tool call requires approval, but approval policy is never', errorCode: 'codex_mcp_approval_denied' },
     { kind: 'text', frameId: 'cx-t1-a', role: 'assistant', text: 'Kiki lists two dispatchable profiles: reviewer and coder. The tracker server needs approval, which this mode does not ask for.' },
   ], { startAt: 0, endAt: 12, exec: CODEX_EXEC, stepUsage: usage(6_100, 380, 12_000) }),
+  marker('cx-t1-model', 'executor.session', {
+    turnId: 1, executorId: 'codex-app-server', kind: 'session',
+    value: { meta: { source: 'codex-app-server', actualModel: 'gpt-5.5-codex', modelProvider: 'openai' } },
+  }, 1),
+  // Codex reports its own context (thread/tokenUsage/updated) the same way.
+  marker('cx-t1-usage', 'executor.usage', {
+    turnId: 1, executorId: 'codex-app-server', kind: 'usage',
+    value: { type: 'usage', used: 6_100, size: 272_000 },
+  }, 11),
 ];
 
 const snapshot = (items, extra = {}) => ({
