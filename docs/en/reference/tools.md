@@ -130,6 +130,8 @@ With multiple provider keys, synchronous `WebSearch` and `FetchURL` calls on the
 
 Fetch or extract content from a URL through Kiki's built-in search and retrieval module (`nb-search`). `direct.fetch` retrieves a given URL; it is not a `WebSearch` search lane. The minimal call is `{ "url": "https://example.com" }`, the URL shorthand for `action: "run"`; do not mix shorthand `url` with the `source` form. The keyless URL default tries `direct.fetch` first, then `jina.reader` for extraction if direct fails. A successful but unusable direct response requires explicit quality rules to trigger fallback. The chain returns Markdown; HTML responses are extracted to body text, and plain text or Markdown pages are passed through.
 
+Direct uses the Kiki server process's `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` settings, including lowercase forms (lowercase wins). Pass your existing proxy environment to the process that starts Kiki; no new `nb_search` setting is needed. For a public hostname on an actually selected proxy route, a Fake-IP DNS answer in `198.18.0.0/15` is treated as a proxy token: the original hostname is sent to the proxy and TLS certificate verification remains enabled. Direct connections, IP-literal URLs and real private-address answers remain guarded, including redirect targets. The configured proxy handles remote DNS and destination access; Kiki adds no third-party DNS service. A TUN-only setup without a selected explicit proxy does not enable this compatibility path.
+
 `run` accepts these parameter groups that actually change behavior:
 
 - `source` — `kind: "url"` for a remote page, `kind: "inline_text"` or `kind: "inline_bytes"` for content already in the call, or `kind: "file"` for a path inside a configured file scope.

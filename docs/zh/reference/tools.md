@@ -118,6 +118,8 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。`direct.fetch` 读取给定 URL，不是 `WebSearch` 的搜索 lane。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
 
+Direct 使用 Kiki 服务器进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY` 设置，也支持小写形式（小写优先）。请把已有代理环境传给启动 Kiki 的进程，无需新增 `nb_search` 配置。公开 hostname 只有实际选中代理时，其 `198.18.0.0/15` Fake-IP DNS 答案才作为代理占位，原 hostname 交给代理连接，保留 TLS 证书校验。直连、IP 字面量 URL 和真实私网地址仍受目标检查，重定向每跳同样检查。远端 DNS 与目标访问由已配置代理负责，Kiki 不新增第三方 DNS 服务；仅开启 TUN、未选中显式代理时不启用此兼容路径。
+
 `run` 接受以下几组真正影响行为的参数：
 
 - `source` — `kind: "url"` 取远程页面，`kind: "inline_text"` 或 `kind: "inline_bytes"` 表示内容已在调用里，或 `kind: "file"` 表示已配置 file 域内的某个路径。

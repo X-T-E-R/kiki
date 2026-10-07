@@ -256,6 +256,7 @@ export class NbSearchService implements INbSearchService {
     const names = new Set([
       ...Object.keys(source.env).filter((name) => name.toUpperCase().startsWith('NB_SEARCH_')),
       ...Object.values(resolved.config.credential_slots).map((slot) => slot.env),
+      'HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy',
     ]);
     const signature = stableFingerprint({
       reuse_local_config: source.status.reuse_local_config,
