@@ -38,15 +38,17 @@ export function RoomRefChip({
   entry,
   onRemove,
   inline = false,
+  href: suppliedHref,
 }: {
   roomId: string;
   entry: RoomRefDirectoryEntry;
   onRemove?: () => void;
   inline?: boolean;
+  href?: string;
 }) {
   const { t, tp } = useI18n();
   const navigate = useGuardedNavigate();
-  const href = conversationRefLink('room', roomId);
+  const href = suppliedHref ?? conversationRefLink('room', roomId);
   const label = entry.name ?? roomId;
   const members = entry.memberCount;
   const tooltip = [
@@ -106,6 +108,7 @@ export function ThreadRefChip({
   onRemove,
   inline = false,
   group,
+  href: suppliedHref,
 }: {
   sessionId: string;
   entry: ThreadRefEntry;
@@ -115,9 +118,11 @@ export function ThreadRefChip({
   onRemove?: () => void;
   /** Inside a user bubble: sized to the running text. */
   inline?: boolean;
+  href?: string;
 }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
+  const href = suppliedHref ?? threadRefLink(sessionId);
   const session = entry.session;
   const title = session !== undefined && session.title.trim() !== '' ? session.title.trim() : undefined;
   const label = title ?? t('threadRef.unknown', { id: shortThreadId(sessionId) });
@@ -169,7 +174,7 @@ export function ThreadRefChip({
   return (
     <>
     <a
-      href={threadRefLink(sessionId)}
+      href={href}
       data-thread-ref-chip={sessionId}
       data-thread-ref-status={status}
       title={tooltip}
@@ -177,7 +182,7 @@ export function ThreadRefChip({
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        navigate(threadRefLink(sessionId));
+        navigate(href);
       }}
       onContextMenu={room.onContextMenu}
       className={`${shape} ${inline ? '' : 'pr-3'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
@@ -248,8 +253,8 @@ export function ThreadRefText({
   for (const ref of refs) {
     if (ref.start > cursor) parts.push(<span key={`t-${cursor}`}>{projectSegment(text.slice(cursor, ref.start))}</span>);
     parts.push(ref.kind === 'room'
-      ? <RoomRefChip key={`r-${ref.start}`} roomId={ref.id} entry={rooms.lookup(ref.id)} inline />
-      : <ThreadRefChip key={`r-${ref.start}`} sessionId={ref.id} entry={directory.lookup(ref.id)} group={group} inline />);
+      ? <RoomRefChip key={`r-${ref.start}`} roomId={ref.id} entry={rooms.lookup(ref.id)} href={ref.href} inline />
+      : <ThreadRefChip key={`r-${ref.start}`} sessionId={ref.id} entry={directory.lookup(ref.id)} group={group} href={ref.href} inline />);
     cursor = ref.end;
   }
   if (cursor < text.length) parts.push(<span key={`t-${cursor}`}>{projectSegment(text.slice(cursor))}</span>);

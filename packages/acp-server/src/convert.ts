@@ -130,23 +130,25 @@ export async function compressPromptImageParts(
             parsed.mimeType,
             { dir: options.originalsDir },
           );
+          const text = buildImageCompressionCaption({
+            original: {
+              width: result.originalWidth,
+              height: result.originalHeight,
+              byteLength: result.originalByteLength,
+              mimeType: parsed.mimeType,
+            },
+            final: {
+              width: result.width,
+              height: result.height,
+              byteLength: result.finalByteLength,
+              mimeType: result.mimeType,
+            },
+            originalPath,
+          });
           out.push({
             type: 'text',
-            text: buildImageCompressionCaption({
-              original: {
-                width: result.originalWidth,
-                height: result.originalHeight,
-                byteLength: result.originalByteLength,
-                mimeType: parsed.mimeType,
-              },
-              final: {
-                width: result.width,
-                height: result.height,
-                byteLength: result.finalByteLength,
-                mimeType: result.mimeType,
-              },
-              originalPath,
-            }),
+            text,
+            presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
           });
           out.push({
             type: 'image_url',

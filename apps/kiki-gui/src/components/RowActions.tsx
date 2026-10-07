@@ -434,7 +434,7 @@ export function UserMessageEditor({
 }: {
   initialText: string;
   loadAttachments?: () => Promise<readonly ComposerAttachment[]>;
-  onSubmit: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<void>;
+  onSubmit: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
@@ -507,9 +507,9 @@ export function UserMessageEditor({
         onChangeModel={() => {}} onChangePermissionMode={() => {}}
         onChangePlanMode={() => {}} onChangeEffort={() => {}}
         onQueueEditCancel={cancel}
-        onSend={async (body, media) => {
+        onSend={async (body, media, options) => {
           setSubmitting(true);
-          try { await onSubmit(body, media); } finally { setSubmitting(false); }
+          try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
         }}
       />
     </div>

@@ -20,7 +20,7 @@ const ROOM_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,127}';
 const SESSION_ID_PATTERN = new RegExp(`^${SESSION_ID}$`);
 const ROOM_ID_PATTERN = new RegExp(`^${ROOM_ID}$`);
 /** Optional sub-route, query or hash after the id (`/agent/…`, `?turn=…`). */
-const TAIL = String.raw`(?:[/?#][^\s]*?)?`;
+const TAIL = String.raw`(?:[/?#][^\s)\]）」”"']*)?`;
 const LEAD = String.raw`(^|[\s(\[（「“"'])`;
 const TRAIL = String.raw`(?=$|[\s)\]）」”"',.;:!?，。；：！？])`;
 const ORIGIN = String.raw`(?:(?:https?|tauri):\/\/[^\s/]+)?`;
@@ -88,7 +88,7 @@ export function findConversationRefs(text: string, options?: ConversationRefOpti
   const ownHost = originHost(options?.origin);
   for (const match of text.matchAll(linkPattern())) {
     const lead = match[1] ?? '';
-    const raw = match[2] ?? '';
+    const raw = (match[2] ?? '').replace(/[.,;:!?，。；：！？]+$/, '');
     const groups = match.groups ?? {};
     const id = groups['id'] ?? groups['protocolId'];
     const route = groups['route'] ?? groups['protocolRoute'];
@@ -99,7 +99,7 @@ export function findConversationRefs(text: string, options?: ConversationRefOpti
     const isSessionId = SESSION_ID_PATTERN.test(id);
     if (kind === 'session' ? !isSessionId : isSessionId || !ROOM_ID_PATTERN.test(id)) continue;
     const start = match.index + lead.length;
-    matches.push({ start, end: start + raw.length, raw, kind, id, href: conversationRefLink(kind, id) + (groups['tail'] ?? '') });
+    matches.push({ start, end: start + raw.length, raw, kind, id, href: conversationRefLink(kind, id) + (groups['tail'] ?? '').replace(/[.,;:!?，。；：！？]+$/, '') });
   }
   return matches;
 }
@@ -187,7 +187,6 @@ export function threadRefInfoOf(
 
 const BLOCK_OPEN = '<thread_refs>';
 const BLOCK_CLOSE = '</thread_refs>';
-const BLOCK_PATTERN = /\n*<thread_refs>\n[\s\S]*?\n<\/thread_refs>\s*$/;
 
 function attr(value: string): string {
   return value
@@ -237,8 +236,8 @@ export const THREAD_REF_HINT =
 
 /**
  * Append the context block for every distinct linked thread and resolved room.
- * Text without context lines comes back unchanged; an existing block is replaced
- * so a re-sent (edited, retried) prompt never carries two.
+ * Text without context lines comes back unchanged. Existing text is preserved;
+ * callers project explicitly marked generated spans before editing or retrying.
  * Use the same `options` as `findConversationRefs` so context and editing share
  * one view of which full URLs are local.
  */
@@ -248,7 +247,7 @@ export function appendThreadRefContext(
   resolveRoom?: (roomId: string) => RoomRefInfo,
   options?: ConversationRefOptions,
 ): string {
-  const body = stripThreadRefContext(text);
+  const body = text;
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const ref of findConversationRefs(body, options)) {
@@ -262,9 +261,19 @@ export function appendThreadRefContext(
   return `${body}\n\n${BLOCK_OPEN}\n${lines.join('\n')}\n${THREAD_REF_HINT}\n${BLOCK_CLOSE}`;
 }
 
-/** Inverse of `appendThreadRefContext`: the prompt as the user wrote it. */
+export function prepareThreadRefContext(
+  text: string,
+  resolve: (sessionId: string) => ThreadRefInfo,
+  resolveRoom?: (roomId: string) => RoomRefInfo,
+  options?: ConversationRefOptions,
+): { text: string; presentation?: import('@kiki/transcript').TextPresentation } {
+  const prepared = appendThreadRefContext(text, resolve, resolveRoom, options);
+  return { text: prepared, presentation: prepared === text ? undefined : { spans: [{ start: text.length, end: prepared.length, kind: 'context' }] } };
+}
+
+/** Unknown historical text is not evidence of a generated context block. */
 export function stripThreadRefContext(text: string): string {
-  return text.replace(BLOCK_PATTERN, '');
+  return text;
 }
 
 // ---- composer editing ----

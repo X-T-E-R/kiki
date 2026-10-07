@@ -1,25 +1,18 @@
 /**
- * Timeline annotation derivation — the second half of the selection-carry-over
- * flow. `selectionQuote.ts` writes annotations into the outgoing prompt as
- * plain-text segments (`> quote` + `Comment: …`); this module is the inverse:
- * it parses those segments and their optional source-anchor comments from user
- * blocks. Explicit anchors bind a particular source version and occurrence;
- * legacy quotes mark only an unambiguous preceding message. Source marks and
- * sent-note bubbles share the same editable presentation overlay.
+ * Timeline annotations derive from explicit selection presentation spans.
+ * Source anchors bind a particular message version and rendered occurrence;
+ * unanchored generated quotes mark only an unambiguous preceding message.
+ * User-authored quote-shaped text without metadata remains ordinary text.
  *
- * The derivation is purely transcript-driven — no wire change, no extra
- * persistence: the local echo and the reloaded history carry the same text,
- * so markers reappear identically after a restart. The only stored state is
- * the user's local overlay on top of a derived annotation (an edited comment
- * or a removed marker), keyed by the carrying message identity, segment order,
- * original quote, and comment, then persisted with the composer drafts (the
- * same draftPersistence gate). Overrides are presentation-local: the sent
- * prompt text never changes.
+ * Source marks and sent-note bubbles share an editable presentation overlay,
+ * keyed by the carrying message identity, segment order, quote, and comment.
+ * Overrides persist with composer drafts but never change the sent prompt.
  */
 
 import { readSettings } from '../settings/settings';
 import { spaceStorage } from '../storage/spaceStorage';
-import { parseSourceAnchor, sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
+import { projectPresentedText } from '@kiki/transcript';
+import { sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
 
 /** One derived timeline marker; `comment: null` is a plain quote (no comment). */
 export interface TimelineAnnotation {
@@ -36,6 +29,7 @@ export interface TimelineBlockLike {
   readonly id: string;
   readonly kind: string;
   readonly text?: string;
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
 }
 
 /** Local overlay for one derived annotation: a replacement comment or a removal. */
@@ -74,63 +68,14 @@ export interface SelectionCarryovers {
 }
 
 /**
- * Inverse of `buildAnnotationsPrefix` + `buildQuotePrefix`. The constructed
- * layout is annotation segments first (blockquote lines, a blank line, then a
- * single `Comment: ` line, then a blank line), at most one plain quote
- * (blockquote lines + a blank line), then the typed text. Parsing stops at the
- * first non-conforming line, which becomes the body — a hand-typed blockquote
- * degrades to "plain quote + body", a benign false positive.
+ * Read generated selection objects and project their marked raw-text spans.
+ * Comments may contain multiple lines; text without presentation is unchanged.
  */
-export function parseSelectionCarryovers(text: string): SelectionCarryovers {
-  const lines = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
-  const annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[] = [];
-  let quote: string | null = null;
-  let quoteSource: SelectionSourceAnchor | null | undefined;
-  let index = 0;
-  const readQuoteLines = (): string[] => {
-    const collected: string[] = [];
-    while (index < lines.length) {
-      const line = lines[index] ?? '';
-      if (line === '>') {
-        collected.push('');
-      } else if (line.startsWith('> ')) {
-        collected.push(line.slice(2));
-      } else {
-        break;
-      }
-      index += 1;
-    }
-    return collected;
-  };
-  const skipBlankLines = () => {
-    while (index < lines.length && lines[index] === '') index += 1;
-  };
-  while (index < lines.length) {
-    const line = lines[index] ?? '';
-    if (line !== '>' && !line.startsWith('> ')) break;
-    const quoteLines = readQuoteLines();
-    const quoteText = quoteLines.join('\n');
-    skipBlankLines();
-    let source: SelectionSourceAnchor | null | undefined;
-    if (lines[index]?.startsWith('<!-- kiki-source:')) {
-      source = parseSourceAnchor(lines[index]!);
-      index += 1;
-      skipBlankLines();
-    }
-    const next = lines[index];
-    if (next !== undefined && next.startsWith('Comment: ')) {
-      const note = { quote: quoteText, comment: next.slice('Comment: '.length) };
-      annotations.push(source === undefined ? note : { ...note, source });
-      index += 1;
-      skipBlankLines();
-      continue;
-    }
-    quote = quoteText;
-    quoteSource = source;
-    break;
-  }
-  const result = { annotations, quote, body: lines.slice(index).join('\n') };
-  return quoteSource === undefined ? result : { ...result, quoteSource };
+export function parseSelectionCarryovers(text: string, presentation?: import('@kiki/transcript').TextPresentation): SelectionCarryovers {
+  const selections = presentation?.spans.filter((span) => span.kind === 'selection' && span.quote !== undefined) ?? [];
+  const annotations = selections.flatMap((span) => span.comment === undefined ? [] : [{ quote: span.quote!, comment: span.comment, source: span.source }]);
+  const quoted = selections.find((span) => span.comment === undefined);
+  return { annotations, quote: quoted?.quote ?? null, quoteSource: quoted?.source, body: projectPresentedText(text, presentation) };
 }
 
 /**
@@ -213,7 +158,7 @@ export function collectTimelineAnnotations(
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
     if (block === undefined || block.kind !== 'user' || block.text === undefined) continue;
-    const carry = parseSelectionCarryovers(block.text);
+    const carry = parseSelectionCarryovers(block.text, block.presentation);
     const segments: readonly { quote: string; comment: string | null; source?: SelectionSourceAnchor | null }[] = [
       ...carry.annotations,
       ...(carry.quote !== null ? [{ quote: carry.quote, comment: null, source: carry.quoteSource }] : []),

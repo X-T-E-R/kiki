@@ -1,4 +1,5 @@
 import type { Message } from '@kiki/protocol';
+import { contentTextPresentation, type TextPresentation } from '@kiki/transcript';
 
 import { mediaFromContentParts, type MediaRef } from '../../composer/media';
 import type { SystemVariant } from './types';
@@ -8,20 +9,10 @@ export interface SplitSystemRemindersResult {
   readonly reminders: readonly string[];
 }
 
-export function splitSystemReminders(text: string): SplitSystemRemindersResult {
-  const reminders: string[] = [];
-  const visible = text.replaceAll(
-    /<system-reminder>([\s\S]*?)<\/system-reminder>|<system>(Image compressed to fit model limits:[\s\S]*?)<\/system>/gi,
-    (_match, body: string | undefined, caption: string | undefined) => {
-      const reminder = (body ?? caption ?? '').trim();
-      if (reminder !== '') reminders.push(reminder);
-      return '';
-    },
-  );
-  return {
-    text: visible.replaceAll(/\n{3,}/g, '\n\n').trim(),
-    reminders,
-  };
+export function splitSystemReminders(text: string, generated = false): SplitSystemRemindersResult {
+  if (!generated) return { text, reminders: [] };
+  const match = /^<system-reminder>([\s\S]*)<\/system-reminder>$/.exec(text.trim());
+  return match === null ? { text, reminders: [] } : { text: '', reminders: [match[1]!.trim()] };
 }
 
 export interface PromptOriginLike {
@@ -82,6 +73,7 @@ export interface ClassifiedText {
   readonly lane: TextLane;
   readonly origin: PromptOriginLike | undefined;
   readonly text: string;
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly reminders: readonly string[];
   readonly userInput?: string;
   readonly skill?: { readonly source: 'skill' | 'plugin'; readonly name: string; readonly args: string | undefined };
@@ -240,15 +232,16 @@ function skillFromOrigin(origin: PromptOriginLike | undefined): ClassifiedText['
 
 export function classifyTranscriptText(input: {
   text: string;
+  presentation?: import('@kiki/transcript').TextPresentation;
   role?: string;
   origin?: PromptOriginLike;
   id?: string;
   subagentPromptAsUser?: boolean;
 }): ClassifiedText {
   const origin = unwrapOrigin(input.origin);
-  const split = splitSystemReminders(input.text);
   const kind = origin?.kind;
-  const notification = splitTaskNotification(split.text);
+  const split = splitSystemReminders(input.text, kind === 'injection');
+  const notification = kind === 'task' || kind === 'background_task' ? splitTaskNotification(split.text) : undefined;
   if (notification !== undefined) {
     return {
       lane: 'system',
@@ -263,10 +256,10 @@ export function classifyTranscriptText(input: {
     kind === 'user' ||
     (input.subagentPromptAsUser === true && kind === 'system_trigger' && origin?.name === 'subagent')
   ) {
-    return { lane: 'you', origin, text: split.text, reminders: split.reminders };
+    return { lane: 'you', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
   if (kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'agent_message') {
-    return { lane: 'peer', origin, text: split.text, reminders: split.reminders };
+    return { lane: 'peer', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
   if (kind === 'skill_activation' || kind === 'plugin_command') {
     return {
@@ -318,24 +311,8 @@ export function classifyTranscriptText(input: {
     };
   }
 
-  const shell = parseHistoricalShell(input.text, input.id);
-  if (shell !== undefined) {
-    return { lane: 'shell', origin, text: split.text, reminders: split.reminders, shell };
-  }
-  if (CRON_FIRE_RE.test(input.text)) {
-    return {
-      lane: 'system',
-      origin,
-      text: extractCronPrompt(split.text),
-      reminders: split.reminders,
-      systemVariant: 'cron_job',
-    };
-  }
-  if (split.text === '' && split.reminders.length > 0) {
-    return { lane: 'reminder', origin, text: '', reminders: split.reminders };
-  }
   if (input.role === 'user' || input.role === undefined) {
-    return { lane: 'you', origin, text: split.text, reminders: split.reminders };
+    return { lane: 'you', origin, text: split.text, presentation: input.presentation, reminders: split.reminders };
   }
   return {
     lane: 'system',
@@ -346,13 +323,22 @@ export function classifyTranscriptText(input: {
   };
 }
 
+export function mediaFromTextPresentation(presentation: TextPresentation | undefined): readonly MediaRef[] {
+  return (presentation?.spans ?? []).flatMap((span) => {
+    if (span.kind !== 'attachment' || span.attachment === undefined) return [];
+    return [{ kind: 'file' as const, ...span.attachment }];
+  });
+}
+
 export function projectMessageContent(content: Message['content']): {
   text: string;
+  presentation?: import('@kiki/transcript').TextPresentation;
   media: readonly MediaRef[];
 } {
   const parts: string[] = [];
   for (const part of content) {
     if (part.type === 'text') parts.push(part.text);
   }
-  return { text: parts.join('\n'), media: mediaFromContentParts(content) };
+  const presentation = contentTextPresentation(content, '\n');
+  return { text: parts.join('\n'), presentation, media: [...mediaFromContentParts(content), ...mediaFromTextPresentation(presentation)] };
 }

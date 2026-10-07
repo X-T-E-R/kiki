@@ -663,6 +663,7 @@ export function useNewSessionDraft({
   const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
+    initialPresentation?: import('@kiki/transcript').TextPresentation;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
     /**
@@ -750,6 +751,7 @@ export function useNewSessionDraft({
             state: {
               createdSession: { id: session.id, scopeId },
               initialPrompt: handoff.initialPrompt,
+              initialPresentation: handoff.initialPresentation,
               initialAttachments: handoff.initialAttachments,
               initialSkill: handoff.initialSkill,
               // The first message of a bare external engine must reach the
@@ -780,12 +782,13 @@ export function useNewSessionDraft({
   const send = useCallback((
     text: string,
     composerAttachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string },
+    options?: { readonly goalObjective?: string; readonly presentation?: import('@kiki/transcript').TextPresentation },
   ) => {
-    if (buildPromptContent(text, composerAttachments) === null) return;
+    if (buildPromptContent(text, composerAttachments, options?.presentation) === null) return;
     if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
     return createThenNavigate({
-      initialPrompt: text.trim(),
+      initialPrompt: text,
+      initialPresentation: options?.presentation,
       initialAttachments: withoutSsh(composerAttachments),
       sshHosts: sshOf(composerAttachments),
       goalObjectiveOverride: options?.goalObjective,

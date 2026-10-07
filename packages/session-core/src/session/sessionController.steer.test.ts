@@ -411,10 +411,11 @@ describe('withPendingSteers', () => {
       queuedPromptIds: ['p1', 'p2'],
       blocks: [{ kind: 'user', id: 'user-p1', text: STEER_TEXT, createdAt: '2026-01-01T00:00:03.000Z', promptId: 'p1', userMessageId: 'p1', promptStatus: 'queued' }],
     };
-    const next = withPendingSteers(state, [{ promptId: 'p1', text: STEER_TEXT, createdAt: '2026-01-01T00:00:03.000Z', phase: 'sending' }]);
+    const presentation = { spans: [{ start: 0, end: STEER_TEXT.length, kind: 'selection' as const, quote: STEER_TEXT }] };
+    const next = withPendingSteers(state, [{ promptId: 'p1', text: STEER_TEXT, presentation, createdAt: '2026-01-01T00:00:03.000Z', phase: 'sending' }]);
     expect(next.queuedPromptIds).toEqual(['p2']);
     expect(next.blocks).toHaveLength(1);
-    expect(next.blocks[0]).toMatchObject({ id: 'user-p1', steerStatus: 'sending' });
+    expect(next.blocks[0]).toMatchObject({ id: 'user-p1', steerStatus: 'sending', presentation });
     expect(next.blocks[0]).not.toHaveProperty('promptStatus');
   });
 });

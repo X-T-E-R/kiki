@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
+import { contentOriginalFileId, type ContentRef, type TextPresentation } from '@kiki/transcript';
 import type { HttpRestMediaOptions, HttpRestMediaSink } from '@kiki/klient';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { ContentRangeText } from './ContentRangeText';
@@ -276,6 +276,8 @@ export function ContentContinuation({
   callerAgentId,
   headingPresent = false,
   className = '',
+  presentation,
+  renderText,
 }: {
   headingPresent?: boolean;
   callerAgentId?: string;
@@ -285,6 +287,8 @@ export function ContentContinuation({
   /** The reading area's own name, e.g. Output / Arguments / Command. */
   label: string;
   className?: string;
+  presentation?: TextPresentation;
+  renderText?: (text: string) => ReactNode;
 }): ReactNode {
   const { t, tp } = useI18n();
   const { pending, statusOf, request } = useContentContinuation(source, roots, callerAgentId);
@@ -298,7 +302,7 @@ export function ContentContinuation({
   if (ref === undefined && ranges.length === 0) return null;
   const progress = ref === undefined ? '' : contentRefProgress(ref, t);
   return <>
-    {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
+    {ranges.map((range) => <div key={JSON.stringify([range.source, range.path, range.revision])} className={className}><ContentRangeText contentRef={range} callerAgentId={callerAgentId} headingPresent={headingPresent && range.path.length === 1} label={range.path.length === 1 ? label : `${label} · ${range.path.slice(1).join('.')}`} presentation={presentation} renderText={renderText} /><ContentOriginalDownload ref={range} label={label} callerAgentId={callerAgentId} /></div>)}
     {ref === undefined ? null : <ContinuationRow
       kind="content"
       state={statusOf(ref)?.status ?? (automatic ? 'loading' : 'idle')}

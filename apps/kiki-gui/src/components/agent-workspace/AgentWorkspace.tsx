@@ -690,11 +690,11 @@ function ChildAgentWorkspace({
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
-    _options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
+    options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
     useSwitchDependency = true,
   ) => {
     if (!agentKnown) return;
-    const content = buildPromptContent(text, composerAttachments);
+    const content = buildPromptContent(text, composerAttachments, options?.presentation);
     if (content === null) return;
     const payload = JSON.stringify([text, content, useSwitchDependency]);
     const previous = pendingSendRef.current;
@@ -766,17 +766,18 @@ function ChildAgentWorkspace({
   const handleComposerSendNow = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
+    presentation?: import('@kiki/transcript').TextPresentation,
   ) => {
     if (!agentKnown) return;
-    const content = buildPromptContent(text, composerAttachments);
+    const content = buildPromptContent(text, composerAttachments, presentation);
     if (content === null) return;
     if (!(await client.isNativeAgent(sessionId, agentId))) {
       // External Send now is still the same durable mailbox submission/retry.
-      await handleComposerSend(text, composerAttachments);
+      await handleComposerSend(text, composerAttachments, { presentation });
       return;
     }
     if (controller === null) {
-      await handleComposerSend(text, composerAttachments, undefined, false);
+      await handleComposerSend(text, composerAttachments, { presentation }, false);
       return;
     }
     draftRef.current = '';
@@ -803,6 +804,11 @@ function ChildAgentWorkspace({
       });
     }
   };
+  const handleComposerSendBusy = async (
+    text: string,
+    composerAttachments: readonly ComposerAttachment[],
+    options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
+  ) => handleComposerSendNow(text, composerAttachments, options?.presentation);
   // Stop is a server-side cancel that can fail; duplicate requests during the
   // round trip are guarded by a synchronous ref (a state-only guard can be
   // crossed by two events in the same batch), mirrored to state for the
@@ -1159,7 +1165,7 @@ function ChildAgentWorkspace({
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
           onChangePlanMode={() => {}}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-          onSend={headerBusy ? handleComposerSendNow : handleComposerSend}
+          onSend={headerBusy ? handleComposerSendBusy : handleComposerSend}
           onSendNow={handleComposerSendNow}
           busySendsNow
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}

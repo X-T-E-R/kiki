@@ -183,6 +183,34 @@ describe('model switch engine', () => {
     expect(todo.getTodos()).toEqual([{ title: 'Verify result', status: 'in_progress' }]);
   });
 
+  it('preserves text presentation when compact rebuilds the model-switch context', async () => {
+    const ctx = await createHost();
+    const text = 'Inspect the marked image caption.';
+    const presentation = { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] };
+    ctx.get(IAgentContextMemoryService).append({
+      role: 'user',
+      content: [{ type: 'text', text, presentation }],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+    ctx.get(IAgentContextMemoryService).append({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Acknowledge.' }],
+      toolCalls: [],
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Portable summary.' });
+
+    const result = await ctx.get(IAgentModelSwitchService).execute({
+      operationId: 'presentation-compact',
+      model: NEW,
+      mode: 'compact',
+    });
+
+    expect(result).toMatchObject({ state: 'completed', summaryGenerated: true });
+    const active = ctx.get(IAgentContextMemoryService).get();
+    expect(active.flatMap((message) => message.content)).toContainEqual({ type: 'text', text, presentation });
+  });
+
   it('a failed summary leaves the old binding and context intact and fresh recovery never calls the old model', async () => {
     const ctx = await createHost();
     appendOldContext(ctx);

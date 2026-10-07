@@ -1,12 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { CONTENT_RANGE_CHARS, type SessionController } from '@kiki/session-core/session';
-import type { ContentRef } from '@kiki/transcript';
+import { projectPresentedText, type ContentRef, type TextPresentation } from '@kiki/transcript';
 
 import { useI18n } from '../i18n';
 import { useTranscriptController, useTranscriptTarget } from './transcriptDetail';
 
-export function ContentRangeText({ contentRef, callerAgentId, label, headingPresent = false }: { contentRef: ContentRef; callerAgentId?: string; label: string; headingPresent?: boolean }) {
+export function ContentRangeText({ contentRef, callerAgentId, label, headingPresent = false, presentation, renderText }: {
+  contentRef: ContentRef;
+  callerAgentId?: string;
+  label: string;
+  headingPresent?: boolean;
+  presentation?: TextPresentation;
+  renderText?: (text: string) => ReactNode;
+}) {
   const controller = useTranscriptController();
   const target = useTranscriptTarget();
   const scroll = useRef<HTMLDivElement>(null);
@@ -30,14 +37,21 @@ export function ContentRangeText({ contentRef, callerAgentId, label, headingPres
     <div ref={scroll} className="h-60 overflow-auto rounded-md bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed text-ink select-text" aria-label={label}>
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualizer.getVirtualItems().map((item) => <div key={`${contentRef.revision}/${item.key}`} data-index={item.index} ref={virtualizer.measureElement} style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` }}>
-          <RangeBlock controller={controller} agentId={agentId} contentRef={contentRef} offset={item.index * CONTENT_RANGE_CHARS} />
+          <RangeBlock controller={controller} agentId={agentId} contentRef={contentRef} offset={item.index * CONTENT_RANGE_CHARS} presentation={presentation} renderText={renderText} />
         </div>)}
       </div>
     </div>
   </div>;
 }
 
-function RangeBlock({ controller, agentId, contentRef, offset }: { controller: SessionController; agentId: string; contentRef: ContentRef; offset: number }) {
+function RangeBlock({ controller, agentId, contentRef, offset, presentation, renderText }: {
+  controller: SessionController;
+  agentId: string;
+  contentRef: ContentRef;
+  offset: number;
+  presentation?: TextPresentation;
+  renderText?: (text: string) => ReactNode;
+}) {
   const { t } = useI18n();
   const [text, setText] = useState<string>();
   const [failed, setFailed] = useState(false);
@@ -51,5 +65,7 @@ function RangeBlock({ controller, agentId, contentRef, offset }: { controller: S
     }, () => { if (!abort.signal.aborted) setFailed(true); });
     return () => { abort.abort(); };
   }, [controller, agentId, key, offset, attempt]);
-  return text !== undefined ? <pre className="m-0 whitespace-pre-wrap break-words">{text}</pre> : <div className="min-h-20 text-ink-faint" role="status">{t(failed ? 'transcript.content.failed' : 'transcript.content.loading')}{failed ? <button type="button" className="ml-2 underline" onClick={() => { setAttempt((value) => value + 1); }}>{t('common.retry')}</button> : null}</div>;
+  if (text === undefined) return <div className="min-h-20 text-ink-faint" role="status">{t(failed ? 'transcript.content.failed' : 'transcript.content.loading')}{failed ? <button type="button" className="ml-2 underline" onClick={() => { setAttempt((value) => value + 1); }}>{t('common.retry')}</button> : null}</div>;
+  const displayed = projectPresentedText(text, presentation, offset);
+  return renderText === undefined ? <pre className="m-0 whitespace-pre-wrap break-words">{displayed}</pre> : <div className="whitespace-pre-wrap break-words">{renderText(displayed)}</div>;
 }

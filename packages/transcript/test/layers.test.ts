@@ -683,6 +683,54 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('carries validated text presentation through queue replacement, delivery, steer, and cold replay', () => {
+    const selection = { spans: [{ start: 0, end: 5, kind: 'selection' as const, quote: 'hello' }] };
+    const replacement = { spans: [{ start: 0, end: 7, kind: 'source' as const, quote: 'replaced' }] };
+    const steer = { spans: [{ start: 0, end: 5, kind: 'attachment' as const, quote: 'steer' }] };
+    const records: TranscriptWireRecord[] = [
+      {
+        type: 'prompt.enqueued', promptId: 'p-present', userMessageId: 'u-present',
+        message: { id: 'u-present', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello', presentation: selection }] }, time: 1,
+      },
+      {
+        type: 'prompt.replaced', promptId: 'p-present',
+        content: [{ type: 'text', text: 'replaced', presentation: replacement }], revision: 2, time: 2,
+      },
+      {
+        type: 'turn.prompt', turnId: 0, promptId: 'p-present',
+        input: [{ type: 'text', text: 'hello', presentation: selection }], origin: { kind: 'user' }, time: 3,
+      },
+      {
+        type: 'context.append_message',
+        message: { id: 'p-present', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello', presentation: selection }] },
+        delivery: { messageId: 'p-present', turnId: 0, stepId: 'step-0', step: 1, origin: 'user' }, time: 4,
+      },
+      {
+        type: 'turn.steer', turnId: 0, promptId: 'steer-present',
+        input: [{ type: 'text', text: 'steer', presentation: steer }], origin: { kind: 'user' }, time: 5,
+      },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-1' }, time: 6 },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'content.part', turnId: 0, stepUuid: 'step-1', uuid: 'assistant-present', part: { type: 'text', text: 'answer', presentation: replacement } },
+        time: 7,
+      },
+    ];
+    const transcript = replay(records);
+    expect(transcript.getPrompt('p-present')?.content).toEqual([{ type: 'text', text: 'replaced', presentation: replacement }]);
+    expect(transcript.getTurn('t0')).toMatchObject({ prompt: 'hello', presentation: selection });
+    expect(transcript.getTurn('t0')?.steps.flatMap((step) => step.frames)).toEqual([
+      expect.objectContaining({ frameId: 'steer-present', text: 'steer', presentation: steer }),
+      expect.objectContaining({ frameId: 'assistant-present', text: 'answer', presentation: replacement }),
+    ]);
+    const invalid = replay([{
+      type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'literal', presentation: { spans: [{ start: -1, end: 2, kind: 'selection' }] } }],
+      origin: { kind: 'user' }, time: 1,
+    }]);
+    expect(invalid.getTurn('t0')).toMatchObject({ prompt: 'literal' });
+    expect(invalid.getTurn('t0')?.presentation).toBeUndefined();
+  });
+
   it('classifies unfinished turns after a restart without a user stop', () => {
     const transcript = replay([records[0]!]);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', cancellation: 'recovery' });

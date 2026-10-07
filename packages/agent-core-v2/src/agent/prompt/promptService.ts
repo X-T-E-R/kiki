@@ -590,6 +590,125 @@ function sharedSteerOrigin(
   return origin;
 }
 
+interface PresentedSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly kind: string;
+  readonly [key: string]: unknown;
+}
+
+interface TextRange {
+  start: number;
+  end: number;
+}
+
+function readPresentedSpans(value: unknown): readonly PresentedSpan[] {
+  if (typeof value !== 'object' || value === null) return [];
+  const spans = (value as { spans?: unknown }).spans;
+  if (!Array.isArray(spans)) return [];
+  return spans.filter((span): span is PresentedSpan => {
+    if (typeof span !== 'object' || span === null) return false;
+    const candidate = span as { start?: unknown; end?: unknown; kind?: unknown };
+    return Number.isInteger(candidate.start) && Number.isInteger(candidate.end) && typeof candidate.kind === 'string';
+  });
+}
+
+function compressionCaptionRanges(text: string, presentation: unknown): TextRange[] {
+  const ranges = readPresentedSpans(presentation)
+    .filter((span) => span.kind === 'image_compression' && span.start >= 0 && span.end > span.start && span.end <= text.length)
+    .map(({ start, end }) => ({ start, end }))
+    .toSorted((left, right) => left.start - right.start || left.end - right.end);
+  const merged: TextRange[] = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous !== undefined && range.start < previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
+}
+
+function offsetAfterRemoving(offset: number, removals: readonly TextRange[]): number {
+  let removed = 0;
+  for (const range of removals) {
+    if (range.end <= offset) {
+      removed += range.end - range.start;
+    } else if (range.start < offset) {
+      removed += offset - range.start;
+      break;
+    } else {
+      break;
+    }
+  }
+  return offset - removed;
+}
+
+function removeTextRanges(text: string, removals: readonly TextRange[]): string {
+  let cursor = 0;
+  let result = '';
+  for (const range of removals) {
+    result += text.slice(cursor, range.start);
+    cursor = range.end;
+  }
+  return result + text.slice(cursor);
+}
+
+function removePresentationRanges(
+  presentation: unknown,
+  textLength: number,
+  removals: readonly TextRange[],
+): unknown {
+  if (typeof presentation !== 'object' || presentation === null) return undefined;
+  const spans = readPresentedSpans(presentation);
+  const next: PresentedSpan[] = [];
+  for (const span of spans) {
+    if (span.kind === 'image_compression') continue;
+    const start = Math.max(0, Math.min(textLength, span.start));
+    const end = Math.max(start, Math.min(textLength, span.end));
+    if (end <= start) continue;
+    let pieces: TextRange[] = [{ start, end }];
+    for (const removal of removals) {
+      pieces = pieces.flatMap((piece) => {
+        if (removal.end <= piece.start || removal.start >= piece.end) return [piece];
+        const result: TextRange[] = [];
+        if (piece.start < removal.start) result.push({ start: piece.start, end: removal.start });
+        if (removal.end < piece.end) result.push({ start: removal.end, end: piece.end });
+        return result;
+      });
+    }
+    for (const piece of pieces) {
+      next.push({
+        ...span,
+        start: offsetAfterRemoving(piece.start, removals),
+        end: offsetAfterRemoving(piece.end, removals),
+      });
+    }
+  }
+  if (next.length === 0) return undefined;
+  return { ...(presentation as { readonly [key: string]: unknown }), spans: next };
+}
+
+function extractMarkedCompressionCaptions(
+  text: string,
+  presentation: unknown,
+): { readonly text: string; readonly presentation: unknown; readonly captions: readonly string[] } {
+  const removals = compressionCaptionRanges(text, presentation);
+  if (removals.length === 0) return { text, presentation, captions: [] };
+  const captions: string[] = [];
+  for (const range of removals) {
+    const marked = text.slice(range.start, range.end);
+    const extracted = extractImageCompressionCaptions(marked);
+    captions.push(...(extracted.captions.length > 0 ? extracted.captions : [marked]));
+  }
+  return {
+    text: removeTextRanges(text, removals),
+    presentation: removePresentationRanges(presentation, text.length, removals),
+    captions,
+  };
+}
+
 export const promptLaunchingKey = defineState<boolean>('prompt.launching', () => false);
 
 export class AgentPromptService implements IAgentPromptService {
@@ -2177,8 +2296,13 @@ export class AgentPromptService implements IAgentPromptService {
     const captions: string[] = []; const parts: ContentPart[] = [];
     for (const part of message.content) {
       if (part.type !== 'text') { parts.push(part); continue; }
-      const extracted = extractImageCompressionCaptions(part.text); captions.push(...extracted.captions);
-      if (extracted.text.trim().length > 0) parts.push({ type: 'text', text: extracted.text });
+      const extracted = extractMarkedCompressionCaptions(part.text, part.presentation);
+      captions.push(...extracted.captions);
+      if (extracted.captions.length === 0) {
+        if (part.text.trim().length > 0) parts.push(part);
+      } else if (extracted.text.trim().length > 0) {
+        parts.push({ ...part, text: extracted.text, presentation: extracted.presentation });
+      }
     }
     return { message: captions.length === 0 ? message : { ...message, content: parts }, captions };
   }

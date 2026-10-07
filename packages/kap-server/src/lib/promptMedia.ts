@@ -82,7 +82,7 @@ export async function resolvePromptSessionMediaRefs(
 export function contentToCoreParts(content: WireContent): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
-    if (part.type === 'text') parts.push({ type: 'text', text: part.text });
+    if (part.type === 'text') parts.push({ type: 'text', text: part.text, presentation: part.presentation });
     else if (part.type === 'image' && part.source.kind === 'url') parts.push({ type: 'image_url', imageUrl: { url: part.source.url, id: part.source.id, name: part.name } });
     else if (part.type === 'image' && part.source.kind === 'base64') parts.push({ type: 'image_url', imageUrl: { url: `data:${part.source.media_type};base64,${part.source.data}`, name: part.name } });
     else if (part.type === 'image' && part.source.kind === 'session_media') parts.push({ type: 'image_url', imageUrl: { url: buildDaemonFileUrl(part.source.file_id), id: part.source.file_id, name: part.name } });
@@ -206,23 +206,25 @@ export async function resolvePromptMediaFiles(
             part.source.media_type,
             { dir },
           );
+          const text = buildImageCompressionCaption({
+            original: {
+              width: compressed.originalWidth,
+              height: compressed.originalHeight,
+              byteLength: compressed.originalByteLength,
+              mimeType: part.source.media_type,
+            },
+            final: {
+              width: compressed.width,
+              height: compressed.height,
+              byteLength: compressed.finalByteLength,
+              mimeType: compressed.mimeType,
+            },
+            originalPath,
+          });
           content.push({
             type: 'text',
-            text: buildImageCompressionCaption({
-              original: {
-                width: compressed.originalWidth,
-                height: compressed.originalHeight,
-                byteLength: compressed.originalByteLength,
-                mimeType: part.source.media_type,
-              },
-              final: {
-                width: compressed.width,
-                height: compressed.height,
-                byteLength: compressed.finalByteLength,
-                mimeType: compressed.mimeType,
-              },
-              originalPath,
-            }),
+            text,
+            presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
           });
           content.push({
             type: 'image',
@@ -244,9 +246,11 @@ export async function resolvePromptMediaFiles(
       if (part.type === 'file') {
         const file = await store.get(part.file_id);
         const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
+        const text = buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath);
         content.push({
-          type: 'text',
-          text: buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath),
+          type: 'text', text,
+          presentation: { spans: [{ start: 0, end: text.length, kind: 'attachment',
+            attachment: { path: attachedPath, name: file.meta.name, mime: file.meta.media_type, size: file.meta.size } }] },
         });
         changed = true;
         continue;
@@ -270,23 +274,25 @@ export async function resolvePromptMediaFiles(
         if (compressed.changed) {
           const dir = await resolveOriginalsDir();
           const originalPath = await persistOriginalImage(data, mediaType, { dir });
+          const text = buildImageCompressionCaption({
+            original: {
+              width: compressed.originalWidth,
+              height: compressed.originalHeight,
+              byteLength: compressed.originalByteLength,
+              mimeType: mediaType,
+            },
+            final: {
+              width: compressed.width,
+              height: compressed.height,
+              byteLength: compressed.finalByteLength,
+              mimeType: compressed.mimeType,
+            },
+            originalPath,
+          });
           content.push({
             type: 'text',
-            text: buildImageCompressionCaption({
-              original: {
-                width: compressed.originalWidth,
-                height: compressed.originalHeight,
-                byteLength: compressed.originalByteLength,
-                mimeType: mediaType,
-              },
-              final: {
-                width: compressed.width,
-                height: compressed.height,
-                byteLength: compressed.finalByteLength,
-                mimeType: compressed.mimeType,
-              },
-              originalPath,
-            }),
+            text,
+            presentation: { spans: [{ start: 0, end: text.length, kind: 'image_compression' }] },
           });
         }
         let finalFile = file;

@@ -2676,10 +2676,10 @@ export class SessionController {
     } finally { lease.release(); }
   }
 
-  async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[]): Promise<void> {
+  async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[], presentation?: import('@kiki/transcript').TextPresentation): Promise<void> {
     assertSessionWritable(this.state);
     const result = await this.client.replacePrompt(this.sessionId, promptId, {
-      content: [...(text.trim() === '' ? [] : [{ type: 'text' as const, text }]), ...(retainedAttachments ?? [])],
+      content: [...(text.trim() === '' ? [] : [{ type: 'text' as const, text, presentation }]), ...(retainedAttachments ?? [])],
       replace_attachments: retainedAttachments === undefined ? undefined : true,
     });
     if (this.unprojectedQueueReceipts.has(promptId)) this.unprojectedQueueReceipts.set(promptId, result);
@@ -2785,6 +2785,7 @@ export class SessionController {
       this.setPendingSteer(MAIN_AGENT_ID, {
         promptId,
         text: queued.text,
+        presentation: queued.presentation,
         media: queued.media,
         createdAt: new Date().toISOString(),
         phase: 'sending',
@@ -2842,12 +2843,14 @@ export class SessionController {
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
+    const projection = projectMessageContent(content);
     const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() });
     input.onPreservation?.(preservation.persisted);
     this.setPendingSteer(agentId, {
       promptId,
       text: input.text,
-      media: input.media ?? nonEmpty(projectMessageContent(content).media),
+      presentation: projection.presentation,
+      media: input.media ?? nonEmpty(projection.media),
       createdAt: new Date().toISOString(),
       phase: 'sending',
     });

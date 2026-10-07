@@ -95,6 +95,7 @@ export interface TranscriptTurn extends ContentWindow {
   readonly delivery?: MessageDelivery;
   /** The raw prompt that opened the turn (user text, cron prompt, …). */
   readonly prompt?: string;
+  readonly presentation?: import('../contract/presentation').TextPresentation;
   /** Attachments carried by the turn-opening input (entities in `attachments`). */
   readonly attachmentIds?: readonly AttachmentId[];
   readonly steps: TranscriptStep[];

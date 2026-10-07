@@ -937,7 +937,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           ? `Message from thread ${await this.threadLabel(message.producer.source)}:\n\n${message.content}`
           : message.content;
       const input = { id: message.messageId, message: { id: message.messageId, role: 'user' as const,
-        content: [{ type: 'text' as const, text }], toolCalls: [], origin } };
+        content: [{ type: 'text' as const, text, presentation: text === message.content ? undefined : {
+          spans: [{ start: 0, end: text.length - message.content.length, kind: 'source' as const }],
+        } }], toolCalls: [], origin } };
       const prior = prompt.lookup(message.messageId, input);
       if (prior === undefined || prior.phase === 'pending') handle = await prompt.enqueue(input);
     } catch (error) {

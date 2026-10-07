@@ -68,25 +68,11 @@ export function retainedAttachmentsFromContent(content: readonly MessageContent[
 }
 
 /**
- * Reads back the display block older sessions appended to a user message.
- * Joining a host is a session fact now (the session host list is the truth), so
- * nothing writes this block any more; it survives only so stored history keeps
- * rendering the way the user typed it instead of leaking the raw XML.
+ * Preserve historical SSH-shaped text without guessing whether the user wrote it.
+ * Resident SSH hosts come from the session host list, not message syntax.
  */
 export function parseSshHostContext(text: string): { body: string; hosts: readonly SshHostAttachment[] } {
-  const match = /(?:\n\n|^)<ssh_host_refs>\n([^\n]+)\n<\/ssh_host_refs>$/.exec(text);
-  if (match === null) return { body: text, hosts: [] };
-  try {
-    const value: unknown = JSON.parse(match[1]!);
-    if (!Array.isArray(value) || !value.every((host: unknown) => {
-      if (typeof host !== 'object' || host === null) return false;
-      const entry = host as Record<string, unknown>;
-      return typeof entry['id'] === 'string' && typeof entry['name'] === 'string';
-    })) return { body: text, hosts: [] };
-    return { body: text.slice(0, match.index), hosts: value.map((host: { id: string; name: string }) => ({ kind: 'ssh', id: host.id, name: host.name })) };
-  } catch {
-    return { body: text, hosts: [] };
-  }
+  return { body: text, hosts: [] };
 }
 
 /**
@@ -303,15 +289,29 @@ export function mentionToken(mention: FileMention): string {
 export function buildPromptContent(
   text: string,
   attachments: readonly ComposerAttachment[],
+  presentation?: import('@kiki/transcript').TextPresentation,
 ): MessageContent[] | null {
   const mentions = attachments.filter((item): item is FileMention => item.kind === 'file');
   const images = attachments.filter((item): item is ImageAttachment => item.kind === 'image');
   const uploads = attachments.filter((item): item is UploadAttachment => item.kind === 'upload');
+  const typedText = text.trim();
+  const mentionText = mentions.map(mentionToken).join(' ');
   const parts: string[] = [];
-  if (mentions.length > 0) parts.push(mentions.map(mentionToken).join(' '));
-  if (text.trim() !== '') parts.push(text.trim());
+  if (mentionText !== '') parts.push(mentionText);
+  if (typedText !== '') parts.push(typedText);
   const content: MessageContent[] = [];
-  if (parts.length > 0) content.push({ type: 'text', text: parts.join('\n\n') });
+  if (parts.length > 0) {
+    const contentText = parts.join('\n\n');
+    const typedTextOffset = mentionText !== '' && typedText !== '' ? mentionText.length + 2 : 0;
+    const rawToContentOffset = typedTextOffset - (text.length - text.trimStart().length);
+    const mappedSpans = typedText === '' ? [] : presentation?.spans.flatMap((span) => {
+      const start = Math.max(typedTextOffset, Math.min(contentText.length, span.start + rawToContentOffset));
+      const end = Math.max(start, Math.min(contentText.length, span.end + rawToContentOffset));
+      return end > start ? [{ ...span, start, end }] : [];
+    }) ?? [];
+    const mappedPresentation = mappedSpans.length > 0 ? { spans: mappedSpans } : undefined;
+    content.push({ type: 'text', text: contentText, presentation: mappedPresentation });
+  }
   for (const image of images) {
     const part: ImageContent = {
       type: 'image',

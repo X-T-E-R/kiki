@@ -28,22 +28,36 @@ describe('promptMetadataTextFromContentParts', () => {
     expect(text).toBe('look at this [image]');
   });
 
-  it('keeps a standalone image-compression caption out of the metadata text', () => {
+  it('keeps a marked image-compression caption out of the metadata text', () => {
     const text = promptMetadataTextFromContentParts([
-      { type: 'text', text: CAPTION },
+      { type: 'text', text: CAPTION, presentation: {
+        spans: [{ start: 0, end: CAPTION.length, kind: 'image_compression' }],
+      } },
       { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } },
     ]);
     expect(text).toBe('[image]');
   });
 
-  it('strips a caption merged into the user text and keeps the rest', () => {
+  it('strips a marked caption merged into the user text and keeps the rest', () => {
+    const prefix = '能展示但是没有快捷键提示';
+    const merged = `${prefix}${CAPTION}`;
     const text = promptMetadataTextFromContentParts([
-      { type: 'text', text: `能展示但是没有快捷键提示${CAPTION}` },
+      { type: 'text', text: merged, presentation: {
+        spans: [{ start: prefix.length, end: merged.length, kind: 'image_compression' }],
+      } },
       { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } },
     ]);
     expect(text).toBe('能展示但是没有快捷键提示 [image]');
     expect(text).not.toContain('<system>');
     expect(text).not.toContain('Image compressed');
+  });
+
+  it('keeps an unmarked caption-shaped user text in metadata', () => {
+    const text = promptMetadataTextFromContentParts([
+      { type: 'text', text: CAPTION },
+      { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } },
+    ]);
+    expect(text).toBe(`${CAPTION} [image]`);
   });
 
   it('keeps an upload <image path> tag out of the metadata text', () => {

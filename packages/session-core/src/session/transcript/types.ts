@@ -27,6 +27,7 @@ export interface UserBlock {
   readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly id: string;
   readonly text: string;
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly media?: readonly MediaRef[];
   readonly queuedContent?: Message['content'];
   readonly createdAt: string;

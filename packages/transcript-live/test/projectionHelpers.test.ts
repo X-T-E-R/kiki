@@ -22,6 +22,13 @@ describe('@kiki/transcript-live projection helpers', () => {
     ]);
   });
 
+  it('retains presentation spans on prompt text without rewriting its content', () => {
+    const text = 'Typed body\n\n<thread_refs>generated</thread_refs>';
+    const presentation = { spans: [{ start: 'Typed body'.length, end: text.length, kind: 'context' as const }] };
+    expect(projectPromptContentParts([{ type: 'text', text, presentation }])).toEqual([{ type: 'text', text, presentation }]);
+    expect(projectPromptContentParts([{ type: 'text', text, presentation: { spans: [{ start: -1, end: 4, kind: 'context' }] } }])).toEqual([{ type: 'text', text }]);
+  });
+
   it('maps native activity state to the shared protocol phase', () => {
     expect(
       toLegacyPhase({

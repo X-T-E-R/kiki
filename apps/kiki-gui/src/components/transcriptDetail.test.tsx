@@ -860,6 +860,34 @@ it('omits a range heading only when its caller already labels the field, keeping
 });
 
 
+it('projects presentation spans for a range without changing its raw read offset', async () => {
+  const ref: ContentRef = { source: { kind: 'frame', id: 'f', turnId: 't1', stepId: 's1' }, path: ['output'], revision: 'presented', kind: 'text', offset: 0, total: 600 };
+  const readContentRange = vi.fn(async (_agentId: string, _contentRef: ContentRef, offset: number) => {
+    expect(offset).toBe(0);
+    return 'abcd';
+  });
+  const controller = {
+    contentRefsFor: () => [ref],
+    isContentRange: () => true,
+    beginContentRead: () => ({ release() {}, retry() {} }),
+    readContentRange,
+  } as unknown as SessionController;
+  const renderText = vi.fn((text: string) => <span data-presented-range>{text}</span>);
+  const presentation = { spans: [{ start: 1, end: 3, kind: 'context' as const }] };
+  const previousOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 240 });
+  try {
+    const container = await render(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="s" agentId="main"><ContentContinuation source={ref.source} roots={['output']} label="Output" presentation={presentation} renderText={renderText} /></TranscriptDetailProvider>);
+    await act(async () => { await vi.waitFor(() => { expect(renderText).toHaveBeenCalledWith('ad'); }); });
+    expect(container.querySelector('[data-presented-range]')?.textContent).toBe('ad');
+    expect(container.querySelector('[data-presented-range]')?.parentElement?.className).toContain('whitespace-pre-wrap');
+    expect(readContentRange).toHaveBeenCalledWith('main', ref, 0, expect.any(AbortSignal));
+  } finally {
+    if (previousOffsetHeight === undefined) Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
+    else Object.defineProperty(HTMLElement.prototype, 'offsetHeight', previousOffsetHeight);
+  }
+});
+
 it.each(['MemoryRead', 'MemoryWrite', 'MemorySearch', 'ExampleTool'])('%s reads structured historical fields on first expansion and retries the original ref', async (name) => {
   const reason = 'Historical reason '.repeat(80) + 'REASON_TAIL';
   const output = { items: Array.from({ length: 10 }, (_, i) => ({ id: `entry-${i}`, body: 'Recorded body '.repeat(100) + `BODY_TAIL_${i}`, status: 'archived', revision: 'old-revision' })), next_cursor: 'actual-next-page', coverage: { exhausted: false, complete: true } };

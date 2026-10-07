@@ -15,25 +15,43 @@ import {
   writeAnnotationOverride,
   type TimelineAnnotation,
 } from './timelineAnnotations';
-import { buildAnnotationsPrefix, buildQuotePrefix, sourceTextVersion } from './selectionQuote';
+import { selectionCarryoverPresentation, sourceTextVersion } from './selectionQuote';
 
-const block = (id: string, kind: string, text: string) => ({ id, kind, text });
+type CarryoverArguments = Parameters<typeof selectionCarryoverPresentation>;
+
+const block = (id: string, kind: string, text: string, presentation?: ReturnType<typeof selectionCarryoverPresentation>['presentation']) =>
+  presentation === undefined ? { id, kind, text } : { id, kind, text, presentation };
+
+const presented = (
+  id: string,
+  kind: string,
+  annotations: CarryoverArguments[0],
+  quote: CarryoverArguments[1] = null,
+  body = '',
+  quoteSource?: CarryoverArguments[2],
+) => {
+  const carry = selectionCarryoverPresentation(annotations, quote, quoteSource);
+  return block(id, kind, `${carry.prefix}${body}`, carry.presentation);
+};
 
 describe('parseSelectionCarryovers', () => {
-  it('round-trips the constructed wire layout', () => {
+  it('round-trips producer metadata for multiline comments, a second annotation, and a source', () => {
+    const source = { blockId: 'assistant-2', version: 'v2', start: 4, end: 10, text: 'second' };
     const annotations = [
-      { quote: 'first fragment', comment: 'comment one' },
-      { quote: 'second fragment\nacross lines', comment: 'comment two' },
+      { quote: 'first fragment\nacross lines', comment: 'comment one\nwith detail' },
+      { quote: 'second', comment: 'comment two', source },
     ];
-    const text = `${buildAnnotationsPrefix(annotations)}${buildQuotePrefix('plain quote')}typed body`;
-    const parsed = parseSelectionCarryovers(text);
+    const carry = selectionCarryoverPresentation(annotations, 'plain quote', source);
+    const parsed = parseSelectionCarryovers(`${carry.prefix}typed body`, carry.presentation);
     expect(parsed.annotations).toEqual(annotations);
     expect(parsed.quote).toBe('plain quote');
+    expect(parsed.quoteSource).toEqual(source);
     expect(parsed.body).toBe('typed body');
   });
 
-  it('parses a quote-only message', () => {
-    const parsed = parseSelectionCarryovers(buildQuotePrefix('just a quote'));
+  it('parses a producer-marked quote-only message', () => {
+    const carry = selectionCarryoverPresentation([], 'just a quote');
+    const parsed = parseSelectionCarryovers(carry.prefix, carry.presentation);
     expect(parsed.annotations).toEqual([]);
     expect(parsed.quote).toBe('just a quote');
     expect(parsed.body).toBe('');
@@ -46,16 +64,20 @@ describe('parseSelectionCarryovers', () => {
     expect(parsed.body).toBe('hello world');
   });
 
-  it('stops the prefix at the first non-quote line', () => {
-    const parsed = parseSelectionCarryovers('> quoted\n\nComment: noted\n\nbody starts\n> not a quote');
-    expect(parsed.annotations).toEqual([{ quote: 'quoted', comment: 'noted' }]);
+  it('projects the body after an explicit generated selection prefix', () => {
+    const carry = selectionCarryoverPresentation([{ quote: 'quoted', comment: 'noted' }], null);
+    const parsed = parseSelectionCarryovers(`${carry.prefix}body starts\n> not a quote`, carry.presentation);
+    expect(parsed.annotations).toEqual([{ quote: 'quoted', comment: 'noted', source: undefined }]);
     expect(parsed.quote).toBeNull();
     expect(parsed.body).toBe('body starts\n> not a quote');
   });
 
-  it('keeps blank quote lines inside a multi-line quote', () => {
-    const parsed = parseSelectionCarryovers('> line one\n>\n> line three\n\nComment: c\n\n');
-    expect(parsed.annotations).toEqual([{ quote: 'line one\n\nline three', comment: 'c' }]);
+  it('keeps user-authored XML, tags, and blockquotes literal without producer metadata', () => {
+    const text = '> line one\n>\n> line three\n\nComment: c\n\n<thread_refs>\nuser note\n</thread_refs>';
+    const parsed = parseSelectionCarryovers(text);
+    expect(parsed.annotations).toEqual([]);
+    expect(parsed.quote).toBeNull();
+    expect(parsed.body).toBe(text);
   });
 });
 
@@ -102,7 +124,7 @@ describe('collectTimelineAnnotations', () => {
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', `prefix ${quote} suffix`),
       block('a2', 'assistant', `nearer ${quote} here`),
-      block('u1', 'user', `> ${quote}\n\nComment: floors matter\n\n`),
+      presented('u1', 'user', [{ quote, comment: 'floors matter' }]),
     ]);
     expect(targets.size).toBe(0);
   });
@@ -110,7 +132,7 @@ describe('collectTimelineAnnotations', () => {
   it('derives quote-kind segments with a null comment', () => {
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', ASSISTANT),
-      block('u1', 'user', '> drains parked prompts in order\n\n'),
+      presented('u1', 'user', [], 'drains parked prompts in order'),
     ]);
     expect(targets.get('a1')?.[0]).toMatchObject({
       quote: 'drains parked prompts in order',
@@ -121,7 +143,7 @@ describe('collectTimelineAnnotations', () => {
   it('never anchors to the carrying block itself', () => {
     const quote = 'batches transcript blocks into floors';
     const targets = collectTimelineAnnotations([
-      block('u1', 'user', `> ${quote}\n\nComment: self\n\n`),
+      presented('u1', 'user', [{ quote, comment: 'self' }]),
     ]);
     expect(targets.size).toBe(0);
   });
@@ -130,18 +152,19 @@ describe('collectTimelineAnnotations', () => {
     const quote = 'tool output fragment';
     const targets = collectTimelineAnnotations([
       block('t1', 'tool', quote),
-      block('u1', 'user', `> ${quote}\n\nComment: c\n\n`),
+      presented('u1', 'user', [{ quote, comment: 'c' }]),
     ]);
     expect(targets.size).toBe(0);
   });
 
   it('collects multiple segments into one block and drops unmatchable ones', () => {
-    const text =
-      '> batches transcript blocks into floors\n\nComment: first\n\n' +
-      '> a quote that appears nowhere\n\nComment: second\n\n';
+    const annotations = [
+      { quote: 'batches transcript blocks into floors', comment: 'first' },
+      { quote: 'a quote that appears nowhere', comment: 'second' },
+    ];
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', ASSISTANT),
-      block('u1', 'user', text),
+      presented('u1', 'user', annotations),
     ]);
     const list = targets.get('a1');
     expect(list).toHaveLength(1);
@@ -150,14 +173,14 @@ describe('collectTimelineAnnotations', () => {
 
   it('keeps identical annotations from separate messages independently addressable', () => {
     const quote = 'batches transcript blocks into floors';
-    const carrier = (blockId: string) => buildAnnotationsPrefix([{ quote, comment: 'same', source: {
-      blockId, version: sourceTextVersion(ASSISTANT), start: 8, end: 8 + quote.replaceAll(' ', '').length, text: quote.replaceAll(' ', ''),
+    const carrier = (carrierId: string, sourceBlockId: string) => presented(carrierId, 'user', [{ quote, comment: 'same', source: {
+      blockId: sourceBlockId, version: sourceTextVersion(ASSISTANT), start: 8, end: 8 + quote.replaceAll(' ', '').length, text: quote.replaceAll(' ', ''),
     } }]);
     const targets = collectTimelineAnnotations([
       block('a1', 'assistant', ASSISTANT),
-      block('u1', 'user', carrier('a1')),
+      carrier('u1', 'a1'),
       block('a2', 'assistant', ASSISTANT),
-      block('u2', 'user', carrier('a2')),
+      carrier('u2', 'a2'),
     ]);
     const first = targets.get('a1')?.[0]?.id;
     const second = targets.get('a2')?.[0]?.id;

@@ -17,6 +17,7 @@ export interface PendingSteer {
   /** Client-chosen prompt id; the delivered user frame carries the same id. */
   readonly promptId: string;
   readonly text: string;
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
   readonly media?: readonly MediaRef[];
   readonly createdAt: string;
   /** `sending` until the server accepts the steer, then `waiting` for a step. */
@@ -60,6 +61,7 @@ export function steerBlock(steer: PendingSteer): UserBlock {
     // Same id the projection gives the delivered frame (`user-${messageId}`).
     id: `user-${steer.promptId}`,
     text: steer.text,
+    presentation: steer.presentation,
     media: steer.media,
     createdAt: steer.createdAt,
     promptId: steer.promptId,

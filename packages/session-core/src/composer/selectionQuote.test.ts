@@ -9,6 +9,7 @@ import {
   buildQuotePrefix,
   removeAnnotation,
   selectionAnchorRect,
+  selectionCarryoverPresentation,
   selectionTextWithin,
   selectionSourceAnchor,
   sourceTextVersion,
@@ -61,6 +62,35 @@ describe('buildAnnotationsPrefix', () => {
     expect(prefix).toBe(
       '> first quote\n\nComment: first note\n\n> second quote\n\nComment: second note\n\n',
     );
+  });
+
+  it('records multiline comments and a second source annotation at exact prefix offsets', () => {
+    const source = { blockId: 'assistant-2', version: 'v2', start: 4, end: 10, text: 'second' };
+    const annotations = [
+      { quote: 'first\nline', comment: 'first note\nwith detail' },
+      { quote: 'second', comment: 'second note', source },
+    ];
+    const carried = selectionCarryoverPresentation(annotations, null);
+    const firstEnd = buildAnnotationBlock(annotations[0]!).length;
+    expect(carried.prefix).toBe(buildAnnotationsPrefix(annotations));
+    expect(carried.presentation.spans).toEqual([
+      {
+        start: 0,
+        end: firstEnd,
+        kind: 'selection',
+        quote: 'first\nline',
+        comment: 'first note\nwith detail',
+        source: undefined,
+      },
+      {
+        start: firstEnd,
+        end: carried.prefix.length,
+        kind: 'selection',
+        quote: 'second',
+        comment: 'second note',
+        source,
+      },
+    ]);
   });
 });
 
@@ -174,17 +204,18 @@ describe('source selection anchors', () => {
       expect(source).toEqual({ blockId: 'source-older', version: sourceTextVersion(raw), start: 4, end: 8, text: 'same' });
       expect(anchoredSelectionRange('same same\nnext', source)).toEqual({ start: 5, end: 9 });
       const note = addAnnotation([], 'same', 'second only', source)[0]!;
-      const carried = buildAnnotationsPrefix([note]) + buildQuotePrefix('same', source) + 'follow up';
-      const coldText = JSON.parse(JSON.stringify(carried)) as string;
-      const parsed = parseSelectionCarryovers(coldText);
+      const carried = selectionCarryoverPresentation([note], 'same', source);
+      const coldText = JSON.parse(JSON.stringify(carried.prefix + 'follow up')) as string;
+      const parsed = parseSelectionCarryovers(coldText, carried.presentation);
       expect(parsed).toMatchObject({ annotations: [{ quote: 'same', comment: 'second only', source }], quote: 'same', quoteSource: source, body: 'follow up' });
       const blocks = [{ id: 'source-older', kind: 'assistant', text: raw }, { id: 'source-newer', kind: 'assistant', text: raw }];
       expect([...collectDraftAnnotationTargets(blocks, [note]).keys()]).toEqual(['source-older']);
-      const sent = collectTimelineAnnotations([...blocks, { id: 'carrier', kind: 'user', text: coldText }]);
+      const carrier = { id: 'carrier', kind: 'user', text: coldText, presentation: carried.presentation };
+      const sent = collectTimelineAnnotations([...blocks, carrier]);
       expect([...sent.keys()]).toEqual(['source-older']);
       expect(sent.get('source-older')).toHaveLength(2);
-      expect(collectTimelineAnnotations([{ ...blocks[0]!, text: raw + ' changed' }, blocks[1]!, { id: 'carrier', kind: 'user', text: coldText }]).size).toBe(0);
-      expect(collectTimelineAnnotations([blocks[1]!, { id: 'carrier', kind: 'user', text: coldText }]).size).toBe(0);
+      expect(collectTimelineAnnotations([{ ...blocks[0]!, text: raw + ' changed' }, blocks[1]!, carrier]).size).toBe(0);
+      expect(collectTimelineAnnotations([blocks[1]!, carrier]).size).toBe(0);
       expect(anchoredSelectionRange('same different', source)).toBeNull();
     } finally { container.remove(); }
   });
@@ -199,8 +230,15 @@ describe('source selection anchors', () => {
       selection.setBaseAndExtent(container.firstChild!.firstChild!, 0, container.lastChild!.firstChild!, 4);
       expect(selectionSourceAnchor(selection)).toBeNull();
       const text = '> same\n\n<!-- kiki-source:invalid -->\n\nComment: note\n\nbody';
-      expect(parseSelectionCarryovers(text)).toMatchObject({ annotations: [{ source: null }], body: 'body' });
-      expect(collectTimelineAnnotations([{ id: 'a', kind: 'assistant', text: 'same' }, { id: 'u', kind: 'user', text }]).size).toBe(0);
+      const presentation = {
+        spans: [{ start: 0, end: text.length - 'body'.length, kind: 'selection' as const, quote: 'same', comment: 'note', source: null }],
+      };
+      expect(parseSelectionCarryovers(text, presentation)).toMatchObject({ annotations: [{ source: null }], body: 'body' });
+      expect(parseSelectionCarryovers(text)).toMatchObject({ annotations: [], quote: null, body: text });
+      expect(collectTimelineAnnotations([
+        { id: 'a', kind: 'assistant', text: 'same' },
+        { id: 'u', kind: 'user', text, presentation },
+      ]).size).toBe(0);
     } finally { container.remove(); }
   });
 });

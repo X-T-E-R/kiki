@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { transcriptValueEquals } from '@kiki/transcript';
+import { readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -37,6 +37,7 @@ import { isModelSwitchQueueId } from '../modelSwitchQueue';
 import { describeError } from '../../util/errorText';
 import {
   classifyTranscriptText,
+  mediaFromTextPresentation,
   originFromRecord,
   producerFromOrigin,
   projectMessageContent,
@@ -152,6 +153,7 @@ function classifiedTextToBlocks(input: {
   id: string;
   classified: ReturnType<typeof classifyTranscriptText>;
   contentSource?: UserBlock['contentSource'];
+  presentation?: UserBlock['presentation'];
   createdAt: string;
   media?: readonly MediaRef[];
   promptId?: string;
@@ -172,6 +174,7 @@ function classifiedTextToBlocks(input: {
           id: `user-${identity}`,
           contentSource: input.contentSource,
           text: classified.text,
+          presentation: classified.presentation ?? input.presentation,
           media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
           createdAt: input.createdAt,
           promptId: input.promptId,
@@ -410,6 +413,14 @@ function mediaFromAttachmentIds(
     });
   }
   return media.length > 0 ? media : undefined;
+}
+
+function mediaWithPresentation(
+  media: readonly MediaRef[] | undefined,
+  presentation: UserBlock['presentation'],
+): readonly MediaRef[] | undefined {
+  const refs = [...(media ?? []), ...mediaFromTextPresentation(presentation)];
+  return refs.length > 0 ? refs : undefined;
 }
 
 function engineQuestionItems(raw: unknown): QuestionItem[] {
@@ -1697,6 +1708,7 @@ function upsertPromptItemBlocks(
     if (
       existing.promptStatus === nextStatus &&
       existing.text === text &&
+      transcriptValueEquals(existing.presentation, projection.presentation) &&
       sameMedia(existing.media, nextMedia) &&
       transcriptValueEquals(existing.queuedContent, queuedContent) &&
       transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
@@ -1705,7 +1717,7 @@ function upsertPromptItemBlocks(
     }
     const next = blocks.filter((block) => !isPromptReminder(block));
     const index = next.indexOf(existing);
-    next.splice(index, 1, { ...existing, text, promptStatus: nextStatus, media: nextMedia, queuedContent }, ...reminders);
+    next.splice(index, 1, { ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent }, ...reminders);
     return next;
   }
   const placeholderIndex =
@@ -1720,7 +1732,7 @@ function upsertPromptItemBlocks(
       : -1;
   const additions = classifiedTextToBlocks({
     id: item.user_message_id,
-    classified: classifyTranscriptText({ text: projection.text, role: 'user', origin: { kind: 'user' } }),
+    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: { kind: 'user' } }),
     createdAt: item.created_at,
     media,
     promptId: item.prompt_id,
@@ -1947,7 +1959,7 @@ function placePromptOutcome(
   const identity = prompt.userMessageId ?? prompt.promptId;
   const created = classifiedTextToBlocks({
     id: identity,
-    classified: classifyTranscriptText({ text: projection.text, role: 'user', origin: { kind: 'user' } }),
+    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: { kind: 'user' } }),
     createdAt: prompt.createdAt,
     media: projection.media,
     promptId: prompt.promptId,
@@ -2350,18 +2362,19 @@ export function agentTranscriptToBlocks(
         const payload = (item as { payload?: unknown }).payload as Record<string, unknown>;
         const messageId = recordString(payload, 'messageId');
         const text = recordString(payload, 'text');
+        const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
           destination.push(...classifiedTextToBlocks({
             id: messageId,
-            classified: classifyTranscriptText({ text, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
+            classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
             createdAt: item.at ?? '',
             turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
-            media: mediaFromAttachmentIds(
+            media: mediaWithPresentation(mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
               attachmentsById,
               response.agent_id,
-            ),
+            ), presentation),
           }));
         }
         continue;
@@ -2421,6 +2434,7 @@ export function agentTranscriptToBlocks(
     const blockStart = blocks.length;
     const origin = originFromTurnItem(item);
     const identity = identityFromTurnOrigin(origin);
+    const turnPresentation = readTextPresentation((item as { presentation?: unknown }).presentation);
     const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
     let projectedTurnPrompt = false;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
@@ -2428,6 +2442,7 @@ export function agentTranscriptToBlocks(
         id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
         classified: classifyTranscriptText({
           text: item.prompt,
+          presentation: turnPresentation,
           role: 'user',
           origin,
           subagentPromptAsUser,
@@ -2437,11 +2452,11 @@ export function agentTranscriptToBlocks(
         contentSource: { kind: 'turn', id: item.turnId },
         promptId: identity.promptId,
         userMessageId: turnUserMessageId,
-        media: mediaFromAttachmentIds(
+        media: mediaWithPresentation(mediaFromAttachmentIds(
           (item as { attachmentIds?: readonly string[] }).attachmentIds,
           attachmentsById,
           response.agent_id,
-        ),
+        ), turnPresentation),
       });
       projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
       blocks.push(...promptBlocks);
@@ -2470,6 +2485,7 @@ export function agentTranscriptToBlocks(
               const turnOrigin = originFromTurnItem(item);
               const taskOrigin = frame.taskId !== undefined ? { kind: 'task', taskId: frame.taskId } : undefined;
               const origin = frameOrigin ?? taskOrigin ?? (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
+              const framePresentation = readTextPresentation((frame as { presentation?: unknown }).presentation);
               const userMessageId = frameMessageId(frame);
               if (
                 projectedTurnPrompt &&
@@ -2484,6 +2500,7 @@ export function agentTranscriptToBlocks(
                   id: userMessageId ?? `agent-frame-${frame.frameId}`,
                   classified: classifyTranscriptText({
                     text: frame.text,
+                    presentation: framePresentation,
                     role: 'user',
                     origin,
                     id: frame.frameId,
@@ -2497,11 +2514,11 @@ export function agentTranscriptToBlocks(
                   turnId: item.turnId,
                   contentSource: { kind: 'frame', id: frame.frameId, turnId: item.turnId, stepId: step.stepId },
                   userMessageId,
-                  media: mediaFromAttachmentIds(
+                  media: mediaWithPresentation(mediaFromAttachmentIds(
                     (frame as { attachmentIds?: readonly string[] }).attachmentIds,
                     attachmentsById,
                     response.agent_id,
-                  ),
+                  ), framePresentation),
                 }),
               );
               break;
@@ -2684,7 +2701,7 @@ export function agentTranscriptToBlocks(
     return batch.map((prompt, index) => {
       const projection = projectMessageContent(parts[index]!);
       return { ...block, id: `user-${prompt.userMessageId ?? prompt.promptId}`,
-        text: projection.text, media: projection.media.length > 0 ? projection.media : undefined,
+        text: projection.text, presentation: projection.presentation, media: projection.media.length > 0 ? projection.media : undefined,
         userMessageId: prompt.userMessageId ?? prompt.promptId, promptId: prompt.promptId,
         contentSource: { kind: 'prompt', id: prompt.promptId },
       };
