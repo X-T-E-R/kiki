@@ -121,7 +121,7 @@ The **WebBridge readiness** card sits on this page too, below the routes. It sta
 
 ## Plugins
 
-**Settings → Plugins** (`/settings/plugins`) lists the plugins installed on the connected server. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the bottom is where new plugins are installed.
+**Settings → Plugins** (`/settings/plugins`) lists the plugins installed on the connected server. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
 
 Selecting a plugin opens **its own settings page** (`/settings/plugins?plugin=<id>`): the plugin's name and state, a way back to the list, the settings its manifest declares, and a switch to turn it on or off. Save and Discard appear once a field has changed; leaving with an unsaved change asks first. **Remove plugin** is at the bottom of the page, and it asks first and names what it takes with it, as the [plugin manager](../customization/plugins.md#install-and-manage) does.
 
