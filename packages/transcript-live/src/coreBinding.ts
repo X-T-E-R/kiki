@@ -274,6 +274,12 @@ export function bindSessionTranscript(
       if (ids.length > 0) applyOps(agentId, [{ op: 'items.remove', ids }]);
     }
     applyFacts(agentId, wireFacts);
+    if (event.type === 'prompt.outcome_committed') {
+      for (const fact of wireFacts) for (const op of fact.operations) {
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+      }
+      return;
+    }
     if (event.type === 'prompt.moved') seedPrompts(agentId);
     if (
       event.type.startsWith('compaction.') ||

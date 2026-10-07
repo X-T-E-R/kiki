@@ -57,10 +57,19 @@ export interface SshConnectionReceipt {
   readonly cleanupOutcome: SshCleanupOutcome;
   readonly resourcesBefore: number;
   readonly resourcesAfter: number;
+  readonly killRequested?: boolean;
+  readonly exitObserved?: boolean;
   readonly errorName?: string;
   readonly errorMessage?: string;
   readonly errorCode?: string | number;
   readonly settledAt: number;
+}
+
+interface ProxyResourceSnapshot {
+  readonly before: number;
+  readonly after: number;
+  readonly killRequested: boolean;
+  readonly exitObserved: boolean;
 }
 
 interface ConnectionSlot {
@@ -70,8 +79,8 @@ interface ConnectionSlot {
   current?: SSHKaos;
   pending?: Promise<SSHKaos>;
   unsubscribe?: () => void;
-  proxy?: { dispose(): void; resources(): { readonly before: number; readonly after: number } };
-  lastResources?: { readonly before: number; readonly after: number };
+  proxy?: { dispose(): void; resources(): ProxyResourceSnapshot };
+  lastResources?: ProxyResourceSnapshot;
   lastTerminalOwner?: 'ssh_proxy' | 'ssh_connection';
   controller?: AbortController;
   retryAfter: number;
@@ -88,7 +97,7 @@ function sshAgent(explicit?: string): string | undefined {
 function openProxy(host: SshConnectionHost): {
   socket: Duplex;
   dispose(): void;
-  resources(): { readonly before: number; readonly after: number };
+  resources(): ProxyResourceSnapshot;
 } | undefined {
   let proxy: ChildProcessWithoutNullStreams;
   if (host.proxyCommand && host.proxyCommand !== 'none') {
@@ -118,11 +127,17 @@ function openProxy(host: SshConnectionHost): {
   proxy.stderr.on('error', (error) => { socket.destroy(error); });
   proxy.stderr.resume();
   let disposed = false;
-  const resources = (): { readonly before: number; readonly after: number } => ({
+  const snapshot: ProxyResourceSnapshot = {
     before: 5,
-    after: Number(!socket.destroyed) + Number(!proxy.stdin.destroyed) + Number(!proxy.stdout.destroyed) +
-      Number(!proxy.stderr.destroyed) + Number(proxy.exitCode === null && proxy.signalCode === null && !proxy.killed),
-  });
+    get after() {
+      const exitObserved = proxy.exitCode !== null || proxy.signalCode !== null;
+      return Number(!socket.destroyed) + Number(!proxy.stdin.destroyed) + Number(!proxy.stdout.destroyed) +
+        Number(!proxy.stderr.destroyed) + Number(!exitObserved);
+    },
+    get killRequested() { return proxy.killed; },
+    get exitObserved() { return proxy.exitCode !== null || proxy.signalCode !== null; },
+  };
+  const resources = (): ProxyResourceSnapshot => snapshot;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -149,6 +164,17 @@ function errorDetails(error: unknown): Pick<SshConnectionReceipt, 'errorName' | 
     };
   }
   return { errorName: 'Error', errorMessage: String(error) };
+}
+
+function cleanupOutcome(resources: ProxyResourceSnapshot | undefined): SshCleanupOutcome {
+  if (resources === undefined || resources.after === 0 && resources.exitObserved) return 'closed';
+  if (resources.killRequested && !resources.exitObserved) return 'killed';
+  return 'cleanup_failed';
+}
+
+function resourceDetails(resources: ProxyResourceSnapshot | undefined): Pick<SshConnectionReceipt, 'killRequested' | 'exitObserved'> {
+  if (resources === undefined) return {};
+  return { killRequested: resources.killRequested, exitObserved: resources.exitObserved };
 }
 
 export class SshConnectionManager {
@@ -234,8 +260,9 @@ export class SshConnectionManager {
         this.emitReceipt({
           operationId, hostId, generation: slot.generation, stage: 'connect',
           callerOutcome: 'rejected', terminalOwner: slot.lastTerminalOwner ?? 'ssh_connection',
-          cleanupOutcome: slot.lastResources === undefined || slot.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+          cleanupOutcome: cleanupOutcome(slot.lastResources),
           resourcesBefore: slot.lastResources?.before ?? 0, resourcesAfter: slot.lastResources?.after ?? 0,
+          ...resourceDetails(slot.lastResources),
           ...errorDetails(error), settledAt: Date.now(),
         });
         throw error;
@@ -278,8 +305,9 @@ export class SshConnectionManager {
       this.emitReceipt({
         operationId, hostId, generation: owner.generation, stage: 'connect',
         callerOutcome: 'rejected', terminalOwner: owner.lastTerminalOwner ?? 'ssh_connection',
-        cleanupOutcome: owner.lastResources === undefined || owner.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+        cleanupOutcome: cleanupOutcome(owner.lastResources),
         resourcesBefore: owner.lastResources?.before ?? 0, resourcesAfter: owner.lastResources?.after ?? 0,
+        ...resourceDetails(owner.lastResources),
         ...errorDetails(error), settledAt: Date.now(),
       });
       throw error;
@@ -353,9 +381,10 @@ export class SshConnectionManager {
         this.emitReceipt({
           operationId: randomUUID(), hostId, generation: slot.generation, stage: 'disconnect',
           callerOutcome: 'unknown', terminalOwner: slot.lastTerminalOwner ?? 'ssh_connection',
-          cleanupOutcome: slot.lastResources === undefined || slot.lastResources.after === 0 ? 'closed' : 'cleanup_failed',
+          cleanupOutcome: cleanupOutcome(slot.lastResources),
           resourcesBefore: resourcesBefore?.before ?? slot.lastResources?.before ?? 0,
-          resourcesAfter: slot.lastResources?.after ?? 0, settledAt: Date.now(),
+          resourcesAfter: slot.lastResources?.after ?? 0,
+          ...resourceDetails(slot.lastResources), settledAt: Date.now(),
         });
         this.emit(hostId, slot, 'disconnected');
       });
@@ -416,8 +445,9 @@ export class SshConnectionManager {
     this.emitReceipt({
       operationId, hostId, generation: slot.generation, stage: 'disconnect',
       callerOutcome: failure === undefined ? 'resolved' : 'rejected', terminalOwner,
-      cleanupOutcome: failure === undefined && resourcesAfter === 0 ? 'closed' : 'cleanup_failed',
+      cleanupOutcome: failure === undefined ? cleanupOutcome(slot.lastResources) : 'cleanup_failed',
       resourcesBefore: resourcesBefore?.before ?? 0, resourcesAfter,
+      ...resourceDetails(slot.lastResources),
       ...(failure === undefined ? {} : errorDetails(failure)), settledAt: Date.now(),
     });
     this.emit(hostId, slot, 'idle');

@@ -567,6 +567,7 @@ export class TranscriptWireAdapter {
           ...promptOrMinimal(prior, terminalPromptId, record),
           status,
           finishedAt: isoOf(record.time) ?? previous?.finishedAt,
+          queuePosition: undefined,
           abortedBeforeStart: status === 'aborted' ? previous?.abortedBeforeStart : undefined,
         }),
       ];

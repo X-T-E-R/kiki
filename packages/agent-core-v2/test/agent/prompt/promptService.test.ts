@@ -1036,6 +1036,56 @@ describe('AgentPromptService', () => {
     await active.completion;
   });
 
+  it('publishes durable cron cancellation outcomes once without aborting adjacent recovered work', async () => {
+    const { prompt, dispatcher, loop, states, eventBus, target } = harness({ manualTurnResult: true });
+    const wire = vi.spyOn(target.accessor.get(IWireService), 'appendRecord');
+    const outcomes: PromptOutcomeCommitted[] = [];
+    const wireBeforePublication: boolean[] = [];
+    const aborted: string[] = [];
+    eventBus.subscribe(PromptOutcomeCommitted, (event) => {
+      outcomes.push(event);
+      wireBeforePublication.push(wire.mock.calls.some(([record]) => record.type === event.type));
+    });
+    eventBus.subscribe(PromptAborted, (event) => aborted.push(event.promptId));
+    const active = await prompt.enqueue({ id: 'active', message: message('foreground') });
+    await active.launched;
+    const ids = ['ordinary-a', 'cron-a', 'ordinary-b', 'cron-b'];
+    for (const [queueIndex, id] of ids.entries()) {
+      await dispatcher.dispatch(new PromptEnqueued({
+        schemaVersion: 1, promptId: id, userMessageId: `${id}-message`,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        message: { ...message(id), origin: id.startsWith('cron')
+          ? { kind: 'cron_job', jobId: `${id}-job`, cron: '0 * * * *', recurring: true,
+            coalescedCount: 1, stale: false, deliveryMode: 'idle' }
+          : { kind: 'user' } },
+        alreadyMaterialized: false, appendTiming: 'agent_idle', revision: 1, queueIndex,
+      }));
+    }
+    await dispatcher.hooks.onDidRestore.run({});
+    try {
+      expect(prompt.abort('cron-a')).toBe(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const terminal = { promptId: 'cron-a', state: 'cancelled' };
+      expect(wire.mock.calls.filter(([record]) => record.type === 'prompt.outcome_committed').map(([record]) => record)).toEqual([
+        expect.objectContaining({ terminal }),
+      ]);
+      expect(outcomes.map((event) => event.terminal)).toEqual([terminal]);
+      expect(wireBeforePublication).toEqual([true]);
+      expect(aborted).toEqual([]);
+      expect(prompt.lookup('cron-a')).toMatchObject({ phase: 'terminal', terminal });
+      expect(prompt.list().active?.id).toBe('active');
+      expect(prompt.list().pending.map((item) => item.id)).toEqual(['ordinary-a', 'ordinary-b', 'cron-b']);
+      expect(states.get(promptQueueKey).order).toEqual(['ordinary-a', 'ordinary-b', 'cron-b']);
+      expect(states.get(promptQueueKey).entries.get('cron-b')).toMatchObject({ message: { origin: { jobId: 'cron-b-job', recurring: true } } });
+      expect(prompt.list().hold).toEqual({ reason: 'recovery', count: 3 });
+      expect(loop.launches).toEqual([0]);
+    } finally {
+      loop.settleActive();
+      await active.completion;
+      await prompt.drain(new Error('fixture cleanup'));
+    }
+  });
+
   it('holds recovered entries while a later blob hydration is pending', async () => {
     const { prompt, dispatcher, loop, target } = harness({ manualTurnResult: true });
     const bytes = await new Jimp({ width: 2, height: 2, color: 0xff0000ff }).getBuffer('image/png');

@@ -1133,6 +1133,17 @@ export interface PromptCompletedEvent {
   readonly reason?: 'completed' | 'failed' | 'blocked';
 }
 
+export interface PromptOutcomeCommittedEvent {
+  readonly type: 'prompt.outcome_committed';
+  readonly time?: number;
+  readonly terminal: {
+    readonly promptId: string;
+    readonly turnId?: string | number;
+    readonly state: 'completed' | 'failed' | 'cancelled' | 'blocked';
+    readonly result?: unknown;
+  };
+}
+
 export interface PromptAbortedEvent {
   readonly type: 'prompt.aborted';
   readonly promptId: string;
@@ -1241,6 +1252,7 @@ export type AgentEvent =
   | PromptEnqueuedEvent
   | PromptLaunchCommittedEvent
   | PromptCompletedEvent
+  | PromptOutcomeCommittedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent;
 
@@ -2214,6 +2226,17 @@ export const promptCompletedEventSchema = z.object({
   reason: z.enum(['completed', 'failed', 'blocked']).optional(),
 }) satisfies z.ZodType<PromptCompletedEvent>;
 
+export const promptOutcomeCommittedEventSchema = z.object({
+  type: z.literal('prompt.outcome_committed'),
+  time: z.number().optional(),
+  terminal: z.object({
+    promptId: z.string(),
+    turnId: z.union([z.string(), z.number()]).optional(),
+    state: z.enum(['completed', 'failed', 'cancelled', 'blocked']),
+    result: z.unknown().optional(),
+  }),
+}) satisfies z.ZodType<PromptOutcomeCommittedEvent>;
+
 export const promptAbortedEventSchema = z.object({
   type: z.literal('prompt.aborted'),
   promptId: z.string(),
@@ -2326,6 +2349,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptEnqueuedEventSchema,
   promptLaunchCommittedEventSchema,
   promptCompletedEventSchema,
+  promptOutcomeCommittedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,
 ]) satisfies z.ZodType<AgentEvent>;

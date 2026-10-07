@@ -150,14 +150,26 @@ function host(port: number, knownHostsFile: string, trustUnknown?: SshConnection
   return { hostname: '127.0.0.1', port, username: 'tester', password: 'temporary-password', agent: 'none', knownHostsFiles: [knownHostsFile], trustUnknown };
 }
 
+function proxyFixture() {
+  const proxy = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    killed: false,
+    kill: vi.fn(() => true),
+  });
+  proxy.kill = vi.fn(() => {
+    proxy.killed = true;
+    return true;
+  });
+  return proxy;
+}
+
 describe('SSH proxy teardown with an isolated child', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it.each(['exit', 'error'] as const)('keeps a proxy %s after failed setup local to its transport', async (event) => {
-    const proxy = Object.assign(new EventEmitter(), {
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-      kill: vi.fn(() => true),
-    });
+    const proxy = proxyFixture();
     vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
     const { path } = await fixture();
     const manager = new SshConnectionManager(async () => ({
@@ -166,7 +178,7 @@ describe('SSH proxy teardown with an isolated child', () => {
     }));
     managers.push(manager);
     await expect(manager.get('proxy')).rejects.toThrow('SSH private key or passphrase is invalid');
-    if (event === 'exit') proxy.emit('exit', 7, null);
+    if (event === 'exit') { proxy.exitCode = 7; proxy.emit('exit', 7, null); }
     else proxy.emit('error', Object.assign(new Error('proxy launch failed'), { code: 'ENOENT' }));
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(manager.status('proxy').state).toBe('failed');
@@ -177,18 +189,17 @@ describe('SSH proxy teardown with an isolated child', () => {
   });
 
   it.each(['exit', 'error', 'stdin', 'stdout', 'stderr', 'disconnect'] as const)('reports proxy %s during handshake and reclaims its streams', async (event) => {
-    const proxy = Object.assign(new EventEmitter(), {
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-      kill: vi.fn(() => true),
-    });
+    const proxy = proxyFixture();
     vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
     const { path } = await fixture();
     const manager = new SshConnectionManager(async () => ({ ...host(22, path), proxyCommand: 'isolated-proxy' }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
     managers.push(manager);
     const opening = manager.get('proxy');
     const rejected = expect(opening).rejects.toThrow();
     await new Promise<void>((resolve) => setImmediate(resolve));
-    if (event === 'exit') proxy.emit('exit', 7, null);
+    if (event === 'exit') { proxy.exitCode = 7; proxy.emit('exit', 7, null); }
     else if (event === 'error') proxy.emit('error', new Error('proxy launch failed'));
     else if (event === 'disconnect') await manager.disconnect('proxy');
     else proxy[event].destroy(new Error(`${event} failed`));
@@ -197,6 +208,10 @@ describe('SSH proxy teardown with an isolated child', () => {
     expect(manager.status('proxy').state).toBe(event === 'disconnect' ? 'idle' : 'failed');
     expect(proxy.kill).toHaveBeenCalledOnce();
     expect([proxy.stdin, proxy.stdout, proxy.stderr].every((stream) => stream.destroyed)).toBe(true);
+    if (event === 'disconnect') expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect', callerOutcome: 'resolved', cleanupOutcome: 'killed',
+      resourcesAfter: 1, killRequested: true, exitObserved: false,
+    }));
   });
 });
 
@@ -238,10 +253,7 @@ describe('SSH connection receipts', () => {
   });
 
   it('reports the caller, proxy owner, and settled proxy resources after setup failure', async () => {
-    const proxy = Object.assign(new EventEmitter(), {
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-      kill: vi.fn(() => true),
-    });
+    const proxy = proxyFixture();
     vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
     const { path } = await fixture();
     const manager = new SshConnectionManager(async () => ({
@@ -258,9 +270,61 @@ describe('SSH connection receipts', () => {
       stage: 'connect',
       callerOutcome: 'rejected',
       terminalOwner: 'ssh_proxy',
-      cleanupOutcome: 'closed',
+      cleanupOutcome: 'killed',
       resourcesBefore: 5,
+      resourcesAfter: 1,
+      killRequested: true,
+      exitObserved: false,
+    }));
+
+    proxy.exitCode = 7;
+    proxy.emit('exit', 7, null);
+    await manager.disconnect('proxy');
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect',
+      callerOutcome: 'resolved',
+      terminalOwner: 'ssh_proxy',
+      cleanupOutcome: 'closed',
       resourcesAfter: 0,
+      killRequested: true,
+      exitObserved: true,
+    }));
+  });
+
+  it('reports closed resources only after the proxy exit event is observed', async () => {
+    const proxy = proxyFixture();
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({ ...host(22, path), proxyCommand: 'isolated-proxy' }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    const opening = manager.get('proxy');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    proxy.stderr.destroy(new Error('proxy launch failed'));
+    await expect(opening).rejects.toThrow();
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect',
+      callerOutcome: 'rejected',
+      cleanupOutcome: 'killed',
+      resourcesBefore: 5,
+      resourcesAfter: 1,
+      killRequested: true,
+      exitObserved: false,
+    }));
+
+    proxy.exitCode = 7;
+    proxy.emit('exit', 7, null);
+    await manager.disconnect('proxy');
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect',
+      callerOutcome: 'resolved',
+      cleanupOutcome: 'closed',
+      resourcesAfter: 0,
+      killRequested: true,
+      exitObserved: true,
     }));
   });
 });

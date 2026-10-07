@@ -187,6 +187,15 @@ describe('events / display re-exports', () => {
     expect((parsed as { status: string }).status).toBe('blocked');
   });
 
+  it.each(['completed', 'failed', 'cancelled', 'blocked'] as const)('validates a committed prompt outcome in %s state without changing its result', (state) => {
+    const event = {
+      type: 'prompt.outcome_committed', time: 1_717_000_000_000, agentId: 'main', sessionId: 'sess_1',
+      terminal: { promptId: 'prompt_1', turnId: 7, state, result: { type: state, detail: { code: 'example.result' } } },
+    };
+    expect(eventSchema.parse(event)).toEqual(event);
+    expect(eventSchema.safeParse({ ...event, terminal: { ...event.terminal, state: 'running' } }).success).toBe(false);
+  });
+
   it('validates queued prompt lifecycle events', () => {
     const queued = eventSchema.parse({
       type: 'prompt.queued',

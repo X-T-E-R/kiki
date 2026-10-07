@@ -14,6 +14,7 @@ export class PromptOutcomeCommitted extends Event2<{ terminal: PromptTerminalRes
   declare readonly terminal: PromptTerminalResult;
   static override readonly type = 'prompt.outcome_committed';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = z.object({ terminal: z.custom<PromptTerminalResult>() });
 }
 registerEvent2Class(PromptOutcomeCommitted);

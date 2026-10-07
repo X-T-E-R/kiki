@@ -36,6 +36,15 @@ import { ExternalTurnRecorder } from '@kiki/agent-core-v2/agent/execution/extern
 import { IAgentContextMemoryService, IAgentUsageService, IEventDispatcher, IWireService } from '@kiki/agent-core-v2';
 import type { AgentExecutorAgentContext } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
 import { mapAcpSessionNotification } from '../../acp-client/src/events';
+import { DisposableStore } from '@kiki/agent-core-v2/_base/di/lifecycle';
+import { createServices } from '@kiki/agent-core-v2/_base/di/test';
+import { IAgentBlobService } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
+import { PromptOutcomeCommitted } from '@kiki/agent-core-v2/agent/prompt/promptReplay';
+import { EventBusService } from '@kiki/agent-core-v2/app/event/eventBusService';
+import { EventDispatcherService } from '@kiki/agent-core-v2/state/eventDispatcherService';
+import { eventSchema } from '@kiki/protocol';
+import { registerStateServices } from '../../agent-core-v2/test/state/stubs';
+import { stubWire } from '../../agent-core-v2/test/agent/loop/stubs';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -50,6 +59,7 @@ import {
   type TranscriptTask,
   type TranscriptTurn,
   type TranscriptWireRecord,
+  type TranscriptChangeEvent,
 } from '@kiki/transcript';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -1979,6 +1989,81 @@ describe('bindSessionTranscript', () => {
       status: 'queued',
     });
     await binding.dispose();
+  });
+
+  it('settles an unlaunched queued prompt once from its durable outcome', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const changes: TranscriptChangeEvent[] = [];
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+      undefined,
+      (event) => changes.push(event),
+    );
+    main.bus.emit(ev({
+      type: 'prompt.enqueued', promptId: 'queued-outcome', userMessageId: 'queued-message',
+      message: { origin: { kind: 'cron_job' }, content: [{ type: 'text', text: 'queued' }] },
+      queueIndex: 2, createdAt: '2026-01-01T00:00:00.000Z',
+    }));
+    const beforeOutcome = changes.length;
+    main.bus.emit(ev({
+      type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:01.000Z'),
+      terminal: { promptId: 'queued-outcome', state: 'cancelled' },
+    }));
+    const outcomeOps = changes.slice(beforeOutcome).flatMap((event) => event.ops);
+    expect(outcomeOps).toHaveLength(1);
+    expect(outcomeOps[0]).toMatchObject({ op: 'prompt.upsert', prompt: { promptId: 'queued-outcome', status: 'aborted', queuePosition: undefined } });
+    expect(store.getAgent('main')?.getPrompt('queued-outcome')).toMatchObject({ status: 'aborted', queuePosition: undefined });
+    await binding.dispose();
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'blocked'] as const)('publishes a durable %s outcome through the dispatcher into one canonical update', async (state) => {
+    const disposables = new DisposableStore();
+    onTestFinished(() => disposables.dispose());
+    const wire = stubWire();
+    const append = vi.spyOn(wire, 'appendRecord');
+    const flush = vi.spyOn(wire, 'flush');
+    const ix = createServices(disposables, {
+      strict: true,
+      base: [registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IWireService, wire);
+        reg.definePartialInstance(IAgentBlobService, { offloadParts: async (parts) => parts });
+        reg.define(IEventBus, EventBusService);
+        reg.define(IEventDispatcher, EventDispatcherService);
+      },
+    });
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    disposables.add(ix.get(IEventBus).subscribe((event) => main.bus.emit(event)));
+    const store = new TranscriptStore('publication-session');
+    const changes: TranscriptChangeEvent[] = [];
+    const binding = bindSessionTranscript(store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+      undefined, (event) => changes.push(event));
+    onTestFinished(() => binding.dispose());
+    for (const [queueIndex, promptId] of ['target', 'adjacent'].entries()) {
+      main.bus.emit(ev({
+        type: 'prompt.enqueued', promptId, userMessageId: `${promptId}-message`, queueIndex,
+        message: { origin: { kind: 'cron_job' }, content: [{ type: 'text', text: promptId }] },
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }));
+    }
+    const beforeOutcome = changes.length;
+    const outcome = new PromptOutcomeCommitted({ terminal: { promptId: 'target', state } });
+    expect(eventSchema.parse({ ...outcome.serialize(), agentId: 'main', sessionId: 'publication-session' })).toMatchObject({ terminal: { promptId: 'target', state } });
+    await ix.get(IEventDispatcher).dispatchDurably(outcome);
+    expect(append).toHaveBeenCalledOnce();
+    expect(flush).toHaveBeenCalledOnce();
+    const ops = changes.slice(beforeOutcome).flatMap((event) => event.ops);
+    const status = state === 'cancelled' ? 'aborted' : state;
+    expect(ops).toEqual([expect.objectContaining({
+      op: 'prompt.upsert', prompt: expect.objectContaining({ promptId: 'target', status, queuePosition: undefined }),
+    })]);
+    expect(store.getAgent('main')?.getPrompt('target')).toMatchObject({ status, queuePosition: undefined });
+    expect(store.getAgent('main')?.getPrompt('adjacent')).toMatchObject({ status: 'queued', queuePosition: 1 });
   });
 
   it('projects a scheduled enqueue before the runtime list owns it, then moves and settles it', async () => {
