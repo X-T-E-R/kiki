@@ -8,6 +8,8 @@ This is the session timeline: assistant messages, tool calls, approvals, questio
 
 Anything that has been resolved — a question you answered, an approval you granted, a marker — collapses into a compact one-line entry that stays where it happened. Several in a row fold into an **Activity history** row you can expand. Failed and cancelled entries always stay visible on their own. Repeating markers such as goal updates show the latest one with a count ("Goal updated ×12") when nothing else separates them.
 
+A subagent dispatch card expands children created during that particular run. Children from other runs, or whose creation time cannot be placed, stay under **Other subagents**, with their count and running or failed status. Open the group to see the same child cards. Resuming an older child does not make it newly created, and later status changes do not override your choice to open or close the group.
+
 File references can be previewed, opened, or revealed in their folder. Reopening a session, or loading an agent's saved history, shows each model change as a divider naming the old and new model; a thinking-effort change on its own does not add one.
 
 Long tool output and other large fields arrive in stages. **Continue loading** pulls in the rest of a truncated field, and the row tells you how much is loaded so far. If that fails on a field that has an original behind it — a tool's input or output, a background task's own output — the same row offers **Download original**, which writes the complete content to your machine and reports its own saving, saved, and retry states. Retrying stays available, and not every field can be downloaded.
