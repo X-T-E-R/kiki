@@ -17,6 +17,12 @@
  * would otherwise rip it out from under the user mid-typing. The id is what
  * keeps that exemption honest: a panel belonging to a dialog underneath, or to
  * no dialog at all, is not accepted while this one is on top.
+ *
+ * Backdrop clicks and a bare Escape close the dialog by default. `dismissible:
+ * false` opts one out — for a dialog whose closing is a decision the user has to
+ * make, not a reflex, so a stray click on the backdrop cannot discard it. That
+ * flag governs only those two inputs; the panel's own close control, its focus
+ * trap, and the pickers it owns are unaffected.
  */
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -69,7 +75,7 @@ const DEFAULT_PANEL_CLASS = `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`;
 
 export function Dialog({
   onClose, ariaLabel, overlayId, panelClassName, overlayClassName, children,
-  stacked, role = 'dialog', overlayData,
+  stacked, role = 'dialog', overlayData, dismissible = true,
 }: {
   onClose: () => void;
   /** Accessible name for the dialog (mirrors the visible title). */
@@ -84,6 +90,15 @@ export function Dialog({
   stacked?: boolean;
   role?: 'dialog' | 'alertdialog';
   overlayData?: Record<`data-${string}`, string>;
+  /**
+   * Whether a backdrop click or a bare Escape closes this dialog. Defaults to
+   * true, which is what every ordinary modal wants. Set it false for a dialog
+   * whose dismiss is an explicit decision — one that would otherwise throw away
+   * unsaved form state on a stray click, or mark a run finished by accident.
+   * The panel keeps its own close control and its focus trap either way, and a
+   * portaled surface this dialog owns still closes on Escape on its own.
+   */
+  dismissible?: boolean;
   children: ReactNode;
 }) {
   const parentDepth = useContext(ModalDepth);
@@ -94,6 +109,8 @@ export function Dialog({
   const ownership = useRef<ReturnType<typeof registerModal> | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const dismissibleRef = useRef(dismissible);
+  dismissibleRef.current = dismissible;
 
   // Stack registration is stable across form edits and busy-state changes.
   useEffect(() => {
@@ -101,7 +118,8 @@ export function Dialog({
     const modal = depth !== undefined && panelRef.current ? registerModal(overlayId, depth, panelRef.current) : null;
     ownership.current = modal;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || (modal ? !modal.isTop() : !panelRef.current || !canRestoreModalFocus(panelRef.current))) return;
+      if (event.key !== 'Escape' || !dismissibleRef.current
+        || (modal ? !modal.isTop() : !panelRef.current || !canRestoreModalFocus(panelRef.current))) return;
       // A confirmation rendered inline inside this panel (not stacked) owns
       // Escape while it is open: it closes, this panel stays.
       if ((panelRef.current?.querySelector('[aria-modal="true"]') ?? null) !== null) return;
@@ -190,7 +208,7 @@ export function Dialog({
         className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
         style={depth === undefined ? undefined : { zIndex: MODAL_BASE_Z_INDEX + depth }}
         onPointerDown={(event) => {
-          if (event.target === event.currentTarget && (depth === undefined
+          if (dismissible && event.target === event.currentTarget && (depth === undefined
             ? panelRef.current && canRestoreModalFocus(panelRef.current)
             : ownership.current?.isTop())) onClose();
         }}

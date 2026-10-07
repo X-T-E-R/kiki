@@ -26,7 +26,7 @@ import { Icon } from './icons';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
-import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
+import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, isAutoCreatedWorkspace, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
@@ -39,14 +39,20 @@ import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
 import { useConnection } from '../state/connection';
 
-/** Basename label for the workspace chip; separator-only paths echo raw. */
+/**
+ * What the target row and the starters name this session's home. A typed cwd
+ * reads as its own folder; a workspace the user chose reads as its name; and a
+ * workspace kiki had to create for itself reads as that fact rather than as the
+ * internal name the server filed it under — the date and id in that name are
+ * never the user's words. `undefined` means the target is still undecided.
+ */
 function workspaceChipLabel(state: NewSessionDraftState): string | undefined {
   const cwd = state.cwd.trim();
   if (cwd !== '') {
     const base = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
     return base !== '' ? base : cwd;
   }
-  return state.effectiveWorkspace?.name;
+  return isAutoCreatedWorkspace(state.effectiveWorkspace) ? undefined : state.effectiveWorkspace?.name;
 }
 
 /**
@@ -101,7 +107,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           />
         </svg>
         <span className="min-w-0 truncate">
-          {label ?? (state.autoWorkspace
+          {label ?? (state.autoWorkspace || isAutoCreatedWorkspace(state.effectiveWorkspace)
             ? state.dailyPersonaName === undefined ? t('new.autoWorkspace') : t('persona.workspaceAuto', { name: state.dailyPersonaName })
             : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
         </span>

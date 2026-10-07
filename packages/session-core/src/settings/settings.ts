@@ -1446,6 +1446,16 @@ export function validateImagePolicyDraft(
  */
 export const DEFAULT_MODEL_CAPABILITIES = ['thinking', 'tool_use'] as const;
 
+/**
+ * The thinking levels a *new* model row starts with. Same rule as the default
+ * capabilities above: it fills in only where nothing was ever stored, so a
+ * model configured to a real set — including an explicitly empty one — keeps
+ * exactly what it has. A session sends one effort, so these are the tiers the
+ * picker offers, not two levels for one request. Ordered low to high, which is
+ * the order the chip editor renders them in.
+ */
+export const DEFAULT_MODEL_SUPPORT_EFFORTS = ['low', 'high'] as const;
+
 export function providerModelDraftFromCatalog(
   model: ModelCatalogItem | GetModelResponse,
 ): ProviderModelDraft {

@@ -14,7 +14,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSummary } from '@kiki/protocol';
+import type { AuthSummary, Workspace } from '@kiki/protocol';
 import { resolveSettingsRoute, SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
@@ -28,6 +28,7 @@ import { NewSessionPage } from './NewSessionPage';
 
 const firstRun = vi.hoisted(() => ({
   needsProviderSetup: false,
+  effectiveWorkspace: undefined as Workspace | undefined,
   client: {
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
@@ -76,8 +77,8 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       agentProfile: '',
       workspaces: [],
       workspacesLoading: false,
-      effectiveWorkspace: undefined,
-      autoWorkspace: true,
+      effectiveWorkspace: firstRun.effectiveWorkspace,
+      autoWorkspace: firstRun.effectiveWorkspace === undefined,
       agentProfileCatalogMode: { mode: 'unscoped' },
       agentProfileCatalogPending: false,
       needsProviderSetup: firstRun.needsProviderSetup,
@@ -307,6 +308,54 @@ describe('the /new page', () => {
     const container = await mountNewSessionPage();
     expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
     expect(container.textContent).not.toContain('Choose another workspace');
+  });
+
+  it.each([
+    ['en', 'Automatically create a workspace'],
+    ['zh', '自动创建工作区'],
+  ] as const)('names the automatic workspace in %s, not as an untitled one', async (locale, expected) => {
+    localStorage.setItem('kiki.locale', locale);
+    firstRun.effectiveWorkspace = {
+      id: 'wd_auto',
+      root: 'C:/Users/me/.kiki/workspaces/2026-10-07-a1b2c3d4',
+      // Exactly what the server files an auto-allocated workspace under.
+      name: 'Untitled workspace 2026-10-07 a1b2c3d4',
+      created_at: '2026-10-07T00:00:00.000Z',
+      last_opened_at: '2026-10-07T00:00:00.000Z',
+      session_count: 1,
+      pinned: false,
+      isGit: false,
+    };
+    try {
+      const container = await mountNewSessionPage();
+      const chip = container.querySelector('[data-hero-target] [data-hero-workspace]');
+      expect(chip?.textContent).toContain(expected);
+      // The internal name must not surface anywhere the user reads.
+      expect(container.textContent).not.toContain('Untitled workspace');
+      expect(document.querySelector('#first-run-hero-footer')!.textContent).not.toContain('Untitled workspace');
+    } finally {
+      firstRun.effectiveWorkspace = undefined;
+    }
+  });
+
+  it('keeps the name of a workspace the user chose', async () => {
+    firstRun.effectiveWorkspace = {
+      id: 'wd_named',
+      root: 'C:/proj',
+      name: 'proj',
+      created_at: '2026-10-07T00:00:00.000Z',
+      last_opened_at: '2026-10-07T00:00:00.000Z',
+      session_count: 1,
+      pinned: false,
+      isGit: false,
+    };
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('proj');
+      expect(document.querySelector('#first-run-hero-footer')!.textContent).toContain('proj');
+    } finally {
+      firstRun.effectiveWorkspace = undefined;
+    }
   });
 
   it('states what kiki is instead of asking an empty question', async () => {

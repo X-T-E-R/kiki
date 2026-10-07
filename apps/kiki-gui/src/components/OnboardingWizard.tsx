@@ -789,9 +789,16 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     onClose();
   }, [onClose]);
 
-  // Dialog handles Escape at the window capture phase, ahead of any popover
-  // inside it. While the protocol picker is open, Escape belongs to the
-  // picker: close it and keep the wizard (and the unsaved form) in place.
+  // Leaving the run. Backdrop clicks and a bare Escape never reach here (the
+  // Dialog is `dismissible={false}`): the header's close and the footer's
+  // last-step "Set up later" are the only ways out, so neither a stray click
+  // nor an interrupted thought can discard the unsaved connection form or mark
+  // the first run done.
+  //
+  // A picker still owns Escape while it is open. Its panel is portaled to
+  // <body>, so its own keydown handler cannot see a key pressed anywhere else on
+  // the page — the window listener below is what closes it, and it acts on the
+  // panel alone. The wizard itself never closes here.
   const dismiss = useCallback(() => {
     const openPicker = document.querySelector<HTMLButtonElement>(
       '[role="dialog"] [data-searchable-select] > button[aria-expanded="true"]',
@@ -803,6 +810,21 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     }
     close();
   }, [close]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const openPicker = document.querySelector<HTMLButtonElement>(
+        '[role="dialog"] [data-searchable-select] > button[aria-expanded="true"]',
+      );
+      if (openPicker === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismiss();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => { window.removeEventListener('keydown', onKeyDown, true); };
+  }, [dismiss]);
 
   const chooseTemplate = (template: ProviderPreset | null, protocol?: ProviderDraft['type']) => {
     const draft = draftForPreset(template, protocol);
@@ -1049,6 +1071,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       // Stacked so a dialog opened from a step (the skill install preview)
       // owns Escape and focus while it is up.
       stacked
+      // This run holds an unsaved connection form and ends the run when it
+      // closes, so it leaves on the header's close button or on an explicit
+      // action inside it — never on a backdrop click or a stray Escape, which
+      // used to throw the draft away and mark the first run done.
+      dismissible={false}
       // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
       // its header/body/footer insets so the scroll region meets the dividers.
       panelClassName="anim-enter flex h-[85vh] w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"

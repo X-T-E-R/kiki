@@ -151,6 +151,24 @@ function clearScopedNewSessionDraft(scopeId: string): void {
 
 export const AUTO_WORKSPACE_ID = '__auto__';
 
+/**
+ * The name the server gives a workspace it had to allocate itself, when a
+ * session is created with no target and nothing to reuse. It is an internal
+ * handle, not something to show: the date and the id fragment exist so the
+ * name is unique on disk, not to be read. A workspace that carries this name
+ * says only "kiki made this one", which the product already has words for.
+ *
+ * A name the user typed is never in this form, so it never matches here — and
+ * the date/id suffix only matters while the workspace is still unnamed, since
+ * the first thing anybody does with it is rename it.
+ */
+const AUTO_WORKSPACE_NAME = /^Untitled workspace \d{4}-\d{2}-\d{2} [0-9a-f]{8}$/;
+
+/** Whether this workspace is one the server allocated rather than one the user named. */
+export function isAutoCreatedWorkspace(workspace: Workspace | undefined): boolean {
+  return workspace !== undefined && AUTO_WORKSPACE_NAME.test(workspace.name);
+}
+
 // The temporary choice survives navigating back to /new, but not a window restart.
 let ephemeralForWindow = false;
 
@@ -1005,7 +1023,10 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       },
       ...sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
-        label: workspace.name,
+        // A workspace kiki created for itself keeps the automatic label here
+        // too: the name it was filed under is an internal handle, and the row
+        // is the user's chance to see what they are about to work in.
+        label: isAutoCreatedWorkspace(workspace) ? t('new.autoWorkspace') : workspace.name,
         hint: workspace.root,
         title: workspace.name,
       })),

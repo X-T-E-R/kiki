@@ -829,10 +829,18 @@ describe('OnboardingWizard', () => {
     const context = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-context]')!;
     expect(context).not.toBeNull();
     await typeInto(context, '200000');
-    // A thinking level and a capability are both real selections, not free text.
+    // A new model starts with the two thinking levels most setups want, and
+    // they are the levels offered to pick from — not one level chosen for the
+    // request. A session still sends exactly one of them.
     const efforts = dialog().querySelector<HTMLElement>('[aria-label="Supported thinking levels"]')!;
     expect(efforts).not.toBeNull();
-    await click(efforts.querySelector('button[aria-pressed]')!);
+    expect([...efforts.querySelectorAll('button[aria-pressed]')]
+      .filter((node) => node.getAttribute('aria-pressed') === 'true')
+      .map((node) => node.textContent?.trim()))
+      .toEqual(['low', 'high']);
+    // The user can change the seed: dropping a level leaves the rest alone.
+    await click([...efforts.querySelectorAll('button[aria-pressed]')]
+      .find((node) => node.textContent?.trim() === 'low')!);
     const caps = dialog().querySelector<HTMLElement>('[aria-label="Model capabilities"]')!;
     expect(caps.textContent).toContain('thinking');
     expect(caps.textContent).toContain('image_in');
@@ -848,7 +856,7 @@ describe('OnboardingWizard', () => {
       expect.objectContaining({
         remote_id: 'kimi-for-coding',
         max_context_size: 200000,
-        support_efforts: ['low'],
+        support_efforts: ['high'],
         capabilities: expect.arrayContaining(['image_in']),
       }),
     ]);
@@ -1038,6 +1046,40 @@ describe('OnboardingWizard', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(dialog().querySelector('#onboarding-provider-base-url')).not.toBeNull();
+  });
+
+  it('ignores a backdrop click and a bare Escape, keeping the form and the run unmarked', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await toModelStep();
+    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
+    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
+    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-kept');
+
+    // Neither reflex may end the run: the half-typed key would be gone, and a
+    // first run would never be offered again.
+    // jsdom has no PointerEvent constructor; the dismiss path only reads .target.
+    await act(async () => {
+      dialog().closest('div')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+    expect(inputByPlaceholder('Paste a new key').value).toBe('sk-kept');
+    expect(dialog()).not.toBeNull();
+  });
+
+  it('the header close still ends the run', async () => {
+    const onClose = vi.fn();
+    await mount(onClose);
+    await act(async () => {
+      dialog().querySelector<HTMLButtonElement>('[aria-label="Close setup"]')!.click();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
   it('keeps the unsubmitted form when going Back and returning', async () => {
