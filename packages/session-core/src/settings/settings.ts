@@ -2387,6 +2387,14 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },
   { section: 'computer-control', cardId: 'st-card-computer-mcp', titleKey: 'st.computer.connectionsTitle', keywordKeys: ['st.computer.connectionsHint', 'st.computer.fieldCommand', 'st.computer.stopButton'], synonyms: ['mcp', 'kiki-computer', 'stdio', '配置', 'connect', '连接', '停止'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
+  // One workspace's own page. Its cards live under this section so a search
+  // hit lands on the list, which is where the workspace is chosen from; the
+  // query is what turns that hit into the page for a specific workspace.
+  { section: 'workspaces', cardId: 'st-card-workspace-detail', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.renameTitle', 'st.workspaces.pin', 'st.workspaces.detail.pinHelp'], synonyms: ['workspace settings', '工作区设置', 'rename workspace', '重命名工作区'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-plugins', titleKey: 'st.workspaces.detail.plugins', keywordKeys: ['st.workspaces.detail.pluginsScope', 'st.workspaces.detail.pluginsEmpty', 'rail.plugins.restore', 'cap.install.scope.workspace'], synonyms: ['workspace plugins', '工作区插件', 'plugin scope', '插件范围'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-trust', titleKey: 'st.workspaces.detail.trust', keywordKeys: ['st.workspaces.detail.trustOn', 'st.workspaces.detail.trustOff'], synonyms: ['trusted workspace', '受信任的工作区', 'workspace trust', '工作区信任'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-memory', titleKey: 'st.workspaces.detail.inherit', keywordKeys: ['st.workspaces.detail.memoryFor', 'st.memory.workspaces'], synonyms: ['workspace memory', '工作区记忆', 'memory override', '记忆覆盖'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-resources', titleKey: 'st.workspaces.detail.resources', keywordKeys: ['st.workspaces.detail.profiles', 'st.workspaces.detail.mcp', 'st.workspaces.detail.skills'], synonyms: ['agent profiles', '智能体配置', 'mcp servers', 'MCP 服务器'] },
   { section: 'workspaces', cardId: 'st-card-worktrees', titleKey: 'st.worktrees.title', keywordKeys: ['st.worktrees.hint', 'st.worktrees.cleanup', 'st.worktreePolicy.prefix', 'st.worktreePolicy.base', 'st.worktreePolicy.autoCleanup'], synonyms: ['branch prefix', '分支前缀', 'worktree policy', 'worktree 策略'] },
   { section: 'ssh', cardId: 'st-card-ssh-hosts', titleKey: 'st.ssh.hostsTitle', keywordKeys: ['st.ssh.addHost', 'st.ssh.writeBack'], synonyms: ['ssh', 'ssh config', '~/.ssh/config', 'remote host', '远程主机', '主机'] },
   { section: 'ssh', cardId: 'st-card-ssh-connection', titleKey: 'st.ssh.connectionTitle', keywordKeys: ['st.ssh.syncToggle', 'st.ssh.approvalToggle', 'st.ssh.approvalHint'], synonyms: ['connection approval', '连接审批', 'host key', '主机密钥', 'known_hosts'] },
@@ -2614,6 +2622,54 @@ export function pluginSettingsIdFromQuery(search: string | URLSearchParams): str
   const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
   const raw = params.get(PLUGIN_SETTINGS_QUERY_KEY);
   return raw === null || raw === '' ? null : raw;
+}
+
+/**
+ * One workspace's own page, `/settings/workspaces?workspace=<id>`.
+ *
+ * A workspace is the unit a reader configures, so it gets a page rather than a
+ * dialog: the list stays a list, and the page is where its name, its plugins
+ * and everything else scoped to it actually live. It rides the existing
+ * `/settings/:section?` route with a query, so it needs no router change and
+ * survives Back like any other settings visit.
+ */
+export const WORKSPACE_SETTINGS_QUERY_KEY = 'workspace';
+
+/** The settings route of one workspace's own page. */
+export function workspaceSettingsPath(workspaceId: string): string {
+  return `/settings/workspaces?${WORKSPACE_SETTINGS_QUERY_KEY}=${encodeURIComponent(workspaceId)}`;
+}
+
+/** The settings route of the workspace list itself. */
+export function workspacesSettingsPath(): string {
+  return '/settings/workspaces';
+}
+
+/**
+ * The workspace id a settings query carries, or null on the list page. An
+ * empty value is the list, not a blank detail page: `?workspace=` is what a
+ * link built from an unset id resolves to.
+ */
+export function workspaceSettingsIdFromQuery(search: string | URLSearchParams): string | null {
+  const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
+  const raw = params.get(WORKSPACE_SETTINGS_QUERY_KEY);
+  return raw === null || raw === '' ? null : raw;
+}
+
+/** The settings route of the sessions section itself. */
+export function sessionsSettingsPath(): string {
+  return '/settings/sessions';
+}
+
+/**
+ * The built-in import-history surface. Bringing an old conversation in is a
+ * way of working with sessions and it ships with Kiki, so it lives on the
+ * session route next to the rest of what sessions can do, rather than behind a
+ * plugin. The old `/capabilities?view=import` address redirects here, so an
+ * old bookmark lands on the same surface rather than on a dead one.
+ */
+export function importHistoryPath(): string {
+  return '/settings/sessions/import';
 }
 
 // ---- millisecond humanizing (unit-ed inputs) ----

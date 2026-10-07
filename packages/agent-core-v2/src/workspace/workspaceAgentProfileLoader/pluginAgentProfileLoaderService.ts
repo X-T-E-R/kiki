@@ -41,7 +41,7 @@ export class PluginAgentProfileLoaderService
     super(log, registry);
     this._register(this.plugins.onDidReload((event) => event.waitUntil(this.reload())));
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
-      if (event.workspaceId === workspace.workspaceId) event.waitUntil(this.reload());
+      if (event.workspaceId === workspace.workspaceId && event.sessionId === undefined) event.waitUntil(this.reload());
     }));
     this.start();
   }

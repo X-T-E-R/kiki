@@ -170,6 +170,9 @@ describe('AgentPluginService plugin session-start wiring', () => {
     const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
       allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
       onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
     const plugins = { ...stubPluginService({ sessionStarts: [] }), enabledSessionStarts: async (workspaceId?: string) => {
       expect(workspaceId).toBe(ctx!.get(ISessionContext).workspaceId);
@@ -186,12 +189,10 @@ describe('AgentPluginService plugin session-start wiring', () => {
     change.fire({ workspaceId: ctx.get(ISessionContext).workspaceId, pluginId: 'demo', revision: 1, waitUntil: (promise) => work.push(promise) });
     expect(work.length).toBeGreaterThan(0);
     void Promise.all(work).then(() => { applied = true; });
-    await Promise.resolve();
-    expect(applied).toBe(false);
-    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(before);
-    await runInjectionBoundary(ctx);
     await Promise.all(work);
     expect(applied).toBe(true);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(before);
+    await runInjectionBoundary(ctx);
     expect(messageText(findPluginSessionStartEventMessages(ctx).at(-1)!)).toContain('no active plugin session starts');
     change.dispose();
   });
@@ -377,7 +378,7 @@ describe('AgentPluginService plugin-change reminder', () => {
     );
   }
 
-  it('appends a plugin_change system reminder when the plugin set mutates', async () => {
+  it('keeps plugin mutations on the usage-managed refresh path when usage is enabled', async () => {
     const mutateEmitter = new Emitter<PluginMutationSummary>();
     ctx = createTestAgent(
       { autoConfigure: true },
@@ -394,10 +395,7 @@ describe('AgentPluginService plugin-change reminder', () => {
       mutation: { kind: 'enable', id: 'demo' },
     });
 
-    const messages = findPluginChangeMessages(ctx);
-    expect(messages).toHaveLength(1);
-    expect(messageText(messages[0]!)).toContain('Plugin "demo" was enabled.');
-    expect(messageText(messages[0]!)).toContain('Plugin tools refresh in live sessions; prompt contributions may remain until /new or /reload.');
+    expect(findPluginChangeMessages(ctx)).toHaveLength(0);
     mutateEmitter.dispose();
   });
 
@@ -486,8 +484,8 @@ describe('AgentPluginService plugin-change reminder', () => {
     sinkChange.fire('plugin');
     await runInjectionBoundary(ctx);
 
-    expect(findPluginChangeMessages(ctx)).toHaveLength(1);
-    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+    expect(findPluginChangeMessages(ctx)).toHaveLength(0);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(2);
 
     sinkChange.fire('plugin');
     await runInjectionBoundary(ctx);
@@ -524,8 +522,8 @@ describe('AgentPluginService plugin-change reminder', () => {
     sinkChange.fire('plugin');
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(findPluginChangeMessages(ctx)).toHaveLength(2);
-    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(1);
+    expect(findPluginChangeMessages(ctx)).toHaveLength(0);
+    expect(findPluginSessionStartEventMessages(ctx)).toHaveLength(2);
 
     sinkChange.dispose();
     mutateEmitter.dispose();

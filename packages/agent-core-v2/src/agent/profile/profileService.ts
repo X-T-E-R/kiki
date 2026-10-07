@@ -296,7 +296,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private frozenPluginBlocks: Map<string, string> | undefined;
   private pluginUsageDirty = true;
   private pluginBlockRefresh: Set<string> | 'all' = new Set();
-  private readonly pluginUsageSettlers: { resolve(): void; reject(error: unknown): void }[] = [];
   private systemPromptRefreshTail: Promise<void> = Promise.resolve();
   private promptLayoutMigrationPending = false;
 
@@ -398,14 +397,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.pluginUsageDirty = true;
     }));
     if (pluginUsage !== undefined) this._register(pluginUsage.onDidChange((event) => {
-      if (event.workspaceId !== this.sessionContext.workspaceId) return;
+      if (event.workspaceId !== this.sessionContext.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== this.sessionContext.sessionId)) return;
       this.frozenPluginSections = undefined;
       this.pluginUsageDirty = true;
-      if (this.states.get(dynamicPromptKey) !== undefined) event.waitUntil(new Promise<void>((resolve, reject) => this.pluginUsageSettlers.push({ resolve, reject })));
     }));
-    this._register({ dispose: () => {
-      for (const waiter of this.pluginUsageSettlers.splice(0)) waiter.resolve();
-    } });
   }
 
   private get activeToolNamesOverlay(): readonly string[] | undefined {
@@ -1782,7 +1778,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (!this.pluginUsage?.enabled() || !this.pluginUsageDirty) return;
     const previous = this.states.get(dynamicPromptKey);
     if (previous === undefined) return;
-    const waiters = this.pluginUsageSettlers.splice(0);
     this.pluginUsageDirty = false;
     try {
       await this.skillCatalog.ready;
@@ -1805,10 +1800,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (hash !== previous.hash || previous.context.pluginBlocks === undefined) {
         await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous.enabled, revision: previous.revision + 1, context, content, hash }));
       }
-      for (const waiter of waiters) waiter.resolve();
     } catch (error) {
       this.pluginUsageDirty = true;
-      for (const waiter of waiters) waiter.reject(error);
       throw error;
     }
   }
@@ -3324,7 +3317,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async resolvePluginSections(): Promise<string> {
     if (this.frozenPluginSections !== undefined) return this.frozenPluginSections;
-    const sections = await this.plugins.enabledSystemPrompts();
+    const sections = await this.plugins.enabledSystemPrompts(
+      this.sessionContext.workspaceId,
+      this.sessionContext.sessionId,
+    );
     if (this.pluginUsage?.enabled()) {
       const saved = this.states.get(dynamicPromptKey)?.context;
       this.frozenPluginBlocks ??= saved?.pluginBlocks !== undefined
@@ -3345,7 +3341,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const skipped: string[] = [];
     let totalBytes = 0;
     for (const section of sections) {
-      if (this.pluginUsage !== undefined && !await this.pluginUsage.allows(this.sessionContext.workspaceId, section.pluginId)) continue;
+      if (this.pluginUsage !== undefined && !await this.pluginUsage.allows(
+        this.sessionContext.workspaceId,
+        section.pluginId,
+        this.sessionContext.sessionId,
+      )) continue;
       const content = this.frozenPluginBlocks?.get(section.pluginId) ?? section.content;
       const block = `<!-- From: plugin ${section.pluginId} -->\n${content}`;
       const bytes = Buffer.byteLength(block, 'utf8');

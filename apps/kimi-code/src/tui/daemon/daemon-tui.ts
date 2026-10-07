@@ -1611,7 +1611,7 @@ export class DaemonTUI {
       const items = await plugins.list();
       this.showStatus(
         items
-          .map((item) => `${item.id} · ${item.enabled ? 'enabled' : 'disabled'} · ${item.state}`)
+          .map((item) => `${item.id} · ${item.globalEnabled ? 'enabled' : 'disabled'} · ${item.state}`)
           .join('\n') || 'No plugins installed.',
       );
       return;

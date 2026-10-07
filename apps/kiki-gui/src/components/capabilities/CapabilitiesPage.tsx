@@ -17,7 +17,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
-import { pluginSettingsPath, readLastSessionId } from '@kiki/session-core/settings';
+import { importHistoryPath, pluginSettingsPath, readLastSessionId } from '@kiki/session-core/settings';
 
 import type { PluginUsageTarget } from '@kiki/protocol';
 
@@ -55,21 +55,12 @@ export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   const view = params.get('view');
   // `manage` is the retired name of the Installed view; old links still land.
   if (view === 'installed' || view === 'manage') return { view: 'installed' };
-  // Import history is a plugins sub-view, so it deep-links with the rest of them
-  // and keeps the same `?source=` handle a plugin detail uses to hand off.
-  if (view === 'import') {
-    const source = params.get('source');
-    // A source is named by its plugin and its id. A link that carries only the
-    // source id still resolves (the view matches on the id alone); carrying the
-    // plugin too is what makes the link unambiguous when two plugins contribute
-    // the same source name.
-    const plugin = params.get('sourcePlugin');
-    return {
-      view: 'import',
-      ...(source !== null && source !== '' ? { sourceId: source } : {}),
-      ...(plugin !== null && plugin !== '' ? { sourcePluginId: plugin } : {}),
-    };
-  }
+  // Import history used to be a plugins sub-view. It is a built-in session
+  // surface now, so this case resolves to the market it was carved out of and
+  // the redirect below carries the caller to the one address it really has.
+  // `?source=` / `?sourcePlugin=` are dropped with it: the new page lists every
+  // source itself, so a half-carried handle would preselect nothing.
+  if (view === 'import') return { view: 'market' };
   // Media is a plugins sub-view for the same reason import history is: it
   // manages what installed plugin packages can do.
   if (view === 'media') return { view: 'media' };
@@ -85,11 +76,6 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
   next.delete('sourcePlugin');
   if (route.view === 'detail') next.set('plugin', route.id);
   if (route.view === 'installed') next.set('view', 'installed');
-  if (route.view === 'import') {
-    next.set('view', 'import');
-    if (route.sourceId !== undefined) next.set('source', route.sourceId);
-    if (route.sourcePluginId !== undefined) next.set('sourcePlugin', route.sourcePluginId);
-  }
   if (route.view === 'media') next.set('view', 'media');
   return next;
 }
@@ -158,6 +144,22 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
   const sessionId = params.get('session') ?? readLastSessionId();
   const panelScope = panelScopeFrom(params);
+
+  // Import history moved to the sessions route, where it belongs: bringing an
+  // old conversation in is a way of working with sessions, and reading it as a
+  // plugin sub-view asked people to install something Kiki already ships. An
+  // old link redirects rather than dead-ends, and Back returns to where it
+  // came from because this is a replace, not a push.
+  useEffect(() => {
+    if (params.get('view') !== 'import') return;
+    const next = new URLSearchParams(params);
+    next.delete('view');
+    next.delete('source');
+    next.delete('sourcePlugin');
+    const query = next.toString();
+    setParams(next, { replace: true });
+    void navigate(`${importHistoryPath()}${query === '' ? '' : `?${query}`}`, { replace: true });
+  }, [params, setParams, navigate]);
 
   const setTab = (next: CapabilityTab) => {
     const updated = applyPluginsRoute(params, { view: 'market' });
@@ -314,7 +316,9 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
                 sessionId={sessionId}
                 onOpenSettings={(id) => { void navigate(pluginSettingsPath(id)); }}
-                onOpenSession={(sessionId) => { void navigate(`/s/${sessionId}`); }}
+                onOpenImportHistory={({ source, sourcePlugin }) => {
+                  void navigate(`${importHistoryPath()}?source=${encodeURIComponent(source)}&sourcePlugin=${encodeURIComponent(sourcePlugin)}`);
+                }}
               />
             )}
           </div>
@@ -340,7 +344,7 @@ export function CapabilityTabBody({
   workspaceRoot,
   onOpenPanel,
   onOpenPlugin,
-  onOpenSession,
+  onOpenImportHistory,
   sessionId,
   onOpenSettings,
 }: {
@@ -351,15 +355,15 @@ export function CapabilityTabBody({
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   readonly onOpenPlugin?: (pluginId: string) => void;
-  /** Open an imported conversation as a live session, on the session route. */
-  readonly onOpenSession?: (sessionId: string) => void;
+  /** The built-in import-history page; a source plugin hands its source to it. */
+  readonly onOpenImportHistory?: (source: { readonly source: string; readonly sourcePlugin: string }) => void;
   /** Session in focus; the media sub-view lists its jobs. */
   readonly sessionId?: string;
   /** A plugin's own settings page; the plugins tab links there instead of
    *  embedding the form, so both surfaces edit the plugin in one place. */
   readonly onOpenSettings?: (pluginId: string) => void;
 }) {
-  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenSession={onOpenSession} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
+  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenImportHistory={onOpenImportHistory} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
   if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} />;
   if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} />;
   return <ToolsView />;

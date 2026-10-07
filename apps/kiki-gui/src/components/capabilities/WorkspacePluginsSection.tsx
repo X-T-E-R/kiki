@@ -1,27 +1,31 @@
 /**
- * 插件 · 本工作区 — the rail's workspace plugin list.
+ * 插件 — the rail's plugin list for the session in focus.
  *
- * This is where the reader decides what a workspace's sessions may use. It is
+ * This is where the reader decides what this conversation may use. It is
  * deliberately *not* plugin management: installs, credentials and the home
  * master switch stay in the plugins page, and nothing here navigates away to
  * do a job this list can do in place.
  *
- * The shape follows the rest of the rail — a folded chapter, hairline rows,
- * no cards — because the reader's other decisions are made here too, and a
+ * The shape follows the rest of the rail — a folded chapter, hairline rows, no
+ * cards — because the reader's other decisions are made here too, and a
  * differently-styled panel would read as a different product.
  *
- * What it shows is the workspace's own answer, and the answer is honest:
+ * What it shows is the *session's* answer, not the workspace's, and the answer
+ * is honest about the four levels that stack into it:
  *
  * - The head names the workspace the **server** resolved, never the window's
  *   own cwd.
- * - A switch shows `effective`, so a plugin turned off at home reads off here
- *   even under a workspace override of `on` — with the real reason beside it
- *   and a link to the page that can fix it.
+ * - The switch shows `effective`, so a plugin whose global default is off but
+ *   that this session switched on reads as on here, and one the home master
+ *   switch denies reads off with the real reason beside it.
+ * - Every row says which level decided, so an `on` from this session is not
+ *   mistaken for one that applies everywhere.
  * - While the server is still applying, the choice just made stays on screen
  *   with its switch live; falling back to the old value would read as "your
  *   click did nothing".
- * - A failed write keeps the row editable: the reason stays beside it and
- *   restore-default remains available.
+ * - A failed write keeps the row editable and restores the last good value,
+ *   beside the reason. Nothing here ever writes the workspace or the global
+ *   default: a session choice is a session choice.
  * - `app_service` belongs to the home scope, so a row carrying it says so
  *   instead of implying that switching it off here stops that service.
  */
@@ -31,7 +35,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tan
 import { Link, useLocation } from 'react-router-dom';
 
 import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
-import { errorText, type Locale } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -51,6 +55,7 @@ import {
   isStaleRevision,
   isStaleScope,
   isStaleTarget,
+  overrideSource,
   rowBlockedByHome,
   rowCanRestore,
   rowState,
@@ -58,6 +63,7 @@ import {
   scopeKey,
   scopeOf,
   scopeTitle,
+  type OverrideSource,
   type UsageScope,
 } from './pluginUsage';
 import { PLUGIN_QUERY_KEYS, useInvalidatePlugins, usePluginMarketplace } from './usePlugins';
@@ -72,7 +78,7 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
   const invalidatePlugins = useInvalidatePlugins();
   const target: PluginUsageTarget = useMemo(() => ({ session_id: sessionId }), [sessionId]);
   // Read by a mutation that outlives this render, so a late answer knows the
-  // locale and the workspace the reader is actually looking at now.
+  // locale and the session the reader is actually looking at now.
   const localeRef = useRef<Locale>(locale);
   localeRef.current = locale;
   const targetRef = useRef<PluginUsageTarget>(target);
@@ -83,14 +89,14 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
   const nextRequest = useRef(0);
   const latestRequests = useRef(new Map<string, number>());
   // Per-row state is keyed by target *and* plugin. A choice or a failure made
-  // for one workspace must never be shown on another workspace's row, even for
-  // the same plugin — so the workspace is part of the identity of the entry.
+  // for one session must never be shown on another session's row, even for the
+  // same plugin — so the target is part of the identity of the entry.
   const rowKey = useCallback((pluginId: string) => `${scopeKey(target)}/${pluginId}`, [target]);
   const [browse, setBrowse] = useState(false);
   const [adding, setAdding] = useState(false);
-  // An install in flight remembers the workspace that opened it, because the
-  // install itself is a home-scope fact and only the `on` that follows is
-  // workspace-scoped.
+  // An install in flight remembers the session that opened it, because the
+  // install itself is a home-scope fact and only the session `on` that
+  // follows is session-scoped.
   const [install, setInstall] = useState<{ readonly request: InstallRequest; readonly target: PluginUsageTarget } | null>(null);
 
   const read = useQuery({
@@ -102,14 +108,14 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
 
   const write = useMutation({
     // The target travels with the call, so every answer — success or failure —
-    // can be checked against the workspace that asked for it rather than the
-    // one the reader happens to be in when it lands.
+    // can be checked against the session that asked for it rather than the one
+    // the reader happens to be in when it lands.
     mutationFn: (input: { pluginId: string; override: 'on' | 'off' | 'inherit'; target: PluginUsageTarget }) =>
       client.setPluginUsage({ target: input.target, plugin_id: input.pluginId, override: input.override }),
     onMutate: (input) => {
       // The reader's choice is on screen before the server answers. `inherit`
-      // removes the override, so it has no workspace value to hold. The value
-      // is captured in a const so the narrowing survives into the updater.
+      // removes the session override, so it has no session value to hold. The
+      // value is captured in a const so the narrowing survives into the updater.
       const { override } = input;
       const key = `${scopeKey(input.target)}/${input.pluginId}`;
       const requestId = ++nextRequest.current;
@@ -127,7 +133,7 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
       latestRequests.current.delete(request.key);
       setPending(({ [request.key]: _cleared, ...rest }) => rest);
       // Clear only this request's optimistic state even after navigation; its
-      // answer must not replace another workspace or a newer request.
+      // answer must not replace another session or a newer request.
       if (isStaleTarget(input.target, targetRef.current)) return;
       if (isStaleScope(response, scopeOf(read.data))) return;
       const previous = queryClient.getQueryData<PluginUsageResponse>(PLUGIN_QUERY_KEYS.usage(sessionId));
@@ -158,7 +164,7 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
   };
 
   const onToggle = (item: PluginUsageItem, enabled: boolean) => {
-    // A home-blocked row has no workspace answer to give, so a click on it is
+    // A home-blocked row has no session answer to give, so a click on it is
     // ignored rather than turned into a write the server would reject.
     if (rowToggleIntent(item) === undefined) return;
     // The checkbox reports the state being asked for; `effective` is the one
@@ -173,12 +179,12 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
 
   // Installing from the rail runs the same preview → consent → install flow as
   // everywhere else, and only an installed plugin is then switched on for this
-  // workspace — consent is never skipped by arriving from here.
+  // session — consent is never skipped by arriving from here, and a plugin
+  // that is already installed is never installed a second time.
   //
-  // The install itself is a home-scope fact: the flow enables the plugin at
-  // home. What is workspace-scoped is only the `on` that follows, and it is
-  // addressed to the workspace that opened the flow — not to whichever one the
-  // reader has since moved to, which must not be switched on by this install.
+  // The install itself is a home-scope fact. What is session-scoped is only
+  // the `on` that follows, and it is addressed to the session that opened the
+  // flow — not to whichever one the reader has since moved to.
   const onInstalled = useCallback(async (pluginId: string, from: PluginUsageTarget) => {
     setInstall(null);
     await invalidatePlugins();
@@ -201,6 +207,9 @@ export function WorkspacePluginsSection({ sessionId }: { readonly sessionId: str
       >
         <div className="space-y-1.5 pt-0.5">
           <ScopeLine scope={scope} onBrowse={() => { setBrowse(true); }} onAddFromSource={() => { setAdding(true); }} />
+          {/* One line, and the boundary it implies lives on the management
+              link: in a narrow rail a paragraph of scope prose costs more
+              than it tells the reader. */}
           {scope !== undefined ? (
             <p className="text-[11.5px] leading-4 text-ink-faint" data-rail-plugins-hint>{t('rail.plugins.hint')}</p>
           ) : null}
@@ -267,11 +276,14 @@ function ScopeLine({
   const { t } = useI18n();
   if (scope === undefined) return null;
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-2">
-      <p className="min-w-0 flex-1 truncate text-[12.5px] leading-5 text-ink-soft" data-rail-plugins-scope title={scope.root}>
+    <div className="flex min-w-0 items-start justify-between gap-2">
+      {/* Wraps rather than clips: the workspace's own name is the thing a
+          reader needs, and a narrow rail must not hide half of it behind an
+          ellipsis. The entry points stay on the baseline with it. */}
+      <p className="min-w-0 flex-1 text-[12.5px] leading-5 text-ink-soft" data-rail-plugins-scope title={scope.root}>
         {scopeTitle(scope, t)}
       </p>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
         <button type="button" onClick={onBrowse} className={`shrink-0 rounded text-[12px] text-ink-faint transition-colors hover:text-ink ${FOCUS_RING}`} data-rail-plugins-browse="">
           {t('rail.plugins.browse')}
         </button>
@@ -315,9 +327,18 @@ function UsageStatus({ read }: { readonly read: UsageRead }) {
   return null;
 }
 
+/** The one honest sentence about why a row is what it is. */
+const REASON_KEY: Readonly<Record<NonNullable<PluginUsageItem['reason']>, I18nKey>> = {
+  home_disabled: 'rail.plugins.reason.homeOff',
+  invalid_plugin: 'rail.plugins.reason.invalid',
+  workspace_disabled: 'rail.plugins.reason.workspaceOff',
+  session_disabled: 'rail.plugins.reason.sessionOff',
+  global_disabled: 'rail.plugins.reason.globalOff',
+};
+
 /**
- * One plugin in this workspace: what it is, whether it is actually usable
- * here, and the choice that changes it.
+ * One plugin in this session: what it is, whether it is actually usable here,
+ * which level decided, and the choice that changes it.
  */
 function PluginUsageRow({
   item,
@@ -346,9 +367,10 @@ function PluginUsageRow({
     item.skillCount > 0 ? t('rail.plugins.counts.skill', { count: item.skillCount }) : '',
     item.mcpServerCount > 0 ? t('rail.plugins.counts.mcp', { count: item.mcpServerCount }) : '',
   ].filter((text) => text !== '');
+  const source = pending === undefined ? overrideSource(item) : 'session';
 
   return (
-    <li className="border-t border-hairline py-1.5 first:border-t-0" data-rail-plugin={item.id} data-override={pending ?? item.override} data-effective={String(effective)}>
+    <li className="border-t border-hairline py-1.5 first:border-t-0" data-rail-plugin={item.id} data-override={pending ?? item.session_override ?? item.override} data-effective={String(effective)}>
       <div className="flex min-w-0 items-center gap-2">
         <CapabilityIcon icon={item.icon} kind="plugin" size="sm" />
         <span className="min-w-0 flex-1 truncate text-[12.5px] leading-5 text-ink" title={item.displayName}>{item.displayName}</span>        <Toggle
@@ -365,11 +387,12 @@ function PluginUsageRow({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-6 text-[11.5px] leading-4">
         {state.kind === 'blocked' ? (
           <span data-rail-plugin-reason={state.reason} className="text-ink-faint">
-            {state.reason === 'home_disabled' ? t('rail.plugins.reason.homeOff') : t('rail.plugins.reason.invalid')}
+            {t(REASON_KEY[state.reason])}
           </span>
         ) : contributions.length > 0 ? (
           <span className="text-ink-faint">{contributions.join(' · ')}</span>
         ) : null}
+        {!blocked ? <SourceTag source={source} /> : null}
         {item.app_service ? (
           // Home-scoped: switching this row off here does not stop that service.
           <span className="text-ink-faint" title={t('rail.plugins.appServiceHint')} data-rail-plugin-app-service="">
@@ -394,16 +417,47 @@ function PluginUsageRow({
 }
 
 /**
+ * Which level decided this row's value, in five words or fewer. A row that
+ * says "from the global default" is answering a question a reader always has
+ * when a plugin is on and they did not turn it on.
+ */
+function SourceTag({ source }: { readonly source: OverrideSource }) {
+  const { t } = useI18n();
+  return (
+    <span data-rail-plugin-source={source} className="text-ink-faint">
+      {t(SOURCE_KEY[source])}
+    </span>
+  );
+}
+
+const SOURCE_KEY: Readonly<Record<OverrideSource, I18nKey>> = {
+  session: 'rail.plugins.source.session',
+  workspace: 'rail.plugins.source.workspace',
+  global: 'rail.plugins.source.global',
+  home: 'rail.plugins.source.home',
+};
+
+/**
  * The catalog, for adding a plugin that is not installed here yet. It reads the
  * same catalog query the plugins page reads — the rail does not become a second
  * marketplace, it just asks the existing one.
+ *
+ * Exported because one workspace's own page opens the same catalog for itself:
+ * arriving there from the rail's Link would have dropped the workspace, and an
+ * install made "for this workspace" would then have landed with no workspace to
+ * name. `title`/`body` exist for that second caller, which has to say *which*
+ * scope it is adding to instead of borrowing the rail's "this conversation".
  */
-function PluginCatalogDialog({
+export function PluginCatalogDialog({
   onClose,
   onPick,
+  title,
+  body,
 }: {
   readonly onClose: () => void;
   readonly onPick: (entry: PluginMarketplaceEntry) => void;
+  readonly title?: string;
+  readonly body?: string;
 }) {
   const { t } = useI18n();
   const catalog = usePluginMarketplace();
@@ -413,9 +467,9 @@ function PluginCatalogDialog({
     [catalog.data, query],
   );
   return (
-    <Dialog onClose={onClose} ariaLabel={t('rail.plugins.browse')} overlayId="rail-plugin-catalog" panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[min(80vh,560px)] overflow-y-auto`}>
-      <h2 className="font-display text-[18px] leading-6 text-ink">{t('rail.plugins.browseTitle')}</h2>
-      <p className="mt-1 text-[13px] leading-5 text-ink-soft">{t('rail.plugins.browseBody')}</p>
+    <Dialog onClose={onClose} ariaLabel={title ?? t('rail.plugins.browse')} overlayId="rail-plugin-catalog" panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[min(80vh,560px)] overflow-y-auto`}>
+      <h2 className="font-display text-[18px] leading-6 text-ink">{title ?? t('rail.plugins.browseTitle')}</h2>
+      <p className="mt-1 text-[13px] leading-5 text-ink-soft">{body ?? t('rail.plugins.browseBody')}</p>
       <div className="mt-4 space-y-1">
         {entries.length === 0 ? (
           <p className="text-[12px] text-ink-faint">{t('cap.plugins.noMatch', { query })}</p>

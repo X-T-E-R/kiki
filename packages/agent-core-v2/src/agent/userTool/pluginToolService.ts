@@ -46,7 +46,9 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       event.waitUntil(this.queueRefresh());
     }));
     if (this.usage !== undefined) this._register(this.usage.onDidChange((event) => {
-      if (event.workspaceId === this.session?.workspaceId) event.waitUntil(this.queueRefresh());
+      if (event.workspaceId !== this.session?.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== this.session?.sessionId)) return;
+      event.waitUntil(this.queueRefresh());
     }));
     void this.queueRefresh();
   }
@@ -63,7 +65,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     await dispose(this.registrations.values());
     this.registrations.clear();
     for (const { pluginId, definition } of definitions) {
-      if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId)) continue;
+      if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) continue;
       const name = `plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`;
       if (this.registry.resolve(name) !== undefined) continue;
       const tool: ExecutableTool = {
@@ -126,8 +128,8 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       approvalRule: path === undefined ? definition.approvalRule ?? name : literalRulePattern(name, path),
       matchesRule: path === undefined ? undefined : (ruleArgs) => matchesPathRuleSubject(ruleArgs, path, pathOptions),
       execute: async (context) => {
-        if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId)) {
-          return { isError: true, output: `Plugin ${pluginId} is disabled in this workspace.` };
+        if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) {
+          return { isError: true, output: `Plugin ${pluginId} is disabled in this session.` };
         }
         const current = this.runtime.acquire(['fs']);
         try {

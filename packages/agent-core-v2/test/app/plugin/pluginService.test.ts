@@ -77,19 +77,39 @@ function makeHost(
 }
 
 function workspaceUsage(blockedPluginId: string, enabled = true): IPluginUsageService {
-  const snapshot = (workspaceId: string): PluginUsageSnapshot => ({
+  const snapshot = (workspaceId: string, sessionId?: string): PluginUsageSnapshot => ({
     workspaceId,
+    sessionId,
     revision: 0,
     overrides: {},
     applyState: 'applied',
     errors: [],
   });
+  type PluginStateReader = Parameters<IPluginUsageService['registerPluginStateReader']>[0];
+  let stateReader: PluginStateReader | undefined;
   return {
     _serviceBrand: undefined,
     enabled: () => enabled,
     read: async (workspaceId) => snapshot(workspaceId),
-    allows: async (workspaceId, pluginId) =>
-      !enabled || workspaceId !== 'workspace-a' || pluginId !== blockedPluginId,
+    registerPluginStateReader: (reader) => {
+      stateReader = reader;
+      return {
+        dispose: () => {
+          if (stateReader === reader) stateReader = undefined;
+        },
+      };
+    },
+    allows: async (workspaceId, pluginId, sessionId) => {
+      const state = stateReader?.(pluginId);
+      if (state?.allowed === false) return false;
+      const global = state?.globalEnabled ?? true;
+      if (!enabled || workspaceId === undefined) return global;
+      const workspace = workspaceId !== 'workspace-a' || pluginId !== blockedPluginId;
+      if (!workspace) return false;
+      return sessionId === undefined ? global : (await snapshot(workspaceId, sessionId)).overrides[pluginId] ?? global;
+    },
+    readSession: async (workspaceId, sessionId) => snapshot(workspaceId, sessionId),
+    applySession: async (value) => value,
     set: async ({ workspaceId }) => snapshot(workspaceId),
     onDidChange: Event.None as IPluginUsageService['onDidChange'],
     onDidApply: Event.None as IPluginUsageService['onDidApply'],
@@ -227,7 +247,7 @@ describe('PluginService (plugin boundary)', () => {
       for (const entry of installable) {
         await installWithConsent(svc, entry.source, entry.sha256);
         const info = await svc.getPluginInfo({ id: entry.id });
-        expect(info, entry.id).toMatchObject({ id: entry.id, version: entry.version, state: 'ok', enabled: false, zipSha256: entry.sha256 });
+        expect(info, entry.id).toMatchObject({ id: entry.id, version: entry.version, state: 'ok', enabled: true, globalEnabled: false, zipSha256: entry.sha256 });
         expect(info.root).toBe(path.join(home, 'plugins/managed', entry.id));
         expect(info.root).not.toBe(entry.source);
         if (entry.id.startsWith('kiki-')) expect(await readFile(path.join(info.root, 'LICENSE'), 'utf8')).not.toBe('');

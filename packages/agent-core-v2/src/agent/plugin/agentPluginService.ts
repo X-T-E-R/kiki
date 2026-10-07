@@ -69,7 +69,6 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   private readonly warnedMissingSessionStartSkills = new Set<string>();
 
   private pendingMutationCatalogChanges = 0;
-  private readonly usageSettlers: { resolve(): void; reject(error: unknown): void }[] = [];
 
   constructor(
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
@@ -97,11 +96,10 @@ export class AgentPluginService extends Service implements IAgentPluginService {
     if (scopeContext.agentId !== MAIN_AGENT_ID) return;
     this.states.contributeState(pluginSessionStartRefreshPendingKey);
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
-      if (event.workspaceId !== this.sessionContext.workspaceId) return;
+      if (event.workspaceId !== this.sessionContext.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== this.sessionContext.sessionId)) return;
       this.refreshPending = true;
-      if (this.states.get(pluginSessionStartSnapshotKey).initialized) event.waitUntil(new Promise<void>((resolve, reject) => this.usageSettlers.push({ resolve, reject })));
     }));
-    this._register({ dispose: () => { for (const waiter of this.usageSettlers.splice(0)) waiter.resolve(); } });
     this._register(
       injector.register(SESSION_START_INJECTION_VARIANT, (injection) =>
         this.reconcileSessionStartReminder(injection),
@@ -153,7 +151,10 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   }
 
   private async renderSessionStartReminder(): Promise<string | undefined> {
-    const sessionStarts = await this.plugins.enabledSessionStarts(this.sessionContext.workspaceId);
+    const sessionStarts = await this.plugins.enabledSessionStarts(
+      this.sessionContext.workspaceId,
+      this.sessionContext.sessionId,
+    );
     if (sessionStarts.length === 0) return undefined;
     await this.skillCatalog.ready;
     return renderPluginSessionStartReminder({
@@ -166,14 +167,10 @@ export class AgentPluginService extends Service implements IAgentPluginService {
   }
 
   private async reconcileSessionStartReminder(injection: ContextInjectionContext): Promise<string | undefined> {
-    const waiters = this.usageSettlers.splice(0);
     try {
-      const result = await this.reconcileSessionStartReminderNow(injection);
-      for (const waiter of waiters) waiter.resolve();
-      return result;
+      return await this.reconcileSessionStartReminderNow(injection);
     } catch (error) {
       this.refreshPending = true;
-      for (const waiter of waiters) waiter.reject(error);
       throw error;
     }
   }

@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
 import { assertPluginSkillUsage } from './pluginSkillUsage';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { validatePromptRuntimeControls } from '#/agent/prompt/runtimeControls';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -20,7 +22,7 @@ import { promptLaunchFailure } from '#/agent/prompt/promptFailure';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { Service } from '#/_base/di/service';
 import { ErrorCodes, Error2 } from '#/errors';
-import { isUserActivatableSkillType, type SkillDefinition } from '#/app/skillCatalog/types';
+import { isUserActivatableSkillType, normalizeSkillName, type SkillDefinition } from '#/app/skillCatalog/types';
 import { IAgentPromptService, promptRetryFor, reservePrompt, type PromptLaunchResult, type PromptReservation } from '#/agent/prompt/prompt';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
@@ -44,6 +46,8 @@ import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetad
 
 export class AgentSkillService extends Service implements IAgentSkillService {
   declare readonly _serviceBrand: undefined;
+  private readonly discovery?: ISkillDiscovery;
+  private readonly sessionPluginUsage?: ISessionPluginUsageService;
 
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -61,6 +65,8 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
     super();
+    this.discovery = optionalService(this.instantiation, ISkillDiscovery);
+    this.sessionPluginUsage = optionalService(this.instantiation, ISessionPluginUsageService);
     agentState.contributeState(skillKey);
   }
 
@@ -74,7 +80,15 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       }
     }
     await this.skillCatalog.ready;
-    const skill = this.skillCatalog.catalog.getSkill(input.name);
+    let skill = this.skillCatalog.catalog.getSkill(input.name);
+    if (skill === undefined) {
+      const managementSkill = await this.findManagementPluginSkill(input.name);
+      if (managementSkill?.plugin?.id !== undefined && this.sessionPluginUsage !== undefined) {
+        await this.sessionPluginUsage.set(managementSkill.plugin.id, 'on');
+        await this.skillCatalog.reload();
+        skill = this.skillCatalog.catalog.getSkill(input.name);
+      }
+    }
     if (skill === undefined) {
       throw new Error2(ErrorCodes.SKILL_NOT_FOUND, `Skill "${input.name}" was not found`);
     }
@@ -85,7 +99,14 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       );
     }
 
-    await assertPluginSkillUsage(skill.path, this.sessionContext.workspaceId, this.plugins, this.usage);
+    await this.enableExplicitPluginSkill(skill.path);
+    await assertPluginSkillUsage(
+      skill.path,
+      this.sessionContext.workspaceId,
+      this.plugins,
+      this.usage,
+      this.sessionContext.sessionId,
+    );
     const skillArgs = input.args ?? '';
     const skillContent = this.renderSkillPrompt(skill, skillArgs);
     const content: ContentPart[] = [
@@ -160,9 +181,24 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     }
     await this.skillCatalog.ready;
     const prepared = await Promise.all(input.skills.map(async (inputSkill) => {
-      const skill = this.skillCatalog.catalog.getSkill(inputSkill.name);
+      let skill = this.skillCatalog.catalog.getSkill(inputSkill.name);
+      if (skill === undefined) {
+        const managementSkill = await this.findManagementPluginSkill(inputSkill.name);
+        if (managementSkill?.plugin?.id !== undefined && this.sessionPluginUsage !== undefined) {
+          await this.sessionPluginUsage.set(managementSkill.plugin.id, 'on');
+          await this.skillCatalog.reload();
+          skill = this.skillCatalog.catalog.getSkill(inputSkill.name);
+        }
+      }
       if (skill === undefined) throw new Error2(ErrorCodes.SKILL_NOT_FOUND, `Skill "${inputSkill.name}" was not found`);
-      await assertPluginSkillUsage(skill.path, this.sessionContext.workspaceId, this.plugins, this.usage);
+      await this.enableExplicitPluginSkill(skill.path);
+      await assertPluginSkillUsage(
+        skill.path,
+        this.sessionContext.workspaceId,
+        this.plugins,
+        this.usage,
+        this.sessionContext.sessionId,
+      );
       const activation = this.prepareBundled(inputSkill);
       return activation;
     }));
@@ -215,6 +251,20 @@ export class AgentSkillService extends Service implements IAgentSkillService {
 
   recordModelToolActivation(origin: SkillActivationOrigin): void {
     void this.recordActivation(origin);
+  }
+
+  private async findManagementPluginSkill(name: string): Promise<SkillDefinition | undefined> {
+    if (this.plugins === undefined || this.discovery === undefined) return undefined;
+    const roots = await this.plugins.pluginSkillRoots('*');
+    const contribution = await this.discovery.discover(roots);
+    const target = normalizeSkillName(name);
+    return contribution.skills.find((skill) => normalizeSkillName(skill.name) === target);
+  }
+
+  private async enableExplicitPluginSkill(path: string): Promise<void> {
+    if (this.plugins === undefined || this.sessionPluginUsage === undefined) return;
+    const pluginId = await this.plugins.pluginSkillOwner(path);
+    if (pluginId !== undefined) await this.sessionPluginUsage.set(pluginId, 'on');
   }
 
   private prepareBundled(input: PromptSkillActivation): {
@@ -314,6 +364,14 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         flow_name: origin.skillName,
       });
     }
+  }
+}
+
+function optionalService<T>(instantiation: IInstantiationService, id: ServiceIdentifier<T>): T | undefined {
+  try {
+    return instantiation.invokeFunction((accessor) => accessor.get(id));
+  } catch {
+    return undefined;
   }
 }
 

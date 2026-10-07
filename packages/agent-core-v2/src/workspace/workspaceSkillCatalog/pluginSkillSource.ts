@@ -16,7 +16,9 @@ export class PluginSkillSource implements IPluginSkillSource {
   readonly onDidChange: Event<void> = (listener, thisArg, disposables) => {
     const reload = this.plugins.onDidReload((event) => event.waitUntil(Promise.resolve(listener.call(thisArg, undefined))), undefined, disposables);
     const usage = this.usage?.onDidChange((event) => {
-      if (event.workspaceId === this.workspaceId) event.waitUntil(Promise.resolve(listener.call(thisArg, undefined)));
+      if (event.workspaceId === this.workspaceId && event.sessionId === undefined) {
+        event.waitUntil(Promise.resolve(listener.call(thisArg, undefined)));
+      }
     }, undefined, disposables);
     return usage === undefined ? reload : combinedDisposable(reload, usage);
   };

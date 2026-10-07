@@ -97,6 +97,10 @@ export class PluginService extends Service implements IPluginService {
       inheritedHomeDir: inheritance.plugins ? inheritance.baseHomeDir : undefined,
       discoverSkills: (roots) => discovery.discover(roots),
     });
+    if (usage !== undefined) this._register(usage.registerPluginStateReader((id) => {
+      const plugin = this.manager.info(id);
+      return plugin === undefined ? { allowed: false, globalEnabled: false } : { allowed: plugin.enabled && plugin.state === 'ok', globalEnabled: plugin.globalEnabled };
+    }));
   }
 
   listPlugins(): Promise<readonly PluginSummary[]> {
@@ -262,16 +266,16 @@ export class PluginService extends Service implements IPluginService {
     return this.runManagementRead(read);
   }
 
-  listPluginCommands(workspaceId?: string): Promise<readonly PluginCommandDef[]> {
-    return this.runSerializedOperation(async () => this.filterUsage(await this.manager.enabledCommands(), workspaceId, (entry) => entry.pluginId));
+  listPluginCommands(workspaceId?: string, sessionId?: string): Promise<readonly PluginCommandDef[]> {
+    return this.runSerializedOperation(async () => this.filterUsage(await this.manager.enabledCommands(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
   checkUpdates(): Promise<readonly PluginUpdateStatus[]> {
     return this.runManagementRead(async () => this.manager.checkUpdates());
   }
 
-  pluginSkillRoots(workspaceId?: string): Promise<readonly SkillRoot[]> {
-    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginSkillRoots(), workspaceId, (entry) => entry.plugin?.id));
+  pluginSkillRoots(workspaceId?: string, sessionId?: string): Promise<readonly SkillRoot[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginSkillRoots(), workspaceId, (entry) => entry.plugin?.id, sessionId));
   }
 
   pluginSkillOwner(candidatePath: string): Promise<string | undefined> {
@@ -292,23 +296,23 @@ export class PluginService extends Service implements IPluginService {
     });
   }
 
-  pluginAgentRoots(workspaceId?: string): Promise<readonly PluginAgentRoot[]> {
-    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginAgentRoots(), workspaceId, (entry) => entry.pluginId));
+  pluginAgentRoots(workspaceId?: string, sessionId?: string): Promise<readonly PluginAgentRoot[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginAgentRoots(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledSessionStarts(workspaceId?: string): Promise<readonly EnabledPluginSessionStart[]> {
-    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSessionStarts(), workspaceId, (entry) => entry.pluginId));
+  enabledSessionStarts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSessionStart[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSessionStarts(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledSystemPrompts(workspaceId?: string): Promise<readonly EnabledPluginSystemPrompt[]> {
-    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSystemPrompts(), workspaceId, (entry) => entry.pluginId));
+  enabledSystemPrompts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSystemPrompt[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSystemPrompts(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledMcpServers(workspaceId?: string): Promise<Record<string, McpServerConfig>> {
+  enabledMcpServers(workspaceId?: string, sessionId?: string): Promise<Record<string, McpServerConfig>> {
     return this.runConsumptionRead({}, async () => {
       const pluginServers = this.manager.enabledMcpServers();
       const owners = new Map(this.manager.mcpServerEntries().map((entry) => [entry.name, entry.pluginId]));
-      const entries = await this.filterUsage(Object.entries(pluginServers), workspaceId, ([name]) => owners.get(name));
+      const entries = await this.filterUsage(Object.entries(pluginServers), workspaceId, ([name]) => owners.get(name), sessionId);
       const selected = Object.fromEntries(entries);
       if (!Object.values(selected).some((server) => server.transport === 'stdio')) return selected;
       const managedEnv = await this.managedKimiCodeEnvForPlugins();
@@ -327,19 +331,20 @@ export class PluginService extends Service implements IPluginService {
     });
   }
 
-  enabledHooks(workspaceId?: string): Promise<readonly HookDef[]> {
-    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHooks(), workspaceId, (entry) => entry.pluginId));
+  enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]> {
+    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHooks(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledHookRules(workspaceId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
-    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHookRules(), workspaceId, (entry) => entry.namespace.startsWith('plugin/') ? entry.namespace.slice(7) : undefined));
+  enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
+    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHookRules(), workspaceId, (entry) => entry.namespace.startsWith('plugin/') ? entry.namespace.slice(7) : undefined, sessionId));
   }
 
-  private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined): Promise<readonly T[]> {
-    if (workspaceId === undefined || this.usage === undefined) return entries;
-    const allowed = await Promise.all(entries.map((entry) => {
+  private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined, sessionId?: string): Promise<readonly T[]> {
+    if (workspaceId === '*') return entries;
+    const allowed = await Promise.all(entries.map(async (entry) => {
       const id = owner(entry);
-      return id === undefined ? Promise.resolve(true) : this.usage!.allows(workspaceId, id);
+      if (id === undefined) return true;
+      return this.usage === undefined ? this.manager.info(id)?.globalEnabled === true : this.usage.allows(workspaceId, id, sessionId);
     }));
     return entries.filter((_, index) => allowed[index]);
   }

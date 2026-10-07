@@ -9,6 +9,7 @@ import {
   resolveSettingsRoute,
   settingsGroupForSection,
   settingsSectionIsDeviceOnly,
+  workspaceSettingsIdFromQuery,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
@@ -40,6 +41,7 @@ import { ComputerControlSection } from './settings/ComputerControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SessionsSection } from './settings/SessionsSection';
+import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
@@ -50,7 +52,7 @@ import { SubagentsSection } from './settings/SubagentsSection';
 import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
-import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
+import { SettingsWorkspaceScopeContext, WorkspaceDetailNameContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 import { SshSection } from './ssh/SshSection';
 import { NavBackButton } from './NavBackButton';
@@ -216,6 +218,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // the workspace their edits target; the scope header names it. Reset on
   // page change — the next section reports its own selection.
   const [workspaceScopeName, setWorkspaceScopeName] = useState<string | null>(null);
+  // One workspace's own page names itself in the breadcrumb. Set by the page
+  // itself (the same handshake the scope header already uses) rather than
+  // resolved here, so the header and the breadcrumb cannot disagree.
+  const [workspaceDetailName, setWorkspaceDetailName] = useState<string | null>(null);
   useEffect(() => { setWorkspaceScopeName(null); }, [active]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -255,6 +261,12 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     const query = params.toString();
     void rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
+
+  // Import history is a built-in session surface with exactly one address. The
+  // redirect that carries an old `/capabilities?view=import` bookmark here
+  // lives on the Capabilities page, because that is the address being changed;
+  // this page needs no effect of its own, and one that navigated to the address
+  // it was already on would only churn the location key.
 
   // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,
   // so an ordinary visit still leaves focus where the user put it. The location
@@ -354,7 +366,21 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     ? pluginSettingsIdFromQuery(search)
     : null;
 
+  // One workspace's own page, or the list. A workspace is the unit a reader
+  // configures, so it gets a page rather than a dialog; the query selects it,
+  // exactly as `?plugin=` selects a plugin's own settings page.
+  const activeWorkspaceId = active === 'workspaces' && hash.replace(/^#/, '') === ''
+    ? workspaceSettingsIdFromQuery(search)
+    : null;
+  // Leaving one workspace's page clears the breadcrumb name it set, so the next
+  // visit does not inherit the previous object's name.
+  useEffect(() => { setWorkspaceDetailName(null); }, [activeWorkspaceId]);
+
+  // Import history is a built-in session surface, not a plugin sub-view. It
+  // answers `/settings/sessions/import` directly; the legacy plugin address is
+  // redirected there above, so it has exactly one home.
   const pane = active === null ? null
+    : section === 'sessions/import' ? <SessionsImportPage />
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
     : active === 'shortcuts' ? <ShortcutsSection />
@@ -377,7 +403,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
     : active === 'spaces' ? <SpacesSection />
-    : active === 'workspaces' ? <WorkspacesSection />
+    : active === 'workspaces' ? <WorkspacesSection workspaceId={activeWorkspaceId} />
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />
@@ -391,12 +417,16 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const showExperimental = active !== null && active !== 'labs'
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
-  const activeLabel = activeLabelKey === undefined ? undefined : t(activeLabelKey);
+  // A workspace's own page names the workspace in the breadcrumb, the way an
+  // open plugin's page names its plugin: the page IS that object, and the
+  // section label alone would not say which one.
+  const activeLabel = workspaceDetailName ?? (activeLabelKey === undefined ? undefined : t(activeLabelKey));
 
   return (
     <SettingsCardMountContext.Provider value={locateCard}>
     <SettingsFlashContext.Provider value={flashCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
+      <WorkspaceDetailNameContext.Provider value={setWorkspaceDetailName}>
       <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
         <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden">
           <Icon name="menu" size={16} />
@@ -459,6 +489,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           )}
         </div>
       </main>
+      </WorkspaceDetailNameContext.Provider>
     </SettingsWorkspaceScopeContext.Provider>
     </SettingsFlashContext.Provider>
     </SettingsCardMountContext.Provider>

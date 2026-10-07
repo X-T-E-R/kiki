@@ -286,7 +286,7 @@ function overviewPluginDescription(plugin: PluginSummary): string {
 
 function pluginStatus(plugin: PluginSummary): string | undefined {
   if (plugin.state !== 'ok') return plugin.state;
-  return plugin.enabled ? 'enabled' : 'disabled';
+  return plugin.globalEnabled ? 'enabled' : 'disabled';
 }
 
 function marketplaceStatusStyle(status: string, colors: ColorPalette): (text: string) => string {
@@ -558,7 +558,7 @@ export class PluginsPanelComponent extends Container implements Focusable {
     // alone misses those and the toggle silently stops working.
     if (matchesKey(data, Key.space) || ch === ' ') {
       if (plugin !== undefined) {
-        this.opts.onSelect({ kind: 'toggle', id: plugin.id, enabled: !plugin.enabled });
+        this.opts.onSelect({ kind: 'toggle', id: plugin.id, enabled: !plugin.globalEnabled });
       }
       return;
     }

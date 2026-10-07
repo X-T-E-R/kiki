@@ -56,8 +56,20 @@ export class AgentPluginMediaService extends Service implements IAgentPluginMedi
       },
       media: async (raw) => {
         const input = mediaActionSchema.parse(raw);
-        if (input.action === 'capabilities') { const { action: _action, ...query } = input; return this.media.capabilities(query); }
-        if (input.action === 'voices') { const { action: _action, ...query } = input; return this.media.voices(query); }
+        if (input.action === 'capabilities') {
+          const { action: _action, ...query } = input;
+          return this.media.capabilities(query, {
+            workspaceId: this.session.workspaceId,
+            sessionId: this.session.sessionId,
+          });
+        }
+        if (input.action === 'voices') {
+          const { action: _action, ...query } = input;
+          return this.media.voices(query, {
+            workspaceId: this.session.workspaceId,
+            sessionId: this.session.sessionId,
+          });
+        }
         await this.owned(input.job_id);
         if (input.action === 'cancel') return this.cancel(input.job_id);
         if (input.action === 'resume') return this.resume(input.job_id);

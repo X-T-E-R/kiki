@@ -2,6 +2,8 @@ import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -13,7 +15,12 @@ import {
 } from '#/mcpCore/connection-manager';
 import type { McpOAuthEvent, McpOAuthService } from '#/mcpCore/oauth/service';
 import { canonicalMcpOAuthResource } from '#/mcpCore/oauth/store';
-import { ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
+import {
+  ISessionEphemeralMcpServers,
+  ISessionPluginMcpServers,
+  type SessionPluginMcpServers,
+} from '#/session/mcp/ephemeralMcpServers';
+import { FilteredMcpConnectionView } from '#/session/mcp/filteredConnectionView';
 import { MergedMcpConnectionView } from '#/session/mcp/mergedConnectionView';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -42,6 +49,12 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
   private readonly resolveClientName = (): string | undefined => this.identity.current().slug;
   private readonly sessionLifecycle: LiveRef<ISessionManager>;
   private sessionLifecycleAttached = false;
+  private readonly sessionOverlays = new Map<string, {
+    readonly overlay: ISessionMcpOverlay;
+    readonly explicit: Readonly<Record<string, McpServerConfig>>;
+    readonly baseView: McpConnectionView;
+    allNames: readonly string[];
+  }>();
 
   constructor(
     @IWorkspaceContext workspace: IWorkspaceContext,
@@ -52,6 +65,8 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @ref(ISessionManager) sessionLifecycle: LiveRef<ISessionManager>,
+    private readonly plugins?: IPluginService,
+    private readonly usage?: IPluginUsageService,
   ) {
     super();
     this.sessionLifecycle = sessionLifecycle;
@@ -75,6 +90,16 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
         change.waitUntil(this.scheduleApply(change));
       }),
     );
+    if (this.usage !== undefined && this.plugins !== undefined) this._register(this.usage.onDidChange((event) => {
+      if (event.workspaceId !== this.workspaceId) return;
+      const refresh = event.sessionId === undefined
+        ? Promise.all([...this.sessionOverlays.keys()].map((sessionId) => this.refreshSessionOverlay(sessionId)))
+        : this.refreshSessionOverlay(event.sessionId);
+      event.waitUntil(refresh);
+    }));
+    if (this.plugins !== undefined) this._register(this.plugins.onDidReload((event) => {
+      event.waitUntil(Promise.all([...this.sessionOverlays.keys()].map((sessionId) => this.refreshSessionOverlay(sessionId))));
+    }));
     this._register({ dispose: this.oauthEventSubscription(this.manager) });
     this.attachSessionLifecycle();
     this._register(sessionLifecycle.onDidChange(() => this.attachSessionLifecycle()));
@@ -91,13 +116,33 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     this._register(
       lifecycle.onWillCreateSession((event) => {
         if (event.readSeed(ISessionContext).workspaceId !== this.workspaceId) return;
-        const servers = event.readSeed(ISessionEphemeralMcpServers);
-        if (Object.keys(servers).length === 0) return;
-        const overlay = this.sessionOverlay(servers, {
-          stdioCwd: event.readSeed(ISessionContext).cwd,
+        let pluginServers: SessionPluginMcpServers = { allNames: [], enabled: {} };
+        try {
+          pluginServers = event.readSeed(ISessionPluginMcpServers) ?? pluginServers;
+        } catch { }
+        const servers = event.readSeed(ISessionEphemeralMcpServers) ?? {};
+        const baseline = this.sessionHandle(pluginServers);
+        const pluginOverlay = Object.fromEntries(
+          Object.entries(pluginServers.enabled).filter(([name]) =>
+            !this.mcpConfig.isFileServer?.(name) && baseline.connectionManager.get(name) === undefined),
+        );
+        const overlayServers = { ...pluginOverlay, ...servers };
+        const sessionId = event.readSeed(ISessionContext).sessionId;
+        if (Object.keys(overlayServers).length === 0 && this.plugins === undefined) return;
+        const overlay = this.plugins === undefined
+          ? this.sessionOverlay(overlayServers, { stdioCwd: event.readSeed(ISessionContext).cwd })
+          : this.sessionOverlay(overlayServers, {
+              stdioCwd: event.readSeed(ISessionContext).cwd,
+            }, baseline.connectionManager);
+        this.sessionOverlays.set(sessionId, {
+          overlay,
+          explicit: servers,
+          baseView: baseline.connectionManager,
+          allNames: pluginServers.allNames,
         });
         event.contributeSeed(ISessionMcpHandle, overlay.handle);
         event.onSessionDispose(() => {
+          this.sessionOverlays.delete(sessionId);
           void overlay.shutdown();
         });
       }),
@@ -108,18 +153,25 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     return this.manager;
   }
 
-  sessionHandle(): ISessionMcpHandle {
+  sessionHandle(pluginServers?: SessionPluginMcpServers): ISessionMcpHandle {
+    const hidden = pluginServers === undefined
+      ? new Set<string>()
+      : new Set(pluginServers.allNames.filter((name) =>
+        !Object.hasOwn(pluginServers.enabled, name) && !this.mcpConfig.isFileServer?.(name),
+      ));
+    const view: McpConnectionView = new FilteredMcpConnectionView(this.manager, hidden);
     return {
       _serviceBrand: undefined,
       ready: this.ready,
-      connectionManager: this.manager,
-      isBaselineServer: this.sessionBaseline(this.manager, this.ready),
+      connectionManager: view,
+      isBaselineServer: this.sessionBaseline(view, this.ready),
     };
   }
 
   sessionOverlay(
     servers: Readonly<Record<string, McpServerConfig>>,
     opts?: SessionMcpOverlayOptions,
+    baseView: McpConnectionView = this.manager,
   ): ISessionMcpOverlay {
     const sessionManager = new McpConnectionManager({
       log: this.log,
@@ -132,6 +184,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
+    let overlayNames = new Set(Object.keys(servers));
     const connect = Promise.all([this.mcpConfig.ready, this.identity.resolved()])
       .then(() => sessionManager.connectAll({ ...servers }))
       .catch((error: unknown) => {
@@ -139,23 +192,56 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
       });
     const unsubscribeOAuth = this.oauthEventSubscription(sessionManager);
     const view = new MergedMcpConnectionView(
-      this.manager,
+      baseView,
       sessionManager,
-      new Set(Object.keys(servers)),
+      overlayNames,
     );
+    const update = async (next: Readonly<Record<string, McpServerConfig>>): Promise<void> => {
+      await connect;
+      const nextNames = new Set(Object.keys(next));
+      for (const name of overlayNames) {
+        if (nextNames.has(name)) continue;
+        const config = sessionManager.configOf(name);
+        if (config === undefined) await sessionManager.remove(name);
+        else await sessionManager.connect(name, { ...config, enabled: false });
+      }
+      for (const [name, config] of Object.entries(next)) await sessionManager.connect(name, config);
+      overlayNames = nextNames;
+      view.replaceOverlayNames(overlayNames);
+    };
     const ready = Promise.all([this.ready, connect]).then(() => undefined);
     return {
       handle: {
         _serviceBrand: undefined,
         ready,
         connectionManager: view,
-        isBaselineServer: this.sessionBaseline(this.manager, this.ready, Object.keys(servers)),
+        isBaselineServer: this.sessionBaseline(baseView, this.ready, Object.keys(servers)),
       },
+      update,
       shutdown: () => {
         unsubscribeOAuth();
         return sessionManager.shutdown();
       },
     };
+  }
+
+  private async refreshSessionOverlay(sessionId: string): Promise<void> {
+    const entry = this.sessionOverlays.get(sessionId);
+    if (entry === undefined || this.plugins === undefined) return;
+    const [all, enabled] = await Promise.all([
+      this.plugins.enabledMcpServers('*'),
+      this.plugins.enabledMcpServers(this.workspaceId, sessionId),
+    ]);
+    entry.allNames = Object.keys(all);
+    const hidden = new Set(entry.allNames.filter((name) =>
+      !Object.hasOwn(enabled, name) && !this.mcpConfig.isFileServer?.(name),
+    ));
+    if (entry.baseView instanceof FilteredMcpConnectionView) entry.baseView.replaceHidden(hidden);
+    const pluginOverlay = Object.fromEntries(
+      Object.entries(enabled).filter(([name]) =>
+        !this.mcpConfig.isFileServer?.(name) && this.manager.get(name) === undefined),
+    );
+    await entry.overlay.update?.({ ...pluginOverlay, ...entry.explicit });
   }
 
   private oauthEventSubscription(manager: McpConnectionManager): () => void {

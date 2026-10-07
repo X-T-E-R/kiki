@@ -31,6 +31,7 @@ export interface IWorkspaceMcpConfigService {
   readonly ready: Promise<void>;
 
   servers(): Readonly<Record<string, McpServerConfig>>;
+  isFileServer?(name: string): boolean;
 
   tunables(): McpTunables;
   allowsCall?(name: string): Promise<boolean>;

@@ -5,6 +5,7 @@ import type { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 
 export interface ISessionMcpOverlay {
   readonly handle: ISessionMcpHandle;
+  update?(servers: Readonly<Record<string, McpServerConfig>>): Promise<void>;
   shutdown(): Promise<void>;
 }
 

@@ -98,7 +98,15 @@ export class SkillTool implements ISkillTool {
             (inspected.environment.pathClass === 'win32' ? path.toLowerCase() : path)) {
             return errorResult(`Skill file target changed after path admission: admitted "${path}", actual "${actualPath}". Use the actual absolute path or resolve a changed link first.`);
           }
-          try { await assertPluginSkillUsage(actualPath, this.sessionContext.workspaceId, this.plugins, this.usage); }
+          try {
+            await assertPluginSkillUsage(
+              actualPath,
+              this.sessionContext.workspaceId,
+              this.plugins,
+              this.usage,
+              this.sessionContext.sessionId,
+            );
+          }
           catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
           await this.catalog.ready;
           for (const entry of this.catalog.catalog.listSkills()) {
@@ -140,7 +148,15 @@ export class SkillTool implements ISkillTool {
     await this.catalog.ready;
     const definition = args.skill === undefined ? undefined : this.catalog.catalog.getSkill(args.skill);
     if (definition !== undefined) {
-      try { await assertPluginSkillUsage(definition.path, this.sessionContext.workspaceId, this.plugins, this.usage); }
+      try {
+        await assertPluginSkillUsage(
+          definition.path,
+          this.sessionContext.workspaceId,
+          this.plugins,
+          this.usage,
+          this.sessionContext.sessionId,
+        );
+      }
       catch (error) { if (isError2(error)) return errorResult(error.message); throw error; }
     }
     return executeModelSkill(this.catalog, this.skill, args, this.queryDepth, this.sessionContext.sessionId);

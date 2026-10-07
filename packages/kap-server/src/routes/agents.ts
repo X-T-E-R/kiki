@@ -58,7 +58,10 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
         const [, project, overrides, persisted] = await Promise.all([
           registry.ready,
           loadWorkspaceHookRules({ _serviceBrand: undefined, runtime: runtime.runtime, root: lease.instance.root, trust: lease.instance.program.trust }, alias => models.resolveId(alias)),
-          usage.enabled() ? usage.read(summary.workspaceId).then(value => value.overrides) : undefined,
+          registry.ready.then(async () => {
+            const ids = [...new Set(registry.snapshot().rules.filter(rule => rule.namespace.startsWith('plugin/')).map(rule => rule.namespace.slice(7)))];
+            return Object.fromEntries(await Promise.all(ids.map(async id => [id, await usage.allows(summary.workspaceId, id, summary.id)])));
+          }),
           readPersistedHookInspection(core.accessor.get(IAppendLogStore), `${scope}/agents/${req.params.agent_id}`, metadata),
         ]);
         finish(projectHookRules(registry.snapshot(), project, registry.disabled(), lease.instance.program.trust.isTrusted(), overrides), persisted);

@@ -220,6 +220,26 @@ describe('HTTP REST domains', () => {
       expect(calls).toEqual([{ path: '/api/workspaces:inspect', method: 'POST', body: { root: 'C:/example/project' } }]);
     } finally { await channel.close(); }
   });
+  it('reads and explicitly changes trust for the addressed workspace only', async () => {
+    const calls: { path: string; method: string }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET' });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ trusted: !String(input).endsWith('/untrust') });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.workspaces.trust('workspace-a')).resolves.toEqual({ trusted: true });
+      await expect(channel.rest.workspaces.setTrust('workspace-a', true)).resolves.toEqual({ trusted: true });
+      await expect(channel.rest.workspaces.setTrust('workspace-a', false)).resolves.toEqual({ trusted: false });
+      expect(calls).toEqual([
+        { path: '/api/workspaces/workspace-a/trust', method: 'GET' },
+        { path: '/api/workspaces/workspace-a/trust', method: 'POST' },
+        { path: '/api/workspaces/workspace-a/untrust', method: 'POST' },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('lists room rows and sends pin, archive, rename and delete through authenticated room routes', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

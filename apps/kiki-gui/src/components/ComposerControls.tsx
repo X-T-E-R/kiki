@@ -29,8 +29,10 @@ import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
+import type { OverrideSource } from './capabilities/pluginUsage';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
+import { Toggle } from './controls';
 import { Icon } from './icons';
 
 /**
@@ -410,7 +412,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
  */
-export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention';
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'plugins';
 
 /** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
 export interface AddMenuHost {
@@ -427,6 +429,37 @@ export interface AddMenuSkills {
   readonly onInsert: (item: SlashItem) => void;
   /** Called when a skills list is about to show (lets a stale catalog refresh). */
   readonly onShow?: () => void;
+}
+
+/**
+ * Plugin rows for this conversation. Unlike a skill, a plugin is not a prompt:
+ * picking one writes the session override and nothing else, so no draft text
+ * and no message is produced by this menu.
+ */
+export interface AddMenuPlugin {
+  readonly id: string;
+  readonly name: string;
+  readonly icon?: string;
+  readonly enabled: boolean;
+  /** False when the master switch denies it; the row says so instead of lying. */
+  readonly available: boolean;
+  /**
+   * Which level decided, in the rail's own vocabulary (session / workspace /
+   * global / home), so a local `on` is not read as a global one and a
+   * workspace decision is not claimed as this conversation's.
+   */
+  readonly source: OverrideSource;
+  readonly contributions: string;
+}
+
+export interface AddMenuPlugins {
+  readonly items: readonly AddMenuPlugin[];
+  readonly loading: boolean;
+  readonly failed: boolean;
+  readonly busyId?: string;
+  /** Called when a plugins list is about to show. */
+  readonly onShow?: () => void;
+  readonly onToggle: (pluginId: string, enabled: boolean) => void;
 }
 
 export interface AddMenuFiles {
@@ -485,6 +518,66 @@ function SkillRow({ item, onInsert, result = false }: { item: SlashItem; onInser
   );
 }
 
+/**
+ * One plugin row: its name, what it adds, which level decided, and the switch
+ * that writes the session override. A plugin the master switch denies keeps
+ * its row and its reason rather than disappearing, so a reader who expected it
+ * finds out why it cannot be used.
+ */
+function PluginRow({ plugin, busy, onToggle, result = false }: {
+  plugin: AddMenuPlugin;
+  busy: boolean;
+  onToggle: (pluginId: string, enabled: boolean) => void;
+  result?: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      role="menuitem"
+      aria-disabled={!plugin.available || undefined}
+      data-menu-row
+      data-add-result={result ? '' : undefined}
+      data-add-plugin={plugin.id}
+      className={MENU_ROW_CLASS + ' aria-disabled:cursor-not-allowed aria-disabled:opacity-60'}
+    >
+      <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-ink">{plugin.name}</span>
+          {plugin.contributions !== '' ? (
+            <span className="truncate text-[12px] text-ink-faint">{plugin.contributions}</span>
+          ) : null}
+        </span>
+        {/* One sentence, two facts, both taken from the same row: whether the
+            switch is on, and which level put it there. The off word comes from
+            the switch, so a caption can never say "on" beside an off switch;
+            the level comes from the scope rule the rail reads, so a workspace
+            decision is never claimed as this conversation's own. */}
+        <span className="mt-0.5 block truncate text-[12px] leading-snug text-ink-faint">
+          {!plugin.available
+            ? t('composer.addMenu.pluginBlocked')
+            : plugin.source === 'session'
+              ? plugin.enabled ? t('composer.addMenu.pluginOnSession') : t('composer.addMenu.pluginOffSession')
+              : plugin.source === 'workspace'
+                ? plugin.enabled ? t('composer.addMenu.pluginOnWorkspace') : t('composer.addMenu.pluginOffWorkspace')
+                : plugin.enabled
+                  ? t('composer.addMenu.pluginFromGlobal')
+                  : t('composer.addMenu.pluginOffGlobal')}
+        </span>
+      </span>
+      <span className="shrink-0">
+        <Toggle
+          label={t('composer.addMenu.pluginToggle', { name: plugin.name })}
+          layout="bare"
+          checked={plugin.enabled}
+          disabled={busy || !plugin.available}
+          onChange={(enabled) => { onToggle(plugin.id, enabled); }}
+        />
+      </span>
+    </div>
+  );
+}
+
 function FileRow({ hit, onMention, result = false }: { hit: FsSearchHit; onMention: (hit: FsSearchHit) => void; result?: boolean }) {
   return (
     <button
@@ -518,6 +611,7 @@ export function AddMenu({
   runMode,
   ssh,
   skills,
+  plugins,
   files,
 }: {
   readonly view: AddMenuView;
@@ -539,6 +633,8 @@ export function AddMenu({
   };
   /** Skills row + view; absent hides it. */
   readonly skills?: AddMenuSkills;
+  /** Plugins row + view; absent hides it (no session to scope them to). */
+  readonly plugins?: AddMenuPlugins;
   /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
   readonly files?: AddMenuFiles;
 }) {
@@ -573,8 +669,12 @@ export function AddMenu({
   // With Attach as the only action (the subagent composer) a menu would be
   // one pointless extra click: ＋ attaches directly.
   const attachOnly =
-    runMode === undefined && onRebuild === undefined && ssh === undefined && skills === undefined && files === undefined;
-  const searchable = skills !== undefined || files !== undefined || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
+    runMode === undefined && onRebuild === undefined && ssh === undefined && skills === undefined
+    && plugins === undefined && files === undefined;
+  // A root search is only worth the space when something is searchable: skills,
+  // files, plugins and SSH hosts each answer it.
+  const searchable = skills !== undefined || plugins !== undefined || files !== undefined
+    || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
   const trimmed = query.trim();
   const needle = trimmed.toLowerCase();
@@ -592,11 +692,20 @@ export function AddMenu({
   const hostMatches = (ssh?.hosts ?? []).filter(
     (host) => host.name.toLowerCase().includes(needle) || (host.detail ?? '').toLowerCase().includes(needle),
   );
+  const pluginMatches = plugins === undefined
+    ? []
+    : trimmed === ''
+      ? plugins.items
+      : plugins.items.filter((plugin) =>
+        plugin.name.toLowerCase().includes(needle)
+        || plugin.contributions.toLowerCase().includes(needle));
 
   const onShowSkills = skills?.onShow;
+  const onShowPlugins = plugins?.onShow;
   useEffect(() => {
     if (open && (view === 'skills' || view === 'root')) onShowSkills?.();
-    // Once per open / view change; the catalog refreshes only when stale.
+    if (open && view === 'plugins') onShowPlugins?.();
+    // Once per open / view change; each catalog refreshes only when stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view]);
 
@@ -688,6 +797,10 @@ export function AddMenu({
   }
 
   const insertSkill = (item: SlashItem) => { close(); skills?.onInsert(item); };
+  // A plugin pick is a scope write, not a draft edit: the panel stays open so
+  // the switch the reader just flipped is still there, and nothing is sent.
+  const busyPlugins = plugins?.busyId;
+  const togglePlugin = (pluginId: string, enabled: boolean) => { plugins?.onToggle(pluginId, enabled); };
   const mentionFile = (hit: FsSearchHit) => { close(); files?.onMention(hit); };
 
   const searchField = (placeholder: string) => (
@@ -756,6 +869,14 @@ export function AddMenu({
           {fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} result />)}
         </>
       ) : null}
+      {plugins !== undefined && pluginMatches.length > 0 ? (
+        <>
+          <GroupLabel>{t('composer.addMenu.plugins')}</GroupLabel>
+          {pluginMatches.slice(0, SEARCH_ROW_LIMIT).map((plugin) => (
+            <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} result />
+          ))}
+        </>
+      ) : null}
       {hostMatches.length > 0 && ssh?.onToggleHost !== undefined ? (
         <>
           <GroupLabel>{t('composer.addMenu.ssh')}</GroupLabel>
@@ -780,7 +901,7 @@ export function AddMenu({
           ))}
         </>
       ) : null}
-      {skillMatches.length === 0 && hostMatches.length === 0 && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
+      {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
         ? note(t('composer.addMenu.noMatch', { query: trimmed }))
         : null}
       {files !== undefined && fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching')) : null}
@@ -818,6 +939,12 @@ export function AddMenu({
       {runMode !== undefined || onRebuild !== undefined ? (
         <div role="group" aria-label={t('composer.addMenu.sessionGroup')} className="mt-1 border-t border-hairline pt-1">
           <GroupLabel>{t('composer.addMenu.sessionGroup')}</GroupLabel>
+          {plugins !== undefined
+            ? drillRow('plugins', <Icon name="skill" size={14} className="shrink-0 text-ink-soft" />, t('composer.addMenu.plugins'),
+                plugins.items.filter((plugin) => plugin.enabled).length > 0
+                  ? <span className="text-[12px] text-ink-faint tabular-nums">{plugins.items.filter((plugin) => plugin.enabled).length}</span>
+                  : undefined, { 'data-add-menu-plugins': '' })
+            : null}
           {runMode !== undefined
             ? drillRow('mode', <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />, t('composer.addMenu.mode'),
                 <span className="text-[12px] text-ink-faint">{t(RUN_MODES.find((mode) => mode.id === runMode.runMode)!.labelKey)}</span>,
@@ -846,7 +973,7 @@ export function AddMenu({
     <div data-add-skills-view>
       {backRow(t('composer.addMenu.skills'))}
       {searchField(t('composer.addMenu.searchSkills'))}
-      <div className="max-h-72 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {skills.status === 'loading' && skills.items.length === 0 ? note(t('composer.addMenu.skillsLoading'))
           : skills.status === 'error' && skills.items.length === 0 ? note(t('composer.addMenu.skillsFailed'), 'danger')
           : skillMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.skillsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
@@ -855,11 +982,31 @@ export function AddMenu({
     </div>
   );
 
+  const pluginsBody = plugins === undefined ? null : (
+    <div data-add-plugins-view>
+      {backRow(t('composer.addMenu.plugins'))}
+      {searchField(t('composer.addMenu.searchPlugins'))}
+      {/* The flexible child of the capped card, so the note below it keeps
+          its own two lines. A partially scrolled row is a normal state for a
+          long list, so the clip is left to mean "more below" rather than
+          being hidden. */}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-1.5">
+        {plugins.loading && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsLoading'))
+          : plugins.failed && plugins.items.length === 0 ? note(t('composer.addMenu.pluginsFailed'), 'danger')
+          : pluginMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.pluginsEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
+          : pluginMatches.map((plugin) => (
+            <PluginRow key={plugin.id} plugin={plugin} busy={busyPlugins === plugin.id} onToggle={togglePlugin} />
+          ))}
+      </div>
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.pluginsHint')}</p>
+    </div>
+  );
+
   const mentionBody = files === undefined ? null : (
     <div data-add-mention-view>
       {backRow(t('composer.addMenu.mention'))}
       {searchField(t('composer.addMenu.searchFiles'))}
-      <div className="max-h-72 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {filesQuery.isError ? note(t('composer.filesFailed'), 'danger')
           : fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching'))
           : fileHits.length === 0 ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
@@ -896,10 +1043,16 @@ export function AddMenu({
             view === 'ssh' ? t('composer.ssh.heading')
               : view === 'mode' ? t('composer.runModeHeading')
               : view === 'skills' ? t('composer.addMenu.skills')
+              : view === 'plugins' ? t('composer.addMenu.plugins')
               : view === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
           }
-          className={`anim-enter ${COMPOSER_PANEL_START} w-80 p-1 ${POPOVER_SURFACE_CLASS}`}
+          // Bounded by the room above the card (`--cp-max-h`) and laid out as
+          // a column: the header, search field and the note keep their height
+          // and the list takes what is left and scrolls. Without the flex
+          // column a tall list pushes the note past the cap, where it paints
+          // over the last row instead of the list shrinking under it.
+          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-80 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}
         >
           {view === 'root' ? (
             <>
@@ -908,6 +1061,8 @@ export function AddMenu({
             </>
           ) : view === 'skills' ? (
             skillsBody
+          ) : view === 'plugins' ? (
+            pluginsBody
           ) : view === 'mention' ? (
             mentionBody
           ) : view === 'ssh' && ssh !== undefined ? (

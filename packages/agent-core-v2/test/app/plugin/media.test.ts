@@ -31,6 +31,7 @@ import { stubProviderService } from '../provider/stubs';
 import type { MediaJob } from '@kiki/protocol';
 import { officialPluginFixture } from '../../fixtures/officialPlugins';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { Event } from '#/_base/event';
 
@@ -44,13 +45,18 @@ const stores: FileStorageService[] = [];
 const config: Record<string, unknown> = {};
 const owner = { sessionId: 'session-media', agentId: 'main', mediaScope: 'sessions/session-media/media' };
 
-function host(providers: Record<string, ProviderConfig> = {}) {
+function host(
+  providers: Record<string, ProviderConfig> = {},
+  usage: IPluginUsageService = { enabled: () => false, allows: async () => true } as unknown as IPluginUsageService,
+  sessions: ISessionIndex = { get: async () => undefined } as unknown as ISessionIndex,
+) {
   const storage = new FileStorageService(home); stores.push(storage);
   const target = createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(home)),
     stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), onDidSectionChange: Event.None, get: (key: string) => config[key] ?? {}, set: async (key: string, value: unknown) => { config[key] = { ...config[key] as object, ...value as object }; }, replace: async (key: string, value: unknown) => { config[key] = value; } } as unknown as IConfigService),
     stubPair(IFlagService, { enabled: (id: string) => id !== 'plugin_app_lifecycle' } as unknown as IFlagService),
-    stubPair(IPluginUsageService, { enabled: () => false, allows: async () => true } as unknown as IPluginUsageService),
+    stubPair(IPluginUsageService, usage),
+    stubPair(ISessionIndex, sessions),
     stubPair(ISessionManager, {} as ISessionManager),
     stubPair(IProviderService, stubProviderService(providers)),
     stubPair(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: async () => 'fixture-oauth-token' }) } as unknown as IOAuthService),
@@ -188,6 +194,40 @@ describe('media provider persisted vertical slice', () => {
     const tts = await start(service, 'speech-1', 'sync', 'tts');
     const speech = await service.run(tts.job_id);
     expect(speech.artifacts[0]).toMatchObject({ kind: 'audio', mime: 'audio/mpeg', name: 'speech.mp3' });
+  });
+
+  it('gates new media admission and discovery by the owning session without blocking accepted execution', async () => {
+    let allowed = false;
+    const usage = {
+      enabled: () => true,
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId: string, sessionId: string) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot: never) => snapshot,
+      onDidChange: Event.None,
+      allows: async (workspaceId: string | undefined, pluginId: string, sessionId?: string) => {
+        expect(workspaceId).toBe('workspace-media');
+        expect(pluginId).toBe('fixture-media');
+        expect(sessionId).toBe(owner.sessionId);
+        return allowed;
+      },
+    } as unknown as IPluginUsageService;
+    const sessions = {
+      get: async (sessionId: string) => ({ id: sessionId, workspaceId: 'workspace-media' }),
+    } as unknown as ISessionIndex;
+    const target = host({}, usage, sessions);
+    await install(target, fixture);
+    await target.app.accessor.get(IPluginSettingsService).update({ pluginId: 'fixture-media', values: { remoteDir: remote } });
+    const service = target.app.accessor.get(IPluginMediaService);
+    const scope = { workspaceId: 'workspace-media', sessionId: owner.sessionId };
+
+    await expect(service.capabilities({ provider: 'fixture-media/synthetic' }, scope)).rejects.toThrow('disabled in this session');
+    await expect(service.voices({ provider: 'fixture-media/synthetic' }, scope)).rejects.toThrow('disabled in this session');
+    await expect(start(service, 'session-gated', 'sync')).rejects.toThrow();
+
+    allowed = true;
+    const job = await start(service, 'accepted-before-off', 'sync');
+    allowed = false;
+    expect(await service.run(job.job_id)).toMatchObject({ state: 'succeeded' });
   });
 
   it('keeps identical request ids independent across owning agents without duplicate submission inside either agent', async () => {

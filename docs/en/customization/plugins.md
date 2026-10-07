@@ -69,22 +69,24 @@ You are approving the source, not the exact bytes: Kiki fingerprints the plugin 
 
 ### Things worth knowing
 
-- **Local edits take effect in the conversation you are already in.** Install once with `/plugins install --trust <path>`, enable with `/plugins enable <id>` (a new plugin starts disabled), then after editing your source run `/plugins install <path>` again with the same path: the managed copy is replaced, the plugin stays enabled, and the tool is available to that conversation as soon as the command returns. No `/plugins reload`, `/reload` or `/new` is needed, and the consented source does not ask for `--trust` again.
+- **Local edits take effect in the conversation you are already in.** Install once with `/plugins install --trust <path>`, enable global use with `/plugins enable <id>` (a fresh CLI install leaves global use off), then after editing your source run `/plugins install <path>` again with the same path: the managed copy is replaced, the plugin stays enabled, and the tool is available to that conversation as soon as the command returns. No `/plugins reload`, `/reload` or `/new` is needed, and the consented source does not ask for `--trust` again.
 - **An update waits for that plugin's in-flight work.** Running calls finish on the old version and calls arriving during the switch wait and run on the new one. Other plugins keep running untouched, and a call already resolved against an older tool definition asks for a retry instead of running against changed rules.
 - **`/plugins reload` is the global re-read**, of `installed.json` and every managed copy. It never copies from your source directories, so it is not how you pick up a source edit; system-prompt sections and plugin Skills rebuild on their own documented timing (see [System-prompt instructions](#system-prompt-instructions) and [Plugin agents](#plugin-agents)).
 - **Local installs are copied** to `$KIKI_HOME/plugins/managed/<id>/`, and the CLI always runs from that copy. Edit the source and reinstall — editing the managed copy by hand has no update path and a later reinstall overwrites it.
 - **Removing a plugin deletes only the installation record.** The managed copy and your source files stay on disk.
-- **Plugins are installed per user** and apply to every project.
+- **Plugins are installed once per Kiki home.** Workspaces and sessions share the package while choosing their own use.
 
-### Choose plugins for a workspace (experimental)
+### Choose where a plugin is used
 
-The GUI right rail can choose which installed plugins a workspace's sessions use, independently of other workspaces in the same space. This capability is available by default; an explicit `[experimental] plugin_workspace_usage = false` or `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0` keeps it off. The section names the workspace resolved from the current session; it is not a switch for just that conversation or profile.
+Install one copy of a plugin, then choose where it is used. The GUI install preview offers global use, use in one workspace, or installation for later. Installing for later leaves it off by default and does not start its App background service. The same preview and one-time consent apply to every choice.
 
-Turning a plugin off here removes its tools, Skills, commands, plugin agents, hooks and workspace panels from this workspace. New calls cannot use an old cached tool or panel; calls already admitted may finish. Plugin instructions refresh at the next safe step or while the agent is idle, so **Applying** means the choice is saved but the current request has not necessarily adopted it. Past messages stay intact.
+In **Settings → Workspaces**, open a workspace to set its plugin defaults. In a conversation, the right rail's **Plugins** section controls only that session; selecting an installed plugin from the composer's **+** menu or plugin picker also enables it only for that session, without sending a message. Other sessions and workspace defaults stay unchanged. This capability is available by default; an explicit `[experimental] plugin_workspace_usage = false` or `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0` keeps the selection surface off.
 
-Use **Restore default** to remove the workspace override and follow the space setting again. A plugin disabled in Plugin settings remains unavailable even if the workspace requests it on; enable its space master switch there first. Profile tool restrictions still apply.
+The most specific selection wins: session, then workspace, then global default. **Restore default** removes the local override. An explicitly globally disabled or invalid plugin cannot be enabled locally; restore its master switch in Plugin settings first. Profile tool restrictions still apply.
 
-Catalog or source installation from the rail uses the same preview and consent as the plugin manager. Installation and the master switch belong to the current space and can affect its other workspaces following the default. Turning a plugin off in the rail does not uninstall it, revoke consent or stop a space service; manage those in Plugin settings. This selection is not a security sandbox for trusted plugin code.
+Turning a plugin off removes its tools, Skills, commands, plugin agents, hooks and panel access from that scope. Calls already admitted may finish. Plugin instructions update at the next safe step; a completed selection does not rewrite an already sent request or past messages. **Applying** indicates that catalog or runtime changes are still being applied. A failed application restores the previous selection and shows the error.
+
+App-activated plugins use a shared background service owned by the connected Kiki home, not a separate process per workspace. A local off does not stop that service or another session's running work, and its presence does not make tools available in scopes where the plugin is off. Manage global disable and uninstall in Plugin settings. Scope selection neither revokes installation consent nor sandboxes trusted plugin code.
 
 ### Custom marketplace JSON
 
@@ -223,7 +225,7 @@ The two Kimi entries are maintained by Kimi and published on Kimi's own CDN rath
 
 1. Run `/plugins` and press `Tab` to select **Official**
 2. Find the plugin and press `Enter` to install
-3. Run `/reload` or `/new` to activate it
+3. Enable it with `/plugins enable <id>`, or choose its [workspace/session use](#choose-where-a-plugin-is-used) in the GUI; no new session is needed
 
 Installing downloads the published package and verifies it against the SHA256 digest in the catalog, so a package whose bytes do not match the released artifact is refused rather than installed.
 
@@ -436,7 +438,7 @@ Contributions apply on every surface: the interactive TUI, `kiki -p` and `kiki w
 
 Each source is capped at 32 KB (UTF-8 bytes); larger content is ignored and reported in the plugin diagnostics. One prompt build takes at most 64 KB of instructions from all enabled plugins combined, and anything past that is skipped with a warning — including a single plugin whose inline text and file together exceed it.
 
-A new session or agent reads the contributions of the plugins enabled at that moment, while a request already in flight keeps the system prompt it started with. `/plugins reload` refreshes the skill list and asks live agents to rebuild their prompts; installing, enabling, disabling or removing a plugin updates the catalog at once, and a later rebuild — after compaction or a tool-policy change, say — picks up the new sections. A resumed session starts from its persisted prompt and uses the current catalog on later rebuilds. Toggling a plugin's MCP server does not change prompt sections.
+A new session or agent reads the contributions of the plugins enabled in its scope, while a request already in flight keeps the system prompt it started with. Changing plugin use updates catalogs immediately and reconciles prompt contributions at the next safe step. Turning a plugin off hides its instructions; turning it back on restores that session's frozen content. `/plugins reload` refreshes the affected plugin's content without replacing unrelated prompt snapshots. A resumed session preserves its persisted prompt content and applies its effective plugin selection. Toggling a plugin's MCP server does not change prompt sections.
 
 The built-in agent prompt includes enabled plugins' instructions automatically. A custom `SYSTEM.md` or agent file owns its own template, so put `${plugin_sections}` where those instructions belong — and if it already includes `${base_prompt}`, which expands to a prompt containing that block, do not add `${plugin_sections}` again. [Custom agents and SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md) has the full variable table.
 
@@ -529,7 +531,7 @@ my-plugin/
     reviewer.md
 ```
 
-Plugin agents rank below every other file source: on a name collision, user-level, extra, project-level and `--agent-file` definitions all win, and replacing a built-in agent still needs an explicit `override: true` in the frontmatter. Installing, enabling, disabling or removing a plugin refreshes the agent list in a new session (or on `/reload`); `/plugins reload` also refreshes the live session.
+Plugin agents rank below every other file source: on a name collision, user-level, extra, project-level and `--agent-file` definitions all win, and replacing a built-in agent still needs an explicit `override: true` in the frontmatter. The dispatch catalog follows the session's effective plugin selection without needing a new session. An agent already running keeps its bound profile; disabling the plugin prevents new dispatches rather than changing that agent's snapshot.
 
 ## MCP servers in plugins
 
@@ -562,15 +564,14 @@ HTTP server (remote service):
 
 For stdio servers, `command` can be a command on `PATH` or a path starting with `./` within the plugin root directory. `cwd` likewise must start with `./` and be within the plugin root directory; otherwise the server is ignored.
 
-Plugin MCP servers start after `/reload` or in new sessions. To enable or disable a server:
+Plugin MCP servers follow the [effective plugin selection](#choose-where-a-plugin-is-used) for the workspace and session. Their own server switch is separate and applies to the installed plugin:
 
 ```sh
 /plugins mcp disable kimi-finance finance
-/reload
-
 /plugins mcp enable kimi-finance finance
-/reload
 ```
+
+Scope changes refresh the runtime catalog. Turning a server off rejects new calls while calls already admitted may finish.
 
 ### Notion material and write-back
 
@@ -613,7 +614,7 @@ History import is available without an experimental switch. It scans nothing at 
 
 ### Importing a conversation
 
-Open **New session** and choose **Import history** beside the starters, or go to **Capabilities** → **Plugins** → **Import history**:
+Open **New session** and choose **Import history** beside the starters, or go to **Settings → Sessions → Import history**:
 
 1. **What it becomes.** **Kiki session** (the default) turns the conversation into a session in this Kiki, its earlier turns as context, so you open it and carry on where the other tool stopped. **Read-only archive** keeps it as a record you can read but not continue.
 2. **Working directory** (for a session). Your workspaces are one click away, and you can type or browse for any folder — a session in a folder you have not opened before works the same. Browsing registers nothing; the folder is used only if an import actually lands there.
@@ -798,10 +799,11 @@ export function register(api: PluginRegistrationApi): void {
 
 ## What installing a plugin does and does not do
 
-Installing a plugin copies its files and reads its manifest. None of these happens at install or session startup:
+Installing copies the plugin's files and reads its manifest. Its selected scope then determines which contributions become active:
 
 - Unsupported runtime fields such as `tools`, `apps`, `inject` and `configFile` are ignored rather than executed
-- Every path stays inside the plugin root after symbolic links are resolved
-- MCP servers start only after a `/reload` or in a new session, and can be disabled at any time from `/plugins`
-- The entry file does not run at install; plugin code starts when you use the contribution, in a Node.js process holding your account's permissions ([not a sandbox](#installing-a-plugin-that-runs-code))
+- Declared package paths stay inside the plugin root after symbolic links are resolved
+- Plugin MCP servers follow effective workspace/session use and their own enable switch; turning them off rejects new calls while admitted calls finish
+- Ordinary plugin entry code starts when its contribution is used. An App-activated plugin can start its shared home service when globally enabled or first enabled in an explicit scope; installing for later does not start it
+- Plugin code runs in a Node.js process holding your account's permissions ([not a sandbox](#installing-a-plugin-that-runs-code))
 - A broken manifest or unsafe path shows up in `/plugins info <id>` diagnostics and affects no other session

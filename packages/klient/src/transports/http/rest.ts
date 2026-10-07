@@ -416,6 +416,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     workspaces: {
       list: () => transport.json('/workspaces'),
+      trust: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/trust`),
+      setTrust: (workspaceId: string, trusted: boolean) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/${trusted ? 'trust' : 'untrust'}`, { method: 'POST' }),
       inspect: (root: string) => transport.json('/workspaces:inspect', {
         method: 'POST', body: { root },
       }),

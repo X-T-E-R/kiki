@@ -5,13 +5,14 @@ import { IPluginService } from '#/app/plugin/plugin';
 import type { PluginCommandDef } from '#/app/plugin/types';
 import { ErrorCodes } from '#/errors';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
 
 import {
   IAgentPluginCommandService,
   PluginCommandActivated,
 } from '#/agent/pluginCommand/pluginCommand';
 
-import { appService, createTestAgent, type TestAgentContext } from '../../harness';
+import { appService, createTestAgent, sessionService, type TestAgentContext } from '../../harness';
 
 const DEPLOY_COMMAND: PluginCommandDef = {
   pluginId: 'demo',
@@ -35,9 +36,7 @@ function pluginServiceStub(commands: readonly PluginCommandDef[]): IPluginServic
     setPluginMcpServerEnabled: async () => {},
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-    getPluginInfo: async () => {
-      throw new Error('getPluginInfo is not used by these tests');
-    },
+    getPluginInfo: async ({ id }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
     listPluginCommands: async () => commands,
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
@@ -64,9 +63,10 @@ describe('AgentPluginCommandService', () => {
     }
   });
 
-  function agentWithDeployCommand(): TestAgentContext {
+  function agentWithDeployCommand(sessionUsage?: ISessionPluginUsageService): TestAgentContext {
     return createTestAgent(
       appService(IPluginService, pluginServiceStub([DEPLOY_COMMAND])),
+      ...(sessionUsage === undefined ? [] : [sessionService(ISessionPluginUsageService, sessionUsage)]),
     );
   }
 
@@ -101,6 +101,23 @@ describe('AgentPluginCommandService', () => {
     const metadata = await ctx.get(ISessionMetadata).read();
     expect(metadata.title).toBe('/demo:deploy prod');
     expect(metadata.lastPrompt).toBe('/demo:deploy prod');
+  });
+
+  it('enables only the current session before applying an explicit command', async () => {
+    const enabled: string[] = [];
+    const sessionUsage: ISessionPluginUsageService = {
+      _serviceBrand: undefined,
+      read: async () => ({ workspaceId: 'workspace-a', sessionId: 'session-a', revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      set: async (pluginId, override) => {
+        expect(override).toBe('on');
+        enabled.push(pluginId);
+        return { workspaceId: 'workspace-a', sessionId: 'session-a', revision: 1, overrides: { [pluginId]: true }, applyState: 'applied' as const, errors: [] };
+      },
+    };
+    ctx = agentWithDeployCommand(sessionUsage);
+    ctx.mockNextResponse({ type: 'text', text: 'deployed' });
+    await ctx.get(IAgentPluginCommandService).activate({ pluginId: 'demo', commandName: 'deploy' });
+    expect(enabled).toEqual(['demo']);
   });
 
   it('rejects an unknown command with request.invalid', async () => {

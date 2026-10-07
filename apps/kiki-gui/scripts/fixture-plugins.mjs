@@ -199,3 +199,87 @@ export function handlePlugins(server, res, path, method, body) {
   }
   return false;
 }
+
+/**
+ * Plugin usage — the four-level answer (home → global → workspace → session).
+ *
+ * A scenario seeds `pluginUsage` as a map of target key → rows; the rows are
+ * echoed with the target the request actually asked for, so a screenshot shows
+ * the same fields the server sends rather than a shape invented here. A
+ * `pluginUsageRefusals` entry makes one write answer unsupported, which is how
+ * the "this server does not offer it" path is observed rather than assumed.
+ */
+export function handlePluginUsage(server, res, path, method, body, query) {
+  if (!path.startsWith('/plugins/usage')) return false;
+  const rows = server.scenario?.data.pluginUsage;
+  if (rows === undefined) {
+    server.envelope(res, null, 40012, 'unsupported procedure');
+    return true;
+  }
+  // A write names its target in the body and a read in the query, exactly as
+  // the real route does, so both have to be read from wherever they arrived.
+  const bodySessionId = body?.target?.session_id;
+  const bodyWorkspaceId = body?.target?.workspace_id;
+  const sessionId = query?.get('session_id') ?? (typeof bodySessionId === 'string' ? bodySessionId : null);
+  const workspaceKey = query?.get('workspace_id')
+    ?? (typeof bodyWorkspaceId === 'string' ? bodyWorkspaceId : null);
+  const key = sessionId !== undefined && sessionId !== null && sessionId !== '' ? `session:${sessionId}` : workspaceKey;
+  const scoped = rows[key] ?? rows.default ?? { workspace_name: 'Fixture workspace', workspace_root: 'C:/work/fixture', plugins: [] };
+
+  if (path === '/plugins/usage' && method === 'GET') {
+    server.envelope(res, {
+      home_id: 'fixture-home',
+      target: {
+        workspace_id: scoped.workspace_id ?? workspaceKey ?? 'ws-fixture',
+        name: scoped.workspace_name ?? 'Fixture workspace',
+        root: scoped.workspace_root ?? 'C:/work/fixture',
+        ...(sessionId !== undefined && sessionId !== null && sessionId !== '' ? { session_id: sessionId } : {}),
+      },
+      revision: server.pluginUsageRevision ?? 1,
+      apply_state: scoped.apply_state ?? 'applied',
+      errors: scoped.errors ?? [],
+      plugins: scoped.plugins ?? [],
+    });
+    return true;
+  }
+  if (path === '/plugins/usage' && method === 'PUT' || path === '/plugins/usage' && method === 'POST') {
+    const pluginId = String(body?.plugin_id ?? '');
+    const override = body?.override;
+    const refusal = server.scenario?.data.pluginUsageRefusals?.[`${key}:${pluginId}`];
+    if (refusal !== undefined) {
+      server.envelope(res, null, refusal.code ?? 40001, refusal.message ?? 'the host refused this write');
+      return true;
+    }
+    const target = rows[key];
+    if (target === undefined) return false;
+    const plugin = (target.plugins ?? []).find((entry) => entry.id === pluginId);
+    if (plugin === undefined) {
+      server.envelope(res, null, 40409, `plugin not found: ${pluginId}`);
+      return true;
+    }
+    if (sessionId !== undefined && sessionId !== null && sessionId !== '') plugin.session_override = override;
+    else plugin.override = override;
+    // The effective answer follows the write, which is what makes the row's
+    // optimistic value converge instead of snapping back.
+    const homeOff = plugin.home_enabled === false;
+    plugin.effective = homeOff ? false : override === 'on';
+    if (override === 'off') plugin.reason = sessionId !== undefined && sessionId !== null && sessionId !== '' ? 'session_disabled' : 'workspace_disabled';
+    else delete plugin.reason;
+    server.pluginUsageRevision = (server.pluginUsageRevision ?? 1) + 1;
+    server.envelope(res, {
+      home_id: 'fixture-home',
+      target: {
+        workspace_id: target.workspace_id ?? workspaceKey ?? 'ws-fixture',
+        name: target.workspace_name ?? 'Fixture workspace',
+        root: target.workspace_root ?? 'C:/work/fixture',
+        ...(sessionId !== undefined && sessionId !== null && sessionId !== '' ? { session_id: sessionId } : {}),
+      },
+      revision: server.pluginUsageRevision,
+      apply_state: 'applied',
+      errors: [],
+      plugins: target.plugins ?? [],
+    });
+    return true;
+  }
+  return false;
+}

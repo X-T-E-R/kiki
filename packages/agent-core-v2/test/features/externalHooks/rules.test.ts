@@ -179,6 +179,9 @@ describe('hooks v2 session workspace loading', () => {
     const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides, applyState: 'applied', errors: [] }),
       allows: async (_workspaceId, id) => overrides[id] !== false, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
       onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
     const session = new HookRulesSession(
       { _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as IHookRulesRegistry['onDidChange'], snapshot: () => merged, disabled: () => [], reload: async () => {} },

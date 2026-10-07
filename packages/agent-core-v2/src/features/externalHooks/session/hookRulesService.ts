@@ -3,6 +3,7 @@ import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
+import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IHookRulesRegistry } from '../app/hookRules';
@@ -15,6 +16,7 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
   private readonly initial: Promise<void>;
   private usageReady: Promise<void> = Promise.resolve();
   private usageOverrides: Readonly<Record<string, boolean>> = {};
+  private allowedPluginIds: ReadonlySet<string> | undefined;
   get ready(): Promise<void> { return Promise.all([this.initial, this.usageReady]).then(() => {}); }
   private project: HookRulesSnapshot = { revision: '', rules: [], diagnostics: [] };
   private pending: Promise<void> = Promise.resolve();
@@ -30,19 +32,30 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     @ref(ISessionHookWorkspace) private readonly workspace: LiveRef<ISessionHookWorkspace>,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ISessionContext private readonly session?: ISessionContext,
+    @IPluginService private readonly plugins?: IPluginService,
   ) {
     super();
     this.initial = this.reload();
     const refreshUsage = () => {
       if (usage === undefined || !usage.enabled() || session === undefined) return Promise.resolve();
-      return usage.read(session.workspaceId).then((snapshot) => {
-        this.usageOverrides = snapshot.overrides;
+      return Promise.all([
+        usage.read(session.workspaceId),
+        usage.readSession(session.workspaceId, session.sessionId),
+        this.plugins?.enabledHookRules(session.workspaceId, session.sessionId) ?? Promise.resolve([]),
+      ]).then(([workspaceSnapshot, sessionSnapshot, sources]) => {
+        this.usageOverrides = { ...workspaceSnapshot.overrides, ...sessionSnapshot.overrides };
+        this.allowedPluginIds = this.plugins === undefined
+          ? undefined
+          : new Set(sources
+            .map((source) => source.namespace.startsWith('plugin/') ? source.namespace.slice('plugin/'.length) : undefined)
+            .filter((id): id is string => id !== undefined));
         this.changed.fire();
       });
     };
     this.usageReady = refreshUsage();
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
-      if (event.workspaceId !== session?.workspaceId) return;
+      if (event.workspaceId !== session?.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== session?.sessionId)) return;
       this.usageReady = refreshUsage();
       event.waitUntil(this.usageReady);
     }));
@@ -55,7 +68,22 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     const global = this.registry.snapshot();
     const disabled = this.registry.disabled();
     const trusted = this.workspace.current?.trust.isTrusted() === true;
-    return projectHookRules(global, this.project, disabled, trusted, this.usage?.enabled() ? this.usageOverrides : undefined);
+    const overrides = this.usage?.enabled() !== true ? undefined : {
+      ...this.usageOverrides,
+      ...this.pluginDisabledOverrides(global),
+    };
+    return projectHookRules(global, this.project, disabled, trusted, overrides);
+  }
+
+  private pluginDisabledOverrides(global: HookRulesSnapshot): Readonly<Record<string, boolean>> {
+    if (this.allowedPluginIds === undefined) return {};
+    const disabled: Record<string, boolean> = {};
+    for (const rule of global.rules) {
+      if (rule.namespace.startsWith('plugin/') && !this.allowedPluginIds.has(rule.namespace.slice('plugin/'.length))) {
+        disabled[rule.namespace.slice('plugin/'.length)] = false;
+      }
+    }
+    return disabled;
   }
 
   observe(event: HookEvent, hookId: string): void { this.observed.fire({ ...event, hookId }); }

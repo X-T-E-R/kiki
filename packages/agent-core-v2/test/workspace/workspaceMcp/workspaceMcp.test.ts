@@ -27,6 +27,7 @@ import { McpOAuthService, type McpOAuthEvent } from '#/mcpCore/oauth/service';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
+import { FilteredMcpConnectionView } from '#/session/mcp/filteredConnectionView';
 import { MergedMcpConnectionView } from '#/session/mcp/mergedConnectionView';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
@@ -815,6 +816,19 @@ describe('MergedMcpConnectionView', () => {
     unsubscribe();
 
     expect(seen).toEqual(['base-only', 'shared']);
+  });
+
+  it('isolates session-off plugin MCP while preserving the file winner', async () => {
+    await base.connect('plugin-only', disabledStdio('plugin-cmd'));
+    await base.connect('file-winner', disabledStdio('file-cmd'));
+    await overlay.connect('plugin-only', disabledStdio('plugin-cmd'));
+    const sessionOn = new MergedMcpConnectionView(base, overlay, new Set(['plugin-only']));
+    const sessionOff = new FilteredMcpConnectionView(base, new Set(['plugin-only']));
+
+    expect(sessionOn.get('plugin-only')).toBeDefined();
+    expect(sessionOff.get('plugin-only')).toBeUndefined();
+    expect(sessionOff.get('file-winner')).toBeDefined();
+    expect(sessionOff.list().map((entry) => entry.name).toSorted()).toEqual(['file-winner']);
   });
 
   it('routes reconnect to the name owner and aggregates initial-load readiness', async () => {

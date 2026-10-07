@@ -137,7 +137,12 @@ export class PluginManager {
     }
   }
 
-  async install(source: string, options: { readonly sha256?: string; readonly fingerprint?: string; readonly consent?: boolean } = {}, beforeReplace?: (id: string) => Promise<void>): Promise<PluginRecord> {
+  async install(source: string, options: {
+    readonly sha256?: string;
+    readonly fingerprint?: string;
+    readonly consent?: boolean;
+    readonly defaultEnabled?: boolean;
+  } = {}, beforeReplace?: (id: string) => Promise<void>): Promise<PluginRecord> {
     const candidate = await preparePluginSource(source, options.sha256);
     let managedCopy: ManagedPluginCopy | undefined;
     let previousRollback: string | undefined;
@@ -176,11 +181,13 @@ export class PluginManager {
       const managedParsed = await parseManifest(normalizedRoot);
       assertInstallable(managedParsed);
       const existing = this.records.get(id);
+      const defaultEnabled = existing === undefined ? options.defaultEnabled ?? false : existing.defaultEnabled;
       const now = new Date().toISOString();
       const record = await recordFrom({
         id,
         root: normalizedRoot,
-        enabled: existing?.enabled ?? false,
+        enabled: existing?.enabled ?? true,
+        defaultEnabled,
         installedAt: existing?.installedAt ?? now,
         updatedAt: now,
         originalSource: candidate.originalSource,
@@ -248,9 +255,9 @@ export class PluginManager {
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
     assertMutable(current);
-    if (current.enabled === enabled) return;
+    if (current.enabled === enabled && current.defaultEnabled === enabled) return;
     const next = new Map(this.records);
-    next.set(key, { ...current, enabled, updatedAt: new Date().toISOString() });
+    next.set(key, { ...current, enabled, defaultEnabled: enabled, updatedAt: new Date().toISOString() });
     await this.persist(next);
     this.records = next;
   }
@@ -316,7 +323,7 @@ export class PluginManager {
     await swapPluginCopies(current.root, rollbackRoot);
     try {
       const previous = await recordFrom({
-        id: key, root: current.root, enabled: current.enabled, installedAt: current.installedAt,
+        id: key, root: current.root, enabled: current.enabled, defaultEnabled: current.defaultEnabled, installedAt: current.installedAt,
         updatedAt: new Date().toISOString(), originalSource: current.rollback.originalSource,
         source: current.rollback.source, capabilities: current.capabilities, github: current.rollback.github,
         zipSha256: current.rollback.zipSha256, parsed: await parseManifest(current.root),
@@ -535,6 +542,7 @@ export class PluginManager {
         root: record.root,
         source: record.source,
         enabled: record.enabled,
+        defaultEnabled: record.defaultEnabled,
         installedAt: record.installedAt,
         updatedAt: record.updatedAt,
         originalSource: record.originalSource,
@@ -552,6 +560,7 @@ export class PluginManager {
       id: entry.id,
       root: entry.root,
       enabled: entry.enabled,
+      defaultEnabled: entry.defaultEnabled,
       installedAt: entry.installedAt,
       updatedAt: entry.updatedAt,
       originalSource: entry.originalSource,
@@ -820,6 +829,7 @@ async function recordFrom(input: {
   id: string;
   root: string;
   enabled: boolean;
+  defaultEnabled?: boolean;
   installedAt: string;
   updatedAt?: string;
   originalSource?: string;
@@ -838,6 +848,7 @@ async function recordFrom(input: {
     root: input.root,
     source: input.source ?? 'local-path',
     enabled: input.enabled,
+    defaultEnabled: input.defaultEnabled,
     state: hasError || parsed.manifest === undefined ? 'error' : 'ok',
     installedAt: input.installedAt,
     updatedAt: input.updatedAt,
@@ -863,6 +874,7 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     version: record.manifest?.version,
     icon: record.manifest?.icon,
     enabled: record.enabled,
+    globalEnabled: record.enabled && (record.defaultEnabled ?? record.enabled),
     state: record.state,
     skillCount: record.skillCount,
     mcpServerCount: Object.keys(record.manifest?.mcpServers ?? {}).length,

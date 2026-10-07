@@ -132,6 +132,7 @@ import {
   type RunModeControls,
 } from './ComposerControls';
 import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
+import { usePluginPicker } from './capabilities/usePluginPicker';
 
 export interface PendingRuntimeControls {
   readonly model?: string;
@@ -1000,6 +1001,11 @@ export function Composer({
   });
   const skills = skillsQuery.data?.skills ?? [];
   const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined;
+  // A plugin is enabled for this conversation, never drafted into it: the
+  // picker writes a session override and produces no text, no message and no
+  // new conversation. Absent without a session, because a plugin scoped to a
+  // conversation only exists relative to one.
+  const pluginPick = usePluginPicker(sessionId);
   const slashMenuOpen = menu?.kind === 'slash';
   const refetchSkills = skillsQuery.refetch;
   const slashMenuWasOpenRef = useRef(false);
@@ -2956,6 +2962,13 @@ export function Composer({
                 status: skillsQuery.isError ? 'error' : skillsQuery.isSuccess ? 'ready' : 'loading',
                 onInsert: insertSkillFromMenu,
                 onShow: () => { if (skillsQuery.isStale && !skillsQuery.isFetching) void skillsQuery.refetch(); },
+              } : undefined}
+              plugins={pluginPick.available ? {
+                items: pluginPick.items,
+                loading: pluginPick.loading,
+                failed: pluginPick.failed,
+                ...(pluginPick.busyId !== undefined ? { busyId: pluginPick.busyId } : {}),
+                onToggle: pluginPick.toggle,
               } : undefined}
               files={fsSearch === undefined ? undefined : {
                 search: fsSearch,

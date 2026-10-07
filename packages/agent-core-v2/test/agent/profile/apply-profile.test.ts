@@ -656,7 +656,11 @@ describe('AgentProfileService.applyProfile', () => {
       _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
       allows: async (_workspaceId, pluginId) => !off.has(pluginId),
-      set: async () => { throw new Error('unused'); }, onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'],
+      set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'],
     };
     const sections = { value: [{ pluginId: 'demo', content: 'frozen demo' }, { pluginId: 'other', content: 'frozen other' }] };
     const plugins = { ...pluginStub(sections), onDidReload: reload.event };
@@ -701,6 +705,9 @@ describe('AgentProfileService.applyProfile', () => {
     const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
       allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
       onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
     const sections = { value: [{ pluginId: 'demo', content: 'saved demo\nwith two lines' }] };
     const { IAgentStateService } = await import('#/agent/state/agentState');
@@ -961,6 +968,7 @@ function pluginStub(
     enabledHooks: async () => [],
     listPluginCommands: async () => [],
     listPlugins: async () => [],
+    getPluginInfo: async ({ id }: { id: string }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
   } as unknown as IPluginService;
 }
 

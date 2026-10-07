@@ -53,7 +53,10 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
-import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
+import {
+  sessionEphemeralMcpServersSeed,
+  sessionPluginMcpServersSeed,
+} from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
 import { externalClientMetaOf, ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
@@ -401,6 +404,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
+    const [allPluginMcpServers, sessionPluginMcpServers] = await Promise.all([
+      this.plugins.enabledMcpServers('*'),
+      this.plugins.enabledMcpServers(workspaceId, opts.sessionId),
+    ]);
     let workspaceReference: IDisposable | undefined;
     const releaseWorkspaceReference = (): void | Promise<void> => {
       const reference = workspaceReference;
@@ -458,6 +465,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
             [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
             ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
+            ...sessionPluginMcpServersSeed({
+              allNames: Object.keys(allPluginMcpServers),
+              enabled: sessionPluginMcpServers,
+            }),
           ],
           configureContainer: (container) => {
             sessionContainer = container;

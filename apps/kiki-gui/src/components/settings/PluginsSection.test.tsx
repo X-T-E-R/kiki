@@ -4,7 +4,7 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { pluginSettingsIdFromQuery } from '@kiki/session-core/settings';
 
@@ -13,6 +13,7 @@ import type { CapabilityStatus, PluginInfo, PluginMarketplaceEntry, PluginMarket
 import { PluginsView, type PluginsRoute } from '../capabilities/PluginsView';
 import { BrowserControlSection } from './BrowserControlSection';
 import { PluginsSection } from './PluginsSection';
+import { InstallFlow } from '../capabilities/InstallFlow';
 import { SettingsNavTree } from './SettingsNav';
 
 const PLUGIN = {
@@ -20,6 +21,9 @@ const PLUGIN = {
   displayName: 'Notes',
   version: '1.0.0',
   enabled: true,
+  // The global default, distinct from the master switch above: a plugin
+  // installed with 'decide later' keeps the master on and this false.
+  globalEnabled: true,
   state: 'ok' as const,
   skillCount: 1,
   mcpServerCount: 1,
@@ -58,6 +62,10 @@ const PLAN = {
   contributions: ['tool:office_view', 'tool:office_set', 'skill:0'], contextTokens: 900, unsupported: [] as string[],
 };
 const previewPlugin = vi.fn(async () => PLAN);
+/** A plan the preview reports as an app service. Declared as a value so the
+ *  extra key is a wider object rather than an excess property on a literal; the
+ *  protocol's own `PluginInstallPlan.appService` arrives with the preview. */
+const APP_SERVICE_PLAN = { ...PLAN, appService: true };
 const installPreviewedPlugin = vi.fn(async (): Promise<Record<string, unknown>> => ({ ...PLUGIN, id: 'catalog-notes', displayName: 'Catalog Notes', enabled: false }));
 const rollbackPlugin = vi.fn(async () => ({ ok: true }));
 const installPluginPrerequisite = vi.fn(async () => ({ ok: true }));
@@ -317,6 +325,40 @@ describe('PluginsSection', () => {
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
+  it('offers a way back from “decide later” without touching the master switch', async () => {
+    // A plugin installed with the global default off keeps the master on, so
+    // the switch beside its name already reads on and cannot express the
+    // choice. The row must offer that choice explicitly, and turning the
+    // master off and on again is NOT a way to get it.
+    const later = { ...PLUGIN, globalEnabled: false };
+    listPlugins.mockResolvedValue({ plugins: [later] });
+    setPluginEnabled.mockClear();
+    const container = await renderLeafAt('/settings/plugins');
+    await flush();
+    const row = container.querySelector('[data-plugin-row="notes"]')!;
+    expect(row.querySelector('[data-plugin-global-default]')!.getAttribute('data-plugin-global-default')).toBe('off');
+    const action = row.querySelector<HTMLButtonElement>('[data-plugin-enable-everywhere="notes"]')!;
+    expect(action.textContent).toBe('Enable everywhere');
+    // The master switch is on and stays on: one write, and it is the one that
+    // sets the default.
+    expect(row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+    // Setting the default is not opening the plugin. A user who reaches for
+    // this action to change the default must not be carried out of the list
+    // into that plugin's page on the way.
+    await click(action);
+    await flush();
+    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', true);
+    expect(locationOf(container)).toBe('/settings/plugins');
+    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
+  });
+
+  it('offers no such action once the global default is already on', async () => {
+    listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, globalEnabled: true }] });
+    const container = await renderLeaf();
+    await flush();
+    expect(container.querySelector('[data-plugin-enable-everywhere]')).toBeNull();
+  });
+
   it('toggles a plugin off through the enable switch', async () => {
     const container = await renderView();
     await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
@@ -386,8 +428,8 @@ describe('PluginsSection', () => {
     expect(confirm.textContent).toBe('Allow and install');
     await click(confirm);
     await flush();
-    expect(installPreviewedPlugin).toHaveBeenCalledWith({ source: ENTRY.source, sha256: undefined, fingerprint: PLAN.fingerprint, consent: true });
-    expect(setPluginEnabled).toHaveBeenCalledWith('catalog-notes', true);
+    expect(installPreviewedPlugin).toHaveBeenCalledWith({ source: ENTRY.source, sha256: undefined, fingerprint: PLAN.fingerprint, consent: true, defaultEnabled: true });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
     expect(document.querySelector('[data-install-done]')).not.toBeNull();
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
@@ -403,7 +445,7 @@ describe('PluginsSection', () => {
     await click(document.querySelector('[data-install-confirm]')!);
     await flush();
     expect(installPreviewedPlugin).toHaveBeenCalledExactlyOnceWith({ source: entry.source, sha256: entry.sha256,
-      fingerprint: PLAN.fingerprint, consent: true });
+      fingerprint: PLAN.fingerprint, consent: true, defaultEnabled: true });
     listPluginMarketplace.mockResolvedValue({ configured: false, entries: [] });
   });
 
@@ -512,12 +554,14 @@ describe('PluginsSection', () => {
     await click(row.querySelector('[data-plugin-update="lint"]')!);
     await flush();
     expect(previewPlugin).toHaveBeenCalledWith(GITHUB.originalSource, undefined);
+    // Still nothing installed: opening the sheet is not installing.
     expect(installPreviewedPlugin).not.toHaveBeenCalled();
     expect(document.querySelector('[data-install-no-changes]')).not.toBeNull();
     const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
     expect(confirm.textContent).toBe('Update');
     await click(confirm);
     await flush();
+    // An update carries no defaultEnabled: every switch the plugin had is kept.
     expect(installPreviewedPlugin).toHaveBeenCalledWith({ source: GITHUB.originalSource, sha256: undefined, fingerprint: PLAN.fingerprint, consent: false });
     expect(setPluginEnabled).not.toHaveBeenCalled();
     listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
@@ -894,5 +938,169 @@ describe('PluginsSection', () => {
     const container = await renderView();
     expect(container.textContent).toContain('list failed');
     expect(container.querySelector('[data-plugin-row="notes"]')).toBeNull();
+  });
+});
+
+/**
+ * Where a new install lands. "Installed" and "on everywhere" are different
+ * facts, so the sheet asks; and the follow-up `on` a workspace scope needs is
+ * a *usage* write, not a second install, which is what makes a failed enable
+ * recoverable without touching the installer again.
+ */
+describe('InstallFlow scope choice', () => {
+  const setPluginUsage = vi.fn(async () => ({ ok: true }));
+
+  beforeEach(() => {
+    setPluginUsage.mockClear();
+    setPluginUsage.mockResolvedValue({ ok: true });
+    Object.assign(mocks.client, { setPluginUsage });
+  });
+
+  /**
+   * Open the sheet for a fresh install, optionally scoped to a workspace.
+   *
+   * The sheet is a portal, so it lives on document.body rather than inside the
+   * tree's own container; these cases assert on the overlay the reader sees.
+   */
+  async function renderInstall(scope?: { readonly workspaceId: string; readonly name: string }): Promise<HTMLElement> {
+    await renderInto(
+      <InstallFlow
+        request={{
+          source: 'https://example.test/pkg.zip',
+          displayName: 'Pkg',
+          ...(scope === undefined
+            ? {}
+            : { scope: { kind: 'workspace' as const, target: { workspace_id: scope.workspaceId }, name: scope.name } }),
+        }}
+        onClose={() => {}}
+      />,
+    );
+    // The overlay the reader actually sees, once the preview has answered.
+    // The sheet is a portal, so it lives on document.body rather than inside
+    // the tree's own container.
+    await flush();
+    return document.body;
+  }
+
+  it('offers the global default and decide-later, and no workspace option without one', async () => {
+    const container = await renderInstall();
+    await flush();
+    const options = [...container.querySelectorAll('[data-install-scope-option]')].map((node) => node.getAttribute('data-install-scope-option'));
+    expect(options).toEqual(['global', 'later']);
+    // Global is the default: it is the common case, and the other is one click.
+    expect(container.querySelector('[data-install-scope]')!.getAttribute('data-install-scope')).toBe('global');
+  });
+
+  it('adds "this workspace only" when the sheet was opened from one, naming it', async () => {
+    const container = await renderInstall({ workspaceId: 'ws-a', name: 'Alpha' });
+    await flush();
+    const options = [...container.querySelectorAll('[data-install-scope-option]')].map((node) => node.getAttribute('data-install-scope-option'));
+    expect(options).toEqual(['global', 'later', 'workspace']);
+    const workspaceRow = container.querySelector('[data-install-scope-option="workspace"]')!;
+    expect(workspaceRow.textContent).toContain('Alpha');
+  });
+
+  it('says an app service is shared at the home scope, beside the choice it affects', async () => {
+    // The plan's own answer: this plugin runs as one home-level service. None of
+    // the three scopes starts a copy per workspace, and deferring the install
+    // does not start it — neither of which the scope hints can say.
+    previewPlugin.mockResolvedValueOnce(APP_SERVICE_PLAN);
+    const container = await renderInstall({ workspaceId: 'ws-a', name: 'Alpha' });
+    await flush();
+    const note = container.querySelector('[data-install-app-service]')!;
+    expect(note.textContent).toBe('Shares one home background service across workspaces; installing for later does not start it.');
+    // Beside the choice, not floating at the end of the sheet.
+    expect(note.closest('fieldset')!.getAttribute('data-install-scope')).toBe('global');
+    // And it is one line: no second confirmation, no wall.
+    expect(container.querySelectorAll('[data-install-app-service]')).toHaveLength(1);
+  });
+
+  it('keeps the note off a plugin the plan does not call an app service', async () => {
+    // The default PLAN carries no `appService`, which is what every other
+    // plugin's preview looks like.
+    const container = await renderInstall();
+    await flush();
+    expect(container.querySelector('[data-install-app-service]')).toBeNull();
+    // The scope choice itself is unchanged by the absence.
+    expect(container.querySelectorAll('[data-install-scope-option]')).toHaveLength(2);
+  });
+
+  it('still asks for consent for a bare app service, and adds no switch of its own', async () => {
+    // A plugin whose only declaration is `activation: 'app'`: it contributes
+    // nothing and needs no special permissions, and the preview still says
+    // consent is required. The new flag is information, not an authorization —
+    // it must not become a second gate or a quieter first use.
+    previewPlugin.mockResolvedValueOnce({
+      ...PLAN,
+      appService: true,
+      consentRequired: true,
+      permissions: undefined,
+      contributions: [],
+      changes: [],
+    } as never);
+    const container = await renderInstall();
+    await flush();
+    expect(container.querySelector('[data-install-contributes]')!.textContent).toContain('Nothing listed.');
+    expect(container.querySelector('[data-install-no-permissions]')!.textContent).toContain('Needs no special permissions.');
+    // The consent ask is the same one every install makes: the same button word.
+    expect(container.querySelector('[data-install-confirm]')!.textContent).toBe('Allow and install');
+    expect(container.querySelector('[data-install-app-service]')).not.toBeNull();
+  });
+
+  it('installs with the global default off when the reader defers', async () => {
+    const container = await renderInstall();
+    await flush();
+    await click(container.querySelector('[data-install-scope-option="later"] input')!);
+    await click(container.querySelector('[data-install-confirm]')!);
+    await flush();
+    expect(installPreviewedPlugin).toHaveBeenCalledWith(expect.objectContaining({ defaultEnabled: false }));
+    // Installation already authorizes the master. A global enable here would
+    // overwrite the selected false default and start an App resident.
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    // And it says so, so the reader is not left guessing where it landed.
+    expect(container.querySelector('[data-install-done="later"]')!.textContent).toContain('global default is off');
+  });
+
+  it('installs for one workspace without touching any other scope', async () => {
+    const container = await renderInstall({ workspaceId: 'ws-a', name: 'Alpha' });
+    await flush();
+    await click(container.querySelector('[data-install-scope-option="workspace"] input')!);
+    await click(container.querySelector('[data-install-confirm]')!);
+    await flush();
+    expect(installPreviewedPlugin).toHaveBeenCalledWith(expect.objectContaining({ defaultEnabled: false }));
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    expect(setPluginUsage).toHaveBeenCalledWith({ target: { workspace_id: 'ws-a' }, plugin_id: 'catalog-notes', override: 'on' });
+    expect(container.querySelector('[data-install-done="workspace"]')!.textContent).toContain('Alpha');
+  });
+
+  it('retries only the enable when the workspace switch fails, never the install', async () => {
+    setPluginUsage.mockRejectedValueOnce(new Error('workspace is read-only'));
+    const container = await renderInstall({ workspaceId: 'ws-a', name: 'Alpha' });
+    await flush();
+    await click(container.querySelector('[data-install-scope-option="workspace"] input')!);
+    await click(container.querySelector('[data-install-confirm]')!);
+    await flush();
+
+    // Installed, and the sheet says exactly that rather than offering a reinstall.
+    expect(installPreviewedPlugin).toHaveBeenCalledTimes(1);
+    const failed = container.querySelector('[data-install-enable-failed]')!;
+    expect(failed.textContent).toContain('workspace is read-only');
+    expect(failed.textContent).toContain('does not install it again');
+
+    setPluginUsage.mockResolvedValueOnce({ ok: true });
+    await click(container.querySelector('[data-install-retry-enable]')!);
+    await flush();
+    // The retry is the usage write again, and the install is still one call.
+    expect(setPluginUsage).toHaveBeenLastCalledWith({ target: { workspace_id: 'ws-a' }, plugin_id: 'catalog-notes', override: 'on' });
+    expect(installPreviewedPlugin).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-install-done="workspace"]')).not.toBeNull();
+  });
+
+  it('leaves a session-scoped install to the rail, writing no workspace', async () => {
+    const container = await renderInstall();
+    await flush();
+    await click(container.querySelector('[data-install-confirm]')!);
+    await flush();
+    expect(setPluginUsage).not.toHaveBeenCalled();
   });
 });

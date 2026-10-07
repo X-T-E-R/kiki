@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ListWorkspacesResponse, Workspace } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { workspaceSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -30,8 +31,24 @@ import {
   type ListFilterSpec,
   type ListSortSpec,
 } from './list';
+import { WorkspaceSettingsPage } from './workspaces/WorkspaceSettingsPage';
 
-export function WorkspacesSection() {
+/**
+ * The workspace list, or one workspace's own page.
+ *
+ * The page is not a modal because a workspace is not a dialog: its name, its
+ * plugins and everything else scoped to it are what a reader configures once
+ * and returns to. The list stays a list, and the row that opens a workspace is
+ * the row's own name rather than a control that competes with its verbs.
+ */
+export function WorkspacesSection({ workspaceId }: { readonly workspaceId?: string | null }) {
+  if (workspaceId !== null && workspaceId !== undefined && workspaceId !== '') {
+    return <WorkspaceSettingsPage workspaceId={workspaceId} />;
+  }
+  return <WorkspacesList />;
+}
+
+function WorkspacesList() {
   const { client, scopeId, sshLabel, activateSshProfile, activateLocal } = useConnection();
   const { t, tp, locale } = useI18n();
   const navigate = useGuardedNavigate();
@@ -100,6 +117,7 @@ export function WorkspacesSection() {
             onRemove={setRemoving}
             onBulkRemove={setBulkRemoving}
             onNewSession={(workspace) => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)}
+            onOpenDetail={(workspace) => { void navigate(workspaceSettingsPath(workspace.id)); }}
           />
         ) : null}
         {!query.isLoading && !query.isError && items.length === 0 ? (
@@ -202,7 +220,7 @@ const byRecent = (a: Workspace, b: Workspace) => Date.parse(b.last_opened_at) - 
  * Each row keeps one visible verb (New session) and the pin mark; rename
  * and unregister live in the row's ⋯ menu so 80 rows are not 320 buttons.
  */
-function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, onBulkRemove, onNewSession }: {
+function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, onBulkRemove, onNewSession, onOpenDetail }: {
   items: readonly Workspace[];
   pinBusy: string | null;
   onPin: (workspace: Workspace) => void;
@@ -211,6 +229,8 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
   onRemove: (workspace: Workspace) => void;
   onBulkRemove: (targets: readonly Workspace[]) => void;
   onNewSession: (workspace: Workspace) => void;
+  /** One workspace's own settings page; the row's name is the way in. */
+  onOpenDetail: (workspace: Workspace) => void;
 }) {
   const { t } = useI18n();
   const filters = useMemo<ListFilterSpec<Workspace>[]>(() => [
@@ -244,7 +264,7 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
     <WorkspaceRow workspace={ws} density={view.density} selecting={view.selected.size > 0} checked={view.selected.has(ws.id)}
       onCheck={() => { view.toggleSelected(ws.id); }} pinBusy={pinBusy === ws.id || pinBusy === 'bulk'}
       onPin={() => { onPin(ws); }} onRename={() => { onRename(ws); }} onRemove={() => { onRemove(ws); }}
-      onNewSession={() => { onNewSession(ws); }} />
+      onNewSession={() => { onNewSession(ws); }} onOpenDetail={() => { onOpenDetail(ws); }} />
   );
 
   return (
@@ -287,7 +307,7 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
 }
 const ROW_ICON = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:text-ink-faint pointer-coarse:h-11 pointer-coarse:w-11';
 
-function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy, onPin, onRename, onRemove, onNewSession }: {
+function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy, onPin, onRename, onRemove, onNewSession, onOpenDetail }: {
   workspace: Workspace;
   density: ListDensity;
   /** Some row is selected: every box shows, not only the hovered one. */
@@ -299,6 +319,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   onRename: () => void;
   onRemove: () => void;
   onNewSession: () => void;
+  onOpenDetail: () => void;
 }) {
   const { t, tp, time } = useI18n();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -311,7 +332,18 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
       <RowCheck quiet={!selecting} checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: workspace.name })} />
       <div className="min-w-0 flex-1 py-1">
         <div className="flex min-w-0 items-baseline gap-2">
-          <p className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p>
+          {/* The name is the way into the workspace's own page: one move,
+              reachable by keyboard, that does not compete with the row's
+              verbs to the right of it. */}
+          <button
+            type="button"
+            data-workspace-open={workspace.id}
+            aria-label={t('st.workspaces.detail.open', { name: workspace.name })}
+            onClick={onOpenDetail}
+            className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          >
+            {workspace.name}
+          </button>
           {compact ? (
             <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={workspace.root}>{workspace.root}</p>
           ) : null}

@@ -163,7 +163,7 @@ export function registerPluginsRoutes(
         const installedInfo =
           record === undefined
             ? undefined
-            : { enabled: record.enabled, version: record.version };
+            : { enabled: record.globalEnabled, version: record.version };
         const updateAvailable =
           computeUpdateStatus(entry.version, record?.version, record !== undefined).kind ===
           'update';
@@ -311,8 +311,8 @@ export function registerPluginsRoutes(
         const usage = core.accessor.get(IPluginUsageService);
         const panels = (await Promise.all(installed.map(async (item) => {
           const info = await plugins.getPluginInfo({ id: item.id });
-          const allowed = !usage.enabled() || workspaceId !== undefined && await usage.allows(workspaceId, info.id);
-          return (info.manifest?.kiki?.panels ?? []).filter((panel) => panel.slot !== 'workspace' || allowed).map((panel) => ({
+          const allowed = await usage.allows(workspaceId, info.id, req.query.session_id);
+          return (info.manifest?.kiki?.panels ?? []).filter(() => allowed).map((panel) => ({
             pluginId: info.id, id: panel.id, label: panel.label, slot: panel.slot,
           }));
         }))).flat();
@@ -331,7 +331,7 @@ export function registerPluginsRoutes(
     async (req, reply) => {
       try {
         const workspaceId = await pluginContextWorkspace(core, req.query);
-        const commands = (await core.accessor.get(IPluginService).listPluginCommands(workspaceId)).map(({ pluginId, name, description, body }) => ({
+        const commands = (await core.accessor.get(IPluginService).listPluginCommands(workspaceId, req.query.session_id)).map(({ pluginId, name, description, body }) => ({
           pluginId, name, description, prompt: body,
         }));
         reply.send(okEnvelope({ commands }, req.id));
@@ -385,9 +385,9 @@ export function registerPluginsRoutes(
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
-        if (panel.slot === 'workspace' && core.accessor.get(IPluginUsageService).enabled()) {
+        if (core.accessor.get(IPluginUsageService).enabled()) {
           const workspaceId = await pluginContextWorkspace(core, req.query);
-          if (workspaceId === undefined || !await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id)) {
+          if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, req.query.session_id)) {
             reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
             return;
           }
@@ -413,10 +413,9 @@ export function registerPluginsRoutes(
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
-        const panel = info.manifest.kiki!.panels!.find((item) => item.id === req.params.panel_id)!;
-        if (panel.slot === 'workspace' && core.accessor.get(IPluginUsageService).enabled()) {
+        if (core.accessor.get(IPluginUsageService).enabled()) {
           const workspaceId = await pluginContextWorkspace(core, { session_id: req.body.session_id });
-          if (workspaceId === undefined || !await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id)) {
+          if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, req.body.session_id)) {
             reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
             return;
           }

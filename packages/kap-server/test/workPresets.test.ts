@@ -14,7 +14,7 @@ function fixture(homeId: string) {
   const values = new Map<string, unknown>();
   const documents = { get: async <T>(scope: string, key: string) => structuredClone(values.get(`${scope}/${key}`)) as T | undefined,
     set: async <T>(scope: string, key: string, value: T) => { values.set(`${scope}/${key}`, structuredClone(value)); } };
-  const recordFor = (id: string) => ({ id, displayName: id, enabled: false, version: '1.0.0', state: 'ok' as const, source: 'local-path' as const, skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0, hasErrors: false });
+  const recordFor = (id: string) => ({ id, displayName: id, enabled: false, globalEnabled: false, version: '1.0.0', state: 'ok' as const, source: 'local-path' as const, skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0, hasErrors: false });
   const installed: ReturnType<typeof recordFor>[] = [];
   const plugins = {
     listPlugins: vi.fn(async () => installed),

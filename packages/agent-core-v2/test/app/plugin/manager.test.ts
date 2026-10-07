@@ -62,6 +62,19 @@ describe('PluginManager', () => {
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('previews App service activation from the manifest without treating ordinary plugins as resident', async () => {
+    const manager = new PluginManager({ kimiHomeDir: home });
+    expect((await manager.preview(root)).appService).toBe(false);
+    await writeFile(join(root, 'entry.mjs'), 'export function register() {}');
+    await writeFile(join(root, 'kimi.plugin.json'), JSON.stringify({
+      name: 'demo',
+      'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs', activation: 'app' },
+    }));
+    const appPlan = await manager.preview(root);
+    expect(appPlan.appService).toBe(true);
+    expect(appPlan.consentRequired).toBe(true);
+  });
+
   it('loads installed plugins and exposes summaries, hooks, and commands', async () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
@@ -70,6 +83,8 @@ describe('PluginManager', () => {
       expect.objectContaining({
         id: 'demo',
         state: 'ok',
+        enabled: true,
+        globalEnabled: true,
         commandCount: 1,
         hookCount: 1,
       }),
@@ -80,6 +95,7 @@ describe('PluginManager', () => {
         command: 'echo stop',
         cwd: root,
         env: { KIKI_HOME: home, KIKI_PLUGIN_ROOT: root },
+        pluginId: 'demo',
       },
     ]);
     await expect(manager.enabledCommands()).resolves.toEqual([
@@ -138,24 +154,84 @@ describe('PluginManager', () => {
     } finally { await host.stopAndWait(); }
   }, 60_000);
 
-  it('installs a local-path plugin disabled and preserves explicit enablement on reinstall', async () => {
+  it('installs a local-path plugin with the master enabled and global default disabled', async () => {
     const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-install-source-'));
     try {
-      await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'other' }), 'utf8');
+      await writeFile(
+        join(sourceRoot, 'kimi.plugin.json'),
+        JSON.stringify({ name: 'other', hooks: [{ event: 'Stop', command: 'echo stop' }] }),
+        'utf8',
+      );
       const manager = new PluginManager({ kimiHomeDir: home });
+      const plan = await manager.preview(sourceRoot);
 
-      const record = await manager.install(sourceRoot);
+      const record = await manager.install(sourceRoot, { fingerprint: plan.fingerprint, consent: true });
 
       expect(record.id).toBe('other');
-      expect(record.enabled).toBe(false);
+      expect(record.enabled).toBe(true);
+      expect(record.defaultEnabled).toBe(false);
       expect(record.root).toContain(join(home, 'plugins', 'managed', 'other'));
       expect(manager.get('other')?.manifest?.name).toBe('other');
+      expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: true, globalEnabled: false }));
+      expect(manager.info('other')).toEqual(expect.objectContaining({ enabled: true, globalEnabled: false }));
+      expect(JSON.parse(await readFile(join(home, 'plugins', 'installed.json'), 'utf8')).plugins).toEqual([
+        expect.objectContaining({ id: 'other', enabled: true, defaultEnabled: false }),
+      ]);
+      expect(manager.enabledHooks()).toHaveLength(1);
 
       await manager.setEnabled('other', true);
-      const reinstalled = await manager.install(sourceRoot);
+      expect(manager.get('other')).toEqual(expect.objectContaining({ enabled: true, defaultEnabled: true }));
+      expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: true, globalEnabled: true }));
+      expect(JSON.parse(await readFile(join(home, 'plugins', 'installed.json'), 'utf8')).plugins).toEqual([
+        expect.objectContaining({ id: 'other', enabled: true, defaultEnabled: true }),
+      ]);
+
+      const reinstalled = await manager.install(sourceRoot, { defaultEnabled: false });
       expect(reinstalled.enabled).toBe(true);
+      expect(reinstalled.defaultEnabled).toBe(true);
+      expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: true, globalEnabled: true }));
     } finally {
       await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('preserves the master and global defaults through updates, rollback, and reload', async () => {
+    const firstSource = await mkdtemp(join(tmpdir(), 'plugin-default-source-'));
+    const secondSource = await mkdtemp(join(tmpdir(), 'plugin-default-update-'));
+    try {
+      await writeFile(join(firstSource, 'kimi.plugin.json'), JSON.stringify({ name: 'default-demo', version: '1.0.0' }), 'utf8');
+      await writeFile(join(secondSource, 'kimi.plugin.json'), JSON.stringify({ name: 'default-demo', version: '2.0.0' }), 'utf8');
+      const manager = new PluginManager({ kimiHomeDir: home });
+      await manager.load();
+      const firstPlan = await manager.preview(firstSource);
+
+      const first = await manager.install(firstSource, {
+        fingerprint: firstPlan.fingerprint,
+        consent: true,
+        defaultEnabled: true,
+      });
+      expect(first).toEqual(expect.objectContaining({ enabled: true, defaultEnabled: true }));
+      await manager.setEnabled('default-demo', false);
+      expect(manager.get('default-demo')).toEqual(expect.objectContaining({ enabled: false, defaultEnabled: false }));
+
+      const updated = await manager.install(secondSource, { defaultEnabled: true });
+      expect(updated.manifest?.version).toBe('2.0.0');
+      expect(updated.enabled).toBe(false);
+      expect(updated.defaultEnabled).toBe(false);
+
+      const rolledBack = await manager.rollback('default-demo');
+      expect(rolledBack.manifest?.version).toBe('1.0.0');
+      expect(rolledBack.enabled).toBe(false);
+      expect(rolledBack.defaultEnabled).toBe(false);
+      expect(manager.summaries().find((summary) => summary.id === 'default-demo')).toEqual(
+        expect.objectContaining({ enabled: false, globalEnabled: false }),
+      );
+
+      await manager.load();
+      expect(manager.get('default-demo')).toEqual(expect.objectContaining({ enabled: false, defaultEnabled: false }));
+    } finally {
+      await rm(firstSource, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(secondSource, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -403,17 +479,39 @@ describe('PluginManager', () => {
     ]);
   });
 
+  it('keeps legacy master-disabled plugins globally disabled without a default field', async () => {
+    await writeFile(
+      join(home, 'plugins', 'installed.json'),
+      JSON.stringify({
+        version: 1,
+        plugins: [{ id: 'demo', root, source: 'local-path', enabled: false, installedAt: '2026-01-01T00:00:00.000Z' }],
+      }),
+      'utf8',
+    );
+    const manager = new PluginManager({ kimiHomeDir: home });
+    await manager.load();
+
+    expect(manager.get('demo')?.defaultEnabled).toBeUndefined();
+    expect(manager.summaries()).toEqual([
+      expect.objectContaining({ id: 'demo', enabled: false, globalEnabled: false }),
+    ]);
+    expect(manager.enabledHooks()).toEqual([]);
+  });
+
   it('persists enabled state changes', async () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
 
     await manager.setEnabled('demo', false);
 
-    expect(manager.get('demo')?.enabled).toBe(false);
+    expect(manager.get('demo')).toEqual(expect.objectContaining({ enabled: false, defaultEnabled: false }));
+    expect(manager.summaries()).toEqual([
+      expect.objectContaining({ id: 'demo', enabled: false, globalEnabled: false }),
+    ]);
     const stored = JSON.parse(await readFile(join(home, 'plugins', 'installed.json'), 'utf8')) as {
-      plugins: Array<{ id: string; enabled: boolean }>;
+      plugins: Array<{ id: string; enabled: boolean; defaultEnabled?: boolean }>;
     };
-    expect(stored.plugins).toEqual([expect.objectContaining({ id: 'demo', enabled: false })]);
+    expect(stored.plugins).toEqual([expect.objectContaining({ id: 'demo', enabled: false, defaultEnabled: false })]);
   });
 });
 

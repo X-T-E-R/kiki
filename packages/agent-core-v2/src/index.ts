@@ -328,6 +328,7 @@ export * from '#/app/plugin/pluginService';
 export * from '#/app/pluginUsage/pluginUsage';
 export * from '#/app/pluginUsage/flag';
 import '#/app/pluginUsage/pluginUsageService';
+export * from '#/session/pluginUsage/sessionPluginUsageService';
 export * from '#/app/plugin/pluginHostService';
 export * from '#/app/pluginImport/pluginImport';
 import '#/app/pluginImport/pluginImportService';

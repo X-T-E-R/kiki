@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
@@ -463,13 +464,22 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [toggleSaving, setToggleSaving] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<string>();
+  // The address is the only source of truth for which workspace this page is
+  // about: `?workspace=` wins over recency, so a link from one workspace's own
+  // page lands on THAT workspace rather than on whichever was opened most
+  // recently. A second copy in state would survive a query-only move — Back,
+  // Forward, or a link naming another workspace while this page stays mounted —
+  // and the card would keep reading and editing the workspace the address no
+  // longer names. An address with no `workspace` is not a choice, so it answers
+  // with the most recently opened workspace, exactly as a first visit does.
+  const [params, setParams] = useSearchParams();
+  const requestedWorkspaceId = params.get('workspace') ?? undefined;
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
   });
-  const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
+  const selectedWorkspaceId = requestedWorkspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQueryKey = ['named-agent-profiles', selectedWorkspaceId ?? 'global'];
   const profilesQuery = useQuery({
     queryKey: profilesQueryKey,
@@ -552,6 +562,12 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     ? shippedEntryForProfile(profile, shippedEntries) !== undefined && !profile.disabled
     : effectiveQuery.data?.items.some((item) => item.name === profile.name
       && item.source === profile.source && item.source_file === profile.source_file) === true;
+  // A link that names a workspace this server no longer lists must not read as
+  // "no workspace chosen" — the rows below are still read for the linked id,
+  // and the picker cannot show it. Saying so is the difference between a dead
+  // link and silently editing whichever workspace came first.
+  const linkedWorkspaceMissing = requestedWorkspaceId !== undefined && workspacesQuery.isSuccess
+    && !(workspacesQuery.data?.items ?? []).some((workspace) => workspace.id === requestedWorkspaceId);
   const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-[12px] font-medium text-ink-soft">{t('new.workspace')}</span>
@@ -560,10 +576,23 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
         ariaLabel={t('new.workspace')}
         className="max-w-64"
         value={selectedWorkspaceId ?? ''}
-        onChange={(id) => { setWorkspaceId(id); }}
+        onChange={(id) => {
+          // Only the address changes: the choice lives there, so a reload, Back
+          // and a fresh link all land on the workspace they name instead of on
+          // whichever one was picked first in this mount.
+          const next = new URLSearchParams(params);
+          if (id === '') next.delete('workspace');
+          else next.set('workspace', id);
+          setParams(next, { replace: true });
+        }}
         choices={(workspacesQuery.data?.items ?? []).map((workspace) => ({ value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root }))}
       />
       <Hint>{t('st.namedAgents.workspaceHint')}</Hint>
+      {linkedWorkspaceMissing ? (
+        <Hint>
+          <span data-named-agents-workspace-missing>{t('st.namedAgents.workspaceMissing')}</span>
+        </Hint>
+      ) : null}
     </div>
   ) : null;
   // `main === true` lands in the main-agent card; everything else is a

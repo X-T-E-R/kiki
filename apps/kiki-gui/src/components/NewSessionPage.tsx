@@ -37,6 +37,7 @@ import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
+import { importHistoryPath } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 
 /**
@@ -535,7 +536,7 @@ function NewSessionPageContent({
                     <button
                       type="button"
                       data-hero-import
-                      onClick={() => { void navigate('/capabilities?view=import'); }}
+                      onClick={() => { void navigate(importHistoryPath()); }}
                       className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
                     >
                       <Icon name="read" size={12} className="text-ink-faint" />

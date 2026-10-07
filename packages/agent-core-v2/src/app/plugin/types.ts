@@ -135,6 +135,7 @@ export interface PluginRecord {
   readonly root: string;
   readonly source: PluginSource;
   readonly enabled: boolean;
+  readonly defaultEnabled?: boolean;
   /** Installed in the base (main) home and only visible here through `inherit.plugins`; its files stay
    *  in the base home and this home cannot change, roll back, or remove it. */
   readonly inherited?: boolean;
@@ -162,6 +163,7 @@ export interface PluginSummary {
   /** The manifest icon, inlined as a `data:` URI; absent when the plugin has none. */
   readonly icon?: string;
   readonly enabled: boolean;
+  readonly globalEnabled: boolean;
   readonly state: PluginState;
   readonly skillCount: number;
   readonly mcpServerCount: number;

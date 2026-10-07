@@ -47,6 +47,18 @@ it('snapshots session file_id and admitted runtime paths to host staging while r
   const url = { url: 'https://fixture.invalid/image.png' };
   expect(await bridge.snapshotInput(url, 'url', fs, signal)).toBe(url);
 });
+it('passes the current session scope to media discovery actions', async () => {
+  const media = ctx.get(IPluginMediaService);
+  const capabilities = vi.spyOn(media, 'capabilities').mockResolvedValue({ models: [] } as never);
+  const voices = vi.spyOn(media, 'voices').mockResolvedValue({ voices: [] } as never);
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const api = bridge.api('scope-fixture', { kind: 'image', prompt: 'scope' });
+  await api.media({ action: 'capabilities' });
+  await api.media({ action: 'voices', provider: 'fixture/synthetic' });
+  const scope = { workspaceId: ctx.get(ISessionContext).workspaceId, sessionId: ctx.get(ISessionContext).sessionId };
+  expect(capabilities).toHaveBeenCalledWith({}, scope);
+  expect(voices).toHaveBeenCalledWith({ provider: 'fixture/synthetic' }, scope);
+});
 it('enforces job session/agent ownership and passes only admitted generation parameters', async () => {
   const media = ctx.get(IPluginMediaService);
   const bridge = ctx.get(IAgentPluginMediaService);

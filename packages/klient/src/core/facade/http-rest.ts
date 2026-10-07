@@ -468,6 +468,8 @@ export interface HttpRestFacade {
     inspect(root: string): Promise<import('@kiki/protocol').InspectWorkspaceResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;
     setPinned(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').Workspace>;
+    trust(workspaceId: string): Promise<{ readonly trusted: boolean }>;
+    setTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }>;
     remove(workspaceId: string): Promise<{ readonly deleted: true }>;
     listSkills(workspaceId: string): Promise<ListSkillsResponse>;
   };

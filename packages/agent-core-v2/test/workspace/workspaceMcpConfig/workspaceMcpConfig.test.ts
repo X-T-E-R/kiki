@@ -323,6 +323,9 @@ describe('WorkspaceMcpConfigService', () => {
     const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
       allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
       onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
     const service = createService(undefined, usage);
     await service.ready;
@@ -344,6 +347,9 @@ describe('WorkspaceMcpConfigService', () => {
     const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
       read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
       allows: async () => true, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
       onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
     const service = createService(undefined, usage);
     await service.ready;

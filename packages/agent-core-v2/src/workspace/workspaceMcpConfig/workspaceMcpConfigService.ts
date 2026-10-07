@@ -54,7 +54,9 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
   ) {
     super();
     if (usage !== undefined) this._register(usage.onDidChange((event) => {
-      if (event.workspaceId === workspace.workspaceId) event.waitUntil(this.reloadPluginServers());
+      if (event.workspaceId === workspace.workspaceId && event.sessionId === undefined) {
+        event.waitUntil(this.reloadPluginServers());
+      }
     }));
     const inheritance = resolveSpaceInheritance(bootstrap);
     this.inheritedHomeDir = inheritance.mcp ? bootstrap.baseHomeDir : undefined;
@@ -91,6 +93,10 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
 
   servers(): Readonly<Record<string, McpServerConfig>> {
     return this.current;
+  }
+
+  isFileServer(name: string): boolean {
+    return this.fileServers.has(name);
   }
 
   async allowsCall(name: string): Promise<boolean> {

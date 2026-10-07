@@ -6,10 +6,14 @@ import { importProbeSchema, importParsePageSchema, type ImportJob, type ImportRe
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { registerScopedService, ScopeActivation, _clearScopedRegistryForTests } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { Event } from '#/_base/event';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { IOAuthService } from '#/app/auth/auth';
 import { StubConfigService, stubOAuthService } from '../../kosong/stubs';
 import { IPluginSettingsService, PluginSettingsService } from '#/app/plugin/pluginSettingsService';
@@ -41,6 +45,7 @@ function host(targetHome = home): ScopedTestHost {
   const result = createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(targetHome)),
     stubPair(IProviderService, stubProviderService()),
+    stubPair(ISessionManager, { list: () => [], get: () => undefined, onDidCreateSession: Event.None, onDidCloseSession: Event.None } as unknown as ISessionManager),
     stubPair(IConfigService, new StubConfigService({ pluginSettings: {} })),
     stubPair(IOAuthService, stubOAuthService()),
     stubPair(IFlagService, { _serviceBrand: undefined, enabled: () => true } as unknown as IFlagService),
@@ -87,6 +92,7 @@ async function importOne(service: IPluginImportService, pluginId: string, source
 }
 beforeEach(async () => {
   _clearScopedRegistryForTests();
+  registerScopedService(LifecycleScope.App, IPluginUsageService, PluginUsageService, ScopeActivation.OnDemand, 'pluginUsage');
   registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
   registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
   registerScopedService(LifecycleScope.App, IPluginHostService, PluginHostService, ScopeActivation.OnDemand, 'plugin');

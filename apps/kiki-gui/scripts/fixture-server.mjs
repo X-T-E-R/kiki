@@ -184,7 +184,7 @@ import { handleBotRooms, resetBotRooms } from './fixture-bot-rooms.mjs';
 import { handleAutoCompact } from './fixture-auto-compact.mjs';
 import { handleAgentHooks } from './fixture-agent-hooks.mjs';
 import { handleContextStrategy, resetContextStrategy } from './fixture-context-strategy.mjs';
-import { handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
+import { handlePluginUsage, handlePlugins, marketplaceWithState, pluginSkins } from './fixture-plugins.mjs';
 import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixture-worktrees.mjs';
 import { handleSsh } from './fixture-ssh.mjs';
 import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
@@ -3260,6 +3260,25 @@ class FixtureServer {
         servers: this.scenario?.data.mcpServers ?? [],
       });
     }
+    // Workspace trust: GET reads it, POST grants or revokes. A scenario seeds
+    // `workspaceTrust` so the page shows a real answer; without one the route
+    // answers not-found, which is what a server that does not offer it does.
+    const trustMatch = /^\/workspaces\/([^/]+)\/(trust|untrust)$/.exec(path);
+    if (trustMatch !== null) {
+      const workspaceId = decodeURIComponent(trustMatch[1]);
+      const seeded = this.scenario?.data.workspaceTrust;
+      if (seeded === undefined || seeded[workspaceId] === undefined) {
+        this.failureEnvelope(res, 404, 40410, `workspace not found: ${workspaceId}`);
+        return;
+      }
+      if (req.method === 'POST') seeded[workspaceId].trusted = trustMatch[2] === 'trust';
+      this.envelope(res, { trusted: seeded[workspaceId].trusted === true });
+      return;
+    }
+    // Usage is checked first: its own route also starts with '/plugins'.
+    // Usage takes the method off `req` when there is one: the session-view
+    // proxy re-enters this route with no request object of its own.
+    if (handlePluginUsage(this, res, path, req?.method ?? method, body, query)) return;
     if (path.startsWith('/plugins') && handlePlugins(this, res, path, method, body)) return;
     if (path === '/plugins/marketplace') {
       const source = this.config.plugins?.marketplaceUrl;
@@ -3311,7 +3330,15 @@ class FixtureServer {
       const index = this.plugins.findIndex((entry) => entry.id === pluginId);
       if (index < 0) return this.envelope(res, null, 40419, 'plugin.not_found');
       if (action === 'remove') this.plugins.splice(index, 1);
-      else this.plugins[index].enabled = action === 'enable';
+      else {
+        // This is the global call, so the master and the global default move
+        // together. The master is a deny, not a scope: a workspace's own deny
+        // outranks it, and turning the master back on is also how a plugin
+        // installed with "decide later" gets its default back.
+        const on = action === 'enable';
+        this.plugins[index].enabled = on;
+        this.plugins[index].globalEnabled = on;
+      }
       return this.envelope(res, { ok: true });
     }
     const pluginInfoMatch = /^\/plugins\/([^/]+)$/.exec(path);

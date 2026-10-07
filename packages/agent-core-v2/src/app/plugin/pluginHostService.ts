@@ -28,6 +28,7 @@ import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 
 import { PluginHost } from './host';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { observePluginActivity } from './pluginActivity';
 import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinHistory';
 import { IPluginService } from './plugin';
@@ -106,13 +107,22 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IConfigService private readonly configService?: IConfigService,
     @IFlagService private readonly flags?: IFlagService,
     @ISessionManager private readonly sessions?: ISessionManager,
+    @IPluginUsageService usage?: IPluginUsageService,
   ) {
     super();
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      event.waitUntil((async () => {
+        if (!await usage.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
+        const info = await this.plugins.getPluginInfo({ id: event.pluginId });
+        if (info.manifest?.kiki?.activation !== 'app') return;
+        await this.runRequest(event.pluginId, async () => undefined);
+      })());
+    }));
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
       event.waitUntil((async () => {
-        await Promise.allSettled([...this.residentWork]);
+        await Promise.allSettled(this.residentWork);
         const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
         await Promise.all(ids.map(async (id) => {
           await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
@@ -138,7 +148,7 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   async stopAll(): Promise<void> {
     this.closing = true;
-    await Promise.allSettled([...this.residentWork]);
+    await Promise.allSettled(this.residentWork);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
@@ -156,7 +166,7 @@ export class PluginHostService extends Service implements IPluginHostService {
     await this.configService?.ready;
     const installed = await this.plugins.listPlugins();
     if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
-    await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
+    await Promise.all(installed.filter((plugin) => plugin.enabled && (plugin.globalEnabled || this.hosts.has(plugin.id)) && plugin.state === 'ok' &&
       (affected === undefined || affected.includes(plugin.id))).map(async (plugin) => {
       const info = await this.plugins.getPluginInfo({ id: plugin.id });
       if (info.manifest?.kiki?.activation !== 'app' || this.closing) return;

@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
   SESSION_TITLE_TRIGGERS,
+  importHistoryPath,
   sessionTitleModelPatch,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
@@ -385,7 +386,7 @@ function ImportHistoryCard() {
           type="button"
           data-settings-open-import
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-          onClick={() => { void navigate('/capabilities?view=import'); }}
+          onClick={() => { void navigate(importHistoryPath()); }}
         >
           <Icon name="read" size={16} className="text-ink-faint" />
           {t('cap.import.open')}

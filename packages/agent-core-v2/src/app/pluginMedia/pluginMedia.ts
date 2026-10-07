@@ -9,6 +9,11 @@ export interface MediaJobOwner {
   readonly identity?: Omit<import('#/session/requestIdentity/requestIdentityRegistry').RequestIdentitySnapshot, 'setTurnState'>;
   readonly parentAgentId?: string;
 }
+
+export interface MediaScopeContext {
+  readonly workspaceId: string;
+  readonly sessionId: string;
+}
 export interface StoredMediaJob {
   readonly view: MediaJob;
   readonly owner: MediaJobOwner;
@@ -22,8 +27,8 @@ export interface IPluginMediaService {
   readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   providers(): Promise<{ provider: string; definition: PluginMediaProviderRegistration['definition'] }[]>;
-  capabilities(query: MediaCapabilityQuery): Promise<MediaCapabilities | { providers: { provider: string; definition: PluginMediaProviderRegistration['definition'] }[] }>;
-  voices(query: MediaVoiceQuery): Promise<MediaVoicePage>;
+  capabilities(query: MediaCapabilityQuery, scope?: MediaScopeContext): Promise<MediaCapabilities | { providers: { provider: string; definition: PluginMediaProviderRegistration['definition'] }[] }>;
+  voices(query: MediaVoiceQuery, scope?: MediaScopeContext): Promise<MediaVoicePage>;
   managedSources(): Promise<import('@kiki/protocol').MediaManagedSource[]>;
   sourceSettings(input: { provider: string }): Promise<import('@kiki/protocol').MediaManagedSource>;
   updateSource(input: import('@kiki/protocol').MediaSourceUpdate): Promise<import('@kiki/protocol').MediaManagedSource>;

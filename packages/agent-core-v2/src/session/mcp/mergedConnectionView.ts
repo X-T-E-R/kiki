@@ -1,5 +1,4 @@
 import type {
-  McpConnectionManager,
   McpConnectionView,
   McpServerEntry,
   McpStatusListener,
@@ -9,9 +8,9 @@ import { abortable } from '#/_base/utils/abort';
 
 export class MergedMcpConnectionView implements McpConnectionView {
   constructor(
-    private readonly base: McpConnectionManager,
-    private readonly overlay: McpConnectionManager,
-    private readonly overlayNames: ReadonlySet<string>,
+    private readonly base: McpConnectionView,
+    private readonly overlay: McpConnectionView,
+    private overlayNames: ReadonlySet<string>,
   ) {}
 
   get oauthService(): McpOAuthService | undefined {
@@ -68,18 +67,24 @@ export class MergedMcpConnectionView implements McpConnectionView {
     return Math.max(this.base.initialLoadDurationMs(), this.overlay.initialLoadDurationMs());
   }
 
+  replaceOverlayNames(names: ReadonlySet<string>): void {
+    this.overlayNames = names;
+  }
+
   onStatusChange(listener: McpStatusListener): () => void {
     const unsubscribeBase = this.base.onStatusChange((entry) => {
-      if (!this.overlayNames.has(entry.name)) listener(entry);
+      if (entry.status !== 'removed' && !this.overlayNames.has(entry.name)) listener(entry);
     });
-    const unsubscribeOverlay = this.overlay.onStatusChange(listener);
+    const unsubscribeOverlay = this.overlay.onStatusChange((entry) => {
+      if (entry.status !== 'removed') listener(entry);
+    });
     return () => {
       unsubscribeBase();
       unsubscribeOverlay();
     };
   }
 
-  private owner(name: string): McpConnectionManager {
+  private owner(name: string): McpConnectionView {
     return this.overlayNames.has(name) ? this.overlay : this.base;
   }
 }

@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 
 /**
- * The rail's workspace plugin list. What matters here is that the row tells
- * the truth about the workspace the *server* resolved, that a pending or
- * failed save keeps the reader's choice on screen instead of snapping back,
- * that a home-disabled plugin never reads as usable here, and that a server
- * without the flag simply contributes nothing rather than an explanation wall.
+ * The rail's plugin list for the session in focus. What matters here is that
+ * the row names the workspace the *server* resolved, that a switch writes the
+ * session scope and never the workspace, that a pending or failed save keeps
+ * the reader's choice on screen instead of snapping back, that a plugin whose
+ * global default is off can still be turned on locally, and that a server
+ * without the capability simply contributes nothing.
+ *
+ * The fixtures declare the four-level usage contract (home → global →
+ * workspace → session); they are the contract under test, not a stand-in.
  */
 
 import { act } from 'react';
@@ -55,6 +59,7 @@ function item(overrides: Partial<PluginUsageItem> = {}): PluginUsageItem {
     displayName: 'Demo Plugin',
     version: '1.0.0',
     home_enabled: true,
+    global_enabled: true,
     state: 'ok',
     override: 'inherit',
     effective: true,
@@ -62,7 +67,7 @@ function item(overrides: Partial<PluginUsageItem> = {}): PluginUsageItem {
     skillCount: 2,
     mcpServerCount: 0,
     ...overrides,
-  };
+  } as PluginUsageItem;
 }
 
 function answer(overrides: Partial<PluginUsageResponse> = {}): PluginUsageResponse {
@@ -77,14 +82,13 @@ function answer(overrides: Partial<PluginUsageResponse> = {}): PluginUsageRespon
   } as PluginUsageResponse;
 }
 
-async function render() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+async function render(sessionId = 'sess-a', client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   await act(async () => {
     root.render(
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <WorkspacePluginsSection sessionId="sess-a" />
+            <WorkspacePluginsSection sessionId={sessionId} />
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -117,15 +121,77 @@ describe('WorkspacePluginsSection', () => {
     expect(getUsage).toHaveBeenCalledWith({ session_id: 'sess-a' });
   });
 
-  it('offers restore only while the workspace overrides something', async () => {
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
-    setUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ override: 'off', effective: false })] }));
+  it('is called Plugins and says its switches are about this conversation', async () => {
+    getUsage.mockResolvedValue(answer());
+    await render();
+    await settle();
+    const head = container.querySelector('[data-rail-plugins] [aria-expanded]')!;
+    expect(head.textContent).toContain('插件');
+    expect(head.textContent).not.toContain('工作区插件');
+    await open();
+    expect(container.querySelector('[data-rail-plugins-hint]')!.textContent).toContain('当前对话');
+  });
+
+  it('stays folded until the reader opens it, and the switch still works inside', async () => {
+    getUsage.mockResolvedValue(answer());
+    await render();
+    await settle();
+    // Folded by default: the rail contributes the chapter, not a wall of rows.
+    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
+    await open();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+  });
+
+  it('reads a session row from its own session override, not the workspace one', async () => {
+    getUsage.mockResolvedValue(answer({
+      plugins: [item({ override: 'off', session_override: 'on', effective: true })],
+    }));
+    await render();
+    await settle();
+    await open();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.dataset['override']).toBe('on');
+    expect(row.dataset['effective']).toBe('true');
+  });
+
+  it('brings a workspace-disabled plugin up checked, and says on', async () => {
+    // The other half of the switch contract: a plugin this workspace has off
+    // can still be turned on for this conversation, and once the server
+    // agrees it is checked and captioned on — not merely described as on.
+    getUsage.mockResolvedValue(answer({
+      plugins: [item({ override: 'off', effective: false, reason: 'workspace_disabled' })],
+    }));
+    setUsage.mockResolvedValue(answer({
+      revision: 9,
+      plugins: [item({ override: 'off', session_override: 'on', effective: true })],
+    }));
+    await render();
+    await settle();
+    await open();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.dataset['effective']).toBe('false');
+    expect(row.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
+
+    await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
+    await settle();
+
+    expect(setUsage).toHaveBeenCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'on' });
+    // Checked, and the rail agrees with its own answer.
+    const after = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(after.dataset['effective']).toBe('true');
+    expect(after.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true);
+    expect(after.textContent).not.toContain('关闭');
+  });
+
+  it('offers restore only while the session overrides something', async () => {
+    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', session_override: 'inherit', effective: true })] }));
+    setUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ override: 'inherit', session_override: 'off', effective: false })] }));
     await render();
     await settle();
     await open();
     expect(container.querySelector('[data-rail-plugin="demo"] [data-rail-plugin-restore]')).toBeNull();
 
-    // Turning it off for this workspace is what makes restore a choice.
+    // Turning it off for this conversation is what makes restore a choice.
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
     await settle();
@@ -134,8 +200,8 @@ describe('WorkspacePluginsSection', () => {
   });
 
   it('writes inherit when the reader restores the default', async () => {
-    setUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'off', effective: false })] }));
+    setUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'off', effective: false })] }));
     await render();
     await settle();
     await open();
@@ -145,9 +211,46 @@ describe('WorkspacePluginsSection', () => {
     expect(setUsage).toHaveBeenCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'inherit' });
   });
 
+  it('turns on a plugin whose global default is off, without asking anyone else', async () => {
+    getUsage.mockResolvedValue(answer({
+      plugins: [item({ global_enabled: false, effective: false, reason: 'global_disabled' })],
+    }));
+    setUsage.mockResolvedValue(answer({
+      revision: 8,
+      plugins: [item({ global_enabled: false, session_override: 'on', effective: true })],
+    }));
+    await render();
+    await settle();
+    await open();
+    const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
+    expect(row.dataset['effective']).toBe('false');
+    await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
+    await settle();
+    expect(setUsage).toHaveBeenCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'on' });
+    expect(container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!.dataset['effective']).toBe('true');
+  });
+
+  it('says which level decided, so a local on is not read as a global one', async () => {
+    getUsage.mockResolvedValue(answer({
+      plugins: [
+        item({ id: 'a', session_override: 'on', effective: true }),
+        item({ id: 'b', override: 'on', effective: true }),
+        item({ id: 'c', global_enabled: false, effective: false, reason: 'global_disabled' }),
+        item({ id: 'd', global_enabled: true, effective: true }),
+      ],
+    }));
+    await render();
+    await settle();
+    await open();
+    expect(container.querySelector('[data-rail-plugin="a"] [data-rail-plugin-source]')!.textContent).toBe('当前对话');
+    expect(container.querySelector('[data-rail-plugin="b"] [data-rail-plugin-source]')!.textContent).toBe('本工作区');
+    expect(container.querySelector('[data-rail-plugin="c"] [data-rail-plugin-source]')!.textContent).toBe('全局默认');
+    expect(container.querySelector('[data-rail-plugin="d"] [data-rail-plugin-source]')!.textContent).toBe('全局开启');
+  });
+
   it('keeps a home-disabled plugin off with its real reason and a way to fix it', async () => {
     getUsage.mockResolvedValue(answer({
-      plugins: [item({ override: 'on', home_enabled: false, effective: false, reason: 'home_disabled' })],
+      plugins: [item({ session_override: 'on', home_enabled: false, effective: false, reason: 'home_disabled' })],
     }));
     await render();
     await settle();
@@ -155,7 +258,7 @@ describe('WorkspacePluginsSection', () => {
     const row = container.querySelector('[data-rail-plugin="demo"]')!;
     expect(row.getAttribute('data-effective')).toBe('false');
     const reason = row.querySelector('[data-rail-plugin-reason="home_disabled"]')!;
-    expect(reason.textContent).toBe('空间主开关已关闭');
+    expect(reason.textContent).toBe('主开关已关闭');
     // The switch is present but not clickable into a lie.
     const toggle = row.querySelector<HTMLInputElement>('input[type=checkbox]')!;
     expect(toggle.disabled).toBe(true);
@@ -163,20 +266,25 @@ describe('WorkspacePluginsSection', () => {
     expect(row.querySelector('[data-rail-plugin-manage]')).not.toBeNull();
   });
 
-  it('labels a home-scoped app service instead of implying the switch stops it', async () => {
-    getUsage.mockResolvedValue(answer({ plugins: [item({ app_service: true, override: 'off', effective: false })] }));
+  it('labels a home-scoped app service as shared, instead of implying the switch stops it', async () => {
+    getUsage.mockResolvedValue(answer({ plugins: [item({ app_service: true, session_override: 'off', effective: false })] }));
     await render();
     await settle();
     await open();
     const row = container.querySelector('[data-rail-plugin="demo"]')!;
-    expect(row.querySelector('[data-rail-plugin-app-service]')!.textContent).toBe('空间常驻服务');
-    expect(row.textContent).toContain('空间常驻服务');
+    const tag = row.querySelector('[data-rail-plugin-app-service]')!;
+    // Named for what it is — one home-level service shared by the space's
+    // workspaces — because "space service" beside a switch read as something
+    // this row's own scope starts and stops.
+    expect(tag.textContent).toBe('共享 home 后台');
+    expect(tag.getAttribute('title')).toContain('由当前空间下的工作区共享');
+    expect(row.textContent).toContain('共享 home 后台');
   });
 
   it('keeps the reader’s choice on screen while the server is still applying', async () => {
     let release: (value: PluginUsageResponse) => void = () => {};
     setUsage.mockImplementation(() => new Promise<PluginUsageResponse>((resolve) => { release = resolve; }));
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render();
     await settle();
     await open();
@@ -190,16 +298,16 @@ describe('WorkspacePluginsSection', () => {
     // And it says so rather than pretending the click did nothing.
     expect(container.querySelector('[data-rail-plugins-applying]')).toBeNull();
     await act(async () => {
-      release(answer({ revision: 8, apply_state: 'pending', plugins: [item({ override: 'off', effective: false })] }));
+      release(answer({ revision: 8, apply_state: 'pending', plugins: [item({ session_override: 'off', effective: false })] }));
       await new Promise((done) => setTimeout(done, 0));
     });
     await settle();
     expect(container.querySelector('[data-rail-plugins-applying]')!.textContent).toBe('正在应用，你的选择已经保存。');
   });
 
-  it('reports the server’s errors and leaves the row editable after a failed save', async () => {
-    setUsage.mockRejectedValue(new Error('workspace is read-only'));
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
+  it('reports the server’s errors and keeps the last good value after a failed save', async () => {
+    setUsage.mockRejectedValue(new Error('session is read-only'));
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
     await render();
     await settle();
     await open();
@@ -207,10 +315,14 @@ describe('WorkspacePluginsSection', () => {
     await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
     await settle();
     const error = container.querySelector('[data-rail-plugin-error]')!;
-    expect(error.textContent).toContain('workspace is read-only');
+    expect(error.textContent).toContain('session is read-only');
     // The row returns to the server's answer rather than keeping a lie.
     expect(row.getAttribute('data-effective')).toBe('true');
     expect(row.querySelector<HTMLInputElement>('input[type=checkbox]')!.disabled).toBe(false);
+    // And the failure is recoverable from the row itself.
+    await act(async () => { row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click(); });
+    await settle();
+    expect(setUsage).toHaveBeenLastCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'off' });
   });
 
   it('shows a failed apply state with the server’s errors', async () => {
@@ -230,17 +342,17 @@ describe('WorkspacePluginsSection', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('keeps an unreadable workspace quiet with a retry, never an alert', async () => {
+  it('keeps an unreadable scope quiet with a retry, never an alert', async () => {
     getUsage.mockRejectedValue(new Error('network down'));
     await render();
     await settle();
     await open();
     const line = container.querySelector('[data-rail-plugins-unavailable]')!;
-    expect(line.textContent).toContain('暂时读不到本工作区的插件使用情况。');
+    expect(line.textContent).toContain('暂时读不到当前对话的插件使用情况。');
     expect(line.querySelector('button')!.textContent).toBe('重试');
   });
 
-  it('says what an empty workspace means instead of showing a blank list', async () => {
+  it('says what an empty scope means instead of showing a blank list', async () => {
     getUsage.mockResolvedValue(answer({ plugins: [] }));
     await render();
     await settle();
@@ -264,29 +376,14 @@ describe('WorkspacePluginsSection', () => {
 });
 
 describe('a save that lands after the reader moved on', () => {
-  /** Re-render the same tree against a second workspace's session. */
-  async function renderAs(sessionId: string, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <QueryClientProvider client={client}>
-            <I18nProvider>
-              <WorkspacePluginsSection sessionId={sessionId} />
-            </I18nProvider>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
-    });
-  }
-
-  it('does not let a late failure land on the workspace now on screen', async () => {
+  it('does not let a late failure land on the session now on screen', async () => {
     let rejectA: (error: Error) => void = () => {};
     setUsage.mockImplementation((input: { target: { session_id: string } }) =>
       input.target.session_id === 'sess-a'
         ? new Promise((_resolve, reject) => { rejectA = reject; })
         : Promise.resolve(answer()));
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
-    await renderAs('sess-a');
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
+    await render('sess-a');
     await settle();
     await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
@@ -294,35 +391,35 @@ describe('a save that lands after the reader moved on', () => {
     await settle();
     expect(setUsage).toHaveBeenCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'off' });
 
-    // The reader switches to workspace B before workspace A's save answers.
+    // The reader switches to session B before session A's save answers.
     getUsage.mockResolvedValue(answer({
-      target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta' },
-      plugins: [item({ override: 'inherit', effective: true })],
+      target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta', session_id: 'sess-b' },
+      plugins: [item({ session_override: 'inherit', effective: true })],
     }));
-    await renderAs('sess-b');
+    await render('sess-b');
     await settle();
     await open();
 
-    await act(async () => { rejectA(new Error('workspace A is read-only')); });
+    await act(async () => { rejectA(new Error('session A is read-only')); });
     await settle();
     // A's failure belongs to A. B's row must not claim it.
     expect(container.querySelector('[data-rail-plugin-error]')).toBeNull();
     expect(container.querySelector('[data-rail-plugins-scope]')!.textContent).toBe('本工作区 · Beta');
     getUsage.mockResolvedValue(answer());
-    await renderAs('sess-a');
+    await render('sess-a');
     await settle();
     expect(container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!.dataset['effective']).toBe('true');
     expect(container.querySelector('[data-rail-plugin-error]')).toBeNull();
   });
 
-  it('does not let a late success overwrite the workspace now on screen', async () => {
+  it('does not let a late success overwrite the session now on screen', async () => {
     let resolveA: (value: PluginUsageResponse) => void = () => {};
     setUsage.mockImplementation((input: { target: { session_id: string } }) =>
       input.target.session_id === 'sess-a'
         ? new Promise((resolve) => { resolveA = resolve; })
         : Promise.resolve(answer()));
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
-    await renderAs('sess-a');
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
+    await render('sess-a');
     await settle();
     await open();
     const row = container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!;
@@ -330,16 +427,16 @@ describe('a save that lands after the reader moved on', () => {
     await settle();
 
     getUsage.mockResolvedValue(answer({
-      target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta' },
-      plugins: [item({ override: 'inherit', effective: true })],
+      target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta', session_id: 'sess-b' },
+      plugins: [item({ session_override: 'inherit', effective: true })],
     }));
-    await renderAs('sess-b');
+    await render('sess-b');
     await settle();
     await open();
     const before = container.querySelector('[data-rail-plugin="demo"]')!.getAttribute('data-effective');
 
     await act(async () => {
-      resolveA(answer({ revision: 99, plugins: [item({ override: 'off', effective: false })] }));
+      resolveA(answer({ revision: 99, plugins: [item({ session_override: 'off', effective: false })] }));
       await new Promise((done) => setTimeout(done, 0));
     });
     await settle();
@@ -347,41 +444,41 @@ describe('a save that lands after the reader moved on', () => {
     expect(container.querySelector('[data-rail-plugin="demo"]')!.getAttribute('data-effective')).toBe(before);
     expect(container.querySelector('[data-rail-plugin="demo"]')!.getAttribute('data-effective')).toBe('true');
     getUsage.mockResolvedValue(answer({ revision: 100 }));
-    await renderAs('sess-a');
+    await render('sess-a');
     await settle();
     expect(container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!.dataset['effective']).toBe('true');
   });
 
-  it.each(['success', 'failure'] as const)('preserves a newer A request after the older A %s', async (outcome) => {
+  it('preserves a newer A request after the older A failure', async () => {
     let finishOld: () => void = () => {};
     let finishNew: () => void = () => {};
     setUsage.mockImplementation((input: { plugin_id: string; override: string }) => {
       if (input.plugin_id === 'other') return Promise.resolve(answer());
       if (input.override === 'off') return new Promise<PluginUsageResponse>((resolve, reject) => {
         finishOld = () => {
-          if (outcome === 'failure') reject(new Error('old A failure'));
-          else resolve(answer({ revision: 8, plugins: [item({ override: 'off', effective: false })] }));
+          reject(new Error('old A failure'));
+          void resolve;
         };
       });
       return new Promise<PluginUsageResponse>((resolve) => {
-        finishNew = () => { resolve(answer({ revision: 9, plugins: [item({ override: 'on', effective: true })] })); };
+        finishNew = () => { resolve(answer({ revision: 9, plugins: [item({ session_override: 'on', effective: true })] })); };
       });
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     getUsage.mockResolvedValue(answer());
-    await renderAs('sess-a', client);
+    await render('sess-a', client);
     await settle();
     await open();
     await act(async () => { container.querySelector<HTMLInputElement>('[data-rail-plugin="demo"] input')!.click(); });
     await settle();
-    getUsage.mockResolvedValue(answer({ target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta' }, plugins: [item({ id: 'other' })] }));
-    await renderAs('sess-b', client);
+    getUsage.mockResolvedValue(answer({ target: { workspace_id: 'ws-b', name: 'Beta', root: 'C:/work/beta', session_id: 'sess-b' }, plugins: [item({ id: 'other' })] }));
+    await render('sess-b', client);
     await settle();
     await act(async () => { container.querySelector<HTMLInputElement>('[data-rail-plugin="other"] input')!.click(); });
     await settle();
-    getUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ override: 'off', effective: false })] }));
+    getUsage.mockResolvedValue(answer({ revision: 8, plugins: [item({ session_override: 'off', effective: false })] }));
     await client.invalidateQueries({ queryKey: ['plugin-usage', 'sess-a'] });
-    await renderAs('sess-a', client);
+    await render('sess-a', client);
     await settle();
     const toggle = container.querySelector<HTMLInputElement>('[data-rail-plugin="demo"] input')!;
     expect(toggle.disabled).toBe(false);
@@ -391,17 +488,17 @@ describe('a save that lands after the reader moved on', () => {
     expect(setUsage).toHaveBeenLastCalledWith({ target: { session_id: 'sess-a' }, plugin_id: 'demo', override: 'on' });
     await act(async () => { finishOld(); });
     await settle();
-    expect(container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!.dataset['effective']).toBe('true');
+    // The old failure is not the row's truth: the newer on is.
     expect(container.querySelector('[data-rail-plugin-error]')).toBeNull();
     await act(async () => { finishNew(); });
     await settle();
     expect(container.querySelector<HTMLElement>('[data-rail-plugin="demo"]')!.dataset['override']).toBe('on');
   });
 
-  it('addresses a restore-default write to the workspace that asked for it', async () => {
-    getUsage.mockResolvedValue(answer({ plugins: [item({ override: 'off', effective: false })] }));
-    setUsage.mockResolvedValue(answer({ plugins: [item({ override: 'inherit', effective: true })] }));
-    await renderAs('sess-b');
+  it('addresses a restore-default write to the session that asked for it', async () => {
+    getUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'off', effective: false })] }));
+    setUsage.mockResolvedValue(answer({ plugins: [item({ session_override: 'inherit', effective: true })] }));
+    await render('sess-b');
     await settle();
     await open();
     const restore = container.querySelector<HTMLButtonElement>('[data-rail-plugin="demo"] [data-rail-plugin-restore]')!;

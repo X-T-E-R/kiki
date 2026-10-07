@@ -159,12 +159,41 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
               {[plugin.version !== undefined ? `v${plugin.version}` : undefined, plugin.id]
                 .filter((part) => part !== undefined).join(' · ')}
             </span>
+            {/* The global default is a separate fact from the master switch
+                beside the name. A plugin installed with "decide later" keeps the
+                master on and this off, so printing only the master would read
+                as "on everywhere". */}
+            <span
+              className="mt-0.5 block truncate text-[11px] leading-4 text-ink-faint"
+              title={t('st.plugins.globalDefaultHint')}
+              data-plugin-global-default={plugin.globalEnabled ? 'on' : 'off'}
+            >
+              {plugin.globalEnabled ? t('st.plugins.globalDefaultOn') : t('st.plugins.globalDefaultOff')}
+            </span>
           </span>
           <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
         </button>
+        {/* The way back from "decide later", kept out of the name button so
+            setting the default never reads as opening this plugin's page. The
+            master switch cannot express it: it is already on, and turning it
+            off first would revoke an authorization this plugin may have. */}
+        {plugin.enabled && !plugin.globalEnabled ? (
+          <button
+            type="button"
+            data-plugin-enable-everywhere={plugin.id}
+            disabled={busy}
+            onClick={() => { void toggle(true); }}
+            title={t('st.plugins.enableEverywhereHint')}
+            className="shrink-0 rounded text-[11px] leading-4 text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50"
+          >
+            {t('st.plugins.enableEverywhere')}
+          </button>
+        ) : null}
         <span className="shrink-0">
           <Toggle
-            label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}
+            // The master switch, named as such: "On" beside a plugin whose
+            // global default is off would otherwise read as "on everywhere".
+            label={plugin.enabled ? t('st.plugins.masterOn') : t('st.plugins.masterOff')}
             checked={plugin.enabled}
             disabled={busy}
             onChange={(checked) => { void toggle(checked); }}

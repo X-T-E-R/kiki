@@ -24,6 +24,7 @@ export interface InstallPluginInput {
   readonly sha256?: string;
   readonly fingerprint?: string;
   readonly consent?: boolean;
+  readonly defaultEnabled?: boolean;
 }
 
 export interface SetPluginEnabledInput {
@@ -63,17 +64,17 @@ export interface IPluginService {
   removePlugin(input: RemovePluginInput): Promise<void>;
   reloadPlugins(): Promise<ReloadSummary>;
   getPluginInfo(input: GetPluginInfoInput): Promise<PluginInfo>;
-  listPluginCommands(workspaceId?: string): Promise<readonly PluginCommandDef[]>;
+  listPluginCommands(workspaceId?: string, sessionId?: string): Promise<readonly PluginCommandDef[]>;
   checkUpdates(): Promise<readonly PluginUpdateStatus[]>;
-  pluginSkillRoots(workspaceId?: string): Promise<readonly SkillRoot[]>;
+  pluginSkillRoots(workspaceId?: string, sessionId?: string): Promise<readonly SkillRoot[]>;
   pluginSkillOwner(path: string): Promise<string | undefined>;
-  pluginAgentRoots(workspaceId?: string): Promise<readonly PluginAgentRoot[]>;
-  enabledSessionStarts(workspaceId?: string): Promise<readonly EnabledPluginSessionStart[]>;
-  enabledSystemPrompts(workspaceId?: string): Promise<readonly EnabledPluginSystemPrompt[]>;
-  enabledMcpServers(workspaceId?: string): Promise<Record<string, McpServerConfig>>;
+  pluginAgentRoots(workspaceId?: string, sessionId?: string): Promise<readonly PluginAgentRoot[]>;
+  enabledSessionStarts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSessionStart[]>;
+  enabledSystemPrompts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSystemPrompt[]>;
+  enabledMcpServers(workspaceId?: string, sessionId?: string): Promise<Record<string, McpServerConfig>>;
   mcpServerEntries(): Promise<readonly PluginMcpServerEntry[]>;
-  enabledHooks(workspaceId?: string): Promise<readonly HookDef[]>;
-  enabledHookRules(workspaceId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]>;
+  enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]>;
+  enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]>;
   hasLoadedSnapshot(): boolean;
   readonly onWillChange: Event<PluginChangeEvent>;
   readonly onDidReload: Event<PluginReloadEvent>;

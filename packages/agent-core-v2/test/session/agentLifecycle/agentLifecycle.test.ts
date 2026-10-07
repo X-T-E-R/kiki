@@ -152,9 +152,7 @@ const pluginServiceStub = {
   setPluginMcpServerEnabled: async () => {},
   removePlugin: async () => {},
   reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-  getPluginInfo: async () => {
-    throw new Error('getPluginInfo is not used by these tests');
-  },
+  getPluginInfo: async ({ id }: { id: string }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }),
   listPluginCommands: async () => [],
   checkUpdates: async () => [],
   pluginSkillRoots: async () => [],

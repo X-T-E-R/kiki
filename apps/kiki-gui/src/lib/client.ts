@@ -736,6 +736,7 @@ export interface PluginSummary {
   /** Manifest icon inlined as a `data:` URI (svg/png); inert in an `<img>`. */
   readonly icon?: string;
   readonly enabled: boolean;
+  readonly globalEnabled: boolean;
   readonly state: 'ok' | 'error';
   readonly skillCount: number;
   readonly mcpServerCount: number;
@@ -2006,6 +2007,14 @@ export class KikiClient {
     return this.run(this.rest.workspaces.setPinned(workspaceId, pinned));
   }
 
+  getWorkspaceTrust(workspaceId: string): Promise<{ readonly trusted: boolean }> {
+    return this.run(this.rest.workspaces.trust(workspaceId));
+  }
+
+  setWorkspaceTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }> {
+    return this.run(this.rest.workspaces.setTrust(workspaceId, trusted));
+  }
+
   /** `DELETE /api/workspaces/{id}` — unregister (does not remove on-disk content). */
   removeWorkspace(workspaceId: string): Promise<{ deleted: true }> {
     return this.run(this.rest.workspaces.remove(workspaceId));
@@ -2455,6 +2464,7 @@ export class KikiClient {
     readonly sha256?: string;
     readonly fingerprint: string;
     readonly consent: boolean;
+    readonly defaultEnabled?: boolean;
   }): Promise<PluginSummary> {
     return this.run(this.rest.plugins.install(input) as Promise<PluginSummary>);
   }

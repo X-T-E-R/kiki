@@ -32,6 +32,9 @@ const { selectFilesNative, readClipboardFiles, connectionScope, onFileDrop, desk
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
+const getPluginUsage = vi.fn();
+const setPluginUsage = vi.fn();
+const listPlugins = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listExecutors = vi.fn();
 const getConfig = vi.fn();
@@ -51,6 +54,27 @@ const EXECUTOR_ITEMS = [
 /** The native engine with the default main profile: an ordinary new session. */
 const NATIVE_AGENT = { executor: 'native', profile: 'agent', overrides: undefined } as const;
 
+/**
+ * A conversation's plugin usage: one plugin the global default has on, and
+ * one whose global default is off but that this conversation turned on. The
+ * fixtures declare the four-level contract (home → global → workspace →
+ * session); they are the contract under test, not a stand-in for the server.
+ */
+function PLUGIN_USAGE(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    home_id: 'home-1',
+    target: { workspace_id: 'ws-a', name: 'Alpha', root: 'C:/work/alpha', session_id: 'session-1' },
+    revision: 4,
+    apply_state: 'applied',
+    errors: [],
+    plugins: [
+      { id: 'global-on', displayName: 'Global On', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', effective: true, app_service: false, skillCount: 1, mcpServerCount: 0 },
+      { id: 'here-on', displayName: 'Here On', home_enabled: true, global_enabled: false, state: 'ok', override: 'inherit', session_override: 'on', effective: true, app_service: false, skillCount: 0, mcpServerCount: 2 },
+    ],
+    ...overrides,
+  };
+}
+
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     connectionId: connectionScope.id,
@@ -61,6 +85,9 @@ vi.mock('../state/connection', () => ({
       listModels,
       listSessionSkills,
       listWorkspaceSkills,
+      getPluginUsage,
+      setPluginUsage,
+      listPlugins,
       listNamedAgentProfiles,
       listExecutors,
       getConfig,
@@ -107,6 +134,9 @@ beforeEach(() => {
     profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
+  listPlugins.mockReset().mockResolvedValue({ plugins: [] });
+  getPluginUsage.mockReset().mockResolvedValue(PLUGIN_USAGE());
+  setPluginUsage.mockReset().mockResolvedValue(PLUGIN_USAGE({ revision: 5 }));
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   meta.mockReset().mockResolvedValue({ experimental_flags: { native_ssh: false } });
   sshList.mockReset().mockResolvedValue({ hosts: [sshHost] });
@@ -3643,5 +3673,196 @@ describe('session SSH stays resident and rides no message', () => {
     const { container } = await renderComposer();
     expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
     expect(container.querySelector('[data-model-switch-error]')).toBeNull();
+  });
+});
+
+/**
+ * The ＋ menu's plugin list.
+ *
+ * A plugin is not a prompt: picking one writes a session override and nothing
+ * else. These cases hold the three ways that could go wrong — it entering the
+ * draft, it sending something, and a refused write leaving a switch that reads
+ * on — and pin each one.
+ */
+describe('composer plugin picker', () => {
+  /** ＋ → Plugins ▸ */
+  async function openPlugins(container: HTMLDivElement): Promise<HTMLDivElement> {
+    await openAddMenu(container);
+    await click(container.querySelector<HTMLButtonElement>('[data-add-menu-plugins]')!);
+    await settle();
+    return container;
+  }
+
+  it('lists the conversation’s plugins with what they add, and never contradicts its own switch', async () => {
+    getPluginUsage.mockResolvedValue(PLUGIN_USAGE({
+      plugins: [
+        { id: 'global-on', displayName: 'Global On', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', effective: true, app_service: false, skillCount: 1, mcpServerCount: 0 },
+        { id: 'here-on', displayName: 'Here On', home_enabled: true, global_enabled: false, state: 'ok', override: 'inherit', session_override: 'on', effective: true, app_service: false, skillCount: 0, mcpServerCount: 2 },
+        // Off by the WORKSPACE, and this conversation only inherits it: the row
+        // must read off, and must not claim this conversation turned it on.
+        { id: 'ws-off', displayName: 'Workspace Off', home_enabled: true, global_enabled: true, state: 'ok', override: 'off', effective: false, reason: 'workspace_disabled', app_service: false, skillCount: 0, mcpServerCount: 0 },
+      ],
+    }));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openPlugins(container);
+
+    const stateOf = (id: string) => ({
+      text: container.querySelector(`[data-add-plugin="${id}"]`)!.textContent ?? '',
+      checked: container.querySelector<HTMLInputElement>(`[data-add-plugin="${id}"] input[type=checkbox]`)!.checked,
+    });
+
+    const globalRow = stateOf('global-on');
+    expect(globalRow.text).toContain('Global On');
+    expect(globalRow.text).toContain('1 skills');
+    expect(globalRow.checked).toBe(true);
+    expect(globalRow.text).toContain('On everywhere by default');
+
+    // A plugin this conversation turned on over an off global default says so,
+    // so a local `on` is never read as a global one.
+    const hereRow = stateOf('here-on');
+    expect(hereRow.text).toContain('2 MCP');
+    expect(hereRow.checked).toBe(true);
+    expect(hereRow.text).toContain('On for this conversation');
+
+    // The two contradictions this pins down. First: switch off, so the
+    // caption says off — naming the scope would have said "on" beside an off
+    // switch. Second, and the one that took a screenshot to see: the value was
+    // decided by the WORKSPACE, so the caption may not claim this conversation
+    // turned it off. The rail tags this same row "this workspace".
+    const offRow = stateOf('ws-off');
+    expect(offRow.checked).toBe(false);
+    expect(offRow.text).toContain('Off for this workspace');
+    expect(offRow.text).not.toContain('Off for this conversation');
+    expect(offRow.text).not.toContain('On everywhere by default');
+  });
+
+  it('names the level that decided a row, in the rail’s own vocabulary', async () => {
+    // One row per reachable level, all reading the same conversation. A picker
+    // with its own narrower rule reported three of these as the wrong one.
+    getPluginUsage.mockResolvedValue(PLUGIN_USAGE({
+      plugins: [
+        { id: 'by-home', displayName: 'By Home', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', effective: true, app_service: false, skillCount: 0, mcpServerCount: 0 },
+        { id: 'by-global-off', displayName: 'By Global Off', home_enabled: true, global_enabled: false, state: 'ok', override: 'inherit', effective: false, reason: 'global_disabled', app_service: false, skillCount: 0, mcpServerCount: 0 },
+        { id: 'by-workspace', displayName: 'By Workspace', home_enabled: true, global_enabled: false, state: 'ok', override: 'on', effective: true, app_service: false, skillCount: 0, mcpServerCount: 0 },
+        { id: 'by-session', displayName: 'By Session', home_enabled: true, global_enabled: false, state: 'ok', override: 'inherit', session_override: 'off', effective: false, app_service: false, skillCount: 0, mcpServerCount: 0 },
+      ],
+    }));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openPlugins(container);
+    const caption = (id: string) => container.querySelector(`[data-add-plugin="${id}"]`)!.textContent ?? '';
+
+    // Nobody overrode it and it is on: the home default decided.
+    expect(caption('by-home')).toContain('On everywhere by default');
+    // Nobody overrode it and it is off: the global default decided, and this
+    // conversation had nothing to do with it. (The row's text carries the
+    // switch's screen-reader label too, so the negative is the caption for
+    // *this conversation* being off, not the words "this conversation".)
+    expect(caption('by-global-off')).toContain('Off by the global default');
+    expect(caption('by-global-off')).not.toContain('Off for this conversation');
+    // The workspace turned it on; this conversation only inherits it. Saying
+    // "for this conversation" here would move the decision one level down.
+    expect(caption('by-workspace')).toContain('On for this workspace');
+    expect(caption('by-workspace')).not.toContain('On for this conversation');
+    // This conversation turned it off over an on global default.
+    expect(caption('by-session')).toContain('Off for this conversation');
+    expect(caption('by-session')).not.toContain('this workspace');
+  });
+
+  it('really turns the plugin on in both surfaces, not just in the menu', async () => {
+    getPluginUsage.mockResolvedValue(PLUGIN_USAGE({
+      plugins: [
+        { id: 'global-on', displayName: 'Global On', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', effective: true, app_service: false, skillCount: 1, mcpServerCount: 0 },
+      ],
+    }));
+    // The write answers with the server's own effective answer, which is what
+    // both surfaces must then read.
+    setPluginUsage.mockResolvedValueOnce(PLUGIN_USAGE({
+      revision: 5,
+      plugins: [
+        { id: 'global-on', displayName: 'Global On', home_enabled: true, global_enabled: true, state: 'ok', override: 'inherit', session_override: 'off', effective: false, app_service: false, skillCount: 1, mcpServerCount: 0 },
+      ],
+    }));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openPlugins(container);
+    const pick = () => container.querySelector<HTMLInputElement>('[data-add-plugin="global-on"] input[type=checkbox]')!;
+    expect(pick().checked).toBe(true);
+
+    // A pointer hits the switch's label, which owns the checkbox; clicking the
+    // row wrapper is not what a reader does.
+    await click(container.querySelector('[data-add-plugin="global-on"] label')!);
+    await settle();
+    await settle();
+    // The menu's own switch follows the server, and it reads off.
+    expect(pick().checked).toBe(false);
+    expect(container.querySelector('[data-add-plugin="global-on"]')!.textContent).toContain('Off for this conversation');
+
+    // And the rail, reading the same session, shows the same thing. Without
+    // this the two surfaces could disagree and both look right alone.
+    const railRow = container.querySelector<HTMLElement>('[data-rail-plugin="global-on"]');
+    if (railRow !== null) {
+      expect(railRow.dataset['effective']).toBe('false');
+      expect(railRow.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
+    }
+  });
+
+  it('writes only the session override, and never touches the draft or sends', async () => {
+    const onChange = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'session-1', value: 'draft text', onChange, onSend });
+    await openPlugins(container);
+    await click(container.querySelector<HTMLInputElement>('[data-add-plugin="global-on"] input[type=checkbox]')!);
+    await settle();
+    await settle();
+
+    expect(setPluginUsage).toHaveBeenCalledWith({ target: { session_id: 'session-1' }, plugin_id: 'global-on', override: 'off' });
+    // Enabling a plugin is not a message and not an edit: neither happened.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('draft text');
+  });
+
+  it('offers no plugin row where there is no conversation to scope one to', async () => {
+    const { container } = await renderComposer({ sessionId: undefined });
+    await openAddMenu(container);
+    expect(container.querySelector('[data-add-menu-plugins]')).toBeNull();
+    expect(getPluginUsage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the row where the server left it when the write is refused', async () => {
+    setPluginUsage.mockRejectedValueOnce(new Error('session is read-only'));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openPlugins(container);
+    const row = () => container.querySelector('[data-add-plugin="global-on"]')!;
+    expect(row().querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true);
+
+    await click(row().querySelector<HTMLInputElement>('input[type=checkbox]')!);
+    await settle();
+    await settle();
+    // A refused write must not leave a switch reading as something it is not.
+    expect(row().querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true);
+  });
+
+  it('explains a plugin the master switch denies instead of offering it silently', async () => {
+    getPluginUsage.mockResolvedValue(PLUGIN_USAGE({
+      plugins: [
+        { id: 'denied', displayName: 'Denied', home_enabled: false, global_enabled: true, state: 'ok', override: 'inherit', effective: false, reason: 'home_disabled', app_service: false, skillCount: 0, mcpServerCount: 0 },
+      ],
+    }));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openPlugins(container);
+    const row = container.querySelector('[data-add-plugin="denied"]')!;
+    expect(row.textContent).toContain('The master switch is off');
+    expect(row.querySelector<HTMLInputElement>('input[type=checkbox]')!.disabled).toBe(true);
+  });
+
+  it('searches plugins by name alongside skills and files', async () => {
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openAddMenu(container);
+    const search = container.querySelector<HTMLInputElement>('[data-add-search]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setter.call(search, 'Here'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle();
+    expect(container.querySelector('[data-add-plugin="here-on"]')).not.toBeNull();
+    expect(container.querySelector('[data-add-plugin="global-on"]')).toBeNull();
   });
 });

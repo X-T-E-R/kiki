@@ -142,6 +142,12 @@ A plugin whose manifest declares no settings still gets its page: the fields are
 
 The page has its own address, so you can copy it, refresh, or use the browser's back button and come back to the same plugin. The plugin's **Plugin settings** entry on the Capabilities page leads to it, and so does the package button on a [media source](../customization/plugins.md#configuring-a-source).
 
+## Workspaces
+
+**Settings → Workspaces** lists the folders known to this server. Open a row to configure that workspace on its own page (`/settings/workspaces?workspace=<id>`): rename it, pin it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. Its root path is shown for identification, not edited here.
+
+**Workspace trust** controls whether Kiki loads that project's configuration, MCP servers and hooks, and permits its project profiles to name external executors. Trust changes only when you explicitly use the switch; opening the page grants nothing and does not change tool approval mode. The **Agents**, **MCP servers** and **Skills** links keep this workspace as their target. Profiles retain their file source and write scope. MCP entries from plugins or project files are read-only here; editable user entries still save to the user configuration, not a new workspace copy. A missing workspace is reported rather than silently switching to another one.
+
 ## Computer control
 
 **Settings → Computer control** drives the desktop of the machine running the Kiki server, through a pinned open-source executor. Nothing is installed or configured by default, so the page starts empty.
@@ -161,6 +167,8 @@ The **Composer → Persist composer drafts** toggle controls whether new-session
 Open **Dispatch capabilities** — next to the new-session workspace selector, or in a session's right rail — to inspect a subagent's profile (configuration file), route, and executor, plus where the default model and effort come from. Default configuration validity and permission to launch are shown separately. See [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
 
 ## Session controls
+
+**Settings → Sessions → Import history** opens Kiki's built-in importer, also available from **New session**. No plugin installation or activation is needed for the built-in formats; see [Session history import](../customization/plugins.md#session-history-import).
 
 **Settings → Sessions → Manage archived conversations** opens a separate page for browsing, searching and reading archived conversations. It also offers permanent deletion of one conversation or all archives in the current connection's home, with confirmation and per-item failure recovery. See [Archive management](./sessions.md#gui-session-recovery-and-activity) for deletion scope.
 

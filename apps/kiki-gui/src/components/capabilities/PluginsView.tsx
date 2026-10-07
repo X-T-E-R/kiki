@@ -24,7 +24,6 @@ import { InlineError } from '../controls';
 import { Icon, Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { AddSourceDialog, CatalogSourceField } from './AddSourceDialog';
-import { ImportHistoryView } from './ImportHistoryView';
 import { MediaSourcesView } from '../media/MediaSourcesView';
 import { InstalledList } from './InstalledList';
 import { InstallFlow, type InstallRequest } from './InstallFlow';
@@ -39,8 +38,6 @@ export type PluginsRoute =
   | { readonly view: 'market' }
   | { readonly view: 'installed' }
   | { readonly view: 'detail'; readonly id: string }
-  /** History import: the session-source importers, and the archives they wrote. */
-  | { readonly view: 'import'; readonly sourceId?: string; readonly sourcePluginId?: string }
   /** The media surface, reached through the media plugin's own entry. */
   | { readonly view: 'media' };
 
@@ -49,7 +46,7 @@ export function PluginsView({
   onRoute,
   workspaceRoot,
   onOpenPanel,
-  onOpenSession,
+  onOpenImportHistory,
   sessionId,
   onOpenSettings,
 }: {
@@ -64,8 +61,12 @@ export function PluginsView({
    * a build without the settings route shows no dead control.
    */
   readonly onOpenSettings?: (pluginId: string) => void;
-  /** Continue a finished native import on the normal session route. */
-  readonly onOpenSession?: (sessionId: string) => void;
+  /**
+   * The built-in import-history page, with the source a plugin hands off.
+   * Import history is not a plugins sub-view any more, so a source plugin's
+   * "import from here" leaves this page instead of drilling into it.
+   */
+  readonly onOpenImportHistory?: (source: { readonly source: string; readonly sourcePlugin: string }) => void;
   /** Session whose media jobs this view lists; without one, no job list. */
   readonly sessionId?: string;
 }) {
@@ -130,21 +131,6 @@ export function PluginsView({
     </>
   );
 
-  if (route.view === 'import') {
-    return (
-      <div data-plugins-view="import">
-        <ImportHistoryView
-          initialSourceId={route.sourceId}
-          initialSourcePluginId={route.sourcePluginId}
-          onOpenPlugin={open}
-          onOpenSession={onOpenSession}
-          onBack={() => { onRoute({ view: 'installed' }); }}
-        />
-        {sheets}
-      </div>
-    );
-  }
-
   if (route.view === 'media') {
     return (
       <div data-plugins-view="media">
@@ -173,8 +159,8 @@ export function PluginsView({
           onInstall={setInstall}
           onUpdate={startUpdate}
           onOpenPanel={onOpenPanel}
-          onOpenImport={importAvailable
-            ? (source) => { onRoute({ view: 'import', sourceId: source.sourceId, sourcePluginId: source.pluginId }); }
+          onOpenImport={importAvailable && onOpenImportHistory !== undefined
+            ? (source) => { onOpenImportHistory({ source: source.sourceId, sourcePlugin: source.pluginId }); }
             : undefined}
           onOpenMedia={() => { onRoute({ view: 'media' }); }}
           onOpenSettings={onOpenSettings}

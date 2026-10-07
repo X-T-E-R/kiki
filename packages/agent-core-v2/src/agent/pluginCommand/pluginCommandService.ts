@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope } from '#/app/scopes';
+import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventService } from '#/app/event/event';
 import { ErrorCodes, Error2 } from '#/errors';
@@ -8,6 +9,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { expandCommandArguments } from '#/app/plugin/commands';
 import { IPluginService } from '#/app/plugin/plugin';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { promptMetadataTextFromText } from '#/agent/prompt/promptMetadataText';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -23,6 +25,7 @@ import {
 
 export class AgentPluginCommandService implements IAgentPluginCommandService {
   declare readonly _serviceBrand: undefined;
+  private readonly sessionPluginUsage?: ISessionPluginUsageService;
 
   constructor(
     @IPluginService private readonly plugins: IPluginService,
@@ -32,11 +35,14 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
     @IEventService private readonly eventService: IEventService,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
-  ) { }
+    @IInstantiationService instantiation: IInstantiationService,
+  ) {
+    this.sessionPluginUsage = optionalService(instantiation, ISessionPluginUsageService);
+  }
 
   async activate(payload: ActivatePluginCommandPayload): Promise<void> {
-    const commands = await this.plugins.listPluginCommands(this.sessionContext.workspaceId);
-    const def = commands.find(
+    const available = await this.plugins.listPluginCommands('*');
+    let def = available.find(
       (command) => command.pluginId === payload.pluginId && command.name === payload.commandName,
     );
     if (def === undefined) {
@@ -44,6 +50,19 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
         ErrorCodes.REQUEST_INVALID,
         `Plugin command "${payload.pluginId}:${payload.commandName}" was not found`,
       );
+    }
+    if (this.sessionPluginUsage !== undefined) {
+      await this.sessionPluginUsage.set(payload.pluginId, 'on');
+      def = (await this.plugins.listPluginCommands(
+        this.sessionContext.workspaceId,
+        this.sessionContext.sessionId,
+      )).find((command) => command.pluginId === payload.pluginId && command.name === payload.commandName);
+      if (def === undefined) {
+        throw new Error2(
+          ErrorCodes.REQUEST_INVALID,
+          `Plugin command "${payload.pluginId}:${payload.commandName}" is not available in this session`,
+        );
+      }
     }
     const commandArgs = payload.args ?? '';
     const expanded = expandCommandArguments(def.body, commandArgs);
@@ -80,6 +99,14 @@ export class AgentPluginCommandService implements IAgentPluginCommandService {
         promptMetadataTextFromPluginCommand(payload),
       );
     }
+  }
+}
+
+function optionalService<T>(instantiation: IInstantiationService, id: ServiceIdentifier<T>): T | undefined {
+  try {
+    return instantiation.invokeFunction((accessor) => accessor.get(id));
+  } catch {
+    return undefined;
   }
 }
 

@@ -57,7 +57,7 @@ export class HookRulesRegistry extends Disposable implements IHookRulesRegistry 
     await Promise.all([this.config.ready, this.models.ready, this.environment.ready]);
     const path = this.environment.pathClass === 'win32' ? nodePath.win32 : nodePath.posix;
     const configured = this.config.get<HooksConfig>(HOOKS_SECTION);
-    const sources: HookRuleSource[] = [...await this.plugins.enabledHookRules()];
+    const sources: HookRuleSource[] = [...await this.plugins.enabledHookRules('*')];
     this.disabledIds = !Array.isArray(configured) && configured !== undefined ? configured.enabled ? configured.disabled : ['*'] : [];
     if (configured !== undefined && !Array.isArray(configured)) {
       sources.push({ namespace: 'user', path: this.bootstrap.configPath, root: path.dirname(this.bootstrap.configPath), config: configured, mutable: !this.bootstrap.configReadOnly, trusted: true });

@@ -11,6 +11,11 @@ import {
   IPluginService,
   IPluginUsageService,
   ISessionIndex,
+  ISessionManager,
+  ISessionContext,
+  ISessionPluginUsageService,
+  SessionPluginUsageService,
+  IAtomicDocumentStore,
   IWorkspaceService,
   type PluginInfo,
   type PluginSummary,
@@ -18,7 +23,8 @@ import {
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { PluginUsageService } from '@kiki/agent-core-v2/app/pluginUsage/pluginUsageService';
-import type { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/testInstantiationService';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
 import { ErrorCode, type PluginUsageResponse } from '@kiki/protocol';
 
 import { registerPluginUsageRoutes } from '../src/routes/pluginUsage';
@@ -58,6 +64,7 @@ function summary(
     displayName: id,
     version: '1.0.0',
     enabled: options.enabled ?? true,
+    globalEnabled: options.enabled ?? true,
     state,
     skillCount: 0,
     mcpServerCount: 0,
@@ -106,6 +113,10 @@ describe('plugin usage routes', () => {
       summary('broken', { state: 'error' }),
     ];
     const byId = new Map(installed.map((plugin) => [plugin.id, info(plugin)]));
+    usage.registerPluginStateReader(id => {
+      const record = byId.get(id);
+      return record === undefined ? { allowed: false, globalEnabled: false } : { allowed: record.enabled && record.state === 'ok', globalEnabled: record.globalEnabled };
+    });
     const workspaces = new Map([
       ['workspace-a', workspace('workspace-a')],
       ['workspace-b', workspace('workspace-b')],
@@ -137,7 +148,7 @@ describe('plugin usage routes', () => {
       app as unknown as Parameters<typeof registerPluginUsageRoutes>[0],
       core,
     );
-    return { app, getWorkspace, getSession, createOrTouch, plugins, core, servicesByToken, byId, usage };
+    return { app, getWorkspace, getSession, createOrTouch, plugins, core, servicesByToken, byId, usage, docs };
   }
 
   it('reads a cold session target without resuming or creating a workspace', async () => {
@@ -155,6 +166,34 @@ describe('plugin usage routes', () => {
     expect(getSession).toHaveBeenCalledWith('cold-session');
     expect(getWorkspace).toHaveBeenCalledWith('workspace-a');
     expect(createOrTouch).not.toHaveBeenCalled();
+  });
+
+  it('activates only the addressed session over later-install defaults and reads the persisted choice without resume', async () => {
+    const { app, servicesByToken, byId, usage, plugins, docs } = createRoute();
+    byId.set('demo', { ...byId.get('demo')!, globalEnabled: false });
+    plugins.listPlugins = vi.fn(async () => [...byId.values()]);
+    const container = new TestInstantiationService();
+    container.set(IAtomicDocumentStore, docs as unknown as IAtomicDocumentStore);
+    container.set(IPluginUsageService, usage);
+    container.set(IPluginService, plugins);
+    container.set(ISessionContext, { workspaceId: 'workspace-a', sessionId: 'cold-session' } as ISessionContext);
+    container.set(ISessionPluginUsageService, new SyncDescriptor(SessionPluginUsageService));
+    const release = vi.fn();
+    const resume = vi.fn(async () => ({ handle: { accessor: container }, dispose: release }));
+    servicesByToken.set(ISessionManager, { get: () => undefined, acquire: resume });
+    try {
+      const result = (await app.inject({ method: 'POST', url: '/plugins/usage', payload: { target: { session_id: 'cold-session' }, plugin_id: 'demo', override: 'on' } })).json() as { code: number; data: PluginUsageResponse };
+      expect(result.code).toBe(0);
+      expect(result.data.target.session_id).toBe('cold-session');
+      expect(result.data.plugins.find(plugin => plugin.id === 'demo')).toMatchObject({ global_enabled: false, override: 'inherit', session_override: 'on', effective: true });
+      const defaults = (await app.inject({ method: 'GET', url: '/plugins/usage?workspace_id=workspace-a' })).json() as { data: PluginUsageResponse };
+      expect(defaults.data.plugins.find(plugin => plugin.id === 'demo')).toMatchObject({ override: 'inherit', effective: false });
+      const cold = (await app.inject({ method: 'GET', url: '/plugins/usage?session_id=cold-session' })).json() as { data: PluginUsageResponse };
+      expect(cold.data.plugins.find(plugin => plugin.id === 'demo')?.effective).toBe(true);
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(resume).toHaveBeenCalledWith('cold-session', 'operation');
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally { await container.dispose(); }
   });
 
   it('applies an off override only to its target workspace and keeps home-disabled plugins off', async () => {
@@ -189,13 +228,9 @@ describe('plugin usage routes', () => {
       url: '/plugins/usage',
       payload: { target: { workspace_id: 'workspace-a' }, plugin_id: 'home-off', override: 'on' },
     });
-    const homeOffBody = homeOff.json() as { code: number; data: PluginUsageResponse };
-    expect(homeOffBody.data.plugins.find((plugin) => plugin.id === 'home-off')).toMatchObject({
-      home_enabled: false,
-      override: 'on',
-      effective: false,
-      reason: 'home_disabled',
-    });
+    expect(homeOff.json().code).toBe(ErrorCode.VALIDATION_FAILED);
+    const deniedRead = (await app.inject({ method: 'GET', url: '/plugins/usage?workspace_id=workspace-a' })).json() as { data: PluginUsageResponse };
+    expect(deniedRead.data.plugins.find((plugin) => plugin.id === 'home-off')).toMatchObject({ home_enabled: false, override: 'inherit', effective: false, reason: 'home_disabled' });
   });
 
   it('restores inherit, exposes installed errors, and rejects unknown plugins', async () => {
@@ -252,7 +287,7 @@ describe('plugin usage routes', () => {
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=cold-session` })).json().code).toBe(0);
       await usage.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' });
       const panels = (await app.inject({ method: 'GET', url: '/plugins/panels?session_id=cold-session' })).json();
-      expect(panels.data.panels.map((panel: { id: string }) => panel.id)).toEqual(['side']);
+      expect(panels.data.panels.map((panel: { id: string }) => panel.id)).toEqual([]);
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=cold-session` })).json().code).toBe(ErrorCode.PLUGIN_NOT_FOUND);
       expect((await app.inject({ method: 'POST', url: '/plugins/demo/panels/work/bridge', payload: { method: 'plugin.call', session_id: 'cold-session', action: 'inspect', args: {} } })).json().code).toBe(ErrorCode.PLUGIN_NOT_FOUND);
       expect(requestPanel).not.toHaveBeenCalled();
