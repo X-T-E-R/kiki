@@ -109,8 +109,9 @@ async function pointer(target: Element, type: string, clientY: number, clientX =
 
 function queueGeometry(container: HTMLDivElement): void {
   const box = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 300, width: 300, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
-  vi.spyOn(container.querySelector('ol')!, 'getBoundingClientRect').mockReturnValue(box(100, rows(container).length * 40));
-  rows(container).forEach((row, index) => {
+  const sendRows = rows(container).filter(row => row.closest('[data-queue-idle-region]') === null);
+  vi.spyOn(container.querySelector('[data-queue-strip] > ol')!, 'getBoundingClientRect').mockReturnValue(box(100, sendRows.length * 40));
+  sendRows.forEach((row, index) => {
     vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(box(100 + index * 40, 40));
     const handle = row.querySelector<HTMLButtonElement>('button[aria-label="Reorder this queued prompt"]');
     if (handle !== null) {
@@ -312,12 +313,8 @@ describe('QueueStrip scheduled delivery modes', () => {
     });
     const row = rows(container)[0]!;
     expect(row.getAttribute('data-queue-held')).toBe(mode);
-    // It names the timing that holds it instead of pretending to be pending.
-    // The mode chip carries only the mode — the row's badge beside it already
-    // says "scheduled", so repeating the word would stutter.
-    expect(row.querySelector('[data-queue-held-mode]')?.textContent).toBe(
-      mode === 'idle' ? 'Insert when idle' : 'Insert immediately',
-    );
+    const modeLabel = mode === 'idle' ? container.querySelector('[data-queue-idle-region]') : row.querySelector('[data-queue-held-mode]');
+    expect(modeLabel?.textContent).toContain(mode === 'idle' ? 'Insert when idle' : 'Insert immediately');
     expect(row.textContent).toContain('Read the runbook before the next release.');
     // The controls that would re-order or rush it are absent, not greyed out:
     // a dead Send now beside a live one reads as a broken row, and a note
@@ -353,6 +350,49 @@ describe('QueueStrip scheduled delivery modes', () => {
     expect(row.querySelector('button[aria-label="Remove"]')).not.toBeNull();
   });
 
+  it('groups idle occurrences in one leading region without changing ordinary move slots', async () => {
+    const onMove = vi.fn();
+    const onRemove = vi.fn();
+    const onRequest = vi.fn();
+    const { container } = await renderStrip({
+      items: [
+        { promptId: 'user-1', text: 'first ordinary draft', queuePosition: 0,
+          runtimeControls: { profile: 'reviewer', model: 'example/captured', thinking: 'max' } },
+        { ...cron('idle-1', 'idle', 'first real job'), queuePosition: 1 },
+        { promptId: 'user-2', text: 'second ordinary draft', queuePosition: 2 },
+        { ...cron('idle-2', 'idle', 'different real job'), queuePosition: 3 },
+      ],
+      onMove, onRemove,
+      promptContinuation: { coverage: { returned: 8, total: 12, hasMore: true }, onRequest },
+    });
+    const region = container.querySelector('[data-queue-idle-region]');
+    expect(region).not.toBeNull();
+    expect(container.querySelectorAll('[data-queue-idle-region]')).toHaveLength(1);
+    expect(rows(container).map(row => row.dataset['queueItem'])).toEqual(['idle-1', 'idle-2', 'user-1', 'user-2']);
+    expect(region!.textContent).toContain('first real job');
+    expect(region!.textContent).toContain('different real job');
+    expect(region!.querySelectorAll('[data-queue-held-mode]')).toHaveLength(0);
+    expect(container.querySelector('[data-queue-item="user-1"] [data-queue-runtime-controls]')?.textContent)
+      .toBe('reviewer · example/captured · max');
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
+    expect(container.textContent).toContain('8 / 12 message records loaded');
+    await click(container.querySelector('[data-content-continuation-action]')!);
+    expect(onRequest).toHaveBeenCalledOnce();
+    const secondUser = container.querySelector('[data-queue-item="user-2"]')!;
+    await keydown(secondUser.querySelector('button[aria-label="Reorder this queued prompt"]')!, 'ArrowUp');
+    expect(onMove).toHaveBeenCalledExactlyOnceWith('user-2', 0);
+    queueGeometry(container);
+    const firstHandle = handleOf(container, 2);
+    await pointer(firstHandle, 'pointerdown', 110);
+    await pointer(firstHandle, 'pointermove', 170);
+    await pointer(firstHandle, 'pointerup', 170);
+    expect(onMove).toHaveBeenLastCalledWith('user-1', 3);
+    const firstIdle = container.querySelector('[data-queue-item="idle-1"]')!;
+    await click(firstIdle.querySelector('button[aria-label="Remove"]')!);
+    await click(firstIdle.querySelector('button[aria-label="Remove?"]')!);
+    expect(onRemove).toHaveBeenCalledExactlyOnceWith('idle-1');
+  });
+
   it('keeps user messages and attachment-only rows out of the mode rule entirely', async () => {
     const { container } = await renderStrip({
       items: [
@@ -363,12 +403,12 @@ describe('QueueStrip scheduled delivery modes', () => {
       onMove: vi.fn(),
       onChangeTiming: vi.fn(),
     });
-    const [first, second, third] = rows(container);
+    const [held, first, second] = rows(container);
     expect(first!.getAttribute('data-queue-held')).toBeNull();
     expect(second!.getAttribute('data-queue-held')).toBeNull();
     expect(first!.querySelector('select[data-timing-picker]')).not.toBeNull();
     expect(second!.querySelector('select[data-timing-picker]')).not.toBeNull();
-    expect(third!.getAttribute('data-queue-held')).toBe('idle');
+    expect(held!.getAttribute('data-queue-held')).toBe('idle');
   });
 
   async function renderSummary(count: number, heldCount: number): Promise<HTMLDivElement> {
@@ -707,7 +747,7 @@ describe('QueueStrip model-switch control rows', () => {
       onEditModelSwitch: () => {},
     });
     const rowTexts = rows(container).map((row) => row.textContent ?? '');
-    expect(rowTexts[0]).toContain('Will switch to example/new when idle');
+    expect(rowTexts[0]).toContain('Switching to example/new');
     expect(rowTexts[0]).toContain('Fresh context');
     expect(rowTexts[1]).toContain('first parked prompt');
     const cancel = container.querySelector<HTMLButtonElement>('[data-queue-model-switch-actions] button:last-child')!;

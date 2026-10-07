@@ -4060,7 +4060,8 @@ boundExecution,
     // prompt held ahead of the send order counts too — otherwise a session
     // waiting only on one would show nothing at all.
     if (queueRowCount === 0 && !hasPromptContinuation) return undefined;
-    const total = queueRowCount;
+    const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
+    const total = queueRowCount - Math.max(0, idleCount - 1);
     return {
       summary: (
         <QueueHeaderSummary count={queuedItemCount} heldCount={heldCronItems.length} hasMoreRecords={hasPromptContinuation} />

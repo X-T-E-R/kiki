@@ -304,6 +304,50 @@ describe('cron-fired prompt admission', () => {
     }
   });
 
+  it('cancels only the waiting cron occurrence and allows the recurring job to fire next minute', async () => {
+    const prompts = ctx.get(IAgentPromptService);
+    const cron = ctx.get(ISessionCronService);
+    const task = await cron.addTask({ cron: '* * * * *', prompt: 'recurring check', recurring: true });
+    const callsBefore = ctx.llmCalls.length;
+    await ctx.rpc.setPermission({ mode: 'manual' });
+    ctx.mockNextResponse({ type: 'function', id: 'busy_cancel_occurrence', name: 'Bash', arguments: JSON.stringify({ command: 'do not execute' }) });
+    try {
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'foreground work' }] });
+      const approval = await ctx.takeApprovalRequest();
+      const first = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'first preserved draft' }], toolCalls: [] } });
+      writeFileSync(clockFile, String(cron.now() + 120_000));
+      await cron.tick();
+      const occurrence = prompts.list().pending.find(p => p.message.origin?.kind === 'cron_job' && p.message.origin.jobId === task.id)!;
+      const second = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'second preserved draft' }], toolCalls: [] } });
+      writeFileSync(clockFile, String(cron.now() + 60_000));
+      await cron.tick();
+      expect(prompts.list().pending.filter(p => p.message.origin?.kind === 'cron_job')).toHaveLength(1);
+      expect(prompts.list().pending.find(p => p.id === occurrence.id)?.message.origin).toMatchObject({ coalescedCount: 3 });
+      expect(prompts.abort(occurrence.id)).toBe(true);
+      expect(prompts.list().pending.map(p => p.id)).toEqual([first.id, second.id]);
+      expect(cron.getTask(task.id)).toMatchObject({ id: task.id, recurring: true });
+      expect(cron.getTask(task.id)?.paused).not.toBe(true);
+      expect(await ctx.get(ICronTaskPersistence).get(ctx.get(ISessionContext).workspaceId, task.id)).toMatchObject({ id: task.id });
+      expect(cron.getNextFireForTask(task.id)).not.toBeNull();
+      writeFileSync(clockFile, String(cron.now() + 60_000));
+      await cron.tick();
+      const next = prompts.list().pending.find(p => p.message.origin?.kind === 'cron_job' && p.message.origin.jobId === task.id)!;
+      expect(next.id).not.toBe(occurrence.id);
+      expect(next.message.origin).toMatchObject({ coalescedCount: 1 });
+      expect(prompts.list().pending.filter(p => p.message.origin?.kind !== 'cron_job').map(p => p.id)).toEqual([first.id, second.id]);
+      for (let i = 0; i < 4; i++) ctx.mockNextResponse({ type: 'text', text: 'done' });
+      approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
+      await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(callsBefore + 5));
+      await ctx.get(IAgentLoopService).settled();
+      expect(ctx.llmCalls.slice(callsBefore + 2).map(call => textOf(call.history.findLast(m => m.role === 'user')!)))
+        .toEqual([expect.stringContaining('coalescedCount="1"'), 'first preserved draft', 'second preserved draft']);
+    } finally {
+      await ctx.rpc.setPermission({ mode: 'yolo' });
+      await cron.removeTasks([task.id]);
+      await cron.flushPersist();
+    }
+  });
+
   it('coalesces idle ticks ahead of ordinary FIFO while queue mode keeps every fire', async () => {
     const prompts = ctx.get(IAgentPromptService);
     const cron = ctx.get(ISessionCronService);

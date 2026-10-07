@@ -461,6 +461,28 @@ describe('queued submit acknowledgement before transcript recovery', () => {
     expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'new-message')).toBe(false);
     controller.close();
   });
+  it('removes a held cron occurrence by prompt id and reconciles without removing ordinary drafts', async () => {
+    const { controller, client } = await open();
+    const prompts = ['first-draft', 'cron-fire', 'second-draft'].map((promptId, queuePosition) => ({
+      promptId, userMessageId: promptId, status: 'queued' as const, queuePosition,
+      originKind: promptId === 'cron-fire' ? 'cron_job' as const : undefined,
+      originDeliveryMode: promptId === 'cron-fire' ? 'idle' as const : undefined,
+      content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:03.000Z',
+    }));
+    await deliver(controller, resetEvent('main', emptySnapshot({ prompts }), 1));
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toMatchObject({ cronDeliveryMode: 'idle' });
+    await controller.abortPrompt('cron-fire');
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'cron-fire');
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'cron-fire', 'second-draft']);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
+      ...prompts[1]!, status: 'aborted', abortedBeforeStart: true, queuePosition: undefined, finishedAt: '2026-01-01T00:00:04.000Z',
+    } }], 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'second-draft']);
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toBeUndefined();
+    expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'cron-fire')).toBe(false);
+    controller.close();
+  });
+
   it('explicit removal before its transcript upsert is not replayed by an empty reset', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', emptySnapshot(), 1));

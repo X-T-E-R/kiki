@@ -27,14 +27,12 @@
  *     repaints from the server's authoritative order;
  *   - a header with the count plus Clear all.
  *
- * A scheduled prompt appears in this list too, but only as something to read.
- * A `queue` cron record really is in the person's send order, so it keeps the
- * same drag handle, timing picker and Send now a typed message has. An `idle`
- * or `steer` record is held by the engine outside that order: its row names the
- * timing that holds it, and the re-order / rush-it-now controls are simply
- * absent — not present and greyed out, which reads as a broken row. A message
- * the user never queued cannot be re-timed like one they did, and Remove stays
- * on every row because the record is real work that can be withdrawn.
+ * Scheduled occurrences remain readable and removable. A `queue` cron record
+ * keeps the person's send-order controls. Idle occurrences share one leading
+ * region, whose label names their timing; different jobs keep their own rows
+ * inside it. A held `steer` row names its timing individually. Neither held
+ * mode offers reordering or Send now. Remove cancels that pending occurrence,
+ * not the recurring job.
  *
  * An empty queue keeps its disclosure when prompt coverage is partial. The
  * continuation reads one canonical entity page per press, including completed
@@ -212,6 +210,8 @@ export function QueueStrip({
     [items, modelSwitches],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
+  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
+  const sendOrderIndexes = rows.flatMap((row, index) => row.kind === 'message' && idleIds.has(row.promptId) ? [] : [index]);
   const switchById = useMemo(
     () => new Map((modelSwitches ?? []).map((entry) => [entry.input.operationId, entry])),
     [modelSwitches],
@@ -246,7 +246,7 @@ export function QueueStrip({
   // An in-flight action locks drag reordering: a second move computed against
   // the pre-move order would land on a stale slot.
   const interactionLocked = pendingIds.length > 0;
-  const draggable = onMove !== undefined && rows.length > 1;
+  const draggable = onMove !== undefined && sendOrderIndexes.length > 1;
   // Edit hold: the edited row and every row behind it wait for the edit.
   const editIndex = editingPromptId === undefined
     ? -1
@@ -278,8 +278,8 @@ export function QueueStrip({
 
   const moveBy = (promptId: string, index: number, delta: -1 | 1) => {
     if (onMove === undefined || interactionLocked) return;
-    const targetIndex = index + delta;
-    if (targetIndex < 0 || targetIndex >= rows.length) return;
+    const targetIndex = sendOrderIndexes[sendOrderIndexes.indexOf(index) + delta];
+    if (targetIndex === undefined) return;
     run(promptId, (id) => onMove(id, targetIndex));
   };
 
@@ -311,7 +311,7 @@ export function QueueStrip({
       const box = element.getBoundingClientRect();
       return event.clientY < box.top + box.height / 2;
     });
-    return index < 0 ? rowElements.length : index;
+    return index < 0 ? rows.length : Number(rowElements[index]!.dataset['queueIndex']);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
@@ -360,6 +360,7 @@ export function QueueStrip({
   };
 
   const rowNodes: ReactNode[] = [];
+  const idleNodes: ReactNode[] = [];
   rows.forEach((row, index) => {
     if (dropSlot === index) {
       rowNodes.push(<li key={`drop-${index}`} aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
@@ -382,6 +383,7 @@ export function QueueStrip({
         <li
           key={`switch-${row.operationId}`}
           data-queue-model-switch={row.operationId}
+          data-queue-index={index}
           data-model-switch-state={entry.receipt.state}
           data-queue-waits-edit={waitsForEdit ? '' : undefined}
           className="anim-enter group flex min-h-8 items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]"
@@ -390,7 +392,7 @@ export function QueueStrip({
               numbers line up; a control item does not reorder. */}
           {draggable ? <span aria-hidden className="h-5 w-4 shrink-0" /> : null}
           <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
-            {index + 1}
+            {sendOrderIndexes.indexOf(index) + 1}
           </span>
           <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft" title={entry.input.model}>
@@ -442,8 +444,8 @@ export function QueueStrip({
     const isEditing = editingPromptId === item.promptId;
     const editLocked = editingPromptId !== undefined && !isEditing;
     const armed = armedRemoveId === item.promptId;
-    // Queued behind the prompt being edited: holds its place until the edit ends.
-    const waitsForEdit = editIndex >= 0 && index > editIndex;
+    // Priority cron deliveries do not wait for the ordinary queue's edit hold.
+    const waitsForEdit = isOrdinaryQueueItem(item) && editIndex >= 0 && index > editIndex;
     const timing = item.appendTiming ?? 'agent_idle';
     const controls = item.runtimeControls;
     const controlProfile = controls?.profile ?? controls?.execution?.profile;
@@ -461,16 +463,17 @@ export function QueueStrip({
     // none of the controls that would re-order or rush it. The same predicate
     // the composer header counts with, so a row and the count cannot disagree.
     const held = !isOrdinaryQueueItem(item);
-    // A held record always carries the mode that holds it; `undefined` here
-    // means the row is in the ordinary order and needs no timing chip.
-    const heldMode = held ? item.cronDeliveryMode : undefined;
+    // Idle timing belongs to the leading region, not to each occurrence row.
+    const idle = idleIds.has(item.promptId);
+    const heldMode = held && !idle ? item.cronDeliveryMode : undefined;
     // A `queue` cron record really is in the user's send order, so it keeps
     // the same drag handle, timing picker and Send now as a typed message.
     const reordering = draggable && !held;
-    rowNodes.push(
+    (idle ? idleNodes : rowNodes).push(
       <li
         key={item.promptId}
         data-queue-item={item.promptId}
+        data-queue-index={index}
         data-queue-held={held ? item.cronDeliveryMode : undefined}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
@@ -495,9 +498,9 @@ export function QueueStrip({
             <Icon name="grip" size={12} />
           </button>
         ) : null}
-        <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
-          {index + 1}
-        </span>
+        {idle ? null : <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
+          {sendOrderIndexes.indexOf(index) + 1}
+        </span>}
         {item.originKind === 'cron_job' ? (
           <details className="group/cron min-w-0 flex-1 basis-36 text-[13px] text-ink">
             <summary className="flex cursor-pointer items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
@@ -665,9 +668,18 @@ export function QueueStrip({
       aria-label={t(rows.length === 0 ? 'queue.records' : 'sv.queueAria')}
       aria-describedby={editIndex >= 0 ? noticeId : undefined}
     >
+      {idleNodes.length > 0 ? (
+        <div data-queue-idle-region className="mb-1 rounded-md bg-ink/[0.025] px-1 py-1">
+          <div className="flex min-h-7 items-center gap-2 px-1.5 text-[12px] font-medium text-ink-soft">
+            <Icon name="clock" size={12} />
+            {t('queue.scheduledMode', { mode: t('cron.delivery.idle') })}
+          </div>
+          <ol className="flex flex-col gap-0.5">{idleNodes}</ol>
+        </div>
+      ) : null}
       {rows.length > 0 ? (
         <header className="flex min-h-7 items-center gap-2 pl-1.5">
-          <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{t('queue.drainOrder')}</span>
+          <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{sendOrderIndexes.length > 0 ? t('queue.drainOrder') : null}</span>
           <button
             type="button"
             onClick={onClearAll}
