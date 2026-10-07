@@ -3,6 +3,24 @@ import { test } from 'node:test';
 
 import { startFixtureServer } from './fixture-server.mjs';
 
+test('fixture preflight permits the client request correlation header', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'hero-shell' });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.http.address().port}/api/meta`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'http://127.0.0.1:54321',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization,x-request-id',
+      },
+    });
+    assert.equal(response.status, 204);
+    assert.ok(response.headers.get('access-control-allow-headers')?.toLowerCase().split(',').map((value) => value.trim()).includes('x-request-id'));
+  } finally {
+    await server.stop();
+  }
+});
+
 const WORKSPACE = 'wd_fixture_000000000000';
 const CARD = 'board_tools_flaky';
 

@@ -1930,7 +1930,7 @@ class FixtureServer {
     if (typeof origin === 'string') {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, x-api-key, anthropic-version');
+      res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, x-api-key, anthropic-version, x-request-id');
       // The export download's filename rides Content-Disposition; browsers
       // hide it from cross-origin fetch unless it is exposed.
       res.setHeader('access-control-expose-headers', 'Content-Disposition');
