@@ -7715,7 +7715,7 @@ export const en = {
   'transcript.exec.compacted': 'The engine compacted its context',
   'transcript.exec.turnDiff': 'Changes this turn',
   'transcript.exec.turnDiffFiles': '{count} files',
-  'transcript.exec.unknownUpdate': 'The engine sent an update Kiki can’t show',
+  'transcript.exec.unknownUpdate': 'Unrecognized engine update',
   'st.executorPrompt.overrideNote': 'An override keeps its own list of blocks; changes to all engines don’t reach it.',
   'st.profiles.fieldsAfterSave': 'Save to see which settings {engine} uses.',
   'st.profiles.fieldValueSet': 'set in this file',

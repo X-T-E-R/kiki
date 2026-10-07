@@ -601,9 +601,12 @@ const MARKER_SUMMARY_KEYS = {
 function executorNoteOf(marker: string, payload: Record<string, unknown> | undefined): NoticeBlock['executor'] {
   switch (marker) {
     case 'executor.degradation': {
-      const value = payload?.['value'];
-      const updateType = typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['updateType'] : undefined;
-      return { kind: 'unknown', ...(typeof updateType === 'string' ? { updateType } : {}) };
+      const raw = payload?.['value'];
+      const value = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : undefined;
+      return { kind: 'unknown',
+        updateType: typeof value?.['updateType'] === 'string' ? value['updateType'] : undefined,
+        method: typeof value?.['method'] === 'string' ? value['method'] : undefined,
+        payload: value?.['payload'] };
     }
     case 'executor.compaction':
       return { kind: 'compaction' };

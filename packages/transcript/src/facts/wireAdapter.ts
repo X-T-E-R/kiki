@@ -663,6 +663,11 @@ export class TranscriptWireAdapter {
       return [this.marker(record, ordinal, 'executor.prompt.delivery')];
     }
     if (record.type === 'executor.runtime.update') {
+      if (record['kind'] === 'tool_input') return this.externalToolInput(record);
+      if (record['kind'] === 'tool_progress') {
+        const value = objectOf(record['value']);
+        return value === undefined ? [] : this.toolProgress(value);
+      }
       const marker = record['kind'] === 'diff' ? 'executor.diff'
         : record['kind'] === 'compaction' ? 'executor.compaction'
         : record['kind'] === 'unknown' ? 'executor.degradation' : undefined;
@@ -1893,6 +1898,25 @@ export class TranscriptWireAdapter {
     return [];
   }
 
+  private externalToolInput(record: TranscriptWireRecord): TranscriptOperation[] {
+    const value = objectOf(record['value']);
+    const toolCallId = stringOf(value?.['toolCallId']);
+    const stepId = stringOf(value?.['stepId']);
+    const turnId = turnIdOf(record['turnId'], undefined);
+    const inputText = stringOf(value?.['inputText']);
+    if (toolCallId === undefined || stepId === undefined || turnId === undefined || inputText === undefined) return [];
+    const previous = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    if (previous !== undefined && previous.frame.state !== 'running') return [];
+    const frame: ToolCallFrame = previous === undefined ? {
+      kind: 'tool', frameId: `${stepId}.${toolCallId}`, toolCallId,
+      part: { partId: toolCallId, messageId: stepId, revision: 0, provenance: { source: 'engine' } },
+      name: stringOf(value?.['name']) ?? '', state: 'running', inputText,
+    } : { ...previous.frame, name: stringOf(value?.['name']) ?? previous.frame.name, inputText };
+    const hit = { turnId, stepId, frame };
+    this.storeTool(toolCallId, hit);
+    return [{ op: 'frame.upsert', ...hit }];
+  }
+
   private toolCall(
     event: Readonly<Record<string, unknown>>,
     ordinal: number,
@@ -1918,7 +1942,8 @@ export class TranscriptWireAdapter {
       name: stringOf(event['name']) ?? '',
       state: 'running',
       input: event['args'],
-      display: event['display'],
+      inputText: this.#tools.get(toolCallId)?.frame.inputText ?? this.lookups?.tool?.(toolCallId)?.frame.inputText,
+      display: event['display'] ?? objectOf(event['extras'])?.['display'],
       startedAt: isoOf(time),
     };
     const hit = { turnId, stepId, frame };

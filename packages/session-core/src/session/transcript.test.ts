@@ -2217,7 +2217,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       'main',
       emptySnapshot({
         items: [
-          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated' } }),
+          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } } }),
           marker('h-1', 'executor.prompt.delivery', { turnId: 2, origin: 'user', method: 'next_turn_preamble', status: 'queued' }),
           marker('h-bad', 'executor.prompt.delivery', { method: 'teleport', status: 'delivered' }),
           marker('c-1', 'executor.compaction', { turnId: 2, kind: 'compaction', value: { threadId: 'thr' } }),
@@ -2227,7 +2227,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     const notes = projected.blocks.map((block) => (block.kind === 'notice' ? [block.turnId, block.executor] : undefined));
     expect(notes).toEqual([
-      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated' }],
+      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } }],
       ['t2', { kind: 'hint', method: 'next_turn_preamble', status: 'queued', origin: 'user' }],
       // An unrecognized delivery shape falls back to a plain marker notice.
       [undefined, undefined],

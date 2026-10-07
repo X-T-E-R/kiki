@@ -921,6 +921,27 @@ describe('TranscriptWireAdapter', () => {
     },
   );
 
+  it('projects Grok tool input snapshots through live and cold facts without reviving terminal tools', () => {
+    const input = (text: string): TranscriptWireRecord => ({ type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_input', value: { toolCallId: 'call-1', stepId: 'step-1', name: 'Bash', inputText: text } });
+    const progress: TranscriptWireRecord = { type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_progress', value: { toolCallId: 'call-1', update: { kind: 'status', text: 'Waiting for permission' } } };
+    const all = [records[0]!, records[1]!, input('{"command":'), input('{"command":"pwd"}'), records[3]!, progress,
+      records[4]!, input('late'), records[6]!, records[7]!];
+    const cold = replay(all);
+    const live = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(live);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of all) reducer.apply(adapter.add(record));
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    const frame = cold.getTurn('t0')?.steps[0]?.frames[0];
+    expect(frame).toMatchObject({ kind: 'tool', name: 'Bash', state: 'done', input: { command: 'pwd' },
+      inputText: '{"command":"pwd"}', output: '/repo', progress: { text: 'Waiting for permission' } });
+    expect(cold.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
+    const interrupted = replay([records[0]!, records[1]!, input('{"command":')]);
+    expect(interrupted.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({ inputText: '{"command":', state: 'interrupted' });
+  });
+
   it('projects durable executor delivery, diff, compaction, and unknown markers through recovery', () => {
     const delivery = { type: 'executor.prompt.delivery', executorId: 'codex-app-server', turnId: 0,
       promptId: 'queued', origin: 'user', method: 'native_steer', status: 'delivered' };

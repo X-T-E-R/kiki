@@ -149,8 +149,7 @@ export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }
     case 'diff':
       return <EngineDiff diff={note.diff} turnLabel={t('transcript.exec.turnDiff')} />;
     case 'unknown':
-      return <QuietNote kind="unknown" title={note.updateType === undefined ? title : `${note.updateType}${title === undefined ? '' : ` · ${title}`}`}
-        icon="dash" text={t('transcript.exec.unknownUpdate')} />;
+      return <UnknownUpdate note={note} title={title} />;
     case 'hint': {
       const key = note.status === 'delivered'
         ? note.method === 'native_steer' ? HINT_KEY['delivered:native_steer'] : HINT_KEY['delivered:next_turn_preamble']
@@ -160,6 +159,26 @@ export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }
     }
   }
 });
+
+function UnknownUpdate({ note, title }: { note: Extract<ExecutorNote, { kind: 'unknown' }>; title?: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const detail = useMemo(() => {
+    if (note.payload === undefined) return undefined;
+    try { return JSON.stringify(note.payload, null, 2)?.slice(0, 16_384); }
+    catch { return undefined; }
+  }, [note.payload]);
+  return <ActivityRow attrs={{ 'data-executor-note': 'unknown' }} glyph={<Icon name="dash" size={12} />}
+    label={t('transcript.exec.unknownUpdate')}
+    detail={note.updateType === undefined ? undefined : <code title={note.method ?? title}>{note.updateType}</code>}
+    metaTitle={title} expanded={detail === undefined ? undefined : open}
+    onToggle={detail === undefined ? undefined : () => { setOpen((value) => !value); }}>
+    {open && detail !== undefined ? <div className="space-y-1">
+      {note.method !== undefined ? <p className="font-mono text-[11px] text-ink-faint">{note.method}</p> : null}
+      <pre data-executor-update-payload className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-ink-soft">{detail}</pre>
+    </div> : undefined}
+  </ActivityRow>;
+}
 
 function QuietNote({ kind, text, icon, title, tone = 'plain' }: {
   kind: string; text: string; icon: 'check' | 'clock' | 'cross' | 'dash'; title?: string; tone?: 'plain' | 'warn';

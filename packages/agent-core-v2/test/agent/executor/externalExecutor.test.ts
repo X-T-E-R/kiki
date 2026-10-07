@@ -1,4 +1,4 @@
-import { AcpClientError, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
+import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -1138,6 +1138,64 @@ describe('ACP external executor', () => {
     expect(records.filter((event) => event.type === 'tool.result')).toHaveLength(1);
     expect(harness.events.filter((event) => event.type === 'tool.call.started')).toHaveLength(1);
     expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(1);
+  });
+
+  it('replays observed Grok extension shapes into tool input and interaction facts, not assistant prose', async () => {
+    const extension = (update: unknown) => mapAcpSessionNotification({ sessionId: 'session-1', update }, '_x.ai/session_notification').event;
+    const harness = createHarness({ events: [
+      extension({ sessionUpdate: 'session_summary_generated', session_summary: 'Inspect project' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-1', name: 'Shell' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: '{"command":"echo ' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: 'ok"}' }),
+      extension({ sessionUpdate: 'response_completed', stop_reason: 'tool_use', usage: { output_tokens: 7 } }),
+      { type: 'tool.call', toolCallId: 'call-1', title: 'Shell', kind: 'execute', rawInput: { command: 'echo ok' } },
+      extension({ sessionUpdate: 'pending_interaction', tool_call_id: 'call-1', kind: 'permission' }),
+      extension({ sessionUpdate: 'interaction_resolved', tool_call_id: 'call-1' }),
+      { type: 'tool.update', toolCallId: 'call-1', status: 'completed', rawOutput: 'ok' },
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-2', name: 'Read', arguments_delta: '{"path":"example.ts"}' }),
+      { type: 'tool.call', toolCallId: 'call-2', title: 'Read', rawInput: { path: 'example.ts' } },
+      { type: 'tool.update', toolCallId: 'call-2', status: 'completed', rawOutput: 'contents' },
+      extension({ sessionUpdate: 'turn_completed', prompt_id: 'prompt-1', stop_reason: 'end_turn', usage: { inputTokens: 12 }, elapsed_ms: 100 }),
+      { type: 'message.delta', role: 'assistant', messageId: 'message-1', content: { type: 'text', text: 'Actual answer' } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'unknown')).toEqual([]);
+    expect(runtime.filter((event) => event.kind === 'tool_input').map((event) => event.value)).toMatchObject([
+      { name: 'Shell', inputText: '' }, { inputText: '{"command":"echo ' },
+      { inputText: '{"command":"echo ok"}' }, { name: 'Read', inputText: '{"path":"example.ts"}' },
+    ]);
+    expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(2);
+    expect(runtime.filter((event) => event.kind === 'tool_progress').map((event) => event.value)).toMatchObject([
+      { update: { text: 'Waiting for permission', customData: { interaction: 'pending' } } },
+      { update: { text: 'Interaction resolved', customData: { interaction: 'resolved' } } },
+    ]);
+    expect(harness.events.filter((event) => event instanceof AssistantDelta).map((event) => event.delta)).toEqual(['Actual answer']);
+    expect(runtime).toContainEqual(expect.objectContaining({ kind: 'session', value: expect.objectContaining({ meta: expect.objectContaining({ completion: expect.objectContaining({ stopReason: 'end_turn' }) }) }) }));
+  });
+
+  it('keeps bounded secret-redacted unknown payloads and does not reuse an index after a response boundary', async () => {
+    const harness = createHarness({ events: [
+      { type: 'tool.input.delta', toolIndex: 0, toolCallId: 'old-call', name: 'Read', delta: '{}' },
+      { type: 'response.completed', meta: { stopReason: 'tool_use' } },
+      { type: 'tool.input.delta', toolIndex: 0, delta: 'unattributed' },
+      { type: 'unknown', updateType: 'future_update', method: '_x.ai/session_notification', payload: {
+        api_key: 'YOUR_API_KEY', nested: { password: 'secret-value', text: 'Bearer abcdefghijklmnopqrstuvwxyz' }, facts: '界'.repeat(10000),
+      } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'tool_input')).toHaveLength(1);
+    const diagnostic = runtime.find((event) => event.kind === 'unknown' && (event.value as { updateType: string }).updateType === 'future_update')!;
+    const json = JSON.stringify(diagnostic.value);
+    expect(json).not.toContain('YOUR_API_KEY');
+    expect(json).not.toContain('secret-value');
+    expect(json).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(json).not.toContain('�');
+    expect(Buffer.byteLength(json)).toBeLessThan(9000);
+    expect(diagnostic.value).toMatchObject({ method: '_x.ai/session_notification', payload: { truncated: true } });
   });
 
   it('maps normalized events to live and canonical durable records with stable losses', async () => {

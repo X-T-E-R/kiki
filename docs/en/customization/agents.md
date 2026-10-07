@@ -120,6 +120,8 @@ For an outbound ACP (Agent Client Protocol) executor, Kiki sends the frozen prof
 
 The override applies when a **new remote session** is created, not on `session/resume` or `session/load`, and an existing remote session keeps whichever mode it started with. Legacy profile-only dispatches include a bounded conversation handoff when a remote session must be recreated. The main-agent `execution` path does not send old Kiki history on a generation change or reconnect fallback. Because a system-prompt override can replace a harness's default system prompt, opt in only when that replacement suits the harness.
 
+External ACP updates stay separate from assistant prose in the transcript. Grok tool-input updates appear in the tool card, interaction updates appear as tool status, and completion metadata does not create a second turn result. If an executor sends an update Kiki does not recognize, the transcript keeps its update type and a bounded, redacted payload when that payload was available; older records that stored only the type cannot be reconstructed.
+
 For legacy profile-only bindings, the built-in `kimi-acp` executor forwards configured MCP servers to Kimi Code; the `execution` path does not automatically forward workspace MCP. Kimi CLI versions from `0.37.0` up to, but not including, `0.39.0` reject ACP stdio MCP servers, so preflight warns that MCP tools will fail and recommends upgrading to `0.39.0` or newer. The warning does not block forwarding, and an undetectable version is forwarded without it.
 
 ### External main-agent delegation

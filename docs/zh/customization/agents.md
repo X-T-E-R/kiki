@@ -120,6 +120,8 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 
 覆写只在创建**新的远端会话**时生效，`session/resume` 和 `session/load` 不会重新发送；已有远端会话保留最初的投递方式。旧的纯 profile 派发在重建远端会话时会附上有长度限制的对话交接；main agent 的 `execution` 路径在代际切换或重新连接失败后不会发送旧 Kiki 历史。系统提示词覆写可能替换 harness 原有的默认系统提示词，因此只对适合这种替换的 harness 启用。
 
+外部 ACP 更新会在时间线中与 Assistant 正文分开。Grok 的工具输入会显示在工具卡片中，交互更新会显示为工具状态，完成元数据不会另造一份轮次结果。执行器发送 Kiki 不认识的更新时，时间线会保留更新类型；如果当时有 payload，也会保留经过脱敏且有大小限制的详情。旧记录如果只保存了类型，无法补回原 payload。
+
 旧的纯 profile 绑定中，内置 `kimi-acp` 执行器会把已配置的 MCP 服务器转发给 Kimi Code；`execution` 路径不会自动转发工作区 MCP。`0.37.0` 起、不含 `0.39.0` 的 Kimi CLI 不接受 ACP stdio MCP 服务器，预检会警告 MCP 工具将失败并建议升级；警告不阻止转发，无法探测版本时也不发这条警告。
 
 ### 外部 main agent 的委派

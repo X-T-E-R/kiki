@@ -147,9 +147,10 @@ export class ExecutorPlanRemove extends Event2<z.infer<typeof executorPlanRemove
 export interface ExecutorPlanRemove extends z.infer<typeof executorPlanRemoveSchema> {}
 
 const executorRuntimeUpdateSchema = z.object({
+  id: z.string().optional(),
   turnId: z.number().int().nonnegative(),
   executorId: z.string().min(1).optional(),
-  kind: z.enum(['commands', 'mode', 'config', 'session', 'usage', 'diff', 'compaction', 'unknown']),
+  kind: z.enum(['commands', 'mode', 'config', 'session', 'usage', 'diff', 'compaction', 'tool_input', 'tool_progress', 'unknown']),
   value: z.unknown(),
 });
 

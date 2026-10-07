@@ -32,6 +32,10 @@ import { createViewState } from '@kiki/session-core/session/transcript/types';
 import { retainedAttachmentsFromContent, buildPromptContent } from '@kiki/session-core/composer/attachments';
 import { projectPromptContentParts } from '../src/promptProjection';
 import { MessageStepRequest } from '@kiki/agent-core-v2/agent/loop/stepRequest';
+import { ExternalTurnRecorder } from '@kiki/agent-core-v2/agent/execution/externalTurnRecorder';
+import { IAgentContextMemoryService, IAgentUsageService, IEventDispatcher, IWireService } from '@kiki/agent-core-v2';
+import type { AgentExecutorAgentContext } from '@kiki/agent-core-v2/app/agentExecutor/agentExecutor';
+import { mapAcpSessionNotification } from '../../acp-client/src/events';
 import {
   AgentTranscript,
   TranscriptFactReducer,
@@ -202,6 +206,69 @@ describe('bindSessionTranscript', () => {
       },
     } as unknown as ISessionScopeHandle;
   }
+
+  it('replays Grok source-shaped extensions through decoder, recorder, live binding, cold replay and view', async () => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('grok-session');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    onTestFinished(() => binding.dispose());
+    const records: TranscriptWireRecord[] = [];
+    const title = vi.fn(async () => undefined);
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async (event: Event2) => {
+        if ((event.constructor as { durable?: boolean }).durable) records.push(event.serialize());
+        main.bus.emit(event);
+      } }],
+      [IWireService, { flush: async () => undefined }],
+      [IAgentUsageService, { record: () => undefined }],
+      [ISessionMetadata, { setGeneratedTitleIfUncustomized: title }],
+      [IAgentContextMemoryService, { appendLoopEvent: (event: unknown) => {
+        const record = { type: 'context.append_loop_event', time: Date.now(), event };
+        records.push(record);
+        main.bus.emit(record as unknown as Event2);
+      } }],
+    ]);
+    const recorder = new ExternalTurnRecorder({ id: 'main', accessor: { get: (token: unknown) => services.get(token) } } as AgentExecutorAgentContext,
+      0, 'remote-1', { executorId: 'grok-acp', protocol: 'acp-v1', model: 'harness-default', resumeMode: 'new', profileDelivery: 'native' });
+    await recorder.begin('Inspect project', { kind: 'user' });
+    const send = async (update: unknown, method = '_x.ai/session_notification') => {
+      await recorder.record(mapAcpSessionNotification({ sessionId: 'remote-1', update }, method).event);
+    };
+    await send({ sessionUpdate: 'session_summary_generated', session_summary: 'Inspect project' });
+    await send({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-1', name: 'Shell' });
+    await send({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: '{"command":"echo ' });
+    expect(store.getAgent('main')?.getTurn('t0')?.steps[0]?.frames).toContainEqual(expect.objectContaining({ kind: 'tool', name: 'Shell', inputText: '{"command":"echo ' }));
+    await send({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: 'ok"}' });
+    await send({ sessionUpdate: 'response_completed', stop_reason: 'tool_use', usage: { output_tokens: 7 } });
+    await send({ sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Shell', kind: 'execute', rawInput: { command: 'echo ok' } }, 'session/update');
+    await send({ sessionUpdate: 'pending_interaction', tool_call_id: 'call-1', kind: 'permission' });
+    expect(store.getAgent('main')?.getTurn('t0')?.steps[0]?.frames).toContainEqual(expect.objectContaining({ kind: 'tool', progress: { kind: 'status', text: 'Waiting for permission', customData: { interaction: 'pending', kind: 'permission' } } }));
+    await send({ sessionUpdate: 'interaction_resolved', tool_call_id: 'call-1' });
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed', rawOutput: 'ok' }, 'session/update');
+    await send({ sessionUpdate: 'agent_message_chunk', messageId: 'message-1', content: { type: 'text', text: 'Actual answer' } }, 'session/update');
+    await send({ sessionUpdate: 'turn_completed', prompt_id: 'prompt-1', stop_reason: 'end_turn', usage: { inputTokens: 6385531, outputTokens: 41393 }, elapsed_ms: 736488 });
+    expect(store.getAgent('main')?.getTurn('t0')?.state).toBe('running');
+    await send({ sessionUpdate: 'future_update', facts: { count: 1 }, token: 'YOUR_API_KEY' });
+    await recorder.complete('end_turn');
+    expect(title).toHaveBeenCalledWith('Inspect project');
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of records) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    const live = store.getAgent('main')!;
+    expect(normalizedBlocks(live.snapshot())).toEqual(normalizedBlocks(cold.snapshot()));
+    expect(live.getTurn('t0')?.steps.flatMap((step) => step.frames)).toContainEqual(expect.objectContaining({ kind: 'tool',
+      state: 'done', inputText: '{"command":"echo ok"}', input: { command: 'echo ok' }, output: 'ok' }));
+    const blocks = normalizedBlocks(live.snapshot());
+    const notes = blocks.filter((block) => block['executor'] !== undefined);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ executor: { kind: 'unknown', updateType: 'future_update', method: '_x.ai/session_notification',
+      payload: { update: { facts: { count: 1 }, token: '[REDACTED]' } } } });
+    expect(JSON.stringify(blocks)).not.toContain('YOUR_API_KEY');
+    expect(live.getTurn('t0')?.execution?.losses).not.toContain('tool_input_partial');
+  });
 
   it('publishes birth for a newborn queued live child and preserves it when the same handle identity returns', async () => {
     const agents = new FakeAgents();

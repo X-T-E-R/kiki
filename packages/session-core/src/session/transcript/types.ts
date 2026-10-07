@@ -428,7 +428,7 @@ export type ExecutorNote =
     }
   | { readonly kind: 'compaction' }
   | { readonly kind: 'diff'; readonly diff: string }
-  | { readonly kind: 'unknown'; readonly updateType?: string };
+  | { readonly kind: 'unknown'; readonly updateType?: string; readonly method?: string; readonly payload?: unknown };
 
 /**
  * A text record an external client saved on purpose. `kind` is the client's

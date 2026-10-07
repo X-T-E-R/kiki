@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
+
+import { redactCtx } from '#/_base/log/formatter';
+import { redactMemorySecrets } from '#/app/memory/memorySafety';
 
 import type {
   NormalizedExecutorContent,
@@ -102,6 +106,7 @@ export class ExternalTurnRecorder {
   #segment: Segment | undefined;
   readonly #userSegments: UserSegment[] = [];
   readonly #tools = new Map<string, RecordedTool>();
+  readonly #toolInputs = new Map<number, { toolCallId: string; name?: string; inputText: string }>();
   #partOrdinal = 0;
   #ended = false;
   #lastAssistantText = '';
@@ -157,6 +162,16 @@ export class ExternalTurnRecorder {
       case 'tool.update':
         await this.#toolUpdate(event);
         return;
+      case 'tool.input.delta':
+        await this.#toolInputDelta(event);
+        return;
+      case 'tool.interaction':
+        await this.#toolInteraction(event);
+        return;
+      case 'response.completed':
+        this.#toolInputs.clear();
+        await this.#runtimeUpdate('session', boundedUnknown({ response: event.meta }));
+        return;
       case 'plan.update':
         if (event.unstable) this.losses.add('unstable_acp_plan');
         await this.#dispatcher.dispatch(
@@ -207,7 +222,10 @@ export class ExternalTurnRecorder {
         return;
       case 'unknown':
         this.losses.add('unknown_update_dropped');
-        await this.#runtimeUpdate('unknown', { updateType: event.updateType });
+        await this.#runtimeUpdate('unknown', {
+          updateType: event.updateType.slice(0, 256), method: event.method,
+          payload: diagnosticPayload(event.payload),
+        });
     }
   }
 
@@ -321,6 +339,40 @@ export class ExternalTurnRecorder {
     });
   }
 
+  async #toolInputDelta(event: Extract<ExternalExecutorEvent, { type: 'tool.input.delta' }>): Promise<void> {
+    this.#flushSegment();
+    const previous = this.#toolInputs.get(event.toolIndex);
+    const toolCallId = event.toolCallId ?? previous?.toolCallId;
+    if (toolCallId === undefined) {
+      await this.record({ type: 'unknown', updateType: 'tool_call_delta_chunk:missing_tool_call_id', payload: event });
+      return;
+    }
+    if (this.#tools.get(toolCallId)?.terminal) return;
+    const sameTool = previous?.toolCallId === toolCallId;
+    const text = (sameTool ? previous.inputText : '') + (event.delta ?? '');
+    const inputText = new StringDecoder('utf8').write(Buffer.from(text).subarray(0, MAX_BOUNDED_JSON_BYTES));
+    if (inputText !== text) this.losses.add('tool_input_partial');
+    const input = { toolCallId, name: event.name ?? (sameTool ? previous.name : undefined), inputText };
+    this.#toolInputs.set(event.toolIndex, input);
+    await this.#runtimeUpdate('tool_input', {
+      toolCallId: this.toolCallId(toolCallId), stepId: this.stepId,
+      name: input.name, inputText, truncated: inputText !== text,
+    });
+  }
+
+  async #toolInteraction(event: Extract<ExternalExecutorEvent, { type: 'tool.interaction' }>): Promise<void> {
+    await this.#runtimeUpdate('session', { interaction: event });
+    const tool = this.#tools.get(event.toolCallId);
+    if (tool === undefined || tool.terminal) return;
+    const text = event.state === 'resolved' ? 'Interaction resolved'
+      : event.kind === 'permission' ? 'Waiting for permission'
+      : event.kind === 'plan_approval' ? 'Waiting for plan review'
+      : 'Waiting for input';
+    const update = { kind: 'status' as const, text, customData: { interaction: event.state, kind: event.kind } };
+    await this.#runtimeUpdate('tool_progress', { toolCallId: tool.namespacedId, update });
+    await this.#dispatcher.dispatch(new ToolProgress({ turnId: this.turnId, toolCallId: tool.namespacedId, update }));
+  }
+
   async #toolCall(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): Promise<void> {
     this.#flushSegment();
     if (this.#tools.has(event.toolCallId)) {
@@ -347,6 +399,7 @@ export class ExternalTurnRecorder {
       args: tool.rawInput,
       extras: boundedRecord({
         remoteToolCallId: event.toolCallId,
+        display: externalToolDisplay(event),
         kind: event.kind,
         status: event.status,
         locations: event.locations,
@@ -446,11 +499,11 @@ export class ExternalTurnRecorder {
   }
 
   async #runtimeUpdate(
-    kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown',
+    kind: ExecutorRuntimeUpdate['kind'],
     value: unknown,
   ): Promise<void> {
     await this.#dispatcher.dispatch(
-      new ExecutorRuntimeUpdate({ turnId: this.turnId, executorId: this.metadata.executorId, kind, value }),
+      new ExecutorRuntimeUpdate({ id: randomUUID(), turnId: this.turnId, executorId: this.metadata.executorId, kind, value }),
     );
   }
 
@@ -646,6 +699,28 @@ function boundedUnknown(value: unknown): unknown {
     return { truncated: true, preview: json.slice(0, MAX_BOUNDED_JSON_BYTES) };
   } catch {
     return Object.prototype.toString.call(value);
+  }
+}
+
+function diagnosticPayload(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  const scrub = (input: unknown): unknown => {
+    if (typeof input === 'string') return redactMemorySecrets(input);
+    if (Array.isArray(input)) return input.map(scrub);
+    if (input !== null && typeof input === 'object') {
+      return Object.fromEntries(Object.entries(input).map(([key, item]) => [key,
+        /credential|private.?key|signature/i.test(key) ? '[REDACTED]' : scrub(item)]));
+    }
+    return input;
+  };
+  try {
+    const sanitized = scrub(redactCtx({ payload: value })['payload']);
+    const json = JSON.stringify(sanitized);
+    if (json === undefined) return undefined;
+    if (Buffer.byteLength(json) <= 8192) return sanitized;
+    return { truncated: true, preview: new StringDecoder('utf8').write(Buffer.from(json).subarray(0, 8192)) };
+  } catch {
+    return { unavailable: true };
   }
 }
 

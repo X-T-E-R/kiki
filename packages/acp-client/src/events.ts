@@ -59,13 +59,18 @@ function content(value: unknown): NormalizedExecutorContent {
 
 export function mapAcpSessionNotification(
   input: unknown,
+  method = 'session/update',
 ): { readonly sessionId: string; readonly event: NormalizedExecutorEvent } {
   const notification = object(input, 'session/update params');
   const sessionId = string(notification['sessionId'], 'session/update.sessionId')!;
   const update = object(notification['update'], 'session/update.update');
-  return { sessionId, event: update['sessionUpdate'] === 'auto_compact_completed'
-    ? { type: 'context.compacted', threadId: sessionId }
-    : mapAcpSessionUpdate(update) };
+  const event = update['sessionUpdate'] === 'auto_compact_completed'
+    ? { type: 'context.compacted' as const, threadId: sessionId }
+    : method === '_x.ai/session_notification' || method === '_x.ai/session/update'
+      ? mapGrokSessionUpdate(update) : mapAcpSessionUpdate(update);
+  return { sessionId, event: event.type === 'unknown'
+    ? { ...event, method, payload: { update, _meta: notification['_meta'] } }
+    : event };
 }
 
 export function mapAcpSessionUpdate(input: unknown): NormalizedExecutorEvent {
@@ -162,7 +167,47 @@ export function mapAcpSessionUpdate(input: unknown): NormalizedExecutorEvent {
     }
     return { type: 'usage', used, size, cost: update['cost'] };
   }
-  return { type: 'unknown', updateType };
+  return { type: 'unknown', updateType, payload: update };
+}
+
+function mapGrokSessionUpdate(update: Record<string, unknown>): NormalizedExecutorEvent {
+  const updateType = string(update['sessionUpdate'], 'update.sessionUpdate')!;
+  if (updateType === 'tool_call_delta_chunk') {
+    const toolIndex = update['tool_index'];
+    if (typeof toolIndex !== 'number' || !Number.isSafeInteger(toolIndex) || toolIndex < 0) {
+      throw new AcpProtocolError('update.tool_index must be a nonnegative integer');
+    }
+    return { type: 'tool.input.delta', toolIndex,
+      toolCallId: string(update['tool_call_id'], 'update.tool_call_id', true),
+      name: string(update['name'], 'update.name', true),
+      delta: string(update['arguments_delta'], 'update.arguments_delta', true) };
+  }
+  if (updateType === 'session_summary_generated') {
+    return { type: 'session.info', title: string(update['session_summary'], 'update.session_summary')! };
+  }
+  if (updateType === 'pending_interaction' || updateType === 'interaction_resolved') {
+    return { type: 'tool.interaction',
+      toolCallId: string(update['tool_call_id'], 'update.tool_call_id')!,
+      state: updateType === 'pending_interaction' ? 'pending' : 'resolved',
+      kind: updateType === 'pending_interaction' ? string(update['kind'], 'update.kind')! : undefined };
+  }
+  if (updateType === 'response_completed') {
+    return { type: 'response.completed', meta: {
+      messageId: string(update['message_id'], 'update.message_id', true),
+      stopReason: string(update['stop_reason'], 'update.stop_reason', true),
+      usage: update['usage'],
+    } };
+  }
+  if (updateType === 'turn_completed') {
+    return { type: 'session.info', meta: { completion: {
+      promptId: string(update['prompt_id'], 'update.prompt_id')!,
+      stopReason: string(update['stop_reason'], 'update.stop_reason')!,
+      usage: update['usage'], elapsedMs: update['elapsed_ms'],
+      agentResult: string(update['agent_result'], 'update.agent_result', true),
+      errorKind: string(update['error_kind'], 'update.error_kind', true),
+    } } };
+  }
+  return mapAcpSessionUpdate(update);
 }
 
 export function isSessionNotification(value: unknown): value is SessionNotification {

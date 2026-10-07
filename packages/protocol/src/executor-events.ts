@@ -39,6 +39,20 @@ export type NormalizedExecutorEvent =
       readonly content?: readonly unknown[];
       readonly locations?: readonly unknown[];
     }
+  | {
+      readonly type: 'tool.input.delta';
+      readonly toolCallId?: string;
+      readonly toolIndex: number;
+      readonly name?: string;
+      readonly delta?: string;
+    }
+  | {
+      readonly type: 'tool.interaction';
+      readonly toolCallId: string;
+      readonly state: 'pending' | 'resolved';
+      readonly kind?: string;
+    }
+  | { readonly type: 'response.completed'; readonly meta: unknown }
   | { readonly type: 'plan.update'; readonly plan: unknown; readonly unstable: boolean }
   | { readonly type: 'plan.remove'; readonly planId?: string; readonly unstable: true }
   | { readonly type: 'commands.update'; readonly commands: readonly unknown[] }
@@ -53,4 +67,9 @@ export type NormalizedExecutorEvent =
       readonly size: number;
       readonly cost?: unknown;
     }
-  | { readonly type: 'unknown'; readonly updateType: string };
+  | {
+      readonly type: 'unknown';
+      readonly updateType: string;
+      readonly method?: string;
+      readonly payload?: unknown;
+    };

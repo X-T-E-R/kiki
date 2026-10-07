@@ -7636,7 +7636,7 @@ export const zh = {
   'transcript.exec.compacted': '引擎已压缩上下文',
   'transcript.exec.turnDiff': '本轮改动',
   'transcript.exec.turnDiffFiles': '{count} 个文件',
-  'transcript.exec.unknownUpdate': '引擎发送了 Kiki 无法显示的更新',
+  'transcript.exec.unknownUpdate': '未识别的引擎更新',
   'st.executorPrompt.overrideNote': '覆盖设置有自己的区块列表；对所有引擎的更改不会影响它。',
   'st.profiles.fieldsAfterSave': '保存后查看 {engine} 使用的设置。',
   'st.profiles.fieldValueSet': '已在此文件中设置',

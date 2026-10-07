@@ -707,7 +707,7 @@ export class AcpProcessClient {
     });
     if (this.#descriptor.id === 'grok-acp') {
       for (const method of ['_x.ai/session_notification', '_x.ai/session/update']) {
-        app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params); });
+        app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params, method); });
       }
     }
     app.onNotification<unknown>(
@@ -1015,9 +1015,9 @@ export class AcpProcessClient {
     return undefined;
   }
 
-  #handleSessionUpdate(params: unknown): void {
+  #handleSessionUpdate(params: unknown, method = 'session/update'): void {
     try {
-      const mapped = mapAcpSessionNotification(params);
+      const mapped = mapAcpSessionNotification(params, method);
       if (mapped.event.type === 'mode.update' && mapped.sessionId === this.#openResult?.sessionId) {
         this.#observedModeId = mapped.event.currentModeId;
         this.#modeWaiter?.(mapped.event.currentModeId);

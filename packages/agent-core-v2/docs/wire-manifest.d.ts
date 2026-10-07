@@ -333,9 +333,10 @@ interface ExecutorPromptDeliveryPayload {
  */
 interface ExecutorRuntimeUpdatePayload {
   _name: 'executor.runtime.update';
+  id?: string;
   turnId: number;
   executorId?: string;
-  kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown';
+  kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'tool_input' | 'tool_progress' | 'unknown';
   value: any;
 }
 

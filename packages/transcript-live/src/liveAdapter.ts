@@ -987,7 +987,7 @@ export class AgentTranscriptLiveAdapter {
     const step = this.ensureStep(turnId, ops);
     const frameId = `${step.stepId}.${event.toolCallId}`;
     const input = parseToolArgs(event.args);
-    const previous = this.toolFrames.get(event.toolCallId)?.frame;
+    const previous = (this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId))?.frame;
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId,
@@ -1002,7 +1002,7 @@ export class AgentTranscriptLiveAdapter {
       name: event.name,
       state: 'running',
       input,
-      inputText: this.toolFrames.get(event.toolCallId)?.frame.inputText,
+      inputText: previous?.inputText,
       display: event.display,
       startedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
       todoId: event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,

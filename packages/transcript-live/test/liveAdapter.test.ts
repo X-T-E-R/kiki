@@ -850,6 +850,19 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(toolFrame('c1')).toMatchObject({ state: 'done', inputText: '{"command":"ls"}\n' });
   });
 
+  it('adopts the canonical frame when a Grok tool delta is followed by its call start', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main', { toolFrame: (id) => id === 'grok-call' ? {
+      turnId: 't1', stepId: 't1.1', frame: { kind: 'tool', frameId: 't1.1.grok-call', toolCallId: 'grok-call',
+        name: 'Shell', state: 'running', inputText: '{"command":"pwd"}' },
+    } : undefined });
+    liveAdapter.map(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    liveAdapter.map(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+    const ops = liveAdapter.map(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'grok-call', name: 'Shell', args: { command: 'pwd' } }));
+    expect(ops).toContainEqual(expect.objectContaining({ op: 'frame.upsert', frame: expect.objectContaining({
+      name: 'Shell', input: { command: 'pwd' }, inputText: '{"command":"pwd"}',
+    }) }));
+  });
+
   it('overwrites tool frame progress and drops progress for unknown calls', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

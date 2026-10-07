@@ -78,6 +78,15 @@ A malformed update is a protocol error and closes the connection. An
 unrecognized discriminator is rewritten to `unknown` before it reaches the
 SDK's closed-union parser, so ACP schema types never reach downstream recorders.
 
+Grok's `_x.ai/session_notification` and `_x.ai/session/update` extensions are
+decoded only for six supported update types: tool-input fragments, pending and
+resolved interactions, session summaries, response-completion metadata, and
+turn-completion metadata. Tool input is emitted as a complete snapshot for the
+canonical tool frame; completion metadata never creates a second turn terminal
+state. Unknown updates retain their method and bounded source payload when
+available so downstream diagnostics can show what arrived without treating it
+as assistant text.
+
 ## Durable session refs
 
 `parseExecutorSessionRefEnvelope`, `serializeExecutorSessionRefEnvelope`, and
