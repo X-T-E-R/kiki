@@ -4070,28 +4070,33 @@ describe('MCP servers in this conversation', () => {
     expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'files' }, override: 'off' });
   });
 
-  it('turning off a server this conversation had added restores the configuration instead of burying it', async () => {
-    // The configuration has this server off, so "off" is not a second decision
-    // to record: clearing the addition is what the reader means.
-    listMcpSessionCapabilities.mockResolvedValue([
-      server('muted', { override: 'on', connection: 'connected', config: { transport: 'stdio', enabled: false } }),
-    ]);
+  it.each([true, false])('keeps MCP off-on-off separate from restore when source enabled is %s', async (enabled) => {
+    const config = { transport: 'stdio' as const, enabled };
+    listMcpSessionCapabilities.mockResolvedValue([server('files', { config, connection: enabled ? 'connected' : 'disabled' })]);
     setMcpSessionOverride.mockImplementation(async ({ override }) => {
-      const next = server('muted', { override, connection: 'disabled', config: { transport: 'stdio', enabled: false } });
+      const held = override === 'on' || (override === 'inherit' && enabled);
+      const next = server('files', { config, override, connection: held ? 'connected' : 'disabled' });
       listMcpSessionCapabilities.mockResolvedValue([next]);
       return next;
     });
-    const { container } = await renderComposer({ sessionId: 'session-1' });
+    const { container } = await renderComposer({ sessionId: 'session-1', value: 'keep me' });
     await openMcp(container);
-
-    const row = () => container.querySelector('[data-add-mcp="muted"]')!;
-    expect(row().textContent).toContain('On for this conversation');
-    await click(row().querySelector('label')!);
-    await settle();
-    await settle();
-
-    expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'muted' }, override: 'inherit' });
-    expect(row().textContent).toContain('Turned off in the MCP configuration');
+    const row = () => container.querySelector('[data-add-mcp="files"]')!;
+    const box = () => row().querySelector<HTMLInputElement>('input[type=checkbox]')!;
+    const toggle = async () => { await click(row().querySelector('label')!); await settle(); await settle(); };
+    if (enabled) await toggle();
+    expect(box().checked).toBe(false);
+    await toggle();
+    expect(box().checked).toBe(true);
+    await toggle();
+    expect(setMcpSessionOverride).toHaveBeenLastCalledWith({ locator: { source: 'global', name: 'files' }, override: 'off' });
+    expect(box().checked).toBe(false);
+    expect(row().textContent).toContain('Off for this conversation');
+    await click([...row().querySelectorAll('button')].find((button) => button.textContent === 'Use config')!);
+    await settle(); await settle();
+    expect(setMcpSessionOverride).toHaveBeenLastCalledWith({ locator: { source: 'global', name: 'files' }, override: 'inherit' });
+    expect(box().checked).toBe(enabled);
+    expect(container.querySelector<HTMLTextAreaElement>('[data-composer-input]')!.value).toBe('keep me');
   });
 
   it('reads the conversation’s own selection again when the list is opened', async () => {

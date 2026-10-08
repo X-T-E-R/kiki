@@ -155,9 +155,7 @@ describe('a conversation’s MCP rows', () => {
     const [removed] = mcpSessionRows({ writable: true, capabilities: [global('files', { override: 'off', connection: 'disabled' })] });
     expect(overrideForSwitch(inherited!, true)).toBe('on');
     expect(overrideForSwitch(inherited!, false)).toBe('off');
-    // Removing an addition is not a second decision: clearing it is what the
-    // reader means, and it leaves the source's own value in charge.
-    expect(overrideForSwitch(added!, false)).toBe('inherit');
+    expect(overrideForSwitch(added!, false)).toBe('off');
     expect(overrideForSwitch(removed!, true)).toBe('on');
   });
 

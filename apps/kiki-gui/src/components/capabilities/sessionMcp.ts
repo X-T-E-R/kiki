@@ -263,11 +263,9 @@ function rowsFrom(source: RowSource, writable: boolean): McpSessionRow {
 }
 
 /**
- * The override a switch click asks the engine for. A row this conversation has
- * turned on or that holds it now still offers the way back to the source
- * baseline, which is `inherit` rather than the opposite of a boolean.
+ * A switch changes this conversation's decision. Returning to the source
+ * baseline is a separate action, shown as Use config on rows with an override.
  */
-export function overrideForSwitch(row: McpSessionRow, on: boolean): McpOverride {
-  if (on) return 'on';
-  return row.override === 'on' ? 'inherit' : 'off';
+export function overrideForSwitch(_row: McpSessionRow, on: boolean): McpOverride {
+  return on ? 'on' : 'off';
 }
