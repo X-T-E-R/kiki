@@ -178,6 +178,27 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(JSON.stringify(meta)).not.toContain('"pattern"');
   });
 
+  it.each(['Read', 'Write'] as const)('applies real external %s path deny to any member of a file batch under yolo', async (name) => {
+    mode = 'yolo';
+    const context = externalContext();
+    const tool = { name, input: { paths: ['/workspace/allowed.ts', '/workspace/blocked.ts'] } };
+    const display = { kind: 'external_permission' as const, options: [], summary: name, detail: tool.input };
+    expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('allow');
+    rules.push({ decision: 'deny', scope: 'user', pattern: `${name}(/workspace/blocked.ts)` });
+    expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('deny');
+  });
+
+  it('does not let an external Write allow rule for one file approve the rest of a batch', async () => {
+    mode = 'manual';
+    const context = externalContext();
+    const tool = { name: 'Write', input: { paths: ['/workspace/allowed.ts', '/workspace/blocked.ts'] } };
+    const display = { kind: 'external_permission' as const, options: [], summary: 'Write', detail: tool.input };
+    rules.push({ decision: 'allow', scope: 'user', pattern: 'Write(/workspace/allowed.ts)' });
+    expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('cancelled');
+    rules.push({ decision: 'allow', scope: 'user', pattern: 'Write(/workspace/**)' });
+    expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('allow');
+  });
+
   it.each(['manual', 'auto', 'review', 'yolo'] as const)('keeps an external unknown tool on the existing %s policy path', async (permissionMode) => {
     mode = permissionMode;
     const tool = { name: 'VendorNewTool', input: { query: 'neutral fixture' } };
