@@ -1006,7 +1006,7 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
-      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request']);
+      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request'], record.time);
       const requestToolCallId = stringOf(objectOf(request)?.['toolCallId']);
       const toolCallId = stringOf(record['toolCallId']) ?? requestToolCallId;
       const recordOrigin = objectOf(record['origin']);
@@ -2478,6 +2478,7 @@ function projectWireQuestionRequest(
   interactionId: string,
   interactionKind: 'approval' | 'question',
   request: unknown,
+  recordedAt: number | undefined,
 ): unknown {
   if (interactionKind !== 'question') return request;
   const payload = objectOf(request);
@@ -2486,6 +2487,7 @@ function projectWireQuestionRequest(
   return {
     ...payload,
     question_id: interactionId,
+    created_at: stringOf(payload?.['createdAt']) ?? stringOf(payload?.['created_at']) ?? isoOf(recordedAt),
     questions: questions.map((value, questionIndex) => {
       const question = objectOf(value);
       return {

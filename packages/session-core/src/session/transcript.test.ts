@@ -5961,6 +5961,51 @@ describe('question history answers', () => {
     { id: 'a', label: 'Typecheck' }, { id: 'b', label: 'Visual proof' },
   ] }];
 
+  it('retires a previously visible answered question with no loaded anchor or request time', () => {
+    const snapshot = userTurnSnapshot();
+    const pendingSnapshot = { ...snapshot, interactions: [{
+      interactionId: 'unanchored-question', interactionKind: 'question' as const, state: 'pending' as const,
+      toolCallId: 'off-page-tool', origin: { agentId: 'main', turnId: 0 }, request: { questions },
+    }] };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    expect(pending.blocks.at(-1)).toMatchObject({ id: 'question-unanchored-question', request: { questions } });
+    expect(projectAgentTranscriptView(pending, 'main', pendingSnapshot).blocks).toEqual(pending.blocks);
+    const answeredSnapshot = { ...pendingSnapshot, interactions: [{
+      ...pendingSnapshot.interactions[0]!, state: 'answered' as const, request: undefined,
+      response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: FIXED_AT_2 },
+    }] };
+    const answered = projectAgentTranscriptView(pending, 'main', answeredSnapshot);
+    expect(answered.blocks.some((block) => block.id === 'question-unanchored-question')).toBe(false);
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
+    expect(answered.blocks).toEqual(cold.blocks);
+    expect(answeredSnapshot.interactions[0]?.response.answers.q1.text).toBe('Read the complete appendix.');
+  });
+
+  it('keeps answered questions with a loaded tool, turn or recorded request time and their full answers', () => {
+    const snapshot = applyOpsToSnapshot(userTurnSnapshot(), spawnChildOps());
+    const fullAnswer = 'Read the complete appendix.\nThen run the selected checks.';
+    const cases = [
+      { toolCallId: TOOL_CALL_ID, request: { questions }, origin: undefined },
+      { toolCallId: undefined, request: { questions }, origin: { agentId: 'main', turnId: 1 } },
+      { toolCallId: undefined, request: { questions, created_at: FIXED_AT_1 }, origin: undefined },
+    ];
+    for (const placement of cases) {
+      const interaction = { ...placement, interactionId: 'placed-question', interactionKind: 'question' as const, state: 'pending' as const };
+      const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...snapshot, interactions: [interaction] });
+      const settledSnapshot = { ...snapshot, interactions: [{ ...interaction, state: 'answered' as const,
+        response: { answers: { q1: { kind: 'other', text: fullAnswer } }, resolved_at: FIXED_AT_2 },
+      }] };
+      const settled = projectAgentTranscriptView(pending, 'main', settledSnapshot);
+      const block = settled.blocks.find((candidate) => candidate.id === 'question-placed-question');
+      expect(block).toMatchObject({ request: { questions }, outcome: { kind: 'answered', answers: { q1: fullAnswer } } });
+      expect(projectAgentTranscriptView(createViewState('session_test'), 'main', settledSnapshot).blocks).toEqual(settled.blocks);
+      if (placement.toolCallId !== undefined) {
+        const toolIndex = settled.blocks.findIndex((candidate) => candidate.kind === 'tool' && candidate.toolCallId === placement.toolCallId);
+        expect(settled.blocks[toolIndex + 1]?.id).toBe(block?.id);
+      }
+    }
+  });
+
   it.each([
     { name: 'saved text keyed by question', answers: { 'Which checks?': 'Typecheck, Visual proof' }, expected: 'Typecheck, Visual proof' },
     { name: 'single click', answers: { q1: { kind: 'single', option_id: 'a' } }, expected: 'Typecheck' },

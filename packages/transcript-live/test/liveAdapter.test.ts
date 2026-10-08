@@ -1893,6 +1893,37 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.listPendingInteractions()).toEqual([]);
   });
 
+  it('restores question request time and identity from durable facts without inventing missing time', () => {
+    const createdAt = Date.parse('2026-01-01T00:00:01.000Z');
+    const payload = { questions: [{ question: 'Pick', options: [{ label: 'Appendix' }] }] };
+    const response = { answers: { q_0: { kind: 'other', text: 'Read the complete appendix.' } } };
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const live = new AgentTranscript('main');
+    live.apply(liveAdapter.mapInteractionRequested({ id: 'question-time', kind: 'question', payload,
+      origin: { agentId: 'main' }, createdAt,
+    }));
+    live.apply(liveAdapter.mapInteractionResolved('question-time', response));
+    const replay = (time: number | undefined, request: unknown = payload) => {
+      const transcript = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main');
+      const reducer = new TranscriptFactReducer(transcript);
+      reducer.apply(adapter.add({ type: 'interaction.request', id: 'question-time', kind: 'question',
+        origin: { agentId: 'main' }, request, time,
+      }));
+      reducer.apply(adapter.add({ type: 'interaction.resolved', id: 'question-time', response, time: createdAt + 500 }));
+      return transcript.getInteraction('question-time');
+    };
+    const requestOf = (interaction: ReturnType<AgentTranscript['getInteraction']>) => interaction?.request as Record<string, unknown>;
+    expect(requestOf(replay(createdAt))['created_at']).toBe(requestOf(live.getInteraction('question-time'))['created_at']);
+    expect(replay(createdAt)).toMatchObject({ interactionId: 'question-time', state: 'answered', origin: { agentId: 'main' }, response });
+    expect(requestOf(replay(createdAt, { ...payload, created_at: '2026-01-01T00:00:00.000Z' }))['created_at']).toBe('2026-01-01T00:00:00.000Z');
+    expect(requestOf(replay(createdAt, { ...payload, createdAt: '2026-01-01T00:00:00.000Z' }))['created_at']).toBe('2026-01-01T00:00:00.000Z');
+    expect(requestOf(replay(createdAt))).toMatchObject({ question_id: 'question-time',
+      questions: [{ id: 'q_0', question: 'Pick', options: [{ id: 'opt_0_0', label: 'Appendix' }] }],
+    });
+    expect(requestOf(replay(undefined))['created_at']).toBeUndefined();
+  });
+
   it('projects prompt submitted/completed/aborted/steered as global queue entities', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

@@ -1695,11 +1695,9 @@ function insertInteractionBlocks(
         continue;
       }
     }
-    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
-    // A settled interaction whose tool call / turn is not in the loaded page
-    // (older history, compacted away) has nothing to sit next to; placing it
-    // by time would stack stale "Question answered" rows at the tail.
+    // A previous slot is not a history anchor for a settled interaction.
     if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
+    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
     insertByTimeline(blocks, interaction.block);
   }
   return blocks;
