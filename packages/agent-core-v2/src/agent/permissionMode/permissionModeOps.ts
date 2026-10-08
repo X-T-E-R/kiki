@@ -5,7 +5,10 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
 
-const permissionSetModeSchema = z.object({ mode: z.custom<PermissionMode>() });
+const permissionSetModeSchema = z.object({
+  mode: z.custom<PermissionMode>(),
+  source: z.enum(['runtime', 'ambient', 'binding']).optional(),
+});
 
 export class PermissionSetMode extends Event2<z.infer<typeof permissionSetModeSchema>> {
   static override readonly type = 'permission.set_mode';
@@ -24,3 +27,11 @@ export const permissionModeConfiguredKey = defineState(
 )
   .replayable({ schema: z.custom<boolean>() })
   .on(PermissionSetMode, () => true);
+
+export const permissionModeExternalOverrideKey = defineState(
+  'permissionMode.externalOverride',
+  (): PermissionMode | null => null,
+)
+  .replayable({ schema: z.custom<PermissionMode | null>() })
+  .on(PermissionSetMode, (previous, event) => event.source === 'runtime' ? event.mode
+    : event.source === 'binding' ? null : previous);

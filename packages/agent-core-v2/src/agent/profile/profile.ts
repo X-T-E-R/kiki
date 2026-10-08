@@ -156,6 +156,7 @@ export interface ProfileBindingSnapshot {
   readonly profileName?: string;
   readonly profileDefinitionId?: string;
   readonly routeId?: string;
+  readonly permissionMode?: import('@kiki/agent-profiles/agentProfile').AgentPermissionMode;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;

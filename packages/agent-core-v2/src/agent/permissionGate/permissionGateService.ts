@@ -78,11 +78,13 @@ export class AgentPermissionGate extends Service implements IAgentPermissionGate
       decision: evaluation.result.kind,
       ...evaluation.result.reason,
     });
-    return this.toolApproval.resolvePermissionResolution(
+    const decision = await this.toolApproval.resolvePermissionResolution(
       evaluation.result,
       context,
       evaluation.policyName,
     );
+    return context.permissionAuthority === 'external-inherit' && decision === undefined
+      ? { permissionDecision: 'approved' } : decision;
   }
 }
 

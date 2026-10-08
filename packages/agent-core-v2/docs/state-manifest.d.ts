@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 118 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 119 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -122,6 +122,7 @@
 //     modelSwitch.continuity                          src/agent/modelSwitch/modelSwitchOps.ts
 //     permissionMode                                  src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.configured                       src/agent/permissionMode/permissionModeOps.ts
+//     permissionMode.externalOverride                 src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.lastMode                         src/agent/permissionMode/injection/permissionModeInjection.ts
 //     permissionRules                                 src/agent/permissionRules/permissionRulesOps.ts
 //     plan                                            src/features/plan/planOps.ts
@@ -983,6 +984,20 @@ export interface AgentStateSnapshot {
           type: 'text';
           text: string;
           presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -993,12 +1008,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -1006,6 +1038,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1221,6 +1261,20 @@ export interface AgentStateSnapshot {
         type: 'text';
         text: string;
         presentation?: unknown;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
+        resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly uri: string;
+          readonly name?: string;
+          readonly mimeType?: string;
+          readonly size?: number;
+          readonly title?: string;
+          readonly description?: string;
+        };
       } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'think';
         think: string;
@@ -1231,12 +1285,29 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'audio_url';
         audioUrl: {
           url: string;
           id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'video_url';
@@ -1244,6 +1315,14 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1391,6 +1470,20 @@ export interface AgentStateSnapshot {
           type: 'text';
           text: string;
           presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -1401,12 +1494,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -1414,6 +1524,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1575,6 +1693,20 @@ export interface AgentStateSnapshot {
       type: 'text';
       text: string;
       presentation?: unknown;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
+      resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly uri: string;
+        readonly name?: string;
+        readonly mimeType?: string;
+        readonly size?: number;
+        readonly title?: string;
+        readonly description?: string;
+      };
     } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'think';
       think: string;
@@ -1585,12 +1717,29 @@ export interface AgentStateSnapshot {
         url: string;
         id?: string;
         name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'audio_url';
       audioUrl: {
         url: string;
         id?: string;
+        name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'video_url';
@@ -1598,6 +1747,14 @@ export interface AgentStateSnapshot {
         url: string;
         id?: string;
         name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     })[];
     readonly toolCalls: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
@@ -1641,6 +1798,20 @@ export interface AgentStateSnapshot {
           type: 'text';
           text: string;
           presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -1651,12 +1822,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -1664,6 +1852,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1806,6 +2002,20 @@ export interface AgentStateSnapshot {
         type: 'text';
         text: string;
         presentation?: unknown;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
+        resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly uri: string;
+          readonly name?: string;
+          readonly mimeType?: string;
+          readonly size?: number;
+          readonly title?: string;
+          readonly description?: string;
+        };
       } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'think';
         think: string;
@@ -1816,12 +2026,29 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'audio_url';
         audioUrl: {
           url: string;
           id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'video_url';
@@ -1829,6 +2056,14 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -3112,6 +3347,20 @@ export interface AgentStateSnapshot {
     type: 'text';
     text: string;
     presentation?: unknown;
+    attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+      readonly fileId: string;
+      readonly mimeType: string;
+      readonly size: number;
+      readonly name?: string;
+    };
+    resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+      readonly uri: string;
+      readonly name?: string;
+      readonly mimeType?: string;
+      readonly size?: number;
+      readonly title?: string;
+      readonly description?: string;
+    };
   } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'think';
     think: string;
@@ -3122,12 +3371,29 @@ export interface AgentStateSnapshot {
       url: string;
       id?: string;
       name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'audio_url';
     audioUrl: {
       url: string;
       id?: string;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'video_url';
@@ -3135,6 +3401,14 @@ export interface AgentStateSnapshot {
       url: string;
       id?: string;
       name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   }>;
   // src/agent/media/mediaToolsRegistrar.ts
@@ -3204,6 +3478,8 @@ export interface AgentStateSnapshot {
   'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'manual' | 'auto' | 'review' | 'yolo';
   // replayable · durable — folds: PermissionSetMode
   'permissionMode.configured': boolean;
+  // replayable · durable — folds: PermissionSetMode
+  'permissionMode.externalOverride': 'manual' | 'auto' | 'review' | 'yolo' | null;
   // src/agent/permissionRules/permissionRulesOps.ts
   // replayable · durable — folds: PermissionRulesAdd, PermissionRecordApprovalResult
   'permissionRules': /* PermissionRulesModelState — packages/agent-core-v2/src/agent/permissionRules/permissionRulesOps.ts */ {
@@ -6725,6 +7001,20 @@ export interface AgentStateSnapshot {
           type: 'text';
           text: string;
           presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -6735,12 +7025,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -6748,6 +7055,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
         readonly toolCalls: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
@@ -6791,6 +7106,20 @@ export interface AgentStateSnapshot {
               type: 'text';
               text: string;
               presentation?: unknown;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
+              resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly uri: string;
+                readonly name?: string;
+                readonly mimeType?: string;
+                readonly size?: number;
+                readonly title?: string;
+                readonly description?: string;
+              };
             } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
               type: 'think';
               think: string;
@@ -6801,12 +7130,29 @@ export interface AgentStateSnapshot {
                 url: string;
                 id?: string;
                 name?: string;
+                mimeType?: string;
+                size?: number;
+                attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                  readonly fileId: string;
+                  readonly mimeType: string;
+                  readonly size: number;
+                  readonly name?: string;
+                };
               };
             } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
               type: 'audio_url';
               audioUrl: {
                 url: string;
                 id?: string;
+                name?: string;
+                mimeType?: string;
+                size?: number;
+                attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                  readonly fileId: string;
+                  readonly mimeType: string;
+                  readonly size: number;
+                  readonly name?: string;
+                };
               };
             } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
               type: 'video_url';
@@ -6814,6 +7160,14 @@ export interface AgentStateSnapshot {
                 url: string;
                 id?: string;
                 name?: string;
+                mimeType?: string;
+                size?: number;
+                attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                  readonly fileId: string;
+                  readonly mimeType: string;
+                  readonly size: number;
+                  readonly name?: string;
+                };
               };
             })[];
           } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -6956,6 +7310,20 @@ export interface AgentStateSnapshot {
             type: 'text';
             text: string;
             presentation?: unknown;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+            resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly uri: string;
+              readonly name?: string;
+              readonly mimeType?: string;
+              readonly size?: number;
+              readonly title?: string;
+              readonly description?: string;
+            };
           } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
             type: 'think';
             think: string;
@@ -6966,12 +7334,29 @@ export interface AgentStateSnapshot {
               url: string;
               id?: string;
               name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
             };
           } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
             type: 'audio_url';
             audioUrl: {
               url: string;
               id?: string;
+              name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
             };
           } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
             type: 'video_url';
@@ -6979,6 +7364,14 @@ export interface AgentStateSnapshot {
               url: string;
               id?: string;
               name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
             };
           })[];
         } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {

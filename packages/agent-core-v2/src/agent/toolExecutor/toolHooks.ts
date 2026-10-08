@@ -20,6 +20,7 @@ export interface ToolExecutionHookContext {
 }
 
 export interface ResolvedToolExecutionHookContext extends ToolExecutionHookContext {
+  readonly permissionAuthority?: 'external-inherit';
   readonly execution: RunnableToolExecution;
 }
 
@@ -30,6 +31,7 @@ export interface BeforeResolveToolContext extends ToolExecutionHookContext {
 export interface BeforeExecuteDecision {
   readonly veto?: ExecutableToolResult;
   readonly executionMetadata?: unknown;
+  readonly permissionDecision?: 'approved' | 'rejected' | 'cancelled';
 }
 
 export interface BeforeToolExecuteEvent extends ResolvedToolExecutionHookContext {

@@ -33,6 +33,7 @@ export interface InProcessAgentHistory {
   readonly sessionResumeParams: unknown[];
   readonly sessionLoadParams: unknown[];
   readonly sessionForkParams: unknown[];
+  readonly promptParams: unknown[];
   cancelCount: number;
 }
 
@@ -79,6 +80,7 @@ export function createInProcessScriptedAgent(
     sessionResumeParams: [],
     sessionLoadParams: [],
     sessionForkParams: [],
+    promptParams: [],
     cancelCount: 0,
   };
   let settlePrompt: ((stopReason: StopReason) => void) | undefined;
@@ -139,8 +141,9 @@ export function createInProcessScriptedAgent(
       }
       return {};
     })
-    .onRequest(methods.agent.session.prompt, async ({ client }) => {
+    .onRequest(methods.agent.session.prompt, async ({ client, params }) => {
       history.methods.push('session/prompt');
+      history.promptParams.push(params);
       for (const update of script.promptUpdates ?? []) {
         await client.notify(methods.client.session.update as string, {
           sessionId,

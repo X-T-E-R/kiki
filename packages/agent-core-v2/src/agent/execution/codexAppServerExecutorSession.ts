@@ -53,6 +53,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
+import { authorizeExternalTool, externalPermissionHostGate, externalToolPermission } from './externalPermission';
 import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
@@ -499,7 +500,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           threadId: priorThreadId,
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
-          approvalPolicy: this.#approvalPolicy(),
+          approvalPolicy: undefined,
           sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
           ...this.#instructions(),
         }, signal);
@@ -550,7 +551,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const started = await this.#client.startThread({
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
-      approvalPolicy: this.#approvalPolicy(),
+      approvalPolicy: undefined,
       sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
       ...this.#instructions(),
     }, signal);
@@ -566,15 +567,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   }
 
   #approvalPolicy(): string | undefined {
-    const mode = this.context.binding.execution === undefined
-      ? this.context.agent.accessor.get(IAgentPermissionModeService).mode : this.context.binding.execution.effective.permission_mode;
-    if (mode === undefined) return undefined;
-    const mapping = this.context.descriptor.permission;
-    if (mapping?.via === 'turn_param') return mapping[mode === 'review' ? 'review' : mode] ?? mapping.manual;
-    if (mode === 'manual' || mode === 'review') {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Codex permission policy cannot be verified for manual/review mode');
-    }
-    return 'on-request';
+    return externalPermissionHostGate(this.context) ? 'on-request' : undefined;
   }
 
   #roots(): { readonly workDir: string; readonly additionalDirs?: readonly string[] } {
@@ -779,35 +772,31 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       readonly kind: string;
     }[],
   ): Promise<string | undefined> {
-    let approval: Promise<Awaited<ReturnType<ISessionApprovalService['request']>>>;
+    const command = request.params['command'];
+    const tool = externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']) ??
+      (typeof command === 'string' ? { name: 'Bash', input: { command, cwd: request.params['cwd'] } }
+        : { name: action, input: request.params });
     try {
-      approval = this.context.agent.accessor.get(ISessionApprovalService).request({
-        id: `codex:${String(request.id)}`,
-        agentId: this.context.agent.id,
-        turnId: active.turn.id,
-        toolCallId: active.recorder.toolCallId(requiredItemId(request)),
-        toolName: action,
-        action,
-        display: {
-          kind: 'external_permission',
-          summary: action,
-          detail: request.params,
-          options: decisions.map((decision) => ({
-            id: decision.id,
-            label: decision.label,
-            kind: decision.kind,
-          })),
-        },
-      });
+      const result = await authorizeExternalTool(this.context, tool, active.turn.id,
+        active.recorder.toolCallId(requiredItemId(request)), active.signal,
+        { kind: 'external_permission', summary: action, detail: request.params,
+          options: decisions.map((decision) => ({ id: decision.id, label: decision.label, kind: decision.kind })) });
+      if (result === 'inherit') {
+        const response = await raceInteraction(this.context.agent.accessor.get(ISessionApprovalService).request({
+          id: `codex:${String(request.id)}`, agentId: this.context.agent.id, turnId: active.turn.id,
+          toolCallId: active.recorder.toolCallId(requiredItemId(request)), toolName: action, action,
+          display: { kind: 'external_permission', summary: action, detail: request.params,
+            options: decisions.map((decision) => ({ id: decision.id, label: decision.label, kind: decision.kind })) },
+        }), active.signal);
+        const selected = decisions.find((decision) => decision.id === response?.selectedOptionId);
+        return response === undefined || response.decision === 'cancelled' || selected === undefined ||
+          (response.decision === 'approved') !== selected.kind.startsWith('allow_') ? undefined : selected.id;
+      }
+      return result === 'cancelled' ? undefined
+        : decisions.find((decision) => decision.kind === (result === 'allow' ? 'allow_once' : 'reject_once'))?.id;
     } catch {
       return undefined;
     }
-    const response = await raceInteraction(approval, active.signal);
-    if (response === undefined || response.decision === 'cancelled') return undefined;
-    const selected = response.selectedOptionId;
-    return selected !== undefined && decisions.some((decision) => decision.id === selected)
-      ? selected
-      : undefined;
   }
 }
 

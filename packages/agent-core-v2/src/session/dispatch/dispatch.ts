@@ -32,6 +32,7 @@ export interface DispatchLaunchInput {
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly permissionMode?: PermissionMode;
+  readonly permissionModeSource?: 'ambient';
   readonly permissionModeCeiling?: PermissionMode;
   readonly allowParentNotify?: boolean;
   readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;

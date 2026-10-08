@@ -764,6 +764,7 @@ export class SessionExternalDelegationService
           main.accessor.get(IAgentPermissionModeService).mode,
           this.permissionCeiling,
         ),
+        permissionModeSource: 'ambient',
         permissionModeCeiling: this.permissionCeiling,
         strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,

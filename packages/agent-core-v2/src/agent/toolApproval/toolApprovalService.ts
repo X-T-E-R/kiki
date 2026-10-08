@@ -224,6 +224,12 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       }
     }
 
+    if (display.kind === 'external_permission' && response.selectedOptionId !== undefined) {
+      const option = display.options?.find((candidate) => candidate.id === response.selectedOptionId);
+      if (option === undefined || (response.decision === 'approved' && !option.kind.startsWith('allow_'))) {
+        response = { decision: 'cancelled' };
+      }
+    }
     const sessionApprovalRule =
       response.decision === 'approved' && response.scope === 'session'
         ? context.execution.approvalRule
@@ -271,6 +277,10 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     }
 
     if (response.decision === 'approved') return undefined;
+    if (display.kind === 'external_permission') return {
+      permissionDecision: response.decision,
+      veto: denyToolExecution(this.formatApprovalRejectionMessage(name, response)),
+    };
     return {
       veto: denyToolExecution(response.reviewer === undefined
         ? this.formatApprovalRejectionMessage(name, response)

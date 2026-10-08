@@ -60,7 +60,7 @@
 //   llm.tools_snapshot                 llm.requestTrace                                                                                                                                                                     src/agent/llmRequester/llmRequestOps.ts
 //   mcp.tools_discovered               mcp.discovery                                                                                                                                                                        src/agent/mcp/mcpDiscoveryOps.ts
 //   permission.record_approval_result  permissionRules                                                                                                                                                                      src/agent/permissionRules/permissionRulesOps.ts
-//   permission.set_mode                permissionMode, permissionMode.configured                                                                                                                                            src/agent/permissionMode/permissionModeOps.ts
+//   permission.set_mode                permissionMode, permissionMode.configured, permissionMode.externalOverride                                                                                                           src/agent/permissionMode/permissionModeOps.ts
 //   plan_mode.cancel                   plan                                                                                                                                                                                 src/features/plan/planOps.ts
 //   plan_mode.enter                    plan                                                                                                                                                                                 src/features/plan/planOps.ts
 //   plan_mode.exit                     plan                                                                                                                                                                                 src/features/plan/planOps.ts
@@ -685,13 +685,14 @@ interface PermissionRecordApprovalResultPayload {
 }
 
 /**
- * states: permissionMode, permissionMode.configured
+ * states: permissionMode, permissionMode.configured, permissionMode.externalOverride
  * owner: src/agent/permissionMode/permissionModeOps.ts
  */
 interface PermissionSetModePayload {
   _name: 'permission.set_mode';
   /** PermissionMode */
   mode: 'manual' | 'auto' | 'review' | 'yolo';
+  source?: 'runtime' | 'ambient' | 'binding';
 }
 
 /**

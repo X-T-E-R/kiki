@@ -21,6 +21,7 @@ export interface ApprovalResponse {
   scope?: 'session';
   feedback?: string;
   selectedLabel?: string;
+  selectedOptionId?: string;
   reviewer?: { backend: 'model' | 'jev'; reason: string; confidence: number };
 }
 
