@@ -5,9 +5,9 @@ import { spawn } from 'node:child_process';
 async function invokeHook(payload) {
   const hooks = JSON.parse(await readFile('.agents/hooks.json', 'utf8'));
   const definition = hooks['kiki-agy-permission-bridge'].PreToolUse[0].hooks[0];
-  const command = /^"([^"]+)" "([^"]+)"$/.exec(definition.command);
-  if (!command) throw Error('Fixture expected pinned Node hook command');
-  const child = spawn(command[1], [command[2]], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+  const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', definition.command] : ['-c', definition.command];
+  const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   const exit = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error('Fixture hook failed'))); });

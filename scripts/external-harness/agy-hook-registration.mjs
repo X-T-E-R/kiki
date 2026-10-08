@@ -3,6 +3,14 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const KEY = 'kiki-agy-permission-bridge';
+
+export function hookCommand(nodePath, handlerPath) {
+  if (process.platform !== 'win32') return `"${nodePath}" "${handlerPath}"`;
+  const literal = value => `'${value.replaceAll("'", "''")}'`;
+  const script = `$ErrorActionPreference='Stop'; $encoding=New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding=$encoding; [Console]::OutputEncoding=$encoding; $OutputEncoding=$encoding; $json=[Console]::In.ReadToEnd(); $json | & ${literal(nodePath)} ${literal(handlerPath)}; exit $LASTEXITCODE`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return `${join(process.env.SystemRoot ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')} -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+}
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 async function optional(path) { try { return await readFile(path); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; } }
 
@@ -86,7 +94,7 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
   const path = join(dir, 'hooks.json');
   const statePath = join(dir, '.kiki-agy-hook-ownership.json');
   const lockPath = `${statePath}.lock`;
-  const definition = { PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command: `"${nodePath}" "${handlerPath}"`, timeout: 86400 }] }] };
+  const definition = { PreToolUse: [{ matcher: '.*', hooks: [{ type: 'command', command: hookCommand(nodePath, handlerPath), timeout: 86400 }] }] };
   const definitionHash = sha(JSON.stringify(definition));
   await locked(lockPath, async () => {
     const before = await optional(path);

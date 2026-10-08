@@ -568,3 +568,58 @@ test('authenticated hook accepts over 1MiB Write args intact through real ACP ho
     assert.equal(calls, 1);
   } finally { await channel.close(); }
 });
+
+
+test('Windows registered hook command survives native shell quoting for exact node path and Chinese spaced paths', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const { mkdtemp, mkdir, cp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { registerProjectHook } = await import('./agy-hook-registration.mjs');
+  const { openPermissionChannel } = await import('./agy-permission-hook.mjs');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-shell-'));
+  const input = { conversationId: 'fixture-windows-shell', stepIdx: 3, toolCall: { name: 'view_file', args: { AbsolutePath: 'C:/example/中文材料/原稿.txt' } } };
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const id = (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-shell', workspace: { cwd: root, additionalDirectories: [] } } } })).sessionId;
+  const s = b.session(id); s.init = { conversation_id: input.conversationId };
+  let optionId = 'allow_once'; let calls = 0;
+  s.active = { client: { request: async (_method, request) => {
+    calls++; assert.deepEqual(request.toolCall.rawInput, input.toolCall.args);
+    assert.deepEqual(request._meta['kiki.tool'], { name: 'Read', input: { path: input.toolCall.args.AbsolutePath } });
+    return { outcome: { outcome: 'selected', optionId } };
+  } } };
+  const channel = await openPermissionChannel(value => b.requestPermission(s, value));
+  async function shell(command) {
+    const child = spawn(process.env.ComSpec, ['/d', '/s', '/c', command], { cwd: root, env: { ...process.env, ...channel.env }, stdio: ['pipe','pipe','pipe'] });
+    let stdout = '', stderr = ''; child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', value => { stdout += value; }); child.stderr.on('data', value => { stderr += value; });
+    const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
+    child.stdin.end(JSON.stringify(input));
+    return { code: await closed, stdout, stderr };
+  }
+  const exactNode = 'C:/nvm4w/nodejs/node.exe';
+  const sourceHandler = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
+  try {
+    const old = await shell(`"${exactNode}" "${sourceHandler}" & exit /b 0`);
+    assert.equal(old.code, 0);
+    assert.match(old.stderr, /is not recognized as an internal or external command/);
+    assert.equal(old.stdout.trim(), ''); assert.equal(calls, 0);
+    const spaced = join(root, '中文 空格'); await mkdir(spaced);
+    const spacedNode = join(spaced, 'node runner.exe'); const spacedHandler = join(spaced, "permission 中文's hook.mjs");
+    await cp(exactNode, spacedNode); await cp(sourceHandler, spacedHandler);
+    for (const [nodePath, handlerPath] of [[exactNode, sourceHandler], [spacedNode, spacedHandler]]) {
+      const registration = await registerProjectHook({ cwd: root, nodePath, handlerPath, sessionId: `fixture-${calls}` });
+      try {
+        const hooks = JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'));
+        const command = hooks['kiki-agy-permission-bridge'].PreToolUse[0].hooks[0].command;
+        for (const [selected, expected] of [['allow_once', 'allow'], ['reject_once', 'deny'], ['kiki.vendor_default', undefined]]) {
+          optionId = selected; const result = await shell(command);
+          assert.equal(result.code, 0, result.stderr);
+          const output = JSON.parse(result.stdout);
+          if (expected === undefined) assert.deepEqual(output, {}); else assert.equal(output.decision, expected);
+        }
+      } finally { await registration.close(); }
+    }
+    assert.equal(calls, 6);
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
+  } finally { s.active = undefined; await channel.close(); await rm(root, { recursive: true, force: true }); }
+});
