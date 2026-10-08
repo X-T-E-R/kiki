@@ -46,7 +46,7 @@ After a compaction, the handoff can list up to five cards linked to the session,
 
 ## Searching conversations
 
-Use the sidebar search or `Ctrl-K` quick switcher to find conversations by title, workspace or message text. `Ctrl-F` searches within the conversation on screen. Message search includes user and assistant text by default; select **Include tool output** to search saved tool results and Shell output too. Thinking blocks, tool names and tool inputs are excluded in both modes. Text you wrote in quotes or code remains searchable.
+Use the sidebar search or `Ctrl-K` quick switcher to find conversations by title, workspace or message text. `Ctrl-F` searches within the conversation on screen. Message search includes user and assistant text by default; turn on **Include tool output** (the terminal icon in conversation find) to search saved tool results and Shell output too. Thinking blocks, tool names and tool inputs are excluded in both modes. Text you wrote in quotes or code remains searchable.
 
 Changing **Include tool output** updates matches and counts without mixing pages from the other scope. Conversation find can load an earlier matching turn and open its folded output. In Messages view, a tool-output hit offers **View in process**, which opens and highlights the output while keeping your query. Original history remains available to read whether or not it is included in search.
 

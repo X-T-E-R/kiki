@@ -288,8 +288,8 @@ describe('find bar in the timeline', () => {
     await act(async () => { press(document.body, { key: 'F3' }); });
     await settle();
     expect(count()).toBe('1 / 3');
-    const tools = container.querySelector<HTMLInputElement>('[data-find-tools]')!;
-    expect(tools.checked).toBe(false);
+    const tools = container.querySelector<HTMLButtonElement>('[data-find-tools]')!;
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
     await act(async () => { tools.click(); });
     await settle();
     expect(count()).toBe('1 / 5');
@@ -299,6 +299,41 @@ describe('find bar in the timeline', () => {
     await typeQuery(input, 'haystack');
     expect(count()).toBe('No results');
     expect(container.querySelector<HTMLButtonElement>('[data-find-next]')?.disabled).toBe(true);
+    off();
+  });
+
+  it('keeps the tool-output scope on the option row as an icon toggle, off by default', async () => {
+    const off = installSessionShortcut();
+    const { container } = await mount(timeline(foldedSession()));
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    const tools = container.querySelector<HTMLButtonElement>('[data-find-tools]')!;
+    const count = () => container.querySelector('[data-find-count]')?.textContent;
+    // One control row: a small icon button beside Aa / ab, not a checkbox with a
+    // row of its own.
+    expect(container.querySelectorAll('[data-find-bar] input[type="checkbox"]')).toHaveLength(0);
+    expect(tools.tagName).toBe('BUTTON');
+    expect(tools.type).toBe('button');
+    expect(tools.querySelector('svg')).not.toBeNull();
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
+    expect(tools.getAttribute('aria-label')).toBe('Include tool output');
+    expect(tools.getAttribute('title')).toBe('Include tool output');
+    expect(container.querySelector('[data-find-bar] > div:first-child [data-find-tools]')).toBe(tools);
+    await typeQuery(input, 'export const needle');
+    await settle(120);
+    // Off by default: the tool output holding the needle is out of scope.
+    expect(count()).toBe('No results');
+    tools.focus();
+    expect(document.activeElement).toBe(tools);
+    await act(async () => { tools.click(); });
+    await settle(120);
+    expect(tools.getAttribute('aria-pressed')).toBe('true');
+    expect(count()).toBe('1 / 1');
+    await act(async () => { tools.click(); });
+    await settle(120);
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
+    expect(count()).toBe('No results');
     off();
   });
 
@@ -337,7 +372,7 @@ describe('find bar in the timeline', () => {
     await settle(120);
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     expect(container.querySelector('[data-history-fold-open]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
     await settle();
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     await typeQuery(input, 'export const');
@@ -478,7 +513,7 @@ async function coldFindHarness(range: boolean, waitForPage?: Promise<void>) {
   }
   setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 1, snippet: `cold ${query}` } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
   const mounted = await mount(<ColdHarness />);
-  await act(async () => { mounted.container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+  await act(async () => { mounted.container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
   await settle(350);
   return { ...mounted, controller, read, page, locate, land, ref };
 }
@@ -567,7 +602,7 @@ describe('find in the message view', () => {
     // Only the tool output holds the needle, and it is out of scope by default.
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     expect(container.querySelector('[data-find-process]')).toBeNull();
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
     await settle(120);
     // The loaded tool hit counts now, and the bar says where it can be shown.
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
@@ -593,7 +628,7 @@ describe('find in the message view', () => {
     await settle();
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
     await typeQuery(input, 'needle');
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
     await settle(120);
     expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
     await act(async () => { press(input, { key: 'F3' }); });

@@ -386,6 +386,13 @@ export function FindBar({
   const plus = outside.more ? '+' : '';
 
   const toggle = (on: boolean) => `${BAR_BUTTON} font-mono text-[11px] font-semibold ${on ? TOGGLE_ON : ''}`;
+  // Icon toggles keep the plain button box; only the on state adds the fill.
+  const iconToggle = (on: boolean) => `${BAR_BUTTON} ${on ? TOGGLE_ON : ''}`;
+  const includeToolOutput = options.includeToolOutput === true;
+  const setIncludeToolOutput = (include: boolean) => {
+    setOptions((value) => ({ ...value, includeToolOutput: include }));
+    onIncludeToolOutputChange?.(include);
+  };
   return (
     <div
       role="search"
@@ -442,6 +449,17 @@ export function FindBar({
         >
           <span className="underline decoration-1 underline-offset-2">ab</span>
         </button>
+        <button
+          type="button"
+          data-find-tools
+          aria-pressed={includeToolOutput}
+          aria-label={t('search.includeToolOutput')}
+          title={t('search.includeToolOutput')}
+          onClick={() => { setIncludeToolOutput(!includeToolOutput); }}
+          className={iconToggle(includeToolOutput)}
+        >
+          <Icon name="terminal" size={14} />
+        </button>
         <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-hairline" />
         <button
           type="button"
@@ -476,14 +494,6 @@ export function FindBar({
           <Icon name="close" size={14} />
         </button>
       </div>
-      <label className="mx-2 mb-1.5 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
-        <input type="checkbox" data-find-tools checked={options.includeToolOutput === true} onChange={(event) => {
-          const include = event.target.checked;
-          setOptions((value) => ({ ...value, includeToolOutput: include }));
-          onIncludeToolOutputChange?.(include);
-        }} className="accent-selected-ink" />
-        {t('search.includeToolOutput')}
-      </label>
       {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack || showProcessNote) ? (
         <div data-find-note className="flex flex-col gap-0.5 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-soft">
           {showProcessNote ? (
