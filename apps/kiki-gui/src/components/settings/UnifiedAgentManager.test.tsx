@@ -293,6 +293,22 @@ describe('profile editor sheet', () => {
     }));
   });
 
+  it('keeps raw external model rules and child leases separate from the native catalog', async () => {
+    const external: NamedAgentProfile = { ...sub, executor: 'example-acp', pinned_model_alias: 'vendor-high',
+      thinking_effort: 'max', allowed_models: ['vendor-high'], preferred_models: ['vendor-fast'],
+      deny_models: ['vendor-retired'], model_profiles: [{ alias: 'vendor-high', thinking_effort: 'max' }] };
+    const lead = { ...main, allowed_subagents: [{ name: 'reviewer', model_alias: 'vendor-high' }] };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [lead, external, explore], complete: true });
+    await render();
+    await open('reviewer');
+    expect(sheet().querySelector('[data-alias-missing]')).toBeNull();
+    expect(sheet().querySelector('[data-alias-missing="true"]')).toBeNull();
+    expect(sheet().querySelector('#profile-effort')?.textContent).toContain('Max');
+    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
+    await open('agent');
+    expect(sheet().querySelector('#lease-model-reviewer [data-alias-missing]')).toBeNull();
+  });
+
   it('reports the missing alias beside the model field and in diagnostics', async () => {
     await render();
     await open('reviewer');

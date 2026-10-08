@@ -141,6 +141,18 @@ externals_visible = false
 
 Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. Bare engine entries appear only when the executable is ready and the engine has confirmed login or usable configuration of its own, such as its declared API-key environment or an anonymous local descriptor. A profile, launch preference or native Kiki model alone does not make an engine runnable; explicit hide settings still take precedence. Settings retains every engine for configuration and Check. If a bound engine becomes unavailable, its session keeps that identity and offers configuration recovery instead of silently switching engines.
 
+Custom executor descriptors can read model IDs from a metadata-only command under `[agent_executors.<id>.model_probe]`. For a command whose JSON response contains `command.data.models`, configure:
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+Use the vendor's actual metadata subcommand and flag order; a print, prompt or slash-command invocation is not a guarantee that no model request will run. Arguments are passed directly as an array, not through a shell. `format` accepts `lines` (the default), `tab`, or `json`; `json_path` selects the JSON array of strings or objects with an `id`. IDs stay unchanged. Invalid JSON or a missing array leaves the catalog partial rather than proving that saved model IDs are invalid.
+
 ## Continuity reminder cues
 
 Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.

@@ -141,6 +141,18 @@ externals_visible = false
 
 向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有可执行程序就绪，且引擎已确认登录或具有自身可用配置（如它声明的 API 密钥环境变量或匿名本地描述符）时，选择列表才显示裸引擎入口。只有 profile、启动偏好或 Kiki 原生模型，不代表引擎可运行；显式隐藏设置仍优先。设置页保留全部引擎，可继续配置或 Check。已绑定引擎变为不可用时，会话保留原身份并提供配置恢复入口，不会悄悄切换引擎。
 
+自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+使用厂商真实的元数据子命令与参数顺序；print、prompt 或斜杠命令并不保证不会发起模型请求。参数以数组直接传给程序，不经过 Shell。`format` 接受 `lines`（默认）、`tab` 或 `json`；`json_path` 选中由字符串或带 `id` 对象组成的 JSON 数组，保留原始 ID。JSON 无效或数组缺失时，目录保持部分已知，不据此判定已保存的模型 ID 无效。
+
 ## 连续性提醒词表
 
 Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。

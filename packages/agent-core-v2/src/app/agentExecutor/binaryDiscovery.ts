@@ -111,7 +111,7 @@ export async function probeExecutorModelCatalog(
   if (result.code !== 0) {
     return { models: { state: 'unavailable', diagnostic: `Model probe exited with code ${String(result.code)}` }, command, programVersion };
   }
-  const values = parseModelProbeOutput(result.output, probe.format);
+  const values = parseModelProbeOutput(result.output, probe.format, probe.jsonPath);
   if (values.length === 0) {
     return {
       models: { state: 'partial', diagnostic: result.truncated === true ? 'Model probe output was truncated' : 'Model probe returned no model identifiers' },
@@ -146,11 +146,26 @@ async function probeProgramVersion(
   return result.available && result.code === 0 ? firstLine(result.output) : undefined;
 }
 
-function parseModelProbeOutput(output: string, format: 'lines' | 'tab'): readonly string[] {
+export function parseModelProbeOutput(output: string, format: 'lines' | 'tab' | 'json', jsonPath: readonly string[] = []): readonly string[] {
   const values = new Set<string>();
-  for (const line of output.split(/\r?\n/u)) {
+  let lines: readonly string[];
+  if (format === 'json') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(output); } catch { return []; }
+    for (const key of jsonPath) {
+      if (parsed === null || typeof parsed !== 'object' || !Object.hasOwn(parsed, key)) return [];
+      parsed = (parsed as Record<string, unknown>)[key];
+    }
+    if (!Array.isArray(parsed)) return [];
+    lines = parsed.flatMap((entry: unknown) => {
+      const id = typeof entry === 'string' ? entry : entry !== null && typeof entry === 'object'
+        ? (entry as Record<string, unknown>)['id'] : undefined;
+      return typeof id === 'string' ? [id] : [];
+    });
+  } else lines = output.split(/\r?\n/u);
+  for (const line of lines) {
     const first = (format === 'tab' ? line.split('\t', 1)[0] ?? '' : line).trim();
-    if (first === '' || first.startsWith('#') || /^(?:id|model|models|name)$/iu.test(first)) continue;
+    if (first === '' || (format !== 'json' && (first.startsWith('#') || /^(?:id|model|models|name)$/iu.test(first)))) continue;
     if (first.length > 256 || /\s/u.test(first)) continue;
     values.add(first);
   }

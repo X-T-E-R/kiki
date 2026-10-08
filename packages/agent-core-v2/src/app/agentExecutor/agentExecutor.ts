@@ -52,7 +52,8 @@ export interface AgentExecutorVersionProbe {
 export interface AgentExecutorModelProbe {
   readonly command?: string;
   readonly args: readonly string[];
-  readonly format: 'lines' | 'tab';
+  readonly format: 'lines' | 'tab' | 'json';
+  readonly jsonPath?: readonly string[];
   readonly versionProbe?: AgentExecutorVersionProbe;
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;

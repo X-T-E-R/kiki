@@ -121,7 +121,8 @@
   # model_probe: object
     # command: string
     # args: string[]
-    # format: "lines" | "tab" (default: "lines")
+    # format: "lines" | "tab" | "json" (default: "lines")
+    # json_path: string[]
     # version_probe: object
       # args: string[]
     # timeout_ms: integer

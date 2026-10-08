@@ -118,6 +118,10 @@ describe('subagent capability final bindings', () => {
       executorCapabilityCatalog: { ...catalog, models: { state: 'unknown' as const } },
     });
     expect(unknown.effectiveModelAliases).toEqual(['gemini-3.8-flash-medium', 'saved-invalid']);
+    const partial = projectProfileModelMenu(profile, services.models, services.config, 'main', {
+      executorCapabilityCatalog: { ...catalog, models: { state: 'partial', values: ['gemini-3.8-flash-medium'] } },
+    });
+    expect(partial.effectiveModelAliases).toEqual(['gemini-3.8-flash-medium', 'saved-invalid']);
   });
 
   it('keeps the original menu distinct from effective candidates under lease and route replacement', () => {

@@ -43,6 +43,8 @@ export function projectProfileModelMenu(
       ? executorModels === undefined ? [...(profile.allowedModels ?? []), ...declared.identities] : [...executorModels]
       : Object.keys(nativeModels)),
     ...declared.aliases,
+    ...(native || options.executorCapabilityCatalog?.models.state === 'ready' ? []
+      : [...(profile.allowedModels ?? []), ...declared.identities]),
     ...(profile.modelProfiles ?? []).map((entry) => entry.alias),
     ...(options.modelAlias === undefined ? [] : [options.modelAlias]),
   ])];
@@ -52,7 +54,8 @@ export function projectProfileModelMenu(
       if (alias === INHERIT_MODEL_ALIAS || alias.trim() === '') return false;
       const identity = resolver.resolveId(alias);
       if (nativeModels !== undefined && (identity === undefined || !Object.hasOwn(nativeModels, identity))) return false;
-      if (executorModels !== undefined && (identity === undefined || !executorModels.has(identity))) return false;
+      if (options.executorCapabilityCatalog?.models.state === 'ready' && executorModels !== undefined &&
+          (identity === undefined || !executorModels.has(identity))) return false;
       if (!roleModelAllowed(alias, constraints, native ? models : undefined)) return false;
       if (position === 'sub') assertSubagentModelNotDenied(config, alias, native ? models : undefined);
       return true;

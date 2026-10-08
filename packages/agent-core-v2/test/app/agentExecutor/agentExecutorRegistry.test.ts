@@ -17,7 +17,7 @@ import {
   AgentExecutorRegistryService,
   descriptorRevisionFromConfig,
 } from '#/app/agentExecutor/agentExecutorRegistryService';
-import { compareExecutorBinaryCandidates, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
+import { compareExecutorBinaryCandidates, parseModelProbeOutput, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
@@ -260,6 +260,21 @@ describe('AgentExecutorRegistryService', () => {
       { command: 'C:/bin/agy.exe', args: ['models'], shell: false, timeout: undefined },
     ]);
     expect(JSON.stringify(result)).not.toContain('secret-token');
+  });
+
+  it('parses raw JSON metadata model IDs and round-trips the extraction path', () => {
+    const jsonPath = ['command', 'data', 'models'];
+    const output = JSON.stringify({ conversation_id: '', num_turns: 0, usage: { total_tokens: 0 },
+      command: { name: 'models', data: { models: [{ id: 'vendor-opus-high', label: 'Opus high' }, { id: 'vendor-opus-high' }, 'vendor-flash-medium'] } } });
+    expect(parseModelProbeOutput(output, 'json', jsonPath)).toEqual(['vendor-opus-high', 'vendor-flash-medium']);
+    expect(parseModelProbeOutput('["model","#local"]', 'json')).toEqual(['model', '#local']);
+    expect(parseModelProbeOutput('{invalid', 'json', jsonPath)).toEqual([]);
+    expect(parseModelProbeOutput(output, 'json', ['missing'])).toEqual([]);
+    const toml = { example: { protocol: 'acp-v1', command: 'vendor.exe', args: [],
+      model_probe: { args: ['--output-format', 'json', 'models'], format: 'json', json_path: jsonPath } } };
+    const parsed = agentExecutorsFromToml(toml);
+    expect(agentExecutorsToToml(parsed)).toEqual(toml);
+    expect(AgentExecutorsConfigSchema.parse(parsed)['example']?.modelProbe).toMatchObject({ format: 'json', jsonPath });
   });
 
   it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {

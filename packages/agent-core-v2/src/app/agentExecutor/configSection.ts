@@ -81,7 +81,8 @@ export const AgentExecutorConfigSchema = z
     modelProbe: z.object({
       command: z.string().trim().min(1).optional(),
       args: z.array(z.string()).min(1),
-      format: z.enum(['lines', 'tab']).default('lines'),
+      format: z.enum(['lines', 'tab', 'json']).default('lines'),
+      jsonPath: z.array(z.string().min(1)).max(16).optional(),
       versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
       timeoutMs: z.number().int().positive().max(90_000).optional(),
       maxOutputBytes: z.number().int().positive().max(1_048_576).optional(),
@@ -287,7 +288,7 @@ export function agentExecutorsFromToml(value: unknown): unknown {
       });
     }
     if (isPlainObject(descriptor['modelProbe'])) {
-      const mapped = renameKey(renameKey(descriptor['modelProbe'], 'timeout_ms', 'timeoutMs'), 'max_output_bytes', 'maxOutputBytes');
+      const mapped = renameKey(renameKey(renameKey(descriptor['modelProbe'], 'timeout_ms', 'timeoutMs'), 'max_output_bytes', 'maxOutputBytes'), 'json_path', 'jsonPath');
       if (Object.hasOwn(mapped, 'version_probe')) {
         mapped['versionProbe'] = mapped['version_probe'];
         delete mapped['version_probe'];
@@ -374,7 +375,7 @@ export function agentExecutorsToToml(value: unknown): unknown {
       });
     }
     if (isPlainObject(descriptor['model_probe'])) {
-      const mapped = renameKey(renameKey(descriptor['model_probe'], 'timeoutMs', 'timeout_ms'), 'maxOutputBytes', 'max_output_bytes');
+      const mapped = renameKey(renameKey(renameKey(descriptor['model_probe'], 'timeoutMs', 'timeout_ms'), 'maxOutputBytes', 'max_output_bytes'), 'jsonPath', 'json_path');
       if (Object.hasOwn(mapped, 'versionProbe')) {
         mapped['version_probe'] = mapped['versionProbe'];
         delete mapped['versionProbe'];
