@@ -8,7 +8,7 @@ This file only contains rules local to `apps/kimi-code`. For cross-repo rules, s
 
 `apps/kimi-code` is the terminal UI / CLI app. The interactive entry chain is:
 
-`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> daemon attach-or-spawn -> `src/tui/daemon/daemon-tui.ts`. The internal `__search-indexer` command is dispatched by `src/main.ts` before ordinary bootstrap, including in the SEA executable.
+`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> daemon attach-or-spawn -> `src/tui/daemon/daemon-tui.ts`. The SEA bundle starts at `src/native-entry.ts`, which dynamically loads either the internal `__search-indexer` runtime or `src/main.ts`. Keep application imports behind this dispatch so the indexer can start within its 384 MiB old-space budget; `src/main.ts` also dispatches the command for non-SEA entries.
 
 Main directories:
 

@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { build } from 'tsdown';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import nativeConfig from '../../../tsdown.native.config';
 
 import { resolvePnpmInvocation } from '../../../scripts/native/01-bundle.mjs';
@@ -46,6 +48,53 @@ describe('resolvePnpmInvocation', () => {
 
 
 describe('SEA native package imports', () => {
+  it('dispatches the indexer before evaluating the application import graph', async () => {
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(resolve('.tmp', 'native-entry-bundle-'));
+    try {
+      const main = join(dir, 'main.ts');
+      const indexer = join(dir, 'indexer.ts');
+      writeFileSync(main, "console.log('application-loaded');\n");
+      writeFileSync(indexer, "export async function runSqliteIndexerCommand(path: string) { if (!path) throw new Error('missing-index-path'); console.log(JSON.stringify({ indexer: path })); }\n");
+      expect(nativeConfig.entry).toEqual(['./src/native-entry.ts']);
+      await build({
+        ...nativeConfig,
+        config: false,
+        entry: [resolve(import.meta.dirname, '../../../src/native-entry.ts')],
+        outDir: join(dir, 'out'),
+        alias: { ...nativeConfig.alias, './main': main, '@kiki/kap-server/sqlite-indexer-runtime': indexer },
+      });
+      const bundle = join(dir, 'out/main.cjs');
+      const indexed = spawnSync(process.execPath, ['--max-old-space-size=384', bundle, '__search-indexer', 'example.sqlite'], { encoding: 'utf8', timeout: 10_000 });
+      expect(indexed.status).toBe(0);
+      expect(indexed.stderr).toBe('');
+      expect(JSON.parse(indexed.stdout)).toEqual({ indexer: 'example.sqlite' });
+      const exit = vi.fn();
+      const stderr = vi.fn();
+      const stdout = vi.fn();
+      runInNewContext(readFileSync(bundle, 'utf8'), {
+        require: createRequire(import.meta.url),
+        exports: {},
+        console: { log: stdout },
+        process: {
+          argv: [process.execPath, bundle, '__search-indexer'],
+          execPath: process.execPath,
+          stderr: { write: stderr },
+          exit,
+        },
+      });
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(1));
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledExactlyOnceWith('missing-index-path\n');
+      const normal = spawnSync(process.execPath, [bundle, '--version'], { encoding: 'utf8', timeout: 10_000 });
+      expect(normal.status).toBe(0);
+      expect(normal.stderr).toBe('');
+      expect(normal.stdout).toBe('application-loaded\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('loads validated disk ESM with top-level await through the bundled plugin entry', async () => {
     mkdirSync(resolve('.tmp'), { recursive: true });
     const dir = mkdtempSync(resolve('.tmp', 'plugin-node-bundle-'));

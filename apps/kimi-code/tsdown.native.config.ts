@@ -31,7 +31,7 @@ function buildTarget(): string {
 }
 
 export default defineConfig({
-  entry: ['./src/main.ts'],
+  entry: ['./src/native-entry.ts'],
   format: ['cjs'],
   outDir: 'dist-native/intermediates',
   clean: true,
