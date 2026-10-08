@@ -11,6 +11,9 @@ import {
 } from '#/_base/errors/unexpectedError';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
+import { ContextAppendMessage, ContextAppendLoopEvent, ContextUndo, ContextClear } from '#/agent/contextMemory/contextEvents';
+import { contextMemoryKey } from '#/agent/contextMemory/contextOps';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -20,7 +23,8 @@ import { Event2, event2FromRecord } from '#/app/event/event2';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { CycleError, EventDispatcherService } from '#/state/eventDispatcherService';
-import { defineState } from '#/state/state';
+import { defineState, type PatchEntry } from '#/state/state';
+import { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 
@@ -306,6 +310,73 @@ describe('EventDispatcherService', () => {
     });
   });
 
+  it('retains context append deltas instead of 500 full conversation arrays', async () => {
+    agentState.contributeState(contextMemoryKey);
+    const seed: ContextMessage[] = Array.from({ length: 1000 }, (_, index) => ({
+      role: 'user', content: [{ type: 'text', text: `Earlier message ${index}` }], toolCalls: [], origin: { kind: 'user' },
+    }));
+    agentState.set(contextMemoryKey, seed);
+    for (let index = 0; index < 501; index++) {
+      await dispatcher.dispatch(new ContextAppendMessage({ message: {
+        role: 'user', content: [{ type: 'text', text: `New message ${index}` }], toolCalls: [], origin: { kind: 'user' },
+      } }));
+    }
+    const history = dispatcher.history(contextMemoryKey);
+    expect(history).toHaveLength(500);
+    const patches = history.flatMap((entry) => [...entry.patches, ...entry.inversePatches]);
+    expect(patches.filter((patch) => patch.path.length === 0)).toHaveLength(0);
+    expect(patches).toHaveLength(1000);
+    expect(agentState.get(contextMemoryKey)).toHaveLength(1501);
+    dispatcher.undo(contextMemoryKey, history.at(-1)!.id);
+    expect(agentState.get(contextMemoryKey)).toHaveLength(1500);
+    await dispatcher.dispatch(new ContextUndo({ count: 1 }));
+    expect(agentState.get(contextMemoryKey)).toHaveLength(1499);
+  });
+
+  it('keeps loop fold identity and inverse patches correct after replacing or truncating context', async () => {
+    agentState.contributeState(contextMemoryKey);
+    await dispatcher.dispatch(new ContextAppendMessage({ message: {
+      role: 'user', content: [{ type: 'text', text: 'Prompt' }], toolCalls: [], origin: { kind: 'user' },
+    } }));
+    await dispatcher.dispatch(new ContextAppendLoopEvent({ event: { type: 'step.begin', uuid: 'step-a' } }));
+    await dispatcher.dispatch(new ContextAppendLoopEvent({ event: { type: 'content.part', stepUuid: 'step-a', part: { type: 'text', text: 'First' } } }));
+    const first = agentState.get(contextMemoryKey);
+    await dispatcher.dispatch(new ContextAppendLoopEvent({ event: { type: 'content.part', stepUuid: 'step-a', part: { type: 'text', text: 'Second' } } }));
+    const replacement = dispatcher.history(contextMemoryKey).at(-1)!;
+    expect(replacement.patches.every((patch) => patch.path.length > 0)).toBe(true);
+    dispatcher.undo(contextMemoryKey, replacement.id);
+    expect(agentState.get(contextMemoryKey)).toEqual(first);
+    await dispatcher.dispatch(new ContextClear({}));
+    expect(agentState.get(contextMemoryKey)).toEqual([]);
+    const cleared = dispatcher.history(contextMemoryKey).at(-1)!;
+    expect(cleared.patches.every((patch) => patch.path.length > 0)).toBe(true);
+    dispatcher.undo(contextMemoryKey, cleared.id);
+    expect(agentState.get(contextMemoryKey)).toEqual(first);
+  });
+
+  it('preserves mixed array replacements and leaves sparse arrays as exact root patches', async () => {
+    let next = [1, 2, 3];
+    const key = defineState('state.test.array', (): number[] => []).replayable({ schema: z.custom<number[]>() })
+      .on(CounterSet, () => next);
+    agentState.contributeState(key);
+    await dispatcher.dispatch(new CounterSet({ value: 0 }));
+    next = [7, 8];
+    await dispatcher.dispatch(new CounterSet({ value: 0 }));
+    const replacement = dispatcher.history(key).at(-1)!;
+    expect(replacement.patches.every((patch) => patch.path.length > 0)).toBe(true);
+    dispatcher.undo(key, replacement.id);
+    expect(agentState.get(key)).toEqual([1, 2, 3]);
+    next = Array.from({ length: 3 }, () => 0);
+    delete next[1];
+    await dispatcher.dispatch(new CounterSet({ value: 0 }));
+    const sparse = dispatcher.history(key).at(-1)!;
+    expect(sparse.patches).toHaveLength(1);
+    expect(sparse.patches[0]!.path).toEqual([]);
+    expect(Object.hasOwn(agentState.get(key), 1)).toBe(false);
+    dispatcher.undo(key, sparse.id);
+    expect(agentState.get(key)).toEqual([1, 2, 3]);
+  });
+
   it('records patch history and rolls back with undo(patchId)', async () => {
     await dispatcher.dispatch(new CounterAdd({ by: 1 }));
     await dispatcher.dispatch(new CounterAdd({ by: 2 }));
@@ -422,6 +493,7 @@ describe('EventDispatcherService', () => {
       { type: 'state.test.item.add', item: 'x', time: 1 },
       { type: 'state.test.anchor', time: 2 },
       { type: 'state.test.item.add', item: 'y', time: 3 },
+      { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: 'Saved prompt' }], toolCalls: [], origin: { kind: 'user' } }, time: 4 },
     ];
     let identity = { size: 123, mtimeMs: 456, headHash: 'head-a' };
     let reads = 0;
@@ -470,6 +542,7 @@ describe('EventDispatcherService', () => {
       const restoredDispatcher = host.get(IEventDispatcher);
       const restoredState = host.get(IAgentStateService);
       restoredState.contributeState(checkpointedKey);
+      restoredState.contributeState(contextMemoryKey);
       return { dispatcher: restoredDispatcher, state: restoredState };
     };
 
@@ -477,7 +550,12 @@ describe('EventDispatcherService', () => {
     await first.dispatcher.restore();
     expect(reads).toBe(1);
     await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
-    const persisted = structuredClone(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1'));
+    const persisted = structuredClone(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1')) as { graph: ReplayCheckpointGraph };
+    const payload = decodeReplayCheckpointGraph(persisted.graph) as { states: { name: string; value: unknown; meta: { history: PatchEntry[] } }[] };
+    const savedContext = payload.states.find((state) => state.name === contextMemoryKey.name)!;
+    savedContext.meta.history = [{ id: 1, eventType: 'context.append_message', patches: [{ op: 'replace', path: [], value: savedContext.value }], inversePatches: [{ op: 'replace', path: [], value: [] }] }];
+    persisted.graph = encodeReplayCheckpointGraph(payload);
+    documents.set('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1', persisted);
     failSet = true;
     await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(false);
     expect(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1')).toEqual(persisted);
@@ -488,6 +566,10 @@ describe('EventDispatcherService', () => {
     expect(reads).toBe(1);
     expect(second.state.get(checkpointedKey).items).toEqual(['x', 'y']);
     expect(second.dispatcher.checkpointDepth(checkpointedKey)).toBe(1);
+    expect(second.state.get(contextMemoryKey)).toEqual(first.state.get(contextMemoryKey));
+    expect(second.dispatcher.history(contextMemoryKey)[0]!.patches).toEqual([{ op: 'add', path: [0], value: second.state.get(contextMemoryKey)[0] }]);
+    second.dispatcher.undo(contextMemoryKey, 1);
+    expect(second.state.get(contextMemoryKey)).toEqual([]);
 
     identity = { size: 124, mtimeMs: 457, headHash: 'head-b' };
     const third = create();
