@@ -25,7 +25,9 @@ export function antigravityProcessService(processes: HostProcessServiceLike, des
 }
 
 export function antigravitySettingsHome(env: Record<string, string> | undefined, bootstrap: IBootstrapService): string {
-  const home = env?.['GEMINI_HOME'] ?? bootstrap.getEnv('GEMINI_HOME') ?? join(bootstrap.osHomeDir, '.gemini');
-  return home === '~' ? bootstrap.osHomeDir
-    : home.startsWith('~/') || home.startsWith('~\\') ? join(bootstrap.osHomeDir, home.slice(2)) : home;
+  const childHome = env?.['HOME'] ?? bootstrap.getEnv('HOME') ?? bootstrap.osHomeDir;
+  const configured = env?.['GEMINI_HOME'] ?? bootstrap.getEnv('GEMINI_HOME');
+  const home = configured === undefined || configured === '' ? join(childHome, '.gemini') : configured;
+  return home === '~' ? childHome
+    : home.startsWith('~/') || home.startsWith('~\\') ? join(childHome, home.slice(2)) : home;
 }

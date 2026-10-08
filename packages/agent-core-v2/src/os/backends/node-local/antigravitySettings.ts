@@ -8,24 +8,46 @@ export type AntigravityAuthMethod = typeof ANTIGRAVITY_AUTH_METHODS[number];
 
 export async function antigravityAuthSettings(home: string, method?: AntigravityAuthMethod): Promise<AntigravityAuthMethod> {
   const requested = join(home, 'antigravity-acp', 'settings.json');
-  const path = await realpath(requested).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'ENOENT') throw error;
-    return requested;
-  });
-  const text = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'ENOENT') throw error;
-    return undefined;
-  });
-  const value: unknown = text === undefined ? {} : JSON.parse(text);
-  if (!isRecord(value)) throw new Error('Antigravity settings.json must be an object');
-  const auth = value['auth'];
-  if (auth !== undefined && !isRecord(auth)) throw new Error('Antigravity auth settings must be an object');
+  const fallback = method ?? 'oauth-personal';
+  let path: string;
+  try {
+    path = await realpath(requested);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return fallback;
+    path = requested;
+  }
+
+  let text: string | undefined;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return fallback;
+  }
+
+  let value: Record<string, unknown> | undefined;
+  if (text !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (!isRecord(parsed)) return fallback;
+      value = parsed;
+    } catch {
+      return fallback;
+    }
+  }
+
+  const auth = value?.['auth'];
+  if (auth !== undefined && !isRecord(auth)) return fallback;
   const existing = isRecord(auth) ? auth['type'] : undefined;
   const selected = method ?? (ANTIGRAVITY_AUTH_METHODS.includes(existing as AntigravityAuthMethod) ? existing as AntigravityAuthMethod : 'oauth-personal');
-  if (existing !== selected) {
-    value['auth'] = { ...isRecord(auth) ? auth : {}, type: selected };
-    await mkdir(dirname(path), { recursive: true });
-    await atomicWrite(path, `${JSON.stringify(value, null, 2)}\n`);
+  if (value === undefined || existing !== selected) {
+    const next = value ?? {};
+    next['auth'] = { ...isRecord(auth) ? auth : {}, type: selected };
+    try {
+      await mkdir(dirname(path), { recursive: true });
+      await atomicWrite(path, `${JSON.stringify(next, null, 2)}\n`);
+    } catch {
+      return selected;
+    }
   }
   return selected;
 }
