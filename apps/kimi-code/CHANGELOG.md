@@ -1,5 +1,123 @@
 # @moonshot-ai/kimi-code
 
+## 0.3.4
+
+### Patch Changes
+
+- [`bc81b86`](https://github.com/X-T-E-R/kiki/commit/bc81b861cdf82184ed2d586ea81c391df35aae4a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve images, audio and embedded resources from external ACP engines.
+
+- [`e172daf`](https://github.com/X-T-E-R/kiki/commit/e172daf2bd4592e734883950ff135ed955521abd) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Antigravity startup with custom home directories or unreadable auxiliary settings.
+
+- [`070e81a`](https://github.com/X-T-E-R/kiki/commit/070e81a2fac7a9e17e27a65baa650557c0d00ec9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Label appearance settings with the space or device where they are stored.
+
+- [`e2bf591`](https://github.com/X-T-E-R/kiki/commit/e2bf591bf63d5d9ee9a3a6dba358e437b7e193fe) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add archived conversation management to session settings.
+
+- [`78ee9b1`](https://github.com/X-T-E-R/kiki/commit/78ee9b17c835034722bc3ad6c52afafc1c6c65d1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Name a workspace Kiki creates for itself "Automatically create a workspace" instead of showing a generated name.
+
+- [`e84f9f2`](https://github.com/X-T-E-R/kiki/commit/e84f9f25ba26c38bbf6d649327c6257f64b73ff9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep queued messages and earlier history reachable in bounded timeline views.
+
+- [`1e32724`](https://github.com/X-T-E-R/kiki/commit/1e327246b5c09d0e2fe33de96c052f20d6f50f2e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Enable built-in features by default and label every built-in experimental switch in Settings.
+
+- [`93e36fa`](https://github.com/X-T-E-R/kiki/commit/93e36fa0bbdcc4ffd9ccf2403c316f3cdbe06112) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep the sidebar and rail text readable over a picture background.
+
+- [`b8fa7e7`](https://github.com/X-T-E-R/kiki/commit/b8fa7e7908dafc4e8503ebb112b14f8e2bab15d9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent read-only CLI commands from creating empty conversations.
+
+- [`8178d0d`](https://github.com/X-T-E-R/kiki/commit/8178d0d9d704ba1b8e9bad0fcc5cee0731205283) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Codex turn usage and error reporting and show the active model for Codex and Claude Code executors.
+
+- [`df57348`](https://github.com/X-T-E-R/kiki/commit/df57348bc9d0e13a1f5cc7793bd7713bdaa480a5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Codex default-model execution when the model catalog is unavailable.
+
+- [`4972e6b`](https://github.com/X-T-E-R/kiki/commit/4972e6bf6c932ead99d7635441f312ee79a51d47) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Codex tasks getting stuck after disconnection or asynchronous notifications.
+
+- [`df57348`](https://github.com/X-T-E-R/kiki/commit/df57348bc9d0e13a1f5cc7793bd7713bdaa480a5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Prevent RPC timeouts from stopping Codex tasks.
+
+- [`c90f839`](https://github.com/X-T-E-R/kiki/commit/c90f839a438b68587bea2d976cfd08eefc85980b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add conversation-specific MCP switches to the composer + menu.
+
+- [`4539a47`](https://github.com/X-T-E-R/kiki/commit/4539a47950d9c711a0d75f9ea06ead38e7de7f4e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Allow choosing a profile Markdown file directly from the profile selector.
+
+- [`a87f82b`](https://github.com/X-T-E-R/kiki/commit/a87f82b7f91ce030b0b7883313793d38ad2b68c4) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fold subagents from other dispatches into an expandable group.
+
+- [`c9586d1`](https://github.com/X-T-E-R/kiki/commit/c9586d1f1bb049df94386a898094531bb7682637) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep external context controls accurate and fullscreen preview controls reachable.
+
+- [`070e81a`](https://github.com/X-T-E-R/kiki/commit/070e81a2fac7a9e17e27a65baa650557c0d00ec9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Simplify external model controls and reuse the local Kimi Code sign-in.
+
+- [`4bb47b1`](https://github.com/X-T-E-R/kiki/commit/4bb47b1ef73df4ec6cdb06442f88bb1ba8741c48) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show the model an external engine reports it is running, its context reading, and a dropped pasted image inside the turn.
+
+- [`df57348`](https://github.com/X-T-E-R/kiki/commit/df57348bc9d0e13a1f5cc7793bd7713bdaa480a5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve large responses and burst output from external executors.
+
+- [`fa13cfc`](https://github.com/X-T-E-R/kiki/commit/fa13cfcd21e4f528d99b913ee237ee357c33296d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show Grok Build tool input and interaction updates, and retain diagnostics for unrecognized engine updates.
+
+- [`76d9445`](https://github.com/X-T-E-R/kiki/commit/76d94457deae42c22bf29768455ea9b8ab83f49f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix profile-file selection, workspace recovery and external engine controls.
+
+- [`f6ea567`](https://github.com/X-T-E-R/kiki/commit/f6ea56731036593453a25728821a4b7cafa2cb9b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add guided discovery routes and contextual model setup.
+
+- [`6d69d24`](https://github.com/X-T-E-R/kiki/commit/6d69d246b8dad88e6df0ab2e25cfb3b680274c56) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix history searches failing while new conversation content is appended.
+
+- [`618b4af`](https://github.com/X-T-E-R/kiki/commit/618b4af156d2b4ce9132694cd89d94b67f13117d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Show idle scheduled prompts in one group at the front of the message queue.
+
+- [`3b78aad`](https://github.com/X-T-E-R/kiki/commit/3b78aad9de3e9f51bff3face93b82fe32a9ce6cc) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve agent creation times across resumed runs.
+
+- [`090ae9a`](https://github.com/X-T-E-R/kiki/commit/090ae9a03a5b20cc2cf8cad86baa8d6e2c10baa9) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix sent images failing to load while the AI is thinking.
+
+- [`baaa438`](https://github.com/X-T-E-R/kiki/commit/baaa438af2d21cb4ff55c5efd4fada4cf858c2e3) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix local directory instructions being skipped when native SSH is disabled.
+
+- [`5c297ef`](https://github.com/X-T-E-R/kiki/commit/5c297efff5a6160676a3bf5142bc030de278d68b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Simplify inline message editing.
+
+- [`dd0e8d4`](https://github.com/X-T-E-R/kiki/commit/dd0e8d47a4f476eb139e580884d58c585e5c1471) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reduce repeated disk reads during memory searches and pending memory edits.
+
+- [`d6bec53`](https://github.com/X-T-E-R/kiki/commit/d6bec53d250c8b8b8d66df8ca31d4627d73a480c) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix incomplete memory tool inputs and historical receipts in the timeline.
+
+- [`bf680dd`](https://github.com/X-T-E-R/kiki/commit/bf680dd3abd2bb0f666c466096b8eae402843794) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix editing, regenerating, and retrying messages without losing conversation history or duplicating requests.
+
+- [`6581beb`](https://github.com/X-T-E-R/kiki/commit/6581beb3ee54896cd7dffe99d4dd8ca7babc2935) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Configure model steering separately for each message source.
+
+- [`78ee9b1`](https://github.com/X-T-E-R/kiki/commit/78ee9b17c835034722bc3ad6c52afafc1c6c65d1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Start a newly added model with the low and high thinking levels selected.
+
+- [`78ee9b1`](https://github.com/X-T-E-R/kiki/commit/78ee9b17c835034722bc3ad6c52afafc1c6c65d1) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep first-time setup open until it is closed with its close button, so an unsaved form is not lost to a stray click.
+
+- [`df57348`](https://github.com/X-T-E-R/kiki/commit/df57348bc9d0e13a1f5cc7793bd7713bdaa480a5) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve large plugin tool results and images as readable session attachments.
+
+- [`1eaf3db`](https://github.com/X-T-E-R/kiki/commit/1eaf3db3b812176d330fb06d22cc2bafaff82d6d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep generated prompt context out of user messages without hiding user-written text.
+
+- [`3ea9164`](https://github.com/X-T-E-R/kiki/commit/3ea916420a98d4adf6fc14c0c6afc87fe91fda15) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix URL fetching through configured proxies with Fake-IP DNS.
+
+- [`5bb556e`](https://github.com/X-T-E-R/kiki/commit/5bb556ef01cb317ab7d292101b3a12829331b427) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Bundle script hooks in Recipes with installation consent and frozen execution.
+
+- [`e6409b0`](https://github.com/X-T-E-R/kiki/commit/e6409b0a7554ef39e5b2dd8f15f7cee36278d699) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Reuse the local Kimi Code sign-in for Kiki OAuth connections.
+
+- [`93e36fa`](https://github.com/X-T-E-R/kiki/commit/93e36fa0bbdcc4ffd9ccf2403c316f3cdbe06112) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep routed page headers and rail status chrome on the picture pane's single ground.
+
+- [`ca30ad2`](https://github.com/X-T-E-R/kiki/commit/ca30ad2bbf77cf61c0a1dff86968c4520ba5666d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Hide unconfigured external engines from execution choices and keep recovery available for bound sessions.
+
+- [`ef03e58`](https://github.com/X-T-E-R/kiki/commit/ef03e58eeee27db7d396a903e063f340057659f6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Add global, workspace, and session plugin activation with workspace settings pages.
+
+- [`4539a47`](https://github.com/X-T-E-R/kiki/commit/4539a47950d9c711a0d75f9ea06ead38e7de7f4e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Search conversation text by default and include tool output only when selected.
+
+- [`d0a3902`](https://github.com/X-T-E-R/kiki/commit/d0a39022e1af461757101838bbb3894dbd48a838) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix conversation search ranking, message-view tool output matches, and quick-switcher search recovery.
+
+- [`92a2ebd`](https://github.com/X-T-E-R/kiki/commit/92a2ebd11083b8567d00a7e6d5a31115fe069988) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep new sessions responsive when another conversation's log write stalls or fails.
+
+- [`ef03e58`](https://github.com/X-T-E-R/kiki/commit/ef03e58eeee27db7d396a903e063f340057659f6) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Move built-in history import to session settings.
+
+- [`4539a47`](https://github.com/X-T-E-R/kiki/commit/4539a47950d9c711a0d75f9ea06ead38e7de7f4e) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix SSH file tools for approved hosts and remote Windows paths.
+
+- [`358aed6`](https://github.com/X-T-E-R/kiki/commit/358aed6cc57afaaee0999c9f05c4206b57db4618) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep SSH failures from terminating the backend and preserve message-bound settings and pending prompts across recovery.
+
+- [`8ed5e32`](https://github.com/X-T-E-R/kiki/commit/8ed5e32821bf3f891d5bea4d1f785bc040bcef8b) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve usable conversation history while older pages are still preparing or only partially verified.
+
+- [`6a1c13e`](https://github.com/X-T-E-R/kiki/commit/6a1c13ed41cd85e6f8dadc62b9bb91086d60f897) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep answered questions from lingering at the end of the timeline without a valid history anchor.
+
+- [`3a1199c`](https://github.com/X-T-E-R/kiki/commit/3a1199c2c7f98a8ccd56e1dea53ec5802f934b87) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep expanding live timeline content from making the conversation jump.
+
+- [`2006c20`](https://github.com/X-T-E-R/kiki/commit/2006c2031d945772c4047021b9e4a514efe0f42a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Keep user messages before their associated context and system reminders in the timeline.
+
+- [`bdef81a`](https://github.com/X-T-E-R/kiki/commit/bdef81a31d2a3354fccc61a4349b9bf5c0819d1d) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Separate translucent workspace panels and clarify background reading assistance.
+
+- [`4a65484`](https://github.com/X-T-E-R/kiki/commit/4a654846c4ff9d555dc765864cbe6aaab1a3557f) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve complete image attachments while sessions are running and when editing messages.
+
+- [`6c63e6b`](https://github.com/X-T-E-R/kiki/commit/6c63e6bffe802fc534695c4dba6998192c42d596) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix welcome messages using the configured model and keep model setup reachable from the composer.
+
+- [`201ac76`](https://github.com/X-T-E-R/kiki/commit/201ac760175e95450ac2ea89c118520ded273b78) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix welcome retries using models selected in the composer.
+
 ## 0.3.3
 
 ### Patch Changes
