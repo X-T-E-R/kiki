@@ -54,6 +54,12 @@ Skip any page and finish it later. The wizard does not connect a model: the new 
 
 The wizard does not ask which folder to work in, and its last step starts nothing on its own: a route row starts that tour and closes the wizard, while **Close setup** closes it without starting anything. Nothing is sent in either case until you send it, and the starter chips on the new session offer a few opening prompts. For the workspace itself, the new session page still defaults to your most recent workspace, or a new folder under Kiki Home if you have none. You can also ask for any of that later setup with `/kiki-ops`, and [Agents and sub-agents](../customization/agents.md#built-in-sub-agents) covers how agent profiles pick their model.
 
+The guided routes also remain available from **Discover Kiki** in the sidebar. Each stop offers an action on the real page or a labelled local example. Leaving keeps your place, and **Continue exploring** takes you back. The tour itself makes no model calls and creates no demo session; a suggested prompt is only a draft until you send it.
+
+To get help with a real task, start a new conversation and ask `/kiki-ops` to help you get started. Kiki's bundled guidance asks what you most want to get done, then takes you through doing it once — setting up what that step needs and leaving what already works alone. You review the draft and press Send yourself.
+
+A default model and thinking effort for a subagent like the read-only Explore come up only when the task requires examining material first — the project's files or the outside sources a claim depends on. A first agent profile is offered only when the work is missing that role, with the reason attached; research, writing and office work get a role shaped to that job rather than the engineering pair. You can ask for that setup later with `/kiki-ops`; [Agents and sub-agents](../customization/agents.md#built-in-sub-agents) explains how profiles pick their model.
+
 ## Your first conversation
 
 Once logged in, describe what you want in natural language. Letting Kiki look around first is a good way to start:

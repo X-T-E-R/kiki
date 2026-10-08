@@ -141,7 +141,9 @@ async function checkClosingStepLayout(page, label) {
   } else {
     expect(report.reservedCap !== true, `${label}: panel reserved ${report.panelHeight}px of a ${report.viewport}px viewport`);
   }
-  expect(report.bodyInside && report.rowsInside, `${label}: the invitation or a route row falls outside the panel`);
+  if (!report.scrolls) {
+    expect(report.bodyInside && report.rowsInside, `${label}: the invitation or a route row falls outside the panel`);
+  }
   // The real separation promise: a short page leaves visible air before the
   // footer; a long page may scroll, but its last row must be reachable without
   // being clipped by the body wrapper.
@@ -150,14 +152,19 @@ async function checkClosingStepLayout(page, label) {
     const settled = await page.evaluate(() => {
       const scroller = document.querySelector('[role="dialog"] [data-onboarding-step-scroll]');
       const wrapper = scroller?.parentElement;
-      const row = document.querySelector('[role="dialog"] [data-onboarding-route]:last-of-type');
-      if (scroller === null || wrapper === null || row === null) return null;
+      const row = [...document.querySelectorAll('[role="dialog"] [data-onboarding-route]')].at(-1);
+      const footer = document.querySelector('[role="dialog"]')?.lastElementChild;
+      if (scroller == null || wrapper == null || row == null || footer == null) return null;
+      const priorScrollTop = scroller.scrollTop;
       scroller.scrollTop = scroller.scrollHeight;
       const rowBox = row.getBoundingClientRect();
       const wrapperBox = wrapper.getBoundingClientRect();
-      return { rowTop: rowBox.top, rowBottom: rowBox.bottom, wrapperTop: wrapperBox.top, wrapperBottom: wrapperBox.bottom };
+      const footerTop = footer.getBoundingClientRect().top;
+      const result = { rowTop: rowBox.top, rowBottom: rowBox.bottom, wrapperTop: wrapperBox.top, wrapperBottom: wrapperBox.bottom, footerTop };
+      scroller.scrollTop = priorScrollTop;
+      return result;
     });
-    expect(settled !== null && settled.rowTop >= settled.wrapperTop - 1 && settled.rowBottom <= settled.wrapperBottom + 1,
+    expect(settled !== null && settled.rowTop >= settled.wrapperTop - 1 && settled.rowBottom <= Math.min(settled.wrapperBottom, settled.footerTop) + 1,
       `${label}: the last route row is not fully visible at the bottom of the scrollable body (${JSON.stringify(settled)})`);
   } else {
     expect(report.lastRowBottom <= report.clipBottom + 1,
