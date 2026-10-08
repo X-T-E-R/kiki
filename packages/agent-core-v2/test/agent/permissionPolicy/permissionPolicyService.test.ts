@@ -158,7 +158,7 @@ describe('AgentPermissionPolicyService chain', () => {
 
   function externalContext(inherit = false): AgentExecutorContext {
     return { agent: { id: 'main', accessor: ix }, descriptor: { id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
-      binding: { systemPrompt: '', thinkingLevel: 'off', permissionMode: inherit ? undefined : mode } };
+      binding: { systemPrompt: '', thinkingLevel: 'off', permissionMode: inherit ? undefined : mode }, worktree: worktreeMeta };
   }
 
   it.each([
@@ -232,6 +232,24 @@ describe('AgentPermissionPolicyService chain', () => {
     rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
     expect(await authorizeExternalTool(context, tool, 1, 'inherit', signal, display)).toBe('inherit');
     expect(await authorizeExternalTool(context, { name: 'Read', input: { path: '/workspace/notes.md' } }, 1, 'deny', signal, display)).toBe('deny');
+  });
+
+  it('keeps external vendor inheritance while enforcing persisted worktree isolation without a mode override', async () => {
+    mode = 'yolo';
+    const unrestricted = externalContext(true);
+    const display = { kind: 'external_permission' as const, options: [], summary: 'Write', detail: {} };
+    const writeSource = { name: 'Write', input: { path: '/source/file.ts' } };
+    expect(externalPermissionMeta(unrestricted, '/workspace')).toMatchObject({ override: undefined, hostGate: false });
+    expect(await authorizeExternalTool(unrestricted, writeSource, 1, 'no-boundary', signal, display)).toBe('inherit');
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'example/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    const isolated = externalContext(true);
+    const meta = externalPermissionMeta(isolated, '/workspace');
+    expect(meta).toMatchObject({ override: undefined, hostGate: true });
+    expect(meta.policyIdentity).not.toBe(externalPermissionMeta(unrestricted, '/workspace').policyIdentity);
+    expect(await authorizeExternalTool(isolated, writeSource, 1, 'protected-write', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source status' } }, 1, 'protected-command', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(isolated, { name: 'Write', input: { path: '/workspace/file.ts' } }, 1, 'own-write', signal, display)).toBe('inherit');
+    expect(await authorizeExternalTool(isolated, { name: 'Read', input: { path: '/source/file.ts' } }, 1, 'source-read', signal, display)).toBe('inherit');
   });
 
   it('preserves external auto sensitive-file approval and malformed command rejection', async () => {

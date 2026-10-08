@@ -120,7 +120,7 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 
 直连保留配置的启动环境、home 和工作目录，但实际程序必须解析到你预期的 CLI 同一可执行文件及设置来源。ACP adapter 可能启动 SDK 自带 binary 或显式覆盖，而不是 PATH 上的 CLI；不选 profile 不会让两者自动变成同一个程序。仅登录观测未知并不阻止启动。
 
-权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，才沿 Kiki 既有工具权限检查应用。显式 deny 规则仍生效；清除覆盖后回到剩余的 profile 或 harness 设置，都未设置时交回引擎。
+权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，才沿 Kiki 既有工具权限检查应用。没有模式覆盖时，显式 deny 规则与会话已绑定的 worktree 隔离限制仍生效。清除覆盖后回到剩余的 profile 或 harness 设置，都未设置时交回引擎。
 
 审批怎样送达与采用哪种策略是两件事。Adapter 支持时，ACP 与 Codex 发出的审批请求进入 Kiki 审批交互。无界面的 CLI 如果要求审批，却没有受支持的回复通道，这次请求就无法完成：使用带审批桥的 adapter，或为该任务明确选择受支持的权限模式，不必修改引擎全局默认值。
 

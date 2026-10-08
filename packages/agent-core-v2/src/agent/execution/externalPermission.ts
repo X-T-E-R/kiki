@@ -41,7 +41,7 @@ export function externalPermissionMode(context: AgentExecutorContext) {
 }
 
 export function externalPermissionHostGate(context: AgentExecutorContext): boolean {
-  return externalPermissionOverride(context) !== undefined ||
+  return context.worktree !== undefined || externalPermissionOverride(context) !== undefined ||
     context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0 ||
     context.binding.executionRestriction !== undefined || (context.binding.disallowedTools?.length ?? 0) > 0 ||
     (context.binding.toolAllowPolicies?.length ?? 0) > 0;
@@ -52,7 +52,7 @@ export function externalPermissionMeta(context: AgentExecutorContext, cwd: strin
   return { version: 1, override: externalPermissionOverride(context), hostGate: externalPermissionHostGate(context),
     policyIdentity: createHash('sha256').update(JSON.stringify({ rules,
       disallowedTools: context.binding.disallowedTools, toolAllowPolicies: context.binding.toolAllowPolicies,
-      restriction: context.binding.executionRestriction })).digest('hex'),
+      restriction: context.binding.executionRestriction, worktree: context.worktree })).digest('hex'),
     workspace: { cwd, additionalDirectories: additionalDirectories ?? [] },
     restriction: context.binding.executionRestriction };
 }
