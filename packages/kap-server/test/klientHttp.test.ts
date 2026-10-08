@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import {
   ISessionManager,
   ISessionMetadata,
+  ISessionIndex,
+  IWorkspaceService,
+  IWorkspaceInstanceManager,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentUsageService,
@@ -15,6 +18,9 @@ import {
   resumeSessionById,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { SessionIndexBuildingError } from '@kiki/agent-core-v2/app/sessionIndex/errors';
+import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { createKlient } from '@kiki/klient/http';
 import type { SessionViewSignal } from '@kiki/klient/session-view';
 import Fastify from 'fastify';
@@ -185,6 +191,88 @@ describe('klient HTTP host', () => {
       await klient.close();
     }
   });
+
+  it('lists workspaces without materializing a Program and preserves index-building failures for retry', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const registry = server.core.accessor.get(IWorkspaceService);
+    const index = server.core.accessor.get(ISessionIndex);
+    const runtime = server.core.accessor.get(IWorkspaceInstanceManager);
+    const created = await registry.createOrTouch(homeDir, 'Example workspace');
+    const materialize = vi.spyOn(runtime, 'getOrCreate').mockImplementation(async () => {
+      throw new Error('Workspace listing must not materialize a Program');
+    });
+    const count = vi.spyOn(index, 'count').mockResolvedValue(0);
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      const listed = await klient.rest.workspaces.list();
+      expect(listed.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id, session_count: 0 })]));
+      expect(materialize).not.toHaveBeenCalled();
+      count.mockRejectedValueOnce(new SessionIndexBuildingError());
+      await expect(klient.rest.workspaces.list()).rejects.toMatchObject({ code: 40939 });
+      const retried = await klient.rest.workspaces.list();
+      expect(retried.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]));
+      expect(materialize).not.toHaveBeenCalled();
+    } finally {
+      count.mockRestore();
+      materialize.mockRestore();
+      await klient.close();
+    }
+  });
+
+  it('creates and opens live and cold views without waiting for an unrelated append', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const store = server.core.accessor.get(IAppendLogStore);
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const manager = server.core.accessor.get(ISessionManager);
+    const append = storage.append.bind(storage);
+    const blocked = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const spy = vi.spyOn(storage, 'append').mockImplementation(async (scope, key, data, options) => {
+      if (scope === 'example-unrelated-agent') {
+        entered.resolve();
+        await blocked.promise;
+      }
+      return append(scope, key, data, options);
+    });
+    const subscriptions: Array<{ close(): void }> = [];
+    let sessionId: string | undefined;
+    try {
+      store.append('example-unrelated-agent', 'events.jsonl', { type: 'example' });
+      await entered.promise;
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Example create and open' });
+      sessionId = created.id;
+      const handle = manager.get(created.id);
+      expect(handle).toBeDefined();
+      await ensureMainAgent(handle!);
+      const open = async () => {
+        const snapshot = await klient.session(created.id).view.snapshot();
+        expect(snapshot.session.id).toBe(created.id);
+        const signals: SessionViewSignal[] = [];
+        const subscription = klient.session(created.id).view.subscribe({
+          sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+          transcriptGrades: { main: 'delta' },
+        }, signal => signals.push(signal));
+        subscriptions.push(subscription);
+        await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true), { timeout: 5000 });
+        expect(signals.some(signal => signal.type === 'protocolError')).toBe(false);
+        subscription.close();
+      };
+      await open();
+      blocked.resolve();
+      await store.flush('example-unrelated-agent', 'events.jsonl');
+      await manager.close(created.id);
+      expect(manager.get(created.id)).toBeUndefined();
+      await open();
+      expect(manager.get(created.id)).toBeUndefined();
+    } finally {
+      blocked.resolve();
+      await store.flush('example-unrelated-agent', 'events.jsonl');
+      spy.mockRestore();
+      for (const subscription of subscriptions) subscription.close();
+      await klient.close();
+      if (sessionId !== undefined && manager.get(sessionId) !== undefined) await manager.close(sessionId);
+    }
+  }, 30_000);
 
   it('restores session harness fields on REST and klient snapshots after closing and resuming', async () => {
     const klient = createKlient({ endpoint, token: TOKEN });

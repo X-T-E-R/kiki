@@ -9,7 +9,12 @@ import { InstantiationService } from '#/_base/di/instantiationService';
 import { ScopeUnits } from '#/_base/di/fiber';
 import { Service } from '#/_base/di/service';
 import { Event } from '#/_base/event';
-import { createServices } from '#/_base/di/test';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { TerminalProcess } from '#/os/interface/terminal';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -150,6 +155,108 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   sessions.set(handle.id, handle);
   return { service, handle, dispose, closed, terminals, mirror, drainRetirements, cleanupStages };
 }
+
+describe('SessionLifecycleService create persistence ownership', () => {
+  it.each(['blocked', 'failed'] as const)('does not couple a new session to an unrelated %s append', async (unrelated) => {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    let releaseOther!: () => void;
+    let releaseIndex!: () => void;
+    const otherGate = new Promise<void>((resolve) => { releaseOther = resolve; });
+    const indexGate = new Promise<void>((resolve) => { releaseIndex = resolve; });
+    const originalAppend = storage.append.bind(storage);
+    storage.append = async (scope, key, bytes, options) => {
+      if (scope === 'unrelated-agent') {
+        if (unrelated === 'failed') throw new Error('unrelated append failed');
+        await otherGate;
+      }
+      if (key === 'session_index.jsonl') await indexGate;
+      return originalAppend(scope, key, bytes, options);
+    };
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const logs = ix.get(IAppendLogStore);
+    logs.append('unrelated-agent', 'wire.jsonl', { value: 'unrelated' });
+    const fx = fixture();
+    Object.assign(fx.service, { appendLogStore: logs });
+    const handle = {
+      id: 'new-session', dispose: vi.fn(async () => {}),
+      accessor: accessor([
+        [ITelemetryService, { track2: () => {} }],
+        [ISessionContext, { sessionDir: '/home/new-session' }],
+        [IAgentLifecycleService, { list: () => [] }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const owner = fx.service as unknown as { materializeSession(opts: unknown): Promise<ISessionScopeHandle> };
+    const materialize = vi.spyOn(owner, 'materializeSession').mockResolvedValue(handle);
+    const created: string[] = [];
+    fx.service.onDidCreateSession((event) => created.push(event.sessionId));
+    let result: { value?: ISessionScopeHandle; error?: unknown } | undefined;
+    const pending = fx.service.create({ sessionId: handle.id, workDir: '/empty-workspace' }).then(
+      (value) => { result = { value }; }, (error: unknown) => { result = { error }; },
+    );
+    try {
+      await drainMicrotasks();
+      expect(result).toBeUndefined();
+      expect(created).toEqual([]);
+      releaseIndex();
+      await drainMicrotasks();
+      expect(result).toEqual({ value: handle });
+      expect(created).toEqual([handle.id]);
+      const records = [];
+      for await (const record of logs.read('', 'session_index.jsonl')) records.push(record);
+      expect(records).toEqual([expect.objectContaining({ sessionId: handle.id, workDir: '/empty-workspace' })]);
+    } finally {
+      releaseOther();
+      releaseIndex();
+      await pending;
+      materialize.mockRestore();
+      await fx.service.dispose();
+      await disposables.dispose();
+    }
+  });
+
+  it('rejects its own index failure and rolls back the created scope and lock', async () => {
+    const failure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'Example index storage is full');
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    storage.append = async () => { throw failure; };
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const fx = fixture();
+    Object.assign(fx.service, { appendLogStore: ix.get(IAppendLogStore) });
+    const dispose = vi.fn(async () => {});
+    const release = vi.fn(async () => {});
+    const handle = {
+      id: 'failed-session', dispose,
+      accessor: accessor([
+        [ISessionContext, { sessionDir: '/home/failed-session' }],
+        [IAgentLifecycleService, { list: () => [] }],
+      ]),
+    } as unknown as ISessionScopeHandle;
+    const owner = fx.service as unknown as {
+      materializeSession(opts: unknown): Promise<ISessionScopeHandle>;
+      sessionLocks: Map<string, { release(): Promise<void> }>;
+    };
+    const materialize = vi.spyOn(owner, 'materializeSession').mockResolvedValue(handle);
+    owner.sessionLocks.set(handle.id, { release });
+    const created: string[] = [];
+    fx.service.onDidCreateSession((event) => created.push(event.sessionId));
+    try {
+      await expect(fx.service.create({ sessionId: handle.id, workDir: '/empty-workspace' })).rejects.toBe(failure);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(fx.service.get(handle.id)).toBeUndefined();
+      expect(created).toEqual([]);
+    } finally {
+      materialize.mockRestore();
+      await fx.service.dispose();
+      await disposables.dispose();
+    }
+  });
+});
 
 describe('SessionLifecycleService factory ownership', () => {
   it.each(['close', 'unload', 'materialization-error', 'rollback', 'factory-error'] as const)(

@@ -544,7 +544,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       workDir,
       ...(sourceRoot === undefined ? {} : { sourceRoot }),
     });
-    await this.appendLogStore.flush();
+    await this.appendLogStore.flush('', 'session_index.jsonl');
   }
 
   private async announceCreated(event: SessionCreatedEvent): Promise<void> {

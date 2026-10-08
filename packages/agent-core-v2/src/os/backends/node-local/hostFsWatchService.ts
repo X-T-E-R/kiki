@@ -45,6 +45,7 @@ interface HostFsWatchRuntime {
   watchNative(
     root: string,
     listener: (eventType: string, filename: string | null) => void,
+    onError: (error: NodeJS.ErrnoException) => void,
   ): NativeFsWatcher;
   watchFallback(
     root: string,
@@ -58,8 +59,12 @@ const NODE_HOST_FS_WATCH_RUNTIME: HostFsWatchRuntime = {
   platform: process.platform,
   homeDir: homedir(),
   resolvePath: (path) => process.platform === 'win32' && /~\d/.test(path) ? resolveLongWatchPath(path) : path,
-  watchNative: (root, listener) =>
-    fsWatch(root, { persistent: false, recursive: true }, listener),
+  watchNative: (root, listener, onError) => {
+    const watcher = fsWatch(root, { persistent: false, recursive: true });
+    watcher.on('error', onError);
+    watcher.on('change', listener);
+    return watcher;
+  },
   watchFallback: (root, options, reportError) =>
     new HostFsWatchHandle(root, options, reportError),
   scheduleRetry: (callback, delayMs) => {
@@ -180,7 +185,16 @@ class SignalWatchHandle implements IHostFsWatchHandle {
   private startNativeLeg(): void {
     if (this.disposed) return;
     try {
-      const watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
+      let watcher: NativeFsWatcher | undefined;
+      let earlyError: NodeJS.ErrnoException | undefined;
+      const onError = (error: NodeJS.ErrnoException): void => {
+        if (watcher === undefined) {
+          earlyError = error;
+          return;
+        }
+        this.onNativeError(watcher, error);
+      };
+      watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
         if (this.disposed) return;
         this.retryAttempts = 0;
         this.recoveryInvalidated = false;
@@ -188,10 +202,12 @@ class SignalWatchHandle implements IHostFsWatchHandle {
         const absPath = resolveNativeSignalPath(this.root, filename);
         if (absPath !== this.root && this.ignored(absPath)) return;
         this.fireInvalidation();
-      });
-      watcher.on('error', (error: NodeJS.ErrnoException) => {
-        this.onNativeError(watcher, error);
-      });
+      }, onError);
+      if (earlyError !== undefined) {
+        watcher.close();
+        this.onNativeError(undefined, earlyError);
+        return;
+      }
       this.nativeWatcher = watcher;
       this.readiness.resolve();
       if (this.recovering) {

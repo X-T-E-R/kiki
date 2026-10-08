@@ -55,6 +55,7 @@ interface TestRetry {
 
 function signalRig(options?: {
   readonly synchronousFailures?: number;
+  readonly earlyError?: string;
   readonly platform?: NodeJS.Platform;
   readonly homeDir?: string;
   readonly resolvePath?: (path: string) => string;
@@ -76,12 +77,13 @@ function signalRig(options?: {
     platform: options?.platform ?? 'darwin',
     homeDir: options?.homeDir ?? '/Users/example',
     resolvePath: options?.resolvePath,
-    watchNative: (root, listener) => {
+    watchNative: (root, listener, onError) => {
       if (synchronousFailures > 0) {
         synchronousFailures -= 1;
         throw Object.assign(new Error('native watch creation failed'), { code: 'EIO' });
       }
       const watcher = new TestNativeWatcher();
+      watcher.on('error', onError);
       attempts.push({
         root,
         watcher,
@@ -89,6 +91,7 @@ function signalRig(options?: {
           listener('rename', filename);
         },
       });
+      if (options?.earlyError !== undefined) watcher.fail(options.earlyError);
       return watcher;
     },
     watchFallback: (path) => {
@@ -261,6 +264,14 @@ describe('host filesystem change notifications', () => {
     rig.attempt(2).watcher.fail();
 
     expect(rig.retries.map((retry) => retry.delayMs)).toEqual([1000, 2000, 4000]);
+  });
+
+  it('catches a native error emitted before watchNative returns', () => {
+    const rig = signalRig({ earlyError: 'EPERM' });
+    handle = rig.service.watch('/repo', { signal: true });
+    expect(rig.attempts).toHaveLength(1);
+    expect(rig.retries).toHaveLength(1);
+    expect(rig.retry(0).delayMs).toBe(1000);
   });
 
   it('invalidates once after a native watch is rearmed', () => {
