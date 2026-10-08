@@ -144,6 +144,12 @@ export async function registerProjectHook({ cwd, nodePath, handlerPath, sessionI
 }
 
 
+/**
+ * Recover only this adapter's dead registration in an explicitly selected workspace.
+ * `node agy-cli-acp.mjs --recover-project-hook <absolute-workspace>` starts no vendor
+ * process. A live lease or changed definition is preserved; successful recovery
+ * restores original bytes or removes only the owned key alongside foreign edits.
+ */
 export async function recoverProjectHook({ cwd, nodePath, handlerPath }) {
   const statePath = join(cwd, '.agents', '.kiki-agy-hook-ownership.json');
   const bytes = await optional(statePath);

@@ -166,6 +166,12 @@ export class AgyBridge {
     session.hostGate = hostGate;
   }
 
+  /**
+   * A native child cannot receive new environment variables mid-session. Its random
+   * channel identity is fixed at launch; inherited turns return the vendor's empty
+   * default and do not register a project hook. The per-turn hostGate snapshot
+   * controls only the owned project key, preserving the native process and history.
+   */
   async syncPermissionHook(session) {
     session.permissionChannel ??= await openPermissionChannel(input => this.requestPermission(session, input), session.permissionIdentity);
     if (!session.hostGate) {
@@ -296,7 +302,7 @@ export class AgyBridge {
     if (session.denied || result.denied_actions?.length) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
-      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; no permission bridge or automatic approval is available`;
+      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; the action was not approved by the current permission policy`;
       await this.settlePendingTools(session, active, 'failed', message);
       process.stderr.write(`${message}\n`);
       const error = new Error(message);
