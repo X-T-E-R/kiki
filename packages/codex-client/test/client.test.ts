@@ -249,6 +249,96 @@ describe('CodexAppServerClient limits and observers', () => {
     await client.shutdown();
   });
 
+  it('B-01 settles natural disconnection while the event sink remains blocked', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture, { shutdownGraceMs: 5 });
+    let releaseSink!: () => void;
+    let sinkEntered!: () => void;
+    let sinkReleased = false;
+    const gate = new Promise<void>((resolve) => { releaseSink = resolve; });
+    const entered = new Promise<void>((resolve) => { sinkEntered = resolve; });
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal, async () => {
+      sinkEntered();
+      await gate;
+      sinkReleased = true;
+    });
+    const completed = handle.completion.catch((error: unknown) => error);
+    fixture.stdout.write(`${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'blocked-message', delta: 'blocked',
+    } })}\n`);
+    await entered;
+    fixture.exit();
+    await expect(completed).resolves.toMatchObject({ code: 'closed' });
+    expect(sinkReleased).toBe(false);
+    expect(client.status().state).toBe('broken');
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+    expect(fixture.kill).not.toHaveBeenCalled();
+    releaseSink();
+    await client.shutdown();
+    expect(fixture.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('B-01 drains buffered legal events and terminal before natural-exit cleanup', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    const client = turnClient(fixture, { shutdownGraceMs: 100 });
+    const texts: string[] = [];
+    let releaseSink!: () => void;
+    let sinkEntered!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSink = resolve; });
+    const entered = new Promise<void>((resolve) => { sinkEntered = resolve; });
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal, async (event) => {
+      if (event.type !== 'message.delta' || event.content.type !== 'text') return;
+      texts.push(event.content.text);
+      if (texts.length === 1) { sinkEntered(); await gate; }
+    });
+    const delta = (text: string): string => `${JSON.stringify({ method: 'item/agentMessage/delta', params: {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'message', delta: text,
+    } })}\n`;
+    fixture.stdout.write(delta('first'));
+    await entered;
+    fixture.stdout.write(delta('tail'));
+    completeTurn(fixture.stdout);
+    fixture.exit();
+    releaseSink();
+    await expect(handle.completion).resolves.toMatchObject({ status: 'completed', turnId: 'turn-1' });
+    expect(texts).toEqual(['first', 'tail']);
+    await vi.waitFor(() => expect(fixture.dispose).toHaveBeenCalledOnce(), { interval: 1 });
+    expect(fixture.kill).not.toHaveBeenCalled();
+    await client.shutdown();
+  });
+
+  it('B-02 lets an asynchronous notification observer await same-connection RPC', async () => {
+    const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }));
+    let client!: CodexAppServerClient;
+    let observerEntered!: () => void;
+    let observerFinished!: (value: unknown) => void;
+    const entered = new Promise<void>((resolve) => { observerEntered = resolve; });
+    const observed = new Promise<unknown>((resolve) => { observerFinished = resolve; });
+    client = new CodexAppServerClient({ spawn: async () => fixture.process }, { id: 'fixture', command: 'fixture' }, {
+      onNotification: async (notification) => {
+        if (notification.method !== 'thread/status/changed') return;
+        observerEntered();
+        observerFinished(await client.request('observer/rpc', {}));
+      },
+    });
+    await client.connect();
+    const handle = await client.startTurn({ threadId: 'thread-1' }, new AbortController().signal, () => {});
+    fixture.stdout.write(`${JSON.stringify({ method: 'thread/status/changed', params: {
+      threadId: 'other-thread', status: 'active',
+    } })}\n`);
+    await entered;
+    const rpc = await waitForFrame(fixture, 'observer/rpc');
+    respondToFrame(fixture, rpc, { ok: true });
+    completeTurn(fixture.stdout);
+    await expect(observed).resolves.toEqual({ ok: true });
+    await expect(handle.completion).resolves.toMatchObject({ status: 'completed' });
+    expect(fixture.methods.filter((method) => method === 'observer/rpc')).toHaveLength(1);
+    expect(fixture.kill).not.toHaveBeenCalled();
+    await client.shutdown();
+  });
+
   it('cancels and cleans up when the event sink is backpressured', async () => {
     const fixture = scriptedProcess(undefined, () => ({ turn: { id: 'turn-1' } }), true);
     const client = turnClient(fixture);

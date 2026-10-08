@@ -57,6 +57,7 @@ export class CodexAppServerClient {
   #terminalError: unknown;
   #shutdownPromise: Promise<void> | undefined;
   #transportCleanup: Promise<void> | undefined;
+  #exitDrainTimer: NodeJS.Timeout | undefined;
   #activeTurn: ActiveTurn | undefined;
   #turnSignal: AbortSignal | undefined;
   readonly #transportEnded = new AbortController();
@@ -302,6 +303,8 @@ export class CodexAppServerClient {
   }
 
   #closeTransport(force: boolean): Promise<void> {
+    if (this.#exitDrainTimer !== undefined) clearTimeout(this.#exitDrainTimer);
+    this.#exitDrainTimer = undefined;
     this.#transportEnded.abort(this.#terminalError ?? new CodexClientError('closed', 'Codex transport closed'));
     return this.#transportCleanup ??= this.#disposeTransport(force);
   }
@@ -359,7 +362,12 @@ export class CodexAppServerClient {
     process.stdin.on('error', (error) => {
       void this.#break(new CodexClientError('stdio', 'Codex app-server stdin failed', error));
     });
-    void process.wait().catch((error: unknown) => this.#break(error));
+    void process.wait().then((exitCode) => {
+      if (this.#process !== process || this.#transportEnded.signal.aborted) return;
+      this.#exitDrainTimer = setTimeout(() => {
+        void this.#break(new CodexClientError('closed', `Codex app-server exited with code ${exitCode} before stdout drained`));
+      }, this.descriptor.shutdownGraceMs ?? 3_000);
+    }, (error: unknown) => this.#break(error));
   }
 
   async #readStdout(process: HostProcessLike): Promise<void> {
@@ -452,7 +460,7 @@ export class CodexAppServerClient {
 
   async #handleNotification(notification: CodexNotification): Promise<void> {
     try {
-      await waitForResponse(Promise.resolve(this.options.onNotification?.(notification)), 'notification observer', undefined, this.#transportEnded.signal);
+      void Promise.resolve(this.options.onNotification?.(notification)).catch(() => undefined);
     } catch {}
     if (this.#transportEnded.signal.aborted) return;
     const active = this.#activeTurn;
