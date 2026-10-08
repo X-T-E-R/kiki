@@ -2,9 +2,11 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { registerProjectHook, recoverProjectHook } from './agy-hook-registration.mjs';
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
+import { openPermissionChannel, permissionChannelIdentity } from './agy-permission-hook.mjs';
 
 const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT = 'engine-default';
@@ -16,6 +18,17 @@ export function launchArgs(session) {
   if (session.effort !== DEFAULT) args.push('--effort', session.effort);
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
   return args;
+}
+
+export function canonicalTool(name, args, cwd) {
+  if (name === 'run_command') return { name: 'Bash', kind: 'execute', input: { command: args.CommandLine, cwd: args.Cwd ?? cwd } };
+  if (name === 'view_file') return { name: 'Read', kind: 'read', input: { path: args.AbsolutePath } };
+  if (name === 'write_to_file') return { name: 'Write', kind: 'edit', input: { path: args.TargetFile } };
+  if (name === 'replace_file_content' || name === 'multi_replace_file_content') return { name: 'Edit', kind: 'edit', input: { path: args.TargetFile } };
+  if (name === 'find_by_name') return { name: 'Glob', kind: 'search', input: { path: args.SearchDirectory, pattern: args.Pattern } };
+  if (name === 'list_dir') return { name: 'Glob', kind: 'search', input: { path: args.DirectoryPath } };
+  if (name === 'grep_search') return { name: 'Grep', kind: 'search', input: { path: args.SearchPath, pattern: args.Query } };
+  return { name, kind: 'other', input: args };
 }
 
 export function promptText(blocks) {
@@ -69,6 +82,45 @@ export class AgyBridge {
       authMethods: [] };
   }
 
+  async requestPermission(session, input) {
+    if (!session.hostGate) return {};
+    const active = session.active;
+    const reject = reason => ({ decision: 'deny', reason });
+    if (!active || session.broken || typeof active.client.request !== 'function') return reject('Kiki AGY permission gate is unavailable for this turn');
+    if (!input || typeof input.conversationId !== 'string' || !Number.isSafeInteger(input.stepIdx) || input.stepIdx < 0
+      || !input.toolCall || typeof input.toolCall.name !== 'string' || !input.toolCall.args || typeof input.toolCall.args !== 'object') {
+      return reject('Invalid AGY PreToolUse payload');
+    }
+    if (!session.init || input.conversationId !== session.init.conversation_id) return reject('AGY permission conversation identity does not match this session');
+    const id = `agy-${input.conversationId}-${input.stepIdx}`;
+    const name = input.toolCall.name;
+    const args = input.toolCall.args;
+    const canonical = canonicalTool(name, args, session.cwd);
+    await this.audit(session, 'permission_request', { toolCallId: id, name, policyIdentity: session.permission.policyIdentity, override: session.permission.override });
+    const controller = new AbortController();
+    session.permissionRequests.add(controller);
+    let response;
+    try {
+      response = await active.client.request('session/request_permission', {
+        sessionId: session.id,
+        toolCall: { toolCallId: id, title: name, kind: canonical.kind, status: 'in_progress', rawInput: args },
+        options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject_once', name: 'Reject once', kind: 'reject_once' },
+          { optionId: 'kiki.vendor_default', name: 'Use vendor permissions', kind: 'allow_once' }],
+        _meta: { 'kiki.tool': { name: canonical.name, input: canonical.input } },
+      }, { signal: controller.signal });
+    } finally { session.permissionRequests.delete(controller); }
+    if (session.active !== active || session.broken) return reject('Kiki AGY turn ended while awaiting permission');
+    if (response?.outcome?.outcome === 'selected' && response.outcome.optionId === 'kiki.vendor_default') {
+      await this.audit(session, 'permission_decision', { toolCallId: id, decision: 'vendor_default' });
+      return {};
+    }
+    const allow = response?.outcome?.outcome === 'selected' && response.outcome.optionId === 'allow_once';
+    await this.audit(session, 'permission_decision', { toolCallId: id, decision: allow ? 'allow' : 'deny' });
+    return allow ? { decision: 'allow', reason: 'Approved by the current Kiki permission gate' }
+      : reject('The current Kiki permission gate rejected or cancelled this action');
+  }
+
   async newSession(params) {
     if (params.mcpServers?.length) throw new Error('AGY MCP forwarding is not supported; retain AGY own configured MCP');
     if (params._meta?.systemPromptOverride !== undefined) throw new Error('System replacement is unsupported; use explicit Kiki preamble delivery');
@@ -76,7 +128,10 @@ export class AgyBridge {
     const dirs = params.additionalDirectories ?? [];
     if (!Array.isArray(dirs) || dirs.some(d => typeof d !== 'string' || !isAbsolute(d))) throw new Error('Additional directories must be absolute');
     const session = { id: randomUUID(), cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
+      permission: undefined, hostGate: false, permissionIdentity: permissionChannelIdentity(),
+      permissionRequests: new Set(), permissionChannel: undefined, permissionRegistration: undefined,
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map() };
+    this.permissionSnapshot(session, params._meta?.['kiki.permission']);
     this.sessions.set(session.id, session);
     await this.audit(session, 'session_new', { cwd: session.cwd, additionalDirectories: dirs, delivery: 'first_user_preamble', systemOverride: false });
     return { sessionId: session.id, configOptions: configOptions(session) };
@@ -97,9 +152,42 @@ export class AgyBridge {
     return { configOptions: configOptions(session) };
   }
 
-  start(session) {
+  permissionSnapshot(session, permission) {
+    const hostGate = permission?.hostGate === true;
+    if (hostGate && (permission.version !== 1
+      || permission.override !== undefined && (!['manual', 'auto', 'review', 'yolo'].includes(permission.override.mode)
+        || typeof permission.override.source !== 'string' || !permission.override.source)
+      || typeof permission.policyIdentity !== 'string' || !permission.policyIdentity
+      || permission.workspace?.cwd !== session.cwd
+      || JSON.stringify(permission.workspace?.additionalDirectories ?? []) !== JSON.stringify(session.additionalDirectories))) {
+      throw new Error('AGY permission bridge requires a matching frozen Kiki permission context');
+    }
+    session.permission = permission === undefined ? undefined : structuredClone(permission);
+    session.hostGate = hostGate;
+  }
+
+  async syncPermissionHook(session) {
+    session.permissionChannel ??= await openPermissionChannel(input => this.requestPermission(session, input), session.permissionIdentity);
+    if (!session.hostGate) {
+      await session.permissionRegistration?.close();
+      session.permissionRegistration = undefined;
+      return;
+    }
+    session.permissionRegistration ??= await registerProjectHook({ cwd: session.cwd, nodePath: process.execPath,
+      handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id });
+  }
+
+  async start(session) {
     const args = [...this.cliPrefix, ...launchArgs(session)];
-    const child = this.spawnProcess(this.cliPath, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const env = { ...process.env, ...session.permissionIdentity };
+    let child;
+    try {
+      child = this.spawnProcess(this.cliPath, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env });
+    } catch (error) {
+      await session.permissionChannel?.close();
+      await session.permissionRegistration?.close();
+      throw error;
+    }
     session.child = child;
     session.exited = new Promise(done => child.once('close', done));
     const decoder = new StringDecoder('utf8');
@@ -132,13 +220,17 @@ export class AgyBridge {
     child.stdin.on('error', fail);
     child.on('error', fail);
     child.once('close', (code, signal) => {
-      delivery.finally(() => {
+      session.cleanup = delivery.finally(async () => {
         session.broken = true;
         if (session.active) {
           session.active.reject(new Error(`AGY exited before terminal result (${code ?? signal})`));
           session.active = undefined;
         }
-      }).catch(() => {});
+        for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
+        await session.permissionChannel?.close();
+        await session.permissionRegistration?.close();
+      });
+      session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
     });
     return this.audit(session, 'launch', { cliPath: this.cliPath, args, pid: child.pid, cwd: session.cwd });
   }
@@ -164,6 +256,7 @@ export class AgyBridge {
       return;
     }
     const active = session.active;
+    if (!active && session.broken) return;
     if (!active) throw new Error('AGY event arrived outside an active turn');
     if (event.event === 'step_update') {
       const step = event.step_update;
@@ -238,6 +331,8 @@ export class AgyBridge {
     const promise = new Promise((resolveTurn, reject) => { session.active = { resolve: resolveTurn, reject, client, text: '' }; });
     promise.catch(() => {});
     try {
+      if (Object.hasOwn(params._meta ?? {}, 'kiki.permission')) this.permissionSnapshot(session, params._meta['kiki.permission']);
+      await this.syncPermissionHook(session);
       if (!session.child) await this.start(session);
       const frame = JSON.stringify({ event: 'user', message: { content } }) + '\n';
       await this.audit(session, 'prompt_sent', { bytes: Buffer.byteLength(frame),
@@ -256,8 +351,12 @@ export class AgyBridge {
     const active = session.active;
     session.active = undefined;
     session.broken = true;
+    for (const controller of session.permissionRequests) controller.abort(new Error('AGY turn cancelled'));
     if (active) await this.settlePendingTools(session, active, 'failed', 'AGY turn cancelled');
+    await session.permissionChannel?.close();
     await this.stopProcess(session.child);
+    await session.cleanup;
+    await session.permissionRegistration?.close();
     await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false });
     active?.resolve({ stopReason: 'cancelled' });
   }
@@ -265,15 +364,19 @@ export class AgyBridge {
   close() {
     this.closePromise ??= Promise.all([...this.sessions.values()].map(async session => {
       const active = session.active; session.active = undefined; session.broken = true;
+      for (const controller of session.permissionRequests) controller.abort(new Error('ACP connection closed'));
       try {
         if (active) await this.settlePendingTools(session, active, 'failed', 'ACP connection closed');
       } finally {
         active?.reject(new Error('ACP connection closed'));
+        await session.permissionChannel?.close();
         if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
           session.child.stdin.end();
           const timer = setTimeout(() => { void this.stopProcess(session.child); }, 3000);
           try { await session.exited; } finally { clearTimeout(timer); }
         }
+        await session.cleanup;
+        await session.permissionRegistration?.close();
         await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
       }
     }));
@@ -313,9 +416,17 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.includes('--version')) console.log('agy-cli-acp 0.1.0');
   else {
     const args = process.argv.slice(2);
-    if (args.length && (args.length !== 2 || args[0] !== '--model')) throw new Error('Only --model <AGY model ID> is supported');
-    runBridge({ sdkPath: process.env.AGY_ACP_SDK_PATH, cliPath: process.env.AGY_CLI_PATH,
-      auditDir: process.env.AGY_BRIDGE_AUDIT_DIR, model: args[1] ?? DEFAULT })
-      .catch(error => { console.error(error.message); process.exitCode = 1; });
+    if (args.length === 2 && args[0] === '--recover-project-hook') {
+      if (!isAbsolute(args[1])) throw Error('AGY hook recovery workspace must be absolute');
+      recoverProjectHook({ cwd: args[1], nodePath: process.execPath,
+        handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) })
+        .then(result => console.log(JSON.stringify(result)))
+        .catch(error => { console.error(error.message); process.exitCode = 1; });
+    } else {
+      if (args.length && (args.length !== 2 || args[0] !== '--model')) throw new Error('Only --model <AGY model ID> or --recover-project-hook <workspace> is supported');
+      runBridge({ sdkPath: process.env.AGY_ACP_SDK_PATH, cliPath: process.env.AGY_CLI_PATH,
+        auditDir: process.env.AGY_BRIDGE_AUDIT_DIR, model: args[1] ?? DEFAULT })
+        .catch(error => { console.error(error.message); process.exitCode = 1; });
+    }
   }
 }

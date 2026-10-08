@@ -1,4 +1,20 @@
 import { createInterface } from 'node:readline';
+import { readFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+
+async function invokeHook(payload) {
+  const hooks = JSON.parse(await readFile('.agents/hooks.json', 'utf8'));
+  const definition = hooks['kiki-agy-permission-bridge'].PreToolUse[0].hooks[0];
+  const command = /^"([^"]+)" "([^"]+)"$/.exec(definition.command);
+  if (!command) throw Error('Fixture expected pinned Node hook command');
+  const child = spawn(command[1], [command[2]], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  const exit = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error('Fixture hook failed'))); });
+  child.stdin.end(JSON.stringify(payload));
+  await exit;
+  return JSON.parse(output);
+}
 let turns = 0;
 const conversation = 'fixture-conversation';
 const args = process.argv.slice(2);
@@ -16,6 +32,18 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (input.message.content === 'malformed') { process.stdout.write('not-json\n'); continue; }
   if (input.message.content === 'crash') process.exit(0);
+  if (input.message.content.startsWith('hook-')) {
+    const parameters = { CommandLine: 'Get-ChildItem -Path "C:/example/allowed" | Select-Object Name', Cwd: process.cwd() };
+    const tool = { step_type: 'tool', step_index: turns, tool_name: 'run_command', tool_info: { parameters } };
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
+    const result = await invokeHook({ conversationId: conversation, stepIdx: turns, workspacePaths: [process.cwd()], toolCall: { name: 'run_command', args: parameters } });
+    const allowed = result.decision === 'allow';
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
+      step_update: { ...tool, state: allowed ? 'DONE' : 'ERROR', tool_info: { parameters, output: allowed ? 'directory result' : undefined, error: allowed ? undefined : result.reason } } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS',
+      response: allowed ? 'hook-approved' : '', num_turns: turns, denied_actions: allowed ? undefined : [{ action: 'command', display_name: 'RunCommand' }] } }) + '\n');
+    continue;
+  }
   const denied = input.message.content === 'deny';
   const deniedTool = input.message.content === 'deny-tool';
   if (denied || deniedTool) process.stderr.write('headless tool auto-denied\n');

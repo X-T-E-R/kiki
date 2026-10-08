@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { AgyBridge, launchArgs, promptText } from './agy-cli-acp.mjs';
 
 const cwd = fileURLToPath(new URL('.', import.meta.url));
@@ -157,4 +158,281 @@ test('real ACP transport preserves tool failure, protocol diagnostics and shuts 
   const exit = await closed;
   assert.deepEqual(exit, { code: 0, signal: null }, stderr);
   reader.close();
+});
+
+
+test('official permission hook preserves raw command, cwd and identity; only the host selected allow permits it', async () => {
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
+  await assert.rejects(b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': { hostGate: true } } }), /frozen Kiki permission context/);
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const s = b.session(id);
+  s.init = { conversation_id: 'fixture-conversation' };
+  const input = { conversationId: 'fixture-conversation', stepIdx: 7,
+    toolCall: { name: 'run_command', args: { CommandLine: 'pwsh -Command "Get-ChildItem -Path \'C:/example/source\' | Select-Object Name"', Cwd: cwd } } };
+  let captured;
+  s.active = { client: { request: async (method, request) => {
+    captured = { method, request };
+    return { outcome: { outcome: 'selected', optionId: 'allow_once' } };
+  } } };
+  assert.equal((await b.requestPermission(s, input)).decision, 'allow');
+  assert.equal(captured.method, 'session/request_permission');
+  assert.deepEqual(captured.request.toolCall.rawInput, input.toolCall.args);
+  assert.deepEqual(captured.request._meta['kiki.tool'], { name: 'Bash', input: { command: input.toolCall.args.CommandLine, cwd } });
+  assert.deepEqual(captured.request.options.map(value => value.optionId), ['allow_once', 'reject_once', 'kiki.vendor_default']);
+  delete s.permission.override;
+  s.active.client.request = async () => ({ outcome: { outcome: 'selected', optionId: 'kiki.vendor_default' } });
+  assert.deepEqual(await b.requestPermission(s, input), {});
+  s.active.client.request = async () => ({ outcome: { outcome: 'selected', optionId: 'reject_once' } });
+  assert.equal((await b.requestPermission(s, input)).decision, 'deny');
+  assert.equal((await b.requestPermission(s, { ...input, conversationId: 'other-session' })).decision, 'deny');
+  s.active = undefined;
+  assert.equal((await b.requestPermission(s, input)).decision, 'deny');
+});
+
+test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
+  const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
+  assert.deepEqual(await requestHookPermission({}, {}), {});
+  let calls = 0;
+  const channel = await openPermissionChannel(async input => { calls++; return { decision: input.allow ? 'allow' : 'deny' }; });
+  try {
+    assert.equal((await requestHookPermission({ allow: true }, channel.env)).decision, 'allow');
+    assert.equal((await requestHookPermission({ allow: false }, channel.env)).decision, 'deny');
+    assert.equal((await requestHookPermission({}, { ...channel.env, KIKI_AGY_PERMISSION_TOKEN: 'wrong' })).decision, 'deny');
+    assert.equal(calls, 2);
+  } finally { await channel.close(); }
+  assert.equal((await requestHookPermission({}, channel.env, 500)).decision, 'deny');
+  const hanging = await openPermissionChannel(async () => new Promise(() => {}));
+  const pending = requestHookPermission({}, hanging.env, 2000);
+  await new Promise(done => setTimeout(done, 30));
+  await hanging.close();
+  assert.equal((await pending).decision, 'deny');
+});
+
+test('project hook registration leases restore original bytes and preserve concurrent foreign hooks', async () => {
+  const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { registerProjectHook } = await import('./agy-hook-registration.mjs');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-hook-'));
+  const path = join(root, '.agents', 'hooks.json');
+  await mkdir(join(root, '.agents'));
+  const original = '{\r\n  "foreign" : { "enabled": false }\r\n}\r\n';
+  const options = { cwd: root, nodePath: process.execPath, handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) };
+  try {
+    await writeFile(path, original);
+    const first = await registerProjectHook({ ...options, sessionId: 'first' });
+    const second = await registerProjectHook({ ...options, sessionId: 'second' });
+    await first.close();
+    assert.ok(JSON.parse(await readFile(path, 'utf8'))['kiki-agy-permission-bridge']);
+    await second.close();
+    assert.equal(await readFile(path, 'utf8'), original);
+    const third = await registerProjectHook({ ...options, sessionId: 'third' });
+    const installed = await readFile(path, 'utf8');
+    const concurrent = installed.slice(0, installed.lastIndexOf('}')) + ', "new-foreign": {"PreToolUse":[]} }';
+    await writeFile(path, concurrent);
+    await third.close();
+    const remaining = await readFile(path, 'utf8');
+    assert.equal(JSON.parse(remaining)['kiki-agy-permission-bridge'], undefined);
+    assert.ok(remaining.includes('"new-foreign": {"PreToolUse":[]}'));
+    assert.ok(remaining.includes('"foreign" : { "enabled": false }'));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('fixture follows project PreToolUse through the owned hook and host ACP decision, including cancel and cleanup', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-vertical-'));
+  const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))],
+    stopProcess: async child => {
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      const closed = new Promise(done => child.once('close', done));
+      child.stdin.end();
+      await closed;
+    } });
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd: root, additionalDirectories: [] } };
+  const id = (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const messages = [];
+  let optionId = 'allow_once'; let requests = 0; let hold = false; let entered;
+  const client = { notify: async (_method, event) => messages.push(event), request: async (method, request, options) => {
+    requests++;
+    assert.equal(method, 'session/request_permission');
+    assert.equal(request._meta['kiki.tool'].input.cwd, root);
+    if (hold) {
+      entered();
+      await new Promise((_done, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    }
+    return { outcome: { outcome: 'selected', optionId } };
+  } };
+  try {
+    assert.equal((await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-allow' }] }, client)).stopReason, 'end_turn');
+    assert.equal(requests, 1);
+    assert.equal(messages.find(message => message.update?.sessionUpdate === 'tool_call_update').update.status, 'completed');
+    optionId = 'reject_once'; messages.length = 0;
+    await assert.rejects(b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-deny' }] }, client), /AGY permission denied/);
+    assert.equal(requests, 2);
+    assert.equal(messages.find(message => message.update?.sessionUpdate === 'tool_call_update').update.status, 'failed');
+    hold = true;
+    const ready = new Promise(done => { entered = done; });
+    const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-wait' }] }, client);
+    pending.catch(() => {});
+    await ready;
+    await b.cancel({ sessionId: id });
+    assert.equal((await pending).stopReason, 'cancelled');
+    assert.equal(b.session(id).permissionRequests.size, 0);
+    assert.notEqual(b.session(id).child.exitCode, null);
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('inherit starts without host hook, even with legacy ambient mode; clearing override is a fresh vendor session', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-inherit-'));
+  const b = bridge('claude-opus-5-5-high');
+  const originalSpawn = b.spawnProcess;
+  const launches = [];
+  b.spawnProcess = (exe, args, options) => { launches.push({ args, env: options.env }); return originalSpawn(exe, args, options); };
+  try {
+    for (const permission of [undefined, { version: 1, mode: 'yolo' }, { version: 1, hostGate: false }]) {
+      const id = (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+      assert.equal((await turn(b, id, 'hello', [])).stopReason, 'end_turn');
+      assert.equal(b.session(id).permissionRegistration, undefined);
+      assert.deepEqual(await b.requestPermission(b.session(id), {}), {});
+      assert.equal(launches.at(-1).env.KIKI_AGY_PERMISSION_ENDPOINT, b.session(id).permissionIdentity.KIKI_AGY_PERMISSION_ENDPOINT);
+      assert.deepEqual(launches.at(-1).args.slice(1), ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'claude-opus-5-5-high']);
+      await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    }
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('vendor-default host outcome crosses owned channel as empty default, never as allow', async () => {
+  const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const permission = { version: 1, hostGate: true, policyIdentity: 'explicit-rules-only', workspace: { cwd, additionalDirectories: [] } };
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const s = b.session(id);
+  s.init = { conversation_id: 'fixture-rules-only' };
+  let optionId = 'kiki.vendor_default';
+  s.active = { client: { request: async () => ({ outcome: { outcome: 'selected', optionId } }) } };
+  const channel = await openPermissionChannel(input => b.requestPermission(s, input));
+  const input = { conversationId: 'fixture-rules-only', stepIdx: 1, toolCall: { name: 'view_file', args: { AbsolutePath: 'C:/example/source.txt' } } };
+  try {
+    assert.deepEqual(await requestHookPermission(input, channel.env), {});
+    optionId = 'reject_once';
+    assert.equal((await requestHookPermission(input, channel.env)).decision, 'deny');
+  } finally { s.active = undefined; await channel.close(); }
+});
+
+test('scoped hook recovery preserves live owner and restores dead owner original bytes without foreign loss', async () => {
+  const { mkdtemp, mkdir, readFile, writeFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { registerProjectHook, recoverProjectHook } = await import('./agy-hook-registration.mjs');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-recovery-'));
+  const options = { cwd: root, nodePath: process.execPath, handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) };
+  const hookPath = join(root, '.agents', 'hooks.json');
+  try {
+    assert.equal((await recoverProjectHook(options)).status, 'no-owned-registration');
+    await mkdir(join(root, '.agents'));
+    const original = '{\r\n "foreign": {"PreToolUse": []}\r\n}\r\n';
+    await writeFile(hookPath, original);
+    const live = await registerProjectHook({ ...options, sessionId: 'live' });
+    assert.equal((await recoverProjectHook(options)).status, 'owned-session-still-live');
+    await live.close();
+    const script = `import { registerProjectHook } from ${JSON.stringify(new URL('./agy-hook-registration.mjs', import.meta.url).href)}; await registerProjectHook(${JSON.stringify({ ...options, sessionId: 'dead' })});`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const exit = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
+    assert.equal(exit, 0);
+    assert.equal((await recoverProjectHook(options)).status, 'owned-registration-recovered');
+    assert.equal(await readFile(hookPath, 'utf8'), original);
+    await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('real ACP permission request carries raw tool metadata and vendor-default ID, then EOF closes owned resources', { timeout: 15000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-permission-'));
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))] })});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
+  const requests = []; const responses = new Map(); let stderr = ''; let optionId = 'allow_once';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const reader = createInterface({ input: child.stdout });
+  reader.on('line', line => {
+    const frame = JSON.parse(line);
+    if (frame.method === 'session/request_permission') {
+      requests.push(frame.params);
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { outcome: { outcome: 'selected', optionId } } }) + '\n');
+    } else if (frame.id !== undefined) { responses.get(frame.id)?.(frame); responses.delete(frame.id); }
+  });
+  let nextId = 0;
+  const request = (method, params) => {
+    const id = ++nextId;
+    return new Promise(done => { responses.set(id, done); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+  };
+  try {
+    assert.ok((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
+    const permission = { version: 1, hostGate: true, policyIdentity: 'fixture-explicit-rules', workspace: { cwd: root, additionalDirectories: [] } };
+    const created = await request('session/new', { cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } });
+    assert.ok(created.result, JSON.stringify(created));
+    const sessionId = created.result.sessionId;
+    assert.equal((await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'hook-allow' }] })).result.stopReason, 'end_turn');
+    assert.equal(requests[0]._meta['kiki.tool'].name, 'Bash');
+    assert.equal(requests[0]._meta['kiki.tool'].input.cwd, root);
+    assert.equal(requests[0].toolCall.rawInput.CommandLine, requests[0]._meta['kiki.tool'].input.command);
+    assert.ok(requests[0].options.some(option => option.optionId === 'kiki.vendor_default'));
+    optionId = 'kiki.vendor_default';
+    const vendor = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'hook-vendor' }] });
+    assert.match(vendor.error.message, /AGY permission denied/);
+    optionId = 'reject_once';
+    const denied = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'hook-deny' }] });
+    assert.match(denied.error.message, /AGY permission denied/);
+    assert.equal(requests.length, 3);
+  } finally { child.stdin.end(); }
+  assert.deepEqual(await closed, { code: 0, signal: null }, stderr);
+  reader.close();
+  await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
+  await rm(root, { recursive: true, force: true });
+});
+
+
+test('turn snapshot switches inherit to explicit and back without replacing native process, model or history', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { requestHookPermission } = await import('./agy-permission-hook.mjs');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-boundary-'));
+  const b = bridge('gemini-3.8-flash-medium');
+  const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+  let requests = 0;
+  const client = { notify: async () => {}, request: async () => { requests++; return { outcome: { outcome: 'selected', optionId: 'allow_once' } }; } };
+  try {
+    await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hello' }] }, client);
+    const pid = b.session(id).child.pid;
+    const conversation = b.session(id).init.conversation_id;
+    const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-runtime', workspace: { cwd: root, additionalDirectories: [] } };
+    assert.equal((await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'hook-allow' }], _meta: { 'kiki.permission': permission } }, client)).stopReason, 'end_turn');
+    assert.equal(requests, 1);
+    assert.ok(JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'))['kiki-agy-permission-bridge']);
+    const other = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    await b.prompt({ sessionId: other, prompt: [{ type: 'text', text: 'hello' }] }, client);
+    assert.deepEqual(await requestHookPermission({}, b.session(other).permissionIdentity), {});
+    assert.equal(requests, 1);
+    const inherited = { version: 1, hostGate: false, policyIdentity: 'fixture-cleared', workspace: { cwd: root, additionalDirectories: [] } };
+    assert.equal((await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'again' }], _meta: { 'kiki.permission': inherited } }, client)).stopReason, 'end_turn');
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    assert.deepEqual(await requestHookPermission({}, b.session(id).permissionIdentity), {});
+    assert.equal(b.session(id).child.pid, pid);
+    assert.equal(b.session(id).init.conversation_id, conversation);
+    assert.equal(b.session(id).init.init.model, 'gemini-3.8-flash-medium');
+    assert.equal(b.session(id).init.init.permission_mode, 'request-review');
+    assert.equal(requests, 1);
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
