@@ -1171,6 +1171,95 @@ describe('Composer profile file', () => {
     });
   });
 
+  it('trims surrounding path whitespace before previewing and using the file', async () => {
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/work', effective: true },
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await openFileForm(container);
+    await typePath(container, '  profiles/research.md  ');
+    await click(container.querySelector('[data-execution-file-check]')!);
+    await settle();
+
+    expect(previewAgentProfileFile).toHaveBeenCalledWith(
+      { path: 'profiles/research.md', cwd: '/work' },
+      { signal: expect.anything() },
+    );
+    expect(container.querySelector('[data-execution-file-preview]')?.textContent).toContain('research-writer');
+    await click(container.querySelector('[data-execution-file-use]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'native',
+      profile: undefined,
+      profile_file: '/work/profiles/research.md',
+      overrides: undefined,
+    });
+  });
+
+  it('discards a late preview after the path changes while the first check is pending', async () => {
+    const first = deferred<{ profile: NamedAgentProfile }>();
+    previewAgentProfileFile.mockImplementation((request: { path: string }) =>
+      request.path === 'profiles/first.md'
+        ? first.promise
+        : Promise.resolve({ profile: { ...FILE_PROFILE, name: 'second-writer', source_file: '/work/profiles/second.md' } }),
+    );
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/work', effective: true },
+      execution: NATIVE_AGENT,
+      onChangeExecution: vi.fn(),
+    });
+    await openFileForm(container);
+    await typePath(container, 'profiles/first.md');
+    await click(container.querySelector('[data-execution-file-check]')!);
+    await settle();
+    expect(container.querySelector('[data-execution-file-preview]')).toBeNull();
+
+    await typePath(container, 'profiles/second.md');
+    await act(async () => { first.resolve({ profile: { ...FILE_PROFILE, name: 'first-writer', source_file: '/work/profiles/first.md' } }); });
+    await settle();
+
+    expect(container.querySelector<HTMLInputElement>('[data-execution-file-path]')?.value).toBe('profiles/second.md');
+    expect(container.querySelector('[data-execution-file-preview]')).toBeNull();
+    expect(container.querySelector('[data-execution-file-use]')).toBeNull();
+  });
+
+  it('discards a late preview when the profile file scope changes while the first check is pending', async () => {
+    const first = deferred<{ profile: NamedAgentProfile }>();
+    previewAgentProfileFile.mockImplementation((_request: { path: string }) => first.promise);
+    const rendered = await renderComposer({
+      sessionId: 'saved-session',
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/work', effective: true },
+      execution: NATIVE_AGENT,
+      onChangeExecution: vi.fn(),
+    });
+    await openFileForm(rendered.container);
+    await typePath(rendered.container, 'profiles/first.md');
+    await click(rendered.container.querySelector('[data-execution-file-check]')!);
+    await settle();
+    expect(previewAgentProfileFile).toHaveBeenCalledWith(
+      { path: 'profiles/first.md', cwd: '/work' },
+      { signal: expect.anything() },
+    );
+
+    await rendered.rerender({
+      sessionId: 'saved-session',
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/other', effective: true },
+      execution: NATIVE_AGENT,
+      onChangeExecution: vi.fn(),
+    });
+    expect(rendered.container.querySelector('[data-execution-file-preview]')).toBeNull();
+
+    await act(async () => { first.resolve({ profile: { ...FILE_PROFILE, name: 'first-writer', source_file: '/work/profiles/first.md' } }); });
+    await settle();
+
+    expect(rendered.container.querySelector<HTMLInputElement>('[data-execution-file-path]')?.value).toBe('profiles/first.md');
+    expect(rendered.container.querySelector('[data-execution-file-preview]')).toBeNull();
+    expect(rendered.container.querySelector('[data-execution-file-use]')).toBeNull();
+  });
+
   it('opens the native path picker without reading bytes, previews the selected file, and waits for Use', async () => {
     desktopRuntime.value = true;
     selectFilePathNative.mockResolvedValueOnce('C:/work/profiles/research.md');

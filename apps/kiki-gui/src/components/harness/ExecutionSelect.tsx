@@ -257,9 +257,12 @@ export function ExecutionSelect({
   const nativePathPicker = host.pickFilePath !== undefined && connection?.connectionSource !== 'ssh' && connection?.connectionSource !== 'remote';
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const openRef = useRef(open);
+  openRef.current = open;
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = (refocus = false) => {
+    openRef.current = false;
     setOpen(false);
     setQuery('');
     if (refocus) triggerRef.current?.focus();
@@ -280,6 +283,13 @@ export function ExecutionSelect({
     readonly description?: string;
   }>({ path: '' });
   const [fileForm, setFileForm] = useState<{ readonly open: boolean; readonly path: string }>({ open: false, path: '' });
+  const formOpenRef = useRef(fileForm.open);
+  formOpenRef.current = fileForm.open;
+  const formPathRef = useRef(fileForm.path);
+  formPathRef.current = fileForm.path;
+  const previewIdentityRef = useRef(previewProfileFile);
+  previewIdentityRef.current = previewProfileFile;
+  const committedPreviewIdentityRef = useRef(previewProfileFile);
   const [check, setCheck] = useState<{
     readonly path: string;
     readonly profile?: NamedAgentProfile;
@@ -288,24 +298,43 @@ export function ExecutionSelect({
   const [checking, setChecking] = useState(false);
   const [picking, setPicking] = useState(false);
   const checkFlight = useRef<AbortController | null>(null);
-  useEffect(() => () => { checkFlight.current?.abort(); }, []);
+  const checkGeneration = useRef(0);
+  const abortCheck = useCallback(() => {
+    checkGeneration.current += 1;
+    checkFlight.current?.abort();
+    checkFlight.current = null;
+    setChecking(false);
+  }, []);
+  useEffect(() => () => { abortCheck(); }, [abortCheck]);
+  useEffect(() => {
+    if (committedPreviewIdentityRef.current === previewProfileFile) return;
+    committedPreviewIdentityRef.current = previewProfileFile;
+    abortCheck();
+    setCheck(undefined);
+  }, [abortCheck, previewProfileFile]);
 
   /** Read one file where the session runs — only on the user's explicit ask. */
   const runCheck = useCallback(async (path: string) => {
-    if (previewProfileFile === undefined) return;
+    const requestIdentity = previewProfileFile;
+    if (requestIdentity === undefined || requestIdentity !== previewIdentityRef.current || !openRef.current || !formOpenRef.current) return;
     checkFlight.current?.abort();
+    const generation = ++checkGeneration.current;
     const controller = new AbortController();
     checkFlight.current = controller;
     setChecking(true);
     try {
-      const profile = await previewProfileFile({ path }, { signal: controller.signal });
-      if (!controller.signal.aborted) setCheck({ path, profile });
+      const profile = await requestIdentity({ path }, { signal: controller.signal });
+      if (!controller.signal.aborted && generation === checkGeneration.current && requestIdentity === previewIdentityRef.current && openRef.current && formOpenRef.current && formPathRef.current.trim() === path) {
+        setCheck({ path, profile });
+      }
     } catch (error) {
-      if (!controller.signal.aborted) setCheck({ path, error: errorText(locale, error) });
+      if (!controller.signal.aborted && generation === checkGeneration.current && requestIdentity === previewIdentityRef.current && openRef.current && formOpenRef.current && formPathRef.current.trim() === path) {
+        setCheck({ path, error: errorText(locale, error) });
+      }
     } finally {
       if (checkFlight.current === controller) {
         checkFlight.current = null;
-        setChecking(false);
+        if (generation === checkGeneration.current) setChecking(false);
       }
     }
   }, [locale, previewProfileFile]);
@@ -316,32 +345,46 @@ export function ExecutionSelect({
    * is not the local desktop, so a local dialog would select the wrong machine.
    */
   const openFileChooser = useCallback(async () => {
+    const requestIdentity = previewProfileFile;
     if (!nativePathPicker) {
-      setFileForm({ open: true, path: choice.profile_file ?? '' });
+      formOpenRef.current = true;
+      formPathRef.current = choice.profile_file ?? '';
+      setFileForm({ open: true, path: formPathRef.current });
       setCheck(undefined);
       return;
     }
     setPicking(true);
     try {
       const path = await host.pickFilePath!();
-      if (path === null || path.trim() === '') return;
+      if (path === null || path.trim() === '' || requestIdentity !== previewIdentityRef.current || !openRef.current) return;
+      formOpenRef.current = true;
+      formPathRef.current = path;
       setFileForm({ open: true, path });
       setCheck(undefined);
       await runCheck(path);
     } catch (error) {
+      if (requestIdentity !== previewIdentityRef.current || !openRef.current) return;
       const path = choice.profile_file ?? '';
+      formOpenRef.current = true;
+      formPathRef.current = path;
       setFileForm({ open: true, path });
       setCheck({ path, error: errorText(locale, error) });
     } finally {
       setPicking(false);
     }
-  }, [choice.profile_file, host, locale, nativePathPicker, runCheck]);
+  }, [choice.profile_file, host, locale, nativePathPicker, previewProfileFile, runCheck]);
 
   // The bound file names itself: one background read per opening, so a file
   // edited on the host is described as it is now. Closing the panel abandons
   // the read, and none of this ever changes the choice or gates sending.
   const attemptedFileReads = useRef(new Set<string>());
-  useEffect(() => { if (!open) attemptedFileReads.current.clear(); }, [open]);
+  useEffect(() => {
+    if (!open) {
+      attemptedFileReads.current.clear();
+      abortCheck();
+      setCheck(undefined);
+    }
+  }, [abortCheck, open]);
   useEffect(() => {
     const path = choice.profile_file;
     if (!open || path === undefined || previewProfileFile === undefined) return;
@@ -535,7 +578,7 @@ export function ExecutionSelect({
                   data-execution-file-back
                   aria-label={t('composer.execution.fileBack')}
                   title={t('composer.execution.fileBack')}
-                  onClick={() => { setFileForm({ open: false, path: '' }); setCheck(undefined); }}
+                  onClick={() => { abortCheck(); formOpenRef.current = false; formPathRef.current = ''; setFileForm({ open: false, path: '' }); setCheck(undefined); }}
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 pointer-coarse:w-9"
                 >
                   <Icon name="arrowLeft" size={12} />
@@ -555,6 +598,9 @@ export function ExecutionSelect({
                   ref={(input) => { input?.focus(); }}
                   value={fileForm.path}
                   onChange={(event) => {
+                    abortCheck();
+                    formOpenRef.current = true;
+                    formPathRef.current = event.target.value;
                     setFileForm({ open: true, path: event.target.value });
                     setCheck(undefined);
                   }}
