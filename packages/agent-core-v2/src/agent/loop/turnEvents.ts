@@ -158,6 +158,7 @@ export interface AssistantDeltaPayload {
   readonly stepId?: string;
   readonly partId?: string;
   readonly delta: string;
+  readonly part?: ContentPart;
 }
 
 export class AssistantDelta extends Event2<AssistantDeltaPayload> {

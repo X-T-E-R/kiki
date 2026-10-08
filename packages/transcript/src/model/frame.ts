@@ -47,6 +47,14 @@ export interface TextFrame {
   readonly presentation?: import('../contract/presentation').TextPresentation;
   /** Attachments carried by this message (entities in `attachments`). */
   readonly attachmentIds?: readonly AttachmentId[];
+  readonly resourceLink?: {
+    readonly uri: string;
+    readonly name?: string;
+    readonly mimeType?: string;
+    readonly size?: number;
+    readonly title?: string;
+    readonly description?: string;
+  };
   /**
    * For user-role inputs that are about a task — e.g. a background-task
    * completion notification injected into the running step — the referenced
@@ -107,6 +115,7 @@ export interface ToolCallFrame {
   /** Open content envelopes — opaque to this layer. */
   readonly input?: unknown;
   readonly output?: unknown;
+  readonly attachmentIds?: AttachmentId[];
   readonly display?: unknown;
   readonly error?: string;
   /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */

@@ -30,6 +30,16 @@ describe('ACP normalized executor event mapper', () => {
       status: 'completed',
       rawOutput: { text: 'ok' },
     })).toMatchObject({ type: 'tool.update', status: 'completed' });
+    expect(mapAcpSessionUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'audio', mimeType: 'audio/wav', data: 'AQI=' } }))
+      .toEqual({ type: 'message.delta', role: 'assistant', messageId: undefined,
+        content: { type: 'audio', mimeType: 'audio/wav', data: 'AQI=' } });
+    expect(mapAcpSessionUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', content: [
+      { type: 'content', content: { type: 'resource', resource: { uri: 'urn:embedded', text: 'embedded body', mimeType: 'text/plain' } } },
+      { type: 'content', content: { type: 'resource_link', uri: 'https://example.test/resource', name: 'remote', mimeType: 'text/plain', title: 'Remote title', description: 'Remote description' } },
+    ] })).toMatchObject({ type: 'tool.update', content: [
+      { type: 'content', content: { type: 'resource', resource: { text: 'embedded body' } } },
+      { type: 'content', content: { type: 'resource_link', uri: 'https://example.test/resource', title: 'Remote title', description: 'Remote description' } },
+    ] });
     expect(mapAcpSessionUpdate({ sessionUpdate: 'plan', entries: [] }))
       .toMatchObject({ type: 'plan.update', unstable: false });
     expect(mapAcpSessionUpdate({ sessionUpdate: 'usage_update', used: 1, size: 10 }))
@@ -58,6 +68,14 @@ describe('ACP normalized executor event mapper', () => {
       .toMatchObject({ type: 'unknown', updateType: 'future_update', method, payload: { update: { nested: { businessFact: 1 } } } });
     expect(mapAcpSessionNotification({ sessionId: 'session-1', update: { sessionUpdate: 'tool_call_delta_chunk', tool_index: 0 } }).event.type).toBe('unknown');
     expect(() => map({ sessionUpdate: 'tool_call_delta_chunk', tool_index: -1 })).toThrow(/tool_index/);
+  });
+
+  it('retains bounded opaque payload diagnostics without pretending support', () => {
+    expect(mapAcpSessionUpdate({ sessionUpdate: 'agent_message_chunk', content: {
+      type: 'future_block', body: { token: 'secret-looking-but-opaque' },
+    } })).toEqual({ type: 'message.delta', role: 'assistant', messageId: undefined, content: {
+      type: 'opaque', contentType: 'future_block', payload: { type: 'future_block', body: { token: '[REDACTED]' } },
+    } });
   });
 
   it('fails known malformed updates instead of silently dropping them', () => {

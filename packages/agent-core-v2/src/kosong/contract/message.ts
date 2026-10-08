@@ -2,10 +2,28 @@ import type { Tool } from './tool';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
+export interface ContentPartAttachment {
+  readonly fileId: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly name?: string;
+}
+
+export interface ResourceLinkMetadata {
+  readonly uri: string;
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly size?: number;
+  readonly title?: string;
+  readonly description?: string;
+}
+
 export interface TextPart {
   type: 'text';
   text: string;
   presentation?: unknown;
+  attachment?: ContentPartAttachment;
+  resourceLink?: ResourceLinkMetadata;
 }
 
 export interface ThinkPart {
@@ -16,17 +34,17 @@ export interface ThinkPart {
 
 export interface ImageURLPart {
   type: 'image_url';
-  imageUrl: { url: string; id?: string; name?: string };
+  imageUrl: { url: string; id?: string; name?: string; mimeType?: string; size?: number; attachment?: ContentPartAttachment };
 }
 
 export interface AudioURLPart {
   type: 'audio_url';
-  audioUrl: { url: string; id?: string };
+  audioUrl: { url: string; id?: string; name?: string; mimeType?: string; size?: number; attachment?: ContentPartAttachment };
 }
 
 export interface VideoURLPart {
   type: 'video_url';
-  videoUrl: { url: string; id?: string; name?: string };
+  videoUrl: { url: string; id?: string; name?: string; mimeType?: string; size?: number; attachment?: ContentPartAttachment };
 }
 
 export type ContentPart = TextPart | ThinkPart | ImageURLPart | AudioURLPart | VideoURLPart;
@@ -115,7 +133,7 @@ export function mergeInPlace(target: StreamedMessagePart, source: StreamedMessag
 export function isVacuousContentPart(part: ContentPart): boolean {
   switch (part.type) {
     case 'text':
-      return part.text.trim().length === 0;
+      return part.text.trim().length === 0 && part.attachment === undefined && part.resourceLink === undefined;
     case 'think':
       return part.encrypted === undefined && part.think.trim().length === 0;
     case 'image_url':

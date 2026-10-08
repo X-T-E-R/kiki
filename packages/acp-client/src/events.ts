@@ -36,11 +36,30 @@ function array(value: unknown, name: string, optional = false): readonly unknown
   return value;
 }
 
+function number(value: unknown, name: string, optional = false): number | undefined {
+  if (value === undefined || value === null) {
+    if (optional) return undefined;
+    throw new AcpProtocolError(`${name} must be a number`);
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new AcpProtocolError(`${name} must be a finite number`);
+  }
+  return value;
+}
+
 function content(value: unknown): NormalizedExecutorContent {
   const block = object(value, 'update.content') as ContentBlock & Record<string, unknown>;
-  const type = string(block['type'], 'update.content.type');
+  const type = string(block['type'], 'update.content.type')!;
   if (type === 'text') return { type, text: string(block['text'], 'update.content.text')! };
   if (type === 'image') {
+    return {
+      type,
+      mimeType: string(block['mimeType'], 'update.content.mimeType')!,
+      data: string(block['data'], 'update.content.data')!,
+      uri: string(block['uri'], 'update.content.uri', true),
+    };
+  }
+  if (type === 'audio') {
     return {
       type,
       mimeType: string(block['mimeType'], 'update.content.mimeType')!,
@@ -52,9 +71,48 @@ function content(value: unknown): NormalizedExecutorContent {
       type,
       uri: string(block['uri'], 'update.content.uri')!,
       name: string(block['name'], 'update.content.name', true),
+      mimeType: string(block['mimeType'], 'update.content.mimeType', true),
+      size: number(block['size'], 'update.content.size', true),
+      description: string(block['description'], 'update.content.description', true),
+      title: string(block['title'], 'update.content.title', true),
     };
   }
-  return { type: 'opaque', contentType: type! };
+  if (type === 'resource') {
+    const resource = object(block['resource'], 'update.content.resource');
+    const uri = string(resource['uri'], 'update.content.resource.uri')!;
+    const mimeType = string(resource['mimeType'], 'update.content.resource.mimeType', true);
+    if (typeof resource['text'] === 'string') {
+      return { type, resource: { type: 'text', uri, text: resource['text'], mimeType } };
+    }
+    if (typeof resource['blob'] === 'string') {
+      return { type, resource: { type: 'blob', uri, blob: resource['blob'], mimeType } };
+    }
+    return { type: 'opaque', contentType: type, payload: boundedDiagnostic(block) };
+  }
+  return { type: 'opaque', contentType: type, payload: boundedDiagnostic(block) };
+}
+
+function boundedDiagnostic(value: unknown): unknown {
+  const redact = (input: unknown): unknown => {
+    if (typeof input === 'string') return input;
+    if (Array.isArray(input)) return input.slice(0, 32).map(redact);
+    if (input !== null && typeof input === 'object') {
+      return Object.fromEntries(Object.entries(input).slice(0, 64).map(([key, item]) => [
+        key,
+        /credential|private.?key|signature|token|secret/i.test(key) ? '[REDACTED]' : redact(item),
+      ]));
+    }
+    return input;
+  };
+  try {
+    const sanitized = redact(value);
+    const json = JSON.stringify(sanitized);
+    if (json === undefined) return undefined;
+    if (Buffer.byteLength(json, 'utf8') <= 8192) return sanitized;
+    return { truncated: true, preview: Buffer.from(json, 'utf8').subarray(0, 8192).toString('utf8') };
+  } catch {
+    return { unavailable: true };
+  }
 }
 
 export function mapAcpSessionNotification(

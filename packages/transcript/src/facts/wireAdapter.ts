@@ -36,7 +36,8 @@ export function taskNotificationFrameId(sourceId: string): string {
 }
 
 interface PendingSteerMedia {
-  readonly kind: 'image' | 'video' | 'audio';
+  readonly kind: 'image' | 'video' | 'audio' | 'file';
+  readonly mediaType?: string;
   readonly source?: AttachmentSource;
   readonly name?: string;
   readonly size?: number;
@@ -1266,7 +1267,7 @@ export class TranscriptWireAdapter {
         op: 'attachment.upsert',
         attachment: {
           attachmentId,
-          mediaType: `${media.kind}/*`,
+          mediaType: media.mediaType ?? `${media.kind}/*`,
           name: media.name,
           size: media.size,
           source: media.source,
@@ -1363,7 +1364,7 @@ export class TranscriptWireAdapter {
           op: 'attachment.upsert',
           attachment: {
             attachmentId,
-            mediaType: `${media.kind}/*`,
+            mediaType: media.mediaType ?? `${media.kind}/*`,
             name: media.name,
             size: media.size,
             source: media.source,
@@ -1482,7 +1483,7 @@ export class TranscriptWireAdapter {
           op: 'attachment.upsert',
           attachment: {
             attachmentId,
-            mediaType: `${media.kind}/*`,
+            mediaType: media.mediaType ?? `${media.kind}/*`,
             name: media.name,
             size: media.size,
             source: media.source,
@@ -1593,7 +1594,7 @@ export class TranscriptWireAdapter {
       operations.push({
         op: 'attachment.upsert',
         attachment: {
-          attachmentId, mediaType: `${media.kind}/*`, name: media.name, size: media.size, source: media.source,
+          attachmentId, mediaType: media.mediaType ?? `${media.kind}/*`, name: media.name, size: media.size, source: media.source,
           owner: turn?.message?.messageId === messageId ? { kind: 'turn', turnId: turn.turnId }
             : turnId === undefined || stepId === undefined ? undefined : { kind: 'frame', turnId, stepId, frameId: messageId },
         },
@@ -1866,7 +1867,7 @@ export class TranscriptWireAdapter {
         partOrdinal: stringOf(event['uuid']) === undefined ? 0 : undefined,
       },
     };
-    if (type === 'text') {
+    if (type === 'text' && mediaOf(part) === undefined) {
       return [
         {
           op: 'frame.upsert',
@@ -1879,6 +1880,7 @@ export class TranscriptWireAdapter {
             role: 'assistant',
             text: stringOf(part['text']) ?? '',
             presentation: readTextPresentation(part['presentation']),
+            resourceLink: resourceLinkOf(part),
           },
         },
       ];
@@ -1897,6 +1899,60 @@ export class TranscriptWireAdapter {
           },
         },
       ];
+    }
+    const media = mediaOf(part);
+    if (media !== undefined) {
+      const attachmentId = `${partId}.att1`;
+      return [
+        {
+          op: 'attachment.upsert',
+          attachment: {
+            attachmentId,
+            mediaType: media.mediaType ?? `${media.kind}/*`,
+            name: media.name,
+            size: media.size,
+            source: media.source,
+            owner: { kind: 'frame', turnId, stepId, frameId: partId },
+          },
+        },
+        {
+          op: 'frame.upsert',
+          turnId,
+          stepId,
+          frame: {
+            kind: 'text',
+            frameId: partId,
+            part: identity,
+            role: 'assistant',
+            text: type === 'text' ? stringOf(part['text']) ?? '' : mediaPlaceholder(media.kind, media.name),
+            attachmentIds: [attachmentId],
+          },
+        },
+      ];
+    }
+    if (type === 'resource_link') {
+      const uri = stringOf(part['uri']);
+      if (uri === undefined) return [];
+      return [{
+        op: 'frame.upsert',
+        turnId,
+        stepId,
+        frame: {
+          kind: 'text', frameId: partId, part: identity, role: 'assistant',
+          text: `[External resource: ${stringOf(part['name']) ?? uri} (${uri})]`,
+          resourceLink: resourceLinkOf(part),
+        },
+      }];
+    }
+    if (type === 'resource') {
+      const resource = objectOf(part['resource']);
+      const text = stringOf(resource?.['text']);
+      if (text !== undefined) {
+        return [{
+          op: 'frame.upsert', turnId, stepId,
+          frame: { kind: 'text', frameId: partId, part: identity, role: 'assistant', text },
+        }];
+      }
     }
     return [];
   }
@@ -1983,17 +2039,35 @@ export class TranscriptWireAdapter {
     const result = objectOf(event['result']);
     const output = result?.['output'];
     const isError = result?.['isError'] === true;
+    const media = mediaPartsOf(Array.isArray(output) ? output : []);
+    const attachmentIds = media.length === 0
+      ? hit.frame.attachmentIds
+      : media.map((_, index) => `${hit.frame.frameId}.att${index + 1}`);
     const frame: ToolCallFrame = {
       ...hit.frame,
       ...projected?.frame,
       state: isError ? 'error' : 'done',
       output,
+      attachmentIds,
       error: isError && typeof output === 'string' ? output : undefined,
       errorCode: isError ? stringOf(result?.['errorCode']) : undefined,
       endedAt: isoOf(time),
     };
     this.storeTool(toolCallId, { ...hit, frame });
-    return [{ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame }];
+    return [
+      ...media.map((item, index): TranscriptOperation => ({
+        op: 'attachment.upsert',
+        attachment: {
+          attachmentId: attachmentIds![index]!,
+          mediaType: item.mediaType ?? `${item.kind}/*`,
+          name: item.name,
+          size: item.size,
+          source: item.source,
+          owner: { kind: 'frame', turnId: hit.turnId, stepId: hit.stepId, frameId: hit.frame.frameId },
+        },
+      })),
+      { op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame },
+    ];
   }
 
   private turnEnded(record: TranscriptWireRecord): TranscriptOperation[] {
@@ -2572,46 +2646,53 @@ function usageOf(value: unknown):
   return { inputOther, output, inputCacheRead, inputCacheCreation };
 }
 
-function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
-  | {
-      readonly kind: 'image' | 'video' | 'audio';
-      readonly source?: AttachmentSource;
-      readonly name?: string;
-      readonly size?: number;
-    }
-  | undefined {
+function resourceLinkOf(value: Readonly<Record<string, unknown>> | undefined): {
+  readonly uri: string;
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly size?: number;
+  readonly title?: string;
+  readonly description?: string;
+} | undefined {
+  const link = objectOf(value?.['resourceLink']);
+  const uri = stringOf(link?.['uri']);
+  if (uri === undefined) return undefined;
+  return {
+    uri,
+    name: stringOf(link?.['name']),
+    mimeType: stringOf(link?.['mimeType']),
+    size: numberOf(link?.['size']),
+    title: stringOf(link?.['title']),
+    description: stringOf(link?.['description']),
+  };
+}
+
+function mediaOf(value: Readonly<Record<string, unknown>> | undefined): PendingSteerMedia | undefined {
   const type = stringOf(value?.['type']);
-  if (
-    type !== 'image_url' &&
-    type !== 'video_url' &&
-    type !== 'audio_url' &&
-    type !== 'image' &&
-    type !== 'video' &&
-    type !== 'audio'
-  ) {
-    return undefined;
-  }
-  const kind: 'image' | 'video' | 'audio' =
-    type === 'image' || type === 'image_url'
-      ? 'image'
-      : type === 'video' || type === 'video_url'
-        ? 'video'
-        : 'audio';
-  const key = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : 'audioUrl';
-  const ref = type.endsWith('_url') ? objectOf(value?.[key]) : objectOf(value?.['source']);
-  const name = stringOf(ref?.['name']) ?? stringOf(value?.['name']);
-  const size = numberOf(ref?.['size']) ?? numberOf(value?.['size']);
-  const fileId = stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
-  if (fileId !== undefined) return { kind, source: { kind: 'session_media', fileId }, name, size };
-  const url = stringOf(ref?.['url']);
-  if (url === undefined) return { kind, source: undefined, name, size };
+  const resourceLink = objectOf(value?.['resourceLink']);
+  const kind = type === 'image' || type === 'image_url' ? 'image'
+    : type === 'video' || type === 'video_url' ? 'video'
+      : type === 'audio' || type === 'audio_url' ? 'audio'
+        : type === 'resource' || type === 'file' || type === 'text' && objectOf(value?.['attachment']) !== undefined ? 'file' : undefined;
+  const key = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : type === 'audio_url' ? 'audioUrl' : undefined;
+  const nested = key === undefined ? undefined : objectOf(value?.[key]);
+  const attachment = objectOf(nested?.['attachment']) ?? objectOf(value?.['attachment']);
+  const ref = key === undefined ? objectOf(value?.['source']) : nested;
+  const name = stringOf(attachment?.['name']) ?? stringOf(ref?.['name']) ?? stringOf(value?.['name']) ?? stringOf(resourceLink?.['name']);
+  const size = numberOf(attachment?.['size']) ?? numberOf(ref?.['size']) ?? numberOf(value?.['size']) ?? numberOf(resourceLink?.['size']);
+  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(value?.['mimeType'])
+    ?? stringOf(resourceLink?.['mimeType']) ?? (kind === undefined ? undefined : `${kind}/*`);
+  const fileId = stringOf(attachment?.['fileId']) ?? stringOf(attachment?.['file_id'])
+    ?? stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
+  if (kind === undefined || mimeType === undefined) return undefined;
+  if (fileId !== undefined) return { kind, mediaType: mimeType, source: { kind: 'session_media', fileId }, name, size };
+  const url = stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
+  if (url === undefined) return { kind, mediaType: mimeType, source: undefined, name, size };
   const daemonRef = sessionMediaIdFromBlobUrl(url) ?? /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
   return {
     kind,
-    source:
-      daemonRef === undefined
-        ? { kind: 'url', url }
-        : { kind: 'session_media', fileId: daemonRef },
+    mediaType: mimeType,
+    source: daemonRef === undefined ? { kind: 'url', url } : { kind: 'session_media', fileId: daemonRef },
     name,
     size: size ?? dataUrlSize(url),
   };
@@ -2643,6 +2724,10 @@ function mediaPartsOf(values: readonly unknown[]): PendingSteerMedia[] {
     if (part !== undefined) media.push(part);
   }
   return media;
+}
+
+function mediaPlaceholder(kind: PendingSteerMedia['kind'], name: string | undefined): string {
+  return `[External ${kind}${name === undefined ? '' : `: ${name}`}]`;
 }
 
 function textOfPart(value: unknown): string {

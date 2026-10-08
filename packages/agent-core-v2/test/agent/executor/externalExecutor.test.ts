@@ -83,6 +83,7 @@ import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -814,6 +815,142 @@ describe('ACP external executor', () => {
     expect(recorder.losses).not.toContain('acp_no_step_boundaries');
     expect(JSON.stringify(loopEvents)).not.toContain('ACP');
     expect(JSON.stringify(loopEvents)).toContain('external executor content');
+  });
+
+  it('materializes ACP assistant and tool media with exact bytes and stable ids', async () => {
+    const loopEvents: unknown[] = [];
+    const stored = new Map<string, Uint8Array>();
+    const mediaStore = {
+      _serviceBrand: undefined,
+      pathFor: () => undefined,
+      resolveDisplayPath: async () => undefined,
+      read: async () => undefined,
+      open: async () => undefined,
+      materialize: async (input: { fileId: string; stream: () => NodeJS.ReadableStream }) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of input.stream() as AsyncIterable<Uint8Array>) chunks.push(Buffer.from(chunk));
+        stored.set(input.fileId, Buffer.concat(chunks));
+        return `media/${input.fileId}`;
+      },
+    } as unknown as ISessionMediaStore;
+    const dispatcher = { _serviceBrand: undefined, dispatch: async () => {} } as unknown as IEventDispatcher;
+    const wire = { _serviceBrand: undefined, flush: async () => {} } as unknown as IWireService;
+    const contextMemory = {
+      _serviceBrand: undefined,
+      get: () => [],
+      append: () => {},
+      appendManaged: () => {},
+      appendLoopEvent: (event: unknown) => loopEvents.push(event),
+    } as unknown as IAgentContextMemoryService;
+    const usage = {
+      _serviceBrand: undefined,
+      record: () => {},
+      status: () => ({}),
+      onDidRecord: () => ({ dispose: () => {} }),
+    } as IAgentUsageService;
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher], [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+      [ISessionMediaStore, mediaStore],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      { id: 'media-agent', accessor: { get: (id) => services.get(id) as never } },
+      3,
+      'media-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native' },
+    );
+    await recorder.begin('work', { kind: 'user' });
+    await recorder.record({ type: 'message.delta', role: 'assistant', content: {
+      type: 'image', mimeType: 'image/png', data: Buffer.from([1, 2, 3]).toString('base64'),
+    } });
+    await recorder.record({ type: 'message.delta', role: 'assistant', content: {
+      type: 'audio', mimeType: 'audio/wav', data: Buffer.from([7, 8]).toString('base64'),
+    } });
+    await recorder.record({ type: 'message.delta', role: 'assistant', content: {
+      type: 'resource_link', uri: 'https://example.test/resource', name: 'remote', mimeType: 'text/plain', size: 12,
+      title: 'Remote title', description: 'Remote description',
+    } });
+    const diffOldText = `before-${'o'.repeat(9000)}`;
+    const diffNewText = `after-${'n'.repeat(9000)}`;
+    const terminalOutput = `terminal-${'t'.repeat(9000)}`;
+    const resourceContent = [
+      { type: 'content', content: { type: 'resource', resource: {
+        uri: 'urn:embedded', blob: Buffer.from([4, 5, 6]).toString('base64'), mimeType: 'application/octet-stream',
+      } } },
+      { type: 'content', content: { type: 'diff', path: 'src/example.ts', oldText: diffOldText, newText: diffNewText } },
+      { type: 'content', content: { type: 'terminal', terminalId: 'terminal-1', output: terminalOutput } },
+    ];
+    await recorder.record({ type: 'tool.call', toolCallId: 'media-tool', title: 'Media tool', content: resourceContent });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', status: 'in_progress', content: resourceContent });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', status: 'completed' });
+    await recorder.complete('end_turn');
+
+    expect([...stored.values()]).toEqual([Buffer.from([1, 2, 3]), Buffer.from([7, 8]), Buffer.from([4, 5, 6])]);
+    const contentPart = loopEvents.find((event): event is { type: 'content.part'; part: Record<string, unknown> } =>
+      typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'content.part');
+    expect(contentPart?.part).toMatchObject({
+      type: 'image_url', imageUrl: { id: expect.stringMatching(/^f_acp_/), url: expect.stringContaining('kimi-file://') },
+    });
+    const resourceLinkPart = loopEvents.find((event): event is { type: 'content.part'; part: Record<string, unknown> } =>
+      typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'content.part' &&
+      typeof (event as { part?: unknown }).part === 'object' && (event as { part: { resourceLink?: unknown } }).part.resourceLink !== undefined);
+    expect(resourceLinkPart?.part).toMatchObject({
+      type: 'text', resourceLink: { uri: 'https://example.test/resource', title: 'Remote title', description: 'Remote description' },
+    });
+    const toolResult = loopEvents.find((event): event is { type: 'tool.result'; result: { output: unknown } } =>
+      typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'tool.result')!;
+    expect(toolResult.result.output).toEqual([
+      expect.objectContaining({ type: 'text', attachment: expect.objectContaining({ mimeType: 'application/octet-stream' }) }),
+      expect.objectContaining({ type: 'text', text: expect.stringContaining(diffOldText) }),
+      expect.objectContaining({ type: 'text', text: expect.stringContaining(terminalOutput) }),
+    ]);
+    expect((toolResult.result.output as readonly { text?: string }[])[1]?.text).toContain(diffNewText);
+    expect(JSON.stringify(loopEvents)).not.toContain('AQID');
+  });
+
+  it('does not duplicate a terminal result when the first update creates the tool', async () => {
+    const loopEvents: unknown[] = [];
+    const observed: Event2[] = [];
+    const dispatcher = {
+      _serviceBrand: undefined,
+      dispatch: async (event: Event2) => { observed.push(event); },
+    } as unknown as IEventDispatcher;
+    const contextMemory = {
+      _serviceBrand: undefined,
+      get: () => [],
+      append: () => {},
+      appendManaged: () => {},
+      appendLoopEvent: (event: unknown) => loopEvents.push(event),
+    } as unknown as IAgentContextMemoryService;
+    const wire = { _serviceBrand: undefined, flush: async () => {} } as unknown as IWireService;
+    const usage = {
+      _serviceBrand: undefined,
+      record: () => {},
+      status: () => ({}),
+      onDidRecord: () => ({ dispose: () => {} }),
+    } as IAgentUsageService;
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher], [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      { id: 'terminal-agent', accessor: { get: (id) => services.get(id) as never } },
+      4,
+      'terminal-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native' },
+    );
+    await recorder.begin('work', { kind: 'user' });
+    await recorder.record({
+      type: 'tool.update',
+      toolCallId: 'first-update-tool',
+      title: 'First update tool',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'terminal output' } }],
+    });
+    await recorder.complete('end_turn');
+
+    expect(loopEvents.filter((event) => typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'tool.result')).toHaveLength(1);
+    expect(observed.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
   it('places a pinned argv model before the harness subcommand', () => {

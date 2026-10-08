@@ -45,6 +45,15 @@ import {
   bindSessionTranscript,
   type LiveAdapterBusEvent,
 } from '../src';
+import { ExternalTurnRecorder } from '@kiki/agent-core-v2/agent/execution/externalTurnRecorder';
+import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
+import { IAgentUsageService } from '@kiki/agent-core-v2/agent/usage/usage';
+import { IEventDispatcher } from '@kiki/agent-core-v2/state/eventDispatcher';
+import { IWireService } from '@kiki/agent-core-v2/wire/wire';
+import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
+import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 
 function ev(payload: Record<string, unknown>): LiveAdapterBusEvent {
   return payload as unknown as LiveAdapterBusEvent;
@@ -226,6 +235,148 @@ describe('AgentTranscriptLiveAdapter', () => {
       startedAt: '2023-11-14T22:13:21.000Z',
       endedAt: '2023-11-14T22:13:23.000Z',
     });
+  });
+
+  it('projects live assistant and tool media through attachment entities', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const feed = (event: LiveAdapterBusEvent): void => {
+      tx.apply(liveAdapter.map(event));
+    };
+    feed(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    feed(ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'media-step' }));
+    feed(ev({ type: 'assistant.delta', turnId: 1, stepId: 'media-step', partId: 'assistant-media', delta: '[External image]', part: {
+      type: 'image_url', imageUrl: { id: 'f_live_image', url: 'kimi-file://f_live_image', name: 'answer.png', mimeType: 'image/png', size: 3,
+        attachment: { fileId: 'f_live_image', mimeType: 'image/png', size: 3, name: 'answer.png' } },
+    } }));
+    feed(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'media-tool', name: 'inspect', args: '{}' }));
+    feed(ev({ type: 'tool.result', turnId: 1, toolCallId: 'media-tool', output: [{ type: 'text', text: '[Embedded resource]', attachment: {
+      fileId: 'f_live_resource', mimeType: 'application/octet-stream', size: 3, name: 'resource.bin',
+    } }] }));
+    const turn = turnOps('t1', tx.getItems());
+    const step = turn.steps[0]!;
+    expect(step.frames.find((frame) => frame.kind === 'text')).toMatchObject({ attachmentIds: ['assistant-media.att1'] });
+    expect(step.frames.find((frame) => frame.kind === 'tool')).toMatchObject({ attachmentIds: ['media-step.media-tool.att1'] });
+    expect(tx.getAttachment('assistant-media.att1')).toMatchObject({ mediaType: 'image/png', source: { kind: 'session_media', fileId: 'f_live_image' } });
+    expect(tx.getAttachment('media-step.media-tool.att1')).toMatchObject({ mediaType: 'application/octet-stream', source: { kind: 'session_media', fileId: 'f_live_resource' } });
+  });
+
+  it('joins recorder media through the real session store into matching live and cold attachments', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'acp-media-joined-'));
+    try {
+      const storage = new FileStorageService(home);
+      const mediaStore = new ScopedMediaStore('sessions/s1/media', storage, new JsonAtomicDocumentStore(storage));
+      const loopEvents: unknown[] = [];
+      const observed: Event2[] = [];
+      const dispatcher = {
+        dispatch: async (event: Event2) => { observed.push(event); },
+      } as unknown as IEventDispatcher;
+      const context = {
+        get: () => [],
+        append: () => {},
+        appendManaged: () => {},
+        appendObservable: () => {},
+        appendLoopEvent: (event: unknown) => loopEvents.push(event),
+      } as unknown as IAgentContextMemoryService;
+      const usage = {
+        record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }),
+      } as unknown as IAgentUsageService;
+      const wire = { flush: async () => {} } as unknown as IWireService;
+      const services = new Map<unknown, unknown>([
+        [IEventDispatcher, dispatcher],
+        [IWireService, wire],
+        [IAgentContextMemoryService, context],
+        [IAgentUsageService, usage],
+        [ISessionMediaStore, mediaStore],
+      ]);
+      const recorder = new ExternalTurnRecorder(
+        { id: 'joined-agent', accessor: { get: (id) => services.get(id) as never } },
+        0,
+        'joined-session',
+        { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native' },
+      );
+      const imageBytes = Buffer.from([1, 2, 3]);
+      const audioBytes = Buffer.from([7, 8]);
+      const resourceBytes = Buffer.from([4, 5, 6]);
+      await recorder.begin('joined', { kind: 'user' });
+      await recorder.record({ type: 'message.delta', role: 'assistant', content: {
+        type: 'image', mimeType: 'image/png', data: imageBytes.toString('base64'),
+      } });
+      await recorder.record({ type: 'message.delta', role: 'assistant', content: {
+        type: 'audio', mimeType: 'audio/wav', data: audioBytes.toString('base64'),
+      } });
+      const resourceContent = [{ type: 'content', content: { type: 'resource', resource: {
+        uri: 'urn:joined-resource', blob: resourceBytes.toString('base64'), mimeType: 'application/octet-stream',
+      } } }];
+      await recorder.record({ type: 'tool.call', toolCallId: 'joined-tool', title: 'inspect', content: resourceContent });
+      await recorder.record({ type: 'tool.update', toolCallId: 'joined-tool', status: 'in_progress', content: resourceContent });
+      await recorder.record({ type: 'tool.update', toolCallId: 'joined-tool', status: 'completed' });
+      await recorder.complete('end_turn');
+
+      const imagePart = loopEvents.find((event): event is { type: 'content.part'; part: { imageUrl: { id: string } } } =>
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'content.part' &&
+        typeof (event as { part?: unknown }).part === 'object' && (event as { part: { type?: unknown } }).part.type === 'image_url');
+      const audioPart = loopEvents.find((event): event is { type: 'content.part'; part: { audioUrl: { id: string } } } =>
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'content.part' &&
+        typeof (event as { part?: unknown }).part === 'object' && (event as { part: { type?: unknown } }).part.type === 'audio_url');
+      const toolWire = loopEvents.find((event): event is { type: 'tool.result'; toolCallId: string; result: { output: readonly [{ type: string; attachment: { fileId: string } }] } } =>
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'tool.result');
+      const imageFileId = imagePart!.part.imageUrl.id;
+      const audioFileId = audioPart!.part.audioUrl.id;
+      const resourceFileId = toolWire!.result.output[0]!.attachment.fileId;
+      expect(await mediaStore.read(imageFileId)).toMatchObject({ data: imageBytes });
+      expect(await mediaStore.read(audioFileId)).toMatchObject({ data: audioBytes });
+      expect(await mediaStore.read(resourceFileId)).toMatchObject({ data: resourceBytes });
+      const readOpen = async (fileId: string): Promise<Buffer> => {
+        const file = await mediaStore.open(fileId);
+        expect(file).toBeDefined();
+        const chunks: Buffer[] = [];
+        for await (const chunk of file!.stream()) chunks.push(Buffer.from(chunk));
+        return Buffer.concat(chunks);
+      };
+      expect(await readOpen(imageFileId)).toEqual(imageBytes);
+      expect(await readOpen(audioFileId)).toEqual(audioBytes);
+      expect(await readOpen(resourceFileId)).toEqual(resourceBytes);
+
+      const prompt = observed.find((event) => event.type === 'turn.prompt');
+      const ended = observed.find((event) => event.type === 'turn.ended');
+      const coldRecords: TranscriptWireRecord[] = [
+        (prompt as Event2).serialize(),
+        ...loopEvents.map((event) => ({ type: 'context.append_loop_event', event })),
+        (ended as Event2).serialize(),
+      ];
+      const cold = new AgentTranscript('joined-agent');
+      const coldReducer = new TranscriptFactReducer(cold);
+      const coldAdapter = new TranscriptWireAdapter('joined-agent');
+      for (const record of coldRecords) coldReducer.apply(coldAdapter.add(record));
+
+      const live = new AgentTranscript('joined-agent');
+      const liveAdapter = new AgentTranscriptLiveAdapter('joined-agent');
+      for (const event of observed) {
+        if (event.type === 'turn.started' || event.type === 'turn.step.started' || event.type === 'assistant.delta' ||
+            event.type === 'tool.call.started' || event.type === 'tool.result' || event.type === 'turn.step.completed' || event.type === 'turn.ended') {
+          live.apply(liveAdapter.map(event as unknown as LiveAdapterBusEvent));
+        }
+      }
+      const coldTurn = turnOps('t0', cold.getItems());
+      const liveTurn = turnOps('t0', live.getItems());
+      const attachmentIdsOf = (frame: TranscriptFrame): readonly string[] =>
+        frame.kind === 'text' || frame.kind === 'tool' ? frame.attachmentIds ?? [] : [];
+      const coldAttachments = coldTurn.steps.flatMap((step) => step.frames.flatMap(attachmentIdsOf));
+      const liveAttachments = liveTurn.steps.flatMap((step) => step.frames.flatMap(attachmentIdsOf));
+      expect(coldAttachments).toHaveLength(3);
+      expect(liveAttachments).toEqual(coldAttachments);
+      expect(cold.getAttachment(coldAttachments[0]!)?.source).toEqual(live.getAttachment(liveAttachments[0]!)?.source);
+      expect(cold.getAttachment(coldAttachments[1]!)?.source).toEqual(live.getAttachment(liveAttachments[1]!)?.source);
+      expect(cold.getAttachment(coldAttachments[2]!)?.source).toEqual(live.getAttachment(liveAttachments[2]!)?.source);
+      expect(JSON.stringify(coldRecords)).not.toContain(imageBytes.toString('base64'));
+      expect(JSON.stringify(coldRecords)).not.toContain(audioBytes.toString('base64'));
+      expect(JSON.stringify(coldRecords)).not.toContain(resourceBytes.toString('base64'));
+      expect(observed.some((event) => event.type === 'assistant.delta' && 'part' in event)).toBe(true);
+      expect(observed.some((event) => event.type === 'tool.result' && Array.isArray((event as Event2 & { output?: unknown }).output))).toBe(true);
+    } finally {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it('projects the live prompt from turn.started and keeps it through turn.ended', () => {

@@ -1,8 +1,23 @@
 export type NormalizedExecutorContent =
   | { readonly type: 'text'; readonly text: string }
-  | { readonly type: 'image'; readonly mimeType: string; readonly data: string }
-  | { readonly type: 'resource_link'; readonly uri: string; readonly name?: string }
-  | { readonly type: 'opaque'; readonly contentType: string };
+  | { readonly type: 'image'; readonly mimeType: string; readonly data: string; readonly uri?: string }
+  | { readonly type: 'audio'; readonly mimeType: string; readonly data: string }
+  | {
+      readonly type: 'resource_link';
+      readonly uri: string;
+      readonly name?: string;
+      readonly mimeType?: string;
+      readonly size?: number;
+      readonly description?: string;
+      readonly title?: string;
+    }
+  | {
+      readonly type: 'resource';
+      readonly resource:
+        | { readonly type: 'text'; readonly uri: string; readonly text: string; readonly mimeType?: string }
+        | { readonly type: 'blob'; readonly uri: string; readonly blob: string; readonly mimeType?: string };
+    }
+  | { readonly type: 'opaque'; readonly contentType: string; readonly payload?: unknown };
 
 export type NormalizedExecutorEvent =
   | {
