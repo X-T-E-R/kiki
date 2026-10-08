@@ -436,3 +436,135 @@ test('turn snapshot switches inherit to explicit and back without replacing nati
     assert.equal(requests, 1);
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('hook UTF8 split bytes preserve raw Chinese command and path through stdin, server and client pipes', async () => {
+  const { createConnection, createServer } = await import('node:net');
+  const { once } = await import('node:events');
+  const { openPermissionChannel, requestHookPermission, permissionChannelIdentity } = await import('./agy-permission-hook.mjs');
+  const hookPath = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
+  const input = { conversationId: 'fixture-chinese', stepIdx: 1, toolCall: { name: 'run_command', args: {
+    CommandLine: 'Get-ChildItem -Path "C:/example/中文材料"', Cwd: 'C:/example/中文工作区' } } };
+  const b = new AgyBridge({ cliPath: process.execPath });
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-utf8', workspace: { cwd, additionalDirectories: [] } };
+  const id = (await b.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
+  const s = b.session(id); s.init = { conversation_id: input.conversationId };
+  const host = [];
+  s.active = { client: { request: async (_method, request) => { host.push(request); return { outcome: { outcome: 'selected', optionId: 'allow_once' } }; } } };
+  const channel = await openPermissionChannel(value => b.requestPermission(s, value));
+  try {
+    const socket = createConnection(channel.env.KIKI_AGY_PERMISSION_ENDPOINT);
+    await once(socket, 'connect');
+    const response = new Promise(done => { let text = ''; socket.setEncoding('utf8'); socket.on('data', chunk => { text += chunk; if (text.includes('\n')) done(JSON.parse(text)); }); });
+    const bytes = Buffer.from(JSON.stringify(input) + '\n');
+    const split = bytes.indexOf(Buffer.from('中')) + 1;
+    socket.write(channel.env.KIKI_AGY_PERMISSION_TOKEN + '\n');
+    socket.write(bytes.subarray(0, split));
+    await new Promise(done => setTimeout(done, 30));
+    socket.write(bytes.subarray(split));
+    assert.equal((await response).decision, 'allow');
+    await once(socket, 'close');
+    assert.deepEqual(host[0].toolCall.rawInput, input.toolCall.args);
+    assert.deepEqual(host[0]._meta['kiki.tool'], { name: 'Bash', input: { command: input.toolCall.args.CommandLine, cwd: input.toolCall.args.Cwd } });
+    const view = { ...input, stepIdx: 2, toolCall: { name: 'view_file', args: { AbsolutePath: 'C:/example/中文材料/原稿.txt' } } };
+    const script = `process.argv[1]=${JSON.stringify(hookPath)}; process.stdin.once('data',()=>process.stderr.write('first-chunk\\n')); const setEncoding=process.stdin.setEncoding.bind(process.stdin); process.stdin.setEncoding=(...args)=>{const value=setEncoding(...args); process.stdout.write('ready\\n'); return value;}; await import(${JSON.stringify(pathToFileURL(hookPath).href)});`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, ...channel.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
+    const lines = createInterface({ input: child.stdout });
+    const received = []; let ready;
+    const started = new Promise(done => { ready = done; });
+    lines.on('line', line => { if (line === 'ready') ready(); else received.push(JSON.parse(line)); });
+    const firstChunk = once(child.stderr, 'data');
+    await started;
+    const stdinBytes = Buffer.from(JSON.stringify(view));
+    const stdinSplit = stdinBytes.indexOf(Buffer.from('中')) + 2;
+    child.stdin.write(stdinBytes.subarray(0, stdinSplit));
+    await firstChunk;
+    child.stdin.end(stdinBytes.subarray(stdinSplit));
+    assert.equal(await closed, 0);
+    lines.close();
+    assert.equal(received[0].decision, 'allow');
+    assert.deepEqual(host[1].toolCall.rawInput, view.toolCall.args);
+    assert.deepEqual(host[1]._meta['kiki.tool'], { name: 'Read', input: { path: view.toolCall.args.AbsolutePath } });
+  } finally { s.active = undefined; await channel.close(); }
+  const identity = permissionChannelIdentity();
+  const server = createServer(socket => {
+    socket.once('data', () => {
+      const bytes = Buffer.from(JSON.stringify({ decision: 'deny', reason: '明确拒绝中文操作' }) + '\n');
+      const split = bytes.indexOf(Buffer.from('明')) + 1;
+      socket.write(bytes.subarray(0, split));
+      setTimeout(() => socket.end(bytes.subarray(split)), 30);
+    });
+    socket.on('error', () => {});
+  });
+  await new Promise(done => server.listen(identity.KIKI_AGY_PERMISSION_ENDPOINT, done));
+  try { assert.deepEqual(await requestHookPermission({}, identity), { decision: 'deny', reason: '明确拒绝中文操作' }); }
+  finally { await new Promise(done => server.close(done)); }
+});
+
+test('authenticated hook accepts over 1MiB Write args intact through real ACP host; bad nonce and cancellation never allow', { timeout: 15000 }, async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { createHash } = await import('node:crypto');
+  const { once } = await import('node:events');
+  const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-large-hook-'));
+  const content = '完整中文正文'.repeat(100000);
+  const raw = { TargetFile: 'C:/example/中文原稿.txt', CodeContent: content };
+  assert.ok(Buffer.byteLength(JSON.stringify(raw)) > 1024 * 1024);
+  const expectedHash = createHash('sha256').update(JSON.stringify(raw)).digest('hex');
+  const hookPath = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
+  const cli = join(root, 'large-hook-cli.mjs');
+  const cliSource = `import { createInterface } from 'node:readline'; import { spawn } from 'node:child_process';
+    let turn=0; for await (const line of createInterface({input:process.stdin})) {
+      const input=JSON.parse(line); turn++;
+      if(turn===1) console.log(JSON.stringify({event:'init',conversation_id:'fixture-large',init:{cwd:process.cwd()}}));
+      const child=spawn(process.execPath,[${JSON.stringify(hookPath)}],{env:process.env,stdio:['pipe','pipe','inherit']});
+      let text=''; child.stdout.setEncoding('utf8'); child.stdout.on('data',c=>text+=c);
+      const closed=new Promise(done=>child.once('close',done));
+      child.stdin.end(JSON.stringify({conversationId:'fixture-large',stepIdx:turn,toolCall:{name:'write_to_file',args:{TargetFile:'C:/example/中文原稿.txt',CodeContent:'完整中文正文'.repeat(100000)}}}));
+      await closed; const result=JSON.parse(text);
+      console.log(JSON.stringify({event:'result',result:{conversation_id:'fixture-large',status:'SUCCESS',response:'fixture tool approved',num_turns:turn,denied_actions:result.decision==='allow'?undefined:[{action:'write'}]}}));
+    }`;
+  await writeFile(cli, cliSource);
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const script = `import {runBridge} from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [cli] })});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const replies = new Map(); let id = 0; const host = [];
+  const lines = createInterface({ input: child.stdout });
+  lines.on('line', line => {
+    const frame = JSON.parse(line);
+    if (frame.method === 'session/request_permission') {
+      host.push(frame.params);
+      child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result:{outcome:{outcome:'selected',optionId:'allow_once'}}})+'\n');
+    } else if (frame.id !== undefined) { replies.get(frame.id)?.(frame); replies.delete(frame.id); }
+  });
+  const request = (method, params) => { const next = ++id; return new Promise(done => { replies.set(next, done); child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:next,method,params})+'\n'); }); };
+  try {
+    assert.ok((await request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result);
+    const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-large', workspace: { cwd: root, additionalDirectories: [] } };
+    const session = await request('session/new', { cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } });
+    const result = await request('session/prompt', { sessionId: session.result.sessionId, prompt: [{ type: 'text', text: 'fixture large tool' }] });
+    assert.equal(result.result.stopReason, 'end_turn', stderr);
+    assert.equal(host.length, 1);
+    assert.equal(createHash('sha256').update(JSON.stringify(host[0].toolCall.rawInput)).digest('hex'), expectedHash);
+    assert.deepEqual(host[0].toolCall.rawInput, raw);
+    assert.deepEqual(host[0]._meta['kiki.tool'], { name: 'Write', input: { path: raw.TargetFile } });
+  } finally { child.stdin.end(); }
+  assert.equal(await closed, 0, stderr); lines.close();
+  await rm(root, { recursive: true, force: true });
+  let calls = 0; let entered;
+  const waiting = new Promise(done => { entered = done; });
+  const channel = await openPermissionChannel(async () => { calls++; entered(); return new Promise(() => {}); });
+  try {
+    assert.equal((await requestHookPermission(raw, { ...channel.env, KIKI_AGY_PERMISSION_TOKEN: 'bad-nonce' }, 2000)).decision, 'deny');
+    assert.equal(calls, 0);
+    const pending = requestHookPermission(raw, channel.env, 2000);
+    await waiting;
+    await channel.close();
+    assert.equal((await pending).decision, 'deny');
+    assert.equal(calls, 1);
+  } finally { await channel.close(); }
+});

@@ -3,8 +3,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { StringDecoder } from 'node:string_decoder';
 
-const MAX_BYTES = 1024 * 1024;
 const denied = reason => ({ decision: 'deny', reason });
 
 export function permissionChannelIdentity() {
@@ -13,43 +13,62 @@ export function permissionChannelIdentity() {
     KIKI_AGY_PERMISSION_TOKEN: randomUUID() };
 }
 
+/**
+ * Authenticate the bounded nonce header before collecting tool JSON. Authenticated
+ * input follows the existing ACP in-memory JSON framing contract without imposing
+ * a smaller tool-input ceiling. The channel is owned and closed with the session.
+ */
 export async function openPermissionChannel(handle, identity = permissionChannelIdentity()) {
   const endpoint = identity.KIKI_AGY_PERMISSION_ENDPOINT;
-  const token = identity.KIKI_AGY_PERMISSION_TOKEN;
+  const expected = Buffer.from(identity.KIKI_AGY_PERMISSION_TOKEN);
   const sockets = new Set();
   let closed = false;
   const server = createServer(socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
     socket.on('error', () => {});
+    let header = Buffer.alloc(0);
+    let authenticated = false;
+    const decoder = new StringDecoder('utf8');
     let frame = '';
     let received = false;
+    const reject = reason => {
+      received = true;
+      socket.pause();
+      socket.end(JSON.stringify(denied(reason)) + '\n');
+    };
     socket.on('data', chunk => {
-      if (received) { socket.destroy(); return; }
-      frame += chunk.toString('utf8');
-      if (Buffer.byteLength(frame) > MAX_BYTES) { socket.destroy(); return; }
+      if (received) return;
+      if (!authenticated) {
+        const end = chunk.indexOf(0x0a);
+        const part = end < 0 ? chunk : chunk.subarray(0, end);
+        if (header.length + part.length > expected.length) { reject('Invalid AGY permission channel identity'); return; }
+        header = Buffer.concat([header, part]);
+        if (end < 0) return;
+        if (header.length !== expected.length || !timingSafeEqual(header, expected)) { reject('Invalid AGY permission channel identity'); return; }
+        authenticated = true;
+        chunk = chunk.subarray(end + 1);
+      }
+      if (closed) { reject('AGY permission channel closed'); return; }
+      frame += decoder.write(chunk);
       const end = frame.indexOf('\n');
       if (end < 0) return;
       received = true;
+      socket.pause();
       void (async () => {
         let response;
         try {
-          const request = JSON.parse(frame.slice(0, end));
-          const supplied = Buffer.from(typeof request.token === 'string' ? request.token : '');
-          const expected = Buffer.from(token);
-          if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw Error('Invalid AGY permission channel identity');
-          if (closed) throw Error('AGY permission channel closed');
-          response = await handle(request.input);
+          response = await handle(JSON.parse(frame.slice(0, end)));
         } catch (error) {
           response = denied(error instanceof Error ? error.message : 'AGY permission request failed');
         }
-        if (!socket.destroyed) socket.end(JSON.stringify(response) + '\n');
+        if (!socket.destroyed && !closed) socket.end(JSON.stringify(response) + '\n');
       })();
     });
   });
   await new Promise((done, reject) => { server.once('error', reject); server.listen(endpoint, done); });
   return {
-    env: { KIKI_AGY_PERMISSION_ENDPOINT: endpoint, KIKI_AGY_PERMISSION_TOKEN: token },
+    env: { KIKI_AGY_PERMISSION_ENDPOINT: endpoint, KIKI_AGY_PERMISSION_TOKEN: identity.KIKI_AGY_PERMISSION_TOKEN },
     async close() {
       if (closed) return;
       closed = true;
@@ -64,18 +83,20 @@ export async function requestHookPermission(input, env = process.env, timeoutMs)
   const token = env.KIKI_AGY_PERMISSION_TOKEN;
   if (!endpoint && !token) return {};
   if (!endpoint || !token) return denied('Incomplete Kiki AGY permission channel');
-  const frame = JSON.stringify({ token, input }) + '\n';
-  if (Buffer.byteLength(frame) > MAX_BYTES) return denied('AGY permission request exceeds frame limit');
+  const frame = JSON.stringify(input) + '\n';
   return new Promise(done => {
     const socket = createConnection(endpoint);
+    socket.setEncoding('utf8');
     let response = '';
     let settled = false;
     const finish = result => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); done(result); };
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => finish(denied('Kiki AGY permission decision timed out')), timeoutMs);
-    socket.once('connect', () => socket.write(frame));
+    socket.once('connect', () => {
+      socket.write(token + '\n');
+      socket.write(frame);
+    });
     socket.on('data', chunk => {
-      response += chunk.toString('utf8');
-      if (Buffer.byteLength(response) > MAX_BYTES) { finish(denied('AGY permission response exceeds frame limit')); return; }
+      response += chunk;
       const end = response.indexOf('\n');
       if (end < 0) return;
       try {
@@ -87,17 +108,17 @@ export async function requestHookPermission(input, env = process.env, timeoutMs)
     });
     socket.once('error', () => finish(denied('Kiki AGY permission channel unavailable')));
     socket.once('end', () => finish(denied('Kiki AGY permission channel ended without a decision')));
+    socket.once('close', () => finish(denied('Kiki AGY permission channel closed without a decision')));
   });
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const owned = process.env.KIKI_AGY_PERMISSION_ENDPOINT || process.env.KIKI_AGY_PERMISSION_TOKEN;
   let input = '';
+  process.stdin.setEncoding('utf8');
   try {
     for await (const chunk of process.stdin) {
-      if (!owned) continue;
-      input += chunk.toString('utf8');
-      if (Buffer.byteLength(input) > MAX_BYTES) throw Error('AGY permission request exceeds frame limit');
+      if (owned) input += chunk;
     }
     const output = owned ? await requestHookPermission(JSON.parse(input)) : {};
     process.stdout.write(JSON.stringify(output) + '\n');
