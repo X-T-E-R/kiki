@@ -2516,6 +2516,41 @@ describe('GlobalSearchService', () => {
       expect(explicitRole.items[0]?.role).toBe('tool');
     });
 
+    it('searches real user-origin live steer frames but excludes internal user-role content', async () => {
+      const s1 = summary('s1', 'unrelated title', T1);
+      const store = makeLiveStore('s1');
+      const needle = 'uniquesteerneedle';
+      store.getAgent('main')!.apply([
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'real-steer', role: 'user', origin: { kind: 'user' }, text: needle,
+          delivery: { deliveryId: 'steer-delivery', messageId: 'real-steer', origin: 'user' },
+        } },
+        ...['system_trigger', 'task', 'mailbox', 'injection'].map((kind): TranscriptOperation => ({
+          op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+            kind: 'text', frameId: `internal-${kind}`, role: 'user', origin: { kind }, text: needle,
+          },
+        })),
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'unknown-provenance', role: 'user', text: needle,
+        } },
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'thinking', frameId: 'private-thought', text: needle,
+        } },
+      ]);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      for (const mode of ['terms', 'literal'] as const) {
+        for (const includeToolOutput of [false, true]) {
+          const page = await service.search({ query: needle, mode, includeToolOutput,
+            container: { sessionId: 's1', agentId: 'main' } });
+          expect(page.source).toBe('live');
+          expect(page.items).toHaveLength(1);
+          expect(page.items[0]).toMatchObject({ role: 'user', turn: 0, stepId: 't0.1' });
+          expect(page.items[0]?.snippet).toContain(needle);
+        }
+      }
+    });
+
     it('accepts single-character literal queries on the live route', async () => {
       const s1 = summary('s1', '苹果标题', T1);
       const service = track(makeService(home!, gettableIndex([s1])));

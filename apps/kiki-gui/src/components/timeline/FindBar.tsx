@@ -37,6 +37,17 @@ export interface FindBarProps {
   readonly onIncludeToolOutputChange?: (include: boolean) => void;
   readonly sessionId: string | undefined;
   readonly agentId: string;
+  /**
+   * Which surface is on screen. The landing key carries it, so a match the
+   * other surface can paint is landed again after the reader switches views.
+   */
+  readonly surface?: string;
+  /**
+   * A match the message view only holds inside a collapsed activity summary:
+   * the host opens the process view at it (the same entry a summary's own
+   * "view in process" uses), because that is the surface that can show it.
+   */
+  readonly onOpenProcessView?: (match: FindMatch) => void;
   /** Older pages remain to be loaded. */
   readonly hasMoreHistory: boolean;
   /** Turn ordinals present on the loaded pages. */
@@ -186,7 +197,7 @@ function useOutsideHits(input: {
 
 export function FindBar({
   items, sessionId, agentId, hasMoreHistory, loadedTurns, request, onLand, onClear, startIndex,
-  onLoadOlder, onLocateTurn, onClose, stepRef, onIncludeToolOutputChange,
+  onLoadOlder, onLocateTurn, onClose, stepRef, onIncludeToolOutputChange, onOpenProcessView, surface = '',
 }: FindBarProps) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -201,6 +212,10 @@ export function FindBar({
   readKeyRef.current = readKey;
   const scopedItems = useMemo(() => items.filter((item) => !item.toolOutput || options.includeToolOutput === true), [items, options.includeToolOutput]);
   const matches = useMemo(() => [...collectMatches(scopedItems, pattern), ...(rangeHit?.key === readKey ? [rangeHit.match] : [])], [scopedItems, pattern, rangeHit, readKey]);
+  // Matches the message view folds into an activity summary: real hits the
+  // reader has to be shown in the process view.
+  const processMatches = useMemo(() => matches.filter((match) => match.item.processViewOnly === true), [matches]);
+  const showProcessNote = processMatches.length > 0 && onOpenProcessView !== undefined;
   const detailController = useTranscriptController();
   const incompleteTurns = useMemo(() => detailController?.incompleteTurnOrdinals(agentId) ?? new Set<number>(), [detailController, agentId, items]);
   const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory, includeToolOutput: options.includeToolOutput === true });
@@ -253,23 +268,34 @@ export function FindBar({
       return;
     }
     // The pattern is part of the key: a longer query can keep the same first
-    // match while its painted range must grow.
-    const key = `${matchKey(current)}\0${pattern.source}\0${pattern.flags}`;
+    // match while its painted range must grow. The surface is part of it too:
+    // opening another view re-lands the match so the new rows get painted.
+    const key = `${matchKey(current)}\0${pattern.source}\0${pattern.flags}\0${surface}`;
     if (landedRef.current === key) return;
     landedRef.current = key;
     const range = current === rangeHit?.match ? rangeHit : undefined;
     void landRef.current(current, pattern, range).then((landed) => {
       if (range !== undefined && !landed && landedRef.current === key && readKeyRef.current === range.key) setReadFailed(true);
     }, () => { if (range !== undefined && landedRef.current === key && readKeyRef.current === range.key) setReadFailed(true); });
-  }, [current, pattern, onClear, rangeHit]);
+  }, [current, pattern, onClear, rangeHit, surface]);
 
+  // A match only the process view can paint: land it there instead of against
+  // a collapsed summary that has no text to show.
+  const openProcessView = useCallback((match: FindMatch) => {
+    landedRef.current = undefined;
+    setCurrentKey(matchKey(match));
+    onOpenProcessView?.(match);
+  }, [onOpenProcessView]);
   const step = useCallback((direction: 1 | -1) => {
     if (matches.length === 0) return;
     const from = index === -1 ? (direction === 1 ? -1 : 0) : index;
     const next = matches[(from + direction + matches.length) % matches.length]!;
-    landedRef.current = undefined;
-    setCurrentKey(matchKey(next));
-  }, [matches, index]);
+    if (next.item.processViewOnly === true && onOpenProcessView !== undefined) openProcessView(next);
+    else {
+      landedRef.current = undefined;
+      setCurrentKey(matchKey(next));
+    }
+  }, [matches, index, onOpenProcessView, openProcessView]);
   stepRef.current = step;
 
   // "Keep looking": page older history in, bounded, until a local match
@@ -458,8 +484,24 @@ export function FindBar({
         }} className="accent-selected-ink" />
         {t('search.includeToolOutput')}
       </label>
-      {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack) ? (
+      {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack || showProcessNote) ? (
         <div data-find-note className="flex flex-col gap-0.5 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-soft">
+          {showProcessNote ? (
+            <p data-find-process className="flex items-center gap-2">
+              <span className="min-w-0 flex-1">{t('search.toolOutput')}</span>
+              <button
+                type="button"
+                data-find-process-open
+                onClick={() => {
+                  const target = current !== undefined && current.item.processViewOnly === true ? current : processMatches[0];
+                  if (target !== undefined) openProcessView(target);
+                }}
+                className={NOTE_ACTION}
+              >
+                {t('message.openProcess')}
+              </button>
+            </p>
+          ) : null}
           {lookingBack ? (
             <p className="flex items-center gap-2">
               <span className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />

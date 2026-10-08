@@ -1,8 +1,11 @@
 import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
-import type { Block, DisplayNode } from '@kiki/session-core/session';
+import type { ActivitySummary, Block, DisplayNode } from '@kiki/session-core/session';
 
 import { markdownVisibleText, type FindItem } from '../../lib/timelineFind';
+
+/** A row the timeline draws: the process tree, plus the message view's summary. */
+export type FindNode = DisplayNode | ActivitySummary;
 
 const OUTPUT_CAP = 60_000;
 
@@ -56,9 +59,9 @@ export function blockFindText(block: Block, includeToolOutput = false): string {
   }
 }
 
-export function buildFindItems(nodes: readonly DisplayNode[], includeToolOutput = false): FindItem[] {
+export function buildFindItems(nodes: readonly FindNode[], includeToolOutput = false): FindItem[] {
   const out: FindItem[] = [];
-  const pushBlock = (block: Block, reveal: readonly string[]) => {
+  const pushBlock = (block: Block, reveal: readonly string[], processViewOnly = false) => {
     const toolOutput = block.kind === 'tool' || block.kind === 'shell';
     if (toolOutput ? !includeToolOutput : block.kind !== 'user' && block.kind !== 'assistant' && block.kind !== 'message') return;
     const text = blockFindText(block, includeToolOutput);
@@ -67,12 +70,13 @@ export function buildFindItems(nodes: readonly DisplayNode[], includeToolOutput 
       reveal: toolOutput ? [...reveal, block.id] : reveal,
       toolCallId: block.kind === 'tool' ? block.toolCallId : undefined,
       toolOutput,
+      processViewOnly: processViewOnly ? true : undefined,
       textSelector: block.kind === 'tool' ? '[data-tool-record-field="output"]' : block.kind === 'shell' ? 'pre, [data-content-range-text]' : undefined,
       turnId: turnOf(block),
       text,
     });
   };
-  const visit = (node: DisplayNode, reveal: readonly string[]) => {
+  const visit = (node: FindNode, reveal: readonly string[]) => {
     switch (node.kind) {
       case 'history-fold':
         for (const member of node.members) visit(member, [...reveal, node.id]);
@@ -85,6 +89,15 @@ export function buildFindItems(nodes: readonly DisplayNode[], includeToolOutput 
         for (const member of node.members) pushBlock(member, reveal);
         return;
       case 'subagent-ended':
+        return;
+      case 'activity-summary':
+        // The message view folds a stretch of internal activity into one
+        // collapsed line. The tool output inside it is still loaded and the
+        // tool checkbox selects it, so it must count here too; the process
+        // view is the surface that can open and paint it.
+        for (const member of node.members) {
+          if (member.kind === 'tool' || member.kind === 'shell') pushBlock(member, [...reveal, node.id], true);
+        }
         return;
       default:
         pushBlock(node, reveal);

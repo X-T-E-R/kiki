@@ -4229,11 +4229,13 @@ export function Transcript({
   const [findReveal] = useState(createFindRevealStore);
   const [findOwner] = useState(() => Symbol('transcript-find'));
   const findOpen = findRequest !== null;
-  // Find reads what the rows show; a message-view activity summary is one
-  // collapsed line whose members stay in the process view.
+  // Find reads what the rows show. A message-view activity summary is one
+  // collapsed line, but the tool output inside it is loaded and the tool
+  // checkbox selects it: it is searched here too, and the items carry the
+  // "process view only" mark that routes their landing below.
   const findItems = useMemo(
     () => (findOpen
-      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'), true)
+      ? buildFindItems(groupedNodes.filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node)), true)
       : []),
     [findOpen, groupedNodes],
   );
@@ -4693,6 +4695,10 @@ export function Transcript({
           onIncludeToolOutputChange={setFindIncludeToolOutput}
           sessionId={sessionIdForLocate}
           agentId={agentId}
+          surface={view}
+          onOpenProcessView={view === 'message' && sessionIdForLocate !== undefined
+            ? (match) => { openProcessAt(match.item.turnId, match.item.blockId); }
+            : undefined}
           hasMoreHistory={state.hasMoreHistory}
           loadedTurns={loadedTurns}
           request={findRequest}

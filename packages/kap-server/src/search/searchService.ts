@@ -22,7 +22,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/minidb';
 import type { SearchMessagesResponse } from '../protocol/rest-search';
-import type { TranscriptStore } from '@kiki/transcript';
+import { projectTranscriptUserOrigin, type TranscriptStore } from '@kiki/transcript';
 
 import {
   GlobalSearchError,
@@ -829,7 +829,9 @@ export class GlobalSearchService implements IGlobalSearchService {
         for (const step of item.steps) {
           const stepTime = parseTime(step.endedAt ?? step.startedAt ?? item.startedAt);
           for (const frame of step.frames) {
-            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text' && frame.role === 'assistant' ? 'assistant' : undefined;
+            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text'
+              ? frame.role === 'assistant' ? 'assistant' : projectTranscriptUserOrigin(frame.origin) !== undefined ? 'user' : undefined
+              : undefined;
             if (role === undefined || role === 'tool' && !includeToolOutput) continue;
             const output = frame.kind === 'tool' ? frame.output : frame.kind === 'text' ? frame.text : undefined;
             const text = (typeof output === 'string' ? output :

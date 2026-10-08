@@ -11,7 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createViewState, type Block, type SessionViewState, SessionController } from '@kiki/session-core/session';
+import { createViewState, type ActivitySummary, type Block, type SessionViewState, SessionController } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import type { SearchMessageHit } from '../../lib/client';
@@ -24,6 +24,7 @@ import {
   resetFindHostsForTests,
   selectionPrefill,
 } from '../../lib/timelineFind';
+import { useTimelineView } from '../message/messageViewMode';
 import { Transcript } from '../Transcript';
 import { FindBar, classifyOutsideHits, setFindSearchForTests } from './FindBar';
 import { TranscriptDetailProvider } from '../transcriptDetail';
@@ -205,6 +206,35 @@ describe('find matching', () => {
       kind: 'message', id: 'm1', origin: 'send_message', status: 'sent', text: '证书那边还差一步', attachments: [], deliveredTo: [], turnId: 't1',
     };
     expect(buildFindItems([message])).toEqual([expect.objectContaining({ blockId: 'm1', text: '证书那边还差一步' })]);
+  });
+
+  it('searches the tool output a message-view summary folds away, only with the tool option', () => {
+    const pattern = buildFindPattern('needle', { caseSensitive: false, wholeWord: false });
+    const count = (items: ReturnType<typeof buildFindItems>) => {
+      const byBlock = new Map<string, number>();
+      for (const match of collectMatches(items, pattern)) byBlock.set(match.item.blockId, (byBlock.get(match.item.blockId) ?? 0) + 1);
+      return Object.fromEntries(byBlock);
+    };
+    const group: ActivitySummary = {
+      kind: 'activity-summary', id: 'activity-tool1', turnId: 't1',
+      members: [think('th1', 'the needle is probably in config', 't1'), tool('tool1', 'grep needle', 'src/needle.ts: export const needle = 1', 't1')],
+      counts: { tools: 1, reads: 0, commands: 1, thinking: 1, subagents: 0, memories: 0 },
+      running: false, failed: 0,
+    };
+    const nodes = [user('u1', 'check the cache', 't1'), group];
+    // The message view keeps its own scope: the folded activity is not searched
+    // unless the tool option asks for its tool output.
+    expect(count(buildFindItems(nodes))).toEqual({});
+    const withTools = buildFindItems(nodes, true);
+    expect(count(withTools)).toEqual({ tool1: 2 });
+    // The member belongs to the process view: it is marked, and its reveal
+    // opens the summary and the tool leaf on the way in.
+    expect(withTools.find((item) => item.blockId === 'tool1')).toMatchObject({
+      processViewOnly: true, reveal: ['activity-tool1', 'tool1'], toolCallId: 'tool1',
+    });
+    // Neither the summary's thinking member nor the tool's own input is searched.
+    expect(withTools.some((item) => item.text.includes('config'))).toBe(false);
+    expect(withTools.some((item) => item.text.includes('grep needle'))).toBe(false);
   });
 
   it('splits server hits into still-loadable and compacted history', () => {
@@ -487,4 +517,89 @@ it('a query change while locating a cold turn prevents its late arrival from sta
     expect(fixture.land).not.toHaveBeenCalled();
     expect(fixture.container.textContent).not.toContain('Could not read the matching content');
   } finally { fixture.controller.close(); }
+});
+
+/** Bot delivery draws the message view: speech rows, and one collapsed activity
+ * line per stretch of internal work (its tool output stays in the process view). */
+function messageViewSession(): Block[] {
+  return [
+    user('u1', 'please check the cache', 't1'),
+    tool('tool1', 'grep cache', 'cache.ts: export const needle = 1', 't1'),
+    answer('a1', 'Found it.', 't1'),
+    user('u2', 'thanks', 't2'),
+    answer('a2', 'You are welcome.', 't2'),
+  ];
+}
+
+/** The session view owns the message/process choice; the find bar flips it. */
+function MessageViewTimeline({ sessionId, blocks }: { sessionId: string; blocks: Block[] }) {
+  const [view] = useTimelineView(sessionId, { delivery: 'message' });
+  return (
+    <Transcript
+      state={state(blocks, { sessionId })}
+      view={view}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => Promise.resolve()}
+      onAnswerQuestion={() => Promise.resolve()}
+      onDismissQuestion={() => Promise.resolve()}
+    />
+  );
+}
+
+describe('find in the message view', () => {
+  it('counts a folded tool output once the tool option is on, and its note shows the hit in the process view', async () => {
+    const off = installSessionShortcut();
+    const registry = new Map<string, { items: Range[] }>();
+    vi.stubGlobal('CSS', {
+      highlights: {
+        set: (name: string, value: { items: Range[] }) => { registry.set(name, value); },
+        delete: (name: string) => { registry.delete(name); },
+      },
+    });
+    vi.stubGlobal('Highlight', class { readonly items: Range[]; constructor(...items: Range[]) { this.items = items; } });
+    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message" blocks={messageViewSession()} />);
+    expect(container.querySelector('[data-message-view-row="activity-summary"]')).not.toBeNull();
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    await typeQuery(input, 'needle');
+    await settle(120);
+    // Only the tool output holds the needle, and it is out of scope by default.
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
+    expect(container.querySelector('[data-find-process]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await settle(120);
+    // The loaded tool hit counts now, and the bar says where it can be shown.
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
+    const open = container.querySelector<HTMLButtonElement>('[data-find-process-open]')!;
+    expect(open.textContent).toContain('process');
+    await act(async () => { open.click(); });
+    await settle(200);
+    // The process view is on screen, opened at the call that holds the hit.
+    expect(container.querySelector('[data-message-view-row]')).toBeNull();
+    const card = container.querySelector('[data-tool-id="tool1"]');
+    expect(card?.textContent).toContain('export const needle = 1');
+    expect(card?.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    expect(registry.get('kiki-find-current')?.items.map((range) => range.toString())).toContain('needle');
+    vi.unstubAllGlobals();
+    vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+    off();
+  });
+
+  it('steps onto a folded tool match by opening the process view', async () => {
+    const off = installSessionShortcut();
+    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message_step" blocks={messageViewSession()} />);
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    await typeQuery(input, 'needle');
+    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await settle(120);
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
+    await act(async () => { press(input, { key: 'F3' }); });
+    await settle(200);
+    expect(container.querySelector('[data-message-view-row]')).toBeNull();
+    expect(container.querySelector('[data-tool-id="tool1"]')?.textContent).toContain('export const needle = 1');
+    off();
+  });
 });
