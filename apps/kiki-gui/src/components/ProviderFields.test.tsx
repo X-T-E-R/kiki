@@ -51,7 +51,7 @@ const startOAuthLogin = vi.fn();
 const cancelOAuthLogin = vi.fn(async () => ({ cancelled: true, status: 'cancelled' }));
 const listOAuthMethods = vi.fn(async (): Promise<unknown[]> => []);
 const probeOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
-const connectOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
+const connectOriginalOAuth = vi.fn(async (_request?: Record<string, unknown>): Promise<unknown> => ({}));
 const SIGNED_IN_KIMI = [
   { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
     account: { state: 'unknown' }, quota: { state: 'unknown' } },
@@ -1501,6 +1501,46 @@ describe('Connections list', () => {
       expect(listOAuthMethods.mock.calls.length).toBeGreaterThan(1);
     });
 
+    it('connects a Kimi Code slot that has no account id, and sends no invented one', async () => {
+      const method = {
+        id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai',
+        signed_in: true, connection_state: 'ready', account: { state: 'unknown' },
+        quota: { state: 'unknown' },
+      } as OAuthMethodStatus;
+      const found = {
+        provider: 'kimi-code', home_dir: '/server/.kimi-code', storage_backend: 'keyring',
+        state: 'ready', account: { state: 'unknown' }, can_connect: true,
+      };
+      probeOriginalOAuth.mockResolvedValue(found);
+      connectOriginalOAuth.mockResolvedValue(found);
+      const onChanged = vi.fn();
+      await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      const source = document.querySelector<HTMLElement>('[data-original-source="kimi-code"]')!;
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+
+      // Kimi Code keeps a credential slot, not an account: the panel says what
+      // was found without naming an account, and connect is still offered.
+      expect(source.querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('connectable');
+      expect(source.textContent).toContain('Found the sign-in Kimi Code already has on this machine.');
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      const request = connectOriginalOAuth.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(request).toMatchObject({ provider: 'kimi-code' });
+      expect(request['expected_account_id']).toBeUndefined();
+      expect(onChanged).toHaveBeenCalled();
+    });
+
+    it('still refuses a Codex connect whose probe found no account identity', async () => {
+      const method = codexMethod() as OAuthMethodStatus;
+      probeOriginalOAuth.mockResolvedValue({
+        provider: 'openai-codex', home_dir: '/server/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'unknown' }, can_connect: true,
+      });
+      await renderSurface(<AccountConnectionPanel method={method} onChanged={vi.fn()} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
     it('refuses a stale check rather than connecting to what the machine no longer has', async () => {
       listOAuthMethods.mockResolvedValue([codexMethod()]);
       listProviders.mockResolvedValue({ items: [CODEX_ROW] });
@@ -1695,14 +1735,14 @@ describe('Connections list', () => {
 
     it('offers no reuse for a method whose machine sign-in is not a thing', async () => {
       listOAuthMethods.mockResolvedValue([{
-        id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai',
+        id: 'octo', label: 'Octo', provider: 'managed:octo', protocol: 'openai',
         signed_in: true, connection_state: 'ready', account: { state: 'known', id: 'dev@example.test' },
         quota: { state: 'unknown' },
       }]);
-      listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER] });
+      listProviders.mockResolvedValue({ items: [{ ...MANAGED_PROVIDER, id: 'managed:octo' }] });
       const { container } = await renderSurface(<ConnectionsTab />);
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:octo"]')!;
       await act(async () => { row.open = true; });
 
       expect(document.querySelector('[data-original-source]')).toBeNull();

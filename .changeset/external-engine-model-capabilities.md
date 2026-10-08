@@ -2,4 +2,4 @@
 "@kiki/cli": minor
 ---
 
-Show external engines' own model IDs and capability status in the composer picker.
+Simplify external model controls and reuse the local Kimi Code sign-in.

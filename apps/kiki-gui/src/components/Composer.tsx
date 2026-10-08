@@ -71,6 +71,7 @@ import {
   projectedProfileModelState,
   projectedProfileModelRuleSource,
   resolveCatalogModel,
+  resolveEffectiveModel,
   resolveSelectedEffort,
   sortThinkingEffortsForDisplay,
   settingsServerSnapshot,
@@ -87,7 +88,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
-import { mapExecutorCapabilities, type ExecutorCapabilityKind } from '../lib/executorCapabilities';
+import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { pastedMediaType } from '../lib/pastedFiles';
@@ -97,7 +98,7 @@ import { useRemoteConnections } from '../lib/remoteConnections';
 import { useConnection } from '../state/connection';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
-import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterUsage } from './ContextMeter';
+import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
 import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
@@ -933,7 +934,7 @@ export function Composer({
       : frozenProfile !== undefined ? catalogProfile : agentId === 'main' ? undefined : { restrict_models_to_menu: true };
   const modelSelectionPosition = agentId === 'main' ? 'main' : 'sub';
   const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
-    const target = option.value === '' ? defaultModel ?? serverDefaultModel : option.value;
+    const target = option.value === '' ? resolveEffectiveModel(undefined, defaultModel, serverDefaultModel) : option.value;
     const state = projectedProfileModelState(modelProjection, models, target, modelSelectionPosition);
     const source = projectedProfileModelRuleSource(modelProjection, models, target, selectedProfileName);
     const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
@@ -944,7 +945,9 @@ export function Composer({
     };
   }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, t]);
   const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
-  const validatingModel = model ?? defaultModel ?? serverDefaultModel;
+  // resolveEffectiveModel, not a bare ?? chain: a persisted empty string is the
+  // unselected state, not a model named "" that failed validation.
+  const validatingModel = resolveEffectiveModel(model, defaultModel, serverDefaultModel);
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const externalExecution = execution !== undefined && !isNativeExecutor(execution.executor);
@@ -969,6 +972,20 @@ export function Composer({
   const executorModelResponse = executorId !== undefined && manualExecutorResponse?.executorId === executorId
     ? manualExecutorResponse.response
     : executorModelsQuery.data;
+  // Manual compaction is a real control, so its declared capability lands on
+  // the meter that offers it. Only an answered catalog gates it: no response
+  // (native engine, or the query still out) leaves the meter exactly as before.
+  const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
+    if (executorId === undefined) return undefined;
+    const control = mapExecutorCapabilities(executorModelResponse).controls.manual_compact;
+    if (control.kind === 'absent') return undefined;
+    if (isExecutorActionAvailable(control)) return { available: true };
+    const reason = [
+      t(control.kind === 'unavailable' ? 'context.compactUnavailable' : 'context.compactUnknown'),
+      control.diagnostic,
+    ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
+    return { available: false, reason };
+  }, [executorId, executorModelResponse, t]);
   const refreshExecutorModels = useCallback(() => {
     if (executorId === undefined || executorRefreshBusy) return;
     setExecutorRefreshBusy(true);
@@ -2175,7 +2192,7 @@ export function Composer({
     }
   };
 
-  const effectiveModel = model ?? defaultModel ?? serverDefaultModel;
+  const effectiveModel = resolveEffectiveModel(model, defaultModel, serverDefaultModel);
   // The status line names the model by its catalog display name (the inherit
   // source and provider live in the picker and the tooltip).
   const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
@@ -2352,7 +2369,7 @@ export function Composer({
         modelSource={modelSource}
         disabled={variant === 'subagent' && disabled}
         onChangeModel={(next) => {
-          const state = projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel, modelSelectionPosition);
+          const state = projectedProfileModelState(modelProjection, models, resolveEffectiveModel(next, defaultModel, serverDefaultModel), modelSelectionPosition);
           if (state === 'blocked') return;
           return onChangeModel(next);
         }}
@@ -3073,6 +3090,7 @@ export function Composer({
                   sessionId={sessionId}
                   onCompact={onCompactContext}
                   autoCompact={contextAutoCompact}
+                  compactAvailability={compactAvailability}
                 />
               ) : null}
               {queueEditing && onQueueEditRemove !== undefined ? (
@@ -3575,63 +3593,49 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
       : modelState === 'unavailable'
         ? t('composer.engineModelUnavailable')
         : modelState === 'unknown' ? t('composer.engineModelUnknown') : undefined;
-  const hasCapabilityResponse = executorCapabilities.freshness !== 'absent';
-  const stateLabel = (kind: ExecutorCapabilityKind): string => t(`composer.engineCapabilityState.${kind}` as I18nKey);
-  const sourceLabel = executorCapabilities.source === 'negotiated'
-    ? t('composer.engineCapabilitySourceNegotiated')
-    : executorCapabilities.source === 'cli_probe'
-      ? t('composer.engineCapabilitySourceCliProbe')
-      : undefined;
-  const freshnessLabel = executorCapabilities.freshness === 'stale'
-    ? t('composer.engineCapabilityStale')
-    : executorCapabilities.freshness === 'fresh' ? t('composer.engineCapabilityFresh') : undefined;
-  const provenanceLine = hasCapabilityResponse && sourceLabel !== undefined && freshnessLabel !== undefined
-    ? executorCapabilities.engine_version === undefined
-      ? t('composer.engineCapabilityProvenance', { source: sourceLabel, freshness: freshnessLabel })
-      : t('composer.engineCapabilityProvenanceVersion', {
-        source: sourceLabel,
-        version: executorCapabilities.engine_version,
-        freshness: freshnessLabel,
-      })
+  // One compact status line, in the order a person needs it: a failed refresh
+  // first (the list on screen is stale by definition), then the model catalog's
+  // own state with its real reason, then the age of the read. A stale read
+  // collapses the model state to unknown, so its age — not "not known yet" —
+  // is the honest line, with Refresh beside it as the recovery.
+  const stale = executorCapabilities.freshness === 'stale';
+  const modelDiagnostic = modelDimension.diagnostic !== undefined && modelDimension.diagnostic !== ''
+    ? modelDimension.diagnostic
     : undefined;
-  const capabilityFacts = hasCapabilityResponse ? [
-    t('composer.engineCapabilityContext', { state: stateLabel(executorCapabilities.context.kind) }),
-    t('composer.engineCapabilityControlModelSwitch', { state: stateLabel(executorCapabilities.controls.model_switch.kind) }),
-    t('composer.engineCapabilityControlThinkingSwitch', { state: stateLabel(executorCapabilities.controls.thinking_switch.kind) }),
-    t('composer.engineCapabilityControlManualCompact', { state: stateLabel(executorCapabilities.controls.manual_compact.kind) }),
-  ] : [];
-  const diagnostics = hasCapabilityResponse ? [
-    modelDimension.diagnostic,
-    executorCapabilities.context.diagnostic,
-    executorCapabilities.controls.model_switch.diagnostic,
-    executorCapabilities.controls.thinking_switch.diagnostic,
-    executorCapabilities.controls.manual_compact.diagnostic,
-  ].filter((diagnostic): diagnostic is string => diagnostic !== undefined && diagnostic !== '') : [];
-  const hasStatus = hasCapabilityResponse || executorRefreshFailed;
+  const modelNote = statusMessage === undefined || (stale && modelState === 'unknown')
+    ? undefined
+    : (modelState === 'unavailable' || modelState === 'unknown') && modelDiagnostic !== undefined
+      ? `${statusMessage} · ${modelDiagnostic}`
+      : statusMessage;
+  const statusLine = executorRefreshFailed
+    ? t('composer.engineCapabilityRefreshFailed')
+    : [modelNote, stale ? t('composer.engineCapabilityStale') : undefined]
+      .filter((part): part is string => part !== undefined)
+      .join(' · ') || undefined;
+  // The one capability that changes what this selector itself may do. Unknown
+  // is not a refusal, so only a declared-unsupported control earns the line.
+  const switchControl = executorCapabilities.controls.model_switch;
+  const switchLine = switchControl.kind === 'unavailable'
+    ? [t('composer.engineModelSwitchUnavailable'), switchControl.diagnostic]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · ')
+    : undefined;
   const panelFooter = (
-    <div data-external-model-footer className="border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-faint">
-      {hasStatus ? (
-        <div data-external-model-status>
-          {statusMessage !== undefined ? <p>{statusMessage}</p> : null}
-          {provenanceLine !== undefined ? <p data-external-model-provenance className="mt-0.5 truncate text-[11px]" title={provenanceLine}>{provenanceLine}</p> : null}
-          {capabilityFacts.length > 0 ? (
-            <ul data-external-capability-facts className="mt-0.5 space-y-0.5 text-[11px]">
-              {capabilityFacts.map((fact) => <li key={fact}>{fact}</li>)}
-            </ul>
-          ) : null}
-          {diagnostics.map((diagnostic, index) => (
-            <p
-              key={`${diagnostic}-${index}`}
-              data-external-model-diagnostic
-              className="mt-0.5 truncate text-[11px]"
-              title={diagnostic}
-            >
-              {diagnostic}
-            </p>
-          ))}
-          {executorRefreshFailed ? <p data-external-model-refresh-error className="mt-0.5">{t('composer.engineCapabilityRefreshFailed')}</p> : null}
-        </div>
-      ) : null}
+    <div data-external-model-footer className="flex items-center gap-2 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-faint">
+      <div data-external-model-status className="min-w-0 flex-1">
+        {statusLine !== undefined ? (
+          <p
+            data-external-model-refresh-error={executorRefreshFailed ? true : undefined}
+            className="truncate"
+            title={statusLine}
+          >
+            {statusLine}
+          </p>
+        ) : null}
+        {switchLine !== undefined ? (
+          <p data-external-model-switch className="truncate" title={switchLine}>{switchLine}</p>
+        ) : null}
+      </div>
       <button
         type="button"
         data-external-model-refresh
@@ -3639,7 +3643,7 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
         title={t('composer.engineCapabilityRefreshAria')}
         disabled={executorRefreshBusy}
         onClick={onRefreshExecutorModels}
-        className="mt-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
+        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
       >
         {executorRefreshBusy ? t('composer.engineCapabilityRefreshing') : t('composer.engineCapabilityRefresh')}
       </button>

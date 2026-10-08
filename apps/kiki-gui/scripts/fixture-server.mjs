@@ -3105,6 +3105,23 @@ class FixtureServer {
         return;
       }
     }
+    // `GET /executors/{id}/models` and `POST /executors/{id}/models:refresh`:
+    // the engine's own model/capability catalog, seeded per scenario under
+    // `executorModels[id]` (an ExecutorModelCatalogResponse). `:refresh`
+    // answers the `executorModelsRefresh[id]` seed when one is set, else the
+    // same catalog again; a seed of the string 'error' fails the way a dead
+    // engine does. Unseeded engines have no catalog to give.
+    const executorModelsMatch = /^\/executors\/([^/]+)\/models(:refresh)?$/.exec(path);
+    if (executorModelsMatch !== null) {
+      const executorId = decodeURIComponent(executorModelsMatch[1]);
+      const seeds = this.scenario?.data;
+      const seed = executorModelsMatch[2] !== undefined
+        ? (seeds?.executorModelsRefresh?.[executorId] ?? seeds?.executorModels?.[executorId])
+        : seeds?.executorModels?.[executorId];
+      if (seed === 'error') return this.envelope(res, null, 50203, 'fixture: the engine did not answer the catalog read');
+      if (seed === undefined || seed === null) return this.envelope(res, null, 40404, 'Executor model catalog not found');
+      return this.envelope(res, structuredClone(seed));
+    }
     if (path === '/auth') {
       return this.envelope(res, this.auth ?? {
         ready: true,

@@ -12,8 +12,10 @@
  *   - Grok Build's machine sign-in has been replaced with a different account.
  *     That is not the same as "unreadable", and the two need opposite responses,
  *     so the seeded answers cover both.
- *   - Kimi Code has no machine counterpart at all, and the page must not offer
- *     one — the reuse path exists only for Codex and Grok.
+ *   - Kimi Code is attached with no reuse offer in the way: the reuse panel
+ *     appears only while a method is not connected, so a signed-in Kimi Code
+ *     row reads as an ordinary connection. The not-yet-connected reuse flow
+ *     for Kimi Code lives in kimi-original-source.scenario.mjs.
  *
  * The account ids are the fixture's own. The connect path refuses an account
  * that no longer matches, which is the behaviour worth photographing: the page

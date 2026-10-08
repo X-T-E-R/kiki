@@ -39,11 +39,12 @@ import {
 const ORIGINAL_APP: Readonly<Record<OriginalProvider, { name: string; home: string }>> = {
   'openai-codex': { name: 'Codex', home: '~/.codex' },
   'grok-build': { name: 'Grok', home: '~/.grok' },
+  'kimi-code': { name: 'Kimi Code', home: '~/.kimi-code' },
 };
 
 /** Methods whose original sign-in this surface can look for. */
 export function isOriginalSourceMethod(method: OAuthMethodStatus): method is OAuthMethodStatus & { id: OriginalProvider } {
-  return method.id === 'openai-codex' || method.id === 'grok-build';
+  return method.id === 'openai-codex' || method.id === 'grok-build' || method.id === 'kimi-code';
 }
 
 /** Where the machine keeps it, in the words a person would use. */
@@ -251,9 +252,15 @@ function ProbeBlock({
           {blocked === null ? (
             <>
               <p className="text-ink">
+                {/* Kimi Code keeps a credential slot, not an account identity:
+                    an unknown account there is the normal answer, not a sign
+                    that something is missing, so it is stated without the
+                    "which account" caveat. */}
                 {probe.account.state === 'known'
                   ? t('st.source.foundAccount', { account: probe.account.id })
-                  : t('st.source.foundAccountUnknown')}
+                  : probe.provider === 'kimi-code'
+                    ? t('st.source.foundSignIn', { app })
+                    : t('st.source.foundAccountUnknown')}
               </p>
               <p className="mt-0.5 text-ink-faint">
                 {storageKey(probe.storage_backend) === null

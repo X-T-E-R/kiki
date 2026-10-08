@@ -50,6 +50,17 @@ export type ContextMeterAutoCompact = Omit<ContextCompactSectionProps, 'used' | 
   readonly strategy?: ContextStrategyHandle;
 };
 
+/**
+ * What the serving engine has declared about manual compaction, when it has
+ * answered at all. `available: false` replaces the card's compact action with
+ * the reason (and adds it to the trigger's title); `undefined` — no answer,
+ * as with the native engine — leaves the meter exactly as it always was.
+ */
+export interface ContextMeterCompactAvailability {
+  readonly available: boolean;
+  readonly reason?: string;
+}
+
 /** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
 export const CONTEXT_WARN_RATIO = 0.5;
 
@@ -135,6 +146,7 @@ export function ContextMeter({
   onCompact,
   placement = 'above',
   autoCompact,
+  compactAvailability,
 }: {
   used: number;
   limit: number;
@@ -164,6 +176,13 @@ export function ContextMeter({
    * used / limit / available rows (older engines, external executors).
    */
   autoCompact?: ContextMeterAutoCompact;
+  /**
+   * The engine's declared manual-compaction capability. Absent means nobody
+   * answered, which gates nothing; `available: false` means the engine
+   * answered and compaction is not (or not known to be) on offer, so the card
+   * states the reason instead of rendering an action that cannot work.
+   */
+  compactAvailability?: ContextMeterCompactAvailability;
 }) {
   const { t, time, locale } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
@@ -191,7 +210,10 @@ export function ContextMeter({
   const warn = level !== 'ok';
   const remaining = Math.max(0, limit - used);
   const label = t('context.meter', { percent });
-  const title = autoCompact !== undefined ? t(
+  const compactReason = compactAvailability !== undefined && !compactAvailability.available
+    ? compactAvailability.reason
+    : undefined;
+  const baseTitle = autoCompact !== undefined ? t(
     level === 'danger' ? 'context.meterCompactDueTitle' : 'context.meterCompactTitle',
     {
       used: time.formatTokens(used),
@@ -206,6 +228,7 @@ export function ContextMeter({
         : 'context.meterTitle',
     { used: time.formatTokens(used), limit: time.formatTokens(limit) },
   );
+  const title = compactReason === undefined ? baseTitle : `${baseTitle}\n${compactReason}`;
 
   const usageTotal =
     usage === undefined
@@ -423,6 +446,13 @@ export function ContextMeter({
           ) : null}
 
           {onCompact !== undefined ? (
+            compactReason !== undefined ? (
+              // The engine answered that this action is not on offer; the card
+              // says why instead of rendering a button that cannot work.
+              <p data-context-compact-unavailable className="mt-3 text-[12px] leading-4 text-ink-faint">
+                {compactReason}
+              </p>
+            ) : (
             <CompactActions
               strategy={autoCompact?.strategy}
               pending={manualPending}
@@ -439,6 +469,7 @@ export function ContextMeter({
                   });
               }}
             />
+            )
           ) : null}
         </div>
       ) : null}
@@ -479,7 +510,7 @@ function CompactActions({
   const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
-      <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact data-executor-action="manual_compact" disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
     );
@@ -490,7 +521,7 @@ function CompactActions({
     rows[(index + delta + rows.length) % rows.length]?.focus();
   };
   return (
-    <div ref={rootRef} className="relative mt-3 flex gap-px">
+    <div ref={rootRef} data-executor-action="manual_compact" className="relative mt-3 flex gap-px">
       <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>

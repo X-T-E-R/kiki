@@ -2926,6 +2926,14 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('treats an empty model value as unselected, not as a removed model named ""', async () => {
+    listModels.mockResolvedValue({ items: [] });
+    const { container } = await renderComposer({ model: '', serverDefaultModel: undefined });
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    expect(container.textContent).not.toContain('Model “”');
+    expect(container.querySelector('#composer-model-select')?.textContent).toContain('Choose a model');
+  });
+
   it('can pick a native model when no default is configured without discarding the welcome draft', async () => {
     const onChangeModel = vi.fn();
     const { container } = await renderComposer({ value: 'Keep this welcome draft.', serverDefaultModel: undefined, onChangeModel });
@@ -2994,9 +3002,10 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector('[data-option-value="claude/sonnet"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="claude/opus"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
-    expect(container.querySelector('[data-external-model-provenance]')?.textContent).toContain('CLI probe');
-    expect(container.querySelector('[data-external-model-provenance]')?.textContent).toContain('fresh');
-    expect(container.querySelector('[data-external-capability-facts]')?.textContent).toContain('Manual compaction · unavailable');
+    // The menu's job is picking a model; provenance and the capability matrix
+    // are not a permanent wall under it.
+    expect(container.querySelector('[data-external-model-provenance]')).toBeNull();
+    expect(container.querySelector('[data-external-capability-facts]')).toBeNull();
   });
 
   it('shows partial engine models with the count still being reported', async () => {
@@ -3035,7 +3044,7 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
     await click(container.querySelector('#composer-engine-model-select')!);
     expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('This engine did not report its models.');
-    expect(container.querySelector('[data-external-model-diagnostic]')?.textContent).toContain('CLI probe timed out');
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('CLI probe timed out');
     expect(container.querySelector('[data-option-value="vendor/saved-model"]')?.getAttribute('aria-selected')).toBe('true');
 
     const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
@@ -3095,6 +3104,58 @@ describe('Composer restored selection diagnostics', () => {
     expect(saved.textContent).toContain('not in this engine\'s list');
     expect(saved.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
+  });
+
+  it.each([
+    {
+      control: { applicability: 'unsupported' as const, apply_state: 'unsupported' as const, diagnostic: 'restart with --model' },
+      declared: true,
+    },
+    {
+      control: { applicability: 'unknown' as const, apply_state: 'unknown' as const },
+      declared: false,
+    },
+  ])('marks the picker boundary only when the engine declares model switching unsupported ($control.applicability)', async ({ control, declared }) => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/model-a'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: control, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+          manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    const line = container.querySelector('[data-external-model-switch]');
+    if (!declared) {
+      // Unknown is not a refusal: the picker stays quiet and usable.
+      expect(line).toBeNull();
+    } else {
+      expect(line?.textContent).toContain('does not accept a model change here');
+      expect(line?.textContent).toContain('restart with --model');
+    }
+  });
+
+  it('says the engine catalog read is old when it is stale, with refresh beside it', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now() - 120_000,
+      effective: {
+        models: { state: 'ready', values: ['vendor/old-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+          manual_compact: { applicability: 'unknown', apply_state: 'unknown' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('Last read over a minute ago.');
+    expect(container.querySelector('[data-external-model-status]')?.textContent).not.toContain('not known yet');
+    expect(container.querySelector('[data-external-model-refresh]')).not.toBeNull();
   });
 
   it('leaves the absent-data picker usable without importing native aliases', async () => {
@@ -3169,27 +3230,62 @@ describe('Composer restored selection diagnostics', () => {
     expect(container.querySelector('[data-external-model-refresh-error]')?.textContent).toContain('Refresh failed; showing the last known values.');
   });
 
-  it.each([
-    { applicability: 'unsupported' as const, apply_state: 'unsupported' as const },
-    { applicability: 'unknown' as const, apply_state: 'unknown' as const },
-  ])('offers no compact action entry point for $applicability control state', async (manualCompact) => {
+  it('offers the meter’s compact action when the engine declares manual compaction ready', async () => {
     getExecutorModels.mockResolvedValue({
       executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
       effective: {
         models: { state: 'ready', values: ['vendor/model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
         controls: {
           model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
-          manual_compact: { ...manualCompact, diagnostic: 'compact is not available' },
+          manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' },
         },
       },
     });
     const { container } = await renderComposer({
       execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
+      contextUsage: { used: 400, limit: 1000 },
+      onCompactContext: vi.fn(),
     });
-    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    await click(container.querySelector<HTMLButtonElement>('[data-context-meter]')!);
+    expect(container.querySelector('[data-executor-action="manual_compact"]')).not.toBeNull();
+    expect(container.querySelector('[data-context-compact-unavailable]')).toBeNull();
+  });
+
+  it.each([
+    {
+      control: { applicability: 'unsupported' as const, apply_state: 'unsupported' as const, diagnostic: 'compact is not available' },
+      sentence: 'This engine does not offer manual compaction.',
+    },
+    {
+      control: { applicability: 'unknown' as const, apply_state: 'unknown' as const, diagnostic: 'compact is not available' },
+      sentence: 'This engine has not said whether manual compaction works.',
+    },
+  ])('states the real reason on the meter instead of a dead compact action ($control.applicability)', async ({ control, sentence }) => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: control,
+        },
+      },
+    });
+    const { container } = await renderComposer({
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+      contextUsage: { used: 400, limit: 1000 },
+      onCompactContext: vi.fn(),
+    });
+    const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]')!;
+    expect(meter.title).toContain(sentence);
+    expect(meter.title).toContain('compact is not available');
+    await click(meter);
     expect(container.querySelector('[data-executor-action="manual_compact"]')).toBeNull();
-    expect(container.textContent).toContain('compact is not available');
+    const reason = container.querySelector('[data-context-compact-unavailable]')!;
+    expect(reason.textContent).toContain(sentence);
+    expect(reason.textContent).toContain('compact is not available');
   });
 
   it('clears explicit external model and thinking overrides when following the engine again', async () => {
@@ -3300,7 +3396,7 @@ describe('Composer queue edit mode', () => {
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
     expect(button.disabled).toBe(false);
     await click(button);
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('', [image]);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('', [image], undefined);
   });
 
   it.each(['paste', 'drop'])('adds an image through %s while editing without inserting its filename as text', async (gesture) => {
@@ -3384,7 +3480,7 @@ describe('Composer queue edit mode', () => {
     await pressKey(area, { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     await pressKey(area, { key: 'Enter', ctrlKey: true });
-    expect(onSend).toHaveBeenCalledExactlyOnceWith('/goal edited', [image]);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('/goal edited', [image], { presentation: undefined });
     expect(onActivateSkill).not.toHaveBeenCalled();
   });
 
@@ -3397,7 +3493,7 @@ describe('Composer queue edit mode', () => {
 
     expect(sendButton.disabled).toBe(false);
     await pressKey(textarea, { key: 'Enter' });
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text', []);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text', [], undefined);
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -3408,7 +3504,7 @@ describe('Composer queue edit mode', () => {
 
     await pressKey(textarea, { key: 'Enter' });
     // A slash-looking edit is queue text, not a command attempt: no guard.
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all', []);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all', [], undefined);
     expect(container.textContent).not.toContain('Send as plain text');
   });
 

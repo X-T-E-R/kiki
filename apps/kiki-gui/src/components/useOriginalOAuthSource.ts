@@ -177,13 +177,21 @@ export function useOriginalOAuthSource(
   const connectOriginal = useCallback(async () => {
     if (currentRequest.current !== request || probe === null || originalSourceBlock(probe) !== null) return;
     const accountId = originalAccountId(probe);
-    if (accountId === null) return;
+    // Codex and Grok attach to a specific account, so the id the probe showed
+    // goes back as the expectation; a missing id refuses the connect. Kimi
+    // Code's original sign-in has no durable account id — the credential slot
+    // (directory + storage) pinned by the probe is what the server re-checks —
+    // so its connect goes without one rather than inventing a label.
+    if (accountId === null && methodId !== 'kimi-code') return;
     setConnectingRequest(request);
     setProbingRequest(null);
     setFeedback(null);
     ++latest.current;
     try {
-      const connected = await client.connectOriginalOAuth({ ...request, expected_account_id: accountId });
+      const connected = await client.connectOriginalOAuth({
+        ...request,
+        expected_account_id: accountId === null ? undefined : accountId,
+      });
       if (currentRequest.current !== request) return;
       setResult({ probe: connected, asked: request });
       await refresh();
@@ -194,7 +202,7 @@ export function useOriginalOAuthSource(
     } finally {
       if (currentRequest.current === request) setConnectingRequest(null);
     }
-  }, [client, locale, probe, refresh, request]);
+  }, [client, locale, methodId, probe, refresh, request]);
 
   // Logout drops Kiki's reference, never the original app's credential.
   const detachLocalOriginal = useMemo<(() => Promise<void>) | undefined>(
