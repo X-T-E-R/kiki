@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Virtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
-import { installTranscriptAnchoring, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
+import { installTranscriptAnchoring, noteReaderDisclosure, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
 
 const base: RowResize = {
   itemStart: 0,
@@ -38,6 +38,172 @@ describe('shouldCompensateRowResize', () => {
   });
 });
 
+
+describe('a reader disclosure click', () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.restoreAllMocks(); });
+
+  /**
+   * A scroll box that records every write it takes in `changes`, and clamps a
+   * write to the height its size container currently reports.
+   */
+  function setup({ sizer, scrollTop }: { sizer: number; scrollTop: number }) {
+    const scroll = document.createElement('div');
+    document.body.append(scroll);
+    const sizerHeight = sizer;
+    let top = scrollTop;
+    const changes: number[] = [];
+    Object.defineProperty(scroll, 'clientHeight', { get: () => 500, configurable: true });
+    Object.defineProperty(scroll, 'scrollHeight', { get: () => sizerHeight, configurable: true });
+    Object.defineProperty(scroll, 'scrollTop', {
+      get: () => top,
+      set: (value: number) => {
+        const next = Math.max(0, Math.min(value, sizerHeight - 500));
+        if (next === top) return;
+        top = next;
+        changes.push(next);
+        scroll.dispatchEvent(new Event('scroll'));
+      },
+      configurable: true,
+    });
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 2, getScrollElement: () => scroll, estimateSize: () => 300, getItemKey: (index) => `k${index}`,
+      anchorTo: 'end', scrollEndThreshold: 80,
+      scrollToFn: (offset, options) => { scroll.scrollTop = offset + (options.adjustments ?? 0); },
+      observeElementRect: () => {}, observeElementOffset: () => {},
+    });
+    instance.scrollElement = scroll;
+    instance.scrollOffset = top;
+    instance.itemSizeCache.set('k0', 300);
+    instance.itemSizeCache.set('k1', 300);
+    const rows = [0, 1].map((index) => {
+      const row = document.createElement('div');
+      row.setAttribute('data-transcript-virtual-item', '');
+      row.dataset['index'] = String(index);
+      row.innerHTML = '<button type="button" data-activity-toggle></button>';
+      scroll.append(row);
+      return row;
+    });
+    instance.elementsCache.set('k0', rows[0]!);
+    instance.elementsCache.set('k1', rows[1]!);
+    instance.getTotalSize();
+    const cleanup = installTranscriptAnchoring(instance);
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      cleanup();
+    };
+    cleanups.push(() => { dispose(); scroll.remove(); });
+    return {
+      scroll, instance, changes, rows, dispose,
+      settle: () => new Promise<void>((resolve) => { setTimeout(resolve, 40); }),
+    };
+  }
+
+  it('follows the end when the row that grows is content, not a gesture', async () => {
+    // The observed defect this guards: a reader 40px above the end grows a row
+    // and the near-end rule carries them the whole delta, to the end.
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900]);
+    expect(test.scroll.scrollTop).toBe(900);
+  });
+
+  it('keeps the reader where they clicked when they open a row at the end', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900, 860]);
+    expect(test.scroll.scrollTop).toBe(860);
+    expect(test.instance.scrollOffset).toBe(860);
+    await test.settle();
+    expect(test.scroll.scrollTop).toBe(860);
+  });
+
+  it('spends the hold on the size change the click caused', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900, 860]);
+    // A later change on that row is content growing, not the gesture: the hold is
+    // spent once. (The harness stays near the end, so the follow's write shows
+    // here; with the row grown, the reader is past the end in the app.)
+    test.instance.resizeItem(1, 760);
+    expect(test.changes).toEqual([900, 860, 900]);
+    expect(test.scroll.scrollTop).toBe(900);
+  });
+
+  it('waits for an actual size change before spending the hold', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    // A measure that reports the size the row already had is not the disclosure.
+    test.instance.resizeItem(1, 300);
+    expect(test.changes).toEqual([]);
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900, 860]);
+    expect(test.scroll.scrollTop).toBe(860);
+  });
+
+  it('carries the reader place with content that moves the viewport', async () => {
+    // Another row's growth is followed at the near end, as content should be:
+    // the reader moves with it, and the click still holds against their own row
+    // instead of restoring an offset that follow has left behind.
+    const test = setup({ sizer: 2000, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    test.instance.resizeItem(0, 500);
+    expect(test.changes).toEqual([1060]);
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([1060, 1460, 1060]);
+    expect(test.scroll.scrollTop).toBe(1060);
+  });
+
+  it('gives the viewport back once the reader has scrolled from the click', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    // The reader moves before the row's resize lands. The click's offset is
+    // stale: the near-end follow owns the viewport, and the old offset is not
+    // written back over the reader's own position.
+    test.scroll.scrollTop = 890;
+    test.instance.scrollOffset = 890;
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([890, 900]);
+    expect(test.scroll.scrollTop).toBe(900);
+  });
+
+  it('gives the viewport back when the reader wheels the transcript', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    test.scroll.dispatchEvent(new Event('wheel'));
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900]);
+    expect(test.scroll.scrollTop).toBe(900);
+  });
+
+  it('stops holding once the clicked row is gone, and does not keep it for a row that returns', async () => {
+    const test = setup({ sizer: 2000, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    // A trim, a fold, or a tab switch replaced the row the reader clicked. The
+    // click is dropped there, not kept against the subtree it referenced.
+    test.rows[1]!.remove();
+    test.instance.resizeItem(0, 500);
+    expect(test.changes).toEqual([1060]);
+    // A row at that index again is not the click: the follow owns the viewport.
+    test.scroll.append(test.rows[1]!);
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([1060, 1460]);
+    expect(test.scroll.scrollTop).toBe(1460);
+  });
+
+  it('stops holding once the anchoring it belongs to is disposed', async () => {
+    const test = setup({ sizer: 1400, scrollTop: 860 });
+    noteReaderDisclosure(test.instance, test.rows[1]!.querySelector('[data-activity-toggle]'));
+    test.dispose();
+    test.instance.resizeItem(1, 700);
+    expect(test.changes).toEqual([900]);
+    expect(test.scroll.scrollTop).toBe(900);
+  });
+});
 
 describe('in-row prose anchoring', () => {
   const cleanups: (() => void)[] = [];

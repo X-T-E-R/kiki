@@ -19,7 +19,10 @@
  * While following the end, size changes keep the bottom pinned. Away from the
  * end, whole rows above the viewport retain the original compensation; within
  * the first visible row, only movement of the reader's visible prose moves
- * scrollTop. Growth below that prose must not drag the reader.
+ * scrollTop. Growth below that prose must not drag the reader. A click on a
+ * row's own disclosure is the reader choosing to read that row, not content
+ * arriving, so the resize it causes keeps the place they clicked instead of
+ * following the end (`noteReaderDisclosure`).
  */
 
 import type { VirtualItem, Virtualizer } from '@tanstack/react-virtual';
@@ -28,6 +31,79 @@ type TranscriptVirtualizer = Virtualizer<HTMLDivElement, HTMLDivElement>;
 
 export const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 120;
 export const TRANSCRIPT_END_THRESHOLD = 80;
+
+/**
+ * The row whose disclosure the reader just clicked, and the place they were at.
+ * Keyed by instance so the helper stays a plain module.
+ */
+type ReaderDisclosure = {
+  readonly key: VirtualItem['key'];
+  readonly row: HTMLDivElement;
+  /** The reader's place. Content that moves the viewport moves this with it. */
+  offset: number;
+};
+
+const readerDisclosures = new WeakMap<TranscriptVirtualizer, ReaderDisclosure>();
+
+/**
+ * Record the reader opening a row's own disclosure. A click is the reader
+ * choosing to read that row, not content arriving at the end, so the size change
+ * the disclosure causes keeps the place they clicked instead of following the end
+ * — which would carry the row's own header out of view. Read before the row's own
+ * handler commits, spent on that row's next size change, and only while the
+ * viewport is still where they left it.
+ */
+export function noteReaderDisclosure(instance: TranscriptVirtualizer, target: Element | null): void {
+  const row = target?.closest<HTMLDivElement>('[data-transcript-virtual-item]') ?? null;
+  const scroll = instance.scrollElement;
+  if (row === null || target === null || !row.contains(target)) return;
+  if (!(scroll instanceof HTMLElement) || !scroll.isConnected || scroll.clientHeight === 0) return;
+  const index = instance.indexFromElement(row);
+  if (index < 0 || index >= instance.options.count || !row.isConnected) return;
+  readerDisclosures.set(instance, {
+    key: instance.options.getItemKey(index),
+    row,
+    offset: scroll.scrollTop,
+  });
+}
+
+/** Put the viewport back where it was; the model follows the DOM. */
+function landOffset(instance: TranscriptVirtualizer, offset: number): void {
+  const element = instance.scrollElement;
+  if (!(element instanceof HTMLElement) || !element.isConnected) return;
+  if (Math.abs(element.scrollTop - offset) > 0.5) element.scrollTop = offset;
+  instance.scrollOffset = element.scrollTop;
+}
+
+/**
+ * The index a clicked row still occupies, when it is mounted and that index
+ * still holds its key. `undefined` means the click describes no row any more:
+ * the row was unmounted, or its index was taken by another row. A prepend, a
+ * trim, a fold or a tab switch can do either.
+ */
+function heldRowIndex(instance: TranscriptVirtualizer, held: ReaderDisclosure): number | undefined {
+  if (!held.row.isConnected) return undefined;
+  const index = instance.indexFromElement(held.row);
+  if (index < 0 || index >= instance.options.count) return undefined;
+  return instance.options.getItemKey(index) === held.key ? index : undefined;
+}
+
+/**
+ * Whether the viewport is still where the click left it, in a transcript that is
+ * still laid out. A hidden transcript takes no write, and any other offset is the
+ * reader having moved it themselves: content that moves it is credited to their
+ * place in `resizeItem` first, so it does not read as a gesture.
+ */
+function readerStillThere(instance: TranscriptVirtualizer, held: ReaderDisclosure): boolean {
+  const element = instance.scrollElement;
+  if (!(element instanceof HTMLElement) || !element.isConnected || element.clientHeight === 0) return false;
+  return Math.abs(element.scrollTop - held.offset) <= 0.5;
+}
+
+/** Keys that scroll a focused container: a press that moves the reader hands the viewport back. */
+const READER_SCROLL_KEYS: ReadonlySet<string> = new Set([
+  'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ',
+]);
 
 /**
  * A row inside a `display: none` subtree (hidden tab/panel) reports a 0 box.
@@ -109,8 +185,59 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
     if (frame !== undefined) cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => { frame = undefined; capture(); });
   };
+  const onReaderInput = () => { readerDisclosures.delete(instance); };
+  const onReaderKey = (event: KeyboardEvent) => {
+    if (READER_SCROLL_KEYS.has(event.key)) onReaderInput();
+  };
   scroll?.addEventListener('scroll', onScroll, { passive: true });
+  scroll?.addEventListener('wheel', onReaderInput, { passive: true });
+  scroll?.addEventListener('touchmove', onReaderInput, { passive: true });
+  scroll?.addEventListener('keydown', onReaderKey);
   capture();
+  const resizeItem = instance.resizeItem;
+  instance.resizeItem = (index, size) => {
+    const held = readerDisclosures.get(instance);
+    if (held === undefined) {
+      resizeItem(index, size);
+      return;
+    }
+    const heldIndex = heldRowIndex(instance, held);
+    if (heldIndex === undefined) {
+      // The row the reader clicked is gone; their click describes nothing, so it
+      // is dropped here rather than keeping a detached subtree alive in the map
+      // (the record is only ever revisited through a resize or a dispose).
+      readerDisclosures.delete(instance);
+      resizeItem(index, size);
+      return;
+    }
+    if (heldIndex !== index) {
+      // Another row's content resized: whatever it did to the viewport stands —
+      // appends keep following, near-end compensation still applies — and the
+      // reader's place moves with the viewport it moved.
+      const element = instance.scrollElement;
+      const before = element instanceof HTMLElement ? element.scrollTop : undefined;
+      resizeItem(index, size);
+      if (before !== undefined && element instanceof HTMLElement) held.offset += element.scrollTop - before;
+      return;
+    }
+    // The clicked row. A measure that repeats the size it already had is not the
+    // disclosure laying out, so the hold is still waiting for it.
+    if (instance.itemSizeCache.get(held.key) === size) {
+      resizeItem(index, size);
+      return;
+    }
+    if (!readerStillThere(instance, held)) {
+      readerDisclosures.delete(instance);
+      resizeItem(index, size);
+      return;
+    }
+    // The disclosure's own size change, spent once. Everything above the clicked
+    // row is unchanged, so putting the viewport back puts the row back and lets
+    // its body grow below the fold.
+    readerDisclosures.delete(instance);
+    resizeItem(index, size);
+    landOffset(instance, held.offset);
+  };
   instance.shouldAdjustScrollPositionOnItemSizeChange = (item: VirtualItem) => {
     const element = instance.scrollElement;
     const scrollOffset = (instance.scrollOffset ?? 0) + instance.scrollAdjustments;
@@ -143,7 +270,12 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
   };
   return () => {
     scroll?.removeEventListener('scroll', onScroll);
+    scroll?.removeEventListener('wheel', onReaderInput);
+    scroll?.removeEventListener('touchmove', onReaderInput);
+    scroll?.removeEventListener('keydown', onReaderKey);
     if (frame !== undefined) cancelAnimationFrame(frame);
+    readerDisclosures.delete(instance);
+    if (instance.resizeItem !== resizeItem) instance.resizeItem = resizeItem;
     anchor = undefined;
   };
 }

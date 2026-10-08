@@ -3656,6 +3656,74 @@ describe('virtualized transcript scrolling', () => {
   });
 });
 
+function liveToolRow(id: string, turnId: string): Block {
+  return {
+    kind: 'tool', id: `tool-${id}`, toolCallId: id, name: 'Read', argsText: '', args: { path: 'a.ts' },
+    display: undefined, description: undefined, status: 'done', output: 'ok', isError: undefined,
+    startedAt: undefined, durationMs: undefined, progressText: undefined, turnId,
+  };
+}
+
+function liveThoughtRow(id: string, text: string, turnId: string): Block {
+  return { kind: 'thinking', id, text, streaming: true, turnId, createdAt: undefined };
+}
+
+/**
+ * A live turn's process rows are exactly the rows a reader can expand while the
+ * turn keeps producing content: a long in-progress reasoning line, a tool body,
+ * a continuation block. The reader who clicked one must keep both their place
+ * and the expansion they asked for, however the turn keeps growing underneath.
+ */
+describe('a live process row the reader expanded', () => {
+  function liveTurn(extra: Block[] = []): Block[] {
+    return [
+      ...virtualBlocks(40, 'hist'),
+      userBlock({ id: 'live-user', text: 'go', turnId: 't9' }),
+      liveThoughtRow('thought-a', 'first thought', 't9'),
+      liveToolRow('tool-a', 't9'),
+      liveThoughtRow('thought-b', `${'long in-progress thought\n'.repeat(60)}`, 't9'),
+      ...extra,
+    ];
+  }
+
+  it('keeps the place the reader clicked while the turn keeps growing', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn())));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const toggle = () => container.querySelector<HTMLElement>('[data-block-id="thought-b"] [data-activity-toggle]');
+    // Following the end, as the live turn leaves it.
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    const clickedAt = scroll.scrollTop;
+    const item = toggle()!.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    const start = virtualItemStart(item);
+    await act(async () => { click(toggle()!); });
+    await settleVirtualizer();
+    const opened = toggle()!;
+    expect(opened.getAttribute('aria-expanded')).toBe('true');
+
+    // Opening the row lays its body out: the row grows past the estimate. The
+    // click was a reading gesture, so the row's own header must not be carried
+    // out of view — unlike an append, which keeps the end pinned.
+    await act(async () => { resizeElement(item, 900); await new Promise((resolve) => setTimeout(resolve, 35)); });
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(virtualItemStart(item)).toBe(start);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
+
+    // The turn keeps producing rows after it; none of them may drag the reader.
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn([liveToolRow('tool-b', 't9')]))));
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
+  });
+});
+
 describe('canonical mount and key stability', () => {
   it('keeps the same DOM node across consecutive deltas', async () => {
     const { controller, flush } = await openLiveTranscript();
