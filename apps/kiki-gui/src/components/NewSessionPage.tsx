@@ -362,6 +362,7 @@ function NewSessionPageContent({
       personaPick,
       state.inheritedDefault,
       state.modelSource,
+      state.execution,
       state.permissionMode,
       state.planMode,
       state.goalObjective,

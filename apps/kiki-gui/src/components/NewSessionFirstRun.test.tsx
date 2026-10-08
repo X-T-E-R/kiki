@@ -8,7 +8,7 @@
  * list or the composer's agent picker.
  */
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -28,6 +28,7 @@ import { NewSessionPage } from './NewSessionPage';
 
 const firstRun = vi.hoisted(() => ({
   needsProviderSetup: false,
+  seat: undefined as unknown,
   effectiveWorkspace: undefined as Workspace | undefined,
   workspaceId: '',
   workspacesFailed: false,
@@ -57,7 +58,7 @@ vi.mock('./ConversationShell', () => {
   const slots = { header: null, dock: null, heroFooter, rail: null, footer: null, preview: null };
   return {
     useConversationShell: () => ({ slots }),
-    useRegisterSeat: () => {},
+    useRegisterSeat: (seat: unknown) => { firstRun.seat = seat; },
   };
 });
 
@@ -67,48 +68,55 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./NewSessionDraft')>();
   return {
     ...actual,
-    useNewSessionDraft: () => ({
-      draft: '',
-      attachments: [],
-      busy: false,
-      error: null,
-      workspaceId: firstRun.workspaceId,
-      cwd: '',
-      permissionMode: 'manual',
-      planMode: false,
-      goalObjective: '',
-      modelOverride: undefined,
-      agentProfile: '',
-      workspaces: [],
-      workspacesLoading: false,
-      workspacesFailed: firstRun.workspacesFailed,
-      workspacesError: firstRun.workspacesError,
-      retryWorkspaces: () => { firstRun.retryWorkspaces(); },
-      effectiveWorkspace: firstRun.effectiveWorkspace,
-      autoWorkspace: firstRun.effectiveWorkspace === undefined && !firstRun.workspacesFailed,
-      agentProfileCatalogMode: { mode: 'unscoped' },
-      agentProfileCatalogPending: false,
-      needsProviderSetup: firstRun.needsProviderSetup,
-      canBrowseForWorkspace: false,
-      browseForWorkspace: async () => {},
-      serverDefaultModel: undefined,
-      inheritedDefault: undefined,
-      modelSource: undefined,
-      supportedEfforts: [],
-      effectiveEffort: undefined,
-      updateDraft: () => {},
-      setAttachments: () => {},
-      selectWorkspace: () => {},
-      setCwd: () => {},
-      setPermissionMode: () => {},
-      setPlanMode: () => {},
-      setGoalObjective: () => {},
-      setModelOverride: () => {},
-      setAgentProfile: () => {},
-      setEffortOverride: () => {},
-      send: () => {},
-      activateSkill: () => {},
-    }),
+    useNewSessionDraft: () => {
+      const [execution, setExecution] = useState({
+        executor: 'native', profile: 'agent', profile_file: undefined as string | undefined, overrides: undefined,
+      });
+      return {
+        draft: '',
+        attachments: [],
+        busy: false,
+        error: null,
+        workspaceId: firstRun.workspaceId,
+        cwd: '',
+        permissionMode: 'manual',
+        planMode: false,
+        goalObjective: '',
+        modelOverride: undefined,
+        agentProfile: '',
+        execution,
+        setExecution,
+        workspaces: [],
+        workspacesLoading: false,
+        workspacesFailed: firstRun.workspacesFailed,
+        workspacesError: firstRun.workspacesError,
+        retryWorkspaces: () => { firstRun.retryWorkspaces(); },
+        effectiveWorkspace: firstRun.effectiveWorkspace,
+        autoWorkspace: firstRun.effectiveWorkspace === undefined && !firstRun.workspacesFailed,
+        agentProfileCatalogMode: { mode: 'unscoped' },
+        agentProfileCatalogPending: false,
+        needsProviderSetup: firstRun.needsProviderSetup,
+        canBrowseForWorkspace: false,
+        browseForWorkspace: async () => {},
+        serverDefaultModel: undefined,
+        inheritedDefault: undefined,
+        modelSource: undefined,
+        supportedEfforts: [],
+        effectiveEffort: undefined,
+        updateDraft: () => {},
+        setAttachments: () => {},
+        selectWorkspace: () => {},
+        setCwd: () => {},
+        setPermissionMode: () => {},
+        setPlanMode: () => {},
+        setGoalObjective: () => {},
+        setModelOverride: () => {},
+        setAgentProfile: () => {},
+        setEffortOverride: () => {},
+        send: () => {},
+        activateSkill: () => {},
+      };
+    },
   };
 });
 
@@ -340,6 +348,21 @@ describe('the /new page', () => {
     const container = await mountNewSessionPage();
     expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
     expect(container.textContent).not.toContain('Choose another workspace');
+  });
+
+  it('passes a changed execution choice through the memoized composer seat', async () => {
+    await mountNewSessionPage();
+    const composer = () => (firstRun.seat as { composer: { props: { children: { props: {
+      execution: { readonly profile_file?: string };
+      onChangeExecution: (next: unknown) => void;
+    } } } } }).composer.props.children;
+    expect(composer().props.execution.profile_file).toBeUndefined();
+    await act(async () => {
+      composer().props.onChangeExecution({
+        executor: 'native', profile: undefined, profile_file: 'C:/fixture/workshop/profiles/selected.md', overrides: undefined,
+      });
+    });
+    expect(composer().props.execution.profile_file).toBe('C:/fixture/workshop/profiles/selected.md');
   });
 
   it('states a failed workspace read in the hero instead of asking for another target', async () => {
