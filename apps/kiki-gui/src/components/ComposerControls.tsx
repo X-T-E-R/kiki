@@ -24,12 +24,23 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import { useQuery } from '@tanstack/react-query';
 
 import type { FsSearchHit, PermissionMode } from '@kiki/protocol';
+import type { McpServerLocator } from '@kiki/klient';
 import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
 import type { OverrideSource } from './capabilities/pluginUsage';
+import { QUIET_BUTTON, StatusDot } from './capabilities/primitives';
+import {
+  heldByConversation,
+  heldCount,
+  mcpRowMatches,
+  overrideForSwitch,
+  type McpOverride,
+  type McpSessionRow,
+} from './capabilities/sessionMcp';
+import type { McpPickAction } from './capabilities/useMcpPicker';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { Toggle } from './controls';
@@ -398,21 +409,23 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * then two groups:
  *
  *   Add context   Files & images · Skills ▸ · Mention a file ▸ · SSH hosts ▸
- *   Session       Mode ▸ · Rebuild context
+ *   Session       Plugins ▸ · MCP servers ▸ · Mode ▸ · Rebuild context
  *
- * Typing in the search filters skills, files and SSH hosts in one list. Each
- * ▸ row drills into its own view (→ / Enter in, ← / Escape / the Back row
- * out). What the menu adds lands where typing would put it: a skill becomes
- * the same `/name ` token the `/` picker writes, a file the same @-mention
- * chip, a host the same session host chip. `view` is parent-owned so `/plan`,
- * `/goal` and the run-mode chip can open straight into Mode (Escape then
- * closes, since nothing was drilled from). `data-plan-select` stays on the
+ * Typing in the search filters skills, files, plugins, MCP servers and SSH
+ * hosts in one list. Each ▸ row drills into its own view (→ / Enter in, ← /
+ * Escape / the Back row out). What the menu adds lands where typing would put
+ * it: a skill becomes the same `/name ` token the `/` picker writes, a file the
+ * same @-mention chip, a host the same session host chip. A plugin or an MCP
+ * server is a fact about the conversation rather than something typed, so those
+ * rows switch the conversation and write no text. `view` is parent-owned so
+ * `/plan`, `/goal` and the run-mode chip can open straight into Mode (Escape
+ * then closes, since nothing was drilled from). `data-plan-select` stays on the
  * root for proofs that address the run-shape panel by that hook.
  *
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
  */
-export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'plugins';
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'plugins' | 'mcp';
 
 /** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
 export interface AddMenuHost {
@@ -460,6 +473,37 @@ export interface AddMenuPlugins {
   /** Called when a plugins list is about to show. */
   readonly onShow?: () => void;
   readonly onToggle: (pluginId: string, enabled: boolean) => void;
+}
+
+/**
+ * MCP servers for this conversation. Like a plugin, a server is a fact about
+ * the conversation rather than a prompt: switching one writes a session
+ * override and produces no draft text and no message.
+ */
+export interface AddMenuMcp {
+  readonly items: readonly McpSessionRow[];
+  readonly loading: boolean;
+  readonly failed: boolean;
+  /**
+   * False where this build cannot write a session override. The list still shows
+   * what the conversation holds; a row whose write could not happen is drawn
+   * without a switch rather than with one that fails.
+   */
+  readonly writable: boolean;
+  readonly busyName?: string;
+  readonly busyAction?: McpPickAction;
+  readonly busyOn?: boolean;
+  /** The refused write, so a row cannot look switched when the engine said no. */
+  readonly failure?: { readonly name: string; readonly message: string };
+  readonly onDismissFailure: () => void;
+  /** Called when an MCP list is about to show. */
+  readonly onShow?: () => void;
+  /** Add, remove, or return a server to the configuration — for this conversation only. */
+  readonly onOverride: (locator: McpServerLocator, override: McpOverride, name: string) => void;
+  /** Retry this conversation's connection to a server that failed or needs sign-in. */
+  readonly onReconnect: (name: string) => void;
+  /** The engine this conversation runs on, when it is not Kiki's own. */
+  readonly externalEngine?: string;
 }
 
 export interface AddMenuFiles {
@@ -578,6 +622,139 @@ function PluginRow({ plugin, busy, onToggle, result = false }: {
   );
 }
 
+/** The dot the settings list already uses for the same engine states. */
+function mcpDotState(row: McpSessionRow): 'ok' | 'busy' | 'error' | 'off' | 'waiting' {
+  if (row.condition === 'off-here' || row.condition === 'off-config' || row.condition === 'plugin-off') return 'off';
+  if (row.condition === 'signed-out') return 'waiting';
+  if (row.condition === 'connecting') return 'busy';
+  if (row.condition === 'live') return row.connection === 'connected' ? 'ok' : 'waiting';
+  if (row.condition === 'on-here') return row.connection === 'connected' ? 'ok' : 'busy';
+  return 'error';
+}
+
+/**
+ * The row's own word for what it is. The conversation's own decision leads,
+ * because that is the fact the reader made and can change here: a server this
+ * conversation removed reads "off for this conversation" whatever the engine's
+ * connection last said, and one it added reads "on for this conversation" even
+ * while that connection is still coming up. Only where this conversation
+ * decided nothing does the configuration or the live connection answer.
+ */
+function mcpStateKey(row: McpSessionRow): I18nKey {
+  if (row.override === 'off') return 'composer.addMenu.mcpOffSession';
+  if (row.override === 'on') return 'composer.addMenu.mcpOnSession';
+  if (row.condition === 'plugin-off') return 'composer.addMenu.mcpPluginMuted';
+  if (row.condition === 'off-config') return 'composer.addMenu.mcpConfigOff';
+  if (row.condition === 'signed-out') return 'composer.addMenu.mcpNeedsAuth';
+  if (row.condition === 'connecting') return 'st.mcp.status.connecting';
+  if (row.condition === 'failed') return 'st.mcp.status.error';
+  if (row.condition === 'live') return row.connection === 'connected' ? 'st.mcp.status.connected' : 'composer.addMenu.mcpSourceOn';
+  return 'st.mcp.status.disconnected';
+}
+
+/**
+ * One MCP server row: what it is, what this conversation did with it, and the
+ * switch that is really this conversation's own. The two offs are different
+ * decisions — the configuration turning a server off is a fact about every
+ * conversation, while this conversation removing one is a choice the reader
+ * just made — so a row names which one happened and never collapses them into
+ * one word. A server the configuration turns off keeps its row and its switch
+ * (the conversation may still want it), and one this conversation removed keeps
+ * the way back to the configuration.
+ */
+function McpRow({ row, busy, retrying, busyOn, onOverride, onReconnect, result = false }: {
+  row: McpSessionRow;
+  busy: boolean;
+  /** True while this row's retry is the write in flight. */
+  retrying: boolean;
+  busyOn: boolean | undefined;
+  onOverride: (locator: McpServerLocator, override: McpOverride, name: string) => void;
+  onReconnect: (name: string) => void;
+  result?: boolean;
+}) {
+  const { t } = useI18n();
+  const held = heldByConversation(row);
+  // While a write is in flight the switch shows the choice just made, and the
+  // engine's own answer replaces the row the moment it comes back: a switch that
+  // snapped back before the answer arrived would read as a refusal.
+  const checked = busy && busyOn !== undefined ? busyOn : held;
+  const stateKey = mcpStateKey(row);
+  // One caption names the plugin that owns the off, so it needs the name the
+  // read carried; every other caption is a complete phrase.
+  const state = t(stateKey, stateKey === 'composer.addMenu.mcpPluginMuted' ? { name: row.pluginLabel ?? '' } : undefined);
+  // The engine's own error text is the row's second line only where the caption
+  // cannot carry it: a failed connection and a locator whose source is gone.
+  // Everywhere else the caption is the reader's word for the same fact, and
+  // printing both would say it twice.
+  const showsEngineError = row.error !== undefined && (row.condition === 'failed' || row.condition === 'unavailable');
+  const detail = showsEngineError ? row.error! : state;
+  const locator = row.locator;
+  // The engine reports which level configured a server, not a path: a global
+  // entry comes from the MCP configuration, a plugin entry names its plugin, and
+  // `caller` is the client that opened this conversation.
+  const origin = row.origin === 'plugin'
+    ? t('composer.addMenu.mcpFromPlugin', { name: row.pluginLabel ?? '' })
+    : row.origin === 'caller'
+      ? t('composer.addMenu.mcpFromConversation')
+      : t('composer.addMenu.mcpFromConfig');
+  return (
+    <div
+      role="menuitem"
+      data-menu-row
+      data-add-result={result ? '' : undefined}
+      data-add-mcp={row.name}
+      data-add-mcp-state={row.condition}
+      data-add-mcp-override={row.override}
+      className={`${MENU_ROW_CLASS} items-start`}
+    >
+      <span className="mt-[5px] flex shrink-0">
+        <StatusDot state={mcpDotState(row)} label={state} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-ink">{row.name}</span>
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint">{row.transport}</span>
+        </span>
+        <span className={`mt-0.5 block truncate text-[12px] leading-snug ${showsEngineError ? 'text-danger' : 'text-ink-faint'}`}>
+          {detail}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] leading-4 text-ink-faint">{origin}</span>
+      </span>
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        {row.addressable && locator !== undefined ? (
+          <Toggle
+            label={t('composer.addMenu.mcpToggle', { name: row.name })}
+            layout="bare"
+            checked={checked}
+            disabled={busy}
+            onChange={(on) => { onOverride(locator, overrideForSwitch(row, on), row.name); }}
+          />
+        ) : null}
+        {row.canReconnect ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { onReconnect(row.name); }}
+            className={`${QUIET_BUTTON} min-h-6 px-1 text-[11px]`}
+          >
+            {retrying ? t('composer.addMenu.mcpRetrying') : t('composer.addMenu.mcpReconnect')}
+          </button>
+        ) : null}
+        {row.canRestore && locator !== undefined ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { onOverride(locator, 'inherit', row.name); }}
+            className={`${QUIET_BUTTON} min-h-6 px-1 text-[11px]`}
+          >
+            {t('composer.addMenu.mcpUseConfig')}
+          </button>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
 function FileRow({ hit, onMention, result = false }: { hit: FsSearchHit; onMention: (hit: FsSearchHit) => void; result?: boolean }) {
   return (
     <button
@@ -612,6 +789,7 @@ export function AddMenu({
   ssh,
   skills,
   plugins,
+  mcp,
   files,
 }: {
   readonly view: AddMenuView;
@@ -635,6 +813,8 @@ export function AddMenu({
   readonly skills?: AddMenuSkills;
   /** Plugins row + view; absent hides it (no session to scope them to). */
   readonly plugins?: AddMenuPlugins;
+  /** MCP servers row + view; absent hides it (no session to scope them to). */
+  readonly mcp?: AddMenuMcp;
   /** Mention-a-file row + view (the `@` picker's search); absent hides it. */
   readonly files?: AddMenuFiles;
 }) {
@@ -670,10 +850,10 @@ export function AddMenu({
   // one pointless extra click: ＋ attaches directly.
   const attachOnly =
     runMode === undefined && onRebuild === undefined && ssh === undefined && skills === undefined
-    && plugins === undefined && files === undefined;
+    && plugins === undefined && mcp === undefined && files === undefined;
   // A root search is only worth the space when something is searchable: skills,
-  // files, plugins and SSH hosts each answer it.
-  const searchable = skills !== undefined || plugins !== undefined || files !== undefined
+  // files, plugins, MCP servers and SSH hosts each answer it.
+  const searchable = skills !== undefined || plugins !== undefined || mcp !== undefined || files !== undefined
     || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
   const trimmed = query.trim();
@@ -699,12 +879,19 @@ export function AddMenu({
       : plugins.items.filter((plugin) =>
         plugin.name.toLowerCase().includes(needle)
         || plugin.contributions.toLowerCase().includes(needle));
+  const mcpMatches = mcp === undefined
+    ? []
+    : trimmed === ''
+      ? mcp.items
+      : mcp.items.filter((row) => mcpRowMatches(row, needle));
 
   const onShowSkills = skills?.onShow;
   const onShowPlugins = plugins?.onShow;
+  const onShowMcp = mcp?.onShow;
   useEffect(() => {
     if (open && (view === 'skills' || view === 'root')) onShowSkills?.();
     if (open && view === 'plugins') onShowPlugins?.();
+    if (open && view === 'mcp') onShowMcp?.();
     // Once per open / view change; each catalog refreshes only when stale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view]);
@@ -800,6 +987,7 @@ export function AddMenu({
   // A plugin pick is a scope write, not a draft edit: the panel stays open so
   // the switch the reader just flipped is still there, and nothing is sent.
   const busyPlugins = plugins?.busyId;
+  const busyMcp = mcp?.busyName;
   const togglePlugin = (pluginId: string, enabled: boolean) => { plugins?.onToggle(pluginId, enabled); };
   const mentionFile = (hit: FsSearchHit) => { close(); files?.onMention(hit); };
 
@@ -877,6 +1065,23 @@ export function AddMenu({
           ))}
         </>
       ) : null}
+      {mcp !== undefined && mcpMatches.length > 0 ? (
+        <>
+          <GroupLabel>{t('composer.addMenu.mcp')}</GroupLabel>
+          {mcpMatches.slice(0, SEARCH_ROW_LIMIT).map((row) => (
+            <McpRow
+              key={row.name}
+              row={row}
+              busy={busyMcp === row.name}
+              retrying={busyMcp === row.name && mcp.busyAction === 'retry'}
+              busyOn={busyMcp === row.name ? mcp.busyOn : undefined}
+              onOverride={mcp.onOverride}
+              onReconnect={mcp.onReconnect}
+              result
+            />
+          ))}
+        </>
+      ) : null}
       {hostMatches.length > 0 && ssh?.onToggleHost !== undefined ? (
         <>
           <GroupLabel>{t('composer.addMenu.ssh')}</GroupLabel>
@@ -901,7 +1106,8 @@ export function AddMenu({
           ))}
         </>
       ) : null}
-      {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
+      {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && mcpMatches.length === 0
+        && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
         ? note(t('composer.addMenu.noMatch', { query: trimmed }))
         : null}
       {files !== undefined && fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching')) : null}
@@ -944,6 +1150,12 @@ export function AddMenu({
                 plugins.items.filter((plugin) => plugin.enabled).length > 0
                   ? <span className="text-[12px] text-ink-faint tabular-nums">{plugins.items.filter((plugin) => plugin.enabled).length}</span>
                   : undefined, { 'data-add-menu-plugins': '' })
+            : null}
+          {mcp !== undefined
+            ? drillRow('mcp', <McpIcon />, t('composer.addMenu.mcp'),
+                heldCount(mcp.items) > 0
+                  ? <span className="text-[12px] text-ink-faint tabular-nums">{heldCount(mcp.items)}</span>
+                  : undefined, { 'data-add-menu-mcp': '' })
             : null}
           {runMode !== undefined
             ? drillRow('mode', <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />, t('composer.addMenu.mode'),
@@ -1002,6 +1214,47 @@ export function AddMenu({
     </div>
   );
 
+  const mcpBody = mcp === undefined ? null : (
+    <div data-add-mcp-view>
+      {backRow(t('composer.addMenu.mcp'))}
+      {searchField(t('composer.addMenu.searchMcp'))}
+      {/* The engine boundary comes before the rows: it changes what the list
+          below can mean, so it is read before any row is read as usable. */}
+      {mcp.externalEngine === undefined ? null : note(t('composer.addMenu.mcpExternalHint', { engine: mcp.externalEngine }))}
+      <div className="min-h-0 flex-1 overflow-y-auto pb-1.5">
+        {mcp.failed && mcp.items.length === 0 ? note(t('composer.addMenu.mcpFailed'), 'danger')
+          : mcp.loading && mcp.items.length === 0 ? note(t('composer.addMenu.mcpLoading'))
+          : mcpMatches.length === 0 ? note(trimmed === '' ? t('composer.addMenu.mcpEmpty') : t('composer.addMenu.noMatch', { query: trimmed }))
+          : mcpMatches.map((row) => (
+            <McpRow
+              key={row.name}
+              row={row}
+              busy={busyMcp === row.name}
+              retrying={busyMcp === row.name && mcp.busyAction === 'retry'}
+              busyOn={busyMcp === row.name ? mcp.busyOn : undefined}
+              onOverride={mcp.onOverride}
+              onReconnect={mcp.onReconnect}
+            />
+          ))}
+      </div>
+      {/* A refused write is about the row it was made on, so it stays until the
+          reader has seen it rather than flashing past with the panel. */}
+      {mcp.failure === undefined ? null : (
+        <p role="alert" className="flex items-start gap-2 px-3 pt-1 pb-0.5 text-[12px] leading-4 text-danger">
+          <span className="min-w-0 flex-1">
+            {t('composer.addMenu.mcpWriteFailed', { name: mcp.failure.name, detail: mcp.failure.message })}
+          </span>
+          <button type="button" onClick={mcp.onDismissFailure} className={`${QUIET_BUTTON} min-h-6 px-1 text-[11px]`}>
+            {t('composer.addMenu.mcpDismiss')}
+          </button>
+        </p>
+      )}
+      <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">
+        {mcp.writable ? t('composer.addMenu.mcpHint') : t('composer.addMenu.mcpNoWrite')}
+      </p>
+    </div>
+  );
+
   const mentionBody = files === undefined ? null : (
     <div data-add-mention-view>
       {backRow(t('composer.addMenu.mention'))}
@@ -1044,6 +1297,7 @@ export function AddMenu({
               : view === 'mode' ? t('composer.runModeHeading')
               : view === 'skills' ? t('composer.addMenu.skills')
               : view === 'plugins' ? t('composer.addMenu.plugins')
+              : view === 'mcp' ? t('composer.addMenu.mcp')
               : view === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
           }
@@ -1063,6 +1317,8 @@ export function AddMenu({
             skillsBody
           ) : view === 'plugins' ? (
             pluginsBody
+          ) : view === 'mcp' ? (
+            mcpBody
           ) : view === 'mention' ? (
             mentionBody
           ) : view === 'ssh' && ssh !== undefined ? (
@@ -1079,6 +1335,22 @@ export function AddMenu({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The MCP capability's own glyph (`CapabilityIcon`'s `mcp` mark: two plugs
+ * meeting), drawn bare for the menu's drill row — the rows in this menu carry a
+ * glyph, not a tile, and a second drawing of the same idea would be a second
+ * thing to keep.
+ */
+function McpIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
+      <path d="M5.5 10.5 3 13M10.5 5.5 13 3" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+      <path d="m6.8 4.6 4.6 4.6-1.6 1.6a2.3 2.3 0 0 1-3.2 0L5.2 9.4a2.3 2.3 0 0 1 0-3.2z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m8.2 6 1.4-1.4M10 7.8l1.4-1.4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+    </svg>
   );
 }
 

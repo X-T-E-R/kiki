@@ -380,6 +380,66 @@ function modelSwitchSeed(server, sessionId, agentId) {
   return [];
 }
 
+/**
+ * One conversation's MCP selection, remembered for the life of the fixture the
+ * way the engine remembers it in the session document. The scenario declares what
+ * each choice leads to (`connectionAfter` and `errorAfter`); nothing here
+ * re-derives admission, which belongs to the engine.
+ */
+function mcpSessionOverrides(server, sessionId) {
+  server.mcpOverrides ??= new Map();
+  let store = server.mcpOverrides.get(sessionId);
+  if (store !== undefined) return store;
+  store = new Map();
+  for (const entry of mcpCapabilitySeed(server, sessionId)) {
+    if (entry.override === 'on' || entry.override === 'off') store.set(mcpLocatorKey(entry.locator), entry.override);
+  }
+  server.mcpOverrides.set(sessionId, store);
+  return store;
+}
+
+function mcpLocatorKey(locator) {
+  return locator.source === 'global' ? `global:${locator.name}` : `plugin:${locator.pluginId}:${locator.serverName}`;
+}
+
+function sameMcpLocator(left, right) {
+  return left !== undefined
+    && right !== undefined
+    && left.source === right.source
+    && mcpLocatorKey(left) === mcpLocatorKey(right);
+}
+
+/** The catalog this fixture serves, including what a rebuild would add. */
+function mcpCapabilitySeed(server, sessionId) {
+  const data = server.scenario?.data;
+  const declared = data?.mcpSessionCapabilities?.[sessionId] ?? [];
+  const added = server.mcpRebuilt === true ? data?.mcpSessionCapabilitiesAdded ?? [] : [];
+  return [...declared, ...added];
+}
+
+/** One entry with this conversation's override applied. */
+function mcpCapabilityAnswer(server, sessionId, entry) {
+  const override = mcpSessionOverrides(server, sessionId).get(mcpLocatorKey(entry.locator)) ?? 'inherit';
+  const capability = {
+    ...entry,
+    override,
+    connection: entry.connectionAfter?.[override] ?? entry.connection,
+  };
+  // The declared error describes the source's own state. A choice this
+  // conversation made replaces it, unless the scenario declares one for it.
+  if (override === 'inherit') capability.error = entry.error;
+  else capability.error = entry.errorAfter?.[override];
+  // Fixture-only keys never reach the wire, which is what the contract parses.
+  delete capability.connectionAfter;
+  delete capability.errorAfter;
+  delete capability.refusesOn;
+  return structuredClone(capability);
+}
+
+function mcpCapabilityAnswers(server, sessionId) {
+  return mcpCapabilitySeed(server, sessionId).map((entry) => mcpCapabilityAnswer(server, sessionId, entry));
+}
+
 function modelSwitchStore(server, session, agentId) {
   session.modelSwitches ??= new Map();
   let store = session.modelSwitches.get(agentId);
@@ -506,7 +566,24 @@ export class FixtureKlient {
         // that own it, so the agent-scoped pair is admitted here.
         const agentMediaCall =
           procedure.scope === 'agent' && procedure.service === 'agentPluginMediaService';
-        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall) {
+        // What one conversation holds today: the composer's MCP list reads this
+        // session-merged agent view, retries a server through it, and — where the
+        // build has the session port — reads and writes this conversation's own
+        // selection.
+        const agentMcpCall =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentMcpService' &&
+          (procedure.method === 'list'
+            || procedure.method === 'reconnect'
+            || procedure.method === 'listMcpSessionCapabilities'
+            || procedure.method === 'setMcpSessionOverride');
+        // Rebuilding context re-reads what the conversation carries, including the
+        // MCP servers enabled since it started.
+        const contextRebuildCall =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentContextRebuildService' &&
+          procedure.method === 'rebuild';
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall && !agentMcpCall && !contextRebuildCall) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -604,6 +681,59 @@ export class FixtureKlient {
     }));
     const key = `${procedure.service}.${procedure.method}`;
     switch (key) {
+      case 'agentMcpService.list':
+        // The conversation's own entries. A scenario that wants a retry to show
+        // a new state rewrites this list the way the engine would.
+        return structuredClone(server.scenario?.data.mcpServerEntries?.[procedure.sessionId] ?? []);
+      case 'agentMcpService.reconnect':
+        return null;
+      case 'agentMcpService.listMcpSessionCapabilities':
+        return mcpCapabilityAnswers(server, procedure.sessionId);
+      case 'agentMcpService.setMcpSessionOverride': {
+        const input = args[0];
+        const entry = mcpCapabilitySeed(server, procedure.sessionId)
+          .find((candidate) => sameMcpLocator(candidate.locator, input.locator));
+        if (entry === undefined) {
+          throw invalid(`MCP server locator ${mcpLocatorKey(input.locator)} is unknown or no longer available`, 40401);
+        }
+        if (input.override === 'on' && entry.refusesOn === true) {
+          // A plugin that turned its own server off owns that decision: the real
+          // engine rejects the locator, so the fixture answers the same way.
+          throw invalid(`MCP server locator ${mcpLocatorKey(input.locator)} does not own runtime name "${entry.runtimeName}"`, 40401);
+        }
+        const store = mcpSessionOverrides(server, procedure.sessionId);
+        if (input.override === 'inherit') store.delete(mcpLocatorKey(input.locator));
+        else store.set(mcpLocatorKey(input.locator), input.override);
+        return mcpCapabilityAnswer(server, procedure.sessionId, entry);
+      }
+      case 'agentContextRebuildService.rebuild': {
+        // A rebuild re-reads the sources the conversation carries. The fixture
+        // answers the visible part of that: servers enabled since the session
+        // started join the list, and every selection the reader made survives.
+        server.mcpRebuilt = true;
+        const capabilities = mcpCapabilityAnswers(server, procedure.sessionId);
+        return {
+          rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
+          changed: true,
+          changes: {
+            profile: false,
+            // The wire spells this one in camel case; the surface list beside it
+            // keeps the engine's snake_case word.
+            promptFields: false,
+            skills: false,
+            instructions: false,
+            plugins: false,
+            mcp: true,
+            injections: false,
+          },
+          readiness: {
+            mcp: capabilities.map(({ runtimeName, connection, error }) => ({ runtimeName, connection, error })),
+            plugins: { state: 'ready', errors: [] },
+          },
+        };
+      }
+      case 'mcpManagementService.listServers':
+        return server.managedMcpServers();
       case 'agentPromptService.listModelSwitches': {
         const session = server.sessions.get(procedure.sessionId);
         if (session === undefined) throw invalid('session not found', 40401);

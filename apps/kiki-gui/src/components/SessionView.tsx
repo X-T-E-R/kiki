@@ -144,10 +144,12 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import {
   agentProfileCatalogQueryKey,
+  invalidateAgentProfileCatalogs,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
+import { invalidatePluginQueries } from '../lib/pluginFreshness';
 import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
 import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
 import { useNavVisitId } from '../lib/useNavSnapshot';
@@ -2614,9 +2616,19 @@ export function SessionView({
   const refetchAgentProfiles = agentProfilesQuery.refetch;
   const handleContextRebuild = useCallback(async () => {
     const result = await client.rebuildContext(sessionId);
+    // A rebuild changes what the conversation carries — the instructions, the
+    // plugins, the skills a plugin brings, and the tools those contribute — so
+    // every list that answers from those sources is re-read. Each one re-reads
+    // its own source; none of them is re-created, and the session, its messages
+    // and its history stay as they are.
+    void invalidateAgentProfileCatalogs(queryClient);
+    void invalidatePluginQueries(queryClient);
+    void queryClient.invalidateQueries({ queryKey: ['skills'] });
+    void queryClient.invalidateQueries({ queryKey: ['tools'] });
+    void queryClient.invalidateQueries({ queryKey: ['session-mcp-capabilities'] });
     void refetchAgentProfiles();
     return result;
-  }, [client, refetchAgentProfiles, sessionId]);
+  }, [client, queryClient, refetchAgentProfiles, sessionId]);
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {

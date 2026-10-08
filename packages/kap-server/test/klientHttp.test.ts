@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +25,7 @@ import { registerKlientHttp } from '../src/transport/klient/registerKlientHttp';
 import { TerminalHttpConnection } from '../src/transport/klient/terminalHttp';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
+import { startInProcessSseMcpServer } from '../../agent-core-v2/test/mcpCore/stubs';
 
 let TOKEN: string;
 
@@ -243,6 +244,79 @@ describe('klient HTTP host', () => {
       await klient.close();
     }
   });
+
+  it('applies real session MCP selection over HTTP and rebuilds without bypassing plugin master denial', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const mcp = await startInProcessSseMcpServer();
+    const pluginDir = await mkdtemp(join(tmpdir(), 'kap-session-mcp-plugin-'));
+    let sessionId: string | undefined;
+    const callPlugin = async (path: string, body: unknown = {}) => {
+      const response = await fetch(`${endpoint}/api/${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json() as { code: number; msg: string; data: { fingerprint?: string } };
+      expect(result.code, result.msg).toBe(0);
+      return result;
+    };
+    try {
+      await klient.global.mcp.add({ server: { name: 'selection-disabled', transport: 'sse', url: mcp.url, enabled: false } });
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'MCP selection proof' });
+      sessionId = created.id;
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      await klient.rest.sessions.updateProfile(created.id, { agent_config: { permission_mode: 'manual' } });
+      const agent = klient.session(created.id).agent('main');
+      await agent.getUsage();
+      await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'preserve MCP proof history' }], toolCalls: [] });
+      const locator = { source: 'global' as const, name: 'selection-disabled' };
+      expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+        runtimeName: locator.name, override: 'inherit', connection: 'disabled',
+      }));
+      expect(await agent.setMcpSessionOverride({ locator, override: 'on' })).toMatchObject({
+        override: 'on', connection: 'connected',
+      });
+      expect((await agent.getMcpServers()).find((entry) => entry.name === locator.name)?.status).toBe('connected');
+      await agent.setMcpSessionOverride({ locator, override: 'off' });
+      expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+        runtimeName: locator.name, override: 'off', connection: 'disabled',
+      }));
+      await klient.global.mcp.add({ server: { name: 'selection-new', transport: 'sse', url: mcp.url, enabled: true } });
+      const before = await agent.getContext();
+      const rebuild = await agent.rebuildContext();
+      expect(rebuild).toMatchObject({ rebuilt: expect.arrayContaining(['mcp']) });
+      expect(await agent.getContext()).toEqual(before);
+      const rebuilt = await agent.listMcpSessionCapabilities();
+      expect(rebuild.readiness.mcp).toEqual(rebuilt.map(({ runtimeName, connection, error }) => ({ runtimeName, connection, error })));
+      expect(rebuilt).toContainEqual(expect.objectContaining({ runtimeName: 'selection-new', connection: 'connected' }));
+      expect(rebuilt).toContainEqual(expect.objectContaining({ runtimeName: locator.name, override: 'off', connection: 'disabled' }));
+      expect((await agent.getMcpServers()).find((entry) => entry.name === 'selection-new')?.status).toBe('connected');
+      await writeFile(join(pluginDir, 'kimi.plugin.json'), JSON.stringify({
+        name: 'selection-denied', version: '1.0.0',
+        mcpServers: { echo: { transport: 'sse', url: mcp.url } },
+      }));
+      const preview = await callPlugin('plugins:preview', { source: pluginDir });
+      await callPlugin('plugins', { source: pluginDir, fingerprint: preview.data.fingerprint, consent: true });
+      await callPlugin('plugins/selection-denied:disable');
+      const plugin = (await klient.global.mcp.list({ cwd: homeDir })).find((entry) => entry.source === 'plugin' && entry.plugin?.id === 'selection-denied');
+      expect(plugin).toBeDefined();
+      if (plugin === undefined) throw new Error('Plugin MCP source was not registered');
+      await expect(agent.setMcpSessionOverride({
+        locator: { source: 'plugin', pluginId: 'selection-denied', serverName: 'echo' }, override: 'on',
+      })).rejects.toMatchObject({
+        code: 40001,
+        message: 'MCP server locator plugin:selection-denied:echo is disabled by its plugin source',
+      });
+    } finally {
+      if (sessionId !== undefined) await server.core.accessor.get(ISessionManager).close(sessionId);
+      await callPlugin('plugins/selection-denied:remove').catch(() => undefined);
+      await klient.global.mcp.remove({ name: 'selection-disabled' }).catch(() => undefined);
+      await klient.global.mcp.remove({ name: 'selection-new' }).catch(() => undefined);
+      await klient.close();
+      await mcp.close();
+      await rm(pluginDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
 
   it('sets a subagent effort through the authenticated klient route and rejects unsupported values', async () => {
     const klient = createKlient({ endpoint, token: TOKEN });

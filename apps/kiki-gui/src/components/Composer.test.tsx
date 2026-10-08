@@ -46,6 +46,17 @@ const sshSessionHosts = vi.fn();
 const sshAdd = vi.fn();
 const sshRemove = vi.fn();
 const sshHost = { id: 'example-host', name: 'Example host', source: 'kiki', hostname: 'example.test', agentAccess: 'offered' };
+/**
+ * The agent facade's MCP surface, mutable per test: the session port 925 adds is
+ * `listMcpSessionCapabilities` / `setMcpSessionOverride`, and a build without it
+ * still answers `getMcpServers` and `reconnectMcpServer`.
+ */
+const mcpAgent: Record<string, unknown> = {};
+const listMcpSessionCapabilities = vi.fn();
+const setMcpSessionOverride = vi.fn();
+const reconnectMcpServer = vi.fn();
+const getMcpServers = vi.fn();
+const listManagedMcpServers = vi.fn();
 /** The engine catalog the execution panel offers. */
 const EXECUTOR_ITEMS = [
   { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready' as const, model_binding: 'mapped' as const, thinking_binding: 'mapped' as const },
@@ -94,7 +105,14 @@ vi.mock('../state/connection', () => ({
       getAgentCapabilities,
       uploadFile,
       meta,
-      klient: { rest: { ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } } },
+      klient: {
+        rest: { ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } },
+        // The composer's MCP picker reads this conversation through the agent
+        // facade: the session port when the build has it, the runtime list and
+        // the management catalog where it does not.
+        session: () => ({ agent: () => mcpAgent }),
+        global: { mcp: { list: listManagedMcpServers } },
+      },
     },
   }),
   // The persona chip's face; letter avatars need no connection.
@@ -137,6 +155,13 @@ beforeEach(() => {
   listPlugins.mockReset().mockResolvedValue({ plugins: [] });
   getPluginUsage.mockReset().mockResolvedValue(PLUGIN_USAGE());
   setPluginUsage.mockReset().mockResolvedValue(PLUGIN_USAGE({ revision: 5 }));
+  for (const key of Object.keys(mcpAgent)) delete mcpAgent[key];
+  Object.assign(mcpAgent, { listMcpSessionCapabilities, setMcpSessionOverride, reconnectMcpServer, getMcpServers });
+  listMcpSessionCapabilities.mockReset().mockResolvedValue([]);
+  setMcpSessionOverride.mockReset();
+  reconnectMcpServer.mockReset().mockResolvedValue(undefined);
+  getMcpServers.mockReset().mockResolvedValue([]);
+  listManagedMcpServers.mockReset().mockResolvedValue([]);
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   meta.mockReset().mockResolvedValue({ experimental_flags: { native_ssh: false } });
   sshList.mockReset().mockResolvedValue({ hosts: [sshHost] });
@@ -817,7 +842,9 @@ describe('Composer execution control', () => {
     await click(rebuildRow!);
     expect(onRebuildContext).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alertdialog"]')?.textContent).toContain(
-      'Conversation messages and history are kept.',
+      // The same conversation, and the sources reloaded — never described as a
+      // new session or as a prompt-only refresh.
+      'This is the same conversation: its messages and history are kept.',
     );
     const confirm = [...container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
       (button) => button.textContent === 'Rebuild context',
@@ -825,7 +852,7 @@ describe('Composer execution control', () => {
     await click(confirm!);
     await settle();
     expect(onRebuildContext).toHaveBeenCalledOnce();
-    expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('latest sources'))).toBe(true);
+    expect(getToasts().some((toast) => toast.tone === 'success' && toast.text.includes('current sources'))).toBe(true);
   });
 
   it('reports rebuild failures and keeps the execution control openable while busy', async () => {
@@ -3864,5 +3891,330 @@ describe('composer plugin picker', () => {
     await settle();
     expect(container.querySelector('[data-add-plugin="here-on"]')).not.toBeNull();
     expect(container.querySelector('[data-add-plugin="global-on"]')).toBeNull();
+  });
+});
+
+/**
+ * MCP servers in one conversation. Every row comes from the engine's own
+ * session capability list, and the switch is the one the engine can really
+ * write: `on` / `off` / `inherit` for this conversation and nothing else.
+ *
+ * The capabilities below carry no `env` and no `headers` — the engine redacts
+ * them before they leave its process — so the rows are built from the states and
+ * the source level alone.
+ */
+describe('MCP servers in this conversation', () => {
+  const server = (name: string, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    locator: { source: 'global', name },
+    runtimeName: name,
+    origin: 'global',
+    config: { transport: 'stdio', enabled: true },
+    authStatus: 'not-applicable',
+    connection: 'connected',
+    override: 'inherit',
+    ...overrides,
+  });
+
+  async function openMcp(container: HTMLDivElement): Promise<void> {
+    await openAddMenu(container);
+    await click(container.querySelector<HTMLButtonElement>('[data-add-menu-mcp]')!);
+    await settle();
+    await settle();
+  }
+
+  it('lists the conversation’s servers with the engine’s own state and level', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([
+      server('files'),
+      server('research-notes', {
+        locator: { source: 'plugin', pluginId: 'research', serverName: 'notes' },
+        origin: 'plugin',
+        config: { transport: 'sse', enabled: true },
+        connection: 'failed',
+        error: 'spawn ENOENT',
+      }),
+      server('muted', { connection: 'disabled', config: { transport: 'stdio', enabled: false }, error: 'MCP server is disabled by its source configuration' }),
+    ]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openAddMenu(container);
+    // The root row counts what this conversation holds, not everything
+    // configured: two of the three servers below are in it.
+    expect(container.querySelector('[data-add-menu-mcp]')!.textContent).toContain('2');
+    await click(container.querySelector<HTMLButtonElement>('[data-add-menu-mcp]')!);
+    await settle();
+    await settle();
+
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('Connected');
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('From your MCP configuration');
+    const failed = container.querySelector('[data-add-mcp="research-notes"]')!;
+    expect(failed.textContent).toContain('spawn ENOENT');
+    // The engine names the level, not a path: a plugin's server says so.
+    expect(failed.textContent).toContain('From plugin research');
+    expect(failed.querySelector('input[type=checkbox]')).not.toBeNull();
+    // Two different offs: the configuration turned this one off and this
+    // conversation had nothing to do with it.
+    const muted = container.querySelector('[data-add-mcp="muted"]')!;
+    expect(muted.textContent).toContain('Turned off in the MCP configuration');
+    expect(muted.textContent).not.toContain('Off for this conversation');
+    // A failed server is one this conversation can retry.
+    expect(failed.textContent).toContain('Reconnect');
+  });
+
+  it('adds a server to this conversation, follows the engine’s answer, and touches no draft', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([
+      server('muted', {
+        connection: 'disabled',
+        config: { transport: 'stdio', enabled: false },
+        error: 'MCP server is disabled by its source configuration',
+      }),
+    ]);
+    // The server answers the write, and every later read answers it too.
+    setMcpSessionOverride.mockImplementation(async () => {
+      const added = server('muted', { connection: 'connecting', override: 'on' });
+      listMcpSessionCapabilities.mockResolvedValue([added]);
+      return added;
+    });
+    const { container } = await renderComposer({ sessionId: 'session-1', value: 'keep me' });
+    await openMcp(container);
+
+    const row = () => container.querySelector('[data-add-mcp="muted"]')!;
+    const box = () => row().querySelector<HTMLInputElement>('input[type=checkbox]')!;
+    expect(box().checked).toBe(false);
+    // A pointer hits the switch's label, which owns the checkbox.
+    await click(row().querySelector('label')!);
+    await settle();
+    await settle();
+
+    expect(setMcpSessionOverride).toHaveBeenCalledWith({
+      locator: { source: 'global', name: 'muted' },
+      override: 'on',
+    });
+    // The row reads the engine's own answer, not the click: the server is this
+    // conversation's now, and the configuration's off is no longer its caption.
+    expect(box().checked).toBe(true);
+    expect(row().textContent).toContain('On for this conversation');
+    expect(row().textContent).not.toContain('Turned off in the MCP configuration');
+    // Adding availability is not writing a message.
+    expect(container.querySelector<HTMLTextAreaElement>('[data-composer-input]')!.value).toBe('keep me');
+  });
+
+  it('keeps a conversation’s own list apart from the configuration, row by row', async () => {
+    // One conversation added a server its configuration has off; another server
+    // in the same list is still off because the configuration says so. The
+    // session's decision is scoped to the session, and both rows say which.
+    listMcpSessionCapabilities.mockResolvedValue([
+      server('added-here', { override: 'on', connection: 'connected', config: { transport: 'stdio', enabled: false } }),
+      server('off-everywhere', { connection: 'disabled', config: { transport: 'stdio', enabled: false } }),
+    ]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openAddMenu(container);
+    expect(container.querySelector('[data-add-menu-mcp]')!.textContent).toBe('MCP servers1');
+    await click(container.querySelector<HTMLButtonElement>('[data-add-menu-mcp]')!);
+    await settle();
+    await settle();
+
+    const added = container.querySelector('[data-add-mcp="added-here"]')!;
+    expect(added.textContent).toContain('On for this conversation');
+    expect(added.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true);
+    const off = container.querySelector('[data-add-mcp="off-everywhere"]')!;
+    expect(off.textContent).toContain('Turned off in the MCP configuration');
+    expect(off.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
+  });
+
+  it('keeps the engine’s answer when a write is refused, and says what happened', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([server('files', { connection: 'disabled', config: { transport: 'stdio', enabled: false } })]);
+    setMcpSessionOverride.mockRejectedValue(new Error('no session override port'));
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+
+    const row = () => container.querySelector('[data-add-mcp="files"]')!;
+    await click(row().querySelector('label')!);
+    await settle();
+    await settle();
+
+    // The switch is back where the server put it, and the reader is told.
+    expect(row().querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
+    expect(row().textContent).toContain('Turned off in the MCP configuration');
+    const alert = container.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain('files');
+  });
+
+  it('removes a server from this conversation only, and keeps the way back to the configuration', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([server('files', { override: 'off', connection: 'disabled' })]);
+    setMcpSessionOverride.mockImplementation(async ({ override }) => {
+      const next = server('files', { connection: override === 'inherit' ? 'connected' : 'connecting', override });
+      listMcpSessionCapabilities.mockResolvedValue([next]);
+      return next;
+    });
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+
+    const row = () => container.querySelector('[data-add-mcp="files"]')!;
+    // Removed for this conversation, which is a different fact from the
+    // configuration turning it off, and the one the reader just made.
+    expect(row().textContent).toContain('Off for this conversation');
+    expect(row().querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(false);
+
+    const buttons = [...row().querySelectorAll('button')];
+    const restore = buttons.find((button) => button.textContent === 'Use config')!;
+    expect(restore).toBeDefined();
+    await click(restore);
+    await settle();
+    expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'files' }, override: 'inherit' });
+
+    // Back on the configuration's value, the switch is on; moving it now is
+    // this conversation removing the server again, and nothing else.
+    setMcpSessionOverride.mockClear();
+    expect(row().querySelector<HTMLInputElement>('input[type=checkbox]')!.checked).toBe(true);
+    await click(row().querySelector('label')!);
+    await settle();
+    expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'files' }, override: 'off' });
+  });
+
+  it('turning off a server this conversation had added restores the configuration instead of burying it', async () => {
+    // The configuration has this server off, so "off" is not a second decision
+    // to record: clearing the addition is what the reader means.
+    listMcpSessionCapabilities.mockResolvedValue([
+      server('muted', { override: 'on', connection: 'connected', config: { transport: 'stdio', enabled: false } }),
+    ]);
+    setMcpSessionOverride.mockImplementation(async ({ override }) => {
+      const next = server('muted', { override, connection: 'disabled', config: { transport: 'stdio', enabled: false } });
+      listMcpSessionCapabilities.mockResolvedValue([next]);
+      return next;
+    });
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+
+    const row = () => container.querySelector('[data-add-mcp="muted"]')!;
+    expect(row().textContent).toContain('On for this conversation');
+    await click(row().querySelector('label')!);
+    await settle();
+    await settle();
+
+    expect(setMcpSessionOverride).toHaveBeenCalledWith({ locator: { source: 'global', name: 'muted' }, override: 'inherit' });
+    expect(row().textContent).toContain('Turned off in the MCP configuration');
+  });
+
+  it('reads the conversation’s own selection again when the list is opened', async () => {
+    // What a switch wrote is the engine's record, not this component's state:
+    // closing and reopening the menu reads it back.
+    listMcpSessionCapabilities.mockResolvedValue([server('files')]);
+    setMcpSessionOverride.mockImplementation(async ({ override }) => {
+      const next = server('files', { override, connection: override === 'off' ? 'disabled' : 'connected' });
+      listMcpSessionCapabilities.mockResolvedValue([next]);
+      return next;
+    });
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+    await click(container.querySelector('[data-add-mcp="files"] label')!);
+    await settle();
+    await settle();
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('Off for this conversation');
+
+    // Reopen: the same menu, a fresh read of the same record.
+    for (const _ of [0, 1]) {
+      await act(async () => {
+        (document.activeElement ?? container.querySelector('[data-add-menu]')!)
+          .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+    }
+    await settle();
+    await openMcp(container);
+    expect(listMcpSessionCapabilities).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('Off for this conversation');
+    expect(container.querySelector<HTMLInputElement>('[data-add-mcp="files"] input[type=checkbox]')!.checked).toBe(false);
+  });
+
+  it('draws no switch where the engine would refuse the write', async () => {
+    // A plugin that turned its own server off owns that decision, and a locator
+    // whose runtime name another source owns has nothing to decide: neither row
+    // gets a control that could only fail.
+    listMcpSessionCapabilities.mockResolvedValue([
+      server('plugin-muted', {
+        locator: { source: 'plugin', pluginId: 'fixture-shots', serverName: 'plugin-muted' },
+        origin: 'plugin',
+        connection: 'disabled',
+        config: { transport: 'stdio', enabled: false },
+      }),
+      server('bench-tools', { connection: 'unavailable', error: 'MCP runtime name "bench-tools" is owned by another source' }),
+    ]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+
+    const muted = container.querySelector('[data-add-mcp="plugin-muted"]')!;
+    expect(muted.textContent).toContain('Turned off inside plugin fixture-shots');
+    expect(muted.querySelector('input[type=checkbox]')).toBeNull();
+    const collided = container.querySelector('[data-add-mcp="bench-tools"]')!;
+    expect(collided.textContent).toContain('owned by another source');
+    expect(collided.querySelector('input[type=checkbox]')).toBeNull();
+  });
+
+  it('retries a failed server in this conversation, not server-wide', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([server('broken', { connection: 'failed', error: 'boom' })]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openMcp(container);
+
+    const reconnect = [...container.querySelectorAll('[data-add-mcp="broken"] button')]
+      .find((button) => button.textContent === 'Reconnect')!;
+    await click(reconnect);
+    await settle();
+
+    expect(reconnectMcpServer).toHaveBeenCalledWith('broken');
+  });
+
+  it('lists the conversation without a switch where this build has no session port, and says so', async () => {
+    // A build before the port: the runtime list and the catalog still answer,
+    // and no row is drawn with a control that could not be written.
+    delete mcpAgent['listMcpSessionCapabilities'];
+    delete mcpAgent['setMcpSessionOverride'];
+    getMcpServers.mockResolvedValue([
+      { name: 'files', transport: 'stdio', status: 'connected', toolCount: 3 },
+      { name: 'muted', transport: 'http', status: 'disabled', toolCount: 0 },
+    ]);
+    listManagedMcpServers.mockResolvedValue([
+      { name: 'files', config: { transport: 'stdio' }, source: 'global', origin: 'C:/home/.kimi/mcp.json', mutable: true },
+      { name: 'muted', config: { transport: 'http', enabled: false }, source: 'global', origin: 'C:/home/.kimi/mcp.json', mutable: true },
+    ]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openAddMenu(container);
+    // The root row counts what this conversation holds — the connected server,
+    // not the muted one the configuration turned off — and here that is the
+    // same list the rows are built from.
+    expect(container.querySelector('[data-add-menu-mcp]')!.textContent).toBe('MCP servers1');
+    await click(container.querySelector<HTMLButtonElement>('[data-add-menu-mcp]')!);
+    await settle();
+    await settle();
+
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('Connected');
+    expect(container.querySelector('[data-add-mcp="muted"]')!.textContent).toContain('Turned off in the MCP configuration');
+    // The level the management catalog named, with no switch to move it.
+    expect(container.querySelector('[data-add-mcp="files"]')!.textContent).toContain('From your MCP configuration');
+    expect(container.querySelector('[data-add-mcp="files"] input[type=checkbox]')).toBeNull();
+    expect(container.textContent).toContain('cannot add or remove');
+  });
+
+  it('searches MCP servers by name alongside everything else', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([server('files'), server('brain')]);
+    const { container } = await renderComposer({ sessionId: 'session-1' });
+    await openAddMenu(container);
+    const search = container.querySelector<HTMLInputElement>('[data-add-search]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setter.call(search, 'brain'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle();
+
+    expect(container.querySelector('[data-add-mcp="brain"]')).not.toBeNull();
+    expect(container.querySelector('[data-add-mcp="files"]')).toBeNull();
+  });
+
+  it('says what happens to the servers when the conversation runs on another engine', async () => {
+    listMcpSessionCapabilities.mockResolvedValue([server('files')]);
+    const { container } = await renderComposer({
+      sessionId: 'session-1',
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+    });
+    await openMcp(container);
+
+    // The list is Kiki's own view, so the boundary is stated rather than implied
+    // by a switch: what reaches that engine is what it accepts.
+    expect(container.textContent).toContain('This conversation runs on Claude Code.');
   });
 });

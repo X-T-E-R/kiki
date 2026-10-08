@@ -133,6 +133,7 @@ import {
 } from './ComposerControls';
 import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 import { usePluginPicker } from './capabilities/usePluginPicker';
+import { useMcpPicker } from './capabilities/useMcpPicker';
 
 export interface PendingRuntimeControls {
   readonly model?: string;
@@ -1006,6 +1007,14 @@ export function Composer({
   // new conversation. Absent without a session, because a plugin scoped to a
   // conversation only exists relative to one.
   const pluginPick = usePluginPicker(sessionId);
+  // An MCP server is scoped to a conversation the same way a plugin is: the
+  // picker reads and writes this conversation's own list, so it needs one too.
+  const mcpPick = useMcpPicker(sessionId);
+  // A conversation on another engine gets its MCP servers from Kiki only as far
+  // as that engine accepts them, and the list says so where it lists them.
+  const externalEngine = externalExecution
+    ? engineLabel(execution.executor, execution.executor, executorCatalog)
+    : undefined;
   const slashMenuOpen = menu?.kind === 'slash';
   const refetchSkills = skillsQuery.refetch;
   const slashMenuWasOpenRef = useRef(false);
@@ -2969,6 +2978,21 @@ export function Composer({
                 failed: pluginPick.failed,
                 ...(pluginPick.busyId !== undefined ? { busyId: pluginPick.busyId } : {}),
                 onToggle: pluginPick.toggle,
+              } : undefined}
+              mcp={mcpPick.available ? {
+                items: mcpPick.items,
+                loading: mcpPick.loading,
+                failed: mcpPick.failed,
+                writable: mcpPick.writable,
+                busyName: mcpPick.busyName,
+                busyAction: mcpPick.busyAction,
+                busyOn: mcpPick.busyOn,
+                failure: mcpPick.failure,
+                onDismissFailure: mcpPick.dismissFailure,
+                onShow: mcpPick.onShow,
+                onOverride: mcpPick.setOverride,
+                onReconnect: mcpPick.reconnect,
+                externalEngine,
               } : undefined}
               files={fsSearch === undefined ? undefined : {
                 search: fsSearch,
