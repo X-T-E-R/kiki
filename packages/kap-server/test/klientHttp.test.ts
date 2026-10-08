@@ -8,6 +8,7 @@ import {
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentUsageService,
+  IAgentExecutorRegistry,
   IEventDispatcher,
   IModelService,
   ensureMainAgent,
@@ -317,6 +318,46 @@ describe('klient HTTP host', () => {
       await rm(pluginDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 30_000);
+
+  it('projects a deterministic observed executor catalog through the production HTTP route', async () => {
+    const registry = server.core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.list().find((entry) => entry.protocol !== 'native');
+    if (descriptor === undefined || registry.recordExecutorCapabilityCatalog === undefined) throw new Error('Executor catalog producer is required');
+    registry.recordExecutorCapabilityCatalog({
+      executorId: descriptor.id, descriptorRevision: descriptor.revision,
+      version: descriptor.version, source: 'negotiated', provenance: 'acp_negotiation', observedAt: Date.now(),
+      models: { state: 'ready', values: ['fixture/model-a', 'fixture/model-b'] },
+      thinkingLevels: { state: 'ready', values: ['low', 'high'] },
+      context: { state: 'ready', contextWindow: 128_000, maxInputTokens: 120_000, maxOutputTokens: 8_000, compactionThreshold: 0.8 },
+      controls: {
+        modelSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'applied' },
+        thinkingSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'applied' },
+        manualCompact: { advertised: false, applicability: 'unsupported', applyState: 'unsupported' },
+      },
+    });
+    const response = await fetch(`${endpoint}/api/executors/${encodeURIComponent(descriptor.id)}/models`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(response.status).toBe(200);
+    const envelope = await response.json() as { code: number; data: Record<string, unknown> };
+    expect(envelope.code).toBe(0);
+    expect(envelope.data).toMatchObject({
+      executor_id: descriptor.id,
+      source: 'negotiated',
+      provenance: 'acp_negotiation',
+      effective: {
+        models: { state: 'ready', values: ['fixture/model-a', 'fixture/model-b'] },
+        thinking_levels: { state: 'ready', values: ['low', 'high'] },
+        context: { state: 'ready', context_window: 128_000, max_input_tokens: 120_000, max_output_tokens: 8_000 },
+        controls: {
+          model_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'applied' },
+          thinking_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { advertised: false, applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    expect(envelope.data.executor_version).toBe(descriptor.version);
+  });
 
   it('sets a subagent effort through the authenticated klient route and rejects unsupported values', async () => {
     const klient = createKlient({ endpoint, token: TOKEN });

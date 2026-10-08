@@ -38,6 +38,10 @@ The direction reverses: another agent harness runs *your* subagent. An agent pro
 
 ![The external engines list, with each engine's install state, what Kiki can set on it, and any check details that remain.](/shots/ecosystem/ce-20261005-ecosystem-engines.en.png)
 
+In an external-engine conversation, the composer's model picker lists the models that engine reported, not Kiki's native model aliases. You can still enter an engine model ID directly. A saved ID stays selected when the engine no longer lists it; the picker marks it **not in this engine's list** instead of silently replacing it. The model an engine reports actually using does not overwrite your selection.
+
+Open that picker to see the observation's source, version when available, and freshness, along with context and control availability. An observation older than one minute is marked **stale** and its capabilities become unknown; choose **Refresh** to request a new observation without sending the draft. Unknown does not mean unsupported: an unsupported control is shown as unavailable, and a control supported only for a fresh binding does not promise to change an already-running turn.
+
 A seat is a fixed place external tools call into; an external executor is a place Kiki dispatches out to. When the external harness is the main agent instead, `allow_kiki_subagents: true` lets it dispatch Kiki subagents back, and `kiki_context` can expose Kiki's own native context — memory, board, cron, threads, history, hooks — to it over the same bridge, with child completions queued back to the main agent. The profile's tool policy, dispatch policy, model constraints, and notification policy still apply across that bridge.
 
 See [External main-agent delegation](/en/customization/agents#external-main-agent-delegation) and [Kiki context in external main agents](/en/customization/agents#kiki-context-in-external-main-agents).
