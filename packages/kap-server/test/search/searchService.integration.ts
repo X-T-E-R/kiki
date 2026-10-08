@@ -792,6 +792,59 @@ describe('GlobalSearchService', () => {
     expect(ranged.items[0]?.time).toBe(T2);
   });
 
+  it.each([makeService, makeInlineService])(
+    'keeps default search on conversation text and binds tool-output scope to cursors (%#)',
+    async (make) => {
+      const s1 = summary('s1', 'content scope', T1);
+      await writeWire(home!, 's1', 'main', [
+        userLine('bodyneedle', T1),
+        rawRecord({ type: 'context.append_loop_event', time: T2, event: {
+          type: 'step.begin', uuid: 'tool-step-1', step: 1,
+        }}),
+        rawRecord({ type: 'context.append_loop_event', time: T2 + 1, event: {
+          type: 'tool.call', stepUuid: 'tool-step-1', toolCallId: 'tool-call-1', name: 'paramsneedle',
+          args: { query: 'paramsneedle' },
+        }}),
+        rawRecord({ type: 'context.append_loop_event', time: T2 + 2, event: {
+          type: 'tool.result', toolCallId: 'tool-call-1', result: { output: 'outputneedle first' },
+        }}),
+        rawRecord({ type: 'context.append_loop_event', time: T3, event: {
+          type: 'step.begin', uuid: 'tool-step-2', step: 2,
+        }}),
+        rawRecord({ type: 'context.append_loop_event', time: T3 + 1, event: {
+          type: 'tool.call', stepUuid: 'tool-step-2', toolCallId: 'tool-call-2', name: 'paramsneedle',
+          args: { query: 'paramsneedle' },
+        }}),
+        rawRecord({ type: 'context.append_loop_event', time: T3 + 2, event: {
+          type: 'tool.result', toolCallId: 'tool-call-2', result: { output: 'outputneedle second' },
+        }}),
+        assistantLine('assistantneedle', T3 + 3),
+        rawRecord({ type: 'context.append_loop_event', time: T3 + 4, event: {
+          type: 'content.part', part: { type: 'think', think: 'thinkingneedle' },
+        }}),
+      ]);
+      const service = track(make(home!, staticIndex([s1])));
+      await service.reindex();
+
+      expect((await service.search({ query: 'bodyneedle' })).items.map((hit) => hit.role)).toEqual(['user']);
+      expect((await service.search({ query: 'assistantneedle' })).items.map((hit) => hit.role)).toEqual(['assistant']);
+      for (const query of ['outputneedle', 'thinkingneedle', 'paramsneedle']) {
+        expect((await service.search({ query })).items).toEqual([]);
+      }
+      expect((await service.search({ query: 'thinkingneedle', includeToolOutput: true })).items).toEqual([]);
+      expect((await service.search({ query: 'paramsneedle', includeToolOutput: true })).items).toEqual([]);
+      const output = await service.search({ query: 'outputneedle', includeToolOutput: true, pageSize: 1 });
+      expect(output.items).toHaveLength(1);
+      expect(output.items[0]?.role).toBe('tool');
+      expect(output.hasMore).toBe(true);
+      await expect(service.search({
+        query: 'outputneedle', includeToolOutput: false, pageSize: 1, pageToken: output.pageToken,
+      })).rejects.toMatchObject({ reason: 'invalid_page_token' });
+      const explicitRole = await service.search({ query: 'outputneedle', role: 'tool', pageSize: 1 });
+      expect(explicitRole.items[0]?.role).toBe('tool');
+    },
+  );
+
   it('sorts by time in both directions', async () => {
     const s1 = summary('s1', 'sort', T1);
     await writeWire(home!, 's1', 'main', [
@@ -2411,6 +2464,56 @@ describe('GlobalSearchService', () => {
         container: { sessionId: 's1' },
       });
       expect(thinking.items).toEqual([]);
+    });
+
+    it('keeps live search conversation-only unless tool output is requested', async () => {
+      const s1 = summary('s1', 'live scope', T1);
+      const store = makeLiveStore('s1');
+      store.getAgent('main')!.apply([
+        {
+          op: 'frame.upsert',
+          turnId: 't0',
+          stepId: 't0.1',
+          frame: {
+            kind: 'tool',
+            frameId: 't0.1.f2',
+            toolCallId: 'call-1',
+            name: 'Read',
+            state: 'done',
+            output: 'live-outputneedle first',
+          },
+        },
+        {
+          op: 'frame.upsert',
+          turnId: 't0',
+          stepId: 't0.1',
+          frame: {
+            kind: 'tool',
+            frameId: 't0.1.f4',
+            toolCallId: 'call-2',
+            name: 'Read',
+            state: 'done',
+            output: 'live-outputneedle second',
+          },
+        },
+      ]);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+
+      expect((await service.search({ query: 'live-outputneedle', container: { sessionId: 's1' } })).items).toEqual([]);
+      const output = await service.search({
+        query: 'live-outputneedle', container: { sessionId: 's1' }, includeToolOutput: true, pageSize: 1,
+      });
+      expect(output.items[0]?.role).toBe('tool');
+      expect(output.hasMore).toBe(true);
+      await expect(service.search({
+        query: 'live-outputneedle', container: { sessionId: 's1' }, includeToolOutput: false,
+        pageSize: 1, pageToken: output.pageToken,
+      })).rejects.toMatchObject({ reason: 'invalid_page_token' });
+      const explicitRole = await service.search({
+        query: 'live-outputneedle', container: { sessionId: 's1' }, role: 'tool', pageSize: 1,
+      });
+      expect(explicitRole.items[0]?.role).toBe('tool');
     });
 
     it('accepts single-character literal queries on the live route', async () => {

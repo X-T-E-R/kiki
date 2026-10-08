@@ -277,6 +277,7 @@ export function resolveWorkspaceTerm<W extends LocalSearchWorkspace>(
 export function buildContentSearchBody(input: {
   readonly text: string;
   readonly role?: 'user' | 'assistant';
+  readonly includeToolOutput?: boolean;
   readonly workspaceIds: readonly string[];
   readonly pageSize?: number;
   readonly pageToken?: string;
@@ -285,6 +286,7 @@ export function buildContentSearchBody(input: {
   sort: 'score';
   page_size: number;
   role?: 'user' | 'assistant';
+  include_tool_output?: boolean;
   workspace_id?: string;
   page_token?: string;
 } {
@@ -293,6 +295,7 @@ export function buildContentSearchBody(input: {
     sort: 'score',
     page_size: input.pageSize ?? CONTENT_SEARCH_PAGE_SIZE,
     ...(input.role === undefined ? {} : { role: input.role }),
+    ...(input.includeToolOutput === undefined ? {} : { include_tool_output: input.includeToolOutput }),
     ...(input.workspaceIds.length === 1 ? { workspace_id: input.workspaceIds[0] } : {}),
     ...(input.pageToken === undefined ? {} : { page_token: input.pageToken }),
   };

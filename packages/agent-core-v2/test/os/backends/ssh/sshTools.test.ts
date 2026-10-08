@@ -32,12 +32,14 @@ const tempHomes: string[] = [];
 
 const attrs = (mode: number, size = 0) => ({ mode, size, uid: 1000, gid: 1000, atime: 0, mtime: 1 });
 
-async function fixture() {
+async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Program Files/Git/bin/bash.exe') {
+  const remoteHome = platform === 'win32' ? 'C:/Users/tester' : '/home/tester';
+  const commands: string[] = [];
   const home = await mkdtemp(join(tmpdir(), 'kiki-ssh-tools-'));
   tempHomes.push(home);
   vi.stubEnv('KIKI_HOME', home);
   const files = new Map<string, Buffer>();
-  const directories = new Set(['/home/tester']);
+  const directories = new Set([remoteHome, ...(platform === 'win32' ? ['E:/', 'E:/scratch'] : [])]);
   const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
   const server = new Server({ hostKeys: [privateKey] }, (client) => {
     client.on('error', () => undefined);
@@ -49,7 +51,11 @@ async function fixture() {
       const session = accept();
       session.on('exec', (acceptExec, _reject, info) => {
         const channel = acceptExec();
-        if (info.command.includes('KIKI_SSH_ENV')) channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/sh\n');
+        const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(info.command);
+        const command = encoded ? Buffer.from(encoded[1]!, 'base64').toString('utf16le') : info.command;
+        commands.push(command);
+        if (command.includes('KIKI_SSH_WINDOWS')) channel.write(`KIKI_SSH_WINDOWS\nAMD64\n10.0.26100\n${shell}\n`);
+        else if (info.command.includes('KIKI_SSH_ENV')) channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/sh\n');
         else if (info.command.includes('--files')) channel.write('./test.txt\n');
         else if (info.command.includes('rg ')) channel.write('/home/tester/test.txt\0');
         else channel.write('hello from SSH\n');
@@ -73,8 +79,9 @@ async function fixture() {
           else channel.status(request, utils.sftp.STATUS_CODE.NO_SUCH_FILE);
         };
         channel.on('REALPATH', (request, path) => {
-          const target = path === '.' ? '/home/tester' : path;
-          channel.name(request, [{ filename: target, longname: target, attrs: attrs(directories.has(target) ? 0o040755 : 0o100644) }]);
+          const native = path === '.' ? remoteHome : path;
+          const target = platform === 'win32' ? `/${native}` : native;
+          channel.name(request, [{ filename: target, longname: target, attrs: attrs(directories.has(native) ? 0o040755 : 0o100644) }]);
         });
         channel.on('STAT', stat);
         channel.on('LSTAT', stat);
@@ -167,7 +174,7 @@ async function fixture() {
   const catalog = { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog;
   const truncation = { isSpillFilePath: () => false } as unknown as IAgentToolResultTruncationService;
   const telemetry = { track2: () => undefined } as unknown as ITelemetryService;
-  return { home, files, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry };
+  return { home, files, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry };
 }
 
 async function execute(execution: ToolExecution) {
@@ -184,6 +191,44 @@ afterEach(async () => {
 });
 
 describe('SSH tools over a real ssh2 transport', () => {
+  it('keeps Windows SFTP file tools available without a remote shell', async () => {
+    const f = await fixture('win32', '');
+    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
+    f.files.set('C:/Users/tester/file.txt', Buffer.from('SFTP only\n'));
+    expect((await execute(await read.resolveExecution({ host: 'dev', path: 'file.txt' }))).output).toContain('SFTP only');
+    expect(f.remote.environment.shellPath).toBe('');
+    await expect(f.remote.process.spawn(f.remote.environment.shellPath, ['-c', 'echo hello'])).rejects.toThrow('Install Git for Windows');
+    f.remote.dispose();
+  });
+
+  it('reads Windows drive paths and roundtrips exact scratch bytes through Write and Edit', async () => {
+    const f = await fixture('win32');
+    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
+    const write = new WriteTool(f.runtime, f.workspace);
+    const edit = new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace);
+    const original = 'E:/work/attempts/run-01/task.log.err';
+    f.files.set(original, Buffer.from('remote diagnostic\r\n'));
+    const result = await execute(await read.resolveExecution({ host: 'dev', path: original, n_lines: 60 }));
+    expect(result.output).toContain('remote diagnostic');
+    expect(f.remote.environment.pathClass).toBe('win32');
+    expect(f.remote.environment.homeDir).toBe('C:/Users/tester');
+    expect(f.commands).toHaveLength(1);
+    expect((await f.remote.connect()).activeProcesses).toBe(0);
+    const path = 'E:/scratch/roundtrip.txt';
+    expect((await execute(await write.resolveExecution({ host: 'dev', path, content: 'alpha 世界\r\n' }))).isError).not.toBe(true);
+    expect((await execute(await read.resolveExecution({ host: 'dev', path }))).output).toContain('alpha 世界');
+    expect((await execute(await edit.resolveExecution({ host: 'dev', path, old_string: 'alpha', new_string: 'beta' }))).isError).not.toBe(true);
+    expect(f.files.get(path)).toEqual(Buffer.from('beta 世界\r\n'));
+    expect((await execute(await read.resolveExecution({ path: 'ssh://dev/E:/scratch/roundtrip.txt' }))).output).toContain('beta 世界');
+    const proc = await f.remote.process.spawn('C:/Program Files/Git/bin/bash.exe', ['-c', "printf 'hello'"], { cwd: 'E:/scratch', env: { EXAMPLE: "a'b $x" } });
+    await proc.wait();
+    expect(f.commands.at(-1)).toContain("Set-Location -LiteralPath 'E:/scratch'");
+    expect(f.commands.at(-1)).toContain("$env:EXAMPLE='a''b $x'");
+    expect(f.commands.at(-1)).toContain("& 'C:/Program Files/Git/bin/bash.exe' '-c'");
+    await proc.dispose();
+    f.remote.dispose();
+  });
+
   it('keeps seven actual tool schemas byte-identical across SSH reconnects', async () => {
     const f = await fixture();
     const tools = [

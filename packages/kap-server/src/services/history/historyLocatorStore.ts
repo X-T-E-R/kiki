@@ -73,6 +73,7 @@ export interface HistoryNavScan {
 export interface HistoryNavSearch {
   readonly query: string;
   readonly mode: HistoryMode;
+  readonly includeToolOutput?: boolean;
   readonly role?: 'user' | 'assistant' | 'tool' | 'record';
   readonly after?: number;
   readonly before?: number;
@@ -376,6 +377,8 @@ export class HistoryLocatorStore {
           if (row.part === undefined || row.part === 'input' || role === undefined ||
               row.anchor.end !== span.endByteOffset || row.anchor.digest !== recordDigest ||
               search.role !== undefined && role !== search.role ||
+              (role === 'tool' && search.includeToolOutput !== true && search.role !== 'tool' ||
+                role === 'record' && search.role !== 'record') ||
               search.after !== undefined && (row.time === undefined || row.time < search.after) ||
               search.before !== undefined && (row.time === undefined || row.time >= search.before) ||
               emitted.has(rowKey(row))) continue;
@@ -444,6 +447,7 @@ export class HistoryLocatorStore {
     const pending: PendingRecord[] = [];
     const store = this.store;
     const plan = input.search === undefined ? undefined : planHistoryQuery(input.search.query, input.search.mode);
+    const includeToolOutput = input.search?.includeToolOutput === true || input.search?.role === 'tool';
     let matchedRecords = 0;
     const writes: WriteOp[] = [];
     const touched = new Map<string, HistoryNavRow>();
@@ -451,6 +455,7 @@ export class HistoryLocatorStore {
     const emitted = new Set<string>();
     const addHit = (row: HistoryNavRow, text: string): void => {
       if (plan === undefined || row.role === undefined ||
+          (row.role === 'tool' && !includeToolOutput || row.role === 'record' && input.search?.role !== 'record') ||
           input.search?.role !== undefined && row.role !== input.search.role ||
           input.search?.after !== undefined && (row.time === undefined || row.time < input.search.after) ||
           input.search?.before !== undefined && (row.time === undefined || row.time >= input.search.before)) return;
@@ -517,7 +522,8 @@ export class HistoryLocatorStore {
             const time = typeof record['time'] === 'number' ? record['time'] : undefined;
             if (input.search?.after !== undefined && (time === undefined || time < input.search.after) ||
                 input.search?.before !== undefined && (time === undefined || time >= input.search.before)) return false;
-            if (op.op === 'turn.upsert' && input.search?.role !== 'assistant' && input.search?.role !== 'tool') {
+            if (op.op === 'turn.upsert' &&
+                (input.search?.role === undefined || input.search.role === 'user')) {
               return op.turn.prompt !== undefined && matchHistoryText(op.turn.prompt, plan) !== undefined;
             }
             if (op.op !== 'frame.upsert') return false;
@@ -526,10 +532,11 @@ export class HistoryLocatorStore {
                 (input.search?.role === undefined || input.search.role === 'assistant')) {
               return matchHistoryText(frame.text, plan) !== undefined;
             }
-            if (frame.kind === 'tool' && (input.search?.role === undefined || input.search.role === 'tool')) {
+            if (frame.kind === 'tool' && includeToolOutput &&
+                (input.search?.role === undefined || input.search.role === 'tool')) {
               return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
             }
-            if(frame.kind==='record' && (input.search?.role===undefined||input.search.role==='record')) return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
+            if(frame.kind==='record' && input.search?.role==='record') return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
             return false;
           });
           if (hasMatch) matchedRecords += 1;

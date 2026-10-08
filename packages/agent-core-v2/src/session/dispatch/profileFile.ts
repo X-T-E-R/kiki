@@ -29,14 +29,16 @@ export function restoreProfileFileSources(
   sources: FrozenProfileFileSources,
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
   definitionId?: string,
+  builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfile | undefined {
-  const restored = materializeSources(sources, basePrompt);
+  const restored = materializeSources(sources, basePrompt, builtinPrompt);
   return definitionId === undefined || restored.root.definitionId === definitionId ? restored.root : restored.sourceDefinitions.get(definitionId);
 }
 
 function materializeSources(
   sources: FrozenProfileFileSources,
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
+  builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ) {
   const contribution = profilesFromDiscovery({
     agents: [sources.root], routes: [], skipped: [], scannedRoots: [sources.root.contributionRoot],
@@ -44,7 +46,7 @@ function materializeSources(
     sourceDefinitions: new Map(Object.entries(sources.sourceDefinitions)),
     dependencyIndex: new Map(Object.entries(sources.dependencyIndex)),
     diagnostics: [...sources.diagnostics],
-  }, basePrompt);
+  }, basePrompt, builtinPrompt);
   const attach = (profile: AgentProfile) => ({ ...profile, fileSources: sources });
   return {
     root: attach(contribution.profiles[0]!),

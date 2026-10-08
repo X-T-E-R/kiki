@@ -1429,6 +1429,8 @@ export const zh = {
   'locate.turnNotFound': '在这个会话里找不到第 {turn} 轮，可能已被撤销或压缩。',
   'locate.loading': '正在加载更早的消息…',
   'locate.failedLoad': '没能加载包含它的更早消息。',
+  'search.includeToolOutput': '包含工具输出',
+  'search.toolOutput': '工具输出',
   'find.aria': '在本会话中查找',
   'find.placeholder': '在本会话中查找',
   'find.count': '{current} / {total}',

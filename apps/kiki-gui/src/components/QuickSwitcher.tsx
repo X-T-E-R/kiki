@@ -43,6 +43,7 @@ export function QuickSwitcher({
   const { t, time } = useI18n();
   const navigate = useGuardedNavigate();
   const [input, setInput] = useState(initialQuery ?? '');
+  const [includeToolOutput, setIncludeToolOutput] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -55,6 +56,7 @@ export function QuickSwitcher({
     workspaces,
     untitled,
     queryKeyPrefix: 'quick-switcher-search',
+    includeToolOutput,
   });
   const localMatches = useMemo(
     () => (search.parsed.text.trim() === '' ? undefined : search.local.sessions.map((match) => match.session.source)),
@@ -173,6 +175,10 @@ export function QuickSwitcher({
           aria-activedescendant={items.length > 0 ? `quick-switcher-item-${activeIndex}` : undefined}
           className="w-full bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-faint"
         />
+        <label className="mt-2 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
+          <input type="checkbox" data-search-tools checked={includeToolOutput} onChange={(event) => { setIncludeToolOutput(event.target.checked); setActiveIndex(0); }} className="accent-selected-ink" />
+          {t('search.includeToolOutput')}
+        </label>
       </div>
 
       <div
@@ -261,7 +267,7 @@ export function QuickSwitcher({
                         <span className="truncate">
                           <ThreadTitle text={item.sessionTitle.trim() !== '' ? item.sessionTitle : untitled} />
                         </span>
-                        <span className="shrink-0">· {t(`sidebar.results.role.${item.role}`)}</span>
+                        <span className="shrink-0">· {t(item.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${item.role}`)}</span>
                       </span>
                     </>
                   )}

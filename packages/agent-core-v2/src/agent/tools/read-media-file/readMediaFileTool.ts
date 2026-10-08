@@ -6,7 +6,7 @@ import { inlineVideoPart, isVideoUploadAuthError } from '#/agent/media/videoUplo
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -242,7 +242,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
       { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
       roots, env.homeDir,
     );
-    const pathOptions = { env, workspace, operation: 'read' as const };
+    const pathOptions = { env, workspace, operation: 'read' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let implicitExternal: boolean;

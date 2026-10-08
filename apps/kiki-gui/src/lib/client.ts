@@ -175,6 +175,7 @@ export interface SearchMessagesBody {
   container?: { session_id?: string; agent_id?: string };
   workspace_id?: string;
   role?: 'user' | 'assistant' | 'title';
+  include_tool_output?: boolean;
   start_time?: number;
   end_time?: number;
   sort?: 'score' | 'time_desc' | 'time_asc';
@@ -187,7 +188,7 @@ export interface SearchMessageHit {
   workspace_id: string;
   session_title: string;
   agent_id: string;
-  role: 'user' | 'assistant' | 'title';
+  role: 'user' | 'assistant' | 'tool' | 'title';
   snippet: string;
   /** Epoch milliseconds (the index normalizes seconds vs ms server-side). */
   time: number;

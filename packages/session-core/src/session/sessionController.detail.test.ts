@@ -841,13 +841,38 @@ it.each([false, true])('finds an unread large range match across a chunk boundar
   const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => ({ ref, value: text.slice(ref.offset, ref.offset + 4097), contentRefs: [] }));
   const { controller, deliver } = harness(undefined, content);
   await controller.open(); deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: 'f-range', toolCallId: 'call-range', name: 'Read', state: 'done', output: 'aaa', contentRefs: [ref] }] }] }] }), 2));
-  await expect(controller.findTurnContentRange('main', 1, /RANGE-BOUNDARY-NEEDLE/gu)).resolves.toEqual({ ref, offset: prefix.length, toolCallId: 'call-range' });
+  await expect(controller.findTurnContentRange('main', 1, /RANGE-BOUNDARY-NEEDLE/gu)).resolves.toBeUndefined();
+  expect(content).not.toHaveBeenCalled();
+  await expect(controller.findTurnContentRange('main', 1, /RANGE-BOUNDARY-NEEDLE/gu, undefined, true)).resolves.toEqual({ ref, offset: prefix.length, toolCallId: 'call-range' });
   expect(content).toHaveBeenCalledTimes(2);
   expect(controller.contentRefsFor('main', source)).toEqual([ref]);
   expect(controller.contentMemoryReport().bodyBytes).toBeLessThan(8 * 1024 * 1024);
   controller.close();
 });
 
+
+it('searches only source-selected cold fields and never reads thinking or tool input', async () => {
+  const source = (id: string) => ({ kind: 'frame' as const, id, turnId: 't1', stepId: 's1' });
+  const ref = (id: string, field: string) => ({ source: source(id), path: [field], revision: 'scope', kind: 'text' as const, offset: 3, total: 600_000 });
+  const thinking = ref('thought', 'text');
+  const input = ref('tool', 'inputText');
+  const output = ref('tool', 'output');
+  const answer = ref('answer', 'text');
+  const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref: requested }) => ({ ref: requested, value: 'selected needle suffix', contentRefs: [] }));
+  const { controller, deliver } = harness(undefined, content);
+  await controller.open();
+  deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed', frames: [
+    { kind: 'thinking', frameId: 'thought', text: '', contentRefs: [thinking] },
+    { kind: 'tool', frameId: 'tool', toolCallId: 'call', name: 'ExampleTool', state: 'done', inputText: '', output: '', contentRefs: [input, output] },
+    { kind: 'text', frameId: 'answer', role: 'assistant', text: '', contentRefs: [answer] },
+  ] }] }] }), 2));
+  await expect(controller.findTurnContentRange('main', 1, /needle/gu)).resolves.toMatchObject({ ref: answer });
+  expect(content.mock.calls.map(([request]) => request.ref.source.id)).toEqual(['answer']);
+  content.mockClear();
+  await expect(controller.findTurnContentRange('main', 1, /needle/gu, undefined, true)).resolves.toMatchObject({ ref: output, toolCallId: 'call' });
+  expect(content.mock.calls.map(([request]) => request.ref.path[0])).toEqual(['output']);
+  controller.close();
+});
 
 it('copies a large structured invocation input including newly discovered prompt refs without retaining it', async () => {
   const prompt = 'prompt '.repeat(700_000);

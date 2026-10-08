@@ -113,6 +113,7 @@ export class SshHostProcessService implements IHostProcessService {
   spawn(command: string, args: readonly string[] = [], options: HostProcessOptions = {}): Promise<IHostProcess> {
     if (options.detached === true) throw new Error('Detached SSH processes are not supported');
     return withConnection(this.connect, async (ssh) => {
+      if (!command) throw new Error('No shell was found on the remote SSH host. Install Git for Windows there to use Bash; SFTP file tools remain available.');
       const process = await ssh.withCwd(options.cwd ?? ssh.getcwd()).execWithEnv(
         [command, ...args], options.env,
       );

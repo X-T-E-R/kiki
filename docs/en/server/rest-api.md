@@ -203,7 +203,9 @@ Set `agent_config.execution` at creation to select a harness independently of a 
 { "agent_config": { "execution": { "executor": "claude-acp" } } }
 ```
 
-The selection is `{ executor, profile?, overrides? }`. Omit `profile` for direct external execution; an explicitly selected profile must use the same executor. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context` and `allow_kiki_subagents`. With the same executor/profile, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. Legacy top-level model/profile/thinking requests remain supported.
+The selection is `{ executor, profile?, profile_file?, overrides? }`. Choose either a registered `profile` name or a `profile_file` Markdown path; they are mutually exclusive, and the selected profile must use the same executor. Explicit files do not require `main: true` and are not registered or copied into a profile directory. Omit both fields for direct external execution. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context` and `allow_kiki_subagents`. With the same executor and profile name or file path, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. Legacy top-level model/profile/thinking requests remain supported.
+
+Before choosing a file, `POST /api/agent-profiles/file-preview` accepts `{ path, cwd?, workspace_id? }` and returns `{ profile }` with the usual named-profile metadata, including its canonical `source_file` and executor. Supply at most one of `cwd` and `workspace_id`; a relative path requires one, while an absolute or `~/` path can be previewed without either. Paths are read on the connected server, not the client machine. Missing or invalid files return `40001` with path diagnostics, without changing a binding. The typed HTTP client exposes this as `klient.rest.agents.previewFile(body, options?)`. Use the returned `source_file` as `execution.profile_file` at session creation or with the next prompt.
 
 Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
 
@@ -532,6 +534,8 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/sessions:archive` | Batch-archive sessions, see below |
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
+
+`POST /api/search` accepts `query` and defaults to user/assistant text plus session titles. Set `include_tool_output: true` to include tool results and Shell output; thinking, tool names and tool inputs remain excluded. `role` can select `user`, `assistant`, `tool` or `title`, with `role: "tool"` explicitly selecting tool results. The same content scope applies to live sessions and existing indexes. Changing it invalidates the old `page_token`; start again without a token.
 
 ### Usage source grouping
 

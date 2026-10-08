@@ -150,6 +150,9 @@ describe('content search scope', () => {
     expect(buildContentSearchBody({ text: 'cache', workspaceIds: ['ws-a', 'ws-b'], role: 'user' })).toEqual({
       query: 'cache', sort: 'score', page_size: 20, role: 'user',
     });
+    expect(buildContentSearchBody({ text: 'cache', workspaceIds: [], includeToolOutput: true })).toMatchObject({
+      query: 'cache', sort: 'score', page_size: 20, include_tool_output: true,
+    });
   });
 
   it('narrows hits to the workspace set and allowed sessions client-side', () => {

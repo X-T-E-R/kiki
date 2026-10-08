@@ -34,6 +34,7 @@ import { useTranscriptController } from '../transcriptDetail';
 
 export interface FindBarProps {
   readonly items: readonly FindItem[];
+  readonly onIncludeToolOutputChange?: (include: boolean) => void;
   readonly sessionId: string | undefined;
   readonly agentId: string;
   /** Older pages remain to be loaded. */
@@ -144,10 +145,11 @@ function useOutsideHits(input: {
   readonly loadedTurns: ReadonlySet<number>;
   readonly incompleteTurns: ReadonlySet<number>;
   readonly hasMoreHistory: boolean;
+  readonly includeToolOutput: boolean;
 }): OutsideHits {
   const client = useOptionalConnection()?.client ?? searchOverride;
   const [page, setPage] = useState<{ key: string; hits: readonly SearchMessageHit[]; more: boolean; failed: boolean } | null>(null);
-  const key = `${input.sessionId ?? ''}\0${input.agentId}\0${input.query}`;
+  const key = `${input.sessionId ?? ''}\0${input.agentId}\0${input.query}\0${input.includeToolOutput}`;
   const armed = client !== undefined && input.sessionId !== undefined && input.query.trim().length >= 2;
   useEffect(() => {
     if (!armed) return undefined;
@@ -159,6 +161,7 @@ function useOutsideHits(input: {
         container: { session_id: input.sessionId, agent_id: input.agentId },
         sort: 'time_desc',
         page_size: 50,
+        include_tool_output: input.includeToolOutput,
       }, controller.signal).then(
         (response) => {
           const usable = response.index_state.state !== 'unavailable';
@@ -183,7 +186,7 @@ function useOutsideHits(input: {
 
 export function FindBar({
   items, sessionId, agentId, hasMoreHistory, loadedTurns, request, onLand, onClear, startIndex,
-  onLoadOlder, onLocateTurn, onClose, stepRef,
+  onLoadOlder, onLocateTurn, onClose, stepRef, onIncludeToolOutputChange,
 }: FindBarProps) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -196,10 +199,11 @@ export function FindBar({
   const readKey = JSON.stringify([sessionId, agentId, query, options]);
   const readKeyRef = useRef(readKey);
   readKeyRef.current = readKey;
-  const matches = useMemo(() => [...collectMatches(items, pattern), ...(rangeHit?.key === readKey ? [rangeHit.match] : [])], [items, pattern, rangeHit, readKey]);
+  const scopedItems = useMemo(() => items.filter((item) => !item.toolOutput || options.includeToolOutput === true), [items, options.includeToolOutput]);
+  const matches = useMemo(() => [...collectMatches(scopedItems, pattern), ...(rangeHit?.key === readKey ? [rangeHit.match] : [])], [scopedItems, pattern, rangeHit, readKey]);
   const detailController = useTranscriptController();
   const incompleteTurns = useMemo(() => detailController?.incompleteTurnOrdinals(agentId) ?? new Set<number>(), [detailController, agentId, items]);
-  const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory });
+  const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory, includeToolOutput: options.includeToolOutput === true });
   const [currentKey, setCurrentKey] = useState<string | undefined>(undefined);
   const [lookingBack, setLookingBack] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
@@ -288,7 +292,7 @@ export function FindBar({
         // Locating a cold turn publishes its structure and content refs. Read
         // that new state, not the render captured before the navigation.
         if (detailController !== undefined && detailController.incompleteTurnOrdinals(agentId).has(outside.nearestTurn) && pattern !== null) {
-          const hit = await detailController.findTurnContentRange(agentId, outside.nearestTurn, pattern, controller.signal);
+          const hit = await detailController.findTurnContentRange(agentId, outside.nearestTurn, pattern, controller.signal, options.includeToolOutput === true);
           if (controller.signal.aborted || readKeyRef.current !== readKey) return;
           if (hit !== undefined) {
             const block = detailController.getAgentState(agentId).blocks.find((candidate) =>
@@ -446,6 +450,14 @@ export function FindBar({
           <Icon name="close" size={14} />
         </button>
       </div>
+      <label className="mx-2 mb-1.5 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
+        <input type="checkbox" data-find-tools checked={options.includeToolOutput === true} onChange={(event) => {
+          const include = event.target.checked;
+          setOptions((value) => ({ ...value, includeToolOutput: include }));
+          onIncludeToolOutputChange?.(include);
+        }} className="accent-selected-ink" />
+        {t('search.includeToolOutput')}
+      </label>
       {hasQuery && (canLookBack || outside.compacted > 0 || lookingBack) ? (
         <div data-find-note className="flex flex-col gap-0.5 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-soft">
           {lookingBack ? (

@@ -299,18 +299,24 @@ describe('SSH connection gate before tool resolution', () => {
     await f.dispose();
   });
 
-  it('allows yolo without connection approval, but requires main-session approval for subagents', async () => {
+  it('allows yolo and routes an unjoined subagent through ordinary connection approval', async () => {
     const f = await fixture({ mode: 'yolo' });
     expect(await f.call('dev')).toBeUndefined();
     expect(f.approvals.request).not.toHaveBeenCalled();
-    const approved = f.state.get(sessionSshHostsKey)['dev'];
     await f.dispose();
     const sub = await fixture({ agentId: 'subagent' });
-    expect(await sub.call('dev')).toContain('subagent cannot connect');
-    expect(sub.approvals.request).not.toHaveBeenCalled();
-    sub.state.set(sessionSshHostsKey, { dev: approved! });
+    expect(sub.state.get(sessionSshHostsKey)).toEqual({});
     expect(await sub.call('dev')).toBeUndefined();
+    expect(sub.approvals.request).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'subagent' }));
+    expect(sub.runtime.approveSshTarget).toHaveBeenCalled();
+    await sub.service.setSessionHosts(() => ({}));
+    expect(await sub.call('dev')).toBeUndefined();
+    expect(sub.approvals.request).toHaveBeenCalledTimes(1);
     await sub.dispose();
+    const denied = await fixture({ agentId: 'subagent', decision: 'rejected' });
+    expect(await denied.call('dev')).toContain('not approved');
+    expect(denied.runtime.approveSshTarget).not.toHaveBeenCalled();
+    await denied.dispose();
   });
 
   it('separates login, unknown-key confirmation, and each keyboard-interactive challenge', async () => {
@@ -332,7 +338,7 @@ describe('SSH connection gate before tool resolution', () => {
     await f.dispose();
   });
 
-  it('global connection approval off skips the prompt but still checks target fingerprint and subagent membership', async () => {
+  it('global connection approval off also admits subagents without a membership prerequisite', async () => {
     const f = await fixture();
     vi.mocked(f.hosts.connectionApprovalEnabled).mockResolvedValue(false);
     expect(await f.call('dev')).toBeUndefined();
@@ -345,7 +351,8 @@ describe('SSH connection gate before tool resolution', () => {
     await f.dispose();
     const sub = await fixture({ agentId: 'subagent' });
     vi.mocked(sub.hosts.connectionApprovalEnabled).mockResolvedValue(false);
-    expect(await sub.call('dev')).toContain('subagent cannot connect');
+    expect(await sub.call('dev')).toBeUndefined();
+    expect(sub.approvals.request).not.toHaveBeenCalled();
     await sub.dispose();
   });
 

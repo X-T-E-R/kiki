@@ -13,7 +13,7 @@ import type { IHostProcessService } from '#/os/interface/hostProcess';
 import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { unwrapErrorCause } from '#/_base/errors/errors';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -109,7 +109,7 @@ export class GlobTool implements IGlobTool {
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
     const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
-    const pathOptions = { env, workspace, operation: 'search' as const };
+    const pathOptions = { env, workspace, operation: 'search' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     let path: string | undefined;
     let implicitExternal = false;
     if (args.path !== undefined) {

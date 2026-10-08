@@ -44,6 +44,12 @@ Changing the setting does not move existing cards; they keep pointing at the sto
 
 After a compaction, the handoff can list up to five cards linked to the session, with ids, titles and statuses. That list needs the board feature and `BoardRead` enabled, and is simply absent if the read fails or takes more than 500 ms. Card status is never updated from todo lists or finished agent runs.
 
+## Searching conversations
+
+Use the sidebar search or `Ctrl-K` quick switcher to find conversations by title, workspace or message text. `Ctrl-F` searches within the conversation on screen. Message search includes user and assistant text by default; select **Include tool output** to search saved tool results and Shell output too. Thinking blocks, tool names and tool inputs are excluded in both modes. Text you wrote in quotes or code remains searchable.
+
+Changing **Include tool output** updates matches and counts without mixing pages from the other scope. Conversation find can load an earlier matching turn and open its folded output; original history remains available to read whether or not it is included in search.
+
 ## Starting and resuming sessions
 
 On the **New session** page in the desktop app or browser you can pick an existing workspace, type an absolute project directory, or choose **Automatically create a workspace** (the default when nothing is registered yet). With the automatic option, your first send creates a directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it, and opens the session there. If you picked a workspace explicitly and it was deleted since, it stays invalid until you choose another one or switch to automatic — Kiki will not quietly open a different workspace. [Data locations](../configuration/data-locations.md#directory-layout) has the layout and what cleanup touches.

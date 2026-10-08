@@ -19,9 +19,23 @@ import {
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileSchema,
   patchConfigRequestSchema,
+  previewAgentProfileFileRequestSchema,
+  executionSelectionSchema,
 } from '../index';
 
 describe('named agent profile REST protocol', () => {
+  it('accepts explicit file execution and requires an unambiguous connected-host preview scope', () => {
+    expect(executionSelectionSchema.parse({ executor: 'native', profile_file: '/profiles/helper.md' }))
+      .toEqual({ executor: 'native', profile_file: '/profiles/helper.md' });
+    expect(executionSelectionSchema.safeParse({ executor: 'native', profile: 'helper', profile_file: '/profiles/helper.md' }).success).toBe(false);
+    expect(executionSelectionSchema.safeParse({ executor: 'native', profile_file: ' ' }).success).toBe(false);
+    for (const path of ['/profiles/helper.md', 'C:\\profiles\\helper.md', '~/profiles/helper.md']) {
+      expect(previewAgentProfileFileRequestSchema.parse({ path })).toEqual({ path });
+    }
+    expect(previewAgentProfileFileRequestSchema.parse({ path: 'helper.md', cwd: '/project' })).toEqual({ path: 'helper.md', cwd: '/project' });
+    expect(previewAgentProfileFileRequestSchema.safeParse({ path: 'helper.md' }).success).toBe(false);
+    expect(previewAgentProfileFileRequestSchema.safeParse({ path: 'helper.md', cwd: '/project', workspace_id: 'workspace' }).success).toBe(false);
+  });
   it('retains separate declarations and effective domains on named, panel and draft preview responses', () => {
     const menu = { restrict_models_to_menu: true,
       declared_model_menu: { aliases: ['fast'], default_alias: 'premium', identities: ['provider/fast', 'provider/premium'] },

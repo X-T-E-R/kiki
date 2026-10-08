@@ -218,6 +218,7 @@ function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): Normal
     container: input.container,
     workspaceId: input.workspaceId,
     role: input.role,
+    includeToolOutput: input.includeToolOutput === true || input.role === 'tool',
     startTime: input.startTime,
     endTime: input.endTime,
     sort: input.sort ?? 'score',
@@ -741,7 +742,7 @@ export class GlobalSearchService implements IGlobalSearchService {
       q.container?.agentId !== undefined
         ? [q.container.agentId]
         : store.agents().map((agent) => agent.agentId);
-    const docs = await this.collectLiveDocs(sessionId, source, agentIds);
+    const docs = await this.collectLiveDocs(sessionId, source, agentIds, q.includeToolOutput === true || q.role === 'tool');
     const budget = {
       deadlineAt: Date.now() + this.queryDeadlineMs,
       textCharsLeft: this.queryTextBudgetChars,
@@ -789,6 +790,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     sessionId: string,
     source: LiveTranscriptSource,
     agentIds: readonly string[],
+    includeToolOutput: boolean,
   ): Promise<{ key: string; value: MessageDoc | TitleDoc }[]> {
     const summary = await this.sessionIndex.get(sessionId);
     const workspaceId = summary?.workspaceId ?? '';
@@ -828,7 +830,7 @@ export class GlobalSearchService implements IGlobalSearchService {
           const stepTime = parseTime(step.endedAt ?? step.startedAt ?? item.startedAt);
           for (const frame of step.frames) {
             const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text' && frame.role === 'assistant' ? 'assistant' : undefined;
-            if (role === undefined) continue;
+            if (role === undefined || role === 'tool' && !includeToolOutput) continue;
             const output = frame.kind === 'tool' ? frame.output : frame.kind === 'text' ? frame.text : undefined;
             const text = (typeof output === 'string' ? output :
               Array.isArray(output) ? output.filter((part): part is { type: 'text'; text: string } =>

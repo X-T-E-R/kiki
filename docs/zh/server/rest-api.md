@@ -203,7 +203,9 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 { "agent_config": { "execution": { "executor": "claude-acp" } } }
 ```
 
-选择对象为 `{ executor, profile?, overrides? }`。省略 `profile` 表示外部直连；显式选择的 profile 必须使用同一执行器。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`。执行器与 profile 相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。旧的顶层 model/profile/thinking 请求仍可使用。
+选择对象为 `{ executor, profile?, profile_file?, overrides? }`。可选择已注册的 `profile` 名称，或 `profile_file` Markdown 路径；两者互斥，所选 profile 必须使用同一执行器。显式文件不要求 `main: true`，不会被注册或复制进 profile 目录。同时省略这两个字段表示外部直连。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`。执行器和 profile 名称或文件路径相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。旧的顶层 model/profile/thinking 请求仍可使用。
+
+选文件前可用 `POST /api/agent-profiles/file-preview`，请求为 `{ path, cwd?, workspace_id? }`，响应为 `{ profile }`，包含普通 profile 元数据、规范绝对路径 `source_file` 和执行器。`cwd` 与 `workspace_id` 最多传一个；相对路径必须指定其中一个，绝对路径或 `~/` 路径则无需指定。路径由当前连接的服务端读取，不是客户端本机路径。缺失或非法文件返回 `40001` 和带路径的诊断，不改变绑定。typed HTTP 客户端对应 `klient.rest.agents.previewFile(body, options?)`。创建会话或发送下一条消息时，把返回的 `source_file` 作为 `execution.profile_file`。
 
 读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
 
@@ -528,6 +530,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `POST /api/sessions:archive` | 批量归档会话，见下节 |
 | `POST /api/sessions:restore` | 批量恢复已归档会话，见下节 |
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
+
+`POST /api/search` 接受 `query`，默认搜索用户与 Assistant 正文及会话标题。设置 `include_tool_output: true` 才纳入工具结果和 Shell 输出，思考块、工具名称和工具输入始终排除。`role` 可选 `user`、`assistant`、`tool` 或 `title`，其中 `role: "tool"` 显式选择工具结果。相同内容范围适用于在线会话与已有索引；改变范围会使旧 `page_token` 失效，应去掉令牌重新查询。
 
 ### 用量来源分组
 

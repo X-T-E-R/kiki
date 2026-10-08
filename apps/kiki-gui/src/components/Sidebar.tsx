@@ -503,6 +503,7 @@ export function Sidebar({
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [searchInput, setSearchInput] = useState('');
+  const [includeToolOutput, setIncludeToolOutput] = useState(false);
   // Search is a header icon (Codex-style): the field only takes vertical space
   // while it is in use, and `/` opens it from anywhere. Closing clears the
   // query so the list is never left silently filtered behind a collapsed box.
@@ -650,6 +651,7 @@ export function Sidebar({
     untitled,
     workspaceScope: filters.workspaces,
     allowedSessionIds,
+    includeToolOutput,
   });
 
   // `/` focuses search from anywhere that is not typing somewhere else; other
@@ -1178,6 +1180,7 @@ export function Sidebar({
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
         </button>
         {searchOpen ? (
+        <div>
         <div className="relative">
           <span className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-ink-faint">
             <Icon name="search" size={14} />
@@ -1217,6 +1220,11 @@ export function Sidebar({
               <Icon name="close" size={12} />
             </button>
           )}
+        </div>
+        <label className="mt-1 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
+          <input type="checkbox" data-search-tools checked={includeToolOutput} onChange={(event) => { setIncludeToolOutput(event.target.checked); setActiveResult(0); }} className="accent-selected-ink" />
+          {t('search.includeToolOutput')}
+        </label>
         </div>
         ) : null}
       </div>
@@ -2833,7 +2841,7 @@ function SearchResults({
               </span>
               <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-ink-faint">
                 <span className="min-w-0 truncate text-ink-soft"><ThreadTitle text={hit.session_title.trim() !== '' ? hit.session_title : t('sidebar.untitled')} /></span>
-                <span className="shrink-0">· {t(`sidebar.results.role.${hit.role}`)}</span>
+                <span className="shrink-0">· {t(hit.role === 'tool' ? 'search.toolOutput' : `sidebar.results.role.${hit.role}`)}</span>
                 <span className="shrink-0">· <RelativeTime at={new Date(hit.time).toISOString()} /></span>
               </span>
             </span>

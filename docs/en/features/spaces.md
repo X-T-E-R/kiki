@@ -70,7 +70,11 @@ A session can hold SSH hosts. Use the input box's **+** menu to add one, and the
 
 The control appears only once the session holds a host. A session that has joined none has no SSH line above its input box, and the **+** menu is still the way to add the first one. It stays on screen for as long as the host is joined, including between turns, because "joined" is the session's own state rather than whether a request happens to be running.
 
-Adding a host makes it available to the session; it does not connect to it. In a new session, picking a host in the **+** menu shows the same **SSH** control before the first message, and the hosts you selected are joined to the created session before that message is sent.
+Adding a host puts it in the session's context; it does not connect to it. In a new session, picking a host in the **+** menu shows the same **SSH** control before the first message, and the hosts you selected are joined to the created session before that message is sent.
+
+An agent can also name a configured host directly in a tool call, without adding it first. Main agents and subagents use the same connection-approval flow; hiding a host, rejecting a request, host-key verification and file permission rules still apply. Removing a host from the context does not revoke an already approved connection.
+
+File paths belong to the selected host. On a Windows SSH host, use an absolute path such as `E:/work/result.log`; `Read`, `Write` and `Edit` use SFTP (SSH file transfer), independently of whether Git Bash is installed. `Bash` requires Git Bash on that remote Windows host.
 
 ![The SSH panel above the input box, listing the hosts joined to this session and the ones still available to add.](/shots/spaces/ps-20261005-spaces-session-ssh.en.png)
 

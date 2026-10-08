@@ -570,6 +570,7 @@ export interface SessionStateSnapshot {
         selection: {
           executor: string;
           profile?: string;
+          profile_file?: string;
           overrides?: {
             model?: string | null;
             thinking?: string | null;
@@ -617,6 +618,15 @@ export interface SessionStateSnapshot {
         readonly planApproval?: boolean;
         readonly models?: readonly string[];
         readonly thinkingLevels?: readonly string[];
+        readonly contextWindow?: number;
+        readonly maxInputTokens?: number;
+        readonly maxOutputTokens?: number;
+        readonly compactionThreshold?: number;
+        readonly controls?: {
+          readonly modelSwitch?: boolean;
+          readonly thinkingSwitch?: boolean;
+          readonly manualCompact?: boolean;
+        };
         readonly authMethods?: readonly string[];
         readonly resume?: boolean;
         readonly load?: boolean;
@@ -1022,7 +1032,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
+        readonly phase: 'output' | 'input';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1260,7 +1270,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'input' | 'output';
+      readonly phase: 'output' | 'input';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -1430,7 +1440,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
+        readonly phase: 'output' | 'input';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1680,7 +1690,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
+        readonly phase: 'output' | 'input';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1845,7 +1855,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'input' | 'output';
+      readonly phase: 'output' | 'input';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -3026,11 +3036,11 @@ export interface AgentStateSnapshot {
         oauthHost?: string;
         source?: {
           kind: 'local_original';
-          provider: 'openai-codex' | 'grok-build';
+          provider: 'openai-codex' | 'grok-build' | 'kimi-code';
           homeDir: string;
           storageBackend: 'file' | 'encrypted' | 'keyring';
-          accountId: string;
           authFile?: string;
+          accountId?: string;
           userId?: string;
           scope?: string;
         };
@@ -3309,6 +3319,7 @@ export interface AgentStateSnapshot {
       selection: {
         executor: string;
         profile?: string;
+        profile_file?: string;
         overrides?: {
           model?: string | null;
           thinking?: string | null;
@@ -3536,7 +3547,7 @@ export interface AgentStateSnapshot {
         readonly kind: 'set';
         readonly names: readonly string[];
       };
-      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
       readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
       readonly requestedProfile: string;
       readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
@@ -4795,6 +4806,7 @@ export interface AgentStateSnapshot {
             selection: {
               executor: string;
               profile?: string;
+              profile_file?: string;
               overrides?: {
                 model?: string | null;
                 thinking?: string | null;
@@ -4993,7 +5005,7 @@ export interface AgentStateSnapshot {
               readonly kind: 'set';
               readonly names: readonly string[];
             };
-            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
             readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
             readonly requestedProfile: string;
             readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
@@ -6828,7 +6840,7 @@ export interface AgentStateSnapshot {
             readonly disclosure?: unknown;
           } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
             readonly kind: 'shell_command';
-            readonly phase: 'input' | 'output';
+            readonly phase: 'output' | 'input';
             readonly isError?: boolean;
           } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
             readonly kind: 'compaction_summary';
@@ -6993,7 +7005,7 @@ export interface AgentStateSnapshot {
           readonly disclosure?: unknown;
         } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'shell_command';
-          readonly phase: 'input' | 'output';
+          readonly phase: 'output' | 'input';
           readonly isError?: boolean;
         } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'compaction_summary';
@@ -7155,6 +7167,7 @@ export interface AgentStateSnapshot {
         readonly execution?: {
           executor: string;
           profile?: string;
+          profile_file?: string;
           overrides?: {
             model?: string | null;
             thinking?: string | null;

@@ -12,6 +12,7 @@ export const searchMessagesBodySchema = z.object({
     .optional(),
   workspace_id: z.string().min(1).optional(),
   role: z.enum(['user', 'assistant', 'tool', 'title']).optional(),
+  include_tool_output: z.boolean().optional(),
   start_time: z.number().int().nonnegative().optional(),
   end_time: z.number().int().nonnegative().optional(),
   sort: z.enum(['score', 'time_desc', 'time_asc']).optional(),

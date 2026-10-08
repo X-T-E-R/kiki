@@ -555,7 +555,8 @@ export class SqliteSearchIndex {
     }
     if (q.workspaceId !== undefined) { filters.push('s.workspace_id=?'); filterValues.push(q.workspaceId); }
     if (q.role !== undefined) { filters.push('d.role=?'); filterValues.push(q.role); }
-    else if (q.historyPlan !== undefined) filters.push("d.role!='title'");
+    else if (q.includeToolOutput !== true) filters.push("d.role!='tool'");
+    if (q.historyPlan !== undefined) filters.push("d.role!='title'");
     if (q.startTime !== undefined) { filters.push('d.time>=?'); filterValues.push(q.startTime); }
     if (q.endTime !== undefined) { filters.push('d.time<=?'); filterValues.push(q.endTime); }
     const joins = (table: string) => `JOIN docs d ON d.id=${table}.rowid

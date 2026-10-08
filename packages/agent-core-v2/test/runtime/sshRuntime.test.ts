@@ -127,6 +127,26 @@ describe('SSH runtime provider', () => {
     runtime.dispose();
   });
 
+  it('uses remote Windows paths and canonical home without the local working directory', async () => {
+    const { service } = fixture();
+    vi.spyOn(service, 'connect').mockResolvedValue({
+      probeEnvironment: async () => {},
+      osEnv: { osKind: 'Windows', osArch: 'AMD64', osVersion: 'fixture', shellName: 'bash', shellPath: 'C:/Program Files/Git/bin/bash.exe' },
+      gethome: () => 'C:/Users/tester',
+    } as never);
+    const runtime = new SshRuntime('workspace', { ...dev, roots: undefined }, service);
+    await runtime.connect();
+    expect(runtime.environment.pathClass).toBe('win32');
+    const target = 'E:/work/attempts/run-01/task.log.err';
+    expect(runtime.path.isAbsolute(target)).toBe(true);
+    expect(runtime.path.resolve('C:/Users/tester', target)).toBe(target);
+    expect(runtime.path.resolve('C:/Users/tester', 'scratch\\file.txt')).toBe('C:/Users/tester/scratch/file.txt');
+    expect(runtime.path.resolve('/E:/scratch/file.txt')).toBe('E:/scratch/file.txt');
+    expect(() => runtime.path.resolve('/scratch')).toThrow('absolute drive or UNC');
+    expect(runtime.workspace.mapRoots({ workDir: '/local' }).workDir).toBe('C:/Users/tester');
+    runtime.dispose();
+  });
+
   it('passes first-key auto-trust only when explicitly requested by yolo', async () => {
     const { service } = fixture();
     const remote = { probeEnvironment: vi.fn(async () => undefined) };
@@ -285,7 +305,7 @@ describe('approved SSH tool preparation', () => {
     } finally { await f.dispose(); }
   });
 
-  it('keeps unknown, hidden, other-workspace and unjoined subagent targets out of registration and connection', async () => {
+  it('keeps unavailable targets out while preparing an approved unjoined subagent host', async () => {
     const f = await approvedPreparationFixture();
     try {
       expect(await f.call()).toContain('not available');
@@ -295,9 +315,9 @@ describe('approved SSH tool preparation', () => {
       expect(await f.call()).toContain('not available');
       await f.writeInventory();
       f.setAgent('child');
-      expect(await f.call()).toContain('subagent cannot connect');
-      expect(f.registry.current('ssh:dev')).toBeUndefined();
-      expect(f.connect).not.toHaveBeenCalled();
+      expect(await f.call()).toBe('ssh:dev');
+      expect(f.registry.current('ssh:dev')).toBeDefined();
+      expect(f.connect).toHaveBeenCalledTimes(1);
     } finally { await f.dispose(); }
   });
 

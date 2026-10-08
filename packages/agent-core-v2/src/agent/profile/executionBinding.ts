@@ -9,13 +9,14 @@ export function resolveExecutionBinding(
   profile: AgentProfile | undefined,
   previous: ExecutionBinding | undefined,
 ): ExecutionBinding {
-  const sameSelection = previous?.selection.executor === requested.executor && previous.selection.profile === requested.profile;
+  const sameSelection = previous?.selection.executor === requested.executor && previous.selection.profile === requested.profile
+    && previous.selection.profile_file === requested.profile_file;
   const overrides: ExecutionOverrides = { ...(sameSelection ? previous.selection.overrides : undefined) };
   for (const [key, value] of Object.entries(requested.overrides ?? {})) {
     if (value === null) delete overrides[key as keyof ExecutionOverrides];
     else if (value !== undefined) Object.assign(overrides, { [key]: value });
   }
-  const selection: ExecutionSelection = { executor: requested.executor, profile: requested.profile,
+  const selection: ExecutionSelection = { executor: requested.executor, profile: requested.profile, profile_file: requested.profile_file,
     overrides: Object.keys(overrides).length > 0 ? overrides : undefined };
   const sources: ExecutionBinding['sources'] = {};
   const pick = <T>(key: keyof ExecutionOverrides, profileValue: T | undefined, defaultValue: T | undefined): T | undefined => {

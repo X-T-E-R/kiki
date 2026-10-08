@@ -394,6 +394,57 @@ describe('AgentProfileService.bind', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
+  it.each(['', 'main: false\n'])('binds an explicit profile file without main curation (%s)', async (main) => {
+    const path = join(homeDir, 'selected.md');
+    await writeFile(path, `---\nname: resume-profile\ndescription: Explicit file fixture\n${main}model_alias: ${RESUME_OLD_MODEL}\ntools: [Read]\ndisallowedTools: [Bash]\n---\nEXPLICIT_FILE_BODY\n\${builtin_prompt}\n`);
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    const before = service.data();
+    const preview = await service.resolveFile(path);
+    expect(preview.sourcePath?.toLowerCase()).toBe(path.replaceAll('\\', '/').toLowerCase());
+    expect(service.data()).toEqual(before);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data()).toMatchObject({ profileName: 'resume-profile', modelAlias: RESUME_OLD_MODEL,
+      execution: { selection: { executor: 'native', profile_file: preview.sourcePath } } });
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    expect(service.data().boundProfile?.fileSources?.root.path).toBe(preview.sourcePath);
+    expect(service.data().disallowedTools).toContain('Bash');
+    await service.rebuildPromptContext();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    const frozen = service.data();
+    await writeFile(path, '---\nname: invalid\nexecutor: missing-executor\n---\ninvalid');
+    await expect(service.bind({ execution: { executor: 'native', profile_file: path } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    await expect(service.bind({ execution: { executor: 'native', profile_file: join(homeDir, 'missing.md') } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+  });
+
+  it('inherits a same-name profile for an explicit file and keeps executor policy', async () => {
+    const path = join(homeDir, 'inherit.md');
+    await writeFile(path, '---\nname: resume-profile\ndescription: Inherit fixture\nmain: false\nsystem_prompt_mode: inherit\nprompt_overrides:\n  fields:\n    system.shared: Fixture shared field\nmodel_alias: ' + RESUME_OLD_MODEL + '\n---\n');
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile({ allowedSubagents: ['explore'] }))));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().boundProfile?.allowedSubagents).toEqual(['explore']);
+    const frozen = service.data();
+    await expect(service.bind({ execution: { executor: 'grok-acp', profile_file: path } })).rejects.toThrow('does not use executor');
+    expect(service.data()).toEqual(frozen);
+    vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'getDefault').mockReturnValue(normalizeAgentProfile({ name: 'agent', systemPrompt: () => 'CHANGED_DEFAULT' }));
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().systemPrompt).not.toContain('CHANGED_DEFAULT');
+  });
+
   it('binds a direct executor without a synthetic profile and clears inherited profile state', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     const build = () => createTestAgent({ persistence, autoConfigure: false }, appService(IAgentExecutorRegistry, externalExecutorRegistry()), hostEnvironmentServices(homeDir, hostPathClass));

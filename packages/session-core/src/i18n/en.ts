@@ -1443,6 +1443,8 @@ export const en = {
   'locate.turnNotFound': 'Could not find turn {turn} in this conversation. It may have been undone or compacted away.',
   'locate.loading': 'Loading earlier messages…',
   'locate.failedLoad': 'Could not load the earlier messages that contain it.',
+  'search.includeToolOutput': 'Include tool output',
+  'search.toolOutput': 'Tool output',
   'find.aria': 'Find in this conversation',
   'find.placeholder': 'Find in this conversation',
   'find.count': '{current} / {total}',

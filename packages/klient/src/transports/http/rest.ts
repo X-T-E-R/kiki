@@ -576,6 +576,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       list: (query?: string | ListNamedAgentProfilesQuery) => transport.json<ListNamedAgentProfilesResponse>('/agents', {
         query: typeof query === 'string' ? { workspace_id: query } : query,
       }),
+      previewFile: (body, options) => transport.json(
+        '/agent-profiles/file-preview', { ...options, method: 'POST', body },
+      ),
       previewExecutorPrompt: (name, body = {}) => transport.json(
         `/agents/${encodeURIComponent(name)}/executor-prompt:preview`, { method: 'POST', body },
       ),

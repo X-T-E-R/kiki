@@ -32,7 +32,7 @@ function fixture(live: boolean, unavailable = false, degradedBuilding = false) {
         : { state: 'ready' },
     source: 'index', unavailable: unavailable || undefined,
   }));
-  const core = { accessor: { get: () => ({ search }) } } as unknown as Scope;
+  const core = { accessor: { get: () => ({ search, get: async () => undefined }) } } as unknown as Scope;
   const seed = historyArchiveSeed(() => core, () => transcript);
   const archive = seed[0]![1] as ReturnType<typeof historyArchiveSeed>[number][1] & {
     readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
@@ -133,6 +133,19 @@ describe('history archive', () => {
     });
     expect(JSON.parse((await archive.readTurn('current', 'main', 4))!).user).toBe('用户压缩前的原话');
     expect(search).toHaveBeenCalledOnce();
+  });
+
+  it('keeps bounded history search on conversation text unless tool output is explicit', async () => {
+    const { archive, readColdSnapshotBounded } = fixture(false, true);
+    const base = { workspaceId: 'ws-a', sessionId: 'current', agentId: 'main', pageSize: 8,
+      fallbackSessionId: 'current', fallbackAgentId: 'main' };
+    expect((await archive.search({ ...base, query: '工具原始结果', mode: 'literal' }) as HistorySearchPage).items).toEqual([]);
+    expect((await archive.search({ ...base, query: '工具原始结果', mode: 'literal', includeToolOutput: true }) as HistorySearchPage).items)
+      .toEqual([expect.objectContaining({ role: 'tool', stepId: 't4.2' })]);
+    expect((await archive.search({ ...base, query: '工具原始结果', mode: 'literal', role: 'tool' }) as HistorySearchPage).items)
+      .toEqual([expect.objectContaining({ role: 'tool', stepId: 't4.2' })]);
+    expect((await archive.search({ ...base, query: 'old.txt', mode: 'literal', includeToolOutput: true }) as HistorySearchPage).items).toEqual([]);
+    expect(readColdSnapshotBounded).toHaveBeenCalledTimes(4);
   });
 
   it('applies auto/all/any phrase matching to the bounded transcript domain', async () => {

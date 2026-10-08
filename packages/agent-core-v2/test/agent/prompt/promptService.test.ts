@@ -724,6 +724,7 @@ describe('AgentPromptService', () => {
 
   it.each([
     { field: 'profile', execution: { profile: 'next-profile' } },
+    { field: 'profile-file', execution: { execution: { executor: 'native', profile_file: '/profiles/next.md' } } },
     { field: 'permission', execution: { permissionMode: 'yolo' as const } },
     { field: 'plan', execution: { planGate: 'gated' as const } },
   ])('keeps a queued prompt and the active settings when Send now requires its own turn for $field', async ({ execution }) => {
@@ -1893,6 +1894,21 @@ describe('AgentPromptService', () => {
       expect(holds).toEqual([{ reason: 'recovery', count: 1 }, null]);
       expect(goal.createGoal).toHaveBeenCalledWith({ objective: 'restored objective' });
     });
+  });
+
+  it('applies an explicit file execution only at the next user message launch', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active-file', message: message('active') });
+    await active.launched;
+    const selection = { executor: 'native', profile_file: '/profiles/next.md' };
+    const queued = await prompt.enqueue({ id: 'next-file', message: message('next'), execution: { execution: selection } });
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(queued.state).toBe('pending');
+    loop.settleActive();
+    await queued.launched;
+    expect(profile.bind).toHaveBeenCalledWith({ execution: { ...selection, overrides: { permission_mode: undefined } }, model: undefined, thinking: undefined }, expect.any(Function));
+    loop.settleActive();
+    await queued.completion;
   });
 
   it('applies each queued execution binding only when its turn starts', async () => {

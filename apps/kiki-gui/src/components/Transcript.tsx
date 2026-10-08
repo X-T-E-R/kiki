@@ -156,6 +156,7 @@ import {
   scrollRangeIntoView,
   turnOrdinal,
   type FindHost,
+  type FindItem,
   type FindMatch,
 } from '../lib/timelineFind';
 import {
@@ -4222,6 +4223,7 @@ export function Transcript({
 
   // ---- find in this conversation (Ctrl/⌘+F; lib/timelineFind.ts) ----
   const [findRequest, setFindRequest] = useState<{ prefill?: string; nonce: number } | null>(null);
+  const [findIncludeToolOutput, setFindIncludeToolOutput] = useState(false);
   const findReturnFocusRef = useRef<HTMLElement | null>(null);
   const findStepRef = useRef<((direction: 1 | -1) => void) | null>(null);
   const [findReveal] = useState(createFindRevealStore);
@@ -4231,7 +4233,7 @@ export function Transcript({
   // collapsed line whose members stay in the process view.
   const findItems = useMemo(
     () => (findOpen
-      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'))
+      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'), true)
       : []),
     [findOpen, groupedNodes],
   );
@@ -4278,6 +4280,7 @@ export function Transcript({
   const clearFindPaint = useCallback(() => { paintFindHighlights(findOwner, [], undefined); }, [findOwner]);
   const closeFind = useCallback(() => {
     setFindRequest(null);
+    setFindIncludeToolOutput(false);
     findStepRef.current = null;
     clearFindPaint();
     const target = findReturnFocusRef.current;
@@ -4310,7 +4313,12 @@ export function Transcript({
     }
     const row = findScope(current.match);
     const scope = current.rangeKey === undefined ? row : [...(row?.querySelectorAll<HTMLElement>('[data-content-range-key]') ?? [])].find((element) => element.dataset['contentRangeKey'] === current.rangeKey) ?? null;
-    const all = scope === null ? [] : findRanges(scope, current.pattern);
+    const rangesForItem = (root: HTMLElement | null, item: FindItem): Range[] => {
+      if (root === null) return [];
+      if (item.textSelector === undefined) return findRanges(root, current.pattern);
+      return [...root.querySelectorAll<HTMLElement>(item.textSelector)].flatMap((field) => findRanges(field, current.pattern));
+    };
+    const all = current.rangeKey === undefined ? rangesForItem(scope, current.match.item) : scope === null ? [] : findRanges(scope, current.pattern);
     // An opened row repeats its first line in the summary above the body;
     // the current match is the one in the body the model text came from.
     // Rendering can also drop or add text around the model's (labels,
@@ -4318,13 +4326,13 @@ export function Transcript({
     const inBody = all.filter((candidate) => candidate.startContainer.parentElement?.closest('[data-activity-toggle]') === null);
     const own = inBody.length > 0 ? inBody : all;
     const range = own.length === 0 ? undefined : own[Math.min(current.match.occurrence, own.length - 1)];
-    const others = findRanges(scroll, current.pattern).filter((candidate) =>
+    const others = findItems.filter((item) => !item.toolOutput || findIncludeToolOutput).flatMap((item) => rangesForItem(findScope({ item, occurrence: 0, start: 0 }), item)).filter((candidate) =>
       range === undefined ||
       candidate.compareBoundaryPoints(Range.START_TO_START, range) !== 0 ||
       candidate.compareBoundaryPoints(Range.END_TO_END, range) !== 0);
     paintFindHighlights(findOwner, others, range);
     return range;
-  }, [clearFindPaint, findOwner, findScope]);
+  }, [clearFindPaint, findOwner, findScope, findItems, findIncludeToolOutput]);
   const landFind = useCallback(async (match: FindMatch, pattern: RegExp, contentRange?: { ref: ContentRef; offset: number }): Promise<boolean> => {
     const token = findLandTokenRef.current + 1;
     findLandTokenRef.current = token;
@@ -4682,6 +4690,7 @@ export function Transcript({
       {findRequest !== null ? (
         <FindBar
           items={findItems}
+          onIncludeToolOutputChange={setFindIncludeToolOutput}
           sessionId={sessionIdForLocate}
           agentId={agentId}
           hasMoreHistory={state.hasMoreHistory}

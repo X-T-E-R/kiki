@@ -145,6 +145,14 @@ afterEach(() => {
 });
 
 describe('SSHKaos.create()', () => {
+  it('rejects an absent SFTP canonical home before a null can reach path operations', async () => {
+    const sftp = createSuccessfulSftp();
+    vi.spyOn(sftp, 'realpath').mockImplementation((_path, callback) => callback(undefined, null as unknown as string));
+    const { SSHKaos, state } = await loadSSHModule({ sftp });
+    await expect(SSHKaos.create({ host: 'example.test', username: 'tester' })).rejects.toThrow('SFTP realpath returned no canonical path for "."');
+    expect(state.endCalls).toBe(1);
+  });
+
   it('rejects a close before readiness and releases the failed client', async () => {
     const { SSHKaos } = await loadSSHModule({
       onConnect(client) { queueMicrotask(() => { client.emit('close'); }); },

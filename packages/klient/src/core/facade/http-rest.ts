@@ -137,7 +137,8 @@ export interface HttpRestSearchMessagesBody {
   readonly op?: 'AND' | 'OR';
   readonly container?: { readonly session_id?: string; readonly agent_id?: string };
   readonly workspace_id?: string;
-  readonly role?: 'user' | 'assistant' | 'title';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'title';
+  readonly include_tool_output?: boolean;
   readonly start_time?: number;
   readonly end_time?: number;
   readonly sort?: 'score' | 'time_desc' | 'time_asc';
@@ -150,7 +151,7 @@ export interface HttpRestSearchMessageHit {
   readonly workspace_id: string;
   readonly session_title: string;
   readonly agent_id: string;
-  readonly role: 'user' | 'assistant' | 'title';
+  readonly role: 'user' | 'assistant' | 'tool' | 'title';
   readonly snippet: string;
   readonly time: number;
   readonly turn?: number;
@@ -573,6 +574,7 @@ export interface HttpRestFacade {
 
   readonly agents: {
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
+    previewFile(body: import('@kiki/protocol').PreviewAgentProfileFileRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse>;
     previewExecutorPrompt(name: string, body?: import('@kiki/protocol').ExecutorPromptPreviewRequest): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse>;
     previewModelMenu(name: string, body: import('@kiki/protocol').AgentModelMenuPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').AgentModelMenuPreviewResponse>;
     create(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile>;

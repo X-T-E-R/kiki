@@ -1,5 +1,5 @@
 import { ErrorCodes, Error2 } from '#/errors';
-import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
+import { createShellPathBridge, getShellPathBridge, type ShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 
 import type { Runtime, RuntimeBinding, RuntimeWorkspaceRoots } from './runtime';
 
@@ -28,8 +28,7 @@ export class RuntimeWorkspaceView {
   }
 
   resolve(path: string, cwd = this.workDir, allowExternalAbsolutePath = false): string {
-    const env = this.runtime.environment;
-    const bridged = env.pathClass === 'win32' ? getShellPathBridge(env).fromShellPath(path) : path;
+    const bridged = runtimeShellPathBridge(this.runtime).fromShellPath(path);
     const absolute = this.runtime.path.isAbsolute(bridged);
     const resolved = absolute
       ? this.runtime.path.resolve(bridged)
@@ -55,4 +54,12 @@ function contains(runtime: Runtime, root: string, candidate: string): boolean {
   const relative = runtime.path.relative(root, candidate);
   if (relative === '') return true;
   return relative !== '..' && !relative.startsWith(`..${runtime.path.separator}`) && !runtime.path.isAbsolute(relative);
+}
+
+export function runtimeShellPathBridge(runtime: Runtime): ShellPathBridge {
+  if (!runtime.identity.runtimeId.startsWith('ssh:')) return getShellPathBridge(runtime.environment);
+  return createShellPathBridge(runtime.environment, {
+    isFile: () => false,
+    execFileSync: () => { throw new Error('Remote shell paths cannot be resolved using local executables'); },
+  });
 }

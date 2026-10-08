@@ -234,6 +234,22 @@ export const listNamedAgentProfilesQuerySchema = z.object({
   }
 });
 
+export const previewAgentProfileFileRequestSchema = z.strictObject({
+  path: z.string().trim().min(1),
+  workspace_id: z.string().trim().min(1).optional(),
+  cwd: absoluteCwdSchema.optional(),
+}).superRefine((value, context) => {
+  if (value.workspace_id !== undefined && value.cwd !== undefined) {
+    context.addIssue({ code: 'custom', message: 'workspace_id and cwd are mutually exclusive' });
+  }
+  if (value.workspace_id === undefined && value.cwd === undefined && !/^(?:\/|[a-zA-Z]:[\\/]|\\\\|~[\\/])/.test(value.path)) {
+    context.addIssue({ code: 'custom', message: 'A relative profile path requires cwd or workspace_id' });
+  }
+});
+export const previewAgentProfileFileResponseSchema = z.object({ profile: namedAgentProfileSchema });
+export type PreviewAgentProfileFileRequest = z.infer<typeof previewAgentProfileFileRequestSchema>;
+export type PreviewAgentProfileFileResponse = z.infer<typeof previewAgentProfileFileResponseSchema>;
+
 export const agentCapabilitiesQuerySchema = z.union([
   z.object({
     session_id: z.string().trim().min(1),
