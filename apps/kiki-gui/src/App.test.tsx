@@ -100,6 +100,39 @@ describe('app navigation dirty guard', () => {
   });
 });
 
+describe('discovery route and dirty guard navigation', () => {
+  it('guards transitions to /discover when dirty form is active', () => {
+    const current = { pathname: '/settings/providers', search: '', hash: '' };
+    expect(shouldGuardNavigation(current, '/discover', true)).toBe(true);
+    expect(shouldGuardNavigation(current, '/discover', false)).toBe(false);
+  });
+
+  it('preserves discovery state and prevents route advance when dirty guard rejects', async () => {
+    const { navigateDiscovery } = await import('@kiki/session-core/discovery');
+    const state = {
+      version: 1 as const,
+      contentVersion: 1,
+      lifecycle: 'active' as const,
+      route: 'overview' as const,
+      station: 'workspace' as const,
+      collapsed: false,
+      progress: {},
+    };
+    const context = {
+      online: true,
+      currentHref: '/new',
+      anchors: ['workspace-picker' as const],
+    };
+    const cancelledPort = {
+      navigate: vi.fn(async () => 'cancelled' as const),
+    };
+    const result = await navigateDiscovery(state, { type: 'next' }, context, cancelledPort);
+    expect(result.outcome).toBe('cancelled');
+    expect(result.state.station).toBe('workspace');
+    expect(cancelledPort.navigate).toHaveBeenCalled();
+  });
+});
+
 describe('conversation shell fallback phase', () => {
   it('opens /new as the hero and a session route as settling until its seat registers', () => {
     expect(resolveFallbackPhase(true)).toBe('hero');

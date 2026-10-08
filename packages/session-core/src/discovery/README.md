@@ -1,6 +1,6 @@
 # 发现 Kiki：GUI 消费合同
 
-`@kiki/session-core/discovery` 提供方案 A 的路线目录、可恢复学习进度、页面目标和可试动作。它不挂载 GUI，不调用模型，不创建会话，不安装能力，不修改执行状态。`/discover` 是前端待注册的地图入口；其他目标都是现有生产页面。
+`@kiki/session-core/discovery` 提供方案 A 的路线目录、可恢复学习进度、页面目标和可试动作。它不挂载 GUI，不调用模型，不创建会话，不安装能力，不修改执行状态。GUI 已将地图挂载在 `/discover`；其他目标都是现有生产页面。
 
 ## 页面与状态
 
@@ -35,13 +35,13 @@
 
 `navigateDiscovery` 将显式选路/选站/前后站/续看送入 `DiscoveryNavigationPort.navigate`，只有 `committed` 才提交新位置。取消 dirty 提醒或页面不可达分别返回 `cancelled / unavailable`，保留原位置。收起、离开及学习标记不调用导航端口。传入与当前页面/空间生命周期绑定的 `AbortSignal`；换空间、离开或被新请求替代时取消，迟到回执不会改变进度。
 
-前端适配必须复用 `useGuardedNavigate` 和既有 nav history。当前 `GuardedNavigate` 返回 void，不能把调用返回当作成功；端口应观察目标 visit 已提交/页面已挂载，以及 dirty 对话取消。设置目标保留 `#st-card-*` 和现有 mount 握手，不另起定时器定位。
+前端适配必须复用 `useGuardedNavigate` 和既有 nav history。`GuardedNavigate` 返回 `void | Promise<void>`，不能把调用返回当作成功；端口应观察目标 visit 已提交/页面已挂载，以及 dirty 对话取消。设置目标保留 `#st-card-*` 和现有 mount 握手，不另起定时器定位。
 
 `tryDiscoveryAction` 只执行当前页面可用动作，并等待 `DiscoveryActionPort.perform` 的观察结果。`done` 才记进度；例子和扩展方向链接只记已看过。真实控件或草稿填入成功才记已尝试。草稿动作明确 `send=false / overwrite=false`；适配器执行时再次核实空草稿且无附件，不把提前投影的 `draftEmpty` 当成可覆盖许可。发送、queue/steer、审批和真实 `/kiki-ops` 首任务继续归原 consumer。
 
-## 待 GUI 接线的位置
+## GUI 接线合同
 
-- App 注册 `DISCOVERY_ENTRY_PATH`，侧栏设置上方放永久入口；欢迎末页用目录选择替代九项清单，保持“用真实任务开始”原草稿 handoff。欢迎完成和导览进度分开。
+- App 注册 `DISCOVERY_ENTRY_PATH`，侧栏设置上方放永久入口。欢迎完成和导览进度分开；欢迎末页的目标是简短邀请和一个 `/discover` 主入口，路线、模型连接和真实任务上手留在 Discover 与各自生产页面，不在欢迎末页并列。
 - 在真实页面页头下挂纸签，不占 RightRail、不盖 Composer；窄窗/开始输入/审批时用 `collapsed` 让位。
 - `workspace-picker / materials / work-mode` 接 NewSessionPage/Composer 现有控件；`agent-panel` 接 SessionView 的 `[data-rail-toggle]`；`send-controls` 接运行时真实发送控件，只打开/解释，不发送消息。
 - `memory-scope / capability-detail / board-detail / cron-detail / result-detail / usage-filter` 接各页面现有操作并按实际 mount/data 宣告可用。无数据保留生产空态，本地例子仅放纸签。

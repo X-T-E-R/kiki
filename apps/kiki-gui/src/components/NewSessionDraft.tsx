@@ -28,6 +28,7 @@ import {
   flushDrafts,
   readDraft,
   readNewSessionDraft,
+  subscribeDraftAppends,
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
@@ -645,6 +646,15 @@ export function useNewSessionDraft({
     setDraft(text);
     writeDraft(draftKey, text);
   }, [draftKey]);
+
+  useEffect(
+    () =>
+      subscribeDraftAppends((target) => {
+        if (target !== draftKey) return;
+        setDraft(readDraft(draftKey));
+      }),
+    [draftKey],
+  );
 
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspacesQuery.isPending)

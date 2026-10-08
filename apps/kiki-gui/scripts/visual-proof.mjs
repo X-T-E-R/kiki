@@ -5936,57 +5936,39 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(450);
   await shot('onboarding-1-welcome');
 
-  // Welcome (language + theme, palette, picture on one page) → model.
+  // Welcome (language + theme, palette, picture on one page) → approvals:
+  // there is no model page in between, so the advance lands on the permission
+  // default. Connecting a model is a row on the closing guide, and the settings
+  // card it opens is the connections proofs' subject.
   await wizard().locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
-  await shot('onboarding-2-model-light');
-  await shot('onboarding-2-model');
-  // Back to the welcome page for the theme, then forward again.
+  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
+  if (await wizard().locator('[data-onboarding-model-id]').count() !== 0) {
+    throw new Error('the run must not hold a model form of its own');
+  }
+  await shot('onboarding-2-permissions');
+
+  // The look is applied live from the welcome page, so the dark view is one
+  // Back away rather than a second pass through a connection form.
   await wizardButton(S.onboardingBack).click();
   await wizardButton(job().view.locale === 'zh' ? '暗色' : 'Dark').click();
-  await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
-  await shot('onboarding-2-model-dark');
-  await wizardButton(S.onboardingBack).click();
+  await shot('onboarding-1-welcome-dark');
   await wizardButton(job().view.locale === 'zh' ? '亮色' : 'Light').click();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-
-  // API-key lane: search result → key → server probe → pick a suggested model,
-  // then "Save & continue" persists.
-  await wizard().locator('[data-provider-template="moonshot"]').click();
-  await wizard().locator('input[type="password"]').fill('sk-proof-key');
-  await wizardButton(S.onboardingTest).click();
-  const chip = wizard().locator('[data-model-suggestion="kimi-for-coding"]');
-  await chip.waitFor({ timeout: 5000 });
-  await waitForText(S.onboardingTestedOk);
-  await chip.click();
-  const modelId = await wizard().locator('input[placeholder="model-id"]').inputValue();
-  if (modelId !== 'kimi-for-coding') {
-    throw new Error(`suggestion chip must fill the model input, saw "${modelId}"`);
-  }
-  await shot('onboarding-3-model-form');
+  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
+  await shot('onboarding-2-permissions-light');
 
   // Mobile width: the dialog stays single-column and inside the viewport.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflows) throw new Error('onboarding dialog overflows the mobile viewport');
-  await shot('onboarding-3-model-form-mobile');
+  await shot('onboarding-2-permissions-mobile');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(250);
 
-  await wizardButton(S.onboardingSaveNext).click();
-  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
-  // Saved + advanced: going Back shows the persisted connection read-out.
-  await wizardButton(S.onboardingBack).click();
-  await waitForText(S.onboardingReady);
-  await shot('onboarding-3-model-saved');
-  await wizardButton(S.onboardingNext).click();
   await waitForText(S.onboardingRecommended);
   if (await wizard().locator('[data-workspace-choice]').count() !== 0) {
     throw new Error('onboarding must not ask for a workspace');
@@ -5996,7 +5978,7 @@ async function scenarioFirstRun() {
   if (checked !== 'auto') throw new Error(`permissions step must preselect auto, saw "${checked}"`);
   const offered = await wizard().locator('[data-permission-choice]').count();
   console.log(`[check] onboarding offers ${offered} permission modes`);
-  await shot('onboarding-5-permissions');
+  await shot('onboarding-2-permissions-checked');
 
   // The wizard gained a capabilities page after permissions, so the primary
   // button on the permissions step advances rather than finishes.
@@ -6006,45 +5988,30 @@ async function scenarioFirstRun() {
 
   await wizardButton(S.onboardingFinish).click();
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
-  await page.waitForSelector('textarea', { timeout: 15_000 });
+  // Finish is the hand-off, not a router stop: it opens a real session whose
+  // composer holds the /kiki-ops request, and sends nothing.
+  await page.waitForURL(/\/s\//, { timeout: 15_000 });
+  const composer = page.locator('textarea').first();
+  await composer.waitFor({ timeout: 15_000 });
   await page.waitForTimeout(600);
-  // Finish lands on the /new hero with an EMPTY composer and starter chips.
-  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
-  const draft = await page.locator('textarea').first().inputValue();
-  if (draft !== '') throw new Error(`finish must not prefill the composer, saw "${draft.slice(0, 80)}"`);
-  const starters = await page.locator('[data-hero-starter]').count();
-  if (starters !== 4) throw new Error(`hero must offer 4 starter chips, saw ${starters}`);
-  await page.locator('[data-hero-starter]').first().click();
-  const filled = await page.locator('textarea').first().inputValue();
-  if (filled === '') throw new Error('a starter chip must fill the draft');
-  if (page.url().includes('/s/')) throw new Error('a starter chip must not send');
+  const draft = await composer.inputValue();
+  if (!draft.startsWith('/kiki-ops ')) {
+    throw new Error(`finish must leave the /kiki-ops request waiting in the composer, saw "${draft.slice(0, 80)}"`);
+  }
   await shot('onboarding-6-finished');
   await page.fill('textarea', '');
 
-  // The saved provider seeds the server's default model; the composer must not
-  // greet the first session with a stale "model unavailable" diagnostic.
-  const serverDefault = await page.evaluate(async ([base, token]) => {
-    const res = await fetch(`${base}/api/config`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    return (await res.json()).data?.default_model;
-  }, [fixtureUrl(), FIXTURE_TOKEN]);
+  // Nothing is configured in this fixture and the run no longer creates a
+  // provider, so the first session is expected to say so rather than greet the
+  // user with a stale selection. Creating a provider is the connections proofs'
+  // subject (visual-proof-models-page.mjs), not this walk's.
   const diagnostics = await page.locator('[data-selection-diagnostic]').allTextContents();
-  console.log(`[first-run] server default_model=${JSON.stringify(serverDefault)} diagnostics=${JSON.stringify(diagnostics)}`);
-  if (diagnostics.length !== 0) {
-    throw new Error(`finish leaves a selection diagnostic on /new: ${diagnostics.join(' | ')}`);
-  }
+  console.log(`[first-run] diagnostics on /new with nothing configured=${JSON.stringify(diagnostics)}`);
 
-  // Reload: onboarding stays completed and the saved provider keeps the
-  // wizard from ever auto-opening again.
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
-  await page.waitForTimeout(1200);
-  if ((await page.locator('[role="dialog"]').count()) !== 0) {
-    throw new Error('onboarding wizard reopened after completion');
-  }
-  const diagnosticsAfter = await page.locator('[data-selection-diagnostic]').allTextContents();
-  console.log(`[first-run] diagnostics after reload=${JSON.stringify(diagnosticsAfter)}`);
+  // No reload check here: this fixture's own context script clears
+  // `kiki.onboarding` on every load (that is what makes the wizard auto-open at
+  // all), so a reload cannot prove the run is never offered twice. The rule
+  // itself is `shouldOfferOnboarding`, covered by the unit tests.
 }
 
 // ---------------------------------------------------------------------------

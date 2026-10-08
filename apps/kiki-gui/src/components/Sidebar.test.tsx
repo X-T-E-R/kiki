@@ -1077,12 +1077,13 @@ describe('Sidebar temporary conversations', () => {
 });
 
 describe('Sidebar entry distribution', () => {
-  it('lists the six tool pages in the primary nav, in order', async () => {
+  it('lists the tool pages in the primary nav, in order', async () => {
     const { container } = await mount();
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
     const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.children[1]?.textContent);
-    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities']);
+    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities', 'Discover Kiki']);
+    expect(nav?.querySelector('[data-nav-discover]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
     await settle();
@@ -2322,31 +2323,31 @@ describe('Sidebar room rows', () => {
   });
 });
 
+function stubViewportWidth(width: number): void {
+  vi.stubGlobal('matchMedia', (query: string) => {
+    const minWidth = /\(min-width:\s*(\d+)px\)/.exec(query);
+    const maxWidth = /\(max-width:\s*(\d+)px\)/.exec(query);
+    return {
+      matches: minWidth !== null
+        ? width >= Number(minWidth[1])
+        : maxWidth !== null
+          ? width <= Number(maxWidth[1])
+          : false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    };
+  });
+}
+
 describe('collapsed icon rail', () => {
   // The two breakpoints the sidebar reads: desktop starts at 768px, the
   // automatic collapse runs until 1280px. A stored sidebarCollapsed override
   // wins over both.
-  function stubViewportWidth(width: number): void {
-    vi.stubGlobal('matchMedia', (query: string) => {
-      const minWidth = /\(min-width:\s*(\d+)px\)/.exec(query);
-      const maxWidth = /\(max-width:\s*(\d+)px\)/.exec(query);
-      return {
-        matches: minWidth !== null
-          ? width >= Number(minWidth[1])
-          : maxWidth !== null
-            ? width <= Number(maxWidth[1])
-            : false,
-        media: query,
-        onchange: null,
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        addListener: () => {},
-        removeListener: () => {},
-        dispatchEvent: () => false,
-      };
-    });
-  }
-
   it('collapses to the icon rail by default between 768px and 1279px', async () => {
     stubViewportWidth(1100);
     const { container } = await mount();
@@ -2418,4 +2419,26 @@ it('keeps time-group headings in nonshrinking normal flow instead of overlaying 
     expect(heading.querySelector('span')?.classList.contains('truncate')).toBe(true);
   }
   expect(container.querySelectorAll('[data-session-group]')).toHaveLength(2);
+});
+
+describe('sidebar discovery navigation', () => {
+  it('renders discovery navigation item in primary nav and collapsed rail', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false });
+    });
+    const { container } = await mount();
+    const discoverBtn = container.querySelector<HTMLButtonElement>('[data-nav-discover]');
+    expect(discoverBtn).not.toBeNull();
+    expect(discoverBtn?.textContent).toMatch(/Discover Kiki|发现 Kiki/);
+
+    // Collapsed rail check
+    await act(async () => {
+      stubViewportWidth(1100);
+      writeLayoutPreferences({ sidebarCollapsed: true });
+    });
+    const collapsed = await mount();
+    const railDiscover = collapsed.container.querySelector<HTMLButtonElement>('[data-sidebar-rail] [data-nav-discover]');
+    expect(railDiscover).not.toBeNull();
+    expect(railDiscover?.getAttribute('title')).toMatch(/Discover Kiki|发现 Kiki/);
+  });
 });

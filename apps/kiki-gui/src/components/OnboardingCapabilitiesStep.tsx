@@ -238,16 +238,28 @@ function CapabilityRow({ item, askingId, onOpen, onAsk, onInstall, feedback }: {
 /**
  * The page itself. `onAsk` resolves when the session exists (the wizard has
  * closed by then) or rejects with a readable message for the row.
+ *
+ * The model connection closes the guide: the routes are the look around, and
+ * running anything needs a connection, so the row states the current one, from
+ * the server's own probes, and opens the Connections card that already owns
+ * sign-in and the API-key form. It is a row here, not a step — nothing is
+ * required and nothing is blocked.
  */
-export function OnboardingCapabilitiesStep({ onOpen, onAsk }: {
+import { DISCOVERY_ROUTES, type DiscoveryRouteId } from '@kiki/session-core/discovery';
+
+import { MODEL_SETTINGS_HREF, ModelConnectionEntry, useModelConnection } from './discovery';
+
+export function OnboardingCapabilitiesStep({ onOpen, onAsk, onStartDiscovery }: {
   readonly onOpen: (href: string) => void;
   readonly onAsk: (prompt: string) => Promise<void>;
+  readonly onStartDiscovery?: (routeId: DiscoveryRouteId) => void;
 }) {
   const { t } = useI18n();
   const [askingId, setAskingId] = useState<string | null>(null);
   const [failed, setFailed] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const [installing, setInstalling] = useState<HostSkillTarget | null>(null);
   const [installed, setInstalled] = useState<Partial<Record<HostSkillTarget, string>>>({});
+  const modelConnection = useModelConnection();
 
   const ask = (id: string, prompt: string) => {
     setAskingId(id);
@@ -304,6 +316,81 @@ export function OnboardingCapabilitiesStep({ onOpen, onAsk }: {
           }}
         />
       ) : null}
+
+      <div className="mt-6 border-t border-hairline pt-4" data-onboarding-discovery-section>
+        <div>
+          <h4 className="font-display text-[14px] font-semibold text-ink">
+            {t('discovery.welcome.title')}
+          </h4>
+          <p className="mt-0.5 text-[12px] text-ink-soft">
+            {t('discovery.welcome.body')}
+          </p>
+        </div>
+
+        {(() => {
+          const overviewRoute = DISCOVERY_ROUTES.find((r) => r.id === 'overview');
+          const interestRoutes = DISCOVERY_ROUTES.filter((r) => r.id !== 'overview');
+          return (
+            <>
+              {overviewRoute !== undefined ? (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    data-discovery-onboarding-overview
+                    onClick={() => { onStartDiscovery?.(overviewRoute.id); }}
+                    className="flex w-full items-center justify-between rounded-xl border border-accent/40 bg-accent-soft/20 p-3 text-left transition-colors hover:bg-accent-soft/30 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                  >
+                    <div className="min-w-0">
+                      <span className="flex items-center gap-1.5 text-[13px] font-semibold text-accent-ink">
+                        <Icon name="compass" size={14} />
+                        {t(overviewRoute.titleKey)}
+                      </span>
+                      <span className="mt-0.5 block text-[12px] text-ink-soft">
+                        {t(overviewRoute.summaryKey)}
+                      </span>
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded-md bg-accent-ink px-2.5 py-1 text-[12px] font-medium text-paper shrink-0">
+                      {t('discovery.title')}
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-2" data-discovery-onboarding-interest-routes>
+                {interestRoutes.map((route) => (
+                  <button
+                    key={route.id}
+                    type="button"
+                    data-discovery-onboarding-route={route.id}
+                    onClick={() => { onStartDiscovery?.(route.id); }}
+                    className="flex flex-col justify-between rounded-xl border border-hairline bg-paper p-3 text-left shadow-[var(--kiki-sheet-shadow)] transition-colors hover:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                  >
+                    <div>
+                      <span className="text-[13px] font-medium text-ink">
+                        {t(route.titleKey)}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-soft">
+                        {t(route.summaryKey)}
+                      </span>
+                    </div>
+                    <span className="mt-2 text-[11px] font-medium text-selected-ink">
+                      {t('discovery.title')} →
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          );
+        })()}
+
+        {/* The map is the look around; this is what makes it runnable. */}
+        <div className="mt-4 border-t border-hairline pt-4" data-onboarding-model-connection>
+          <ModelConnectionEntry
+            info={modelConnection}
+            onOpen={() => { onOpen(MODEL_SETTINGS_HREF); }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

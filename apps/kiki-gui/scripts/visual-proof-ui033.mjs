@@ -1,16 +1,11 @@
 /**
  * Visual proof for the 0.3.3 fixes: the paths that were broken and silent.
  *
- *   node scripts/visual-proof-ui033.mjs [--only=onboarding-model-picker] [--matrix=width]
+ *   node scripts/visual-proof-ui033.mjs [--only=engine-visibility] [--matrix=width]
  *
  * Every check here is an assertion about something that used to fail with no
  * error at all, which is why a green test run was not evidence:
  *
- *  - onboarding-model-picker — the wizard's model dropdown painted *under* the
- *    dialog, so the list was in the DOM and dead on screen. Checked by asking
- *    the page what actually paints on top at the panel's own coordinates.
- *  - onboarding-model-empty — the empty state before any fetch, and after a
- *    fetch that reported nothing: two different sentences.
  *  - onboarding-set-up-later — "Set up later" steps past the current step and
  *    keeps the run open; on the last step it still closes.
  *  - engine-visibility — an engine nobody configured is not offered; hiding one
@@ -29,22 +24,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEXT = {
   en: {
-    next: 'Next',
-    skipForNow: 'Skip for now',
     setUpLater: 'Set up later',
     closeSetup: 'Close setup',
-    testConnection: 'Test connection',
-    finish: 'Let Kiki set it up',
-    manual: 'Enter it yourself',
   },
   zh: {
-    next: '下一步',
-    skipForNow: '暂时跳过',
     setUpLater: '稍后配置',
     closeSetup: '关闭引导',
-    testConnection: '测试连接',
-    finish: '让 Kiki 帮你配置',
-    manual: '自己输入',
   },
 };
 
@@ -71,78 +56,6 @@ async function openWizard(page) {
   await wizard.waitFor({ timeout: 20_000 });
   await page.waitForTimeout(450);
   return wizard;
-}
-
-/** Welcome → the model step, through the wizard's own advance. */
-async function toModelStep(page, wizard, text) {
-  await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 8000 });
-  await wizard.getByRole('button', { name: text.next, exact: true }).click();
-  await wizard.locator('[data-connection-choice]').first().waitFor({ timeout: 8000 });
-}
-
-/** The manual lane, where the API-key form with its model picker lives. */
-async function toProviderForm(page, wizard) {
-  // The dense onboarding path already opens on "Enter it myself"; only switch
-  // when the directory tab is the one showing.
-  const manual = wizard.locator('[data-connection-source-choice="manual"]');
-  if (await manual.count() > 0 && await manual.getAttribute('aria-selected') !== 'true') {
-    await manual.click();
-  }
-  // The vendor rows only appear after a directory search; the protocol list is
-  // the always-present way into the same form.
-  await wizard.locator('[data-provider-protocol]').first().waitFor({ timeout: 8000 });
-  await wizard.locator('[data-provider-protocol]').first().click();
-  await wizard.locator('#onboarding-provider-model').waitFor({ timeout: 8000 });
-  await page.waitForTimeout(250);
-}
-
-/**
- * What actually paints on top, at a point inside the element.
- *
- * A present-in-the-DOM list can still be invisible, so the only honest check is
- * the browser's own hit test: the panel has to be the element the pointer
- * reaches. That is what failed before, and it is why this is a rendered
- * check rather than a DOM-existence assertion.
- */
-async function topmostAt(page, selector) {
-  return page.evaluate((target) => {
-    const node = document.querySelector(target);
-    if (node === null) return { found: false };
-    const rect = node.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return { found: true, zeroSized: true };
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return {
-      found: true,
-      zeroSized: false,
-      reachable: hit !== null && node.contains(hit),
-      hitTag: hit?.tagName ?? null,
-      panelZ: node instanceof HTMLElement ? getComputedStyle(node).zIndex : null,
-    };
-  }, selector);
-}
-
-/** The wizard's model dropdown: open it and assert the list is really usable. */
-async function modelPickerIsUsable(page, wizard) {
-  await wizard.locator('#onboarding-provider-model').click();
-  const panel = page.locator('[data-select-panel]');
-  await panel.waitFor({ timeout: 8000 });
-  await page.waitForTimeout(300);
-
-  const topmost = await topmostAt(page, '[data-select-panel]');
-  expect(topmost.found && !topmost.zeroSized, 'the model panel must have a real box');
-  expect(topmost.reachable, `the model panel must be the topmost element where it is drawn (hit ${topmost.hitTag}, z ${topmost.panelZ})`);
-
-  // A click on a visible option row must actually commit.
-  const rows = panel.locator('[role="option"]');
-  if (await rows.count() > 0) {
-    const first = await rows.first().getAttribute('data-option-value');
-    await rows.first().click();
-    await page.waitForTimeout(250);
-    const value = await wizard.locator('#onboarding-provider-model').getAttribute('data-onboarding-model-id');
-    expect(value !== null, 'the model trigger must exist after committing');
-    expect(first !== null, 'the clicked row must carry a value');
-  }
-  return topmost;
 }
 
 /**
@@ -346,72 +259,13 @@ const scenarios = [
     },
   },
   {
-    name: 'onboarding-model-picker',
-    fixture: 'first-run',
-    onboarding: false,
-    matrix: ['width'],
-    async run({ page, view, shot }) {
-      const text = TEXT[view.locale];
-      const wizard = await openWizard(page);
-      await toModelStep(page, wizard, text);
-      await shot('ui033-1-model-step');
-      await toProviderForm(page, wizard);
-      await shot('ui033-2-provider-form');
-      const topmost = await modelPickerIsUsable(page, wizard);
-      await shot('ui033-3-model-picker-open');
-      // The options list is the whole point of the control; a shot that shows
-      // the dialog but not the list over it is exactly the failure.
-      expect(topmost.reachable, 'model options must be visible above the wizard');
-    },
-  },
-  {
-    name: 'onboarding-model-empty',
-    fixture: 'first-run',
-    onboarding: false,
-    async run({ page, view, shot }) {
-      const text = TEXT[view.locale];
-      const wizard = await openWizard(page);
-      await toModelStep(page, wizard, text);
-      await toProviderForm(page, wizard);
-
-      // Before any fetch the trigger already says the list has not been read
-      // yet — it must not claim the provider reported nothing.
-      const triggerBefore = await wizard.locator('#onboarding-provider-model').innerText();
-      await wizard.locator('#onboarding-provider-model').click();
-      await page.waitForSelector('[data-select-panel]', { timeout: 8000 });
-      const panelBefore = await page.locator('[data-select-panel]').innerText();
-      await shot('ui033-4-model-empty-before-fetch');
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(200);
-
-      // After a fetch that reported nothing, the provider's answer is the fact.
-      // The form needs an address first: "Test connection" is disabled without
-      // one, which is itself the correct behaviour.
-      await wizard.locator('#onboarding-provider-base-url').fill('https://api.example.test/v1');
-      await wizard.getByRole('button', { name: text.testConnection, exact: true }).click();
-      await page.waitForTimeout(1200);
-      await wizard.locator('#onboarding-provider-model').click();
-      await page.waitForSelector('[data-select-panel]', { timeout: 8000 });
-      const triggerAfter = await wizard.locator('#onboarding-provider-model').innerText();
-      const panelAfter = await page.locator('[data-select-panel]').innerText();
-      await shot('ui033-5-model-empty-after-fetch');
-      // The fixture answers with one model, so after the fetch there is a real
-      // option and the "not read yet" claim is gone either way. The rule under
-      // test is that the two empty states are different sentences.
-      const notFetched = 'No models listed yet';
-      expect(triggerBefore.includes(notFetched), `before any fetch the trigger must say the list is unread (saw ${JSON.stringify(triggerBefore)})`);
-      expect(!panelAfter.includes(notFetched), `after a fetch the unread-list wording must be gone (saw ${JSON.stringify(panelAfter)})`);
-      expect(triggerBefore !== triggerAfter || panelBefore !== panelAfter, 'the model control must react to the probe');
-    },
-  },
-  {
     name: 'onboarding-set-up-later',
     fixture: 'first-run',
     onboarding: false,
     async run({ page, view, shot }) {
       const text = TEXT[view.locale];
       const wizard = await openWizard(page);
-      await toModelStep(page, wizard, text);
+      await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 8000 });
 
       // "Set up later" is about this step, so it steps past it and keeps going.
       await wizard.getByRole('button', { name: text.setUpLater, exact: true }).click();

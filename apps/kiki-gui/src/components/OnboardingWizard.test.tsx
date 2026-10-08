@@ -2,13 +2,14 @@
 
 /**
  * OnboardingWizard — the first-run dialog: the auto-popup decision rule
- * (shouldOfferOnboarding), the four-step walk, the save semantics of every
- * advance ("Save & continue" persists the provider form; finish persists the
- * permission default), exit-and-re-entry state, and the finish hand-off
- * (/new hero with its own target default, nothing prefilled or sent).
+ * (shouldOfferOnboarding), the three-step walk (nothing here configures a
+ * model: the guide states the current connection and opens the real Settings
+ * card that owns it), the save semantics of every advance (finish persists the
+ * permission default), exit state, and the finish hand-off (/new hero with its
+ * own target default, nothing prefilled or sent).
  */
 
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,9 +18,14 @@ import type { AuthSummary } from '@kiki/protocol';
 import { clearStoredDrafts, readDraft, readNewSessionDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { readSettings } from '@kiki/session-core/settings';
 
+import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
+
 import { I18nProvider } from '../i18n';
 import { readSkinPrefs } from '../lib/skins';
 import { PERMISSION_MODES } from '../lib/permissionModes';
+import { ConfirmDialog } from './ConfirmDialog';
+import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
+import { DiscoveryPage, DiscoveryProvider } from './discovery';
 import {
   OnboardingWizard,
   requestOnboardingOpen,
@@ -68,26 +74,24 @@ vi.mock('../state/connection', () => ({
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
 }));
-vi.mock('./dirtyGuard', () => ({
-  useGuardedNavigate: () => navigate,
-  useDirtyReporter: () => {},
-}));
+vi.mock('./dirtyGuard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./dirtyGuard')>();
+  const { useContext } = await import('react');
+  return {
+    ...actual,
+    useGuardedNavigate: () => {
+      const ctx = useContext(actual.DirtyGuardContext);
+      return ctx?.navigate ?? navigate;
+    },
+    useDirtyReporter: () => {},
+  };
+});
 
 const AUTH_EMPTY: AuthSummary = {
   ready: false,
   providers_count: 0,
   default_model: null,
   managed_provider: null,
-};
-
-/** The provider row the fixture "server" holds after a create. */
-const SAVED_PROVIDER = {
-  id: 'kimi',
-  type: 'kimi',
-  base_url: 'https://api.moonshot.ai/v1',
-  status: 'connected',
-  has_api_key: true,
-  default_model: 'kimi-for-coding',
 };
 
 const containers: HTMLDivElement[] = [];
@@ -135,8 +139,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount();
+afterEach(async () => {
+  for (const root of roots.splice(0)) {
+    await act(async () => { root.unmount(); });
+  }
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -170,6 +176,7 @@ async function mount(onClose: () => void = () => {}): Promise<HTMLDivElement> {
 async function click(element: Element): Promise<void> {
   await act(async () => {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -201,30 +208,6 @@ function buttonByText(text: string): HTMLElement {
   );
   if (button === undefined) throw new Error(`button "${text}" not found`);
   return button;
-}
-
-function inputByPlaceholder(placeholder: string): HTMLInputElement {
-  const input = [...dialog().querySelectorAll('input')].find(
-    (candidate) => candidate.placeholder === placeholder,
-  );
-  if (input === undefined) throw new Error(`input "${placeholder}" not found`);
-  return input;
-}
-
-async function typeInto(input: HTMLInputElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-  await act(async () => {
-    setter?.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-}
-
-async function typeIntoTextArea(input: HTMLTextAreaElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-  await act(async () => {
-    setter?.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
 }
 
 /**
@@ -261,47 +244,6 @@ function restoreStepScroller(): void {
     Reflect.deleteProperty(HTMLElement.prototype, key);
   }
   resizeCallbacks.length = 0;
-}
-
-/**
- * Choose a model id the way the form is used: open the combobox, and commit
- * either a listed row or, when the id is not listed, the custom row the search
- * itself offers.
- */
-async function pickModelId(remoteId: string): Promise<void> {
-  const trigger = dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')
-    ?? dialog().querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]');
-  if (trigger === null) throw new Error('model combobox trigger not found');
-  await act(async () => { trigger.click(); });
-  // The option panel is portalled to the body, so it is queried from the
-  // document, exactly as SearchableSelect's own tests do.
-  const panel = document.querySelector<HTMLElement>('[data-select-panel]');
-  if (panel === null) throw new Error('model combobox panel not open');
-  const filter = panel.querySelector<HTMLInputElement>('input[role="combobox"]');
-  if (filter === null) throw new Error('model combobox has no filter input');
-  await typeInto(filter, remoteId);
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  // A listed candidate is a data-option-value row; an id the provider never
-  // listed is the custom row, which is identified by its title instead.
-  const row = [...document.querySelectorAll('[data-option-value], [data-select-panel] [role="option"]')]
-    .find((node) => node.getAttribute('data-option-value') === remoteId
-      || node.getAttribute('title') === remoteId);
-  if (row === undefined) throw new Error('model option not offered: ' + remoteId);
-  await act(async () => { (row as HTMLElement).click(); });
-}
-
-/** Walk from the welcome page (language + appearance) onto the model step. */
-async function toModelStep(): Promise<void> {
-  await click(buttonByText('Next'));
-  await flush();
-}
-
-/** Fill the template → key → model id path on the model step. */
-async function fillProviderForm(): Promise<void> {
-  await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-  await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-  await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-  await pickModelId('kimi-for-coding');
 }
 
 describe('shouldOfferOnboarding', () => {
@@ -342,13 +284,16 @@ describe('manual re-entry channel', () => {
   });
 });
 
-/** Welcome → model → (skip) → approvals. */
+/**
+ * Welcome → approvals: the one advance moves straight to the permission
+ * default, which is the second of three steps.
+ */
 async function toPermissionsStep(): Promise<void> {
-  await toModelStep();
-  await click(buttonByText('Skip for now'));
+  await click(buttonByText('Next'));
+  await flush();
 }
 
-/** … → approvals → (Next saves the mode) → capabilities. */
+/** … → approvals → (Next saves the mode) → the guide. */
 async function toCapabilitiesStep(): Promise<void> {
   await toPermissionsStep();
   await click(buttonByText('Next'));
@@ -359,7 +304,7 @@ describe('OnboardingWizard', () => {
   it('opens on one welcome page: language and appearance together', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
-    expect(dialog().textContent).toContain('Step 1 of 4');
+    expect(dialog().textContent).toContain('Step 1 of 3');
     expect(dialog().textContent).toContain('Language and look');
     expect(dialog().querySelector('[data-onboarding-welcome] [aria-labelledby="onboarding-language-label"]')).not.toBeNull();
     expect(dialog().querySelector('[data-onboarding-welcome] [data-onboarding-appearance]')).not.toBeNull();
@@ -385,413 +330,22 @@ describe('OnboardingWizard', () => {
 
   it('walks forward and back through the setup steps', async () => {
     await mount();
-    await toModelStep();
-    expect(dialog().textContent).toContain('Step 2 of 4');
-    // One entry: choose API key or account first, then protocol or method.
-    expect(dialog().querySelectorAll('[data-connection-choice]')).toHaveLength(2);
-    expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
-    expect(dialog().querySelector('[data-provider-template="anthropic"]')).toBeNull();
-    await click(dialog().querySelector('[data-connection-choice="account"]')!);
-    await flush();
-    expect(dialog().querySelectorAll('[data-oauth-method]')).toHaveLength(3);
-    expect(dialog().querySelector('[data-provider-protocol]')).toBeNull();
-
-    await click(buttonByText('Skip for now'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    // The welcome page is the only look step: nothing configures a model here,
+    // so the next page is already the permission default.
+    await toPermissionsStep();
+    expect(dialog().textContent).toContain('Step 2 of 3');
     expect(dialog().textContent).toContain('How much should Kiki do on its own?');
 
-    await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 2 of 4');
-    await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 1 of 4');
-    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
-  });
-
-  it('uses the selected account method rather than implicitly signing in with Kimi', async () => {
-    await mount();
-    await toModelStep();
-    await click(dialog().querySelector('[data-connection-choice="account"]')!);
-    await flush();
-    await click(dialog().querySelector('[data-oauth-method="github-copilot"] button')!);
-    expect(startOAuthLogin).toHaveBeenCalledWith({ provider: 'github-copilot' });
-  });
-
-  it('labels the model step advance "Skip for now" until a provider connects', async () => {
-    await mount();
-    await toModelStep();
-    await click(buttonByText('Skip for now'));
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 3 of 4');
-  });
-
-  it('keeps the advance as Next while adding another provider to an existing connection', async () => {
-    listProviders.mockResolvedValue({ items: [SAVED_PROVIDER] });
-    await mount();
-    await toModelStep();
-    expect(dialog().textContent).toContain('A model provider is connected');
-    expect(dialog().querySelector('[data-preset-grid]')).toBeNull();
-    expect(dialog().querySelector('[data-account-sign-in]')).toBeNull();
-    await click(buttonByText('Change or add another connection'));
-    expect(dialog().textContent).not.toContain('A model provider is connected');
-    expect(dialog().querySelectorAll('[data-provider-protocol]')).toHaveLength(5);
-    await click(dialog().querySelector('[data-connection-choice="account"]')!);
-    expect(dialog().querySelector('[data-account-sign-in]')).not.toBeNull();
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
-    expect(createProvider).not.toHaveBeenCalled();
-  });
+    await flush();
+    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().querySelector('[data-onboarding-discovery-section]')).not.toBeNull();
 
-  it('saves a model id the provider never listed, and saves it without a picker', async () => {
-    // The provider reported nothing (the probe failed, or the id is private):
-    // the field is still a real text field, and the value is what gets written.
-    probeProviderDraft.mockResolvedValue([]);
-    await mount();
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-custom');
-    expect(dialog().querySelector('#onboarding-model-picker')).toBeNull();
-    await pickModelId('my-private-model');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['default_model']).toBe('my-private-model');
-    expect(body['models']).toEqual([expect.objectContaining({ remote_id: 'my-private-model' })]);
-  });
-
-  it('offers every reported model, however many the provider lists', async () => {
-    // The provider can list far more models than fit on the first screen. The
-    // list is filtered, not truncated, so a model past any page boundary is
-    // still findable by typing part of its id.
-    const many = Array.from({ length: 120 }, (_, index) => ({
-      id: '',
-      remoteId: `kimi-model-${String(index).padStart(3, '0')}`,
-      maxContextSize: 131072,
-      displayName: '',
-      capabilities: ['thinking'],
-      supportEfforts: [],
-      requestIdentityChoice: 'inherit' as const,
-      requestIdentityOverridesJson: '',
-      imageAcceptedTypes: null,
-      imageConvertUnsupported: null,
-    }));
-    probeProviderDraft.mockResolvedValue(many);
-    await mount();
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-many');
-    await click(buttonByText('Test connection'));
-    await flush();
-    await act(async () => { dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')!.click(); });
-    await flush();
-    const filter = document.querySelector<HTMLInputElement>('[data-select-panel] input[role="combobox"]')!;
-    // The last of 120 is reachable: nothing was cut before the search saw it.
-    await typeInto(filter, 'kimi-model-119');
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect([...document.querySelectorAll('[data-option-value]')].map((n) => n.getAttribute('data-option-value')))
-      .toEqual(['kimi-model-119']);
-    await act(async () => {
-      (document.querySelector('[data-option-value="kimi-model-119"]') as HTMLElement).click();
-    });
-    expect(dialog().querySelector('#onboarding-provider-model')?.textContent).toContain('kimi-model-119');
-  });
-
-  it('saves the auto-compact threshold beside the window, and inherits when left empty', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    // Empty is a real state meaning "inherit", not a zero threshold.
-    expect(threshold.value).toBe('');
-    expect(threshold.placeholder).toBe('Inherit');
-    await typeInto(threshold, '90000');
-    await act(async () => { threshold.focus(); threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['models']).toEqual([
-      expect.objectContaining({ remote_id: 'kimi-for-coding', auto_compact: 90000 }),
-    ]);
-  });
-
-  it('refuses to save an auto-compact value the field rejected, and does not step on', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    // The real order a person uses: focus, then type, then leave the field.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '0');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    // Zero is not a threshold, and a share of the window is not a token count.
-    // The mistake stays on screen with its reason; it is not quietly turned into
-    // an inherited value.
-    expect(threshold.value).toBe('0');
-    expect(threshold.getAttribute('aria-invalid')).toBe('true');
-    expect(dialog().textContent).toContain('Use a whole number of tokens, 1 or more.');
-    // Save is refused: nothing is created and the wizard stays on this step.
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 2 of 4');
-    // The rejected text is still there to be corrected, not replaced.
-    expect(threshold.value).toBe('0');
-  });
-
-  it('reports a bad auto-compact once, in its own field, and only refuses the save', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '75%');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
-    await click(buttonByText('Save & continue'));
-    await flush();
-    // The field owns this message, and the refused save adds no second copy
-    // under the form: one mistake, one place saying it.
-    const alerts = [...dialog().querySelectorAll('[role="alert"]')];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0]!.textContent).toBe('Use a whole number of tokens, 1 or more.');
-    expect(alerts[0]!.hasAttribute('data-field-issue')).toBe(true);
-    // The save is refused and the caret goes back to the mistake.
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 2 of 4');
-    expect(document.activeElement).toBe(threshold);
-    expect(threshold.value).toBe('75%');
-    // Correcting it clears the message, and the very next save goes through
-    // once: the refused one left nothing behind to clear or re-show.
-    await typeInto(threshold, '90000');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
-    expect(dialog().querySelectorAll('[role="alert"]')).toHaveLength(0);
-    expect(threshold.getAttribute('aria-invalid')).toBe(null);
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(createProvider.mock.calls[0]![0]).toMatchObject({
-      models: [expect.objectContaining({ auto_compact: 90000 })],
-    });
-  });
-
-  it('reports a never-left auto-compact in its field too, without a form-level copy', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    // No blur ever runs, so the field's own commit never saw this text. The
-    // message still belongs to the field, and still appears exactly once.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '90k');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const alerts = [...dialog().querySelectorAll('[role="alert"]')];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0]!.hasAttribute('data-field-issue')).toBe(true);
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(threshold);
-  });
-
-  it('keeps a real save failure visible, and does not let a field mistake hide it', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    // A failure the person must act on is not cleared by a later field edit.
-    createProvider.mockRejectedValueOnce(new Error('server offline'));
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain('server offline');
-    // Typing into the threshold must not wipe that real reason.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '75%');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
-    expect(dialog().textContent).toContain('server offline');
-    // Correcting the field and retrying reaches the create again.
-    await typeInto(threshold, '90000');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(2);
-  });
-
-  it('refuses a bad auto-compact even when the field was never left', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    // Typed and left as-is: no blur ever runs, so nothing but the live text can
-    // tell the save that this is not a number.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '90k');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 2 of 4');
-  });
-
-  it('saves a corrected auto-compact value, and an emptied one goes back to inheriting', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '75%');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(threshold.getAttribute('aria-invalid')).toBe('true');
-    // Correcting it in place, the way a person fixes a mistake, then saving.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '90000');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(threshold.getAttribute('aria-invalid')).toBe(null);
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['models']).toEqual([expect.objectContaining({ auto_compact: 90000 })]);
-  });
-
-  it('drops an emptied auto-compact back to inheriting, and that is what it saves', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    const threshold = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-auto-compact]')!;
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '90000');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(threshold.value).toBe('90000');
-    // Clearing it is a deliberate act, and it returns to the inherited default.
-    await act(async () => { threshold.focus(); });
-    await typeInto(threshold, '');
-    await act(async () => { threshold.blur(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    const models = body['models'] as Array<Record<string, unknown>>;
-    expect(models[0]!['auto_compact']).toBeUndefined();
-  });
-
-  it('draws the identity choice once, in the base form, and keeps Advanced to the override body', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // The base form owns the only identity selector: the same one, drawn once.
-    expect(dialog().querySelectorAll('[data-request-identity-choice]')).toHaveLength(1);
-    const toggle = dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!;
-    await click(toggle);
-    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
-    // Advanced adds the hand-written override body and nothing that repeats the
-    // selector the form above already shows.
-    expect(body.querySelector('[data-request-identity-choice]')).toBeNull();
-    expect(dialog().querySelectorAll('[data-request-identity-choice]')).toHaveLength(1);
-  });
-
-  it('lets the base identity selector show the states the override body can leave behind', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // Advanced edits can leave the layer on a manual-override or no-identity
-    // state. Both are reachable, so the base selector offers them instead of
-    // rendering blank for a value it does not have.
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
-    await flush();
-    const offered = [...document.querySelectorAll('[data-option-value]')]
-      .map((node) => node.getAttribute('data-option-value'));
-    expect(offered).toContain('custom_overrides');
-    expect(offered).toContain('none');
-    expect(offered).toContain('opencode_compatible');
-  });
-
-  it('gives Advanced real work once an identity is set: the override body and a way back', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // Choose an identity in the base form, so the layer is authored.
-    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
-    await flush();
-    await act(async () => {
-      (document.querySelector('[data-option-value="codex_compatible"]') as HTMLElement).click();
-    });
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    // Now there is a body to edit and a control that clears it, rather than an
-    // empty disclosure.
-    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
-    expect(body.querySelector('textarea')).not.toBeNull();
-    expect(body.textContent).toContain('Clear layer');
-  });
-
-  it('opens Advanced onto a real override body even while the identity is inherited', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // Nothing has chosen a preset, so the layer is still inherited. The
-    // disclosure still has a body, because there is a body to write exactly
-    // once and the person should not have to guess a preset first.
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    const body = dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
-    const area = body.querySelector<HTMLTextAreaElement>('textarea')!;
-    expect(area).not.toBeNull();
-    // Still inherited: an untouched body has nothing to clear back.
-    expect(body.textContent).not.toContain('Clear layer');
-    await typeIntoTextArea(area, '{"client":{"user_agent":"host"}}');
-    // Writing is what authors the layer, and it uses the state the contract
-    // already has for a hand-written body, not a new one.
-    const trigger = dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!;
-    expect(trigger.textContent).toContain('Custom overrides only');
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    expect(dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!.textContent)
-      .toContain('Clear layer');
-    // And the save carries that body rather than an empty layer.
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    const sent = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(sent['request_identity']).toMatchObject({ overrides: { client: { user_agent: 'host' } } });
-  });
-
-  it('keeps an override-only layer honest when the body is emptied, and clears it deliberately', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    await click(dialog().querySelector<HTMLButtonElement>('[data-onboarding-advanced-toggle]')!);
-    const body = () => dialog().querySelector<HTMLElement>('[data-onboarding-advanced-body]')!;
-    await typeIntoTextArea(body().querySelector<HTMLTextAreaElement>('textarea')!, '{"cache":{"source":"session"}}');
-    // Deleting the text leaves the override-only state, which says it needs a
-    // non-empty object, and the save is refused for that reason rather than
-    // quietly dropping the layer the person was editing.
-    await typeIntoTextArea(body().querySelector<HTMLTextAreaElement>('textarea')!, '');
-    expect(dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!.textContent)
-      .toContain('Custom overrides only');
-    expect(body().textContent).toContain('non-empty object');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    // Clearing is the deliberate way back, and it lands on the inherited layer
-    // that sends no identity at all.
-    const clear = [...body().querySelectorAll('button')]
-      .find((candidate) => candidate.textContent === 'Clear layer');
-    expect(clear).toBeDefined();
-    await click(clear!);
-    expect(dialog().querySelector<HTMLElement>('[data-request-identity-choice] button')!.textContent)
-      .toContain('Inherit global default');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    expect((createProvider.mock.calls[0]![0] as Record<string, unknown>)['request_identity']).toBeUndefined();
+    await click(buttonByText('Back'));
+    expect(dialog().textContent).toContain('Step 2 of 3');
+    await click(buttonByText('Back'));
+    expect(dialog().textContent).toContain('Step 1 of 3');
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
   });
 
   it('says there is more below from the first frame, and stops saying so at the end', async () => {
@@ -800,7 +354,6 @@ describe('OnboardingWizard', () => {
       // A step taller than its own box, before any pointer has touched it.
       stepGeometry.contentHeight = 900;
       await mount();
-      await toModelStep();
       expect(dialog().querySelector('[data-onboarding-scroll-more]')).not.toBeNull();
       // Content that later fits has nothing below it, and saying otherwise
       // would point at a fold that is not there.
@@ -820,244 +373,12 @@ describe('OnboardingWizard', () => {
     }
   });
 
-  it('offers the base model options and writes the chosen ones', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // Context length, thinking levels and the model's own capabilities are
-    // first-class choices here, not settings to discover later.
-    const context = dialog().querySelector<HTMLInputElement>('[data-onboarding-model-context]')!;
-    expect(context).not.toBeNull();
-    await typeInto(context, '200000');
-    // A new model starts with the two thinking levels most setups want, and
-    // they are the levels offered to pick from — not one level chosen for the
-    // request. A session still sends exactly one of them.
-    const efforts = dialog().querySelector<HTMLElement>('[aria-label="Supported thinking levels"]')!;
-    expect(efforts).not.toBeNull();
-    expect([...efforts.querySelectorAll('button[aria-pressed]')]
-      .filter((node) => node.getAttribute('aria-pressed') === 'true')
-      .map((node) => node.textContent?.trim()))
-      .toEqual(['low', 'high']);
-    // The user can change the seed: dropping a level leaves the rest alone.
-    await click([...efforts.querySelectorAll('button[aria-pressed]')]
-      .find((node) => node.textContent?.trim() === 'low')!);
-    const caps = dialog().querySelector<HTMLElement>('[aria-label="Model capabilities"]')!;
-    expect(caps.textContent).toContain('thinking');
-    expect(caps.textContent).toContain('image_in');
-    // Add image input to whatever the preset already seeded.
-    const vision = [...caps.querySelectorAll('button[aria-pressed]')]
-      .find((node) => node.textContent?.trim() === 'image_in')!;
-    expect(vision.getAttribute('aria-pressed')).toBe('false');
-    await click(vision);
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['models']).toEqual([
-      expect.objectContaining({
-        remote_id: 'kimi-for-coding',
-        max_context_size: 200000,
-        support_efforts: ['high'],
-        capabilities: expect.arrayContaining(['image_in']),
-      }),
-    ]);
-  });
-
-  it('lets the request identity be chosen while connecting, and writes it', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    // The identity is a base choice, visible without opening anything: which
-    // client shape the requests take is part of connecting a provider.
-    expect(dialog().querySelector('[data-request-identity-choice]')).not.toBeNull();
-    // The manual override body stays under the disclosure, and is absent until
-    // an identity is actually authored.
-    expect(dialog().querySelector('[data-onboarding-advanced-toggle]')?.getAttribute('aria-expanded')).toBe('false');
-    expect(dialog().querySelector('[data-onboarding-advanced-body]')).toBeNull();
-    // Open the identity list and pick OpenCode: the same catalog the settings
-    // editor uses, not a second list maintained for the wizard.
-    await act(async () => { dialog().querySelector<HTMLButtonElement>('[data-request-identity-choice] button')!.click(); });
-    await flush();
-    await act(async () => {
-      (document.querySelector('[data-option-value="opencode_compatible"]') as HTMLElement).click();
-    });
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['request_identity']).toEqual({ preset: 'opencode_compatible' });
-  });
-
-  it('leaves the request identity out of the body when it is left inherited', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    // "inherit" is the absence of a policy, not a policy asking for nothing.
-    expect(body['request_identity']).toBeUndefined();
-  });
-
-  it('Save & continue persists the filled provider form before advancing', async () => {
-    await mount();
-    await toModelStep();
-    await fillProviderForm();
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['id']).toBe('moonshot');
-    expect(body['type']).toBe('kimi');
-    expect(body['api_key']).toBe('sk-test-key');
-    expect(body['default_model']).toBe('kimi-for-coding');
-    expect(body['models']).toEqual([
-      expect.objectContaining({ remote_id: 'kimi-for-coding' }),
-    ]);
-    expect(dialog().textContent).toContain('Step 3 of 4');
-  });
-
-  it('Test connection probes the unsaved form values and fills suggestions', async () => {
-    probeProviderDraft.mockResolvedValue([
-      {
-        id: '',
-        remoteId: 'kimi-for-coding',
-        maxContextSize: 131072,
-        displayName: '',
-        capabilities: ['thinking'],
-        supportEfforts: [],
-        requestIdentityChoice: 'inherit',
-        requestIdentityOverridesJson: '',
-        imageAcceptedTypes: null,
-        imageConvertUnsupported: null,
-      },
-    ]);
-    await mount();
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-probe-me');
-    await click(buttonByText('Test connection'));
-    await flush();
-    expect(probeProviderDraft).toHaveBeenCalledWith({
-      type: 'kimi',
-      baseUrl: 'https://api.moonshot.ai/v1',
-      apiKey: 'sk-probe-me',
-    });
-    expect(createProvider).not.toHaveBeenCalled();
-    // One control: the same combobox that accepted the hand-typed id now offers
-    // what the provider reported, with no separate picker beside it.
-    const combobox = dialog().querySelector<HTMLButtonElement>('#onboarding-provider-model')!;
-    expect(combobox).not.toBeNull();
-    expect(dialog().querySelector('#onboarding-model-picker')).toBeNull();
-    await act(async () => { combobox.click(); });
-    await flush();
-    const listed = [...document.querySelectorAll('[data-option-value]')]
-      .map((node) => node.getAttribute('data-option-value'));
-    // Every reported model is reachable, and the count matches the probe, so
-    // nothing is truncated away before the search sees it.
-    expect(listed).toContain('kimi-for-coding');
-    expect(listed).toEqual(['kimi-for-coding']);
-    await act(async () => {
-      (document.querySelector('[data-option-value="kimi-for-coding"]') as HTMLElement).click();
-    });
-    expect(dialog().querySelector('#onboarding-provider-model')?.textContent).toContain('kimi-for-coding');
-  });
-
-  it('a started but invalid form blocks the advance with an inline error', async () => {
-    await mount();
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Model IDs cannot be empty.');
-    expect(dialog().textContent).toContain('Step 2 of 4');
-  });
-
-  it('a protocol card derives the connection name from the Base URL, and keeps it editable', async () => {
-    await mount();
-    await toModelStep();
-    await click(dialog().querySelector('[data-provider-protocol="openai"]')!);
-    const id = dialog().querySelector<HTMLInputElement>('#onboarding-provider-id')!;
-    const baseUrl = dialog().querySelector<HTMLInputElement>('#onboarding-provider-base-url')!;
-    expect(id.value).toBe('');
-    await typeInto(baseUrl, 'https://api.deepseek.com/v1');
-    expect(id.value).toBe('deepseek');
-    await typeInto(id, 'work');
-    await typeInto(baseUrl, 'https://api.mistral.ai/v1');
-    expect(id.value).toBe('work');
-
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-    await pickModelId('mistral-large');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    const body = createProvider.mock.calls[0]![0] as Record<string, unknown>;
-    expect(body['id']).toBe('work');
-    expect(body['type']).toBe('openai');
-    expect(body['base_url']).toBe('https://api.mistral.ai/v1');
-  });
-
-  it('a protocol card with no Base URL puts the error on the Base URL field', async () => {
-    await mount();
-    await toModelStep();
-    await click(dialog().querySelector('[data-provider-protocol="openai"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-test-key');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    const baseUrl = dialog().querySelector<HTMLInputElement>('#onboarding-provider-base-url')!;
-    expect(baseUrl.getAttribute('aria-invalid')).toBe('true');
-    expect(dialog().querySelector('#onboarding-provider-base-url-issue')?.textContent).toBe('Fill in the Base URL first.');
-    expect(dialog().querySelector('#onboarding-provider-id-issue')).toBeNull();
-    // The old one-line id rule never fires for an empty form.
-    expect(dialog().textContent).not.toContain('must start with a letter or digit');
-    // Typing an address clears the field error and names the connection.
-    await typeInto(baseUrl, 'https://api.deepseek.com/v1');
-    expect(dialog().querySelector('#onboarding-provider-base-url-issue')).toBeNull();
-    expect(dialog().querySelector<HTMLInputElement>('#onboarding-provider-id')!.value).toBe('deepseek');
-  });
-
-  it('an emptied connection name asks for one on the name field', async () => {
-    await mount();
-    await toModelStep();
-    await click(dialog().querySelector('[data-provider-protocol="anthropic"]')!);
-    await typeInto(dialog().querySelector<HTMLInputElement>('#onboarding-provider-base-url')!, 'https://llm.example.com/v1');
-    await typeInto(dialog().querySelector<HTMLInputElement>('#onboarding-provider-id')!, '');
-    await pickModelId('claude-x');
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).not.toHaveBeenCalled();
-    expect(dialog().querySelector('#onboarding-provider-id-issue')?.textContent).toBe('Give this connection a name.');
-    expect(dialog().querySelector('#onboarding-provider-base-url-issue')).toBeNull();
-  });
-
-  it('Escape closes an open protocol picker without closing the wizard', async () => {
+  it('ignores a backdrop click and a bare Escape, keeping the run unmarked', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toModelStep();
-    await click(dialog().querySelector('[data-provider-protocol="openai"]')!);
-    const trigger = dialog().querySelector<HTMLButtonElement>('#onboarding-provider-protocol')!;
-    await click(trigger);
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
-    expect(onClose).not.toHaveBeenCalled();
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(dialog().querySelector('#onboarding-provider-base-url')).not.toBeNull();
-  });
 
-  it('ignores a backdrop click and a bare Escape, keeping the form and the run unmarked', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-kept');
-
-    // Neither reflex may end the run: the half-typed key would be gone, and a
-    // first run would never be offered again.
+    // Neither reflex may end the run behind the user: the run is marked done
+    // once, by an explicit exit, and a first run is never offered twice.
     // jsdom has no PointerEvent constructor; the dismiss path only reads .target.
     await act(async () => {
       dialog().closest('div')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
@@ -1068,7 +389,6 @@ describe('OnboardingWizard', () => {
 
     expect(onClose).not.toHaveBeenCalled();
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
-    expect(inputByPlaceholder('Paste a new key').value).toBe('sk-kept');
     expect(dialog()).not.toBeNull();
   });
 
@@ -1080,45 +400,6 @@ describe('OnboardingWizard', () => {
     });
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  it('keeps the unsubmitted form when going Back and returning', async () => {
-    await mount();
-    await toModelStep();
-    await typeInto(inputByPlaceholder('Search DeepSeek, Kimi, Ollama…'), 'kimi');
-    await click(dialog().querySelector('[data-provider-template="moonshot"]')!);
-    await typeInto(inputByPlaceholder('Paste a new key'), 'sk-kept');
-    await click(buttonByText('Back'));
-    await click(buttonByText('Next'));
-    expect(inputByPlaceholder('Paste a new key').value).toBe('sk-kept');
-  });
-
-  it('a saved connection survives closing and reopening the wizard', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toModelStep();
-    await fillProviderForm();
-    await click(buttonByText('Save & continue'));
-    await flush();
-    expect(createProvider).toHaveBeenCalledTimes(1);
-
-    // Leaving the wizard is the header's close, not "Set up later": that one only
-    // steps past the model page and keeps walking.
-    await click(dialog().querySelector<HTMLButtonElement>('[aria-label="Close setup"]')!);
-    await flush();
-    expect(onClose).toHaveBeenCalledTimes(1);
-    await unmountLast();
-    listProviders.mockResolvedValue({ items: [SAVED_PROVIDER] });
-    getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, providers_count: 1 });
-
-    // Re-entry: connected, so the advance reads "Next" and saves nothing.
-    await mount();
-    await toModelStep();
-    await flush();
-    expect(dialog().textContent).toContain('A model provider is connected');
-    await click(buttonByText('Next'));
-    expect(createProvider).toHaveBeenCalledTimes(1);
-    expect(dialog().textContent).toContain('Step 3 of 4');
   });
 
   it('offers every permission mode, recommends auto, and Next writes it to the server config', async () => {
@@ -1134,7 +415,7 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Next'));
     await flush();
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
-    expect(dialog().textContent).toContain('Step 4 of 4');
+    expect(dialog().textContent).toContain('Step 3 of 3');
   });
 
   it('a failed permission save stays on the step', async () => {
@@ -1143,7 +424,7 @@ describe('OnboardingWizard', () => {
     await toPermissionsStep();
     await click(buttonByText('Next'));
     await flush();
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 2 of 3');
     expect(dialog().querySelector('[data-onboarding-capabilities]')).toBeNull();
   });
 
@@ -1164,8 +445,8 @@ describe('OnboardingWizard', () => {
     // The action is about this step's question, so it answers it and moves on:
     // the wizard is still here, and the run is not marked complete.
     expect(onClose).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-connection-choice]')).not.toBeNull();
-    expect(dialog().textContent).toContain('Step 2 of 4');
+    expect(dialog().querySelector('[data-permission-choice]')).not.toBeNull();
+    expect(dialog().textContent).toContain('Step 2 of 3');
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
   });
 
@@ -1230,7 +511,6 @@ describe('OnboardingWizard', () => {
     await mount();
     await click(buttonByText('下一步'));
     await flush();
-    await click(buttonByText('暂时跳过'));
     await click(buttonByText('下一步'));
     await flush();
     await click(buttonByText('让 Kiki 带你上手'));
@@ -1289,7 +569,7 @@ describe('OnboardingWizard', () => {
     }
     expect(dialog().querySelectorAll('[data-onboarding-cap-group]')).toHaveLength(3);
     await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 3 of 4');
+    expect(dialog().textContent).toContain('Step 2 of 3');
     expect(dialog().querySelector('[data-permission-choice]')).not.toBeNull();
   });
 
@@ -1414,5 +694,340 @@ describe('OnboardingWizard', () => {
     expect(readNewSessionDraft().cwd).toBeUndefined();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+  });
+
+  describe('onboarding wizard discovery entry', () => {
+    it('offers overview and four interest routes on the last capabilities step', async () => {
+      await mount();
+      await toCapabilitiesStep();
+      expect(dialog().querySelector('[data-discovery-onboarding-overview]')).not.toBeNull();
+      const routes = [...dialog().querySelectorAll('[data-discovery-onboarding-route]')].map((el) =>
+        el.getAttribute('data-discovery-onboarding-route'),
+      );
+      expect(routes).toEqual(['do-first', 'understand', 'sustain', 'extend']);
+    });
+
+    it('starts the overview discovery route and completes onboarding when clicking take a tour', async () => {
+      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
+      const onClose = vi.fn();
+      await mount(onClose);
+      await toCapabilitiesStep();
+      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
+      await act(async () => {
+        overviewBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+      expect(navigate).toHaveBeenCalledWith('/new');
+      const discState = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(discState.lifecycle).toBe('left');
+      expect(discState.route).toBe('overview');
+    });
+
+    it('starts an interest discovery route when chosen from the capabilities step', async () => {
+      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
+      const onClose = vi.fn();
+      await mount(onClose);
+      await toCapabilitiesStep();
+      const routeBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-route="do-first"]')!;
+      await act(async () => {
+        routeBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      const discState = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(discState.lifecycle).toBe('left');
+      expect(discState.route).toBe('do-first');
+    });
+
+    it('welcome discovery entry with mounted DiscoveryProvider commits and finishes onboarding', async () => {
+      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
+      const onClose = vi.fn();
+      await mountWithDiscovery({ onClose, dirty: false });
+      await toCapabilitiesStep();
+
+      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
+      await act(async () => {
+        overviewBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+      const discState = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(discState.lifecycle).toBe('left');
+      expect(discState.route).toBe('overview');
+      expect(discState.station).toBe('workspace');
+    });
+
+    it('welcome discovery entry preserves wizard and discovery state when dirty guard cancelled', async () => {
+      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
+      const onClose = vi.fn();
+      const { cancelAction, router } = await mountWithDiscovery({ onClose, dirty: true });
+      await toCapabilitiesStep();
+
+      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
+      await act(async () => {
+        overviewBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+
+      // Dirty guard prompt is waiting; user cancels it
+      await cancelAction();
+      await flush();
+
+      // Wizard must stay open, onboarding must not be completed, discovery must not start, router must remain
+      expect(router.state.location.pathname).toBe('/settings/providers');
+      expect(onClose).not.toHaveBeenCalled();
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+      const discState = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(discState.lifecycle).toBe('new');
+    });
+
+    it('welcome discovery entry commits when dirty guard confirmed', async () => {
+      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
+      const onClose = vi.fn();
+      const { confirmAction, router } = await mountWithDiscovery({ onClose, dirty: true });
+      await toCapabilitiesStep();
+
+      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
+      await act(async () => {
+        overviewBtn.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+
+      // Prior to confirming: router has not committed and discovery has not persisted
+      expect(router.state.location.pathname).toBe('/settings/providers');
+      expect(readDiscoveryState(currentDiscoveryScope('local')).lifecycle).toBe('new');
+
+      // User confirms dirty navigation
+      await confirmAction();
+      await flush();
+
+      // After router commit: location is /new, wizard closed, completedAt recorded, discovery persisted
+      expect(router.state.location.pathname).toBe('/new');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+      const discState = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(discState.lifecycle).toBe('left');
+      expect(discState.route).toBe('overview');
+    });
+  });
+
+  describe('the guide states the model connection', () => {
+    it('reports nothing connected and opens the real Settings card', async () => {
+      const onClose = vi.fn();
+      await mount(onClose);
+      await toCapabilitiesStep();
+
+      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
+      expect(row?.getAttribute('data-model-connection')).toBe('missing');
+      expect(dialog().textContent).toContain('Not connected yet');
+
+      await click(dialog().querySelector('[data-model-connection-open]')!);
+      // The wizard owns no provider form: the one real page that writes a
+      // provider is the Connections card, and leaving for it ends the run.
+      expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-providers-add');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+      expect(createProvider).not.toHaveBeenCalled();
+    });
+
+    it('names the model the server already reports, and writes nothing', async () => {
+      getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, providers_count: 1, default_model: 'kimi-for-coding' });
+      await mount();
+      await toCapabilitiesStep();
+
+      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
+      expect(row?.getAttribute('data-model-connection')).toBe('ready');
+      expect(row?.textContent).toContain('kimi-for-coding');
+      expect(dialog().querySelector('[data-model-connection-open]')?.textContent).toContain('Model settings');
+      expect(createProvider).not.toHaveBeenCalled();
+    });
+
+    it('does not claim a state it could not read', async () => {
+      getAuth.mockRejectedValue(new Error('auth probe failed'));
+      await mount();
+      await toCapabilitiesStep();
+
+      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
+      expect(row?.getAttribute('data-model-connection')).toBe('unknown');
+      expect(dialog().textContent).not.toContain('Not connected yet');
+    });
+
+    it('configures no model anywhere in the run', async () => {
+      await mount();
+      await toCapabilitiesStep();
+      expect(dialog().querySelector('[data-connection-choice]')).toBeNull();
+      expect(dialog().querySelector('[data-onboarding-model-id]')).toBeNull();
+      expect(createProvider).not.toHaveBeenCalled();
+      expect(probeProviderDraft).not.toHaveBeenCalled();
+      expect(dialog().textContent).toContain('Step 3 of 3');
+    });
+  });
+});
+
+async function mountWithDiscovery(options: {
+  onClose?: () => void;
+  dirty?: boolean;
+  initialRoute?: string;
+  children?: React.ReactNode;
+} = {}) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  function Harness({ children }: { children: React.ReactNode }) {
+    const location = useLocation();
+    const rawNavigate = useNavigate();
+    const performNavigation = (target: To | number, opts?: NavigateOptions) => {
+      if (typeof target === 'number') return rawNavigate(target);
+      return rawNavigate(target, opts);
+    };
+    const {
+      value: dirtyGuardValue,
+      pending,
+      confirm,
+      cancel,
+    } = useDirtyGuardState(location, performNavigation);
+
+    useEffect(() => {
+      if (options.dirty) {
+        dirtyGuardValue.reportDirty('wizard-draft-1', true);
+      }
+    }, [dirtyGuardValue]);
+
+    return (
+      <DirtyGuardContext.Provider value={dirtyGuardValue}>
+        <DiscoveryProvider>
+          {children}
+          <ConfirmDialog
+            open={pending}
+            title="Unsaved changes"
+            body="Leave page?"
+            confirmLabel="Leave"
+            cancelLabel="Stay"
+            onConfirm={() => { void confirm(); }}
+            onCancel={cancel}
+          />
+        </DiscoveryProvider>
+      </DirtyGuardContext.Provider>
+    );
+  }
+
+  const initialRoute = options.initialRoute ?? (options.dirty ? '/settings/providers' : '/new');
+  const router = createMemoryRouter(
+    [
+      {
+        path: '*',
+        element: (
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <Harness>
+                {options.children ?? <OnboardingWizard onClose={options.onClose ?? (() => {})} />}
+              </Harness>
+            </I18nProvider>
+          </QueryClientProvider>
+        ),
+      },
+    ],
+    { initialEntries: [initialRoute] },
+  );
+
+  await act(async () => {
+    root.render(<RouterProvider router={router} />);
+  });
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  return {
+    container,
+    router,
+    cancelAction: async () => {
+      const stayBtn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Stay');
+      if (stayBtn) {
+        await act(async () => {
+          stayBtn.click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+      }
+    },
+    confirmAction: async () => {
+      const leaveBtn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Leave');
+      if (leaveBtn) {
+        await act(async () => {
+          leaveBtn.click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+      }
+    },
+  };
+}
+
+describe('discovery route map model connection', () => {
+  const ACTIVE_TOUR = {
+    version: 1 as const,
+    contentVersion: 1,
+    lifecycle: 'active' as const,
+    route: 'overview' as const,
+    station: 'agents' as const,
+    collapsed: false,
+    progress: {},
+  };
+
+  it('states the connection on the map and opens the real Settings card', async () => {
+    const { router } = await mountWithDiscovery({
+      initialRoute: '/discover',
+      children: <DiscoveryPage onToggleSidebar={() => {}} />,
+    });
+
+    const row = document.querySelector('[data-discovery-model-connection] [data-model-connection]');
+    expect(row?.getAttribute('data-model-connection')).toBe('missing');
+    expect(document.querySelector('[data-model-connection-open]')?.textContent).toContain('Connect a model');
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-model-connection-open]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(router.state.location.pathname).toBe('/settings/ai');
+    expect(router.state.location.search).toBe('?tab=providers');
+    expect(router.state.location.hash).toBe('#st-card-providers-add');
+  });
+
+  it('keeps the tour position when it leaves for Settings, so the way back survives', async () => {
+    const { currentDiscoveryScope, readDiscoveryState, writeDiscoveryState } = await import('@kiki/session-core/discovery');
+    writeDiscoveryState(currentDiscoveryScope('local'), ACTIVE_TOUR);
+
+    const { router } = await mountWithDiscovery({
+      initialRoute: '/discover',
+      children: <DiscoveryPage onToggleSidebar={() => {}} />,
+    });
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-model-connection-open]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+
+    expect(router.state.location.pathname).toBe('/settings/ai');
+    // Left, not forgotten: the route and stop kept here are what the resume tag
+    // offers on the page the person landed on.
+    const state = readDiscoveryState(currentDiscoveryScope('local'));
+    expect(state.lifecycle).toBe('left');
+    expect(state.route).toBe('overview');
+    expect(state.station).toBe('agents');
   });
 });

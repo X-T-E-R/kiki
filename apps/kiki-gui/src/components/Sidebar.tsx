@@ -128,7 +128,8 @@ const UsageIcon = () => <Icon name="usage" size={16} />;
 /** Memory is a kept leaf of notes (a place), not the timeline's spark. */
 const MemoryIcon = () => <Icon name="notes" size={16} />;
 const PersonaIcon = () => <Icon name="persona" size={16} />;
-const CapabilitiesIcon = () => <Icon name="star" size={16} />
+const CapabilitiesIcon = () => <Icon name="star" size={16} />;
+const CompassIcon = () => <Icon name="compass" size={16} />;
 
 function PinIcon({ className = '' }: { className?: string }) {
   return <Icon name="pin" size={12} className={className} />;
@@ -261,7 +262,7 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
   );
 }
 
-type NavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities';
+type NavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities' | 'discover';
 
 const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, string>; icon: () => React.ReactNode }[] = [
   { key: 'board', route: '/board', hook: { 'data-nav-board': '' }, icon: BoardIcon },
@@ -274,6 +275,7 @@ const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, str
   { key: 'personas', route: '/personas', hook: { 'data-nav-personas': '' }, icon: PersonaIcon },
   { key: 'usage', route: '/usage', hook: { 'data-nav-usage': '' }, icon: UsageIcon },
   { key: 'capabilities', route: '/capabilities', hook: { 'data-nav-capabilities': '' }, icon: CapabilitiesIcon },
+  { key: 'discover', route: '/discover', hook: { 'data-nav-discover': '' }, icon: CompassIcon },
 ];
 
 const WORKSPACE_SCOPED_ROUTES: readonly string[] = ['/board', '/cron', '/memory'];
@@ -315,7 +317,7 @@ function PrimaryNav({
                 }`}
               >
                 <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
-                <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`)}</span>
+                <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`)}</span>
                 {item.key === 'usage' ? <RequestGovernanceBadge /> : null}
                 {badge !== undefined && badge.count > 0 ? (
                   <span
@@ -366,7 +368,7 @@ function CollapsedSidebarRail({
         {NAV_ITEMS.map((item) => {
           const current = location.pathname === item.route
             || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
-          const label = item.key === 'personas' ? t('persona.nav') : t(`nav.${item.key}`);
+          const label = item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`);
           const ItemIcon = item.icon;
           return (
             <button

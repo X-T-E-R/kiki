@@ -97,6 +97,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         aria-label={t('hero.workspaceAria')}
         aria-haspopup="dialog"
         aria-expanded={open}
+        data-anchor="workspace-picker"
         className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
       >
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
