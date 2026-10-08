@@ -282,6 +282,19 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(isReadStep(image('t1'))).toBe(false);
   });
 
+  it('gives an image that arrives as the result’s own attachment the same row', () => {
+    const attached = (turnId: string): ToolBlock => inTurn(tool('external_paint', 'done', {
+      media: [{ kind: 'image', fileId: 'f_acp_2f1a', name: 'answer.png', mime: 'image/png' }],
+    }), turnId);
+    const blocks = [inTurn(read('/w/a'), 't1'), inTurn(shell(), 't1'), attached('t1'), inTurn(text('user'), 't2'), attached('t2')];
+    const nodes = foldHistory(blocks, latestTurnId(blocks));
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'media-run', 'user', 'media-run']);
+    const historical = nodes[1] as MediaRun;
+    expect(historical).toMatchObject({ latest: false });
+    expect(historical.members).toHaveLength(1);
+    expect(nodes[3]).toMatchObject({ latest: true });
+  });
+
   it.each([false, true])('merges completion echoes by execution, retaining separate resumes and same-name agents (summaryFirst=%s)', (summaryFirst) => {
     const note = (id: string, taskId: string, body: string): SystemBlock => ({
       kind: 'system', id, variant: 'task', taskId, turnId: 't2', createdAt: undefined,

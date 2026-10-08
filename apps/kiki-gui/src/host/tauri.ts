@@ -248,6 +248,13 @@ export const tauriHost: TauriHostAdapter = {
       },
     };
   },
+  async pickFilePath(): Promise<string | null> {
+    requireLocalWorkspace();
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ directory: false, multiple: false });
+    if (selected === null) return null;
+    return typeof selected === 'string' ? selected : selected[0] ?? null;
+  },
   async pickFiles(): Promise<HostSelectedFile[] | null> {
     const [{ open }, { readFile, stat }] = await Promise.all([
       import('@tauri-apps/plugin-dialog'),

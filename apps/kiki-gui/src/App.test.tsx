@@ -1,7 +1,8 @@
 import { QueryClient } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, SESSION_INDEX_RETRY_LIMIT, isEditableTarget, retryRootReadModelDelay, retryRootReadModelQuery } from './App';
+import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
+import { SESSION_INDEX_RETRY_LIMIT, retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';

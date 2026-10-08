@@ -282,10 +282,20 @@ describe('per-session composer state (memory-only)', () => {
 
 describe('persisted /new draft scalars', () => {
   it('restores a bare engine and explicit engine overrides without native defaults', () => {
-    const execution = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/model-id', thinking: null } };
+    const execution = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/model-id', thinking: null } };
     writeNewSessionDraft({ execution });
     expect(readNewSessionDraft().execution).toEqual(execution);
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ execution: { executor: 42 } }));
+    expect(readNewSessionDraft().execution).toBeUndefined();
+  });
+
+  it('restores a draft that runs a profile file, and refuses one that also names a profile', () => {
+    const execution = { executor: 'native', profile: undefined, profile_file: '/home/dev/profiles/research.md', overrides: undefined };
+    writeNewSessionDraft({ execution });
+    expect(readNewSessionDraft().execution).toEqual(execution);
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
+      execution: { executor: 'native', profile: 'agent', profile_file: '/home/dev/profiles/research.md' },
+    }));
     expect(readNewSessionDraft().execution).toBeUndefined();
   });
 

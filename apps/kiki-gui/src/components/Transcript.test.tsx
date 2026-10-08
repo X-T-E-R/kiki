@@ -5886,7 +5886,7 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     kind: 'tool', id, toolCallId: id, name: 'Bash', argsText: '', args: { command: `echo ${id}` }, display: undefined,
     description: undefined, status: 'done', output: 'ok', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
   });
-  const look = (id: string, turnId = 't1'): Block => ({
+  const look = (id: string, turnId = 't1'): Extract<Block, { kind: 'tool' }> => ({
     kind: 'tool', id, toolCallId: id, name: 'ReadMediaFile', argsText: '', args: { path: `C:/w/${id}.png` }, display: undefined,
     description: undefined, status: 'done', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
     output: [
@@ -5945,6 +5945,28 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(settled?.hasAttribute('data-media-run-latest')).toBe(false);
     expect(settled?.querySelector('img')?.className).toContain('h-9');
     expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
+  });
+
+  it('shows an image the result reports as its own attachment, and only once beside its content part', async () => {
+    const { root, container } = makeRoot();
+    const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
+    // No content parts at all: the image is known only through the result's
+    // own attachment reference — the shape an external harness reports.
+    const attached: Block = {
+      ...look('a1'),
+      output: undefined,
+      media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png', mime: 'image/png' }],
+    };
+    await render([user, step('s1'), attached]);
+    const attachedRun = container.querySelector('[data-media-run]');
+    expect(attachedRun?.getAttribute('data-media-run')).toBe('1');
+    expect(attachedRun?.querySelector('[data-media-thumb]')?.getAttribute('title')).toBe('answer.png');
+    // The same file, now reported twice (content part and reference): one slot.
+    const described: Block = { ...look('a2'), media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'a2.png', mime: 'image/png' }] };
+    await render([user, step('s1'), described]);
+    const deduped = container.querySelector('[data-media-run]');
+    expect(deduped?.getAttribute('data-media-run')).toBe('1');
+    expect(deduped?.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
   });
 });
 

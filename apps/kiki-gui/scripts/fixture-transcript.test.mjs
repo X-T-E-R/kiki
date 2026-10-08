@@ -75,6 +75,63 @@ test('full tool result upserts retain the started tool name and display metadata
   assert.equal(frame.output, 'updated');
 });
 
+test('a tool result carries its own attachment entities instead of inline parts', () => {
+  const projector = new TranscriptProjector('session_fixture_tool_media');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Paint something.' },
+  });
+  projector.ingestFrame({
+    type: 'tool.call.started',
+    payload: { turnId: 1, toolCallId: 'call-paint', name: 'external_paint' },
+  });
+  projector.ingestFrame({
+    type: 'tool.result',
+    payload: {
+      turnId: 1,
+      toolCallId: 'call-paint',
+      output: 'painted',
+      attachmentIds: ['tool-call-paint.att1'],
+      attachments: [{
+        attachmentId: 'tool-call-paint.att1',
+        mediaType: 'image/png',
+        name: 'render.png',
+        size: 12,
+        source: { kind: 'session_media', fileId: 'f_fixture_tool_media' },
+      }],
+    },
+  });
+  const snapshot = projector.snapshot('main');
+  assert.equal(snapshot.items[0].steps[0].frames[0].attachmentIds[0], 'tool-call-paint.att1');
+  assert.deepEqual(snapshot.attachments, [{
+    attachmentId: 'tool-call-paint.att1',
+    mediaType: 'image/png',
+    name: 'render.png',
+    size: 12,
+    source: { kind: 'session_media', fileId: 'f_fixture_tool_media' },
+  }]);
+});
+
+test('a tool result without attachments keeps the frame exactly as before', () => {
+  const projector = new TranscriptProjector('session_fixture_tool_plain');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Run it.' },
+  });
+  projector.ingestFrame({
+    type: 'tool.call.started',
+    payload: { turnId: 1, toolCallId: 'call-plain', name: 'Read' },
+  });
+  projector.ingestFrame({
+    type: 'tool.result',
+    payload: { turnId: 1, toolCallId: 'call-plain', output: 'plain' },
+  });
+  const snapshot = projector.snapshot('main');
+  assert.equal(snapshot.attachments.length, 0);
+  assert.equal('attachmentIds' in snapshot.items[0].steps[0].frames[0], true);
+  assert.equal(snapshot.items[0].steps[0].frames[0].attachmentIds, undefined);
+});
+
 test('filters ops and redacts snapshots by grade', () => {
   const ops = [
     { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' } } },

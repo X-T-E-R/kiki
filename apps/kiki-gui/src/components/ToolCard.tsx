@@ -12,7 +12,7 @@ import { memo, useMemo, useState, type ReactNode } from 'react';
 import type { ToolInputDisplay } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
+import { extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -298,12 +298,22 @@ function wellClass(island: boolean, tone: 'plain' | 'danger' = 'plain'): string 
   }`;
 }
 
-function OutputView({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
+/** The result well: engine content parts, canonical result media, or both. */
+function OutputView({ output, media, agentId, island = false }: {
+  output: unknown;
+  /** Canonical result media from the frame's own attachment references. */
+  media?: readonly MediaRef[];
+  agentId: string;
+  island?: boolean;
+}) {
   const { t } = useI18n();
-  if (output === undefined || output === null) return null;
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
   // arrays; render their images as thumbnails instead of serialized JSON.
-  const mediaOutput = extractToolOutputMedia(output);
+  const mediaOutput = output === undefined || output === null ? undefined : extractToolOutputMedia(output);
+  // A result that carries both the reference and the part reports one file
+  // twice; `toolResultMedia` folds them so the well draws each image once.
+  const resultMedia = toolResultMedia(media, mediaOutput?.media);
+  const resultList = resultMedia.length > 0 ? <MediaPartList media={resultMedia} agentId={agentId} /> : null;
   if (mediaOutput !== undefined) {
     return (
       <div className="space-y-2">
@@ -312,10 +322,26 @@ function OutputView({ output, agentId, island = false }: { output: unknown; agen
             {mediaOutput.text}
           </pre>
         ) : null}
-        <MediaPartList media={mediaOutput.media} agentId={agentId} />
+        {resultList}
       </div>
     );
   }
+  // A body the window omitted still leaves its media known: the references
+  // name the file, so show it beside whatever text survived.
+  const body = outputBody(output, agentId, island, t);
+  if (body === null) return resultList;
+  if (resultList === null) return <>{body}</>;
+  return (
+    <div className="space-y-2">
+      {body}
+      {resultList}
+    </div>
+  );
+}
+
+/** The text/JSON reading of a result, with its media handled above. */
+function outputBody(output: unknown, agentId: string, island: boolean, t: Translate): ReactNode {
+  if (output === undefined || output === null) return null;
   // The media plugin's `generate` result: .
   // A short generation shows its files right here; a long one shows where it
   // got to, with the same honesty rules the management view uses. Drawn
@@ -472,7 +498,7 @@ ${engineError}`;
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
-  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} agentId={agentId} /></ToolRecordField>;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the
@@ -569,7 +595,7 @@ ${engineError}`;
               <CommandIsland
                 command={block.display.command}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} island /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and

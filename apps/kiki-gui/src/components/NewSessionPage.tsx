@@ -277,7 +277,7 @@ function NewSessionPageContent({
   const sendDisabled = cwd !== ''
     ? !isAbsoluteCwdPath(cwd)
     : !state.workspacesLoading && state.effectiveWorkspace === undefined && !state.autoWorkspace;
-  const showTargetHint = sendDisabled && !state.workspacesLoading;
+  const showTargetHint = sendDisabled && !state.workspacesLoading && !state.workspacesFailed;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
   const starters = useMemo(() => heroStarters(workspaceChipLabel(state)), [state]);
 
@@ -496,8 +496,24 @@ function NewSessionPageContent({
           {showTargetHint ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}
-          {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.effectiveWorkspace === undefined ? (
+          {/* A read that failed cannot say the chosen workspace is invalid: the
+              failure row below carries the retry, and this draft keeps the id
+              the user picked. */}
+          {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && !state.workspacesFailed && state.effectiveWorkspace === undefined ? (
             <p role="alert" className="mt-2 text-[12px] text-danger">{t('selection.workspaceInvalid', { value: state.workspaceId })}</p>
+          ) : null}
+          {cwd === '' && state.workspacesFailed ? (
+            <div role="alert" data-hero-workspace-failure className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-danger">
+              <span>{state.workspacesError ?? t('new.workspacesFailed')}</span>
+              <button
+                type="button"
+                data-hero-workspace-retry
+                onClick={() => { state.retryWorkspaces(); }}
+                className="shrink-0 rounded-md border border-hairline bg-paper px-2 py-0.5 text-[11.5px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
+              >
+                {t('common.retry')}
+              </button>
+            </div>
           ) : null}
         </div>
       </div>

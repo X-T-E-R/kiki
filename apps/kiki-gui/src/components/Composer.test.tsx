@@ -20,10 +20,11 @@ import { PERMISSION_MODES } from '../lib/permissionModes';
 import { Composer } from './Composer';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
 
-const { selectFilesNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
+const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
   readClipboardFiles: vi.fn(),
   connectionScope: { id: null as string | null, source: 'desktop' as 'desktop' | 'ssh' | 'remote' | 'manual', url: 'http://127.0.0.1:1234' },
   selectFilesNative: vi.fn(),
+  selectFilePathNative: vi.fn(),
   onFileDrop: vi.fn(),
   desktopRuntime: { value: false },
   vscodeRuntime: { value: false },
@@ -36,6 +37,7 @@ const getPluginUsage = vi.fn();
 const setPluginUsage = vi.fn();
 const listPlugins = vi.fn();
 const listNamedAgentProfiles = vi.fn();
+const previewAgentProfileFile = vi.fn();
 const listExecutors = vi.fn();
 const getExecutorModels = vi.fn();
 const refreshExecutorModels = vi.fn();
@@ -65,7 +67,22 @@ const EXECUTOR_ITEMS = [
   { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'ready' as const, version: '2.1.0', model_binding: 'mapped' as const, thinking_binding: 'unavailable' as const, connection: { login_status: 'logged_in' as const, default_args: [] } },
 ];
 /** The native engine with the default main profile: an ordinary new session. */
-const NATIVE_AGENT = { executor: 'native', profile: 'agent', overrides: undefined } as const;
+const NATIVE_AGENT = { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined } as const;
+
+/**
+ * A profile file on the connected host: not a registered profile, not a main
+ * one, and named only by the path the session would run.
+ */
+const FILE_PROFILE = {
+  name: 'research-writer',
+  source: 'explicit',
+  main: false,
+  disabled: false,
+  routes: [],
+  executor: 'native',
+  source_file: '/work/profiles/research.md',
+  description: 'Writes up research.',
+} satisfies NamedAgentProfile;
 
 /**
  * A conversation's plugin usage: one plugin the global default has on, and
@@ -102,6 +119,7 @@ vi.mock('../state/connection', () => ({
       setPluginUsage,
       listPlugins,
       listNamedAgentProfiles,
+      previewAgentProfileFile,
       listExecutors,
       getConfig,
       getAgentCapabilities,
@@ -120,13 +138,13 @@ vi.mock('../state/connection', () => ({
       },
     },
   }),
-  // The persona chip's face; letter avatars need no connection.
-  useOptionalConnection: () => undefined,
+  // The picker only needs connection provenance; media surfaces are mocked separately.
+  useOptionalConnection: () => ({ connectionSource: connectionScope.source }),
 }));
 vi.mock('../host', () => ({
   useHost: () =>
     desktopRuntime.value
-      ? { kind: 'tauri', pickFiles: selectFilesNative, readClipboardFiles, onFileDrop }
+      ? { kind: 'tauri', pickFiles: selectFilesNative, pickFilePath: selectFilePathNative, readClipboardFiles, onFileDrop }
       : { kind: 'browser' },
 }));
 vi.mock('../host/vscode', () => ({
@@ -174,6 +192,7 @@ beforeEach(() => {
   sshAdd.mockReset().mockResolvedValue({});
   sshRemove.mockReset().mockResolvedValue({});
   selectFilesNative.mockReset();
+  selectFilePathNative.mockReset();
   readClipboardFiles.mockReset().mockResolvedValue(null);
   connectionScope.id = null;
   connectionScope.source = 'desktop';
@@ -215,6 +234,7 @@ beforeEach(() => {
     ] satisfies NamedAgentProfile[],
   });
   listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
+  previewAgentProfileFile.mockReset().mockResolvedValue({ profile: FILE_PROFILE });
   getExecutorModels.mockReset().mockReturnValue(new Promise(() => {}));
   refreshExecutorModels.mockReset();
   getConfig.mockReset().mockResolvedValue({});
@@ -696,7 +716,7 @@ describe('Composer execution control', () => {
   it('preserves a bound unavailable engine identity and offers configuration rather than an executable bare entry', async () => {
     listExecutors.mockResolvedValue({ items: EXECUTOR_ITEMS.map(item => item.id === 'native' ? item : { ...item, status: 'unavailable' }) });
     const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({ sessionId: 'saved-session', execution: { executor: 'claude-acp', profile: undefined, overrides: undefined }, onChangeExecution });
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, onChangeExecution });
     const trigger = container.querySelector('#composer-execution-select')!;
     expect(trigger.textContent).toContain('Claude Code');
     await click(trigger);
@@ -794,7 +814,7 @@ describe('Composer execution control', () => {
     expect(bareRow?.textContent).toContain('Run this engine as it is');
     await click(bareRow!);
     expect(onChangeExecution).toHaveBeenCalledWith({
-      executor: 'claude-acp', profile: undefined, overrides: undefined,
+      executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined,
     });
   });
 
@@ -811,7 +831,7 @@ describe('Composer execution control', () => {
     expect(row).not.toBeNull();
     await click(row!);
     expect(onChangeExecution).toHaveBeenCalledWith({
-      executor: 'claude-acp', profile: 'reviewer', overrides: undefined,
+      executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined,
     });
   });
 
@@ -903,7 +923,7 @@ describe('Composer execution control', () => {
       .find((row) => row.textContent?.includes('grok-only'));
     await click(option!);
     expect(onChangeWhileBusy).toHaveBeenCalledWith({
-      executor: 'native', profile: 'grok-only', overrides: undefined,
+      executor: 'native', profile: 'grok-only', profile_file: undefined, overrides: undefined,
     });
     // Rebuild stays locked: it really does rewrite the live turn's context.
     await openAddMenu(rendered.container);
@@ -985,7 +1005,7 @@ describe('Composer execution control', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
-      execution: { executor: 'native', profile: 'alpha-main', overrides: undefined },
+      execution: { executor: 'native', profile: 'alpha-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
     const trigger = await waitForTrigger(container);
@@ -1016,7 +1036,7 @@ describe('Composer execution control', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_alpha' },
       agentProfile: 'alpha-main',
       onChangeAgentProfile: () => {},
-      execution: { executor: 'native', profile: 'alpha-main', overrides: undefined },
+      execution: { executor: 'native', profile: 'alpha-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
     expect((await waitForTrigger(rendered.container)).textContent).toContain('alpha-main');
@@ -1026,7 +1046,7 @@ describe('Composer execution control', () => {
       agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_beta' },
       agentProfile: 'beta-main',
       onChangeAgentProfile: () => {},
-      execution: { executor: 'native', profile: 'beta-main', overrides: undefined },
+      execution: { executor: 'native', profile: 'beta-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
     await settle();
@@ -1056,7 +1076,7 @@ describe('Composer execution control', () => {
       agentProfileCatalogMode: { mode: 'disabled' },
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
-      execution: { executor: 'native', profile: 'workspace-main', overrides: undefined },
+      execution: { executor: 'native', profile: 'workspace-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
     await settle();
@@ -1069,7 +1089,7 @@ describe('Composer execution control', () => {
       sessionId: 'session-1',
       agentProfile: 'workspace-main',
       onChangeAgentProfile: () => {},
-      execution: { executor: 'native', profile: 'workspace-main', overrides: undefined },
+      execution: { executor: 'native', profile: 'workspace-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
     catalog.resolve({
@@ -1093,7 +1113,7 @@ describe('Composer execution control', () => {
       agentProfile: 'reviewer',
       agentProfilePending: true,
       onChangeAgentProfile: () => {},
-      execution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
+      execution: { executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
       executionPending: true,
     });
@@ -1101,6 +1121,232 @@ describe('Composer execution control', () => {
     // A pending switch names the engine/profile and when it applies.
     expect(trigger.textContent).toContain('reviewer · next message');
     expect(trigger.title).toContain('applies from your next message');
+  });
+});
+
+describe('Composer profile file', () => {
+  /** Open the panel, then its file form. */
+  async function openFileForm(container: HTMLDivElement): Promise<void> {
+    await click(await waitForTrigger(container));
+    await click(container.querySelector('[data-execution-file-open]')!);
+  }
+
+  async function typePath(container: HTMLDivElement, path: string): Promise<void> {
+    const input = container.querySelector<HTMLInputElement>('[data-execution-file-path]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, path);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it('reads a file where the session runs and reports it as the pick', async () => {
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/work', effective: true },
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await openFileForm(container);
+    await typePath(container, 'profiles/research.md');
+    await click(container.querySelector('[data-execution-file-check]')!);
+    await settle();
+
+    // The path is resolved on the session's own host, not on this machine.
+    expect(previewAgentProfileFile).toHaveBeenCalledWith(
+      { path: 'profiles/research.md', cwd: '/work' },
+      { signal: expect.anything() },
+    );
+    const preview = container.querySelector('[data-execution-file-preview]');
+    expect(preview?.textContent).toContain('research-writer');
+    expect(preview?.textContent).toContain('/work/profiles/research.md');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+
+    await click(container.querySelector('[data-execution-file-use]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'native',
+      profile: undefined,
+      profile_file: '/work/profiles/research.md',
+      overrides: undefined,
+    });
+  });
+
+  it('opens the native path picker without reading bytes, previews the selected file, and waits for Use', async () => {
+    desktopRuntime.value = true;
+    selectFilePathNative.mockResolvedValueOnce('C:/work/profiles/research.md');
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await click(await waitForTrigger(container));
+    const picker = container.querySelector<HTMLButtonElement>('[data-execution-file-open]')!;
+    expect(picker.dataset['executionFilePicker']).toBe('native');
+    await click(picker);
+    await settle();
+
+    expect(selectFilePathNative).toHaveBeenCalledOnce();
+    expect(previewAgentProfileFile).toHaveBeenCalledWith(
+      { path: 'C:/work/profiles/research.md' },
+      { signal: expect.anything() },
+    );
+    expect(container.querySelector('[data-execution-file-preview]')?.textContent).toContain('research-writer');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    await click(container.querySelector('[data-execution-file-use]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'native', profile: undefined, profile_file: '/work/profiles/research.md', overrides: undefined,
+    });
+  });
+
+  it.each(['ssh', 'remote'] as const)('opens the path field instead of a local picker for a %s session', async (source) => {
+    desktopRuntime.value = true;
+    connectionScope.source = source;
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: NATIVE_AGENT, onChangeExecution: vi.fn() });
+    await click(await waitForTrigger(container));
+    const picker = container.querySelector<HTMLButtonElement>('[data-execution-file-open]')!;
+    expect(picker.dataset['executionFilePicker']).toBe('path');
+    await click(picker);
+    expect(selectFilePathNative).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-execution-file-path]')).not.toBeNull();
+  });
+
+  it('shows the server’s refusal in the panel and changes nothing', async () => {
+    const onChangeExecution = vi.fn();
+    previewAgentProfileFile.mockRejectedValue(new ApiError({
+      code: API_CODES.REQUEST_INVALID,
+      msg: 'Unable to load profile file "notes.txt": Choose a profile Markdown (.md) file',
+      data: null,
+    }));
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await openFileForm(container);
+    await typePath(container, 'notes.txt');
+    await click(container.querySelector('[data-execution-file-check]')!);
+    await settle();
+
+    const error = container.querySelector('[data-execution-file-error]');
+    expect(error?.textContent).toContain('Choose a profile Markdown (.md) file');
+    expect(container.querySelector('[data-execution-file-preview]')).toBeNull();
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    // The form is still open on the same text, so the reader can fix the path.
+    expect(container.querySelector<HTMLInputElement>('[data-execution-file-path]')?.value).toBe('notes.txt');
+  });
+
+  it('leaves the draft and the pick alone when the file form is closed', async () => {
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+    });
+    await openFileForm(container);
+    await typePath(container, 'profiles/research.md');
+    await click(container.querySelector('[data-execution-file-back]')!);
+
+    expect(previewAgentProfileFile).not.toHaveBeenCalled();
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    // Back to the engine list, still on the bound engine.
+    expect(container.querySelector('[data-execution-filter]')).not.toBeNull();
+    expect(container.querySelector('[data-execution-file-path]')).toBeNull();
+  });
+
+  it('names a bound profile file and does not read it as the bare engine', async () => {
+    const fileChoice = {
+      executor: 'native',
+      profile: undefined,
+      profile_file: '/work/profiles/research.md',
+      overrides: undefined,
+    } as const;
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: fileChoice,
+      onChangeExecution: vi.fn(),
+    });
+    const trigger = await waitForTrigger(container);
+    expect(trigger.textContent).toContain('research.md');
+    expect(trigger.getAttribute('data-execution-profile-file')).toBe('/work/profiles/research.md');
+
+    await click(trigger);
+    await settle();
+    const row = container.querySelector('[data-execution-file-row]');
+    expect(row?.getAttribute('data-execution-file-row')).toBe('/work/profiles/research.md');
+    // The declared name replaces the file name once the host has answered.
+    expect(row?.textContent).toContain('research-writer');
+    expect(row?.textContent).toContain('/work/profiles/research.md');
+    expect(row?.getAttribute('aria-selected')).toBe('true');
+    // The bare native row is not the current pick: the session runs a profile.
+    expect(container.querySelector('[data-execution-bare="native"]')?.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('keeps the current compact control on the bound engine while a switch waits', async () => {
+    // The bound engine is native, which compacts; the pending pick is an
+    // external engine that cannot. Acting on the current turn must not follow
+    // the waiting pick.
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1',
+      apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['claude/sonnet'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const { container } = await renderComposer({
+      sessionId: 'saved-session',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      boundExecution: NATIVE_AGENT,
+      executionPending: true,
+      contextUsage: { used: 120, limit: 1_000 },
+      onCompactContext: () => {},
+      onChangeExecution: vi.fn(),
+    });
+    await click(container.querySelector('[data-context-meter]')!);
+    expect(container.querySelector('[data-context-compact]')).not.toBeNull();
+    expect(container.querySelector('[data-context-compact-unavailable]')).toBeNull();
+  });
+
+  it('lets an engine catalogue age out of the compact control, as the model menu shows it', async () => {
+    // Only the clock is faked: a control that stays "ready" on a capability the
+    // model menu already calls stale is the disagreement this pins.
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    try {
+      getExecutorModels.mockResolvedValue({
+        executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1',
+        apply_state: 'ready', observed_at: Date.now(),
+        effective: {
+          models: { state: 'ready', values: ['claude/sonnet'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+          controls: {
+            model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+            thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+            manual_compact: { applicability: 'fresh_binding', apply_state: 'applied' },
+          },
+        },
+      });
+      const { container } = await renderComposer({
+        sessionId: 'saved-session',
+        execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+        contextUsage: { used: 120, limit: 1_000 },
+        onCompactContext: () => {},
+        onChangeExecution: vi.fn(),
+      });
+      await click(container.querySelector('[data-context-meter]')!);
+      expect(container.querySelector('[data-context-compact]')).not.toBeNull();
+
+      vi.setSystemTime(Date.now() + 61_000);
+      await act(async () => { vi.advanceTimersByTime(1_100); });
+
+      expect(container.querySelector('[data-context-compact-unavailable]')).not.toBeNull();
+      expect(container.querySelector('[data-context-compact]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -2961,7 +3207,7 @@ describe('Composer restored selection diagnostics', () => {
     listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
     const onSend = vi.fn();
     const onChangeExecution = vi.fn();
-    const { container } = await renderComposer({ value: 'hello', model: 'vendor-only', effort: 'vendor-effort', execution: { executor: 'claude-acp', profile: undefined, overrides: undefined }, onChangeExecution, onSend });
+    const { container } = await renderComposer({ value: 'hello', model: 'vendor-only', effort: 'vendor-effort', execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, onChangeExecution, onSend });
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
     expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('Follow engine configuration');
@@ -2970,7 +3216,7 @@ describe('Composer restored selection diagnostics', () => {
   it('accepts an external model ID verbatim without looking it up in the native catalog', async () => {
     listModels.mockResolvedValue({ items: [] });
     const onChangeExecution = vi.fn();
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click(container.querySelector('#composer-engine-model-select')!);
     const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
@@ -2996,7 +3242,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
     await click(container.querySelector('#composer-engine-model-select')!);
     expect(container.querySelector('[data-option-value="claude/sonnet"]')).not.toBeNull();
@@ -3019,7 +3265,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
     await click(container.querySelector('#composer-engine-model-select')!);
     expect(container.querySelector('[data-option-value="vendor/model-a"]')).not.toBeNull();
@@ -3038,7 +3284,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
     const onChangeExecution = vi.fn();
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution });
     expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
@@ -3067,7 +3313,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const onChangeExecution = vi.fn();
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution });
     const trigger = container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!;
@@ -3095,7 +3341,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
     const trigger = container.querySelector('#composer-engine-model-select')!;
     expect(trigger.textContent).toContain('vendor/saved-model');
@@ -3126,7 +3372,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
     await click(container.querySelector('#composer-engine-model-select')!);
     const line = container.querySelector('[data-external-model-switch]');
@@ -3150,7 +3396,7 @@ describe('Composer restored selection diagnostics', () => {
         },
       },
     });
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
     await click(container.querySelector('#composer-engine-model-select')!);
     expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('Last read over a minute ago.');
@@ -3159,7 +3405,7 @@ describe('Composer restored selection diagnostics', () => {
   });
 
   it('leaves the absent-data picker usable without importing native aliases', async () => {
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
     const { container } = await renderComposer({ execution: choice, onChangeExecution: vi.fn() });
     await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
     expect(container.querySelector('[data-option-value=""]')).not.toBeNull();
@@ -3188,7 +3434,7 @@ describe('Composer restored selection diagnostics', () => {
     getExecutorModels.mockResolvedValue(observed);
     refreshExecutorModels.mockReturnValue(refreshResult.promise);
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
     });
     expect(refreshExecutorModels).not.toHaveBeenCalled();
@@ -3219,7 +3465,7 @@ describe('Composer restored selection diagnostics', () => {
     getExecutorModels.mockResolvedValue(observed);
     refreshExecutorModels.mockRejectedValue(new Error('refresh unavailable'));
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
     });
     await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
@@ -3242,7 +3488,7 @@ describe('Composer restored selection diagnostics', () => {
       },
     });
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
       contextUsage: { used: 400, limit: 1000 },
       onCompactContext: vi.fn(),
@@ -3273,7 +3519,7 @@ describe('Composer restored selection diagnostics', () => {
       },
     });
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
       contextUsage: { used: 400, limit: 1000 },
       onCompactContext: vi.fn(),
@@ -3292,7 +3538,7 @@ describe('Composer restored selection diagnostics', () => {
     // The default `getExecutorModels` never answers, so this is the catalogue
     // that is not here yet — neither a declaration nor a refusal.
     const { container } = await renderComposer({
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
       contextUsage: { used: 400, limit: 1000 },
       onCompactContext: vi.fn(),
@@ -3317,7 +3563,7 @@ describe('Composer restored selection diagnostics', () => {
 
   it('clears explicit external model and thinking overrides when following the engine again', async () => {
     const onChangeExecution = vi.fn();
-    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click(container.querySelector('#composer-engine-model-select')!);
     await click(container.querySelector('[data-option-value=""]')!);
@@ -3423,7 +3669,7 @@ describe('Composer queue edit mode', () => {
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
     expect(button.disabled).toBe(false);
     await click(button);
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('', [image], undefined);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('', [image]);
   });
 
   it.each(['paste', 'drop'])('adds an image through %s while editing without inserting its filename as text', async (gesture) => {
@@ -3507,7 +3753,7 @@ describe('Composer queue edit mode', () => {
     await pressKey(area, { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     await pressKey(area, { key: 'Enter', ctrlKey: true });
-    expect(onSend).toHaveBeenCalledExactlyOnceWith('/goal edited', [image], { presentation: undefined });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('/goal edited', [image]);
     expect(onActivateSkill).not.toHaveBeenCalled();
   });
 
@@ -3520,7 +3766,7 @@ describe('Composer queue edit mode', () => {
 
     expect(sendButton.disabled).toBe(false);
     await pressKey(textarea, { key: 'Enter' });
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text', [], undefined);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('edited queued text', []);
     expect(onSend).not.toHaveBeenCalled();
   });
 
@@ -3531,7 +3777,7 @@ describe('Composer queue edit mode', () => {
 
     await pressKey(textarea, { key: 'Enter' });
     // A slash-looking edit is queue text, not a command attempt: no guard.
-    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all', [], undefined);
+    expect(props.onQueueEditConfirm).toHaveBeenCalledExactlyOnceWith('/not-a-skill at all', []);
     expect(container.textContent).not.toContain('Send as plain text');
   });
 
@@ -4561,7 +4807,7 @@ describe('MCP servers in this conversation', () => {
     listMcpSessionCapabilities.mockResolvedValue([server('files')]);
     const { container } = await renderComposer({
       sessionId: 'session-1',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
     });
     await openMcp(container);
 

@@ -305,6 +305,7 @@ export function Composer({
   modelSwitchError,
   agentProfile,
   execution,
+  boundExecution,
   onChangeExecution,
   executionPending = false,
   onCancelExecution,
@@ -427,6 +428,14 @@ export function Composer({
    * choice. The pick shown is the pending one when a switch is waiting.
    */
   execution?: ExecutionChoice;
+  /**
+   * What the session is running right now, when that differs from what the
+   * chip shows. A confirmed engine switch waits for the next message, and the
+   * controls that act on the *current* turn — manual compaction — must read this
+   * binding, not the waiting pick. Omit where there is no running session yet
+   * (the /new draft), in which case the shown pick is the only binding.
+   */
+  boundExecution?: ExecutionChoice;
   onChangeExecution?: (next: ExecutionChoice) => void;
   /** A confirmed engine switch applies from the next message — accent tint. */
   executionPending?: boolean;
@@ -972,12 +981,35 @@ export function Composer({
   const executorModelResponse = executorId !== undefined && manualExecutorResponse?.executorId === executorId
     ? manualExecutorResponse.response
     : executorModelsQuery.data;
+  /**
+   * Manual compaction acts on the session that is running now, so it reads the
+   * *bound* engine. A pick waiting for the next message must not hide a control
+   * the current turn can still honour, nor offer one it cannot; the two engines
+   * are read from the same key when they are the same, so the ordinary case
+   * costs no second request.
+   */
+  const capabilityExecution = boundExecution ?? execution;
+  const boundExecutorId = capabilityExecution !== undefined && !isNativeExecutor(capabilityExecution.executor)
+    ? capabilityExecution.executor
+    : undefined;
+  const boundExecutorModelsQuery = useQuery({
+    queryKey: ['executor-models', boundExecutorId],
+    queryFn: () => client.klient.rest!.executors.getModels(boundExecutorId!),
+    enabled: boundExecutorId !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  // The same clock the model selector reads, so "the catalogue is stale" and
+  // "this action is unknown" cannot disagree: a capability that ages out says
+  // so here too, and refresh brings both back together.
+  const capabilityNow = useNow();
   // Manual compaction is a real control, so its declared capability lands on
   // the meter that offers it: a native session keeps the plain action, while an
   // external engine's action needs an explicit declaration.
   const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
-    if (executorId === undefined) return undefined;
-    const control = mapExecutorCapabilities(executorModelResponse).controls.manual_compact;
+    if (boundExecutorId === undefined) return undefined;
+    const response = boundExecutorId === executorId ? executorModelResponse : boundExecutorModelsQuery.data;
+    const control = mapExecutorCapabilities(response, capabilityNow).controls.manual_compact;
     if (control.kind === 'absent') return { available: false, reason: t('context.compactUnread') };
     if (isExecutorActionAvailable(control)) return { available: true };
     const reason = [
@@ -985,7 +1017,7 @@ export function Composer({
       control.diagnostic,
     ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
     return { available: false, reason };
-  }, [executorId, executorModelResponse, t]);
+  }, [boundExecutorId, executorId, executorModelResponse, boundExecutorModelsQuery.data, capabilityNow, t]);
   const refreshExecutorModels = useCallback(() => {
     if (executorId === undefined || executorRefreshBusy) return;
     setExecutorRefreshBusy(true);
@@ -995,6 +1027,26 @@ export function Composer({
       .catch(() => { setExecutorRefreshFailed(true); })
       .finally(() => { setExecutorRefreshBusy(false); });
   }, [client, executorId, executorRefreshBusy]);
+  /**
+   * Where a profile file is read. The scope is the one this composer's profile
+   * list already reads from — the session's own working directory or workspace —
+   * so a path typed for a remote connection is resolved on that host; with no
+   * scope the path must be absolute and is read at the connected home. The
+   * server's own refusal (an unreadable path, a file that is not a profile) is
+   * what the panel shows.
+   */
+  const profileFileScope = useMemo((): { readonly cwd?: string; readonly workspace_id?: string } => {
+    if (agentProfileCatalogMode.mode === 'cwd') return { cwd: agentProfileCatalogMode.cwd };
+    if (agentProfileCatalogMode.mode === 'workspace') return { workspace_id: agentProfileCatalogMode.workspaceId };
+    return {};
+  }, [agentProfileCatalogMode]);
+  const previewProfileFile = useCallback(async (
+    request: { readonly path: string },
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<NamedAgentProfile> => {
+    const response = await client.previewAgentProfileFile({ path: request.path, ...profileFileScope }, options);
+    return response.profile;
+  }, [client, profileFileScope]);
   const invalidModelDomain = !externalExecution && engine === undefined && modelDomainState === 'blocked';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
@@ -1824,8 +1876,14 @@ export function Composer({
       setMenu(null);
       const edited = prepareThreadRefContext(text.trim(), threadRefDirectory.info, roomRefInfoOf);
       runAgentTurn(async () => {
-        if (queueEditing) await onQueueEditConfirm?.(edited.text, attachments, edited.presentation);
-        else await onSend(edited.text, attachments, { presentation: edited.presentation });
+        if (queueEditing) {
+          if (edited.presentation === undefined) await onQueueEditConfirm?.(edited.text, attachments);
+          else await onQueueEditConfirm?.(edited.text, attachments, edited.presentation);
+        } else if (edited.presentation === undefined) {
+          await onSend(edited.text, attachments);
+        } else {
+          await onSend(edited.text, attachments, { presentation: edited.presentation });
+        }
       });
       return;
     }
@@ -2338,6 +2396,8 @@ export function Composer({
           }}
           onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
           onCancelPending={executionPending ? onCancelExecution : undefined}
+          onOpen={() => { void agentProfilesQuery.refetch(); }}
+          previewProfileFile={previewProfileFile}
         />
         </ComposerPanelOrigin>
       ),

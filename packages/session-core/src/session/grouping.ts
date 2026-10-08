@@ -13,7 +13,7 @@
  * underlying block list (and its reducer semantics) is untouched.
  */
 
-import { extractToolOutputMedia } from '../composer/media';
+import { extractToolOutputMedia, toolResultMedia } from '../composer/media';
 import { mergeTaskNotifications } from './transcript/project';
 import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
@@ -148,12 +148,13 @@ export function subagentLive(block: SubagentBlock): boolean {
 /**
  * A tool call whose result is an image the agent looked at (ReadMediaFile,
  * a screenshot MCP, a browser capture). Recognised by the result itself, so
- * any image-returning tool qualifies without a name list.
+ * any image-returning tool qualifies without a name list — whether the image
+ * arrives as an engine content part or as the result's own attachment.
  */
 export function isMediaTool(block: Block): block is ToolBlock {
   if (block.kind !== 'tool' || block.status === 'running') return false;
-  const media = extractToolOutputMedia(block.output);
-  return media !== undefined && media.media.some((item) => item.kind === 'image');
+  const media = toolResultMedia(block.media, extractToolOutputMedia(block.output)?.media);
+  return media.some((item) => item.kind === 'image');
 }
 
 /**

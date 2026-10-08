@@ -43,15 +43,46 @@ export interface ExecutionChoice {
   readonly executor: string;
   /** Absent = run the harness with its own configuration. */
   readonly profile: string | undefined;
+  /**
+   * A profile Markdown file chosen directly on the connected host, instead of a
+   * registered profile name. The two are mutually exclusive on the wire: a file
+   * is loaded and projected as its own profile, the registry is never rewritten,
+   * and a file whose declared name matches a registered profile does not replace
+   * it. A session that carries a file keeps carrying it — dropping it would
+   * silently turn a profiled run into a bare harness.
+   */
+  /** Optional for callers that still construct legacy choices by hand. */
+  readonly profile_file?: string;
   /** Absent = every override inherits. */
   readonly overrides: ExecutionOverrides | undefined;
 }
 
-export const NATIVE_CHOICE: ExecutionChoice = { executor: NATIVE_EXECUTOR, profile: undefined, overrides: undefined };
+export const NATIVE_CHOICE: ExecutionChoice = {
+  executor: NATIVE_EXECUTOR,
+  profile: undefined,
+  profile_file: undefined,
+  overrides: undefined,
+};
 
 export function executionChoice(selection: ExecutionSelection | undefined): ExecutionChoice {
   if (selection === undefined) return NATIVE_CHOICE;
-  return { executor: selection.executor, profile: selection.profile, overrides: selection.overrides };
+  return {
+    executor: selection.executor,
+    profile: selection.profile,
+    profile_file: selection.profile_file,
+    overrides: selection.overrides,
+  };
+}
+
+/**
+ * What to call a profile file in a control that has one line: its own file name.
+ * The path itself stays available as the row's detail, so a reader who picked
+ * `/home/dev/profiles/research.md` sees `research.md` and the path beside it.
+ */
+export function profileFileLabel(path: string): string {
+  const normalized = path.replaceAll('\\', '/').replace(/\/+$/, '');
+  const name = normalized.slice(normalized.lastIndexOf('/') + 1);
+  return name === '' ? path : name;
 }
 
 /** Recover a saved selection without interpreting an invalid or unknown record as native. */
@@ -65,6 +96,7 @@ export function executionSelectionOf(choice: ExecutionChoice): ExecutionSelectio
   return {
     executor: choice.executor,
     ...(choice.profile === undefined ? {} : { profile: choice.profile }),
+    ...(choice.profile_file === undefined ? {} : { profile_file: choice.profile_file }),
     ...(choice.overrides === undefined ? {} : { overrides: choice.overrides }),
   };
 }
@@ -85,6 +117,13 @@ export function executionSelectionOf(choice: ExecutionChoice): ExecutionSelectio
  * **key presence**, and a present key means the execution selection owns that
  * control outright: the caller sends no legacy field for it at all, whether
  * its value is a real id or `null`.
+ *
+ * A profile *file* is deliberately not one of the "a Kiki profile supplies it"
+ * cases: this process has not resolved that file, so it cannot know which model
+ * or effort the file declares, and promoting the value the page happens to
+ * display would invent an override the user never made. The file's own
+ * configuration owns the untouched controls; a control the user really moved is
+ * still sent, which is the third case below.
  */
 export function namesLegacyControl(choice: ExecutionChoice | undefined, control: 'model' | 'thinking' | 'permission_mode'): boolean {
   const overrides = choice?.overrides;
@@ -117,13 +156,16 @@ export function isBareExternalChoice(choice: ExecutionChoice | undefined): boole
   return choice !== undefined
     && !isNativeExecutor(choice.executor)
     && choice.profile === undefined
+    && choice.profile_file === undefined
     && choice.overrides === undefined;
 }
 
-/** Two picks are the same request when the engine, profile and every override match. */export function sameExecutionChoice(left: ExecutionChoice | undefined, right: ExecutionChoice | undefined): boolean {
+/** Two picks are the same request when the engine, profile and every override match. */
+export function sameExecutionChoice(left: ExecutionChoice | undefined, right: ExecutionChoice | undefined): boolean {
   if (left === undefined || right === undefined) return left === right;
   return left.executor === right.executor
     && left.profile === right.profile
+    && left.profile_file === right.profile_file
     && sameOverrides(left.overrides, right.overrides);
 }
 
@@ -159,7 +201,7 @@ function sameContext(left: readonly ExecutionContextGroup[] | null | undefined, 
 export function boundExecutionChoice(binding: ExecutionBinding | undefined, fallbackProfile?: string): ExecutionChoice {
   if (binding !== undefined) return executionChoice(binding.selection);
   if (fallbackProfile !== undefined && fallbackProfile !== '') {
-    return { executor: NATIVE_EXECUTOR, profile: fallbackProfile, overrides: undefined };
+    return { executor: NATIVE_EXECUTOR, profile: fallbackProfile, profile_file: undefined, overrides: undefined };
   }
   return NATIVE_CHOICE;
 }

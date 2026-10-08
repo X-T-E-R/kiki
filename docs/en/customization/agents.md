@@ -90,6 +90,8 @@ The GUI's main-agent selector lists the profiles effective for the current works
 
 In **Settings → Agents**, pick a workspace to inspect its default main profile, the source in effect, and the subagent capabilities. File-backed profiles can be edited where they are shown; editing a legacy `SYSTEM.md` adds frontmatter and keeps the prompt body. A selected profile that later becomes unavailable stays visible with a diagnostic, so you can pick another.
 
+Picking a profile file directly in the composer (see [Choosing the engine and its profile](#choosing-the-engine-and-its-profile)) is separate from this catalog: the file is read for the session that runs it, it is never listed as a registered profile, and it replaces nothing.
+
 ### Profile reloads and live sessions
 
 Agent files are watched and reloaded on change, and a reload never breaks a live session: an agent already running or resumed keeps the prompt and constraint snapshot it was bound with, even if its profile is edited, made `private`, deleted or made invalid. Your edit therefore applies to **new** dispatches only, and dispatching to a private or deleted profile fails with an explicit error. A frozen dispatch list skips an invalid target instead of failing the whole turn. Restoring an old record whose profile is gone falls back to the default profile with a warning, after checking its model, effort and executor.
@@ -97,6 +99,10 @@ Agent files are watched and reloaded on change, and a reload never breaks a live
 ### Choosing the engine and its profile
 
 The control at the left of the composer's status line answers one question — what runs this session — in one panel. Kiki itself is the first entry; each external engine follows, and under each engine sit that engine's own main profiles. The first row of every engine is that harness **as it is**: no Kiki profile, no Kiki prompt, no injected tools, and the harness's own model, effort and approval mode. Picking a profile under an engine takes both at once, so the two halves can never disagree.
+
+The panel also runs a profile straight from a Markdown file. Select the small file button in the search row: on a local desktop, Kiki opens the native file picker and previews the selected file before you choose **Use**; on an SSH, remote, browser or other host without a native path picker, enter the path and choose **Check file** instead. Relative paths resolve against the session's working directory or workspace, and a remote path is read on the host running the session rather than on your machine. A file that is not a main profile — `main: false`, or one that overrides a built-in — works the same way. Nothing is registered or imported: the file is not added to the profile catalog, no existing profile is replaced, and cancelling or closing the picker/form changes neither your draft nor the current selection. A file that cannot be read is refused in place, with the server's own reason.
+
+Picking a file takes its engine with it — a file declaring an external `executor` runs that engine — so one choice answers both halves. The file supplies what it declares: leave the model and approval controls alone and the file's choices apply, while changing one yourself wins for that message. A session that runs a file keeps running it; changing only the model on the next message carries the same file instead of falling back to the bare harness. **Rebuild context** reads the file again.
 
 The model control beside it stays separate: a model is a choice *within* the engine you picked. For an external engine, leave **Follow engine configuration** selected to keep its profile or engine defaults, or enter the engine's own model ID for a session override. Choosing Follow again clears the session's model and thinking overrides; it does not change the saved profile or engine settings. Native Kiki model lists do not limit external model IDs.
 

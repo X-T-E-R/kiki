@@ -29,6 +29,10 @@ import { NewSessionPage } from './NewSessionPage';
 const firstRun = vi.hoisted(() => ({
   needsProviderSetup: false,
   effectiveWorkspace: undefined as Workspace | undefined,
+  workspaceId: '',
+  workspacesFailed: false,
+  workspacesError: undefined as string | undefined,
+  retryWorkspaces: () => {},
   client: {
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
@@ -68,7 +72,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       attachments: [],
       busy: false,
       error: null,
-      workspaceId: '',
+      workspaceId: firstRun.workspaceId,
       cwd: '',
       permissionMode: 'manual',
       planMode: false,
@@ -77,8 +81,11 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       agentProfile: '',
       workspaces: [],
       workspacesLoading: false,
+      workspacesFailed: firstRun.workspacesFailed,
+      workspacesError: firstRun.workspacesError,
+      retryWorkspaces: () => { firstRun.retryWorkspaces(); },
       effectiveWorkspace: firstRun.effectiveWorkspace,
-      autoWorkspace: firstRun.effectiveWorkspace === undefined,
+      autoWorkspace: firstRun.effectiveWorkspace === undefined && !firstRun.workspacesFailed,
       agentProfileCatalogMode: { mode: 'unscoped' },
       agentProfileCatalogPending: false,
       needsProviderSetup: firstRun.needsProviderSetup,
@@ -118,6 +125,10 @@ beforeAll(() => {
 
 beforeEach(() => {
   firstRun.needsProviderSetup = false;
+  firstRun.workspaceId = '';
+  firstRun.workspacesFailed = false;
+  firstRun.workspacesError = undefined;
+  firstRun.retryWorkspaces = () => {};
   localStorage.setItem('kiki.locale', 'en');
   vi.clearAllMocks();
 });
@@ -218,6 +229,27 @@ describe('WorkspacePickerFields first-run affordances', () => {
     expect(populated.textContent).not.toContain('Choose a project folder, or send now');
   });
 
+  it('states a failed workspace read instead of borrowing the empty-catalog story', async () => {
+    const retryWorkspaces = vi.fn();
+    const failed = await mount(draftState({
+      workspacesFailed: true,
+      workspacesError: 'session index is building',
+      autoWorkspace: false,
+      retryWorkspaces,
+    }));
+    expect(failed.querySelector('[data-new-workspace-failure]')?.textContent).toContain('session index is building');
+    expect(failed.textContent).not.toContain('Choose a project folder, or send now');
+    // Every option survives the failure, including automatic allocation.
+    expect(failed.querySelector<HTMLButtonElement>('#new-workspace-select')?.disabled).toBe(false);
+    await act(async () => {
+      failed.querySelector<HTMLButtonElement>('[data-new-workspace-retry]')?.click();
+    });
+    expect(retryWorkspaces).toHaveBeenCalledTimes(1);
+
+    const unnamed = await mount(draftState({ workspacesFailed: true, autoWorkspace: false }));
+    expect(unnamed.querySelector('[data-new-workspace-failure]')?.textContent).toContain('could not list your workspaces');
+  });
+
   it('offers explicit automatic allocation even when workspaces already exist', async () => {
     const selectWorkspace = vi.fn();
     const container = await mount(draftState({
@@ -308,6 +340,54 @@ describe('the /new page', () => {
     const container = await mountNewSessionPage();
     expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
     expect(container.textContent).not.toContain('Choose another workspace');
+  });
+
+  it('states a failed workspace read in the hero instead of asking for another target', async () => {
+    const retryWorkspaces = vi.fn();
+    firstRun.workspacesFailed = true;
+    firstRun.workspacesError = 'workspace list unavailable';
+    firstRun.retryWorkspaces = retryWorkspaces;
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')?.textContent).toContain('workspace list unavailable');
+      expect(container.textContent).not.toContain('Choose another workspace');
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-hero-workspace-retry]')?.click();
+      });
+      expect(retryWorkspaces).toHaveBeenCalledTimes(1);
+    } finally {
+      firstRun.workspacesFailed = false;
+      firstRun.workspacesError = undefined;
+      firstRun.retryWorkspaces = () => {};
+    }
+  });
+
+  it('does not call a chosen workspace unavailable from a list that never loaded', async () => {
+    firstRun.workspaceId = 'wd-chosen';
+    firstRun.workspacesFailed = true;
+    firstRun.workspacesError = 'workspace list unavailable';
+    try {
+      // A failed read cannot tell an unknown id from one it never got to check,
+      // so the failure is stated once with its retry and the choice is kept.
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')?.textContent).toContain('workspace list unavailable');
+      expect(container.textContent).not.toContain('is unavailable. Choose a workspace');
+    } finally {
+      firstRun.workspaceId = '';
+      firstRun.workspacesFailed = false;
+      firstRun.workspacesError = undefined;
+    }
+  });
+
+  it('still reports a chosen workspace the loaded list does not contain', async () => {
+    firstRun.workspaceId = 'wd-chosen';
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')).toBeNull();
+      expect(container.textContent).toContain('Workspace “wd-chosen” is unavailable.');
+    } finally {
+      firstRun.workspaceId = '';
+    }
   });
 
   it.each([

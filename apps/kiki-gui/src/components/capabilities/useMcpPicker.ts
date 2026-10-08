@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import type { Klient, McpServerEntry, McpServerLocator, McpSessionCapability } from '@kiki/klient';
 import { errorText } from '@kiki/session-core/i18n';
@@ -98,6 +98,25 @@ function agentMcpSurface(client: KikiClient, sessionId: string | undefined): Age
 export type McpPickAction = 'switch' | 'restore' | 'retry';
 
 /**
+ * Which conversation a write belongs to, fixed when the write is sent.
+ *
+ * The composer mount survives session switches, so a response that lands after
+ * the user moved to another conversation would otherwise be handled by the
+ * callbacks of the *new* render: the row it updates (the cache key), the busy
+ * flag and the failure it reports would all belong to the wrong conversation.
+ * A pending mutation keeps the callbacks of the latest render, so the identity
+ * has to travel with the request instead.
+ */
+interface McpRequestIdentity {
+  readonly key: readonly unknown[];
+  readonly sessionId: string | undefined;
+  /** QueryClient scopes are per connection, but mutation callbacks need the same guard explicitly. */
+  readonly connectionKey: string;
+  readonly client: KikiClient;
+  readonly queryClient: Pick<QueryClient, 'setQueryData'>;
+}
+
+/**
  * What the query holds: the port's own capabilities, or rows already built from
  * the reads a build without the port has.
  */
@@ -118,17 +137,29 @@ export interface McpPickFailure {
   readonly message: string;
 }
 
+/** Busy and failure are notices about one conversation, not about the picker. */
+interface McpPickBusy {
+  readonly sessionId: string | undefined;
+  readonly connectionKey: string;
+  readonly client: KikiClient;
+  readonly name: string;
+  readonly action: McpPickAction;
+  /** The value a switch was just asked for, so the control shows the choice. */
+  readonly on?: boolean;
+}
+
+interface McpPickFailureNotice extends McpPickFailure {
+  readonly sessionId: string | undefined;
+  readonly connectionKey: string;
+  readonly client: KikiClient;
+}
+
 export function useMcpPicker(sessionId: string | undefined) {
-  const { client } = useConnection();
+  const { client, scopeId, spaceKey, connectionId } = useConnection();
   const { locale } = useI18n();
   const queryClient = useQueryClient();
-  const [failure, setFailure] = useState<McpPickFailure | undefined>(undefined);
-  const [busy, setBusy] = useState<{
-    readonly name: string;
-    readonly action: McpPickAction;
-    /** The value a switch was just asked for, so the control shows the choice. */
-    readonly on?: boolean;
-  } | undefined>(undefined);
+  const [failure, setFailure] = useState<McpPickFailureNotice | undefined>(undefined);
+  const [busy, setBusy] = useState<McpPickBusy | undefined>(undefined);
   const [settleUntil, setSettleUntil] = useState(0);
   // Read by a write that outlives this render, so a late failure is written in
   // the language the reader is actually looking at when it lands.
@@ -141,7 +172,16 @@ export function useMcpPicker(sessionId: string | undefined) {
     [client, sessionId, scoped],
   );
   const port = useMemo(() => mcpSessionPort(surface), [surface]);
-  const key = useMemo(() => ['session-mcp-capabilities', sessionId ?? 'none'] as const, [sessionId]);
+  // `scopeId`/`spaceKey` identify the active host, while the client reference
+  // below protects mutation callbacks if a host is replaced without a new id.
+  const connectionKey = useMemo(
+    () => `${scopeId}:${spaceKey}:${connectionId ?? ''}`,
+    [connectionId, scopeId, spaceKey],
+  );
+  const key = useMemo(
+    () => ['session-mcp-capabilities', connectionKey, sessionId ?? 'none'] as const,
+    [connectionKey, sessionId],
+  );
 
   const read = useQuery({
     queryKey: key,
@@ -188,24 +228,39 @@ export function useMcpPicker(sessionId: string | undefined) {
     void revalidate().catch(() => undefined);
   }, [revalidate]);
 
-  const write = useMutation({
+  const requestIsCurrent = useCallback(
+    (request: McpRequestIdentity | undefined): request is McpRequestIdentity =>
+      request !== undefined && request.connectionKey === connectionKey && request.client === client,
+    [client, connectionKey],
+  );
+
+  const write = useMutation<McpSessionCapability, Error, { locator: McpServerLocator; override: McpOverride; name: string }, McpRequestIdentity>({
     mutationFn: async (input: { locator: McpServerLocator; override: McpOverride; name: string }) => {
       if (port === undefined) throw new Error('this build cannot write a conversation’s MCP servers');
       return port.write({ locator: input.locator, override: input.override });
     },
-    onMutate: (input) => {
+    onMutate: (input): McpRequestIdentity => {
       setFailure(undefined);
       setBusy({
+        sessionId,
+        connectionKey,
+        client,
         name: input.name,
         action: input.override === 'inherit' ? 'restore' : 'switch',
         on: input.override !== 'off',
       });
+      // `onMutate` runs while this request is being sent, so the identity it
+      // returns is this conversation and connection — the reply updates that
+      // one and nothing else, however far the user has moved on.
+      return { key, sessionId, connectionKey, client, queryClient };
     },
-    onSuccess: (capability) => {
-      // The engine's own updated capability replaces the row on screen, so what
-      // the reader sees after a write is the state the engine recorded — and a
-      // reopen of the menu re-reads it from the same source.
-      queryClient.setQueryData<McpRead>(key, (current) =>
+    onSuccess: (capability, _input, request) => {
+      // A reply without its request identity cannot update any cache.
+      if (request === undefined) return;
+      // The request owns its connection's QueryClient. This keeps a late reply
+      // useful when returning to the original host without writing into the
+      // replacement host's cache.
+      request.queryClient.setQueryData<McpRead>(request.key, (current) =>
         current === undefined || current.kind !== 'port'
           ? current
           : {
@@ -213,31 +268,50 @@ export function useMcpPicker(sessionId: string | undefined) {
               capabilities: current.capabilities.map((row) =>
                 sameLocator(row.locator, capability.locator) ? capability : row),
             });
-      settle();
+      if (requestIsCurrent(request)) settle();
     },
-    onError: (error, input) => {
-      setFailure({ name: input.name, message: errorText(localeRef.current, error) });
+    onError: (error, input, request) => {
+      if (request === undefined) return;
+      setFailure({ sessionId: request.sessionId, connectionKey: request.connectionKey, client: request.client, name: input.name, message: errorText(localeRef.current, error) });
     },
-    onSettled: () => { setBusy(undefined); },
+    onSettled: (_data, _error, _input, request) => {
+      if (request === undefined) return;
+      setBusy((current) => current !== undefined && (current.sessionId !== request.sessionId || current.connectionKey !== request.connectionKey || current.client !== request.client) ? current : undefined);
+    },
   });
 
-  const reconnect = useMutation({
+  const reconnect = useMutation<undefined, Error, { name: string }, McpRequestIdentity>({
     mutationFn: async (input: { name: string }) => {
       if (surface?.reconnectMcpServer === undefined) {
         throw new Error('this build cannot reconnect a conversation’s MCP servers');
       }
       await surface.reconnectMcpServer(input.name);
     },
-    onMutate: (input) => {
+    onMutate: (input): McpRequestIdentity => {
       setFailure(undefined);
-      setBusy({ name: input.name, action: 'retry' });
+      setBusy({ sessionId, connectionKey, client, name: input.name, action: 'retry' });
+      return { key, sessionId, connectionKey, client, queryClient };
     },
-    onSuccess: () => { settle(); },
-    onError: (error, input) => {
-      setFailure({ name: input.name, message: errorText(localeRef.current, error) });
+    onSuccess: (_data, _input, request) => { if (requestIsCurrent(request)) settle(); },
+    onError: (error, input, request) => {
+      if (request === undefined) return;
+      setFailure({ sessionId: request.sessionId, connectionKey: request.connectionKey, client: request.client, name: input.name, message: errorText(localeRef.current, error) });
     },
-    onSettled: () => { setBusy(undefined); },
+    onSettled: (_data, _error, _input, request) => {
+      if (request === undefined) return;
+      setBusy((current) => current !== undefined && (current.sessionId !== request.sessionId || current.connectionKey !== request.connectionKey || current.client !== request.client) ? current : undefined);
+    },
   });
+
+  // A notice belongs to the conversation that is on screen; a late answer to a
+  // conversation the reader has left reports nothing here.
+  const currentFailure = useMemo(
+    () => (failure !== undefined && failure.sessionId === sessionId && failure.connectionKey === connectionKey && failure.client === client
+      ? { name: failure.name, message: failure.message }
+      : undefined),
+    [client, connectionKey, failure, sessionId],
+  );
+  const currentBusy = busy !== undefined && busy.sessionId === sessionId && busy.connectionKey === connectionKey && busy.client === client ? busy : undefined;
 
   return {
     items,
@@ -247,11 +321,11 @@ export function useMcpPicker(sessionId: string | undefined) {
     writable: port !== undefined,
     loading: scoped && read.isPending,
     failed: read.isError,
-    failure,
+    failure: currentFailure,
     dismissFailure: useCallback(() => { setFailure(undefined); }, []),
-    busyName: busy?.name,
-    busyAction: busy?.action,
-    busyOn: busy?.on,
+    busyName: currentBusy?.name,
+    busyAction: currentBusy?.action,
+    busyOn: currentBusy?.on,
     /** Add, remove, or return a server to the configuration — for this conversation only. */
     setOverride: useCallback((locator: McpServerLocator, override: McpOverride, name: string) => {
       write.mutate({ locator, override, name });

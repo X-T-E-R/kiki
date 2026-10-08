@@ -92,7 +92,7 @@ import {
   readLastSessionId,
   writeLayoutPreferences,
 } from '@kiki/session-core/settings';
-import { isSessionIndexBuildingError } from './lib/client';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 import { useLayoutPreferences } from './lib/layoutHooks';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
@@ -115,17 +115,6 @@ import { activeSpace } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
-export const SESSION_INDEX_RETRY_LIMIT = 4;
-
-/** Retry the cold-home read model only a bounded number of times. */
-export function retryRootReadModelQuery(failureCount: number, error: Error): boolean {
-  return failureCount < SESSION_INDEX_RETRY_LIMIT && isSessionIndexBuildingError(error);
-}
-
-/** Keep cold-index retries responsive without hammering a new home. */
-export function retryRootReadModelDelay(attempt: number): number {
-  return Math.min(250 * 2 ** attempt, 2_000);
-}
 
 function RootRedirect() {
   const host = useHost();

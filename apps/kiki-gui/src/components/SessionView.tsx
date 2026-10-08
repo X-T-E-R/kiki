@@ -2255,7 +2255,10 @@ export function SessionView({
   );
   const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
   const shownExecution = pendingExecution ?? (profilePending
-    ? { ...boundExecution, profile: pendingProfile }
+    // A pending *named* profile replaces whatever profile was bound, including a
+    // file: the two are mutually exclusive on the wire, so the file goes with it
+    // rather than riding along into an invalid selection.
+    ? { ...boundExecution, profile: pendingProfile, profile_file: undefined }
     : boundExecution);
   const executionPending = profilePending || (pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution));
   // Engine names for the confirmation, from the same catalog the panel reads.
@@ -4312,6 +4315,7 @@ boundExecution,
             agentProfile={pendingProfile ?? boundProfile}
             agentProfilePending={profilePending}
             execution={shownExecution}
+            boundExecution={boundExecution}
             executionPending={executionPending}
             onCancelExecution={cancelPendingExecution}
             executionGrants={{

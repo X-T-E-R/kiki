@@ -154,6 +154,8 @@ interface HostCapabilities {
   isWindowVisibleAndFocused?: () => Promise<boolean>;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
+  /** Pick a host path without reading or uploading its contents. */
+  pickFilePath?: () => Promise<string | null>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;
   /** OS file-copy clipboard, distinct from text and screenshot clipboard data. */
   readClipboardFiles?: () => Promise<{

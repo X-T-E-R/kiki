@@ -197,6 +197,14 @@ export interface ToolBlock {
   readonly description: string | undefined;
   readonly status: ToolStatus;
   readonly output: unknown;
+  /**
+   * Media this call produced, taken from the frame's canonical attachment
+   * references. An external harness reports its result bodies as attachment
+   * ids rather than inline parts, so without this the timeline can only show
+   * the placeholder text. Read through the same session-media path the
+   * attachment's own preview uses.
+   */
+  readonly media?: readonly MediaRef[];
   readonly isError: boolean | undefined;
   /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */
   readonly errorCode?: string;

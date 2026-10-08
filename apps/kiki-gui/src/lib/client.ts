@@ -897,6 +897,8 @@ export type AgentTranscriptFrame =
       frameId: string;
       role: 'assistant' | 'user';
       text: string;
+      /** Canonical attachment ids on this frame (assistant image/audio/resource blobs). */
+      attachmentIds?: readonly string[];
       /** Linked task entity for user-role inputs about a task. */
       taskId?: string;
       /** Engine prompt origin for non-typed user inputs (e.g. {kind:'task'}). */
@@ -916,6 +918,8 @@ export type AgentTranscriptFrame =
       inputText?: string;
       startedAt?: string;
       endedAt?: string;
+      /** Canonical attachment ids on this call's output, alongside its content parts. */
+      attachmentIds?: readonly string[];
       progress?: { text?: string };
       /** Agents spawned by this call. */
       agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' }[];
@@ -1841,6 +1845,19 @@ export class KikiClient {
     requestOptions?: { readonly signal?: AbortSignal },
   ): Promise<import('@kiki/protocol').ListAgentTasksResponse> {
     return this.run(this.rest.sessions.listAgentTasks(sessionId, query, requestOptions));
+  }
+
+  /**
+   * Validate a profile Markdown file on the connected host, without registering
+   * or binding anything. `cwd` / `workspace_id` name the host that reads it, so
+   * a path typed for a remote session is resolved there, not on this machine;
+   * the answer is the profile the server would really run.
+   */
+  previewAgentProfileFile(
+    body: import('@kiki/protocol').PreviewAgentProfileFileRequest,
+    options?: import('@kiki/klient').HttpRestRequestOptions,
+  ): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse> {
+    return this.run(this.rest.agents.previewFile(body, options));
   }
 
   createAgentProfile(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile> {

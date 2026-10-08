@@ -117,6 +117,44 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
 // Tool result media
 // ---------------------------------------------------------------------------
 
+/**
+ * The media a tool call produced, as one list per file. A result reports the
+ * same bytes twice when it has both a canonical attachment reference (file id,
+ * name, MIME) and the engine's own content part (url, and sometimes the host
+ * path the read came from), so the two are folded by identity and the surviving
+ * entry keeps every field either side knew.
+ */
+export function toolResultMedia(
+  references: readonly MediaRef[] | undefined,
+  parts: readonly MediaRef[] | undefined,
+): readonly MediaRef[] {
+  const merged: MediaRef[] = [];
+  const positions = new Map<string, number>();
+  for (const item of [...(references ?? []), ...(parts ?? [])]) {
+    const key = item.fileId ?? item.detail?.attachmentId ?? item.blobHash ?? item.url ?? item.path
+      ?? `${item.kind}:${item.name ?? ''}`;
+    const at = positions.get(key);
+    if (at === undefined) {
+      positions.set(key, merged.length);
+      merged.push(item);
+      continue;
+    }
+    const kept = merged[at]!;
+    merged[at] = {
+      ...kept,
+      url: kept.url ?? item.url,
+      path: kept.path ?? item.path,
+      fileId: kept.fileId ?? item.fileId,
+      blobHash: kept.blobHash ?? item.blobHash,
+      detail: kept.detail ?? item.detail,
+      name: kept.name ?? item.name,
+      mime: kept.mime ?? item.mime,
+      size: kept.size ?? item.size,
+    };
+  }
+  return merged;
+}
+
 export interface ToolOutputMedia {
   /** Text parts joined, with image/video wrapper tags stripped. */
   readonly text: string;
@@ -135,6 +173,13 @@ function toolMediaRef(ref: MediaRef, path: string | undefined): MediaRef {
       return { ...ref, url: undefined, path, mime: match.mime, blobHash: match.hash };
     }
     return { ...ref, url: undefined, path: undefined, name: path, mime: undefined };
+  }
+  const daemon = url === undefined ? null : DAEMON_FILE_RE.exec(url);
+  if (daemon !== null) {
+    // `kimi-file://<id>` addresses the session's own media store, so it is a
+    // canonical file id the session read resolves — never a dead <img src>.
+    const fileId = daemon[1] ?? '';
+    return { ...ref, url: undefined, path, fileId: fileId === '' ? undefined : fileId };
   }
   return {
     ...ref,

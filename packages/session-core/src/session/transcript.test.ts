@@ -1493,8 +1493,71 @@ describe('transcript projection cache', () => {
     });
   });
 
-  it('reprojects a settled task-backed shell when the global task entity changes', () => {
-    const item: AgentTranscriptSnapshot['items'][number] = {
+  it('carries a tool result\'s canonical attachments into the tool block media', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media.1', turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-media', toolCallId: 'call-media', name: 'external_paint',
+          state: 'done' as const, output: [{ type: 'text', text: 'painted' }],
+          attachmentIds: ['f-tool-media.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main', items,
+      attachments: [{
+        attachmentId: 'f-tool-media.att1', mediaType: 'image/png', name: 'answer.png', size: 42,
+        source: { kind: 'session_media', fileId: 'f_acp_deadbeef' },
+      }],
+    });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'image', fileId: 'f_acp_deadbeef', name: 'answer.png', mime: 'image/png', size: 42 }],
+    });
+  });
+
+  it('keeps a tool result attachment readable when the window omitted the entity', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media-gone.1', turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-gone', toolCallId: 'call-gone', name: 'external_paint',
+          state: 'done' as const, attachmentIds: ['f-tool-gone.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'file', detail: { agentId: 'main', attachmentId: 'f-tool-gone.att1' } }],
+    });
+  });
+
+  it('leaves a tool block without result media when the frame names none', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'run it',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-plain.1', turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-plain', toolCallId: 'call-plain', name: 'Read',
+          state: 'done' as const, output: 'plain output',
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    expect(blocks.find((block) => block.kind === 'tool')).toMatchObject({ media: undefined });
+  });
+
+  it('reprojects a settled task-backed shell when the global task entity changes', () => {    const item: AgentTranscriptSnapshot['items'][number] = {
       kind: 'turn',
       turnId: 't-task-cache',
       ordinal: 1,

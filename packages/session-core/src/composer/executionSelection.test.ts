@@ -10,6 +10,8 @@ import {
   isBareExternalChoice,
   sendsLegacyControl,
   profileExecutor,
+  profileFileLabel,
+  readExecutionChoice,
   profilesForExecutor,
   profileMatchesExecutor,
   sameExecutionChoice,
@@ -19,12 +21,21 @@ import {
 const native = (profile?: string): ExecutionChoice => ({
   executor: NATIVE_EXECUTOR,
   profile,
+  profile_file: undefined,
   overrides: undefined,
 });
 
 const bare = (executor: string): ExecutionChoice => ({
   executor,
   profile: undefined,
+  profile_file: undefined,
+  overrides: undefined,
+});
+
+const filed = (path: string, executor = NATIVE_EXECUTOR): ExecutionChoice => ({
+  executor,
+  profile: undefined,
+  profile_file: path,
   overrides: undefined,
 });
 
@@ -56,6 +67,7 @@ describe('executionSelectionOf', () => {
     expect(executionSelectionOf({
       executor: 'codex-app-server',
       profile: 'reviewer',
+      profile_file: undefined,
       overrides: { kiki_context: [] },
     })).toEqual({ executor: 'codex-app-server', profile: 'reviewer', overrides: { kiki_context: [] } });
   });
@@ -63,6 +75,16 @@ describe('executionSelectionOf', () => {
   it('round-trips through executionChoice without inventing values', () => {
     const selection = { executor: 'claude-acp', overrides: { allow_kiki_subagents: false } };
     expect(executionSelectionOf(executionChoice(selection))).toEqual(selection);
+  });
+
+  it('carries a profile file through every hop', () => {
+    const selection = { executor: 'claude-acp', profile_file: '/home/dev/profiles/research.md' };
+    const choice = executionChoice(selection);
+    expect(choice.profile_file).toBe('/home/dev/profiles/research.md');
+    expect(executionSelectionOf(choice)).toEqual(selection);
+    expect(sameExecutionChoice(choice, executionChoice({ ...selection }))).toBe(true);
+    expect(sameExecutionChoice(choice, bare('claude-acp'))).toBe(false);
+    expect(sameExecutionChoice(choice, executionChoice({ executor: 'claude-acp', profile_file: '/other.md' }))).toBe(false);
   });
 });
 
@@ -74,12 +96,22 @@ describe('boundExecutionChoice', () => {
       effective: { kiki_context: [], allow_kiki_subagents: false },
       sources: {},
       generation: 1,
-    })).toEqual({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+    })).toEqual({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
+  });
+
+  it('keeps a committed profile file instead of reading it as a bare engine', () => {
+    expect(boundExecutionChoice({
+      version: 1,
+      selection: { executor: 'claude-acp', profile_file: '/home/dev/profiles/research.md' },
+      effective: { kiki_context: [], allow_kiki_subagents: false },
+      sources: {},
+      generation: 1,
+    })).toEqual({ executor: 'claude-acp', profile: undefined, profile_file: '/home/dev/profiles/research.md', overrides: undefined });
   });
 
   it('reads a server without the projection as a native main profile', () => {
     expect(boundExecutionChoice(undefined, 'reviewer')).toEqual({
-      executor: 'native', profile: 'reviewer', overrides: undefined,
+      executor: 'native', profile: 'reviewer', profile_file: undefined, overrides: undefined,
     });
   });
 
@@ -90,20 +122,24 @@ describe('boundExecutionChoice', () => {
 
 describe('sameExecutionChoice', () => {
   it('separates an absent override from an explicit one', () => {
-    const left: ExecutionChoice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
-    const right: ExecutionChoice = { executor: 'claude-acp', profile: undefined, overrides: {} };
+    const left: ExecutionChoice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
+    const right: ExecutionChoice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: {} };
     expect(sameExecutionChoice(left, right)).toBe(true);
   });
 
   it('treats an explicit empty context list as different from an absent one', () => {
-    const left: ExecutionChoice = { executor: 'claude-acp', profile: undefined, overrides: { kiki_context: [] } };
-    const right: ExecutionChoice = { executor: 'claude-acp', profile: undefined, overrides: { kiki_context: ['memory'] } };
+    const left: ExecutionChoice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { kiki_context: [] } };
+    const right: ExecutionChoice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { kiki_context: ['memory'] } };
     expect(sameExecutionChoice(left, right)).toBe(false);
   });
 
   it('is false when one side is undefined', () => {
     expect(sameExecutionChoice(undefined, bare('claude-acp'))).toBe(false);
     expect(sameExecutionChoice(undefined, undefined)).toBe(true);
+  });
+
+  it('does not read a profile file as the same request as a named profile', () => {
+    expect(sameExecutionChoice(filed('/home/dev/profiles/research.md'), native('research'))).toBe(false);
   });
 });
 
@@ -134,7 +170,7 @@ describe('profileMatchesExecutor', () => {
 
 describe('sendsLegacyControl', () => {
   const bare = (overrides?: ExecutionChoice['overrides']): ExecutionChoice =>
-    ({ executor: 'claude-acp', profile: undefined, overrides });
+    ({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides });
 
   it('withholds every control of a bare engine the user never touched', () => {
     for (const control of ['model', 'thinking', 'permission_mode'] as const) {
@@ -170,22 +206,53 @@ describe('sendsLegacyControl', () => {
   });
 
   it('never withholds on native execution or when a profile is selected', () => {
-    const native: ExecutionChoice = { executor: 'native', profile: 'agent', overrides: undefined };
-    const profiled: ExecutionChoice = { executor: 'claude-acp', profile: 'reviewer', overrides: undefined };
+    const native: ExecutionChoice = { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined };
+    const profiled: ExecutionChoice = { executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined };
     for (const control of ['model', 'thinking', 'permission_mode'] as const) {
       expect(sendsLegacyControl(native, control, false)).toBe(true);
       expect(sendsLegacyControl(profiled, control, false)).toBe(true);
       expect(sendsLegacyControl(undefined, control, false)).toBe(true);
     }
   });
+
+  it('leaves a file profile’s own controls to the file', () => {
+    // This process never resolved the file, so it cannot know which model or
+    // effort it declares: the displayed value must not become an override.
+    const file = filed('/home/dev/profiles/research.md', 'claude-acp');
+    expect(sendsLegacyControl(file, 'model', false)).toBe(false);
+    expect(sendsLegacyControl(file, 'thinking', false)).toBe(false);
+    expect(sendsLegacyControl(file, 'permission_mode', false)).toBe(false);
+    // A control the user really moved is still theirs.
+    expect(sendsLegacyControl(file, 'model', true)).toBe(true);
+  });
 });
 
 describe('isBareExternalChoice', () => {
   it('is true only for an external engine with neither a profile nor overrides', () => {
-    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, overrides: undefined })).toBe(true);
-    expect(isBareExternalChoice({ executor: 'native', profile: 'agent', overrides: undefined })).toBe(false);
-    expect(isBareExternalChoice({ executor: 'claude-acp', profile: 'reviewer', overrides: undefined })).toBe(false);
-    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, overrides: { model: 'm' } })).toBe(false);
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined })).toBe(true);
+    expect(isBareExternalChoice({ executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined })).toBe(false);
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined })).toBe(false);
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'm' } })).toBe(false);
+    // A file is a Kiki layer, so the engine is not being run as it is.
+    expect(isBareExternalChoice({ executor: 'claude-acp', profile: undefined, profile_file: '/p/research.md', overrides: undefined })).toBe(false);
+  });
+});
+
+describe('profileFileLabel', () => {
+  it('names a profile file by its own file name on either path spelling', () => {
+    expect(profileFileLabel('/home/dev/profiles/research.md')).toBe('research.md');
+    expect(profileFileLabel('C:\\profiles\\research.md')).toBe('research.md');
+    expect(profileFileLabel('/home/dev/profiles/')).toBe('profiles');
+    expect(profileFileLabel('research.md')).toBe('research.md');
+  });
+});
+
+describe('readExecutionChoice', () => {
+  it('keeps a file selection and refuses one that also names a profile', () => {
+    expect(readExecutionChoice({ executor: 'native', profile_file: '/p/research.md' }))
+      .toEqual(filed('/p/research.md'));
+    expect(readExecutionChoice({ executor: 'native', profile: 'agent', profile_file: '/p/research.md' })).toBeUndefined();
+    expect(readExecutionChoice({ executor: 'native', profile_file: ' ' })).toBeUndefined();
   });
 });
 

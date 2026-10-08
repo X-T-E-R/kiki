@@ -635,7 +635,7 @@ describe('promptGoalObjective', () => {
 });
 
 describe('resolveControlledSkillSubmission', () => {
-  const input = { name: 'kiki-ops', args: 'Help me start.', userInput: '/kiki-ops Help me start.', attachments: [], pendingProfile: undefined, boundProfile: 'agent', boundExecution: { executor: 'native', profile: 'agent', overrides: undefined }, modelTouched: false, effortTouched: false, model: 'example/model', thinking: 'high', permissionTouched: false };
+  const input = { name: 'kiki-ops', args: 'Help me start.', userInput: '/kiki-ops Help me start.', attachments: [], pendingProfile: undefined, boundProfile: 'agent', boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined }, modelTouched: false, effortTouched: false, model: 'example/model', thinking: 'high', permissionTouched: false };
   it('keeps the existing skill REST route when no control was chosen', () => {
     expect(resolveControlledSkillSubmission(input)).toBeUndefined();
   });
@@ -646,7 +646,7 @@ describe('resolveControlledSkillSubmission', () => {
     expect(JSON.stringify(request?.content)).toContain('note.md');
   });
   it('carries a pending bare execution without leaking native model or effort', () => {
-    const request = resolveControlledSkillSubmission({ ...input, pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined } });
+    const request = resolveControlledSkillSubmission({ ...input, pendingExecution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined } });
     expect(request?.execution).toEqual({ executor: 'claude-acp' });
     expect(request?.model).toBeUndefined();
     expect(request?.thinking).toBeUndefined();
@@ -770,7 +770,7 @@ describe('activateSkillWithConditionalClear', () => {
     const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
     const selection = { name: 'review', args: '--fix', userInput: '/review --fix\nOriginal task.', attachments,
       pendingProfile: 'review-profile', boundProfile: 'default',
-      pendingExecution: { executor: 'native', profile: undefined, overrides: undefined }, boundExecution: undefined,
+      pendingExecution: { executor: 'native', profile: undefined, profile_file: undefined, overrides: undefined }, boundExecution: undefined,
       modelTouched: true, effortTouched: true, model: 'selected-model', thinking: 'high',
       permissionTouched: true, permissionMode: 'manual' as const };
     const captured = captureSkillRequest(resolveControlledSkillSubmission(selection)!);
@@ -989,8 +989,8 @@ describe('resolveProfileSwitchSubmission', () => {
         model: undefined,
         thinking: undefined,
         permissionMode: 'manual',
-        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        pendingExecution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined, permissionMode: undefined });
   });
@@ -1006,8 +1006,8 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: undefined,
         permissionTouched: true,
         permissionMode: 'yolo',
-        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        pendingExecution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined, permissionMode: 'yolo' });
   });
@@ -1026,10 +1026,10 @@ describe('resolveProfileSwitchSubmission', () => {
         permissionMode: 'manual',
         pendingExecution: {
           executor: 'example-acp',
-          profile: undefined,
+          profile: undefined, profile_file: undefined,
           overrides: { model: 'vendor-model', thinking: 'high' },
         },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({
       execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } },
@@ -1050,10 +1050,39 @@ describe('resolveProfileSwitchSubmission', () => {
         model: undefined,
         thinking: undefined,
         permissionMode: 'auto',
-        pendingExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        pendingExecution: { executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ execution: { executor: 'claude-acp', profile: 'reviewer' }, model: undefined, thinking: undefined, permissionMode: 'auto' });
+  });
+
+  it('keeps a profile file when only the model moved', () => {
+    // The session runs an explicit file, and a model pick rebuilds the choice:
+    // if the file does not survive that rebuild, the next message silently
+    // becomes a bare harness with none of the file's prompt or policy.
+    const filed = { executor: 'claude-acp', profile: undefined, profile_file: '/work/profiles/research.md', overrides: undefined };
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: false,
+        model: 'vendor/model-b',
+        thinking: undefined,
+        // What the external model control emits: the choice it was shown, with
+        // the pick added — the file rides along because it was never dropped.
+        pendingExecution: { ...filed, overrides: { model: 'vendor/model-b', thinking: null } },
+        boundExecution: filed,
+      }),
+    ).toEqual({
+      execution: {
+        executor: 'claude-acp',
+        profile_file: '/work/profiles/research.md',
+        overrides: { model: 'vendor/model-b', thinking: null },
+      },
+      model: undefined,
+      thinking: undefined,
+    });
   });
 
   it('carries a bare external engine with no profile, so the harness runs as it is', () => {
@@ -1065,14 +1094,14 @@ describe('resolveProfileSwitchSubmission', () => {
         effortTouched: false,
         model: 'provider/model',
         thinking: 'high',
-        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        pendingExecution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined });
   });
 
   it('sends no execution selection when the pending pick matches the live binding', () => {
-    const bound = { executor: 'native', profile: 'agent', overrides: undefined };
+    const bound = { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined };
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1096,8 +1125,8 @@ describe('resolveProfileSwitchSubmission', () => {
         effortTouched: true,
         model: 'provider/other',
         thinking: 'low',
-        pendingExecution: { executor: 'codex-app-server', profile: 'reviewer', overrides: undefined },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        pendingExecution: { executor: 'codex-app-server', profile: 'reviewer', profile_file: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ execution: { executor: 'codex-app-server', profile: 'reviewer' }, model: 'provider/other', thinking: 'low' });
   });
@@ -1113,10 +1142,10 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: undefined,
         pendingExecution: {
           executor: 'claude-acp',
-          profile: undefined,
+          profile: undefined, profile_file: undefined,
           overrides: { kiki_context: [], allow_kiki_subagents: false },
         },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({
       execution: { executor: 'claude-acp', overrides: { kiki_context: [], allow_kiki_subagents: false } },
@@ -1140,7 +1169,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'off',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'example-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
   });
@@ -1156,7 +1185,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'high',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'manual' });
   });
@@ -1177,7 +1206,7 @@ describe('resolveProfileSwitchSubmission', () => {
         permissionTouched: true,
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'example-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/other', thinking: 'low', permissionMode: 'manual' });
     expect(
@@ -1190,7 +1219,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'low',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'example-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/other', thinking: 'low', permissionMode: undefined });
   });
@@ -1210,7 +1239,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: {
           executor: 'example-acp',
-          profile: undefined,
+          profile: undefined, profile_file: undefined,
           overrides: { model: 'vendor-model' },
         },
       }),
@@ -1231,7 +1260,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'low',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'example-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: undefined, thinking: 'low', permissionMode: undefined });
   });
@@ -1250,7 +1279,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'off',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'example-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: undefined });
   });
@@ -1268,7 +1297,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'high',
         permissionMode: 'manual',
         pendingExecution: undefined,
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/other', thinking: 'high', permissionMode: 'manual' });
   });
@@ -1291,10 +1320,10 @@ describe('resolveProfileSwitchSubmission', () => {
         permissionTouched: true,
         pendingExecution: {
           executor: 'example-acp',
-          profile: undefined,
+          profile: undefined, profile_file: undefined,
           overrides: { model: 'vendor-model', thinking: null },
         },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({
       execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: null } },
@@ -1321,10 +1350,10 @@ describe('resolveProfileSwitchSubmission', () => {
         permissionTouched: true,
         pendingExecution: {
           executor: 'example-acp',
-          profile: undefined,
+          profile: undefined, profile_file: undefined,
           overrides: { permission_mode: null },
         },
-        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({
       execution: { executor: 'example-acp', overrides: { permission_mode: null } },
@@ -1364,7 +1393,7 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'high',
         permissionMode: 'auto',
         pendingExecution: undefined,
-        boundExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
+        boundExecution: { executor: 'claude-acp', profile: 'reviewer', profile_file: undefined, overrides: undefined },
       }),
     ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'auto' });
   });
@@ -1373,12 +1402,12 @@ describe('resolveProfileSwitchSubmission', () => {
 describe('executionSwitchName', () => {
   it('names the engine by its catalog label, and the native engine as Kiki', () => {
     const labels = { __native: 'Kiki', 'claude-acp': 'Claude Code' };
-    expect(executionSwitchName({ executor: 'claude-acp', profile: undefined, overrides: undefined }, labels)).toBe('Claude Code');
-    expect(executionSwitchName({ executor: 'native', profile: 'agent', overrides: undefined }, labels)).toBe('Kiki');
+    expect(executionSwitchName({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }, labels)).toBe('Claude Code');
+    expect(executionSwitchName({ executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined }, labels)).toBe('Kiki');
   });
 
   it('falls back to the raw id for an engine the catalog does not list', () => {
-    expect(executionSwitchName({ executor: 'custom-xyz', profile: undefined, overrides: undefined }, { __native: 'Kiki' })).toBe('custom-xyz');
+    expect(executionSwitchName({ executor: 'custom-xyz', profile: undefined, profile_file: undefined, overrides: undefined }, { __native: 'Kiki' })).toBe('custom-xyz');
   });
 });
 

@@ -9,6 +9,7 @@ const {
   onTrayNewSession,
   pickDirectories: selectDirectoriesNative,
   pickDirectory: selectDirectoryNative,
+  pickFilePath: selectFilePathNative,
   pickFiles: selectFilesNative,
   openUrl: openExternalUrl,
 } = tauriHost;
@@ -98,6 +99,7 @@ describe('native desktop bridge', () => {
   it('blocks native file and directory operations in SSH scope and restores local operations', async () => {
     tauriHost.connection.setWorkspaceScope('ssh');
     try {
+      await expect(tauriHost.pickFilePath()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.pickDirectory()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.pickDirectories()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.revealPath('/home/dev/project')).rejects.toThrow('SSH workspace');
@@ -241,6 +243,14 @@ describe('native desktop bridge', () => {
 
     open.mockResolvedValueOnce(null);
     await expect(selectDirectoriesNative()).resolves.toBeNull();
+  });
+
+  it('picks a local file path without statting or reading its contents', async () => {
+    open.mockResolvedValueOnce('C:/work/profiles/research.md');
+    await expect(selectFilePathNative()).resolves.toBe('C:/work/profiles/research.md');
+    expect(open).toHaveBeenCalledWith({ directory: false, multiple: false });
+    expect(stat).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
   });
 
   it('stats native file picks without reading their contents eagerly', async () => {

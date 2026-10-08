@@ -2702,6 +2702,11 @@ export function agentTranscriptToBlocks(
               description: undefined,
               status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
+              media: mediaFromAttachmentIds(
+                (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds,
+                attachmentsById,
+                response.agent_id,
+              ),
               isError: frame.state === 'error',
               errorCode: frame.errorCode,
               startedAt,

@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
-import type { NamedAgentProfile } from '../lib/client';
+import { ApiError, type NamedAgentProfile } from '../lib/client';
 import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
   AUTO_WORKSPACE_ID,
@@ -219,7 +219,7 @@ describe('buildNewSessionCreate', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       // What the page is displaying, none of it chosen here:
       model: 'provider/model',
       thinking: 'high',
@@ -239,7 +239,7 @@ describe('buildNewSessionCreate', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       model: 'provider/model',
       thinking: 'high',
       permissionMode: 'yolo',
@@ -261,7 +261,7 @@ describe('buildNewSessionCreate', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       model: 'provider/model',
       thinking: 'high',
       permissionMode: 'yolo',
@@ -284,7 +284,7 @@ describe('buildNewSessionCreate', () => {
     const native = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'native', profile: 'agent', overrides: undefined },
+      execution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
       model: 'provider/model',
       thinking: 'high',
       permissionMode: 'auto',
@@ -305,7 +305,7 @@ describe('buildNewSessionCreate', () => {
     const profiled = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'claude-reviewer',
-      execution: { executor: 'claude-acp', profile: 'claude-reviewer', overrides: undefined },
+      execution: { executor: 'claude-acp', profile: 'claude-reviewer', profile_file: undefined, overrides: undefined },
       model: 'provider/model',
       thinking: 'high',
       permissionMode: 'auto',
@@ -332,7 +332,7 @@ describe('buildNewSessionCreate', () => {
       profile: 'agent',
       execution: {
         executor: 'example-acp',
-        profile: undefined,
+        profile: undefined, profile_file: undefined,
         overrides: { model: 'vendor-model', thinking: 'high' },
       },
       model: 'vendor-model',
@@ -360,7 +360,7 @@ describe('buildNewSessionCreate', () => {
       profile: 'agent',
       execution: {
         executor: 'example-acp',
-        profile: undefined,
+        profile: undefined, profile_file: undefined,
         overrides: { model: null, permission_mode: null },
       },
       model: 'vendor-model',
@@ -382,7 +382,7 @@ describe('buildNewSessionCreate', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       permissionMode: 'review',
       planMode: false,
       modelTouched: false,
@@ -404,7 +404,7 @@ describe('buildNewSessionCreate', () => {
       profile: 'agent',
       execution: {
         executor: 'claude-acp',
-        profile: undefined,
+        profile: undefined, profile_file: undefined,
         overrides: { model: 'harness-model', allow_kiki_subagents: false },
       },
       model: 'harness-model',
@@ -424,11 +424,66 @@ describe('buildNewSessionCreate', () => {
     });
   });
 
+  it('creates a session that runs a profile file, without naming a registered profile', () => {
+    const body = buildNewSessionCreate({
+      cwd: '/work',
+      profile: 'agent',
+      execution: {
+        executor: 'native',
+        profile: undefined,
+        profile_file: '/work/profiles/research.md',
+        overrides: undefined,
+      },
+      // A file pick carries no model or effort: nothing was chosen, and the
+      // file's own configuration supplies whatever it declares.
+      model: undefined,
+      thinking: undefined,
+      permissionMode: 'manual',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'native', profile_file: '/work/profiles/research.md' },
+      permission_mode: 'manual',
+      plan_mode: false,
+    });
+    expect(body.agent_config).not.toHaveProperty('profile');
+  });
+
+  it('leaves an external engine’s profile file its own model and effort', () => {
+    // The process never resolved the file, so it cannot know which model or
+    // effort it declares: the value merely on display must not become an
+    // override that outranks the file.
+    const body = buildNewSessionCreate({
+      cwd: '/work',
+      profile: 'agent',
+      execution: {
+        executor: 'claude-acp',
+        profile: undefined,
+        profile_file: '/work/profiles/research.md',
+        overrides: undefined,
+      },
+      model: 'vendor/model-a',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp', profile_file: '/work/profiles/research.md' },
+      plan_mode: false,
+    });
+  });
+
   it('still lets a touched control win over an engine that names no override', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
       profile: 'agent',
-      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       model: 'picked/model',
       thinking: 'low',
       permissionMode: 'yolo',
@@ -488,7 +543,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => {
       state.setModelOverride('provider/alpha');
       state.setEffortOverride('high');
-      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
     });
     state = await settleDraft((value) => value.execution.executor === 'claude-acp');
     expect(state.modelOverride).toBeUndefined();
@@ -1662,7 +1717,7 @@ describe('persona model and effort choice sources', () => {
     await renderDraft({});
     let state = await settleDraft((value) => !value.agentProfileCatalogPending);
     await act(async () => {
-      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
     });
     state = latestDraftState!;
     // The page still shows Kiki's own default; none of it was chosen here, and
@@ -1682,7 +1737,7 @@ describe('persona model and effort choice sources', () => {
     await renderDraft({});
     let state = await settleDraft((value) => !value.agentProfileCatalogPending);
     await act(async () => {
-      state.setExecution({ executor: 'claude-acp', profile: undefined, overrides: undefined });
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
     });
     state = latestDraftState!;
     await act(async () => { state.setPermissionMode('yolo'); });
@@ -1706,5 +1761,74 @@ describe('persona model and effort choice sources', () => {
     const body = client.createSession.mock.calls[0]![0] as SessionCreate;
     expect(body.persona).toBeUndefined();
     expect(body.agent_config).toMatchObject({ profile: 'agent', model: 'fixture/model', thinking: 'high' });
+  });
+});
+
+describe('workspace list failures on /new', () => {
+  const workspace = (id: string, name: string) => ({
+    id,
+    name,
+    root: `/workspace/${name.toLowerCase()}`,
+    pinned: false,
+    isGit: false,
+    last_opened_at: '2026-09-05T00:00:00.000Z',
+    session_count: 0,
+  });
+
+  it('reports a failed read instead of reading it as a home with no workspaces', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesFailed);
+
+    expect(state.workspaces).toEqual([]);
+    expect(state.workspacesError).toBe('workspace list unavailable');
+    expect(state.workspacesLoading).toBe(false);
+    // A read that never answered cannot decide the target by allocating one.
+    expect(state.autoWorkspace).toBe(false);
+    expect(state.effectiveWorkspace).toBeUndefined();
+    // A non-index failure is not a cold home: it is reported at once, not retried.
+    expect(client.listWorkspaces).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the draft and the explicit automatic option while the read has failed', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesFailed);
+
+    await act(async () => { state.updateDraft('keep this draft'); });
+    await act(async () => { latestDraftState!.setCwd('C:/proj'); });
+    expect(latestDraftState!.draft).toBe('keep this draft');
+    // A typed absolute path still decides the target while the list is broken.
+    expect(latestDraftState!.autoWorkspace).toBe(false);
+
+    await act(async () => { latestDraftState!.setCwd(''); });
+    await act(async () => { latestDraftState!.selectWorkspace(AUTO_WORKSPACE_ID); });
+    expect(latestDraftState!.autoWorkspace).toBe(true);
+    expect(latestDraftState!.draft).toBe('keep this draft');
+  });
+
+  it('distinguishes an empty home: a resolved empty list is not a failure', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [] });
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesLoading === false && !value.workspacesFailed);
+
+    expect(state.workspacesFailed).toBe(false);
+    expect(state.workspacesError).toBeUndefined();
+    // Automatic allocation is the honest target for a home with no folders yet.
+    expect(state.autoWorkspace).toBe(true);
+  });
+
+  it('retries a cold index within the shared bounded window, then lists the folder', async () => {
+    const building = new ApiError({ code: 40939, msg: 'session index is building', data: null });
+    client.listWorkspaces
+      .mockRejectedValueOnce(building)
+      .mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    await renderDraft();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    const state = await settleDraft((value) => value.workspaces.length > 0);
+
+    expect(client.listWorkspaces).toHaveBeenCalledTimes(2);
+    expect(state.workspacesFailed).toBe(false);
+    expect(state.effectiveWorkspace?.id).toBe('wd_alpha');
   });
 });

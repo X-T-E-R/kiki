@@ -170,6 +170,16 @@ describe('extractToolOutputMedia', () => {
     });
   });
 
+  it('resolves a daemon file url to the session media id instead of a dead image src', () => {
+    expect(extractToolOutputMedia([
+      { type: 'text', text: 'Here is the render.' },
+      { type: 'image_url', imageUrl: { url: 'kimi-file://f_acp_2f1a?path=%2Fabs%2Fmedia%2Ff_acp_2f1a.png', id: 'f_acp_2f1a', mimeType: 'image/png' } },
+    ])).toEqual({
+      text: 'Here is the render.',
+      media: [{ kind: 'image', url: undefined, path: undefined, fileId: 'f_acp_2f1a' }],
+    });
+  });
+
   it('returns undefined for plain strings, objects, and text-only arrays', () => {
     expect(extractToolOutputMedia('plain')).toBeUndefined();
     expect(extractToolOutputMedia({ kind: 'text', text: 'x' })).toBeUndefined();

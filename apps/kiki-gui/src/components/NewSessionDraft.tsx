@@ -59,6 +59,7 @@ import {
 import { DEFAULT_AGENT_PROFILE } from './Composer';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 import { useHost } from '../host';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
 import {
   agentProfileCatalogQueryKey,
   loadAgentProfileCatalog,
@@ -421,8 +422,13 @@ export function useNewSessionDraft({
   // the user names an engine of their own; a bare engine sends no profile at
   // all, so the harness runs with its own configuration.
   const [execution, setExecutionState] = useState<ExecutionChoice>(() =>
-    applyPrefill && initialProfile !== undefined ? { executor: NATIVE_EXECUTOR, profile: initialProfile, overrides: undefined }
-      : initialRestoredDraft.execution ?? { executor: NATIVE_EXECUTOR, profile: initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE, overrides: undefined });
+    applyPrefill && initialProfile !== undefined ? { executor: NATIVE_EXECUTOR, profile: initialProfile, profile_file: undefined, overrides: undefined }
+      : initialRestoredDraft.execution ?? {
+        executor: NATIVE_EXECUTOR,
+        profile: initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
+        profile_file: undefined,
+        overrides: undefined,
+      });
   // The visible effort follows the catalog for ordinary drafts. A persona's
   // inherited preview is not a user override, even when it has the same value.
   const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
@@ -447,13 +453,23 @@ export function useNewSessionDraft({
   const effortTouched = useRef(false);
   const permissionTouched = useRef(false);
 
+  // Shares App's `['workspaces']` read, including its bounded cold-index retry,
+  // so /new can tell a failed read from a home with no workspaces yet.
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
+    retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
   });
   const workspaces = workspacesQuery.data?.items ?? [];
   const workspacesLoading = workspacesQuery.isLoading;
+  const workspacesFailed = workspacesQuery.isError;
+  const workspacesError = workspacesQuery.error instanceof Error ? workspacesQuery.error.message : undefined;
+  const { refetch: refetchWorkspaces } = workspacesQuery;
+  const retryWorkspaces = useCallback(() => {
+    void refetchWorkspaces();
+  }, [refetchWorkspaces]);
 
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
@@ -462,8 +478,11 @@ export function useNewSessionDraft({
         : workspaces.find((w) => w.id === workspaceId),
     [dailyPersonaId, workspaces, workspaceId],
   );
+  // Only a list that answered can be read as "nothing here": a read still in
+  // flight, or one that failed, decides nothing, and automatic allocation then
+  // needs the user's own choice of it.
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
-    && (workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID);
+    && (workspaceId === AUTO_WORKSPACE_ID || (workspaceId === '' && workspacesQuery.isSuccess));
   const worktreeRoot = cwd.trim() !== ''
     ? (isAbsoluteCwdPath(cwd.trim()) ? cwd.trim() : undefined)
     : effectiveWorkspace?.root;
@@ -560,7 +579,7 @@ export function useNewSessionDraft({
   ) => {
     const defaults = composerDefaultsForProfile(items, name);
     const selected = items.find((item) => item.name === name);
-    setExecutionState({ executor: selected?.executor || NATIVE_EXECUTOR, profile: name, overrides: undefined });
+    setExecutionState({ executor: selected?.executor || NATIVE_EXECUTOR, profile: name, profile_file: undefined, overrides: undefined });
     setAgentProfileState(name);
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
@@ -622,13 +641,14 @@ export function useNewSessionDraft({
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
-  // user is still choosing from (or one that has failed) decides nothing.
+  // user is still choosing from (or one that has failed) decides nothing, and
+  // neither does a workspace list that has not answered yet.
   const dailyDefaultApplied = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (dailyPersonaId === undefined || persona === undefined) return;
     if (persona.definition.id !== dailyPersonaId) return;
     if (dailyDefaultApplied.current === dailyPersonaId) return;
-    if (workspacesQuery.isPending) return;
+    if (workspacesQuery.isPending || workspacesQuery.isError) return;
     dailyDefaultApplied.current = dailyPersonaId;
     if (workspaceId !== '' || cwd.trim() !== '') return;
     const home = persona.definition.homeWorkspace;
@@ -640,7 +660,7 @@ export function useNewSessionDraft({
       return;
     }
     if (isAbsoluteCwdPath(home)) setCwd(home);
-  }, [cwd, dailyPersonaId, persona, workspaceId, workspaces, workspacesQuery.isPending]);
+  }, [cwd, dailyPersonaId, persona, workspaceId, workspaces, workspacesQuery.isPending, workspacesQuery.isError]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
@@ -980,6 +1000,10 @@ export function useNewSessionDraft({
     setExecution,
     workspaces,
     workspacesLoading,
+    workspacesFailed,
+    /** The server's own message, for the failure row instead of a generic one. */
+    workspacesError,
+    retryWorkspaces,
     effectiveWorkspace,
     autoWorkspace,
     worktreeAvailability,
@@ -1045,7 +1069,8 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   );
 
   // First run has no registered folders, but automatic allocation remains available.
-  const firstRun = !state.workspacesLoading && state.workspaces.length === 0;
+  // A failed read is not an empty home, so it never borrows this explanation.
+  const firstRun = !state.workspacesLoading && !state.workspacesFailed && state.workspaces.length === 0;
 
   return (
     <div className="flex flex-col gap-2">
@@ -1053,6 +1078,19 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>
       {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
+      {state.workspacesFailed ? (
+        <div role="alert" data-new-workspace-failure className="flex flex-wrap items-center gap-2 text-[11.5px] leading-relaxed text-danger">
+          <span>{state.workspacesError ?? t('new.workspacesFailed')}</span>
+          <button
+            type="button"
+            data-new-workspace-retry
+            onClick={() => { state.retryWorkspaces(); }}
+            className="shrink-0 rounded-md border border-hairline bg-paper px-2 py-0.5 text-[11.5px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
       {firstRun ? (
         <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
       ) : null}
