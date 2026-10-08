@@ -2,9 +2,10 @@
 
 /**
  * OnboardingWizard — the first-run dialog: the auto-popup decision rule
- * (shouldOfferOnboarding), the three-step walk (nothing here configures a model
- * and the closing step hands over to /discover), the save semantics of every
- * advance (Next persists the permission default), and exit state.
+ * (shouldOfferOnboarding), the three-step walk (nothing here configures a
+ * model; the closing step starts a discovery route in place), the save
+ * semantics of every advance (Next persists the permission default), and exit
+ * state.
  */
 
 import { act, useEffect } from 'react';
@@ -14,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { AuthSummary } from '@kiki/protocol';
 import { clearStoredDrafts, readDraft, readNewSessionDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
+import { currentDiscoveryScope, readDiscoveryState } from '@kiki/session-core/discovery';
 import { readSettings } from '@kiki/session-core/settings';
 
 import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
@@ -47,9 +49,13 @@ const previewHostSkillInstall = vi.fn();
 const installHostSkill = vi.fn();
 const navigate = vi.fn();
 
+/** Mutable connection surface, so one test can take the socket away. */
+const connectionState = vi.hoisted(() => ({ wsStatus: undefined as 'open' | 'closed' | undefined }));
+
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     config: { url: 'http://127.0.0.1:1', token: 'test-token' },
+    get wsStatus() { return connectionState.wsStatus; },
     client: {
       getAuth,
       listProviders,
@@ -110,6 +116,7 @@ beforeEach(() => {
   localStorage.removeItem('kiki.settings');
   clearStoredDrafts();
   resetDraftMemoryForTests();
+  connectionState.wsStatus = undefined;
   navigate.mockReset();
   getAuth.mockReset().mockResolvedValue(AUTH_EMPTY);
   listProviders.mockReset().mockResolvedValue({ items: [] });
@@ -150,24 +157,10 @@ afterAll(() => {
 });
 
 async function mount(onClose: () => void = () => {}): Promise<HTMLDivElement> {
-  const container = document.createElement('div');
-  document.body.append(container);
-  containers.push(container);
-  const root = createRoot(container);
-  roots.push(root);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <OnboardingWizard onClose={onClose} />
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  // The wizard's last step starts discovery routes through the shared context,
+  // so every mount lives inside the same router + guard + discovery shell the
+  // App gives it; a bare dialog would throw on useDiscovery.
+  const { container } = await mountWithDiscovery({ onClose });
   return container;
 }
 
@@ -474,38 +467,128 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  describe('the closing step invites the tour', () => {
-    it('is one invitation and one action, with no capability list, route grid or model row of its own', async () => {
+  describe('the closing step starts a discovery route in place', () => {
+    it('lists the five catalog routes as quiet rows, and nothing the hub owns', async () => {
       await mount();
       await toDiscoverStep();
 
       expect(dialog().textContent).toContain('Step 3 of 3');
       expect(dialog().textContent).toContain('Look around Kiki');
+      expect(dialog().textContent).toContain('Start from a place that interests you.');
       expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
+
+      const rows = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-route]')];
+      expect(rows.map((row) => row.dataset['onboardingRoute'])).toEqual([
+        'overview', 'do-first', 'understand', 'sustain', 'extend',
+      ]);
+      expect(rows[0]?.textContent).toContain('Take me on a tour');
+      expect(rows[0]?.textContent).toContain('5 stops');
+      expect(rows[3]?.textContent).toContain('Keep work going');
+      expect(rows[3]?.textContent).toContain('3 stops');
+
       // Everything the hub owns stays on the hub: no second copy in the welcome.
+      expect(dialog().querySelector('[data-onboarding-discover-start]')).toBeNull();
       expect(dialog().querySelector('[data-onboarding-cap], [data-cap-ask], [data-cap-open], [data-cap-install]')).toBeNull();
       expect(dialog().querySelector('[data-discovery-onboarding-route], [data-discovery-onboarding-overview]')).toBeNull();
       expect(dialog().querySelector('[data-model-connection], [data-onboarding-model-connection]')).toBeNull();
       expect(dialog().textContent).not.toContain('What else Kiki can do');
-      // One primary, and it is the tour.
-      const starts = [...dialog().querySelectorAll('[data-onboarding-discover-start]')];
-      expect(starts.map((element) => element.textContent)).toEqual(['Discover Kiki']);
+      // The rows themselves are the actions: the footer keeps no primary.
+      expect([...dialog().querySelectorAll('button')].some((button) => button.textContent === 'Next')).toBe(false);
     });
 
-    it('opens the real /discover hub and completes the run, creating nothing', async () => {
+    it('a route row starts that route right there and completes the run, creating nothing', async () => {
       const onClose = vi.fn();
-      await mount(onClose);
+      const { router } = await mountWithDiscovery({ onClose });
       await toDiscoverStep();
 
-      await click(dialog().querySelector('[data-onboarding-discover-start]')!);
+      await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
+      await flush();
       await flush();
 
-      expect(navigate).toHaveBeenCalledWith('/discover');
+      expect(router.state.location.pathname).toBe('/memory');
       expect(onClose).toHaveBeenCalledTimes(1);
+      // The persisted record never stores 'active': a reload reads a started
+      // tour back as 'left', so it resumes instead of overlaying a live one.
+      const state = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(state.lifecycle).toBe('left');
+      expect(state.route).toBe('sustain');
+      expect(state.station).toBe('memory');
       expect(createSession).not.toHaveBeenCalled();
       expect(readDraft('new')).toBe('');
       expect(readNewSessionDraft().workspaceId).toBeUndefined();
       expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+    });
+
+    it('a route whose first stop is this page starts in place, without leaving', async () => {
+      const onClose = vi.fn();
+      const { router } = await mountWithDiscovery({ onClose });
+      await toDiscoverStep();
+
+      await click(dialog().querySelector('[data-onboarding-route="overview"]')!);
+      await flush();
+      await flush();
+
+      expect(router.state.location.pathname).toBe('/new');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      const state = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(state.lifecycle).toBe('left');
+      expect(state.route).toBe('overview');
+      expect(state.station).toBe('workspace');
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+    });
+
+    it('a cancelled dirty-draft prompt leaves the wizard and the tour untouched', async () => {
+      const onClose = vi.fn();
+      const { router, cancelAction } = await mountWithDiscovery({ onClose, dirty: true });
+      await toDiscoverStep();
+
+      await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
+      await cancelAction();
+      await flush();
+
+      expect(router.state.location.pathname).toBe('/settings/providers');
+      expect(onClose).not.toHaveBeenCalled();
+      expect(readDiscoveryState(currentDiscoveryScope('local')).route).toBeUndefined();
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+      // Staying here is the user's choice, not a failure: nothing to recover from.
+      expect(dialog().textContent).not.toContain('This page is not available right now');
+    });
+
+    it('a confirmed dirty-draft prompt commits the route and ends the run', async () => {
+      const onClose = vi.fn();
+      const { router, confirmAction } = await mountWithDiscovery({ onClose, dirty: true });
+      await toDiscoverStep();
+
+      await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
+      await confirmAction();
+      await flush();
+      await flush();
+
+      expect(router.state.location.pathname).toBe('/memory');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      const state = readDiscoveryState(currentDiscoveryScope('local'));
+      expect(state.lifecycle).toBe('left');
+      expect(state.route).toBe('sustain');
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+    });
+
+    it('a route that cannot start says so in place and recovers the rows', async () => {
+      connectionState.wsStatus = 'closed';
+      const onClose = vi.fn();
+      const { router } = await mountWithDiscovery({ onClose });
+      await toDiscoverStep();
+
+      await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
+      await flush();
+
+      expect(router.state.location.pathname).toBe('/new');
+      expect(onClose).not.toHaveBeenCalled();
+      expect(readDiscoveryState(currentDiscoveryScope('local')).route).toBeUndefined();
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+      expect(dialog().textContent).toContain('This page is not available right now');
+      // Settled: the rows are actionable again, not stuck disabled.
+      const row = dialog().querySelector('[data-onboarding-route="sustain"]');
+      expect(row?.hasAttribute('disabled')).toBe(false);
     });
 
     it('closes the run without a session, a draft or a navigation when the action is skipped', async () => {

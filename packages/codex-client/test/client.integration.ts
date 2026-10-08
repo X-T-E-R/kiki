@@ -2,7 +2,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { CodexAppServerClient, CodexClientError, CodexRemoteError } from '../src/index';
+import {
+  CodexAppServerClient,
+  CodexClientError,
+  CodexRemoteError,
+  type NormalizedExecutorEvent,
+} from '../src/index';
 import { NodeProcessService } from './nodeProcessService';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-app-server.mjs', import.meta.url));
@@ -26,16 +31,16 @@ async function thoughtTexts(mode: string): Promise<readonly string[]> {
   const app = client(mode);
   await app.connect();
   const thread = await app.startThread({ model: 'gpt-test' });
+  const texts: string[] = [];
   const handle = await app.startTurn(
     { threadId: thread.thread.id, input: [] },
     new AbortController().signal,
+    async (event) => {
+      if (event.type === 'thought.delta' && event.content.type === 'text') {
+        texts.push(event.content.text);
+      }
+    },
   );
-  const texts: string[] = [];
-  for await (const event of handle.events) {
-    if (event.type === 'thought.delta' && event.content.type === 'text') {
-      texts.push(event.content.text);
-    }
-  }
   await handle.completion;
   await app.shutdown();
   return texts;
@@ -48,12 +53,13 @@ describe('CodexAppServerClient process integration', () => {
     await app.connect();
     expect(await app.listModels()).toMatchObject({ data: [{ id: 'gpt-test' }] });
     const thread = await app.startThread({ model: 'gpt-test' });
+    const events: NormalizedExecutorEvent[] = [];
     const handle = await app.startTurn({
       threadId: thread.thread.id,
       input: [{ type: 'text', text: 'hello' }],
-    }, new AbortController().signal);
-    const events = [];
-    for await (const event of handle.events) events.push(event);
+    }, new AbortController().signal, async (event) => {
+      events.push(event);
+    });
     await expect(handle.completion).resolves.toMatchObject({
       status: 'completed',
       usage: { inputTokens: 2, cachedInputTokens: 1, outputTokens: 1, contextWindow: 100 },
@@ -74,8 +80,11 @@ describe('CodexAppServerClient process integration', () => {
     const app = client('approval', { onServerRequest: handler });
     await app.connect();
     const thread = await app.startThread({ model: 'gpt-test' });
-    const handle = await app.startTurn({ threadId: thread.thread.id, input: [] }, new AbortController().signal);
-    for await (const _event of handle.events) {}
+    const handle = await app.startTurn(
+      { threadId: thread.thread.id, input: [] },
+      new AbortController().signal,
+      async () => {},
+    );
     await expect(handle.completion).resolves.toMatchObject({ status: 'completed' });
     expect(handler).toHaveBeenCalledOnce();
     await app.shutdown();
@@ -91,16 +100,16 @@ describe('CodexAppServerClient process integration', () => {
     const app = client('reasoning-multiple');
     await app.connect();
     const thread = await app.startThread({ model: 'gpt-test' });
+    const thoughts: Array<{ readonly messageId: string | undefined; readonly text: string }> = [];
     const handle = await app.startTurn(
       { threadId: thread.thread.id, input: [] },
       new AbortController().signal,
+      async (event) => {
+        if (event.type === 'thought.delta' && event.content.type === 'text') {
+          thoughts.push({ messageId: event.messageId, text: event.content.text });
+        }
+      },
     );
-    const thoughts: Array<{ readonly messageId: string | undefined; readonly text: string }> = [];
-    for await (const event of handle.events) {
-      if (event.type === 'thought.delta' && event.content.type === 'text') {
-        thoughts.push({ messageId: event.messageId, text: event.content.text });
-      }
-    }
     await expect(handle.completion).resolves.toMatchObject({ status: 'completed' });
     expect(thoughts).toEqual([
       { messageId: 'reasoning-1', text: 'first summary' },
@@ -128,7 +137,7 @@ describe('CodexAppServerClient process integration', () => {
     await hanging.connect();
     const thread = await hanging.startThread({ model: 'gpt-test' });
     const controller = new AbortController();
-    const pending = hanging.startTurn({ threadId: thread.thread.id, input: [] }, controller.signal);
+    const pending = hanging.startTurn({ threadId: thread.thread.id, input: [] }, controller.signal, async () => {});
     void pending.catch(() => undefined);
     controller.abort();
     await expect(pending).rejects.toBeInstanceOf(CodexClientError);
@@ -137,8 +146,11 @@ describe('CodexAppServerClient process integration', () => {
     const malformed = client('malformed');
     await malformed.connect();
     const malformedThread = await malformed.startThread({ model: 'gpt-test' });
-    await expect(malformed.startTurn({ threadId: malformedThread.thread.id, input: [] }, new AbortController().signal))
-      .rejects.toMatchObject({ code: 'protocol' });
+    await expect(malformed.startTurn(
+      { threadId: malformedThread.thread.id, input: [] },
+      new AbortController().signal,
+      async () => {},
+    )).rejects.toMatchObject({ code: 'protocol' });
     await malformed.shutdown();
   }, 15_000);
 });

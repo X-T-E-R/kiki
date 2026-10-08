@@ -6,14 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
+import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { PluginToolOutput } from './toolOutput';
 
 export const PLUGIN_RPC_VERSION = 1;
 const IDLE_MS = 90_000;
 const HANDSHAKE_MS = 15_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
-const MAX_IMAGE_URL_CHARS = 12 * 1024 * 1024;
 
-function validToolResult(result: unknown): result is ExecutableToolResult {
+function validToolResult(result: unknown, references: ReadonlySet<string>): result is ExecutableToolResult {
   if (typeof result !== 'object' || result === null || !('output' in result)) return false;
   const { output, isError } = result as { output: unknown; isError?: unknown };
   if (isError !== undefined && typeof isError !== 'boolean') return false;
@@ -23,8 +24,7 @@ function validToolResult(result: unknown): result is ExecutableToolResult {
     const value = part as { type: unknown; text?: unknown; imageUrl?: { url?: unknown } };
     return (value.type === 'text' && typeof value.text === 'string') ||
       (value.type === 'image_url' && typeof value.imageUrl?.url === 'string' &&
-        value.imageUrl.url.length <= MAX_IMAGE_URL_CHARS &&
-        /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value.imageUrl.url));
+        (references.has(value.imageUrl.url) || /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value.imageUrl.url)));
   });
 }
 
@@ -33,6 +33,7 @@ interface Call {
   readonly reject: (reason: Error) => void;
   readonly onProgress?: (update: ToolUpdate) => void;
   readonly media?: PluginMediaApi;
+  readonly output?: PluginToolOutput;
   readonly connection?: () => Promise<unknown>;
 }
 
@@ -136,27 +137,38 @@ export class PluginHost {
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly media?: PluginMediaApi } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly media?: PluginMediaApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
     await this.start();
     if (!this.registered.has(name)) throw new Error(`Plugin ${this.id} did not register ${name}`);
     clearTimeout(this.idle);
     const requestId = ++this.nextId;
     return new Promise<ExecutableToolResult>((resolve, reject) => {
-      if (signal.aborted) { reject(signal.reason); return; }
-      const cancel = () => this.send({ method: 'cancel', params: { id: requestId } });
+      if (signal.aborted) { reject(new Error('Plugin tool cancelled')); return; }
+      const output = new PluginToolOutput(scope.attachmentStore, signal);
+      const cleanup = () => {
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(requestId);
+        this.scheduleIdle();
+        return output.dispose();
+      };
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id: requestId } });
+        void cleanup().then(() => { reject(new Error('Plugin tool cancelled')); });
+      };
       signal.addEventListener('abort', cancel, { once: true });
       this.pending.set(requestId, {
         resolve: (result) => {
-          signal.removeEventListener('abort', cancel);
-          if (!validToolResult(result)) {
-            reject(new Error(`Plugin ${this.id} returned an invalid tool result`));
-          } else resolve(result);
-          this.scheduleIdle();
+          void cleanup().then(() => {
+            if (!validToolResult(result, output.references)) reject(new Error(`Plugin ${this.id} returned an invalid tool result`));
+            else resolve(result);
+          });
         },
-        reject: (error) => { signal.removeEventListener('abort', cancel); reject(error); this.scheduleIdle(); },
+        reject: (error) => { void cleanup().then(() => { reject(error); }); },
         onProgress,
         media: scope.media,
+        output,
       });
       this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn } });
     });
@@ -200,8 +212,8 @@ export class PluginHost {
 
   async stopAndWait(): Promise<void> {
     this.stopped = true;
-    if (this.child !== undefined && this.lifecycle?.resident) {
-      try { await this.lifecycleRequest('shutdown', {}); } catch {}
+    if (this.child !== undefined) {
+      try { await this.lifecycleRequest('shutdown', {}); await this.exited; } catch {}
     }
     this.stop();
     await this.exited;
@@ -293,6 +305,16 @@ export class PluginHost {
               this.lifecycle.focusSession?.(sessionId);
             }).then(() => this.send({ method: 'app-focus-result', params: { callId, result: true } }),
               () => this.send({ method: 'app-focus-result', params: { callId, error: 'Session is no longer available' } }));
+          } else if (message.method === 'output-request') {
+            const { id, callId, action, input } = message.params ?? {};
+            const call = this.pending.get(id);
+            void Promise.resolve().then(() => {
+              if (call?.output === undefined) throw new Error('Plugin output storage is unavailable');
+              return call.output.request(action, input);
+            }).then(
+              (result) => { if (this.child === child) this.send({ method: 'output-result', params: { callId, result } }); },
+              (error) => { if (this.child === child) this.send({ method: 'output-result', params: { callId, error: String(error) } }); },
+            );
           } else if (message.method === 'media-call') {
             const { id, callId, action, input } = message.params ?? {};
             const call = this.pending.get(id);

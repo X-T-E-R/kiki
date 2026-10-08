@@ -424,6 +424,12 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
+### 原生工具结果
+
+在 `x-kiki.tools` 下声明的原生工具可以返回文本和 PNG、JPEG 或 WebP 图像的 base64 data URL。大结果自动保存为会话附件：文本保留预览，并附上完整原件的路径和 `kimi-file://` 引用；图像通过会话附件引用继续显示。让 Agent 用 `Read` 分页读取完整文本，或用 `ReadMediaFile` 检查原图。插件作者仍按通常的格式返回结果，不需要自己拆分。
+
+会话附件存储不可用或写入失败时，只有这次工具调用报错，同一插件的其他调用继续运行。如果错误提示没有可读原件，先检查会话存储或恢复源文件，再决定是否重跑可能有副作用的工具。
+
 ### 系统提示词指令
 
 短指令可以直接写在 `systemPrompt`，较长内容则用 `systemPromptPath` 指向 plugin 根目录内的文件。两个字段同时存在时，内联文本在前，文件内容在后。文件内容在安装或重载 plugin 时读取，因此修改文件后需要 `/plugins reload` 才会生效。例如：

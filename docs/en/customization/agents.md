@@ -100,7 +100,7 @@ The control at the left of the composer's status line answers one question — w
 
 The model control beside it stays separate: a model is a choice *within* the engine you picked. For an external engine, leave **Follow engine configuration** selected to keep its profile or engine defaults, or enter the engine's own model ID for a session override. Choosing Follow again clears the session's model and thinking overrides; it does not change the saved profile or engine settings. Native Kiki model lists do not limit external model IDs.
 
-Model and profile catalogs load in the background. You can send with a preserved selection before they finish; Kiki validates the actual binding on the server. A catalog error offers Retry without replacing your choice, while a confirmed missing or invalid choice still needs correction.
+Model and profile catalogs load in the background. You can send with a preserved selection before they finish; Kiki validates the actual binding on the server. When you follow the Codex engine's defaults, starting a task does not query its model catalog. A catalog error offers Retry without replacing your choice, while a confirmed missing or invalid choice still needs correction; if Codex rejects a supplied model or thinking effort, its error is kept rather than choosing a replacement.
 
 A new session applies its engine pick immediately. In a session that has already spoken, engine, profile and model selections stay pending for your next message. The composer shows a pending chip you can cancel before sending. Sending captures those settings on that message; if it is queued, its settings appear with it rather than as another queue item. Nothing switches just because you made a pending selection.
 

@@ -2,17 +2,23 @@
  * OnboardingWizard — the first-run dialog, three steps that each say one thing:
  * welcome (language, theme, palette, an optional background picture — all
  * applied live), how much it may do on its own (default permission mode), and
- * one invitation to the guided tour. There is no workspace question: /new
+ * where to look around first. There is no workspace question: /new
  * already defaults to the most recent workspace, else a fresh folder in Kiki
  * Home.
  *
- * The last step is a sentence and one action. It opens the real /discover hub,
- * which owns the routes, the resume state and the model connection — read from
- * the server's own `auth` and provider probes — so the welcome invents no
- * second copy of any of them. Connecting a model happens where it is needed,
- * in the existing Connections card that already owns account sign-in and the
- * API-key form; nothing in this run writes a provider, and the current model
- * and settings stay untouched.
+ * The last step lists the five discovery routes themselves, one quiet row
+ * each, straight from the shared catalog. A row starts that route through the
+ * same DiscoveryContext the /discover hub and the sidebar entry use, so the
+ * welcome invents no second flow, progress store, or resume state — and the
+ * run ends only once the guarded navigation commits: a cancelled dirty-draft
+ * prompt leaves both the wizard and the tour untouched, while a route that
+ * genuinely cannot start (offline with no local example) says so in place
+ * instead of failing silent. The hub still owns the resume banner and the
+ * model connection — read from the server's own `auth` and provider probes —
+ * so the welcome grows no second copy of either. Connecting a model happens
+ * where it is needed, in the existing Connections card that already owns
+ * account sign-in and the API-key form; nothing in this run writes a
+ * provider, and the current model and settings stay untouched.
  *
  * Every primary advance button persists the current step before moving on, so
  * leaving the wizard after any Next loses nothing. Nothing here holds an
@@ -27,17 +33,17 @@
  * Two entries: the App shell auto-opens it when the auth/models probes report
  * a server with nothing to answer with (`shouldOfferOnboarding`), and the
  * settings About page re-opens it through `requestOnboardingOpen`. Every exit
- * path — finish, X, or a capability that leaves for its own page — marks the
- * run completed (`kiki.onboarding` in localStorage), so the auto-popup fires at
- * most once. Stepping past a step is not an exit: the run stays unfinished
- * until one of those paths is taken, so a half-walked wizard can still be
- * completed.
+ * path — a started route, X, or Close setup — marks the run completed
+ * (`kiki.onboarding` in localStorage), so the auto-popup fires at most once.
+ * Stepping past a step is not an exit: the run stays unfinished until one of
+ * those paths is taken, so a half-walked wizard can still be completed.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
+import { DISCOVERY_ROUTES, type DiscoveryRouteId } from '@kiki/session-core/discovery';
 import { errorText, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
@@ -52,10 +58,11 @@ import { Icon } from './icons';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
+import { useDiscovery } from './discovery';
 import { OnboardingAppearanceStep, OnboardingRow } from './OnboardingAppearanceStep';
 import { needsProviderSetup } from './NewSessionDraft';
 import { FeedbackLine, type Feedback } from './controls';
-import { useGuardedNavigate } from './dirtyGuard';
+import { DirtyGuardContext } from './dirtyGuard';
 import { mergeConfigEcho } from './settings/configEcho';
 import { SettingsSegmented } from './settings/SettingsPrimitives';
 import { PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
@@ -203,7 +210,8 @@ function PermissionOption({
 export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) {
   const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
-  const navigate = useGuardedNavigate();
+  const { startRoute } = useDiscovery();
+  const dirtyGuard = useContext(DirtyGuardContext);
   const queryClient = useQueryClient();
   const [step, setStep] = useState<OnboardingStep>('welcome');
 
@@ -247,6 +255,8 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   );
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionFeedback, setPermissionFeedback] = useState<Feedback>(null);
+  const [discoverBusy, setDiscoverBusy] = useState(false);
+  const [discoverFeedback, setDiscoverFeedback] = useState<Feedback>(null);
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   useEffect(() => {
@@ -361,16 +371,28 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   };
 
   /**
-   * The last step's one action: open the real /discover hub. It is the page
-   * that owns the routes, the resume state and the model connection, so the
-   * welcome hands over instead of growing a second copy of them — and leaving
-   * the run (completing it, closing the dialog) happens exactly as it does for
-   * any other exit.
+   * A route row starts that route right there: the shared DiscoveryContext
+   * owns the state, the guarded navigation and the persistence, so the wizard
+   * only decides what the outcome means for itself. A committed start ends the
+   * run like any other explicit exit. A cancelled one — the dirty-draft prompt
+   * answered with "stay" — is the user choosing to remain here, so it stays
+   * silent; anything else (offline with no local example, a navigation that
+   * failed) gets a recovery line, or the row reads as dead.
    */
-  const openDiscovery = () => {
-    markOnboardingCompleted();
-    onClose();
-    navigate('/discover');
+  const startDiscoveryRoute = async (routeId: DiscoveryRouteId) => {
+    setDiscoverBusy(true);
+    setDiscoverFeedback(null);
+    try {
+      const started = await startRoute(routeId);
+      if (started) {
+        markOnboardingCompleted();
+        onClose();
+      } else if (dirtyGuard?.dirty !== true) {
+        setDiscoverFeedback({ tone: 'error', text: t('discovery.unavailable') });
+      }
+    } finally {
+      setDiscoverBusy(false);
+    }
   };
 
   const stepIndex = STEPS.indexOf(step);
@@ -429,7 +451,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           ref={stepScrollRef}
           data-onboarding-step-scroll
           onScroll={noteStepScroll}
-          className="h-full min-h-0 overflow-y-auto px-6 py-4"
+          className="h-full min-h-0 overflow-y-auto px-6 py-3"
         >
         <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
 
@@ -454,10 +476,41 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         ) : null}
 
         {step === 'discover' ? (
-          <div className="mt-3" data-onboarding-discover>
+          <div className="mt-2" data-onboarding-discover>
             <p className="max-w-[52ch] text-[13px] leading-relaxed text-ink-soft">
               {t('onboarding.discover.body')}
             </p>
+            {/* The five routes of the shared catalog, one quiet row each: the
+                whole row is the action and the stops count stays a whisper.
+                No accent button here on purpose — this page offers five peer
+                places to start, not one recommended action. */}
+            <div className="mt-2 space-y-1" role="group" aria-label={t('onboarding.step.discover')}>
+              {DISCOVERY_ROUTES.map((route, index) => (
+                <button
+                  key={route.id}
+                  type="button"
+                  data-onboarding-route={route.id}
+                  data-autofocus={index === 0 ? true : undefined}
+                  disabled={discoverBusy}
+                  onClick={() => { void startDiscoveryRoute(route.id); }}
+                  className="group flex w-full items-center gap-3 rounded-[10px] px-3 py-2.5 text-left transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-medium text-ink">{t(route.titleKey)}</span>
+                    <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">
+                      {route.id === 'overview' ? t('onboarding.discover.overviewLine') : t(route.summaryKey)}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-[11px] tabular-nums text-ink-faint">
+                      {t('discovery.stops', { count: route.stations.length })}
+                    </span>
+                    <Icon name="arrowRight" size={14} className="text-ink-faint transition-colors group-hover:text-ink" />
+                  </span>
+                </button>
+              ))}
+            </div>
+            <FeedbackLine feedback={discoverFeedback} />
           </div>
         ) : null}
 
@@ -513,17 +566,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               {t('onboarding.back')}
             </button>
           ) : null}
-          {last ? (
-            <button
-              type="button"
-              data-autofocus
-              data-onboarding-discover-start
-              onClick={openDiscovery}
-              className={PRIMARY_BUTTON}
-            >
-              {t('discovery.title')}
-            </button>
-          ) : (
+          {/* The last step's actions are the route rows themselves, so the
+              footer keeps no primary of its own. */}
+          {!last ? (
             <button
               type="button"
               data-autofocus
@@ -533,7 +578,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             >
               {step === 'permissions' && permissionBusy ? t('common.saving') : t('onboarding.next')}
             </button>
-          )}
+          ) : null}
         </div>
       </div>
     </Dialog>

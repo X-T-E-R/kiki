@@ -25,6 +25,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, PluginErrors } from '#/errors';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
+import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 
 import { PluginHost } from './host';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -64,6 +65,7 @@ export interface PluginExecutionScope {
   readonly approvedPaths?: readonly string[];
   readonly imageIn?: boolean;
   readonly media?: PluginMediaApi;
+  readonly attachmentStore?: ISessionMediaStore;
 }
 
 export interface IPluginHostService {

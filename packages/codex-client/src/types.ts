@@ -1,7 +1,5 @@
 import type { Readable, Writable } from 'node:stream';
 
-import type { NormalizedExecutorEvent } from '@kiki/protocol';
-
 export interface HostProcessOptionsLike {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
@@ -39,6 +37,7 @@ export interface CodexProcessDescriptor {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly startupTimeoutMs?: number;
+  /** Optional caller wait deadline; does not cancel or resend the RPC. Unset waits for the response or disconnection. */
   readonly requestTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly stderrMaxBytes?: number;
@@ -150,7 +149,6 @@ export interface CodexTurnCompletion {
 }
 
 export interface CodexTurnHandle {
-  readonly events: AsyncIterable<NormalizedExecutorEvent>;
   readonly completion: Promise<CodexTurnCompletion>;
   cancel(reason?: unknown): Promise<boolean>;
 }

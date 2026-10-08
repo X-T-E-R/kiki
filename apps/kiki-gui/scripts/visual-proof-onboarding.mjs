@@ -1,24 +1,28 @@
 /**
- * Visual proof for the first-run onboarding run and the hub its last step opens,
- * over the `first-run` fixture (nothing configured, so the wizard auto-opens).
+ * Visual proof for the first-run onboarding run and the tour its last step
+ * starts, over the `first-run` fixture (nothing configured, so the wizard
+ * auto-opens).
  *
  *   node scripts/visual-proof-onboarding.mjs [--matrix=all] [--only=onboarding-walk]
  *
  * The run has three steps: the welcome page (language + appearance), the
- * permission default, and one invitation to the tour. The invitation is a
- * sentence and one action — "Discover Kiki" — which opens the real /discover
- * hub; the capability list, the four interest routes and the model connection
- * all live on their own real pages, not in the welcome. Connecting a model
- * happens where it is needed: the hub's row states the current connection from
- * the server's own `auth` and provider probes and opens the Connections card in
- * Settings that actually owns sign-in and the API-key form.
+ * permission default, and a closing page that lists the five discovery routes
+ * themselves, one quiet row each. A row starts that route through the shared
+ * DiscoveryContext — the welcome invents no second flow, progress store or
+ * resume state — and the run ends only once the guarded navigation commits.
+ * The capability list and the model connection live on their own real pages,
+ * not in the welcome. Connecting a model happens where it is needed: the hub's
+ * row states the current connection from the server's own `auth` and provider
+ * probes and opens the Connections card in Settings that actually owns sign-in
+ * and the API-key form.
  *
  * Walks (asserted, not just captured):
- *  - onboarding-walk — welcome → approvals → the invitation; the closing page is
- *    one sentence and one action (no capability rows, no route grid, no model
- *    row, nothing to scroll), the panel is shorter than its 85vh cap, and the
- *    action lands on the real route map.
- *  - onboarding-skip — closing from the invitation starts nothing and routes
+ *  - onboarding-walk — welcome → approvals → the route rows; the closing page is
+ *    one sentence plus the five catalog routes in order (no capability rows, no
+ *    single call to action, no model row, nothing to scroll), the panel is
+ *    shorter than its 85vh cap, and starting the overview route ends the run
+ *    and pins the first station tag over the composer without leaving /new.
+ *  - onboarding-skip — closing from the route rows starts nothing and routes
  *    nowhere.
  *  - discover-model-connection — the /discover map's row opens the real card,
  *    leaving the tour keeps its position, and the resume tag comes back to it.
@@ -33,8 +37,8 @@ import { runProof } from '../proof/runner.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEXT = {
-  en: { next: 'Next', closeSetup: 'Close setup', discover: 'Discover Kiki', cancel: 'Cancel' },
-  zh: { next: '下一步', closeSetup: '关闭引导', discover: '发现 Kiki', cancel: '取消' },
+  en: { next: 'Next', closeSetup: 'Close setup' },
+  zh: { next: '下一步', closeSetup: '关闭引导' },
 };
 
 const CONNECTIONS_CARD = '#st-card-providers-add, [data-add-connection-panel]';
@@ -50,7 +54,7 @@ async function openWizard(page) {
   return wizard;
 }
 
-/** Welcome → approvals → the closing invitation, through the wizard's own advance. */
+/** Welcome → approvals → the closing route rows, through the wizard's own advance. */
 async function toGuide(page, wizard, text, shot) {
   await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   if (shot !== undefined) await shot('onboarding-1-welcome');
@@ -66,31 +70,54 @@ async function toGuide(page, wizard, text, shot) {
 }
 
 /**
- * The closing page is one sentence and one action, and it must not pretend to
- * be the hub: no capability rows, no route grid, no model row of its own, and no
- * reserved empty height — the panel is a cap, so a short page stays short. All
- * of that is geometry and the DOM, which a screenshot alone can miss.
+ * The closing page is one sentence and the five catalog routes as quiet rows,
+ * and it must not pretend to be the hub: no capability rows, no leftover single
+ * call to action, no model row of its own, and no reserved empty height — the
+ * panel is a cap, so the page takes the height its rows need and no more. On a
+ * desktop window that is still a short page that comes nowhere near the cap; on
+ * a phone-sized window five labelled rows legitimately fill most of it, so the
+ * narrow pass only requires the cap to hold. Either way the last row keeps real
+ * air between itself and the footer's divider — measured against the body
+ * wrapper's visible bottom, not the panel, because the wrapper clips overflow
+ * and a screenshot alone can miss that. If a taller translation ever does
+ * overflow, the step must say so with its "more below" fade and scroll, never
+ * clip silently.
  */
-async function checkClosingStepLayout(page, text, label) {
+async function checkClosingStepLayout(page, label) {
   const report = await page.evaluate(() => {
     const panel = document.querySelector('[role="dialog"]');
     const body = document.querySelector('[role="dialog"] [data-onboarding-discover]');
-    const cta = document.querySelector('[role="dialog"] [data-onboarding-discover-start]');
+    const rows = [...document.querySelectorAll('[role="dialog"] [data-onboarding-route]')];
     const box = panel === null ? null : panel.getBoundingClientRect();
     const bodyBox = body === null ? null : body.getBoundingClientRect();
-    const ctaBox = cta === null ? null : cta.getBoundingClientRect();
     const scroller = document.querySelector('[role="dialog"] [data-onboarding-step-scroll]');
+    const wrapper = scroller === null ? null : scroller.parentElement;
+    const footer = panel === null ? null : panel.lastElementChild;
+    const lastRow = rows.length === 0 ? null : rows[rows.length - 1];
     const inside = (inner) => inner !== null && box !== null
       && inner.top >= box.top - 1 && inner.bottom <= box.bottom + 1;
     return {
       panelHeight: box === null ? -1 : Math.round(box.height),
       viewport: window.innerHeight,
+      viewportWidth: window.innerWidth,
       // 85vh is the cap; a page this short must come nowhere near it.
       reservedCap: box === null || box.height >= window.innerHeight * 0.84,
       bodyInside: inside(bodyBox),
-      ctaInside: inside(ctaBox),
-      ctas: [...document.querySelectorAll('[role="dialog"] [data-onboarding-discover-start]')]
-        .map((element) => element.textContent),
+      rows: rows.map((row) => row.getAttribute('data-onboarding-route')),
+      rowsInside: rows.every((row) => inside(row.getBoundingClientRect())),
+      // The real separation promise: the last row's bottom edge against the
+      // footer's divider, and against the body wrapper's visible bottom — the
+      // wrapper clips overflow, so a row past it is cut, not scrolled to.
+      footerTop: footer === null ? -1 : Math.round(footer.getBoundingClientRect().top),
+      lastRowBottom: lastRow === null ? -1 : Math.round(lastRow.getBoundingClientRect().bottom),
+      clipBottom: wrapper === null ? -1 : Math.round(wrapper.getBoundingClientRect().bottom),
+      fadeShown: document.querySelector('[role="dialog"] [data-onboarding-scroll-more]') !== null,
+      scrollerBox: scroller === null ? null : {
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+        scrollTop: Math.round(scroller.scrollTop),
+      },
+      legacyCta: document.querySelectorAll('[data-onboarding-discover-start]').length,
       legacy: {
         caps: document.querySelectorAll('[data-onboarding-cap], [data-onboarding-capabilities]').length,
         routes: document.querySelectorAll('[data-discovery-onboarding-route], [data-discovery-onboarding-overview]').length,
@@ -100,13 +127,44 @@ async function checkClosingStepLayout(page, text, label) {
       pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
     };
   });
-  expect(report.ctas.length === 1 && report.ctas[0] === text.discover,
-    `${label}: expected exactly one "${text.discover}" action, saw ${JSON.stringify(report.ctas)}`);
+  expect(report.rows.join(',') === 'overview,do-first,understand,sustain,extend',
+    `${label}: expected the five catalog routes in order, saw ${JSON.stringify(report.rows)}`);
+  expect(report.legacyCta === 0, `${label}: the old single call to action is still there`);
   expect(report.legacy.caps === 0 && report.legacy.routes === 0 && report.legacy.model === 0,
     `${label}: the closing page repeats what the hub owns ${JSON.stringify(report.legacy)}`);
-  expect(report.reservedCap !== true, `${label}: panel reserved ${report.panelHeight}px of a ${report.viewport}px viewport`);
-  expect(report.bodyInside && report.ctaInside, `${label}: the invitation or its action falls outside the panel`);
-  expect(report.scrolls !== true, `${label}: the closing page scrolls, so it is not the short page it should be`);
+  // Narrow viewports (the 390 pass, or a job born narrow) may fill most of the
+  // window: the cap is the whole promise there — approach it, never cross it.
+  const compact = report.viewportWidth <= 600;
+  if (compact) {
+    expect(report.panelHeight <= Math.round(report.viewport * 0.85) + 2,
+      `${label}: panel is ${report.panelHeight}px, past the 85vh cap of a ${report.viewport}px viewport`);
+  } else {
+    expect(report.reservedCap !== true, `${label}: panel reserved ${report.panelHeight}px of a ${report.viewport}px viewport`);
+  }
+  expect(report.bodyInside && report.rowsInside, `${label}: the invitation or a route row falls outside the panel`);
+  // The real separation promise: a short page leaves visible air before the
+  // footer; a long page may scroll, but its last row must be reachable without
+  // being clipped by the body wrapper.
+  if (report.scrolls) {
+    expect(report.fadeShown, `${label}: the closing page scrolls but nothing says there is more below`);
+    const settled = await page.evaluate(() => {
+      const scroller = document.querySelector('[role="dialog"] [data-onboarding-step-scroll]');
+      const wrapper = scroller?.parentElement;
+      const row = document.querySelector('[role="dialog"] [data-onboarding-route]:last-of-type');
+      if (scroller === null || wrapper === null || row === null) return null;
+      scroller.scrollTop = scroller.scrollHeight;
+      const rowBox = row.getBoundingClientRect();
+      const wrapperBox = wrapper.getBoundingClientRect();
+      return { rowTop: rowBox.top, rowBottom: rowBox.bottom, wrapperTop: wrapperBox.top, wrapperBottom: wrapperBox.bottom };
+    });
+    expect(settled !== null && settled.rowTop >= settled.wrapperTop - 1 && settled.rowBottom <= settled.wrapperBottom + 1,
+      `${label}: the last route row is not fully visible at the bottom of the scrollable body (${JSON.stringify(settled)})`);
+  } else {
+    expect(report.lastRowBottom <= report.clipBottom + 1,
+      `${label}: the last route row is clipped by the body (row bottom ${report.lastRowBottom}, visible bottom ${report.clipBottom})`);
+    const separation = report.footerTop - report.lastRowBottom;
+    expect(separation >= 8, `${label}: the last route row sits ${separation}px from the footer divider`);
+  }
   expect(!report.pageOverflow, `${label}: page overflows horizontally`);
   console.log(`[layout] ${label} ${JSON.stringify(report)}`);
 }
@@ -142,33 +200,34 @@ async function walk({ page, view, shot }) {
   const text = TEXT[view.locale];
   const wizard = await openWizard(page);
   await toGuide(page, wizard, text, shot);
-  await checkClosingStepLayout(page, text, `closing ${view.locale} ${view.theme} ${view.width}`);
+  await checkClosingStepLayout(page, `closing ${view.locale} ${view.theme} ${view.width}`);
   await shot('onboarding-3-discover');
 
-  // The narrow window is where a footer with two text buttons plus a primary
-  // runs out of room first, so the same page is measured and captured there.
+  // The narrow window is where five rows plus a footer with two text buttons
+  // run out of room first, so the same page is measured and captured there.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
-  await checkClosingStepLayout(page, text, `closing ${view.locale} ${view.theme} 390`);
+  await checkClosingStepLayout(page, `closing ${view.locale} ${view.theme} 390`);
   await shot('onboarding-3-discover-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
 
-  // The one action hands over to the real hub: the route map, the resume state
-  // and the model connection are all its own.
-  await wizard.locator('[data-onboarding-discover-start]').click();
-  await page.waitForURL(/\/discover/, { timeout: 15_000 });
-  await page.waitForSelector('[data-discovery-page]', { timeout: 15_000 });
-  expect(await wizard.count() === 0, 'the invitation hands over and the run ends');
-  expect(await page.locator('[data-start-route]').count() >= 4, 'the invitation opens the real route map');
-  await page.waitForTimeout(400);
-  await shot('onboarding-4-discover-hub');
+  // A route row starts the tour right there: the overview route's first stop
+  // is this very page, so the wizard closes and the station tag pins itself
+  // over the composer without any navigation at all.
+  await wizard.locator('[data-onboarding-route="overview"]').click();
+  await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 10_000 });
+  expect(page.url().includes('/new'), `the overview route starts in place on /new, saw ${page.url()}`);
+  await page.waitForSelector('[data-discovery-tour-tag]', { timeout: 15_000 });
+  await checkTagClears(page, `first stop ${view.locale} ${view.theme} ${view.width}`, '[data-discovery-tour-tag]', ['textarea[data-composer]', '[data-send-ready]']);
+  await page.waitForTimeout(300);
+  await shot('onboarding-4-first-stop');
 }
 
 /**
- * Leaving the run from its last step. The step's own action is the invitation;
- * closing without taking it must dismiss without starting anything and without
- * routing anywhere.
+ * Leaving the run from its last step. The step's own actions are the route
+ * rows; closing without taking one must dismiss without starting anything and
+ * without routing anywhere.
  */
 async function skip({ page, view }) {
   const text = TEXT[view.locale];

@@ -5881,8 +5881,9 @@ export const en = {
   'onboarding.reenter': 'Replay setup wizard',
   'onboarding.reenterHint': 'Runs the first-run setup again: look, defaults and the guided tour.',
   'onboarding.step.discover': 'Look around Kiki',
-  'onboarding.discover.body':
-    'Take a look around first: the tour walks the real app and sends nothing.',
+  'onboarding.discover.body': 'Start from a place that interests you.',
+  'onboarding.discover.overviewLine':
+    'The workspace, sessions, memory, capabilities, and schedules.',
   'askKiki.failed': 'Could not open a session: {detail}. Press it again to retry.',
   // Queue strip + composer queue-edit round-trip (drag reorder, armed remove).
   'queue.editTitle': 'Edit in the composer — confirming puts it back at the same queue position',
@@ -10434,6 +10435,7 @@ export const en = {
   'discovery.model.connect': 'Connect a model',
   'discovery.model.manage': 'Model settings',
   'discovery.continue': 'Continue exploring',
+  'discovery.start': 'Start the tour',
   'discovery.routes': 'Change route',
   'discovery.previous': 'Previous stop',
   'discovery.next': 'Next stop: {name}',

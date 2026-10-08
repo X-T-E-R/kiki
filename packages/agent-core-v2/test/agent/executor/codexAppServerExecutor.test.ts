@@ -11,7 +11,7 @@ import {
   type NormalizedExecutorEvent,
 } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
@@ -71,7 +71,9 @@ interface HarnessOptions {
   readonly models?: readonly string[];
   readonly actualModel?: string;
   readonly modelProvider?: string;
+  readonly agentVersion?: string;
   readonly modelReasoningEfforts?: readonly string[];
+  readonly modelListBehavior?: 'fail' | 'hang';
   readonly modelAlias?: string;
   readonly unpinModel?: boolean;
   readonly thinkingEffort?: string;
@@ -93,14 +95,6 @@ interface HarnessOptions {
   readonly permissionMode?: { mode: 'manual' | 'auto' | 'yolo' };
   readonly kikiSubagents?: boolean;
   readonly clientFactory?: ConstructorParameters<typeof CodexAppServerExecutorSession>[1];
-}
-
-function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
-  return {
-    async *[Symbol.asyncIterator]() {
-      for (const event of events) yield event;
-    },
-  };
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -214,6 +208,15 @@ function createHarness(options: HarnessOptions = {}) {
   const modelCatalog = {
     get: () => ({ providerName: 'openai' }) as Model,
   } as unknown as IModelCatalog;
+  const metadataUpdates: AgentMeta[] = [];
+  const metadata = {
+    read: async () => ({ agents: {} }),
+    registerAgent: vi.fn(),
+    updateAgent: vi.fn(async (_agentId: string, updater: (current: AgentMeta) => AgentMeta) => {
+      metadataUpdates.push(updater({ negotiated: { models: ['stale-model'], image: true } }));
+    }),
+  } as unknown as ISessionMetadata;
+  const negotiatedRegistry = vi.fn();
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
     [IAgentPermissionModeService, options.permissionMode ?? { mode: 'manual' }],
@@ -231,8 +234,8 @@ function createHarness(options: HarnessOptions = {}) {
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
     [IWireService, wire],
-    [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
-    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
+    [IAgentExecutorRegistry, { recordNegotiated: negotiatedRegistry }],
+    [ISessionMetadata, metadata],
   ]);
   const context: AgentExecutorContext = {
     agent: {
@@ -278,11 +281,13 @@ function createHarness(options: HarnessOptions = {}) {
   });
   const client = {
     status: () => resolveTurnCompletion === undefined
-      ? { state: 'ready' as const }
-      : { state: 'turning' as const, threadId: 'thread-new', turnId: 'turn-1' },
+      ? { state: 'ready' as const, agentVersion: options.agentVersion }
+      : { state: 'turning' as const, threadId: 'thread-new', turnId: 'turn-1', agentVersion: options.agentVersion },
     request: vi.fn(async (_method: string, _params: unknown) => options.steerResponse ?? { turnId: 'turn-1' }),
     connect: async () => {},
-    listModels: async () => {
+    listModels: vi.fn(async () => {
+      if (options.modelListBehavior === 'hang') return new Promise<never>(() => {});
+      if (options.modelListBehavior === 'fail') throw new Error('model catalog unavailable');
       const models = [...(options.models ?? [options.modelAlias ?? 'gpt-test'])];
       modelLists.push(models);
       return {
@@ -294,7 +299,7 @@ function createHarness(options: HarnessOptions = {}) {
         })),
         nextCursor: null,
       };
-    },
+    }),
     startThread: async (params: Readonly<Record<string, unknown>>) => {
       starts.push(params);
       return { thread: { id: 'thread-new' }, model: options.actualModel, modelProvider: options.modelProvider };
@@ -312,7 +317,11 @@ function createHarness(options: HarnessOptions = {}) {
         modelProvider: options.modelProvider,
       };
     },
-    startTurn: async (params: Readonly<Record<string, unknown>>): Promise<CodexTurnHandle> => {
+    startTurn: async (
+      params: Readonly<Record<string, unknown>>,
+      _signal: AbortSignal,
+      onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>,
+    ): Promise<CodexTurnHandle> => {
       prompts.push(params);
       if (serverHandler !== undefined && options.approvalOptionId !== undefined) {
         await serverHandler(
@@ -358,18 +367,15 @@ function createHarness(options: HarnessOptions = {}) {
       const completion = options.deferTurnCompletion === true
         ? new Promise<CodexTurnCompletion>((resolve) => { resolveTurnCompletion = resolve; })
         : Promise.resolve(completed);
-      return {
-        events: asyncEvents(options.turnEvents ?? [
-          {
-            type: 'message.delta',
-            role: 'assistant',
-            messageId: 'message-1',
-            content: { type: 'text', text: 'done' },
-          },
-        ]),
-        completion,
-        cancel: turnCancel,
-      };
+      for (const event of options.turnEvents ?? [
+        {
+          type: 'message.delta',
+          role: 'assistant',
+          messageId: 'message-1',
+          content: { type: 'text', text: 'done' },
+        },
+      ]) await onEvent(event);
+      return { completion, cancel: turnCancel };
     },
     shutdown: vi.fn(async () => {}),
   };
@@ -428,6 +434,8 @@ function createHarness(options: HarnessOptions = {}) {
     dispatcher,
     usageRecords,
     turnCancel,
+    metadataUpdates,
+    negotiatedRegistry,
   };
 }
 
@@ -669,7 +677,21 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
-  it('passes the original model through model/list, thread creation, and xhigh turn start', async () => {
+  it('records only the connected Codex version and clears stale negotiated capability facts', async () => {
+    const harness = createHarness({ agentVersion: 'codex-test-version' });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.metadataUpdates).toHaveLength(1);
+    expect(harness.metadataUpdates[0]?.negotiated).toEqual({ agentVersion: 'codex-test-version' });
+    expect(harness.negotiatedRegistry).not.toHaveBeenCalled();
+    await harness.session.shutdown();
+  });
+
+  it('passes the original model through thread creation and xhigh turn start without a model/list gate', async () => {
     const harness = createHarness({
       modelAlias: 'vendor-short',
       thinkingEffort: 'xhigh',
@@ -682,7 +704,8 @@ describe('Codex app-server external executor', () => {
     );
     await handle.completion;
 
-    expect(harness.modelLists).toEqual([['vendor-short']]);
+    expect(harness.modelLists).toEqual([]);
+    expect(harness.client.listModels).not.toHaveBeenCalled();
     expect(harness.starts[0]).toMatchObject({ model: 'vendor-short' });
     expect(harness.prompts[0]).toMatchObject({
       threadId: 'thread-new',
@@ -691,7 +714,7 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
-  it('keeps the Codex thread on an idle model/effort change and revalidates the new model', async () => {
+  it('keeps the Codex thread on an idle model/effort change without a directory gate', async () => {
     const harness = createHarness({ models: ['gpt-test', 'gpt-next'], modelReasoningEfforts: ['high', 'xhigh'] });
     const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
     await first.completion;
@@ -701,25 +724,27 @@ describe('Codex app-server external executor', () => {
     await second.completion;
     expect(harness.starts).toHaveLength(1);
     expect(harness.prompts[1]).toMatchObject({ threadId: 'thread-new', model: 'gpt-next', effort: 'xhigh' });
-    expect(harness.modelLists).toHaveLength(2);
+    expect(harness.modelLists).toHaveLength(0);
+    expect(harness.client.listModels).not.toHaveBeenCalled();
     await harness.session.shutdown();
   });
 
-  it('rejects an explicitly unsupported Codex effort before thread and turn start', async () => {
+  it('passes an explicitly requested Codex effort through without directory prevalidation', async () => {
     const harness = createHarness({
       modelAlias: 'gpt-test',
       thinkingEffort: 'xhigh',
       modelReasoningEfforts: ['low', 'high'],
     });
 
-    await expect(harness.session.run(
+    const handle = await harness.session.run(
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },
-    )).rejects.toThrow(/thinking effort "xhigh" is not advertised/);
+    );
+    await handle.completion;
 
-    expect(harness.starts).toEqual([]);
-    expect(harness.resumes).toEqual([]);
-    expect(harness.prompts).toEqual([]);
+    expect(harness.starts).toHaveLength(1);
+    expect(harness.prompts[0]).toMatchObject({ model: 'gpt-test', effort: 'xhigh' });
+    expect(harness.modelLists).toEqual([]);
     await harness.session.shutdown();
   });
 
@@ -751,15 +776,52 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
-  it('fails closed when model/list does not advertise the pinned id', async () => {
-    const harness = createHarness({ models: ['other-model'] });
+  it.each(['fail', 'hang'] as const)('runs with an unpinned Codex default when model/list would %s', async (modelListBehavior) => {
+    const harness = createHarness({ modelListBehavior, unpinModel: true, thinkingEffort: 'high' });
+    try {
+      const handle = await harness.session.run(
+        { kind: 'prompt', prompt: 'work' },
+        { signal: new AbortController().signal },
+      );
+      await handle.completion;
 
-    await expect(harness.session.run(
-      { kind: 'prompt', prompt: 'work' },
-      { signal: new AbortController().signal },
-    )).rejects.toThrow(/not advertised/);
-    expect(harness.starts).toHaveLength(0);
-    await harness.session.shutdown();
+      expect(harness.client.listModels).not.toHaveBeenCalled();
+      expect(harness.starts[0]?.['model']).toBeUndefined();
+      expect(harness.prompts[0]).toMatchObject({ effort: 'high' });
+      expect(harness.prompts[0]?.['model']).toBeUndefined();
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('preserves an invalid model vendor error instead of falling back to a fresh thread', async () => {
+    const vendorError = new CodexRemoteError(
+      '1', -32602, 'invalid model "vendor-invalid"', { code: 'invalid_model', model: 'vendor-invalid' },
+    );
+    const harness = createHarness({
+      priorThreadId: 'thread-old', modelAlias: 'vendor-invalid', thinkingEffort: 'off', resumeError: vendorError,
+    });
+    try {
+      await expect(harness.session.run(
+        { kind: 'prompt', prompt: 'work' },
+        { signal: new AbortController().signal },
+      )).rejects.toBe(vendorError);
+      expect(harness.resumes).toHaveLength(1);
+      expect(harness.starts).toHaveLength(0);
+      expect(harness.prompts).toHaveLength(0);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it('preserves unrelated vendor resume errors instead of falling back to a fresh thread', async () => {
+    const vendorError = new CodexRemoteError('1', 429, 'rate limit exceeded');
+    const harness = createHarness({ priorThreadId: 'thread-old', thinkingEffort: 'off', resumeError: vendorError });
+    try {
+      await expect(harness.session.run(
+        { kind: 'prompt', prompt: 'work' },
+        { signal: new AbortController().signal },
+      )).rejects.toBe(vendorError);
+      expect(harness.resumes).toHaveLength(1);
+      expect(harness.starts).toHaveLength(0);
+      expect(harness.prompts).toHaveLength(0);
+    } finally { await harness.session.shutdown(); }
   });
 
   it('round-trips a structured command decision by its exact option id', async () => {

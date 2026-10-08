@@ -14,6 +14,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { isWithinDirectory, resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
@@ -40,6 +41,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @IAgentPluginMediaService private readonly media?: IAgentPluginMediaService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ISessionContext private readonly session?: ISessionContext,
+    @ISessionMediaStore private readonly attachmentStore?: ISessionMediaStore,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
@@ -169,6 +171,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
             media: this.media?.api(context.toolCallId, admittedRequest),
+            attachmentStore: this.attachmentStore,
           }, definition);
         } finally { current.dispose(); }
       },

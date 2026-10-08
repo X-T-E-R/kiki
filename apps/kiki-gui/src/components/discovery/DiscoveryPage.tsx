@@ -154,7 +154,7 @@ export function DiscoveryPage({
                       onClick={() => { void handlePickRoute(route.id); }}
                       className={`${isCurrent ? PRIMARY_BUTTON : SECONDARY_BUTTON} h-7 py-0 text-[12px]`}
                     >
-                      {isCurrent ? t('discovery.continue') : t('discovery.title')}
+                      {isCurrent ? t('discovery.continue') : t('discovery.start')}
                     </button>
                   </div>
                 </div>

@@ -5808,7 +5808,8 @@ export const zh = {
   'onboarding.reenter': '重新进入引导',
   'onboarding.reenterHint': '重新走一遍首次启动引导：外观、默认设置和导览。',
   'onboarding.step.discover': '先逛逛 Kiki',
-  'onboarding.discover.body': '先看看：导览在真实界面里走一遍，不会发出任何请求。',
+  'onboarding.discover.body': '从一个你感兴趣的地方开始。',
+  'onboarding.discover.overviewLine': '工作台、会话、记忆、能力和定时，各停一站。',
   'askKiki.failed': '没能打开会话：{detail}。再点一次重试。',
   // 排队条与输入框的排队消息编辑往返（拖拽调序、二次确认移除）。
   'queue.editTitle': '放回输入框编辑 — 确认后回到原排队位置',
@@ -10342,6 +10343,7 @@ export const zh = {
   'discovery.model.connect': '连接模型',
   'discovery.model.manage': '模型设置',
   'discovery.continue': '继续看',
+  'discovery.start': '开始导览',
   'discovery.routes': '换条路线',
   'discovery.previous': '上一站',
   'discovery.next': '下一站：{name}',

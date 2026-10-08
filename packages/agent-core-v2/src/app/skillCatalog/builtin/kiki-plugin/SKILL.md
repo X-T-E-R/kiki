@@ -40,7 +40,7 @@ when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin direc
 
 ## 4. 写 entry
 
-entry 是一个 ES 模块，导出 `register(api)`；需要前置安装再导出 `installPrerequisite`，需要面板后端再导出 `handlePanelRequest`。运行时上下文提供 `signal`（用户取消时中止，长任务要听它）、`settings`、`workspaceRoot`、`approvedPaths`、`imageIn`、`progress`。返回 `output` 是一个字符串或 part 数组：`{ type: 'text', text }` 与 `{ type: 'image_url', imageUrl: { url } }`。图片只接受 `data:image/png|jpeg|webp;base64,` dataURL，≤12 MiB，远程 URL 会被判为非法结果。类型来自公开的 `@kiki/plugin-sdk`。
+entry 是一个 ES 模块，导出 `register(api)`；需要前置安装再导出 `installPrerequisite`，需要面板后端再导出 `handlePanelRequest`。运行时上下文提供 `signal`（用户取消时中止，长任务要听它）、`settings`、`workspaceRoot`、`approvedPaths`、`imageIn`、`progress`。返回 `output` 是一个字符串或 part 数组：`{ type: 'text', text }` 与 `{ type: 'image_url', imageUrl: { url } }`。图片只接受 `data:image/png|jpeg|webp;base64,` dataURL，远程 URL 会被判为非法结果。大文本和图像由宿主自动保存为会话原件：文本返回预览和可读路径，图像返回会话附件引用，不需要插件另写分块协议。类型来自公开的 `@kiki/plugin-sdk`。
 
 写之前用 Read 阅读 `references/authoring.md`；内置调用时，这份参考已附在下方。里面有可直接复制的最小 manifest、entry、image part 示例和一份真能跑的 `kiki-tile` 例子（一张确定性小图 + 数字，一次 tool output 同时回传文字和图片）。
 

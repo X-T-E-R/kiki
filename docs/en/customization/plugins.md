@@ -423,6 +423,12 @@ Supported fields:
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
+### Native tool results
+
+Native tools declared under `x-kiki.tools` can return text and PNG, JPEG or WebP images as base64 data URLs. Large results are saved automatically as session attachments: text keeps a preview with the complete original's path and `kimi-file://` reference, and images remain available through the session attachment reference. Ask the agent to use `Read` to page through the original text or `ReadMediaFile` to inspect the original image. Plugin authors can keep the usual return format; they do not need to split the result themselves.
+
+If attachment storage is unavailable or a write fails, only that tool call reports the error; other calls to the same plugin continue. When an error says no readable original is available, check the session storage or recover the source file before repeating a tool that may have side effects.
+
 ### System-prompt instructions
 
 `systemPrompt` holds a short inline instruction; `systemPromptPath` keeps longer text in a file inside the plugin root. With both, the inline text comes first and the file follows. The file is read at install or reload, so edits need a `/plugins reload` to apply. For example:

@@ -1,6 +1,5 @@
 import type { NormalizedExecutorEvent } from '@kiki/protocol';
 
-import { AsyncQueue } from '#/asyncQueue';
 import { CodexClientError, CodexRemoteError } from '#/errors';
 import { mapCodexNotification } from '#/events';
 import { StderrRing } from '#/stderrRing';
@@ -23,25 +22,17 @@ import type {
 
 type JsonObject = Record<string, unknown>;
 
-const MAX_JSONL_FRAME_BYTES = 1024 * 1024;
-const MAX_STDOUT_BUFFER_BYTES = 1024 * 1024;
-const MAX_EVENT_BACKLOG = 1024;
-const MAX_EARLY_NOTIFICATIONS = 1024;
-const MAX_MODEL_PAGES = 100;
-const MAX_MODELS = 10_000;
-
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
-  readonly timer: NodeJS.Timeout;
-  readonly signal?: AbortSignal;
-  readonly onAbort?: () => void;
 }
 
 interface ActiveTurn {
   readonly threadId: string;
-  readonly turnId: string;
-  readonly events: AsyncQueue<NormalizedExecutorEvent>;
+  turnId?: string;
+  observedTurnId?: string;
+  terminal?: CodexTurnCompletion;
+  readonly onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>;
   readonly completion: Promise<CodexTurnCompletion>;
   readonly resolve: (value: CodexTurnCompletion) => void;
   readonly reject: (error: unknown) => void;
@@ -61,16 +52,14 @@ export class CodexAppServerClient {
   #process: HostProcessLike | undefined;
   #state: CodexClientStatus['state'] = 'cold';
   #agentVersion: string | undefined;
-  #stdoutBuffer = '';
   #requestSequence = 0;
   #frameSequence = 0;
   #terminalError: unknown;
   #shutdownPromise: Promise<void> | undefined;
   #transportCleanup: Promise<void> | undefined;
   #activeTurn: ActiveTurn | undefined;
-  #startingTurnThreadId: string | undefined;
   #turnSignal: AbortSignal | undefined;
-  readonly #earlyNotifications: CodexNotification[] = [];
+  readonly #transportEnded = new AbortController();
 
   constructor(
     private readonly processService: HostProcessServiceLike,
@@ -127,7 +116,7 @@ export class CodexAppServerClient {
           version: this.descriptor.clientVersion ?? '0.1.0',
         },
         capabilities: { experimentalApi: false, requestAttestation: false },
-      }, this.descriptor.startupTimeoutMs, signal);
+      }, this.descriptor.startupTimeoutMs ?? 30_000, signal);
       const userAgent = initialized !== null && typeof initialized === 'object'
         ? (initialized as Record<string, unknown>)['userAgent'] : undefined;
       this.#agentVersion = typeof userAgent === 'string' ? /^\S+\/([^\s]+)/.exec(userAgent)?.[1] : undefined;
@@ -143,14 +132,8 @@ export class CodexAppServerClient {
     const models: CodexModelListResult['data'][number][] = [];
     const cursors = new Set<string>();
     let cursor: string | null | undefined;
-    let pages = 0;
     do {
-      pages += 1;
-      if (pages > MAX_MODEL_PAGES) {
-        const error = new CodexClientError('protocol', 'model/list exceeded the page limit');
-        await this.#break(error);
-        throw error;
-      }
+      signal?.throwIfAborted();
       const value = object(await this.request('model/list', {
         cursor,
         limit: 100,
@@ -160,11 +143,6 @@ export class CodexAppServerClient {
         throw new CodexClientError('protocol', 'model/list result.data must be an array', value);
       }
       for (const raw of value['data']) {
-        if (models.length >= MAX_MODELS) {
-          const error = new CodexClientError('protocol', 'model/list exceeded the model limit');
-          await this.#break(error);
-          throw error;
-        }
         const model = object(raw, 'model/list model');
         if (typeof model['id'] !== 'string') {
           throw new CodexClientError('protocol', 'model/list model.id must be a string', model);
@@ -202,22 +180,20 @@ export class CodexAppServerClient {
     return threadResult(await this.request('thread/resume', params, signal), 'thread/resume');
   }
 
-  async startTurn(params: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<CodexTurnHandle> {
-    if (this.#activeTurn !== undefined || this.#startingTurnThreadId !== undefined) {
+  /**
+   * Attaches the ordered event consumer before requesting the turn. The consumer
+   * may run before the start ACK and is awaited to backpressure stdout; it must
+   * not wait for another RPC on this connection. Resolves only after the ACK.
+   */
+  async startTurn(
+    params: Readonly<Record<string, unknown>>,
+    signal: AbortSignal,
+    onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>,
+  ): Promise<CodexTurnHandle> {
+    signal.throwIfAborted();
+    if (this.#state !== 'ready') throw closedError(this.#state);
+    if (this.#activeTurn !== undefined) {
       throw new CodexClientError('protocol', 'Codex client already has an active turn');
-    }
-    const threadId = requiredString(params['threadId'], 'turn/start params.threadId');
-    this.#startingTurnThreadId = threadId;
-    this.#turnSignal = signal;
-    let turnId: string;
-    try {
-      const result = object(await this.request('turn/start', params, signal), 'turn/start result');
-      const turn = object(result['turn'], 'turn/start result.turn');
-      turnId = requiredString(turn['id'], 'turn/start result.turn.id');
-      if (this.#state !== 'ready') throw asError(this.#terminalError, closedError(this.#state));
-    } catch (error) {
-      this.#clearStartingTurn();
-      throw error;
     }
     let resolve!: (value: CodexTurnCompletion) => void;
     let reject!: (error: unknown) => void;
@@ -225,33 +201,41 @@ export class CodexAppServerClient {
       resolve = innerResolve;
       reject = innerReject;
     });
+    void completion.catch(() => undefined);
     const active: ActiveTurn = {
-      threadId,
-      turnId,
-      events: new AsyncQueue<NormalizedExecutorEvent>(MAX_EVENT_BACKLOG),
-      completion,
-      resolve,
-      reject,
+      threadId: requiredString(params['threadId'], 'turn/start params.threadId'),
+      onEvent, completion, resolve, reject,
       seenMessageDeltas: new Set(),
       seenReasoningSummaryDeltas: new Set(),
     };
     this.#activeTurn = active;
-    this.#startingTurnThreadId = undefined;
-    this.#setState('turning');
-    for (const notification of this.#earlyNotifications.splice(0)) {
-      this.#handleNotification(notification);
-    }
-    const onAbort = (): void => {
-      void this.#interrupt(active).catch(() => undefined);
-    };
+    this.#turnSignal = signal;
+    const onAbort = (): void => { void this.#interrupt(active).catch(() => undefined); };
     signal.addEventListener('abort', onAbort, { once: true });
     void completion.finally(() => signal.removeEventListener('abort', onAbort)).catch(() => undefined);
-    if (signal.aborted) onAbort();
-    return {
-      events: active.events,
-      completion,
-      cancel: async () => this.#interrupt(active),
-    };
+    const started = (async (): Promise<CodexTurnHandle> => {
+      try {
+        const result = object(await this.#requestCore('turn/start', params), 'turn/start result');
+        const turn = object(result['turn'], 'turn/start result.turn');
+        const turnId = requiredString(turn['id'], 'turn/start result.turn.id');
+        if (this.#activeTurn !== active || this.#state !== 'ready') throw asError(this.#terminalError, closedError(this.#state));
+        if (active.observedTurnId !== undefined && active.observedTurnId !== turnId) {
+          const error = new CodexClientError('protocol', 'turn/start response does not match the observed turn');
+          await this.#break(error);
+          throw error;
+        }
+        active.turnId = turnId;
+        if (active.interruptTimer !== undefined) clearTimeout(active.interruptTimer);
+        this.#setState('turning');
+        if (active.terminal !== undefined) this.#finishActiveTurn(active.terminal);
+        else if (signal.aborted) void this.#interrupt(active).catch(() => undefined);
+        return { completion, cancel: async () => this.#interrupt(active) };
+      } catch (error) {
+        this.#finishActiveTurn(undefined, error);
+        throw error;
+      }
+    })();
+    return waitForResponse(started, 'turn/start', this.descriptor.requestTimeoutMs, signal);
   }
 
   async request(
@@ -289,6 +273,12 @@ export class CodexAppServerClient {
     if (this.#activeTurn !== active || this.#state === 'broken' || this.#state === 'closed') {
       return Promise.resolve(false);
     }
+    if (active.turnId === undefined) {
+      active.interruptTimer ??= setTimeout(() => {
+        void this.#break(new CodexClientError('timeout', 'Codex cancelled turn/start did not acknowledge within the shutdown grace'));
+      }, this.descriptor.shutdownGraceMs ?? 3_000);
+      return Promise.resolve(true);
+    }
     return active.interruption ??= this.#sendInterrupt(active);
   }
 
@@ -312,6 +302,7 @@ export class CodexAppServerClient {
   }
 
   #closeTransport(force: boolean): Promise<void> {
+    this.#transportEnded.abort(this.#terminalError ?? new CodexClientError('closed', 'Codex transport closed'));
     return this.#transportCleanup ??= this.#disposeTransport(force);
   }
 
@@ -345,21 +336,8 @@ export class CodexAppServerClient {
   ): Promise<unknown> {
     if (signal?.aborted) throw aborted(method, signal.reason);
     const id = `kiki-${++this.#requestSequence}`;
-    const timeoutMs = timeoutOverride ?? 30_000;
     const response = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#takePending(id)?.reject(new CodexClientError('timeout', `${method} timed out after ${timeoutMs}ms`));
-        void this.#break(new CodexClientError('timeout', `${method} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      const abortSignal = signal;
-      const onAbort = abortSignal === undefined
-        ? undefined
-        : () => {
-            const pending = this.#takePending(id);
-            pending?.reject(aborted(method, abortSignal.reason));
-          };
-      this.#pending.set(id, { resolve, reject, timer, signal: abortSignal, onAbort });
-      if (onAbort !== undefined) abortSignal!.addEventListener('abort', onAbort, { once: true });
+      this.#pending.set(id, { resolve, reject });
     });
     void response.catch(() => undefined);
     try {
@@ -368,61 +346,46 @@ export class CodexAppServerClient {
       this.#takePending(id)?.reject(error);
       throw error;
     }
-    return response;
+    return waitForResponse(response, method, timeoutOverride, signal);
   }
 
   #attachProcess(process: HostProcessLike): void {
     process.stdout.setEncoding('utf8');
     process.stderr.setEncoding('utf8');
-    process.stdout.on('data', (chunk: string) => this.#consume(chunk));
-    process.stdout.on('end', () => {
-      if (this.#stdoutBuffer.length > 0) {
-        const tail = this.#stdoutBuffer.replace(/\r$/, '');
-        this.#stdoutBuffer = '';
-        if (Buffer.byteLength(tail, 'utf8') > MAX_JSONL_FRAME_BYTES) {
-          void this.#break(new CodexClientError('protocol', 'Codex JSONL frame exceeded the protocol limit'));
-          return;
-        }
-        this.#consumeLine(tail);
-      }
-      if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
-        void this.#break(new CodexClientError('closed', 'Unexpected Codex app-server stdout EOF'));
-      }
+    void this.#readStdout(process).catch((error: unknown) => {
+      if (!this.#transportEnded.signal.aborted) return this.#break(error);
     });
     process.stderr.on('data', (chunk: string) => this.#stderr.append(chunk));
     process.stdin.on('error', (error) => {
       void this.#break(new CodexClientError('stdio', 'Codex app-server stdin failed', error));
     });
-    void process.wait().then((code) => {
-      if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
-        void this.#break(new CodexClientError('closed', `Codex app-server exited with code ${code}`));
-      }
-    }, (error) => void this.#break(error));
+    void process.wait().catch((error: unknown) => this.#break(error));
   }
 
-  #consume(chunk: string): void {
-    if (this.#state === 'broken' || this.#state === 'closed') return;
-    this.#stdoutBuffer += chunk;
-    for (;;) {
-      const index = this.#stdoutBuffer.indexOf('\n');
-      if (index < 0) {
-        if (Buffer.byteLength(this.#stdoutBuffer, 'utf8') > MAX_STDOUT_BUFFER_BYTES) {
-          void this.#break(new CodexClientError('protocol', 'Codex stdout pending buffer exceeded the protocol limit'));
-        }
-        return;
+  async #readStdout(process: HostProcessLike): Promise<void> {
+    const fragments: string[] = [];
+    for await (const chunk of process.stdout) {
+      if (this.#transportEnded.signal.aborted) return;
+      const text = String(chunk);
+      let start = 0;
+      for (let index = text.indexOf('\n'); index >= 0; index = text.indexOf('\n', start)) {
+        fragments.push(text.slice(start, index));
+        const raw = fragments.join('').replace(/\r$/, '');
+        fragments.length = 0;
+        await this.#consumeLine(raw);
+        if (this.#transportEnded.signal.aborted) return;
+        start = index + 1;
       }
-      const raw = this.#stdoutBuffer.slice(0, index).replace(/\r$/, '');
-      this.#stdoutBuffer = this.#stdoutBuffer.slice(index + 1);
-      if (Buffer.byteLength(raw, 'utf8') > MAX_JSONL_FRAME_BYTES) {
-        void this.#break(new CodexClientError('protocol', 'Codex JSONL frame exceeded the protocol limit'));
-        return;
-      }
-      this.#consumeLine(raw);
-      if (this.#terminalError !== undefined) return;
+      if (start < text.length) fragments.push(text.slice(start));
+    }
+    if (fragments.length > 0) await this.#consumeLine(fragments.join('').replace(/\r$/, ''));
+    if (this.#state !== 'closing' && this.#state !== 'closed' && this.#state !== 'broken') {
+      await this.#break(new CodexClientError('closed', process.exitCode === null
+        ? 'Unexpected Codex app-server stdout EOF' : `Codex app-server exited with code ${process.exitCode}`));
     }
   }
 
-  #consumeLine(raw: string): void {
+  async #consumeLine(raw: string): Promise<void> {
     let payload: unknown;
     try {
       payload = JSON.parse(raw);
@@ -446,7 +409,7 @@ export class CodexAppServerClient {
         this.#handleServerRequest(payload);
       } else {
         this.#observe('server-to-client', 'notification', raw, payload);
-        this.#handleNotification({ method: payload['method'], params: payload['params'] });
+        await this.#handleNotification({ method: payload['method'], params: payload['params'] });
       }
       return;
     }
@@ -487,26 +450,22 @@ export class CodexAppServerClient {
     ));
   }
 
-  #handleNotification(notification: CodexNotification): void {
+  async #handleNotification(notification: CodexNotification): Promise<void> {
     try {
-      void Promise.resolve(this.options.onNotification?.(notification)).catch(() => undefined);
+      await waitForResponse(Promise.resolve(this.options.onNotification?.(notification)), 'notification observer', undefined, this.#transportEnded.signal);
     } catch {}
+    if (this.#transportEnded.signal.aborted) return;
     const active = this.#activeTurn;
-    if (active !== undefined) {
-      const threadId = notificationThreadId(notification.params);
-      if (threadId !== undefined && threadId !== active.threadId) return;
-      const turnId = isObject(notification.params) ? optionalString(notification.params['turnId']) : undefined;
-      if (turnId !== undefined && turnId !== active.turnId) return;
-    }
-    if (active === undefined) {
-      if (this.#startingTurnThreadId !== undefined) {
-        if (this.#earlyNotifications.length >= MAX_EARLY_NOTIFICATIONS) {
-          void this.#break(new CodexClientError('protocol', 'Codex early notification limit exceeded'));
-          return;
-        }
-        this.#earlyNotifications.push(notification);
-      }
-      return;
+    if (active === undefined) return;
+    const threadId = notificationThreadId(notification.params);
+    if (threadId !== undefined && threadId !== active.threadId) return;
+    const params = isObject(notification.params) ? notification.params : undefined;
+    const turnId = optionalString(params?.['turnId']) ??
+      (isObject(params?.['turn']) ? optionalString(params['turn']['id']) : undefined);
+    if (turnId !== undefined) {
+      if (active.turnId !== undefined && turnId !== active.turnId) return;
+      if (active.observedTurnId !== undefined && turnId !== active.observedTurnId) return;
+      active.observedTurnId = turnId;
     }
     let mapped;
     try {
@@ -531,12 +490,7 @@ export class CodexAppServerClient {
           active.seenReasoningSummaryDeltas.add(event.messageId);
         }
       }
-      try {
-        active.events.push(event);
-      } catch (error) {
-        void this.#break(new CodexClientError('protocol', 'Codex event backlog limit exceeded', error));
-        return;
-      }
+      await waitForResponse(Promise.resolve(active.onEvent(event)), 'event consumer', undefined, this.#transportEnded.signal);
     }
     if (mapped.usage !== undefined && mapped.cumulativeUsage !== undefined) {
       active.usageBaseline ??= subtractUsage(mapped.cumulativeUsage, mapped.usage);
@@ -547,15 +501,16 @@ export class CodexAppServerClient {
     if (
       mapped.completion !== undefined &&
       mapped.completion.threadId === active.threadId &&
-      mapped.completion.turnId === active.turnId
+      (active.turnId === undefined || mapped.completion.turnId === active.turnId)
     ) {
-      this.#finishActiveTurn({
+      active.terminal = {
         ...mapped.completion,
         status: active.terminalError === undefined ? mapped.completion.status : 'failed',
         error: active.terminalError ?? mapped.completion.error,
         stderrTail: this.stderrTail(),
         usage: active.usage,
-      });
+      };
+      if (active.turnId !== undefined) this.#finishActiveTurn(active.terminal);
     }
   }
 
@@ -654,10 +609,6 @@ export class CodexAppServerClient {
     const pending = this.#pending.get(id);
     if (pending === undefined) return undefined;
     this.#pending.delete(id);
-    clearTimeout(pending.timer);
-    if (pending.signal !== undefined && pending.onAbort !== undefined) {
-      pending.signal.removeEventListener('abort', pending.onAbort);
-    }
     return pending;
   }
 
@@ -667,9 +618,7 @@ export class CodexAppServerClient {
   }
 
   #clearStartingTurn(): void {
-    this.#startingTurnThreadId = undefined;
     this.#turnSignal = undefined;
-    this.#earlyNotifications.length = 0;
   }
 
   #finishActiveTurn(completed?: CodexTurnCompletion, error?: unknown): void {
@@ -678,13 +627,8 @@ export class CodexAppServerClient {
     this.#activeTurn = undefined;
     this.#clearStartingTurn();
     if (active.interruptTimer !== undefined) clearTimeout(active.interruptTimer);
-    if (completed !== undefined) {
-      active.events.end();
-      active.resolve(completed);
-    } else {
-      active.events.fail(error);
-      active.reject(error);
-    }
+    if (completed !== undefined) active.resolve(completed);
+    else active.reject(error);
     if (this.#state === 'turning') this.#setState('ready');
   }
 
@@ -695,7 +639,6 @@ export class CodexAppServerClient {
       this.#setState('broken');
       this.#rejectPending(error);
       this.#clearStartingTurn();
-      this.#stdoutBuffer = '';
     }
     try {
       await this.#closeTransport(true);
@@ -716,6 +659,24 @@ export class CodexAppServerClient {
       } catch {}
     }
   }
+}
+
+function waitForResponse<T>(response: Promise<T>, method: string, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let timer: NodeJS.Timeout | undefined;
+    const cleanup = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const fail = (error: unknown): void => { cleanup(); reject(error); };
+    const onAbort = (): void => fail(aborted(method, signal?.reason));
+    response.then((value) => { cleanup(); resolve(value); }, fail);
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => fail(new CodexClientError('timeout', `Waiting for ${method} response timed out after ${timeoutMs}ms`)), timeoutMs);
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 async function waitWithinGrace(process: HostProcessLike, grace: number): Promise<void> {

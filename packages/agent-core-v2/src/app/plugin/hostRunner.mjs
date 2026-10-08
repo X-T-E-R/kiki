@@ -8,12 +8,83 @@ const sources = new Map();
 const providers = new Map();
 const mediaCalls = new Map();
 let nextMediaCall = 0;
+const outputCalls = new Map();
+let nextOutputCall = 0;
 function callMedia(id, action, input) {
   const callId = ++nextMediaCall;
   return new Promise((resolve, reject) => {
     mediaCalls.set(callId, { resolve, reject });
     send({ method: 'media-call', params: { id, callId, action, input } });
   });
+}
+function outputRequest(id, action, input) {
+  const callId = ++nextOutputCall;
+  return new Promise((resolve, reject) => {
+    outputCalls.set(callId, { resolve, reject });
+    send({ method: 'output-request', params: { id, callId, action, input } });
+  });
+}
+const OUTPUT_PREVIEW_CHARS = 50_000;
+const IMAGE_PREVIEW_CHARS = 512 * 1024;
+async function saveOutput(id, value, mimeType, signal, base64 = false) {
+  const size = base64 ? Math.floor(value.length * 3 / 4) - (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0) : Buffer.byteLength(value);
+  await outputRequest(id, 'start', { size, mimeType });
+  for (let offset = 0; offset < value.length;) {
+    signal.throwIfAborted();
+    let end = Math.min(value.length, offset + (base64 ? 64 * 1024 : 16 * 1024));
+    if (!base64 && end < value.length && value.codePointAt(end - 1) > 0xffff) end -= 1;
+    const chunk = value.slice(offset, end);
+    await outputRequest(id, 'chunk', base64 ? chunk : Buffer.from(chunk).toString('base64'));
+    offset = end;
+  }
+  signal.throwIfAborted();
+  return outputRequest(id, 'end');
+}
+function outputNotice(saved) {
+  return `Original plugin output saved at: ${JSON.stringify(saved.path)}\nAttachment reference: ${JSON.stringify(saved.reference)}; size: ${saved.size} bytes.\nPass the path to Read or ReadMediaFile to inspect the complete original.`;
+}
+function textPreview(value, saved) {
+  const notice = outputNotice(saved);
+  return `${value.slice(0, Math.max(0, OUTPUT_PREVIEW_CHARS - notice.length - 2))}\n\n${notice}`;
+}
+async function prepareToolResult(id, result, signal) {
+  if (typeof result !== 'object' || result === null || !('output' in result) ||
+    (result.isError !== undefined && typeof result.isError !== 'boolean')) throw new Error('Plugin returned an invalid tool result');
+  let output = result.output;
+  let truncated;
+  if (typeof output === 'string') {
+    if (output.length > OUTPUT_PREVIEW_CHARS) {
+      const saved = await saveOutput(id, output, 'text/plain', signal);
+      output = textPreview(output, saved);
+      truncated = true;
+    }
+  } else if (Array.isArray(output)) {
+    const parts = [];
+    for (const part of output) {
+      signal.throwIfAborted();
+      if (!(part?.type === 'text' && typeof part.text === 'string') &&
+        !(part?.type === 'image_url' && typeof part.imageUrl?.url === 'string' && /^data:image\/(?:png|jpeg|webp);base64,/.test(part.imageUrl.url))) throw new Error('Plugin returned an invalid tool result');
+      if (part?.type === 'image_url' && typeof part.imageUrl?.url === 'string' && part.imageUrl.url.length > IMAGE_PREVIEW_CHARS) {
+        const url = part.imageUrl.url;
+        const match = /^data:(image\/(?:png|jpeg|webp));base64,/.exec(url);
+        if (match === null) throw new Error('Plugin returned an invalid tool result image URL');
+        const saved = await saveOutput(id, url.slice(match[0].length), match[1], signal, true);
+        parts.push({ type: 'text', text: outputNotice(saved) }, { type: 'image_url', imageUrl: { url: saved.reference } });
+      } else if (part?.type === 'text' && typeof part.text === 'string' && part.text.length > OUTPUT_PREVIEW_CHARS) {
+        const saved = await saveOutput(id, part.text, 'text/plain', signal);
+        parts.push({ type: 'text', text: textPreview(part.text, saved) });
+        truncated = true;
+      } else parts.push(part);
+    }
+    output = parts;
+    const serialized = JSON.stringify(output);
+    if (serialized.length > 2 * OUTPUT_PREVIEW_CHARS) {
+      const saved = await saveOutput(id, serialized, 'application/json', signal);
+      output = outputNotice(saved);
+      truncated = true;
+    }
+  } else throw new Error('Plugin returned an invalid tool result');
+  return { output, isError: result.isError, truncated };
 }
 const pending = new Map();
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
@@ -141,6 +212,13 @@ for await (const line of createInterface({ input: process.stdin })) {
     pending.get(message.params?.id)?.abort();
     continue;
   }
+  if (message.method === 'output-result') {
+    const call = outputCalls.get(message.params?.callId);
+    outputCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
+    else call?.resolve(message.params?.result);
+    continue;
+  }
   if (message.method === 'media-result') {
     const call = mediaCalls.get(message.params?.callId);
     mediaCalls.delete(message.params?.callId);
@@ -222,7 +300,7 @@ for await (const line of createInterface({ input: process.stdin })) {
           media(input) { return callMedia(message.id, 'media', input); },
         },
       });
-    }).then(
+    }).then((result) => prepareToolResult(message.id, result, controller.signal)).then(
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
     ).finally(() => pending.delete(message.id));
