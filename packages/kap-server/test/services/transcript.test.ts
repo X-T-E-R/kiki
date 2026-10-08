@@ -48,6 +48,7 @@ import {
   type TranscriptOperation,
   type TranscriptTask,
   type TranscriptTurn,
+  type TranscriptWireAdapterCheckpoint,
 } from '@kiki/transcript';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -2967,7 +2968,80 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it('rebuilds a format 7 EOF checkpoint to recover answered question time from unchanged wire', async () => {
+      const home = await seedWireHomeWithTool();
+      const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+      const response = { answers: { q_0: { kind: 'other', text: 'Read the complete appendix before proceeding.' } } };
+      await appendFile(wirePath, `${[
+        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 5_500 },
+        { type: 'interaction.request', id: 'question-upgrade', kind: 'question',
+          request: { questions: [{ question: 'Choose a reference', options: [{ label: 'Appendix' }] }] },
+          origin: { agentId: 'main' }, time: 6_000 },
+        { type: 'interaction.resolved', id: 'question-upgrade', response, time: 7_000 },
+        { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' },
+          input: [{ type: 'text', text: 'Continue after the answer.' }], time: 8_000 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 9_000 },
+        ...Array.from({ length: 300 }, (_, index) => ({ type: 'executor.runtime.update', kind: 'stable', index })),
+      ].map((record) => JSON.stringify(record)).join('\n')}\n`);
+      const originalWire = await fsPromises.readFile(wirePath);
+      const receiptPath = join(dirname(wirePath), WIRE_TRANSCRIPT_RECEIPT_KEY);
+      const originalReceipt = await fsPromises.readFile(receiptPath);
+      const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
+      const query = core.accessor.get(IQueryStore);
+      const key = 'ws\0s1\0main';
+      const starts: (number | undefined)[] = [];
+      const read = async () => {
+        const service = new TranscriptService({
+          homeDir: home, core,
+          wireRecordReader: async (path, options) => {
+            starts.push(options.startByteOffset);
+            return streamWireRecords(path, options);
+          },
+        });
+        try { return await service.readColdSnapshot('s1', 'main'); }
+        finally { service.dispose(); }
+      };
+      try {
+        const expected = await read();
+        const checkpoint = await query.get<{
+          format: number; nextByteOffset: number; recordCount: number;
+          snapshot: AgentTranscriptSnapshot; adapter: TranscriptWireAdapterCheckpoint;
+        }>('__transcript_projection_checkpoint__', key);
+        expect(checkpoint).toBeDefined();
+        expect(checkpoint!.nextByteOffset).toBe(originalWire.byteLength);
+        expect(checkpoint!.recordCount).toBeGreaterThanOrEqual(256);
+        expect(originalWire.byteLength).toBeLessThanOrEqual(8 << 20);
+        const legacy = structuredClone(checkpoint!);
+        legacy.format = 7;
+        for (const interaction of [...legacy.snapshot.interactions, ...legacy.adapter.interactions.map(([, value]) => value)]) {
+          if (interaction.interactionId === 'question-upgrade') {
+            delete (interaction.request as Record<string, unknown>)['created_at'];
+          }
+        }
+        expect(legacy.snapshot.interactions).toContainEqual(expect.objectContaining({
+          interactionId: 'question-upgrade', state: 'answered', response,
+          request: { question_id: 'question-upgrade', questions: [{ id: 'q_0', question: 'Choose a reference',
+            options: [{ id: 'opt_0_0', label: 'Appendix' }] }] },
+        }));
+        await query.put('__transcript_projection_checkpoint__', key, legacy);
+        const recovered = await read();
+        expect(recovered?.interactions).toContainEqual(expect.objectContaining({
+          interactionId: 'question-upgrade', state: 'answered', response,
+          request: expect.objectContaining({ created_at: new Date(6_000).toISOString() }),
+        }));
+        expect(recovered).toEqual(expected);
+        expect(starts).toEqual([undefined, undefined]);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(8);
+        expect(await read()).toEqual(expected);
+        expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
+        expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
+        expect(await fsPromises.readFile(receiptPath)).toEqual(originalReceipt);
+      } finally {
+        await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      }
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -3019,7 +3093,7 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(7);
+        expect(checkpoint?.format).toBe(8);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
           snapshot: { ...checkpoint!.snapshot, meta: {}, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },

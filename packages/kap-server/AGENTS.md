@@ -28,6 +28,8 @@ Usage aggregation compares agent inventories, wire size, mtime and offset when r
 
 ## Transcript surface
 
+`TranscriptService` owns the derived projection checkpoint format. Bump it when replay semantics change: an accepted checkpoint seeds the snapshot, adapter and reducer, then resumes from its saved byte offset, so an EOF checkpoint cannot recover newly projected facts without invalidation. Format 8 rebuilds older checkpoints from unchanged canonical wire to restore question request time. Replay prefers payload `createdAt`, then `created_at`, then the durable `interaction.request` record's `time`; absent all three, it leaves request time unset. Never rewrite wire or infer request time from the answer. A rebuilt current-format checkpoint remains reusable for unchanged wire and appended tails.
+
 Implements the op-batch sequencing contract:
 
 - `TranscriptService.dispatchOps` assigns every dispatched batch a per-agent consecutive `seq` and retains it in a bounded in-memory journal (`TRANSCRIPT_OPS_JOURNAL_CAPACITY`, dies with the live store). WS `transcript.ops`/`transcript.reset` payloads carry the seq/watermark.
