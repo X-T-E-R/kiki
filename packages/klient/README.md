@@ -143,9 +143,21 @@ summaries; `ready` still waits for all admitted agents.
 `resyncRequired` invalidates the session checkpoint. A transcript catch-up with
 `complete: false` or a changed epoch requires a new baseline, not ordinary-event
 replay. Paged responses preserve `coverage`, cursor, and authoritative
-`tool_call_count`; an absent count means unknown, not zero. Close the subscription
-when leaving the view. `restart()` reconnects the shared socket and therefore
-also invalidates ordinary-event observations and in-flight streams.
+`tool_call_count`; an absent count means unknown, not zero. The optional `read`
+field identifies the source and its readiness; `partial` is not complete history.
+Page `next_cursor` and entity-list cursors bind their source. If that source changes,
+the next read succeeds with an empty continuation, `has_more: true`, and
+`read.stale: { reason: 'source_changed', retry: 'authoritative' }`, not a validation
+error. Keep the displayed history, discard that continuation token, and retry once
+using a logical `beforeTurn` anchor for older turns or no cursor for entities.
+Do not merge stale payloads or treat their empty items as completion. A second
+stale response remains retryable; it must not start an automatic retry loop.
+Legacy logical item anchors and v1 entity cursors remain accepted; malformed or
+wrong-agent cursors still fail validation.
+
+Close the subscription when leaving the view. `restart()` reconnects the shared
+socket and therefore also invalidates ordinary-event observations and in-flight
+streams.
 
 Malformed view signals produce a payload-free `protocolError` diagnostic instead
 of being silently discarded. The first invalid signal is recoverable; another

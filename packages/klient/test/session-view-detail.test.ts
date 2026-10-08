@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 
 import { createKlient } from '../src/transports/http/index.js';
 import { KlientValidationError } from '../src/core/validation.js';
@@ -12,6 +13,23 @@ const task = {
 };
 
 describe('session view transcript detail', () => {
+  it('preserves structured stale page and entity responses through HTTP validation', async () => {
+    const read = { source: 'cold', readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } };
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      return envelope(url.pathname.endsWith('/details')
+        ? { session_id: 's1', agent_id: 'main', kind: 'task', items: [], has_more: true, read }
+        : { session_id: 's1', agent_id: 'main', items: [], tasks: [], meta: {}, agents: [], pending_interactions: [], has_more: true,
+          coverage: { kind: 'unknown', hasMoreOlder: true }, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION, read });
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      const transcript = klient.session('s1').view.transcript;
+      await expect(transcript.page({ agentId: 'main', beforeItem: 'source-bound' })).resolves.toMatchObject({ items: [], has_more: true, read });
+      await expect(transcript.entities!({ agentId: 'main', kind: 'task', cursor: 'source-bound' })).resolves.toMatchObject({ items: [], has_more: true, read });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { await klient.close(); }
+  });
   it('reads one entity through the authenticated session detail route', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));

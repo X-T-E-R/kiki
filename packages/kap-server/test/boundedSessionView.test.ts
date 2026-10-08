@@ -19,6 +19,39 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('returns structured stale continuations when source-bound page and detail cursors change source', async () => {
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true,
+      items: [0, 1, 2].map((ordinal) => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] })),
+      tasks: [0, 1, 2].map((ordinal) => ({ taskId: `task-${ordinal}`, kind: 'shell', state: 'completed', detached: false, outputTail: '' })),
+    };
+    const live = canonicalService(snapshot);
+    Object.assign(live, { verifyTranscriptLiveCoverage: async () => true, isTranscriptLiveCoverageVerified: () => true,
+      getTranscriptCursor: () => ({ seq: 3, epoch: 'live-epoch' }), forSessionLive: () => ({ agents: () => [] }) });
+    const firstPage = await readSessionViewTranscriptPage(live, 'fixture-session', { agentId: 'main', pageSize: 1 });
+    const firstDetail = await readSessionViewTranscriptDetails(live, 'fixture-session', { agentId: 'main', kind: 'task', limit: 1 });
+    const cold = { forSessionLive: () => undefined, readColdSnapshot: async () => snapshot,
+      readColdPageSnapshot: async () => snapshot, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const pageCursor = encode({ v: 2, agentId: 'main', source: 'live', anchor: 'turn:t2', epoch: 'live-epoch' });
+    const stalePage = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeItem: pageCursor });
+    const staleDetail = await readSessionViewTranscriptDetails(cold, 'fixture-session', { agentId: 'main', kind: 'task', cursor: firstDetail?.next_cursor });
+    const read = { source: 'cold', readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } };
+    expect(stalePage).toMatchObject({ items: [], has_more: true, coverage: { kind: 'unknown', hasMoreOlder: true }, read });
+    expect(staleDetail).toMatchObject({ items: [], has_more: true, read });
+    expect(stalePage?.next_cursor).toBeUndefined();
+    expect(staleDetail?.next_cursor).toBeUndefined();
+    expect(staleDetail?.total).toBeUndefined();
+    expect(transcriptDetailListResponseSchema.safeParse(staleDetail).success).toBe(true);
+    expect(JSON.parse(Buffer.from(firstPage!.next_cursor!, 'base64url').toString())).toMatchObject({ v: 2, source: 'live', agentId: 'main' });
+    const recovered = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't2' });
+    expect(recovered?.items).toHaveLength(2);
+    expect(recovered?.read?.stale).toBeUndefined();
+    const legacy = await readSessionViewTranscriptDetails(cold, 'fixture-session', { agentId: 'main', kind: 'task',
+      cursor: encode({ v: 1, agentId: 'main', kind: 'task', after: 'task-0' }) });
+    expect(legacy?.items).toMatchObject([{ taskId: 'task-1' }, { taskId: 'task-2' }]);
+    await expect(readSessionViewTranscriptDetails(cold, 'fixture-session', { agentId: 'main', kind: 'task', cursor: 'invalid' })).rejects.toThrow('invalid transcript detail cursor');
+  });
   it('continues a canonical older frame from cold history when the live tail has evicted it', async () => {
     const frame = { kind: 'text' as const, frameId: 'f-old', role: 'assistant' as const, text: '旧正文😀'.repeat(10_000) };
     const older: AgentTranscriptSnapshot = { ...empty(), items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's-old', turnId: 't0', ordinal: 0, state: 'completed', frames: [frame] }] }] };
@@ -59,7 +92,9 @@ describe('bounded session-view canonical reads', () => {
       seen.push(...page.items.map((item) => item.kind === 'marker' ? item.markerId : item.kind === 'turn' ? item.turnId : item.taskId));
       cursor = page.next_cursor;
       expect(page.has_more).toBe(cursor !== undefined);
-      if (cursor !== undefined) expect(cursor).toBe(`marker:${seen.at(-1)}`);
+      if (cursor !== undefined) expect(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))).toEqual({
+        v: 2, agentId: 'main', source: 'cold', anchor: `marker:${seen.at(-1)}`, epoch: 'cold:fixture-session:main',
+      });
     } while (cursor !== undefined);
     expect(seen).toEqual(['t1', ...Array.from({ length: 220 }, (_, index) => `marker-${index}`)]);
     await expect(readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', afterItem: 'marker:missing' })).rejects.toThrow('invalid transcript detail cursor');

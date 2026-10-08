@@ -2001,6 +2001,47 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it('recovers a structured stale page once without discarding history or merging its payload', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'live-bound' }), 1, true));
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(99)], has_more: true,
+      read: { source: 'cold', readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } } });
+    client.getAgentTranscript.mockImplementationOnce(() => held.promise);
+    const loading = controller.loadOlderMessages();
+    try {
+      await waitFor(() => client.getAgentTranscript.mock.calls.length === 2);
+      expect(historyTexts(controller)).toEqual(['History 2']);
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeTurn: 'history-2', beforeItem: undefined });
+      held.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' } });
+      await expect(loading).resolves.toBe(true);
+      expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
+    } finally { held.resolve({ agent_id: 'main', items: [], has_more: true }); controller.close(); }
+  });
+
+  it('recovers a structured stale entity cursor without losing prior entities or marking partial complete', async () => {
+    const prompt = (promptId: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('retained')], has_more: true, next_cursor: 'live-bound' })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('discard-stale')], has_more: true,
+        read: { source: 'cold', readiness: 'partial', stale: { reason: 'source_changed', retry: 'authoritative' } } })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('recovered')], has_more: false, read: { source: 'cold', readiness: 'partial' } });
+    const { controller, deliver } = await openEntityController(entities);
+    try {
+      deliver(resetEvent('main', emptySnapshot(), 1, true));
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(true);
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(true);
+      expect(entities.mock.calls[2]?.[0]).toMatchObject({ cursor: undefined });
+      expect(controller.getState().blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['retained', 'recovered']);
+      expect(controller.getState().globalCoverage?.prompts.hasMore).toBe(true);
+      expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+      expect(entities).toHaveBeenCalledTimes(3);
+    } finally { controller.close(); }
+  });
+
   it('stops repeated cursors as a retryable error without falsely completing history', async () => {
     const { controller, client } = await openTranscriptController();
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));

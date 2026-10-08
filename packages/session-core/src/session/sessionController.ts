@@ -1336,8 +1336,8 @@ export class SessionController {
     const store = this.ensureAgentTranscript(agentId);
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
     const currentSnapshot = this.composeAgentSnapshot(agentId);
-    const beforeItem = this.olderPageCursors.get(agentId);
-    const beforeTurn = beforeItem === undefined
+    let beforeItem = this.olderPageCursors.get(agentId);
+    let beforeTurn = beforeItem === undefined
       ? this.olderPageTurns.get(agentId) ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
     if (this.closed || !currentSnapshot.hasMoreOlder) return false;
     if (beforeItem === undefined && beforeTurn === undefined) {
@@ -1353,18 +1353,26 @@ export class SessionController {
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
-      const page = await this.readPreparedContent(() => this.view.transcript.page({
-        agentId,
-        beforeTurn,
-        beforeItem,
-        pageSize: 20,
-      }, { signal }), signal);
-      if (
-        this.closed || signal.aborted ||
-        this.agentTranscripts.get(agentId) !== store ||
-        (this.historyGeneration.get(agentId) ?? 0) !== generation
-      ) {
-        return false;
+      const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
+      const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
+        (this.historyGeneration.get(agentId) ?? 0) !== generation;
+      let page = await read();
+      if (obsolete()) return false;
+      if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
+      if (page.read?.stale !== undefined) {
+        this.historyReads.set(agentId, page.read);
+        this.olderPageCursors.delete(agentId);
+        this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
+        beforeItem = undefined;
+        beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
+        if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
+          this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
+          void this.resync();
+          return false;
+        }
+        page = await read();
+        if (obsolete()) return false;
+        if (page.read?.stale !== undefined) throw new Error('History continuation is still stale');
       }
       const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
       const pageReadiness = page.read?.readiness;
@@ -2003,15 +2011,25 @@ export class SessionController {
     const pending = this.detailReads.get(requestKey);
     if (pending !== undefined) return pending;
     const generation = this.historyGeneration.get(agentId) ?? 0;
-    const cursor = this.entityPageCursors.get(requestKey) ?? undefined;
+    let cursor = this.entityPageCursors.get(requestKey) ?? undefined;
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
-        const page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
-        if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
-        if (page.has_more && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) throw new Error('Transcript entity page did not advance its cursor');
+        const obsolete = () => this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation;
+        let page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
+        if (obsolete() || page.agent_id !== agentId || page.kind !== kind) return false;
+        if (page.read?.stale !== undefined) {
+          this.entityPageCursors.delete(requestKey);
+          cursor = undefined;
+          if (page.read.stale.retry === 'resync') { void this.resync(); return false; }
+          page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
+          if (obsolete() || page.agent_id !== agentId || page.kind !== kind) return false;
+          if (page.read?.stale !== undefined) throw new Error('Transcript entity continuation is still stale');
+        }
+        const partial = page.read !== undefined && page.read.readiness !== 'ready';
+        if (page.has_more && !(partial && page.items.length === 0) && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) throw new Error('Transcript entity page did not advance its cursor');
         const store = this.ensureAgentTranscript(agentId);
         const ops: TranscriptOperation[] = [];
         switch (page.kind) {
@@ -2022,13 +2040,15 @@ export class SessionController {
           case 'todo': for (const todo of page.items) if (!store.getTodos().has(todo.todoId)) ops.push({ op: 'todo.upsert', todo }); break;
         }
         store.apply(ops);
-        this.entityPageCursors.set(requestKey, page.has_more ? page.next_cursor ?? null : null);
+        if (page.next_cursor !== undefined && page.has_more) this.entityPageCursors.set(requestKey, page.next_cursor);
+        else if (partial) this.entityPageCursors.delete(requestKey);
+        else this.entityPageCursors.set(requestKey, null);
         const snapshot = store.snapshot();
         const field = { task: 'tasks', attachment: 'attachments', prompt: 'prompts', interaction: 'interactions', todo: 'todos' }[kind] as 'tasks' | 'attachments' | 'prompts' | 'interactions' | 'todos';
         const count = snapshot[field].length;
         const full = (returned: number) => ({ returned, total: returned, hasMore: false });
         const previous: NonNullable<AgentTranscriptSnapshot['globalCoverage']> = this.globalCoverage.get(agentId) ?? { version: 1, tasks: full(snapshot.tasks.length), attachments: full(snapshot.attachments.length), prompts: full(snapshot.prompts.length) };
-        this.globalCoverage.set(agentId, { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more } });
+        this.globalCoverage.set(agentId, { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more || partial } });
         this.forestDirtyAgents.add(agentId);
         this.publishProjectedAgent(agentId, store);
         return page.items.length > 0;

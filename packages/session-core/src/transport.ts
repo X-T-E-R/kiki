@@ -481,6 +481,7 @@ export interface AgentTranscriptResponse {
   readonly has_more: boolean;
   readonly next_cursor?: string;
   readonly coverage?: { readonly kind: 'full' | 'tail' | 'unknown'; readonly hasMoreOlder: boolean };
+  readonly read?: import('@kiki/transcript').TranscriptRead;
   readonly tool_call_count?: number;
   readonly cursor?: { readonly seq: number; readonly epoch?: string };
   readonly interactions?: readonly AgentTranscriptInteraction[];
