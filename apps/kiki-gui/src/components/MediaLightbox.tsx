@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
+import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan } from './ImageViewport';
 
 export function MediaLightbox({
@@ -30,12 +31,13 @@ export function MediaLightbox({
   useEffect(() => { setFailed(false); setNaturalWidth(undefined); setActualSize(false); }, [src]);
   const dpr = useDevicePixelRatio();
   const pan = useDragPan(actualSize);
-  const label = name ?? t('media.viewImage');
+  const label = imagePreviewLabel({ name }, t('media.image'));
+  const downloadName = imagePreviewDownloadName({ name });
 
   const download = () => {
     const anchor = document.createElement('a');
     anchor.href = src;
-    anchor.download = name ?? 'image';
+    anchor.download = downloadName;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();

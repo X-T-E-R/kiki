@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { RendererInstall } from './RendererInstall';
+import { useDocumentPreview } from './documentPreview';
 
 const roots: Root[] = [];
 const containers: HTMLDivElement[] = [];
@@ -128,4 +129,50 @@ describe('Office preview recovery follows the real plugin state', () => {
     await click(container, '[data-retry-install]');
     expect(onInstalled).toHaveBeenCalled();
   });
+});
+
+describe('document preview source identity', () => {
+  it('does not reload a document when a parent supplies the same source in a new object', async () => {
+    const documentPreview = vi.fn(async () => ({
+      kind: 'ready', format: 'pdf', fidelity: 'rendered', renderer: 'browser-pdf',
+      source: { kind: 'workspace', name: 'report.pdf', size: 10 },
+      navigation: { kind: 'page', page: 1 }, assets: [], read_only: true,
+    }));
+    const client = fakeClient({ documentPreview });
+    function Probe({ revision }: { revision: number }) {
+      const controller = useDocumentPreview(client, 'example-session', { kind: 'workspace', path: '/work/report.pdf' });
+      return <div data-state={controller.state.kind}>{revision}</div>;
+    }
+    const container = await render(<Probe revision={1} />);
+    expect(container.querySelector('[data-state="ready"]')).not.toBeNull();
+    await act(async () => { roots.at(-1)!.render(<I18nProvider><Probe revision={2} /></I18nProvider>); });
+    expect(documentPreview).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-state="ready"]')).not.toBeNull();
+  });
+});
+
+
+it('retains ready layout during page navigation but hides it on a source or session change', async () => {
+  const response = (page: number) => ({
+    kind: 'ready', format: 'pdf', fidelity: 'rendered', renderer: 'browser-pdf',
+    source: { kind: 'workspace', name: 'report.pdf', size: 10 },
+    navigation: { kind: 'page', page, page_count: 3 }, assets: [], read_only: true,
+  });
+  let finish: ((value: unknown) => void) | undefined;
+  const documentPreview = vi.fn().mockResolvedValueOnce(response(1)).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const client = fakeClient({ documentPreview });
+  function Probe({ session = 'example-session', path = '/work/report.pdf' }: { session?: string; path?: string }) {
+    const controller = useDocumentPreview(client, session, { kind: 'workspace', path });
+    return <div data-state={controller.state.kind}><button data-next onClick={() => { controller.goTo({ page: 2 }); }}>next</button></div>;
+  }
+  const container = await render(<Probe />);
+  await click(container, '[data-next]');
+  expect(container.querySelector('[data-state="ready"]')).not.toBeNull();
+  expect(documentPreview).toHaveBeenCalledTimes(2);
+  await act(async () => { finish?.(response(2)); });
+  await act(async () => { roots.at(-1)!.render(<I18nProvider><Probe session="another-session" /></I18nProvider>); });
+  expect(container.querySelector('[data-state="loading"]')).not.toBeNull();
+  await act(async () => { finish?.(response(1)); });
+  await act(async () => { roots.at(-1)!.render(<I18nProvider><Probe session="another-session" path="/work/other.pdf" /></I18nProvider>); });
+  expect(container.querySelector('[data-state="loading"]')).not.toBeNull();
 });

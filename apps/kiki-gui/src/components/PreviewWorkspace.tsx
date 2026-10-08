@@ -5,8 +5,8 @@
  * buffers with a dot. Content routes by extension: images render at full
  * resolution (fit width or 100%, with the lightbox one click away),
  * markdown toggles rendered/source, code/text open in a CodeMirror view,
- * common video containers play in a plain HTML5 player, and unknown binaries
- * get the download fallback. Wherever the download anchor appears, the
+ * common video containers play in a plain HTML5 player, common audio files use
+ * native controls, and unknown binaries get the download fallback. Wherever the download anchor appears, the
  * desktop opener pair — "open with default app" and "reveal in file
  * manager" — appears beside it, gated on the same host capability as the tab
  * context menu's entries; a reveal icon also rides the binary tab's caption
@@ -29,7 +29,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
@@ -42,22 +42,18 @@ import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
 import { useOptionalConnection } from '../state/connection';
 import {
-  HostFileEditorController,
-  type HostFileEditorSnapshot,
-} from '../state/hostFileEditor';
-import {
   normalizeTabInput,
   previewTabKey,
   type PreviewTab as PreviewTabModel,
 } from '../state/previewWorkspace';
 import { AgentWorkspace, type AgentWorkspaceNavigation } from './agent-workspace/AgentWorkspace';
-import { CodeEditor } from './CodeEditor';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
 import { ImageViewport } from './ImageViewport';
 import { DocumentTabView } from './preview/DocumentTabView';
+import { TextTabView } from './preview/TextTabView';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -1252,6 +1248,8 @@ function PreviewTabView({
         <ImageTabView path={path} onOpenImage={onOpenImage} />
       ) : kind === 'video' ? (
         <VideoTabView path={path} />
+      ) : kind === 'audio' ? (
+        <AudioTabView path={path} scopeId={connection?.scopeId} />
       ) : kind === 'pdf' || kind === 'office' ? (
         <DocumentTabView
           source={{ kind: 'workspace', path }}
@@ -1510,137 +1508,58 @@ function VideoTabView({ path }: { readonly path: string }) {
 }
 
 /**
- * Text/code/markdown tab: one HostFileEditorController per tab (created when
- * the connection's client is available), CodeMirror for source, the Markdown
- * renderer for the rendered markdown mode.
+ * Audio tab: read the original host bytes once, then hand the resulting blob
+ * URL to the browser's native player. A failed read stays actionable so the
+ * same tab can retry; a browser decode failure uses the ordinary file fallback.
  */
-const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
-  status: 'loading',
-  error: undefined,
-  savedText: '',
-  draft: '',
-  dirty: false,
-  saving: false,
-  conflict: false,
-  oversized: false,
-  generation: 0,
-  lastSavedAt: undefined,
-};
-
-function TextTabView({
-  path,
-  markdown,
-  navigation,
-  reportDirty,
-  onReadingReady,
-}: {
-  readonly path: string;
-  readonly markdown: boolean;
-  readonly navigation?: FileReference;
-  readonly reportDirty: (path: string, dirty: boolean) => void;
-  readonly onReadingReady: () => void;
-}) {
-  const host = useHost();
+function AudioTabView({ path, scopeId }: { readonly path: string; readonly scopeId?: string }) {
   const { t } = useI18n();
-  const connection = useOptionalConnection();
-  const client = connection?.client;
-  const [controller, setController] = useState<HostFileEditorController | null>(null);
-  const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
-  const [fullMarkdown, setFullMarkdown] = useState<{
-    controller: HostFileEditorController; client: KikiClient; path: string;
-    generation: number; text: string;
-  } | null>(null);
-  const [loadingFull, setLoadingFull] = useState(false);
-  const [fullError, setFullError] = useState(false);
-  const fullLoadId = useRef(0);
-  const fullReadController = useRef<AbortController | null>(null);
-  const [headingFound, setHeadingFound] = useState(true);
-  useEffect(() => {
-    if (navigation?.line !== undefined) setMode('source');
-    else if (navigation?.heading !== undefined) setMode('rendered');
-  }, [navigation]);
+  const client = useOptionalConnection()?.client;
+  const name = basenameOf(path);
+  const [attempt, setAttempt] = useState(0);
+  const [unplayable, setUnplayable] = useState(false);
+  const [state, setState] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'error' }
+    | {
+      readonly status: 'ready';
+      readonly client: KikiClient;
+      readonly path: string;
+      readonly scopeId: string | undefined;
+      readonly url: string;
+      readonly size: number;
+    }
+  >({ status: 'loading' });
 
   useEffect(() => {
+    setUnplayable(false);
     if (client === undefined) {
-      setController(null);
+      setState({ status: 'error' });
       return;
     }
-    const next = new HostFileEditorController({
-      path,
-      readFile: (target) => client.previewHostFile(target),
-      writeFile: host.writeFileText,
-    });
-    setController(next);
-    void next.load();
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    setState({ status: 'loading' });
+    client.readHostFileBytes(path).then(
+      ({ bytes, mime }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setState({ status: 'ready', client, path, scopeId, url: objectUrl, size: bytes.byteLength });
+      },
+      () => {
+        if (!cancelled) setState({ status: 'error' });
+      },
+    );
     return () => {
-      next.dispose();
-      setController(null);
+      cancelled = true;
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, host, path]);
+  }, [attempt, client, path, scopeId]);
 
-  const subscribe = useMemo(
-    () => controller?.subscribe ?? (() => () => {}),
-    [controller],
-  );
-  // Stable fallback snapshot: useSyncExternalStore loops forever on a fresh
-  // object per call while the controller is still being created.
-  const getState = useMemo(
-    () => controller?.getState ?? (() => IDLE_SNAPSHOT),
-    [controller],
-  );
-  const snap = useSyncExternalStore(subscribe, getState);
-  useEffect(() => {
-    setLoadingFull(false);
-    setFullError(false);
-    return () => { fullLoadId.current += 1; fullReadController.current?.abort(); fullReadController.current = null; };
-  }, [client, path, snap.generation]);
-
-  const dirty = snap.dirty;
-  useEffect(() => {
-    reportDirty(path, dirty);
-    return () => { reportDirty(path, false); };
-  }, [reportDirty, path, dirty]);
-
-  const name = basenameOf(path);
-  const editable = controller?.editable ?? false;
-  const showEditor = !markdown || mode === 'source';
-  const [sourceMounted, setSourceMounted] = useState(!markdown);
-  useEffect(() => { if (showEditor) setSourceMounted(true); }, [showEditor]);
-  const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
-    fullMarkdown.path === path && fullMarkdown.generation === snap.generation
-    ? fullMarkdown.text : undefined;
-  const referenceOutside = useMemo(() => {
-    if (navigation?.line === undefined) return false;
-    const lines = (fullText ?? snap.draft).split('\n');
-    return navigation.line > lines.length || (navigation.endLine ?? navigation.line) > lines.length ||
-      (navigation.column ?? 1) > (lines[navigation.line - 1]?.length ?? 0) + 1;
-  }, [navigation, fullText, snap.draft]);
-  // The renderer, not a frame deadline, says when this tab's text is on screen.
-  useEffect(() => {
-    if (snap.status === 'ready') onReadingReady();
-  }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady]);
-  const normalizedPath = path.replaceAll('\\', '/');
-  const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
-  const loadFullMarkdown = useCallback(async () => {
-    if (client === undefined || controller === null || fullReadController.current !== null) return;
-    const loadId = ++fullLoadId.current;
-    const abort = new AbortController();
-    fullReadController.current = abort;
-    setLoadingFull(true);
-    setFullError(false);
-    try {
-      const { bytes } = await client.readHostFileBytes(path, { ...client.readingOptions(), signal: abort.signal });
-      if (loadId === fullLoadId.current && !abort.signal.aborted) setFullMarkdown({ controller, client, path, generation: snap.generation, text: new TextDecoder().decode(bytes) });
-    } catch {
-      if (loadId === fullLoadId.current && !abort.signal.aborted) setFullError(true);
-    } finally {
-      if (fullReadController.current === abort) fullReadController.current = null;
-      if (loadId === fullLoadId.current) setLoadingFull(false);
-    }
-  }, [client, controller, path, snap.generation]);
-  useEffect(() => {
-    if (snap.status === 'ready' && snap.oversized && fullText === undefined && !fullError) void loadFullMarkdown();
-  }, [snap.status, snap.oversized, fullText, fullError, loadFullMarkdown]);
+  const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
+    ? state
+    : undefined;
+  if (unplayable) return <BinaryTabView path={path} />;
 
   return (
     <>
@@ -1648,135 +1567,42 @@ function TextTabView({
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
           {path}
         </span>
-        {markdown ? (
-          <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
-            {(['rendered', 'source'] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                data-md-mode={option}
-                onClick={() => { setMode(option); }}
-                className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
-                  mode === option
-                    ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                    : 'text-ink-faint hover:text-ink-soft'
-                }`}
-              >
-                {option === 'rendered' ? t('preview.rendered') : t('preview.source')}
-              </button>
-            ))}
+        {readyState !== undefined ? (
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-audio-meta>
+            {formatBytes(readyState.size)}
           </span>
-        ) : null}
-        {snap.status === 'ready' ? (
-          <span className="shrink-0 text-[11px] text-ink-faint" data-save-status>
-            {snap.saving
-              ? t('preview.saving')
-              : snap.dirty
-                ? <span className="inline-flex items-center gap-1"><Icon name="dot" size={12} className="text-amber-rule" />{t('preview.unsaved')}</span>
-                : snap.lastSavedAt !== undefined
-                  ? t('preview.saved')
-                  : ''}
-          </span>
-        ) : null}
-        {editable ? (
-          <button
-            type="button"
-            data-save-button
-            disabled={!snap.dirty || snap.saving}
-            onClick={() => { void controller?.saveNow(); }}
-            className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink-soft"
-          >
-            {t('preview.save')}
-          </button>
         ) : null}
         <HeaderFileActions path={path} name={name} />
       </div>
-      {snap.conflict ? (
-        <div
-          data-conflict-banner
-          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-amber-rule/40 bg-amber-card px-3 py-1.5 text-[11px] text-amber-ink"
-        >
-          <span className="min-w-0 flex-1">{t('preview.conflictBody')}</span>
-          <button
-            type="button"
-            data-conflict-overwrite
-            onClick={() => { void controller?.resolveConflict('overwrite'); }}
-            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
-          >
-            {t('preview.overwrite')}
-          </button>
-          <button
-            type="button"
-            data-conflict-reload
-            onClick={() => { void controller?.resolveConflict('reload'); }}
-            className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium transition-colors hover:bg-amber-rule/20"
-          >
-            {t('preview.reload')}
-          </button>
-          <button
-            type="button"
-            onClick={() => { void controller?.resolveConflict('cancel'); }}
-            className="rounded-full px-2 py-0.5 text-amber-ink/70 transition-colors hover:text-amber-ink"
-          >
-            {t('preview.keepEditing')}
-          </button>
-        </div>
-      ) : null}
-      {snap.error !== undefined && snap.status !== 'error' ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/5 px-3 py-1.5 text-[11px] text-danger">
-          <span className="min-w-0 flex-1 truncate">{snap.error}</span>
-          <button
-            type="button"
-            onClick={() => { controller?.dismissError(); }}
-            aria-label={t('common.close')}
-            className="shrink-0"
-          >
-            <Icon name="close" size={12} />
-          </button>
-        </div>
-      ) : null}
-      {!editable && snap.status === 'ready' ? (
-        <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[11px] ${
-          snap.oversized && fullText === undefined
-            ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
-            : 'border-hairline bg-paper/60 text-ink-faint'
-        }`} data-preview-size-notice>
-          <span>{snap.oversized && fullText === undefined
-            ? t('preview.oversized') : t('preview.editUnsupported')}</span>
-          {loadingFull ? <span role="status">{t('preview.loading')}</span> : null}
-          {fullError ? <button type="button" data-load-full-markdown onClick={() => { void loadFullMarkdown(); }} className="rounded-full border border-amber-rule/60 px-2 py-0.5 font-medium">{t('transcript.detail.retry')}</button> : null}
-          {fullError ? <span role="alert">{t('preview.failed')}</span> : null}
-        </div>
-      ) : null}
-      <div className="flex min-h-0 flex-1 flex-col">
-        {snap.status === 'loading' ? (
-          <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+        {readyState === undefined && state.status === 'loading' ? (
+          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
             {t('preview.loading')}
           </p>
-        ) : snap.status === 'error' ? (
-          <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-        ) : (
-          <>
-            {navigation?.invalidTarget || (navigation?.heading !== undefined && !headingFound) || referenceOutside ? <p role="status" className="px-3 py-2 text-[12px] text-ink-soft">{t(referenceOutside ? 'preview.referenceClamped' : 'preview.referenceMissing')}</p> : null}
-            {sourceMounted || showEditor ? <div hidden={!showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'flex' : 'hidden'}`}>
-              <CodeEditor
-                key={fullText !== undefined ? `${path}:full` : path}
-                path={path}
-                value={fullText ?? snap.draft}
-                generation={snap.generation}
-                navigation={showEditor ? navigation : undefined}
-                readOnly={!editable}
-                onChange={(text) => { controller?.setDraft(text); }}
-                onSaveShortcut={() => { void controller?.saveNow(); }}
-                ariaLabel={t('preview.openFile', { name })}
-              />
-            </div> : null}
-            {markdown ? <div hidden={showEditor} data-preview-scroll className={`min-h-0 flex-1 overflow-auto p-4 ${showEditor ? 'hidden' : ''}`}>
-              <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} documentPath={path} headingNavigation={showEditor ? undefined : navigation} onHeadingResult={setHeadingFound} />
-            </div> : null}
-          </>
-        )}
+        ) : readyState === undefined && state.status === 'error' ? (
+          <div className="flex items-center gap-2 text-[12.5px] text-danger">
+            <span>{t('preview.failed')}</span>
+            <button
+              type="button"
+              data-preview-audio-retry
+              onClick={() => { setAttempt((value) => value + 1); }}
+              className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : readyState !== undefined ? (
+          <audio
+            src={readyState.url}
+            controls
+            preload="metadata"
+            aria-label={name}
+            data-preview-audio
+            onError={() => { setUnplayable(true); }}
+            className="w-full max-w-2xl"
+          />
+        ) : null}
       </div>
     </>
   );

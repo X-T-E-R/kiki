@@ -92,6 +92,30 @@ export const messageContentSchema = z.discriminatedUnion('type', [
 ]);
 export type MessageContent = z.infer<typeof messageContentSchema>;
 
+const streamAttachmentSchema = z.object({
+  fileId: z.string(), mimeType: z.string(), size: z.number(), name: z.string().optional(),
+});
+const streamMediaUrlSchema = z.object({
+  url: z.string(), id: z.string().optional(), name: z.string().optional(),
+  mimeType: z.string().optional(), size: z.number().optional(), attachment: streamAttachmentSchema.optional(),
+});
+
+export const assistantStreamPartSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('text'), text: z.string(), presentation: z.unknown().optional(),
+    attachment: streamAttachmentSchema.optional(),
+    resourceLink: z.object({
+      uri: z.string(), name: z.string().optional(), mimeType: z.string().optional(),
+      size: z.number().optional(), title: z.string().optional(), description: z.string().optional(),
+    }).optional(),
+  }),
+  z.object({ type: z.literal('think'), think: z.string(), encrypted: z.string().optional() }),
+  z.object({ type: z.literal('image_url'), imageUrl: streamMediaUrlSchema }),
+  z.object({ type: z.literal('audio_url'), audioUrl: streamMediaUrlSchema }),
+  z.object({ type: z.literal('video_url'), videoUrl: streamMediaUrlSchema }),
+]);
+export type AssistantStreamPart = z.infer<typeof assistantStreamPartSchema>;
+
 export const messageSchema = z.object({
   id: z.string().min(1),
   session_id: z.string().min(1),

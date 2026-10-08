@@ -431,9 +431,19 @@ function MarkdownAnchor({ href, children, documentDirectory, documentPath }: {
   );
 }
 
+const IMAGE_REHYPE_PLUGINS = Object.entries(defaultRehypePlugins).map(([name, plugin]) => {
+  if (name !== 'sanitize' || !Array.isArray(plugin)) return plugin;
+  const schema = plugin[1] as { protocols?: Record<string, string[]> };
+  return [plugin[0], {
+    ...schema,
+    protocols: { ...schema.protocols, src: [...(schema.protocols?.src ?? []), 'data', 'blob', 'kimi-file'] },
+  }] as typeof plugin;
+});
+
 const components: Components = {
   pre: KikiMarkdownPre as Components['pre'],
   a: MarkdownAnchor as Components['a'],
+  img: MarkdownFileImage as Components['img'],
 };
 
 export const Markdown = memo(function Markdown({
@@ -497,8 +507,8 @@ export const Markdown = memo(function Markdown({
   const rehypePlugins = useMemo(
     () =>
       annotationTargets === undefined || annotationTargets.length === 0
-        ? undefined
-        : [...Object.values(defaultRehypePlugins), rehypeAnnotationMarks(annotationTargets)],
+        ? IMAGE_REHYPE_PLUGINS
+        : [...IMAGE_REHYPE_PLUGINS, rehypeAnnotationMarks(annotationTargets)],
     [annotationTargets],
   );
   // Streamdown's own memo does not compare rehypePlugins, so an annotation

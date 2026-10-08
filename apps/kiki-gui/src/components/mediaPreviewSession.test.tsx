@@ -10,6 +10,7 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { ApiError } from '@kiki/session-core/transport';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { previewThumbnail } from './imageThumbnail';
+import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { ToolCard } from './ToolCard';
 import { TranscriptDetailProvider } from './transcriptDetail';
 const mocks = vi.hoisted(() => ({
@@ -120,6 +121,27 @@ afterAll(() => {
     });
   }
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+});
+
+describe('image preview naming', () => {
+  it('accepts only real names or legal path basenames and keeps opaque references out of labels', () => {
+    expect(safeImagePreviewName({ name: 'shot.png' })).toBe('shot.png');
+    expect(safeImagePreviewName({ metadataName: 'metadata.webp' })).toBe('metadata.webp');
+    expect(safeImagePreviewName({ path: 'C:\\work\\shot.png' })).toBe('shot.png');
+    expect(safeImagePreviewName({
+      name: 'data:image/png;base64,AAAA',
+      metadataName: 'blob:opaque-image',
+      path: '/workspace/shot.png',
+    })).toBe('shot.png');
+    expect(safeImagePreviewName({ name: 'https://example.test/shot.png', path: '/workspace/fallback.png' })).toBe('fallback.png');
+    expect(safeImagePreviewName({ name: 'shot%2Epng', path: '/workspace/fallback.png' })).toBe('fallback.png');
+    expect(safeImagePreviewName({ name: `iVBORw0KGgo${'A'.repeat(12)}`, path: '/workspace/fallback.png' })).toBe('fallback.png');
+    expect(safeImagePreviewName({ name: '截图 2026.png' })).toBe('截图 2026.png');
+    expect(safeImagePreviewName({ name: 'iVBORw0KGgo.png' })).toBe('iVBORw0KGgo.png');
+    expect(safeImagePreviewName({ path: 'C:\\工作区\\照片 1.png' })).toBe('照片 1.png');
+    expect(imagePreviewLabel({ name: 'data:image/png;base64,AAAA' }, 'Image')).toBe('Image');
+    expect(imagePreviewDownloadName({ name: 'blob:image' })).toBe('image');
+  });
 });
 
 describe('session media preview', () => {
@@ -413,6 +435,28 @@ describe('sent image loading and recovery', () => {
     expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(media[0]!.url);
   });
 
+  it('keeps opaque source URLs out of image labels and download names', async () => {
+    const rawUrl = 'data:image/png;base64,AAAA';
+    const { root, container } = makeRoot();
+    await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: rawUrl }]} /></MediaPreviewProvider>);
+    const image = container.querySelector<HTMLImageElement>('img');
+    const trigger = image?.closest<HTMLButtonElement>('button');
+    expect(image?.alt).toBe('Image');
+    expect(trigger?.title).toBe('Image');
+    expect([...container.querySelectorAll<HTMLElement>('[title]')].every((element) => !element.title.includes(rawUrl))).toBe(true);
+
+    const downloadClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.download).toBe('image');
+      expect(this.getAttribute('download')).toBe('image');
+    });
+    await act(async () => { trigger?.click(); });
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.getAttribute('aria-label')).toBe('Image');
+    expect(dialog?.querySelector<HTMLImageElement>('img')?.alt).toBe('Image');
+    await act(async () => { findDialogButton(dialog, 'Download')?.click(); });
+    expect(downloadClick).toHaveBeenCalledOnce();
+  });
+
   it('reports a decoded URL failure and retries instead of leaving a blank frame', async () => {
     const { root, container } = makeRoot();
     await renderSettled(root, <MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', name: 'broken.png', url: 'data:image/png;base64,AAAA' }]} /></MediaPreviewProvider>);
@@ -433,7 +477,13 @@ describe('sent image loading and recovery', () => {
     expect(document.querySelector('[data-attachment-preview] [data-media-broken="read"]')).not.toBeNull();
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-attachment-preview] [data-media-broken]')?.click(); });
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledTimes(2);
-    expect(document.querySelector('[data-attachment-preview] img')).not.toBeNull();
+    const attachmentDialog = [...document.querySelectorAll('[role="dialog"]')]
+      .find((dialog) => dialog.querySelector('[data-attachment-preview]') !== null);
+    expect(attachmentDialog?.querySelector('[data-attachment-preview] img')).not.toBeNull();
+    expect(attachmentDialog?.className).not.toContain('bg-panel');
+    expect(attachmentDialog?.className).not.toContain('p-4');
+    await act(async () => { attachmentDialog?.querySelector('[data-attachment-preview] img')?.closest('button')?.click(); });
+    expect([...document.querySelectorAll('[role="dialog"]')].some((dialog) => dialog.getAttribute('aria-label') === 'saved.png')).toBe(true);
   });
 });
 

@@ -145,6 +145,28 @@ describe('Agent loop', () => {
   `);
   });
 
+  it('streams native model images with the same part identity as durable content, without putting bytes in text', async () => {
+    const events: AssistantDelta[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(AssistantDelta, (event) => events.push(event));
+    const image = { type: 'image_url' as const, imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png' } };
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'Here is the image.' }, image, { type: 'text', text: 'Done.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Draw an image' }] });
+      await ctx.untilTurnEnd();
+      expect(events.map((event) => event.delta)).toEqual(['Here is the image.', '', 'Done.']);
+      const media = events.filter((event) => event.part?.type === 'image_url');
+      expect(media).toHaveLength(1);
+      expect(media[0]?.part).toEqual(image);
+      const persisted = await ctx.persistedWireRecords();
+      const content = persisted.filter((record) => record.type === 'context.append_loop_event')
+        .map((record) => record['event'] as { type: string; uuid?: string; part?: { type: string } });
+      expect(content.find((event) => event.type === 'content.part' && event.part?.type === 'image_url')?.uuid).toBe(media[0]?.partId);
+      expect(new Set(events.map((event) => event.partId)).size).toBe(3);
+    } finally {
+      await subscription.dispose();
+    }
+  });
+
   it('merges text deltas across a vacuous reasoning part instead of splitting the text', async () => {
     const assistantDeltas: AssistantDelta[] = [];
     const thinkingDeltas: ThinkingDelta[] = [];

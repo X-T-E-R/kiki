@@ -349,3 +349,15 @@ describe('managed account sign-in contract', () => {
     expect(oAuthFlowSnapshotSchema.safeParse({ ...snapshot, status: 'unrecognized' }).success).toBe(false);
   });
 });
+
+
+it('preserves assistant media part identity and legacy text deltas at the client event boundary', () => {
+  const schema = agentEvents['assistant.delta'].schema;
+  const media = {
+    type: 'assistant.delta', turnId: 1, step: 2, stepId: 'example-step', partId: 'example-image', delta: '',
+    part: { type: 'image_url', imageUrl: { url: 'https://example.test/image.png', id: 'provider-reference', name: 'image.png' } },
+  };
+  expect(schema.parse(media)).toEqual(media);
+  const legacy = { type: 'assistant.delta', turnId: 1, delta: 'hello' };
+  expect(schema.parse(legacy)).toEqual(legacy);
+});

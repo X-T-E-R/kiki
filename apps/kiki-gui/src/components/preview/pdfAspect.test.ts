@@ -3,7 +3,38 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { I18nProvider } from '../../i18n';
+import { PdfPageView } from './PdfPageView';
+
+const pdfMocks = vi.hoisted(() => ({ getDocument: vi.fn() }));
+vi.mock('pdfjs-dist', () => ({
+  GlobalWorkerOptions: { workerSrc: undefined },
+  getDocument: pdfMocks.getDocument,
+}));
+
+const roots: Root[] = [];
+const containers: HTMLDivElement[] = [];
+
+beforeEach(() => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+});
+
+afterEach(async () => {
+  for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
+  for (const container of containers.splice(0)) container.remove();
+  pdfMocks.getDocument.mockReset();
+  vi.restoreAllMocks();
+});
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  });
+}
 
 /**
  * The canvas must keep the document's own proportions.
@@ -52,5 +83,98 @@ describe('pdf page proportions', () => {
       // The inverse — what the bug produced — would be above 1 (sideways).
       expect(height / width).not.toBeGreaterThan(1);
     }
+  });
+});
+
+describe('pdf page document lifecycle', () => {
+  it('reads and opens one source once while paging, cancels render work, and disposes on source change', async () => {
+    const firstRenderDone = Promise.withResolvers<void>();
+    const firstRenderCancel = vi.fn();
+    const secondRenderCancel = vi.fn();
+    const firstPage = {
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale })),
+      render: vi.fn(() => ({ promise: firstRenderDone.promise, cancel: firstRenderCancel })),
+      cleanup: vi.fn(),
+    };
+    const secondPage = {
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: secondRenderCancel })),
+      cleanup: vi.fn(),
+    };
+    const firstDocument = {
+      numPages: 2,
+      getPage: vi.fn(async (page: number) => page === 1 ? firstPage : secondPage),
+      destroy: vi.fn(async () => undefined),
+    };
+    const firstLoadingTask = {
+      promise: Promise.resolve(firstDocument),
+      destroy: vi.fn(async () => undefined),
+    };
+    const secondDocument = {
+      numPages: 1,
+      getPage: vi.fn(async () => secondPage),
+      destroy: vi.fn(async () => undefined),
+    };
+    const secondLoadingTask = {
+      promise: Promise.resolve(secondDocument),
+      destroy: vi.fn(async () => undefined),
+    };
+    pdfMocks.getDocument.mockReturnValueOnce(firstLoadingTask).mockReturnValueOnce(secondLoadingTask);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D);
+    const signals: AbortSignal[] = [];
+    const readDocumentPreviewAsset = vi.fn(async (_assetUrl: string, signal?: AbortSignal) => {
+      if (signal !== undefined) signals.push(signal);
+      return { bytes: Uint8Array.of(1, 2, 3), mime: 'application/pdf' };
+    });
+    const client = { readDocumentPreviewAsset } as never;
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(createElement(I18nProvider, null, createElement(PdfPageView, { client, assetUrl: '/asset-1', sourceKey: 'scope:source', page: 1, name: 'guide.pdf' })));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(readDocumentPreviewAsset).toHaveBeenCalledTimes(1);
+    expect(pdfMocks.getDocument).toHaveBeenCalledTimes(1);
+    expect(firstDocument.getPage).toHaveBeenCalledWith(1);
+    expect(firstPage.render).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(createElement(I18nProvider, null, createElement(PdfPageView, { client, assetUrl: '/asset-2', sourceKey: 'scope:source', page: 2, name: 'guide.pdf' })));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(readDocumentPreviewAsset).toHaveBeenCalledTimes(1);
+    expect(pdfMocks.getDocument).toHaveBeenCalledTimes(1);
+    expect(firstRenderCancel).toHaveBeenCalledTimes(1);
+    expect(firstDocument.getPage).toHaveBeenCalledWith(2);
+    expect(secondPage.render).toHaveBeenCalledTimes(1);
+    await flush();
+
+    firstRenderDone.resolve();
+    await flush();
+
+    let resolveSource: ((value: { bytes: Uint8Array; mime: string }) => void) | undefined;
+    const pendingSource = new Promise<{ bytes: Uint8Array; mime: string }>((resolve) => { resolveSource = resolve; });
+    readDocumentPreviewAsset.mockImplementationOnce(async () => pendingSource);
+    await act(async () => {
+      root.render(createElement(I18nProvider, null, createElement(PdfPageView, { client, assetUrl: '/asset-3', sourceKey: 'scope:other-source', page: 1, name: 'other.pdf' })));
+      await Promise.resolve();
+    });
+    expect(firstDocument.destroy).toHaveBeenCalledTimes(1);
+    expect(firstLoadingTask.destroy).not.toHaveBeenCalled();
+    expect(signals[0]?.aborted).toBe(true);
+    expect(container.querySelector('canvas')?.style.visibility).toBe('hidden');
+
+    resolveSource?.({ bytes: Uint8Array.of(4, 5, 6), mime: 'application/pdf' });
+    await flush();
+    expect(readDocumentPreviewAsset).toHaveBeenCalledTimes(2);
+    expect(pdfMocks.getDocument).toHaveBeenCalledTimes(2);
   });
 });

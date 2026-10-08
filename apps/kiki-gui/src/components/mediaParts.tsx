@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { basenameOf, formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
+import { formatBytes, type MediaRef } from '@kiki/session-core/composer/media';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { ApiError, API_CODES } from '@kiki/session-core/transport';
 import { useOptionalConnection } from '../state/connection';
 import { Icon } from './icons';
+import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaPreview } from './mediaPreviewContext';
 import { useTranscriptDetail } from './transcriptDetail';
@@ -65,7 +66,7 @@ export function useSessionMedia(
       controller.abort();
       if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
     };
-  }, [client, enabled, previewOnly, item.blobHash, item.fileId, item.mime, item.kind, sessionId, setLoad]);
+  }, [client, enabled, previewOnly, item.blobHash, item.fileId, item.path, item.mime, item.kind, sessionId, setLoad]);
 
   return load;
 }
@@ -89,8 +90,8 @@ function useVisibleOnce(): [(node: HTMLElement | null) => void, boolean] {
   return [setNode, visible];
 }
 
-export function attachmentName(item: MediaRef, loadedName?: string): string {
-  return item.name ?? loadedName ?? item.fileId ?? item.path ?? 'attachment';
+export function attachmentName(item: MediaRef, loadedName?: string, fallback = 'attachment'): string {
+  return imagePreviewLabel({ name: item.name, metadataName: loadedName, path: item.path }, fallback);
 }
 
 function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: MediaThumbSize }) {
@@ -99,13 +100,14 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
   const [hostRef, visible] = useVisibleOnce();
   const load = useSessionMedia(item, preview?.sessionId, visible);
   const [failedUrl, setFailedUrl] = useState<string>();
-  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+  const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, fallback);
   let body: ReactNode;
   if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
     body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { preview?.openAttachment(item); }} />;
   } else if (load.status === 'loading') {
     body = (
-      <span className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} border border-hairline bg-paper text-[11px] text-ink-faint`}>
+      <span aria-busy="true" className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} text-[11px] text-ink-faint`}>
         {size === 'strip' ? null : t('preview.loading')}
       </span>
     );
@@ -115,7 +117,7 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
         type="button"
         title={name}
         onClick={() => { preview?.openAttachment(item); }}
-        className={`block overflow-hidden ${THUMB_SIZE[size].frame} border border-hairline transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
+        className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
@@ -126,12 +128,13 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
 
 export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { name: string; decode: boolean; size?: MediaThumbSize; onRetry: () => void }) {
   const { t } = useI18n();
-  const label = decode ? t('media.unavailable', { name }) : t('preview.failed');
+  const safeName = imagePreviewLabel({ name }, t('media.attachment'));
+  const label = decode ? t('media.unavailable', { name: safeName }) : t('preview.failed');
   return (
-    <button type="button" data-media-broken={decode ? 'decode' : 'read'} onClick={onRetry} title={name} aria-label={`${label} · ${t('transcript.detail.retry')}`}
+    <button type="button" data-media-broken={decode ? 'decode' : 'read'} onClick={onRetry} title={safeName} aria-label={`${label} · ${t('transcript.detail.retry')}`}
       className={`flex ${THUMB_SIZE[size].slot} flex-col items-center justify-center gap-1 ${THUMB_SIZE[size].frame} border border-dashed border-hairline-strong bg-panel p-2 text-[11px] text-ink-faint hover:border-accent focus-visible:outline-2 focus-visible:outline-selected-ink`}>
       <Icon name="file" size={size === 'strip' ? 12 : 16} />
-      {size === 'strip' ? null : <>{decode ? null : <span className="max-w-full truncate">{name}</span>}<span>{label}</span><span className="text-accent">{t('transcript.detail.retry')}</span></>}
+      {size === 'strip' ? null : <>{decode ? null : <span className="max-w-full truncate">{safeName}</span>}<span>{label}</span><span className="text-accent">{t('transcript.detail.retry')}</span></>}
     </button>
   );
 }
@@ -139,7 +142,8 @@ export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { 
 function FileChip({ item }: { item: MediaRef }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const label = item.name ?? (item.path !== undefined ? basenameOf(item.path) : t('media.attachment'));
+  const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
+  const label = attachmentName(item, undefined, fallback);
   const detail = item.size !== undefined ? formatBytes(item.size) : item.mime;
   const openable = (item.path !== undefined || item.fileId !== undefined) && preview !== null;
   const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-1.5 text-left ${
@@ -152,12 +156,12 @@ function FileChip({ item }: { item: MediaRef }) {
       {detail !== undefined && detail !== '' ? <span className="shrink-0 font-mono text-[11px] text-ink-faint">{detail}</span> : null}
     </>
   );
-  if (!openable) return <span className={className} title={item.path ?? item.fileId}>{body}</span>;
+  if (!openable) return <span className={className} title={label}>{body}</span>;
   return (
     <button
       type="button"
       className={className}
-      title={item.path ?? item.fileId}
+      title={label}
       onClick={() => {
         if ((item.kind === 'image' || item.kind === 'video') && item.path !== undefined) preview.openAttachment(item);
         else if (item.path !== undefined) preview.openFile(item.path);
@@ -183,25 +187,28 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
 function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: MediaThumbSize }) {
+  const { t } = useI18n();
   const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
   const source = useMemo(() => ({ client, sessionId: preview?.sessionId, url: item.url }), [client, preview?.sessionId, item.url]);
   const [failed, setFailed] = useState<typeof source | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [hostRef, visible] = useVisibleOnce();
-  const name = attachmentName(item);
+  const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
+  const name = attachmentName(item, undefined, fallback);
+  const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
   const body = failed === source ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
-    : !visible ? <span className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame} border border-hairline bg-paper`} />
+    : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
     : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
-    : <button type="button" onClick={() => { preview?.openImage(item.url, name); }} title={name} className="focus-visible:outline-2 focus-visible:outline-selected-ink"><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} ${THUMB_SIZE[size].frame} border border-hairline object-cover`} /></button>;
+    : <button type="button" onClick={() => { preview?.openImage(item.url, downloadName); }} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}</span>;
 }
 
 function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
   const { t } = useI18n();
   const detail = useTranscriptDetail({ agentId: item.detail.agentId, kind: 'attachment', id: item.detail.attachmentId });
-  const name = item.name ?? t('media.attachment');
+  const name = attachmentName(item, undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
   const client = useOptionalConnection()?.client;
   const preview = useMediaPreview();
   const [hostRef, visible] = useVisibleOnce();
@@ -265,7 +272,7 @@ export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef;
     const savedItem = {
       ...item,
       path: undefined,
-      name: item.name ?? (item.path === undefined ? undefined : basenameOf(item.path)),
+      name: item.name ?? safeImagePreviewName({ path: item.path }),
       fileId: item.fileId ?? (agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`),
     };
     return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} size={size} />;

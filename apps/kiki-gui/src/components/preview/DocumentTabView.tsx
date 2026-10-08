@@ -217,6 +217,7 @@ export function DocumentTabView({ source, sessionId, client: clientProp, onOpenP
             <PdfPageView
               client={client}
               assetUrl={asset.url}
+              sourceKey={JSON.stringify({ sessionId: sessionId ?? null, source: documentSource })}
               page={page}
               name={name}
               onPageCount={controller.setNumPages}

@@ -413,6 +413,7 @@ export { PreviewToggleButton } from './PreviewToggleButton';
 // ---------------------------------------------------------------------------
 
 import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts';
+import { safeImagePreviewName } from './imagePreviewName';
 
 function isTextPreview(mime: string, name: string): boolean {
   if (mime.startsWith('text/')) return true;
@@ -431,6 +432,7 @@ function AttachmentPreviewDialog({
 }) {
   const { t } = useI18n();
   const host = useHost();
+  const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
@@ -438,8 +440,11 @@ function AttachmentPreviewDialog({
   const [failedUrl, setFailedUrl] = useState<string>();
   const viewable = item.kind !== 'file' || /^(?:image|video|audio)\//.test(item.mime ?? '') || item.mime === 'application/pdf' || /\.pdf$/i.test(item.name ?? '') || isTextPreview(item.mime ?? '', item.name ?? '');
   const load = useSessionMedia(item, sessionId, viewable, false, attempt);
-  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  const downloadName = safeImagePreviewName({ name: item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: item.path });
   const title = t('preview.openFile', { name });
+  const imageSurface = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+  const imageActionLabel = t('media.viewImage');
   useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
   const download = async () => {
     if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined))) return;
@@ -481,7 +486,17 @@ function AttachmentPreviewDialog({
   } else if (load.status === 'failed' || failedUrl === load.url) {
     body = <MediaLoadFailure name={name} decode={load.status === 'ready'} onRetry={() => { setFailedUrl(undefined); setAttempt((value) => value + 1); }} />;
   } else if (load.mime.startsWith('image/')) {
-    body = <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full object-contain" />;
+    body = (
+      <button
+        type="button"
+        title={imageActionLabel}
+        aria-label={imageActionLabel}
+        onClick={() => { preview?.openImage(load.url, downloadName); }}
+        className="block max-h-[72vh] max-w-full overflow-hidden rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+      >
+        <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full object-contain" />
+      </button>
+    );
   } else if (load.mime.startsWith('video/')) {
     body = <video src={load.url} controls onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full" />;
   } else if (load.mime.startsWith('audio/')) {
@@ -491,7 +506,7 @@ function AttachmentPreviewDialog({
   } else if (isTextPreview(load.mime, name)) {
     const text = new TextDecoder().decode(load.bytes);
     body = load.bytes.byteLength > 1024 * 1024
-      ? <div className="h-[72vh] min-h-0 w-full overflow-hidden rounded-lg border border-hairline bg-paper"><CodeEditor key={load.url} path={name} value={text} generation={attempt} readOnly onChange={() => {}} ariaLabel={title} /></div>
+      ? <div className="h-[72vh] min-h-0 w-full overflow-hidden rounded-lg border border-hairline bg-paper"><CodeEditor key={`${name}:${attempt}`} path={name} value={text} generation={attempt} readOnly onChange={() => {}} ariaLabel={title} /></div>
       : <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3"><pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre></div>;
   } else {
     body = (
@@ -508,7 +523,9 @@ function AttachmentPreviewDialog({
       ariaLabel={title}
       overlayId="session-attachment-preview"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
-      panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]"
+      panelClassName={imageSurface
+        ? 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden outline-none'
+        : 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]'}
     >
       <header className="mb-3 flex shrink-0 items-center gap-3">
         <div className="min-w-0 flex-1">

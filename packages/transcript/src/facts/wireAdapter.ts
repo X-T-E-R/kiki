@@ -3,7 +3,7 @@ import { CompactionProjection, type CompactionProjectionCheckpoint } from './com
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
-import { sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
+import { mediaUrlFromPart, parseDaemonFileRefFileId, sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
 import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
@@ -2680,15 +2680,15 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined): PendingS
   const ref = key === undefined ? objectOf(value?.['source']) : nested;
   const name = stringOf(attachment?.['name']) ?? stringOf(ref?.['name']) ?? stringOf(value?.['name']) ?? stringOf(resourceLink?.['name']);
   const size = numberOf(attachment?.['size']) ?? numberOf(ref?.['size']) ?? numberOf(value?.['size']) ?? numberOf(resourceLink?.['size']);
-  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(value?.['mimeType'])
+  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(ref?.['media_type']) ?? stringOf(value?.['mimeType'])
     ?? stringOf(resourceLink?.['mimeType']) ?? (kind === undefined ? undefined : `${kind}/*`);
   const fileId = stringOf(attachment?.['fileId']) ?? stringOf(attachment?.['file_id'])
-    ?? stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
+    ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']) ?? stringOf(value?.['file_id']);
   if (kind === undefined || mimeType === undefined) return undefined;
   if (fileId !== undefined) return { kind, mediaType: mimeType, source: { kind: 'session_media', fileId }, name, size };
-  const url = stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
+  const url = mediaUrlFromPart(value)?.url ?? stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
   if (url === undefined) return { kind, mediaType: mimeType, source: undefined, name, size };
-  const daemonRef = sessionMediaIdFromBlobUrl(url) ?? /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
+  const daemonRef = sessionMediaIdFromBlobUrl(url) ?? parseDaemonFileRefFileId(url);
   return {
     kind,
     mediaType: mimeType,

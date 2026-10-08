@@ -63,6 +63,9 @@ import type {
 } from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  mediaUrlFromPart,
+  parseDaemonFileRefFileId,
+  sessionMediaIdFromBlobUrl,
   releaseToolFramePayload,
   taskNotificationFrameId,
   type AgentRef,
@@ -2044,13 +2047,13 @@ function contentPartMedia(value: unknown): LiveContentMedia | undefined {
   const type = typeof part['type'] === 'string' ? part['type'] : undefined;
   const attachment = objectRecord(part['attachment']);
   const nestedKey = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : type === 'audio_url' ? 'audioUrl' : undefined;
-  const nested = nestedKey === undefined ? undefined : objectRecord(part[nestedKey]);
+  const nested = nestedKey === undefined ? objectRecord(part['source']) : objectRecord(part[nestedKey]);
   const nestedAttachment = objectRecord(nested?.['attachment']);
   const metadata = nestedAttachment ?? attachment;
   const fileId = stringValue(metadata?.['fileId']) ?? stringValue(metadata?.['file_id'])
-    ?? stringValue(nested?.['id']) ?? stringValue(part['fileId']);
+    ?? stringValue(nested?.['fileId']) ?? stringValue(nested?.['file_id']) ?? stringValue(part['fileId']);
   const mimeType = stringValue(metadata?.['mimeType']) ?? stringValue(metadata?.['mediaType'])
-    ?? stringValue(nested?.['mimeType']);
+    ?? stringValue(nested?.['mimeType']) ?? stringValue(nested?.['media_type']);
   const kind = type === 'image_url' || type === 'image' ? 'image'
     : type === 'video_url' || type === 'video' ? 'video'
       : type === 'audio_url' || type === 'audio' ? 'audio' : undefined;
@@ -2063,14 +2066,15 @@ function contentPartMedia(value: unknown): LiveContentMedia | undefined {
     };
   }
   if (kind === undefined) return undefined;
-  const url = stringValue(nested?.['url']);
-  const source = fileId === undefined
+  const url = mediaUrlFromPart(part)?.url ?? stringValue(nested?.['url']);
+  const managedId = fileId ?? (url === undefined ? undefined : sessionMediaIdFromBlobUrl(url) ?? parseDaemonFileRefFileId(url));
+  const source = managedId === undefined
     ? url === undefined ? undefined : { kind: 'url' as const, url }
-    : { kind: 'session_media' as const, fileId };
+    : { kind: 'session_media' as const, fileId: managedId };
   return {
     mediaType: mimeType ?? `${kind}/*`,
     source,
-    name: stringValue(metadata?.['name']) ?? stringValue(nested?.['name']),
+    name: stringValue(metadata?.['name']) ?? stringValue(nested?.['name']) ?? stringValue(part['name']),
     size: numberValue(metadata?.['size']) ?? numberValue(nested?.['size']),
   };
 }

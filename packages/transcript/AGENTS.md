@@ -12,6 +12,10 @@ The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `Trans
 
 `full_compaction.begin/cancel/complete` and `context.apply_compaction` project through one lifecycle owner in live binding and cold replay. A queued manual intent is separate from an automatic run, and its running/committed states upsert the same marker. Only `context.apply_compaction` confirms success; finishing a cold replay marks unfinished operations interrupted, while live attachment restores their pre-finalization checkpoint state. New cancel records retain an optional failure reason; old cancel records cannot distinguish failure from cancellation. Projection checkpoints written before this lifecycle must be invalidated by the server owner; never rewrite source wire records.
 
+## Media facts
+
+Native `assistant.delta` events may carry optional `part` and `partId` in addition to the legacy text `delta`. The shared schema lives in `packages/protocol/src/message.ts` and mirrors the engine's `ContentPart` field names (`imageUrl`, `audioUrl`, `videoUrl`). Media uses an empty text delta; streamed and durable `content.part` records retain the same part identity so snapshots and duplicate delivery do not append another image. Live and cold readers treat a provider URL's `id` as a provider reference, not a session file ID; the original part remains in canonical wire. Only attachment `fileId`/`file_id`, canonical file sources, `kimi-file://` and existing saved blob references select the authenticated session-media route. Base64 sources and ordinary image URLs stay URL sources; filenames come from actual metadata, not their URL payload.
+
 ## Plan content
 
 Plan content is a recorded fact too: each ExitPlanMode review submission offloads the document to `agents/<agentId>/plan/<planId>/v<N>.md` and persists a reference-only `plan.revision` record (`{id, version, path, sha256, bytes}`), which projects — live and cold — to a `plan.revision` marker and the `modes.plan` badge (`{reviewPath, version}`).

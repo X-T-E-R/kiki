@@ -261,6 +261,42 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getAttachment('media-step.media-tool.att1')).toMatchObject({ mediaType: 'application/octet-stream', source: { kind: 'session_media', fileId: 'f_live_resource' } });
   });
 
+  it('keeps provider image references distinct from managed files in live and cold, with idempotent media frames', () => {
+    const live = new AgentTranscript('main');
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    live.apply(adapter.map(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } })));
+    live.apply(adapter.map(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'image-step' })));
+    const parts = [
+      { type: 'image_url', imageUrl: { url: 'https://example.test/answer.png', id: 'provider-reference', name: 'answer.png', mimeType: 'image/png' } },
+      { type: 'image_url', imageUrl: { url: 'kimi-file://stored-image', id: 'provider-reference', name: 'saved.png', mimeType: 'image/png' } },
+      { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' }, name: 'inline.png' },
+    ];
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const wire = new TranscriptWireAdapter('main');
+    reducer.apply(wire.add({ type: 'turn.prompt', turnId: 0, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Draw' }] }));
+    reducer.apply(wire.add({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '0', step: 1, uuid: 'image-step' } }));
+    parts.forEach((part, index) => {
+      const partId = `image-${index}`;
+      const event = ev({ type: 'assistant.delta', turnId: 0, step: 1, stepId: 'image-step', partId, delta: '', part });
+      live.apply(adapter.map(event));
+      live.apply(adapter.map(event));
+      reducer.apply(wire.add({ type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', step: 1, stepUuid: 'image-step', uuid: partId, part } }));
+      expect(live.getAttachment(`${partId}.att1`)).toMatchObject({
+        name: ['answer.png', 'saved.png', 'inline.png'][index],
+        source: [
+          { kind: 'url', url: 'https://example.test/answer.png' },
+          { kind: 'session_media', fileId: 'stored-image' },
+          { kind: 'url', url: 'data:image/png;base64,iVBORw0KGgo=' },
+        ][index],
+      });
+      expect(cold.getAttachment(`${partId}.att1`)?.source).toEqual(live.getAttachment(`${partId}.att1`)?.source);
+      expect(cold.getAttachment(`${partId}.att1`)?.name).toEqual(live.getAttachment(`${partId}.att1`)?.name);
+    });
+    expect(turnOps('t0', live.getItems()).steps[0]?.frames).toHaveLength(3);
+    expect(turnOps('t0', cold.getItems()).steps[0]?.frames).toHaveLength(3);
+  });
+
   it('joins recorder media through the real session store into matching live and cold attachments', async () => {
     const home = await mkdtemp(join(tmpdir(), 'acp-media-joined-'));
     try {

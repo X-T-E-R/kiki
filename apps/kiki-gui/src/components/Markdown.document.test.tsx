@@ -124,7 +124,7 @@ it('does not retain an image from the previous connection while the next one loa
     containers.push(container);
     const root = createRoot(container);
     roots.push(root);
-    const image = () => <MarkdownFileImage src="./assets/diagram.png" documentDirectory="/work/docs" />;
+    const image = () => <I18nProvider><MarkdownFileImage src="./assets/diagram.png" documentDirectory="/work/docs" /></I18nProvider>;
     await act(async () => { root.render(image()); });
     expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:first-host');
 
@@ -160,4 +160,22 @@ it('renders Mermaid as an inert image and leaves invalid diagrams as code', asyn
     createObjectURL.mockRestore();
     revokeObjectURL.mockRestore();
   }
+});
+
+
+it('shows timeline data and URL images without weakening link or HTML sanitization', async () => {
+  const urls = [
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE1cAAAAASUVORK5CYII=',
+    'data:image/jpeg;base64,/9j/2Q==',
+    'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22/%3E',
+    'https://example.test/image.png',
+    'blob:example-image',
+  ];
+  const container = await render(urls.map((url) => `![diagram](${url})`).join('\n\n') + '\n\n[unsafe](javascript:alert(1))\n\n<img src="javascript:alert(1)" onerror="alert(1)"><script>alert(1)</script>');
+  expect([...container.querySelectorAll('img')].map((image) => image.getAttribute('src')).filter(Boolean)).toEqual(urls);
+  expect(container.textContent).not.toContain('diagram [blocked]');
+  expect(container.textContent).toContain('unsafe [blocked]');
+  expect(container.textContent).toContain('[Image blocked:');
+  expect(container.querySelector('script, [onerror], a[href^="javascript:"]')).toBeNull();
+  expect(readHostFileBytes).not.toHaveBeenCalled();
 });

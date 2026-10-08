@@ -61,6 +61,7 @@ vi.mock('../state/connection', async (importOriginal) => {
       const file = {
         '/work/shots/screen.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
         '/work/clips/intro.mp4': { bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), mime: 'video/mp4' },
+        '/work/audio/sample.mp3': { bytes: new Uint8Array([73, 68, 51, 3]), mime: 'audio/mpeg' },
         '/work/bundles/release.zip': { bytes: new Uint8Array([80, 75, 3, 4]), mime: 'application/zip' },
       }[path];
       return file === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(file);
@@ -1212,6 +1213,82 @@ describe('PreviewWorkspace media tabs', () => {
     expect(panel.querySelector('[data-download-file]')).not.toBeNull();
     expect(panel.querySelector('[data-open-default-app]')).toBeNull();
     expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+  });
+
+  it('plays common audio files with native controls from the original bytes', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/sample.mp3" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/audio/sample.mp3');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/sample.mp3"]')!;
+    const audio = panel.querySelector<HTMLAudioElement>('audio[data-preview-audio]')!;
+    expect(audio.hasAttribute('controls')).toBe(true);
+    expect(audio.getAttribute('src')).toBe('blob:mock');
+    expect(panel.querySelector('[data-audio-meta]')?.textContent).toBe('4 B');
+    expect(panel.querySelector('[data-download-file]')).not.toBeNull();
+    expect(panel.querySelector('[data-open-default-app]')).toBeNull();
+    expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+  });
+
+  it('keeps a real audio read failure visible and retries the original read', async () => {
+    const readHostFileBytes = vi.fn()
+      .mockRejectedValueOnce(new Error('read failed'))
+      .mockResolvedValue({ bytes: new Uint8Array([1, 2]), mime: 'audio/wav' });
+    connectionMock.activeClient = { readHostFileBytes };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/retry.wav" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/audio/retry.wav');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/retry.wav"]')!;
+    expect(panel.querySelector('audio[data-preview-audio]')).toBeNull();
+    expect(panel.querySelector('[data-preview-audio-retry]')).not.toBeNull();
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[data-preview-audio-retry]')!.click();
+      await Promise.resolve();
+    });
+    expect(readHostFileBytes).toHaveBeenCalledTimes(2);
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
+  });
+
+  it('drops old audio bytes before a client or scope change resolves', async () => {
+    let resolveSecond!: (value: { bytes: Uint8Array; mime: string }) => void;
+    const firstClient = { readHostFileBytes: vi.fn(async () => ({ bytes: new Uint8Array([1]), mime: 'audio/mpeg' })) };
+    const secondClient = {
+      readHostFileBytes: vi.fn(() => new Promise<{ bytes: Uint8Array; mime: string }>((resolve) => { resolveSecond = resolve; })),
+    };
+    connectionMock.activeClient = firstClient;
+    const probe = makeRoot();
+    const view = () => (
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/scope-change.mp3" />
+      </MediaPreviewProvider>
+    );
+    await renderSettled(probe.root, view());
+    await openFile(probe.container, '/work/audio/scope-change.mp3');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/scope-change.mp3"]')!;
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
+
+    connectionMock.scopeId = 'ssh:remote-2';
+    connectionMock.activeClient = secondClient;
+    await renderSettled(probe.root, view());
+    expect(panel.querySelector('audio[data-preview-audio]')).toBeNull();
+    expect(panel.querySelector('[data-preview-audio-retry]')).toBeNull();
+    await act(async () => {
+      resolveSecond({ bytes: new Uint8Array([2]), mime: 'audio/mpeg' });
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
   });
 
   it.each([['local', true], ['ssh:remote-1', false]] as const)(

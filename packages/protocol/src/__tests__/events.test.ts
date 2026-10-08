@@ -99,6 +99,13 @@ describe('events / display re-exports', () => {
     ).toBe(true);
   });
 
+  it('preserves native assistant media without converting it into a text delta', () => {
+    const event = { type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-image', partId: 'part-image', delta: '',
+      part: { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png' } } };
+    expect(assistantDeltaEventSchema.parse(event)).toEqual(event);
+    expect(agentEventSchema.parse(event)).toEqual(event);
+  });
+
   it('preserves legacy and step-owned assistant and thinking deltas', () => {
     expect(
       assistantDeltaEventSchema.parse({

@@ -99,7 +99,7 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
   const media: MediaRef[] = [];
   for (const part of content) {
     if (part.type === 'image' || part.type === 'video') {
-      media.push(refFromSource(part.type, part.source));
+      media.push({ ...refFromSource(part.type, part.source), name: part.name });
     } else if (part.type === 'file') {
       media.push({
         kind: 'file',
@@ -529,7 +529,7 @@ export function resolveFileHref(href: string, cwd: string | undefined): string |
   return resolveFileReference(href, cwd)?.path;
 }
 
-export type PreviewKind = 'image' | 'markdown' | 'text' | 'video' | 'pdf' | 'office' | 'binary';
+export type PreviewKind = 'image' | 'markdown' | 'text' | 'video' | 'audio' | 'pdf' | 'office' | 'binary';
 export type DocumentPreviewFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
@@ -539,11 +539,12 @@ const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx']);
 // Common video containers. Playback still depends on the codecs the runtime's
 // HTML5 stack ships; an unplayable one degrades to the download fallback.
 const VIDEO_EXTS = new Set(['mp4', 'm4v', 'webm', 'mov', 'mkv', 'avi', 'mpg', 'mpeg', '3gp', 'ogv']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus']);
 const TEXT_EXTS = new Set([
   'txt', 'log', 'csv', 'tsv', 'json', 'jsonc', 'jsonl', 'xml', 'yml', 'yaml', 'toml',
   'ini', 'cfg', 'conf', 'env', 'properties', 'lock',
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts', 'css', 'scss', 'less',
-  'html', 'htm', 'vue', 'svelte', 'astro',
+  'html', 'htm', 'xhtml', 'vue', 'svelte', 'astro',
   'py', 'pyi', 'rb', 'go', 'rs', 'java', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs',
   'swift', 'kt', 'kts', 'm', 'mm', 'php', 'pl', 'pm', 'r', 'lua', 'sql', 'graphql',
   'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
@@ -575,6 +576,7 @@ export function previewKindOf(path: string): PreviewKind {
   if (MARKDOWN_EXTS.has(ext)) return 'markdown';
   if (TEXT_EXTS.has(ext)) return 'text';
   if (VIDEO_EXTS.has(ext)) return 'video';
+  if (AUDIO_EXTS.has(ext)) return 'audio';
   if (PDF_EXTS.has(ext)) return 'pdf';
   if (OFFICE_EXTS.has(ext)) return 'office';
   // Extension-less files are usually scripts/config; the text view degrades

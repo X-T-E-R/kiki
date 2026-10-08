@@ -2851,11 +2851,12 @@ export class KikiClient {
   async documentPreview(
     sessionId: string,
     request: DocumentPreviewRequest,
+    signal?: AbortSignal,
   ): Promise<DocumentPreviewResponse> {
     return documentPreviewResponseSchema.parse(await this.memoryRequest<unknown>(
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/document-preview`,
-      { body: request },
+      { body: request, signal, ...this.readingOptions() },
     ));
   }
 

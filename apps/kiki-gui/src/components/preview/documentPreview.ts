@@ -97,42 +97,51 @@ export function useDocumentPreview(
   initial: { page?: number; sheet?: string } = {},
 ): DocumentPreviewController {
   const { locale } = useI18n();
-  const [state, setState] = useState<DocumentPreviewState>({ kind: 'loading' });
   const [cursor, setCursor] = useState<{ page?: number; sheet?: string; range?: string; offset?: number }>(initial);
   const [attempt, setAttempt] = useState(0);
   const [numPages, setNumPages] = useState<number | undefined>(undefined);
 
   // The source is rebuilt on every parent render; keying the effect on its
   // contents keeps one fetch per actual source instead of one per render.
-  const sourceKey = useMemo(() => (source === undefined ? undefined : JSON.stringify(source)), [source]);
+  const sourceKey = source === undefined ? undefined : JSON.stringify(source);
+  const stableSource = useMemo(() => sourceKey === undefined ? undefined : JSON.parse(sourceKey) as DocumentPreviewSource, [sourceKey]);
+  const scope = useMemo(() => ({ client, sessionId, sourceKey, attempt }), [client, sessionId, sourceKey, attempt]);
+  const [scopedState, setScopedState] = useState<{ scope: typeof scope; value: DocumentPreviewState }>({ scope, value: { kind: 'loading' } });
+  const state: DocumentPreviewState = scopedState.scope === scope ? scopedState.value : { kind: 'loading' };
+  const setState = useCallback((next: DocumentPreviewState | ((current: DocumentPreviewState) => DocumentPreviewState)) => {
+    setScopedState((current) => {
+      const value = current.scope === scope ? current.value : { kind: 'loading' } as const;
+      return { scope, value: typeof next === 'function' ? next(value) : next };
+    });
+  }, [scope]);
 
-  useEffect(() => { setNumPages(undefined); }, [sourceKey]);
+  useEffect(() => { setNumPages(undefined); }, [client, sessionId, sourceKey]);
 
   useEffect(() => {
-    if (client === undefined || sessionId === undefined || source === undefined) {
+    if (client === undefined || sessionId === undefined || stableSource === undefined) {
       setState({
         kind: 'failed',
         message: locale === 'zh' ? '没有连接到这台电脑上的服务。' : 'Not connected to the service on this machine.',
       });
       return;
     }
-    let cancelled = false;
-    setState({ kind: 'loading' });
+    const abort = new AbortController();
+    setState((current) => current.kind === 'ready' ? current : { kind: 'loading' });
     const request: DocumentPreviewRequest = {
-      source,
+      source: stableSource,
       page: cursor.page,
       sheet: cursor.sheet,
       range: cursor.range,
       offset: cursor.offset,
     };
-    client.documentPreview(sessionId, request).then((response) => {
-      if (!cancelled) setState({ kind: 'ready', response });
+    client.documentPreview(sessionId, request, abort.signal).then((response) => {
+      if (!abort.signal.aborted) setState({ kind: 'ready', response });
     }, (error: unknown) => {
-      if (cancelled) return;
+      if (abort.signal.aborted) return;
       setState({ kind: 'failed', message: errorText(locale, error) });
     });
-    return () => { cancelled = true; };
-  }, [attempt, client, cursor.offset, cursor.page, cursor.range, cursor.sheet, locale, sessionId, source, sourceKey]);
+    return () => { abort.abort(); };
+  }, [client, cursor.offset, cursor.page, cursor.range, cursor.sheet, locale, sessionId, stableSource, setState]);
 
   const goTo = useCallback((next: { page?: number; sheet?: string; range?: string; offset?: number }) => {
     setCursor((previous) => ({ ...previous, ...next }));
@@ -172,7 +181,7 @@ export function useDocumentPreview(
       }
       return current;
     });
-  }, [numPages]);
+  }, [numPages, setState]);
 
   const retry = useCallback(() => { setAttempt((value) => value + 1); }, []);
 

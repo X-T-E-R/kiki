@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ToolInputDisplaySchema, type ToolInputDisplay } from './display';
-import { messageContentSchema, type MessageContent } from './message';
+import { assistantStreamPartSchema, messageContentSchema, type AssistantStreamPart, type MessageContent } from './message';
 import {
   sessionPendingInteractionSchema,
   sessionSchema,
@@ -827,7 +827,9 @@ export interface AssistantDeltaEvent {
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;
+  readonly partId?: string;
   readonly delta: string;
+  readonly part?: AssistantStreamPart;
 }
 
 export interface HookResultEvent {
@@ -1973,7 +1975,9 @@ export const assistantDeltaEventSchema = z.object({
   turnId: z.number(),
   step: z.number().optional(),
   stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 }) satisfies z.ZodType<AssistantDeltaEvent>;
 
 export const hookResultEventSchema = z.object({

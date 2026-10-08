@@ -1611,6 +1611,7 @@ export const zh = {
 
   // ---- media + file preview ----
   'media.attachment': '附件',
+  'media.image': '图片',
   'media.viewImage': '查看图片',
   'media.download': '下载',
   'media.zoomFit': '适应屏幕',

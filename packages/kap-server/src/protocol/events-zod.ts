@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assistantStreamPartSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
@@ -849,6 +850,7 @@ export const assistantDeltaEventSchema = z.object({
   stepId: z.string().optional(),
   partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 }) satisfies z.ZodType<AssistantDeltaPayload>;
 
 export const hookResultEventSchema = z.object({

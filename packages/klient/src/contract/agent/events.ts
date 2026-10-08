@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { assistantStreamPartSchema } from '@kiki/protocol';
 
 import type { EventRegistration } from '../types.js';
 import { modelSwitchQueuedEventSchema, modelSwitchStatusEventSchema } from './modelSwitch.js';
@@ -105,7 +106,11 @@ export const assistantDeltaEventSchema = z.object({
   type: z.literal('assistant.delta'),
   time: z.number().optional(),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 });
 
 export const thinkingDeltaEventSchema = z.object({

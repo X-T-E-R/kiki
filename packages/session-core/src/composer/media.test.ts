@@ -30,6 +30,16 @@ describe('mediaFromContentParts', () => {
     ]);
   });
 
+  it('preserves real image filenames across inline and managed protocol sources', () => {
+    expect(mediaFromContentParts([
+      { type: 'image', name: 'answer.png', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'image', name: 'saved.jpg', source: { kind: 'session_media', file_id: 'file-example' } },
+    ])).toEqual([
+      { kind: 'image', name: 'answer.png', url: 'data:image/png;base64,aGVsbG8=', mime: 'image/png' },
+      { kind: 'image', name: 'saved.jpg', fileId: 'file-example' },
+    ]);
+  });
+
   it('passes url sources through (snapshot projects user images as data: URLs)', () => {
     const content: Message['content'] = [
       { type: 'image', source: { kind: 'url', url: 'data:image/jpeg;base64,/9j/' } },
@@ -336,6 +346,10 @@ describe('previewKindOf / extOf', () => {
     expect(previewKindOf('/x/clip.mp4')).toBe('video');
     expect(previewKindOf('/x/clip.WEBM')).toBe('video');
     expect(previewKindOf('C:/x/take.mov')).toBe('video');
+    for (const extension of ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus']) {
+      expect(previewKindOf(`/x/sound.${extension}`)).toBe('audio');
+    }
+    expect(previewKindOf('/x/sound.OPUS')).toBe('audio');
     expect(previewKindOf('/x/guide.PDF')).toBe('pdf');
     expect(previewKindOf('/x/report.docx')).toBe('office');
     expect(previewKindOf('/x/table.xlsx')).toBe('office');

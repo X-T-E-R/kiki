@@ -1628,6 +1628,7 @@ export const en = {
 
   // ---- media + file preview ----
   'media.attachment': 'Attachment',
+  'media.image': 'Image',
   'media.viewImage': 'View image',
   'media.download': 'Download',
   'media.zoomFit': 'Fit to screen',

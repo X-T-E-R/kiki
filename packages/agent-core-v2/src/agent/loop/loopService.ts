@@ -1389,8 +1389,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
           case 'image_url':
           case 'audio_url':
-          case 'video_url':
+          case 'video_url': {
+            onResponseEvent();
+            const partId = accumulate(part);
+            void this.dispatcher.dispatch(
+              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part }),
+            );
             return;
+          }
           case 'function': {
             onResponseEvent();
             forceContentPartBoundary = true;
@@ -1434,7 +1440,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         const unused = [...partialContent];
         return content.map((part) => {
           const index = unused.findIndex((entry) => entry.part.type === part.type);
-          if (index === -1) return { id: randomUUID(), part };
+          if (index === -1) {
+            const id = randomUUID();
+            if (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') {
+              void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: id, delta: '', part }));
+            }
+            return { id, part };
+          }
           const [entry] = unused.splice(index, 1);
           return { id: entry!.id, part };
         });
