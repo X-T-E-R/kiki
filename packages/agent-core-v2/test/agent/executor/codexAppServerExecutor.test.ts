@@ -539,7 +539,7 @@ describe('Codex app-server external executor', () => {
     await harness.session.shutdown();
   });
 
-  it.each(['missing facts', 'other item', 'other turn', 'other thread'] as const)(
+  it.each(['missing facts', 'other item', 'other turn', 'other thread', 'request other thread'] as const)(
     'does not guess Codex fileChange paths from grantRoot with %s', async (mismatch) => {
       const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async () => undefined);
       const harness = createHarness({ permissionGate, notifications: mismatch === 'missing facts' ? [] : [{ method: 'item/started', params: {
@@ -549,14 +549,16 @@ describe('Codex app-server external executor', () => {
           changes: [{ path: 'C:/workspace/allowed.ts', kind: 'add', diff: 'neutral' }],
         },
       } }], serverRequest: { method: 'item/fileChange/requestApproval', params: {
-        threadId: 'thread-new', turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
+        threadId: mismatch === 'request other thread' ? 'thread-other' : 'thread-new',
+        turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
       } } });
       Object.assign(harness.context.binding, { permissionMode: 'yolo' });
       const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
       await run.completion;
       expect(permissionGate).not.toHaveBeenCalled();
       expect(harness.serverResults).toEqual([{ error: { code: -32602,
-        message: 'File approval has no matching fileChange paths for the active item and turn' } }]);
+        message: mismatch === 'request other thread' ? 'File approval belongs to a different thread'
+          : 'File approval has no matching fileChange paths for the active item and turn' } }]);
       await harness.session.shutdown();
     },
   );

@@ -705,6 +705,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     responder: CodexServerRequestResponder,
     active: PermissionContext,
   ): Promise<void> {
+    if (request.params['threadId'] !== this.#threadId) {
+      await responder.respondError(-32602, 'File approval belongs to a different thread');
+      return;
+    }
     const decisions = ['accept', 'acceptForSession', 'decline', 'cancel'].map((decision) => ({
       id: decision,
       raw: decision,
