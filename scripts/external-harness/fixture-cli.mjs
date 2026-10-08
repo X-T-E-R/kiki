@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 async function invokeHook(payload) {
@@ -32,6 +33,36 @@ for await (const line of createInterface({ input: process.stdin })) {
   }
   if (input.message.content === 'malformed') { process.stdout.write('not-json\n'); continue; }
   if (input.message.content === 'crash') process.exit(0);
+  if (input.message.content.startsWith('vendor-')) {
+    const write = input.message.content === 'vendor-write';
+    const wide = input.message.content === 'vendor-command-wide';
+    const command = 'echo approved> command-executed.txt';
+    const path = resolve('fixture-report.md');
+    const parameters = write ? { TargetFile: path, CodeContent: 'approved report' } : { CommandLine: command, Cwd: process.cwd() };
+    const name = write ? 'write_to_file' : 'run_command';
+    const resource = write ? `write_file(${path})` : `command(${command})`;
+    const tool = { step_type: 'tool', step_index: turns, tool_name: name, tool_info: { parameters } };
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
+    let result = {};
+    try { result = await invokeHook({ conversationId: conversation, stepIdx: turns, workspacePaths: [process.cwd()], toolCall: { name, args: parameters } }); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Independent downstream resource check, not merely the hook's allow decision.
+    // This models the documented override contract; installed CLI consumption is
+    // established separately by the real consumer, not inferred from this fixture.
+    const allowed = result.decision !== 'deny' && (wide || result.decision === 'allow' && result.permissionOverrides?.includes(resource));
+    if (allowed) {
+      if (write) await writeFile(path, parameters.CodeContent);
+      else await new Promise((done, reject) => {
+        const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
+        const argv = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
+        const child = spawn(shell, argv, { stdio: 'ignore' });
+        child.once('error', reject); child.once('close', code => code === 0 ? done() : reject(Error('Fixture command failed')));
+      });
+    }
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: allowed ? 'DONE' : 'ERROR', tool_info: { parameters, output: allowed ? 'executed' : undefined, error: allowed ? undefined : 'Vendor resource permission denied' } } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: allowed ? 'resource-approved' : '', num_turns: turns, denied_actions: allowed ? undefined : [{ action: write ? 'write_file' : 'command' }] } }) + '\n');
+    continue;
+  }
   if (input.message.content.startsWith('hook-')) {
     const parameters = { CommandLine: 'Get-ChildItem -Path "C:/example/allowed" | Select-Object Name', Cwd: process.cwd() };
     const tool = { step_type: 'tool', step_index: turns, tool_name: 'run_command', tool_info: { parameters } };

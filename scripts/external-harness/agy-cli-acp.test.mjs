@@ -623,3 +623,61 @@ test('Windows registered hook command survives native shell quoting for exact no
     await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
   } finally { s.active = undefined; await channel.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('per-call resources cross downstream vendor command and write checks without retaining approval on clear', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-resources-'));
+  const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], stopProcess: async child => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(done => child.once('close', done)); child.stdin.end(); await exited;
+  } });
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-resources', workspace: { cwd: root, additionalDirectories: [] } };
+  let optionId = 'allow_once'; const calls = [];
+  const client = { notify: async () => {}, request: async (_method, request) => {
+    calls.push(request); return { outcome: { outcome: 'selected', optionId } };
+  } };
+  const open = async meta => (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': meta } })).sessionId;
+  const prompt = (id, text, meta) => b.prompt({ sessionId: id, prompt: [{ type: 'text', text }], _meta: { 'kiki.permission': meta } }, client);
+  try {
+    const id = await open(undefined);
+    await prompt(id, 'hello', undefined);
+    const pid = b.session(id).child.pid;
+    assert.equal((await prompt(id, 'vendor-command', permission)).stopReason, 'end_turn');
+    assert.equal((await readFile(join(root, 'command-executed.txt'), 'utf8')).trim(), 'approved');
+    optionId = 'allow_always';
+    assert.equal((await prompt(id, 'vendor-write', permission)).stopReason, 'end_turn');
+    assert.equal(await readFile(join(root, 'fixture-report.md'), 'utf8'), 'approved report');
+    assert.equal(calls.length, 2);
+    assert.notEqual(calls[0].toolCall.toolCallId, calls[1].toolCall.toolCallId);
+    assert.equal(b.session(id).child.pid, pid);
+    await rm(join(root, 'command-executed.txt'));
+    await assert.rejects(prompt(id, 'vendor-command', undefined), /AGY permission denied/);
+    assert.equal(calls.length, 2);
+    await assert.rejects(readFile(join(root, 'command-executed.txt')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    await b.cancel({ sessionId: id });
+
+    const rejectId = await open(permission);
+    optionId = 'reject_once';
+    await assert.rejects(prompt(rejectId, 'vendor-command-wide', permission), /AGY permission denied/);
+    await assert.rejects(readFile(join(root, 'command-executed.txt')), { code: 'ENOENT' });
+    await b.cancel({ sessionId: rejectId });
+
+    const inherit = { ...permission, override: undefined };
+    const inheritId = await open(inherit);
+    optionId = 'kiki.vendor_default';
+    assert.equal((await prompt(inheritId, 'vendor-command-wide', inherit)).stopReason, 'end_turn');
+    assert.equal((await readFile(join(root, 'command-executed.txt'), 'utf8')).trim(), 'approved');
+    await rm(join(root, 'command-executed.txt'));
+    await assert.rejects(prompt(inheritId, 'vendor-command', inherit), /AGY permission denied/);
+    await assert.rejects(readFile(join(root, 'command-executed.txt')), { code: 'ENOENT' });
+    await b.cancel({ sessionId: inheritId });
+
+    const oldId = await open(permission);
+    b.requestPermission = async () => ({ decision: 'allow' });
+    await assert.rejects(prompt(oldId, 'vendor-command', permission), /AGY permission denied/);
+    await assert.rejects(readFile(join(root, 'command-executed.txt')), { code: 'ENOENT' });
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});

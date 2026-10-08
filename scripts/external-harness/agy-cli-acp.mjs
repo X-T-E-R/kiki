@@ -31,6 +31,18 @@ export function canonicalTool(name, args, cwd) {
   return { name, kind: 'other', input: args };
 }
 
+/** Official PreToolUse resource strings for this call only; never a cached grant. */
+export function toolPermissionResources(name, args) {
+  let action; let target;
+  if (name === 'run_command') { action = 'command'; target = args.CommandLine; }
+  else if (['write_to_file', 'replace_file_content', 'multi_replace_file_content'].includes(name)) { action = 'write_file'; target = args.TargetFile; }
+  else if (name === 'view_file') { action = 'read_file'; target = args.AbsolutePath; }
+  else if (name === 'list_dir') { action = 'read_file'; target = args.DirectoryPath; }
+  else if (name === 'find_by_name') { action = 'read_file'; target = args.SearchDirectory; }
+  else if (name === 'grep_search') { action = 'read_file'; target = args.SearchPath; }
+  return action && typeof target === 'string' && target.length > 0 ? [`${action}(${target})`] : undefined;
+}
+
 export function promptText(blocks) {
   if (!Array.isArray(blocks) || blocks.some(b => b.type !== 'text' || typeof b.text !== 'string')) {
     throw new Error('AGY CLI accepts text prompts only; image/audio/resource blocks are unsupported');
@@ -115,9 +127,10 @@ export class AgyBridge {
       await this.audit(session, 'permission_decision', { toolCallId: id, decision: 'vendor_default' });
       return {};
     }
-    const allow = response?.outcome?.outcome === 'selected' && response.outcome.optionId === 'allow_once';
-    await this.audit(session, 'permission_decision', { toolCallId: id, decision: allow ? 'allow' : 'deny' });
-    return allow ? { decision: 'allow', reason: 'Approved by the current Kiki permission gate' }
+    const allow = response?.outcome?.outcome === 'selected' && ['allow_once', 'allow_always'].includes(response.outcome.optionId);
+    const permissionOverrides = allow ? toolPermissionResources(name, args) : undefined;
+    await this.audit(session, 'permission_decision', { toolCallId: id, decision: allow ? 'allow' : 'deny', permissionOverrides });
+    return allow ? { decision: 'allow', reason: 'Approved by the current Kiki permission gate', permissionOverrides }
       : reject('The current Kiki permission gate rejected or cancelled this action');
   }
 
