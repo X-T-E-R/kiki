@@ -99,6 +99,7 @@ export interface SystemReminderBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly variant?: string;
+  readonly ownerPromptId?: string;
   readonly disclosure?: unknown;
   /** The reminder's category and trigger facts, when its disclosure carries a known kind. */
   readonly category?: ReminderCategory;
@@ -133,6 +134,7 @@ export interface SystemBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly source?: string;
+  readonly ownerPromptId?: string;
   /** Task notifications: the background task the note is about. */
   readonly taskId?: string;
   /** Hook results: the event that produced it (`kiki:<harness>:<event>` for Kiki's own hooks). */

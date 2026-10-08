@@ -144,6 +144,7 @@ function reminderBlocks(
     createdAt,
     turnId,
     variant: origin?.variant,
+    ownerPromptId: origin?.ownerPromptId,
     disclosure: origin?.disclosure,
     category,
   }));
@@ -258,6 +259,7 @@ function classifiedTextToBlocks(input: {
           createdAt: input.createdAt,
           turnId: input.turnId,
           source: producerFromOrigin(classified.origin),
+          ownerPromptId: classified.origin?.kind === 'injection' ? classified.origin.ownerPromptId : undefined,
           taskId: classified.systemVariant === 'task' ? classified.origin?.taskId : undefined,
           hookEvent: classified.systemVariant === 'hook_result' ? classified.origin?.event : undefined,
         } satisfies SystemBlock);
@@ -2129,6 +2131,16 @@ function mergeTranscriptPromptBlocks(
       revision: prompt.revision,
     };
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
+    const owner = prompt.status === 'running' ? context.turns.get(prompt.promptId) : undefined;
+    if (owner !== undefined) {
+      const userIndex = next.findIndex((block) => block.kind === 'user' && block.turnId === undefined && isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
+      const turnStart = next.findIndex((block) => sameTurnId(blockTurnId(block), owner.turnId));
+      if (userIndex >= 0 && turnStart >= 0 && turnStart < userIndex) {
+        const user = next[userIndex] as UserBlock;
+        next.splice(userIndex, 1);
+        next.splice(turnStart, 0, { ...user, turnId: owner.turnId });
+      }
+    }
   }
   if (earlier.length > 0) next = [earlierPromptOutcomesBlock(earlier), ...next];
   return next;
@@ -2517,7 +2529,7 @@ export function agentTranscriptToBlocks(
         createdAt: (item as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ?? item.startedAt ?? '',
         turnId: item.turnId,
         contentSource: { kind: 'turn', id: item.turnId },
-        promptId: identity.promptId,
+        promptId: (item as { readonly promptId?: string }).promptId ?? identity.promptId,
         userMessageId: turnUserMessageId,
         media: mediaWithPresentation(mediaFromAttachmentIds(
           (item as { attachmentIds?: readonly string[] }).attachmentIds,
@@ -2792,7 +2804,9 @@ export function agentTranscriptToBlocks(
   const firstAt = timestampMs(firstTurn?.startedAt);
   for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
     const at = blockTimelineMs(marker)!;
-    if (firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
+    const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
+    const ownsLoadedPrompt = promptOwner !== undefined && withTaskBlocks.some((block) => isPromptIdentity(block, promptOwner));
+    if (!ownsLoadedPrompt && firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
     const owner = blockTurnId(marker);
     const ownerStart = owner === undefined ? -1 : withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), owner));
     const sourceTime = (block: Block) => 'frameId' in block && block.frameId !== undefined
@@ -2843,12 +2857,59 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(insertInteractionBlocks(
-    withSubagentEvents,
-    response.interactions ?? [],
-    response.agent_id,
-    previous,
-  ))));
+  const withInteractions = insertInteractionBlocks(withSubagentEvents, response.interactions ?? [], response.agent_id, previous);
+  return foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(
+    placePromptContextAfterUser(withInteractions, response.items),
+  )));
+}
+
+function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTranscriptProjectionSource['items']): Block[] {
+  const usersByPrompt = new Map<string, number[]>();
+  const usersByMessage = new Map<string, number[]>();
+  const openingUsers = new Map<string, number>();
+  const userTurns = new Set(items.flatMap((item) =>
+    item.kind === 'turn' && originFromTurnItem(item)?.kind === 'user' ? [item.turnId] : []));
+  const obstructedTurns = new Set<string>();
+  for (const [index, block] of blocks.entries()) {
+    const turnId = blockTurnId(block);
+    if (block.kind !== 'user') {
+      if (turnId !== undefined && block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) {
+        obstructedTurns.add(turnId);
+      }
+      continue;
+    }
+    const origin = originFromRecord({ origin: block.sourceOrigin });
+    if (origin !== undefined && origin.kind !== 'user') continue;
+    for (const [id, users] of [[block.promptId, usersByPrompt], [block.userMessageId, usersByMessage]] as const) {
+      if (id === undefined) continue;
+      const indices = users.get(id) ?? [];
+      indices.push(index);
+      users.set(id, indices);
+    }
+    if (turnId !== undefined && userTurns.has(turnId) && !openingUsers.has(turnId) && !obstructedTurns.has(turnId)) {
+      openingUsers.set(turnId, index);
+    }
+  }
+  const afterUser = new Map<number, Block[]>();
+  const moved = new Set<number>();
+  for (const [index, block] of blocks.entries()) {
+    if (block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) continue;
+    let host: number | undefined;
+    if (block.ownerPromptId !== undefined) {
+      const candidates = usersByPrompt.get(block.ownerPromptId) ?? usersByMessage.get(block.ownerPromptId) ?? [];
+      const sameTurn = candidates.filter((candidate) => block.turnId !== undefined && sameTurnId(blockTurnId(blocks[candidate]!), block.turnId));
+      host = candidates.length === 1 ? candidates[0] : sameTurn.length === 1 ? sameTurn[0] : undefined;
+    } else if (block.turnId !== undefined) {
+      host = openingUsers.get(block.turnId);
+    }
+    if (host === undefined || host <= index) continue;
+    const context = afterUser.get(host) ?? [];
+    const turnId = blockTurnId(blocks[host]!);
+    context.push(turnId === block.turnId ? block : { ...block, turnId });
+    afterUser.set(host, context);
+    moved.add(index);
+  }
+  return blocks.flatMap((block, index) => moved.has(index) ? [] : [block, ...(afterUser.get(index) ?? [])]);
 }
 
 /**

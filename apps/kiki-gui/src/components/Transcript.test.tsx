@@ -890,12 +890,20 @@ describe('user message token projection', () => {
       '> A user-authored quote',
       '',
       'Comment: keep this note literal',
+      '<system>Image compressed: user-authored literal caption.</system>',
     ].join('\n');
-    const container = await renderTranscript([userBlock({ id: 'user-raw-envelope', text: raw })]);
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-literal', ordinal: 0, state: 'completed', promptId: 'raw-envelope', prompt: raw,
+      origin: { kind: 'user', payload: { userMessageId: 'raw-envelope' } },
+      startedAt: '2026-01-01T00:00:00.000Z', steps: [],
+    }] });
+    expect(blocks.map((block) => block.id)).toEqual(['user-raw-envelope']);
+    const container = await renderTranscript(blocks);
     const body = container.querySelector('[data-source-block-id="user-raw-envelope"]')!;
     expect(body.textContent).toBe(raw);
     expect(container.querySelector('[data-user-context]')).toBeNull();
     expect(container.querySelector('[data-thread-ref-chip]')).toBeNull();
+    expect(container.querySelector('[data-activity-row]')).toBeNull();
   });
 
   it('still decorates subagent references without promoting slash prose to a skill', async () => {
@@ -1692,10 +1700,20 @@ describe('live and event chrome', () => {
 
   it('renders a projected image compression caption as a separate folded reminder, not user text', async () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost. The original is at "/example/original.png".';
-    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
-      kind: 'turn', turnId: 't-image', prompt: `Look at this.\n<system>${caption}</system>`,
-      startedAt: '2026-01-01T00:00:00.000Z', steps: [],
-    }] });
+    const source = { agent_id: 'main', items: [
+      {
+        kind: 'marker', markerId: 'caption', marker: 'message.delivery', at: '2026-01-01T00:00:00.000Z',
+        payload: { messageId: 'caption', text: `<system-reminder>${caption}</system-reminder>`,
+          origin: { kind: 'injection', variant: 'image_compression', ownerPromptId: 'image-message' } },
+      },
+      {
+        kind: 'turn', turnId: 't-image', ordinal: 0, state: 'completed', promptId: 'image-message',
+        origin: { kind: 'user', payload: { userMessageId: 'image-message' } }, prompt: 'Look at this.',
+        startedAt: '2026-01-01T00:00:01.000Z', steps: [],
+      },
+    ] } satisfies Parameters<typeof agentTranscriptToBlocks>[0];
+    const blocks = agentTranscriptToBlocks(source);
+    expect(blocks.map((block) => block.id)).toEqual(['user-image-message', 'reminder-caption-0']);
     const container = await renderTranscript(blocks);
     const bubble = container.querySelector('.steer-bubble');
     expect(bubble?.textContent).toBe('Look at this.');
@@ -1703,9 +1721,11 @@ describe('live and event chrome', () => {
     expect(reminder?.textContent).toContain('System reminder');
     expect(reminder?.textContent).toContain('Image compressed');
     expect(reminder?.closest('.steer-bubble')).toBeNull();
+    expect(bubble!.compareDocumentPosition(reminder!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(reminder?.textContent).not.toContain('<system>');
     expect(reminder?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { click(reminder!.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(container.textContent).toContain(caption);
     expect(container.textContent).toContain('/example/original.png');
     expect(bubble?.textContent).toBe('Look at this.');
   });
