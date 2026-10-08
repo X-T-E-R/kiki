@@ -27,6 +27,7 @@ export function register(api) {
     if (args.crash) process.exit(7);
     if (args.cacheDir) return { output: process.env.KIKI_CACHE_DIR ?? '' };
     if (args.context) return { output: JSON.stringify({ workspaceRoot: ctx.workspaceRoot, approvedPaths: ctx.approvedPaths, imageIn: ctx.imageIn, settings: ctx.settings }) };
+    if (args.output !== undefined) return { output: args.output };
     if (args.image) return { output: [{ type: 'text', text: 'preview' }, { type: 'image_url', imageUrl: { url: 'data:image/png;base64,aGVsbG8=' } }] };
     if (args.invalidImage) return { output: [{ type: 'image_url', imageUrl: { url: 'https://example.com/image.png' } }] };
     if (args.large) return { output: `${'x'.repeat(16 * 1024 * 1024)}😀tail` };

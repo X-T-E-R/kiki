@@ -59,12 +59,13 @@ async function prepareToolResult(id, result, signal) {
       truncated = true;
     }
   } else if (Array.isArray(output)) {
+    const imageChars = output.reduce((sum, part) => sum + (part?.type === 'image_url' && typeof part.imageUrl?.url === 'string' ? part.imageUrl.url.length : 0), 0);
     const parts = [];
     for (const part of output) {
       signal.throwIfAborted();
       if (!(part?.type === 'text' && typeof part.text === 'string') &&
         !(part?.type === 'image_url' && typeof part.imageUrl?.url === 'string' && /^data:image\/(?:png|jpeg|webp);base64,/.test(part.imageUrl.url))) throw new Error('Plugin returned an invalid tool result');
-      if (part?.type === 'image_url' && typeof part.imageUrl?.url === 'string' && part.imageUrl.url.length > IMAGE_PREVIEW_CHARS) {
+      if (part.type === 'image_url' && imageChars > IMAGE_PREVIEW_CHARS) {
         const url = part.imageUrl.url;
         const match = /^data:(image\/(?:png|jpeg|webp));base64,/.exec(url);
         if (match === null) throw new Error('Plugin returned an invalid tool result image URL');
@@ -77,10 +78,10 @@ async function prepareToolResult(id, result, signal) {
       } else parts.push(part);
     }
     output = parts;
-    const serialized = JSON.stringify(output);
+    const serialized = JSON.stringify(parts.filter((part) => part.type === 'text'));
     if (serialized.length > 2 * OUTPUT_PREVIEW_CHARS) {
       const saved = await saveOutput(id, serialized, 'application/json', signal);
-      output = outputNotice(saved);
+      output = [{ type: 'text', text: outputNotice(saved) }, ...parts.filter((part) => part.type === 'image_url')];
       truncated = true;
     }
   } else throw new Error('Plugin returned an invalid tool result');

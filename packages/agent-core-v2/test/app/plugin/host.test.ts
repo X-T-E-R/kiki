@@ -105,6 +105,55 @@ describe('plugin host lifecycle', () => {
     } finally { host.stop(); }
   });
 
+  it('preserves medium mixed image parts independently of the text budget', async () => {
+    const host = await readyHost();
+    const attachment = await attachmentStore();
+    const data = Buffer.alloc(160 * 160 * 4);
+    let state = 0x12345678;
+    for (let i = 0; i < data.length; i += 1) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      data[i] = state & 255;
+    }
+    const png = await new Jimp({ width: 160, height: 160, data }).getBuffer('image/png');
+    const url = `data:image/png;base64,${png.toString('base64')}`;
+    expect(url.length).toBeGreaterThan(100_000);
+    expect(url.length).toBeLessThan(512 * 1024);
+    const image = { type: 'image_url', imageUrl: { url } } as const;
+    const preview = { type: 'text', text: 'Neutral image preview' } as const;
+    try {
+      for (const output of [[preview, image], [preview, image, image]]) {
+        await expect(host.execute('fixture_echo', { output }, new AbortController().signal)).resolves.toEqual({ output });
+      }
+      const smallPng = await new Jimp({ width: 8, height: 8, color: 0x4078c8ff }).getBuffer('image/png');
+      const smallOutput = [preview, { type: 'image_url', imageUrl: { url: `data:image/png;base64,${smallPng.toString('base64')}` } }];
+      await expect(host.execute('fixture_echo', { output: smallOutput }, new AbortController().signal)).resolves.toEqual({ output: smallOutput });
+      const result = await host.execute('fixture_echo', { output: [preview, image, image, image, image] }, new AbortController().signal, undefined, {}, { attachmentStore: attachment.store });
+      if (typeof result.output === 'string') throw new Error('Image parts were replaced by text');
+      const images = result.output.filter((part) => part.type === 'image_url');
+      expect(images).toHaveLength(4);
+      for (const part of images) {
+        const fileId = parseDaemonFileUrl(part.imageUrl.url)!.fileId;
+        const file = (await attachment.store.open(fileId))!;
+        expect(file.mediaType).toBe('image/png');
+        const bytes = await streamedBytes(file.stream());
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(createHash('sha256').update(png).digest('hex'));
+        const decoded = await Jimp.read(bytes);
+        expect([decoded.width, decoded.height]).toEqual([160, 160]);
+      }
+      const mixed = await host.execute('fixture_echo', { output: [image, ...Array.from({ length: 3 }, () => ({ type: 'text', text: 'x'.repeat(40_000) }))] }, new AbortController().signal, undefined, {}, { attachmentStore: attachment.store });
+      if (typeof mixed.output === 'string') throw new Error('Mixed image parts were replaced by text');
+      expect(mixed.output.filter((part) => part.type === 'image_url')).toEqual([image]);
+      const notice = mixed.output.find((part) => part.type === 'text');
+      if (notice?.type !== 'text') throw new Error('Missing text attachment notice');
+      const textId = parseDaemonFileUrl(/kimi-file:\/\/([^"\s]+)/.exec(notice.text)![0])!.fileId;
+      const textFile = (await attachment.store.open(textId))!;
+      const textParts = JSON.parse((await streamedBytes(textFile.stream())).toString()) as { text: string }[];
+      expect(textParts.map((part) => part.text)).toEqual(Array.from({ length: 3 }, () => 'x'.repeat(40_000)));
+    } finally { await host.stopAndWait(); await attachment.dispose(); }
+  });
+
   it('streams a legal large output completely with a preview while a same-host small call finishes', async () => {
     const host = await readyHost();
     const attachment = await attachmentStore();
