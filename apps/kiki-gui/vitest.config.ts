@@ -26,6 +26,7 @@ export default defineConfig({
   resolve: {
     alias: {
       zod: protocolZod,
+      '@kiki/protocol/agentName': fileURLToPath(new URL('../../packages/protocol/src/agentName.ts', import.meta.url)),
       '@kiki/protocol': fileURLToPath(new URL('../../packages/protocol/src/index.ts', import.meta.url)),
       '@kiki/plugin-sdk/media': fileURLToPath(new URL('../../packages/plugin-sdk/src/media.ts', import.meta.url)),
       '@kiki/plugin-sdk/media-download': fileURLToPath(new URL('../../packages/plugin-sdk/src/media-download.ts', import.meta.url)),

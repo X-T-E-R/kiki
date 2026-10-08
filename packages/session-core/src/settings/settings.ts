@@ -2144,6 +2144,10 @@ export function settingsSectionIsDeviceOnly(sectionId: string): boolean {
   return SETTINGS_SECTION_META[sectionId]?.scopes[0] === 'app';
 }
 
+export function settingsSectionSupportsSpace(sectionId: string): boolean {
+  return SETTINGS_SECTION_META[sectionId]?.scopes.includes('space') ?? false;
+}
+
 export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
   return SETTINGS_NAV_TREE.find(
     (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.includes(sectionId),
@@ -2156,7 +2160,7 @@ export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec
  * `workspace` marks pages whose editors can target one workspace through
  * their own picker.
  */
-export type SettingsScope = 'app' | 'server' | 'workspace';
+export type SettingsScope = 'app' | 'server' | 'workspace' | 'space';
 
 export interface SettingsSectionMeta {
   readonly scopes: readonly SettingsScope[];
@@ -2166,7 +2170,7 @@ export interface SettingsSectionMeta {
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
   general: { scopes: ['app'], purposeKey: 'st.purpose.general' },
-  appearance: { scopes: ['app'], purposeKey: 'st.purpose.appearance' },
+  appearance: { scopes: ['app', 'space'], purposeKey: 'st.purpose.appearance' },
   shortcuts: { scopes: ['app', 'server'], purposeKey: 'st.purpose.shortcuts' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },

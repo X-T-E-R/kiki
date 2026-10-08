@@ -79,6 +79,7 @@ import {
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   settingsSectionIsDeviceOnly,
+  settingsSectionSupportsSpace,
   settingsGroupForSection,
   settingsSectionForCard,
   settingsServerSnapshot,
@@ -1344,6 +1345,8 @@ describe('settings nav groups (IA v2)', () => {
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('general')).toBe(false);
     expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
@@ -1402,6 +1405,7 @@ describe('settings nav groups (IA v2)', () => {
         .toBe(settingsGroupForSection(section.id)?.id === 'device' || section.id === 'connection');
     }
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
+    expect(SETTINGS_SECTION_META['appearance']?.scopes).toEqual(['app', 'space']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);

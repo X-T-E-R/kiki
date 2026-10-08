@@ -12,6 +12,7 @@ import {
   spaceSettingsKeys,
   type SpacePreferenceItem,
   type SpaceSettingsTarget,
+  spaceSettingsTargetIsSpace,
   spaceSettingsTargetOf,
   spaceSettingsClientKey,
 } from '../../../lib/spaceSettings';
@@ -49,7 +50,7 @@ function SpacePrefOriginContext({ item, label, target }: SpacePrefOriginProps & 
   const client = target?.client ?? null;
   const identity = target?.identity ?? null;
   const spaceId = identity?.homeId ?? 'unidentified';
-  const inSpace = spaceId !== 'main';
+  const inSpace = spaceSettingsTargetIsSpace(target);
   const serverId = identity?.serverId;
   // One entry per server and home, and an unidentified connection keeps its own
   // slot rather than borrowing a confirmed server's read.
@@ -87,7 +88,7 @@ function SpacePrefOriginContext({ item, label, target }: SpacePrefOriginProps & 
     retry: false,
   });
 
-  if (!inSpace) return null;
+  if (!inSpace && identity !== null) return null;
   if (detail.isError || identity === null) {
     return (
       <span data-pref-origin={`${item}-unknown`} className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-faint">

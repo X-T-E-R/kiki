@@ -29,7 +29,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { DeferredAppendTiming, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -87,6 +87,7 @@ import {
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
+import { mapExecutorCapabilities, type ExecutorCapabilityKind } from '../lib/executorCapabilities';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { pastedMediaType } from '../lib/pastedFiles';
@@ -947,6 +948,36 @@ export function Composer({
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const externalExecution = execution !== undefined && !isNativeExecutor(execution.executor);
+  const executorId = externalExecution && execution !== undefined ? execution.executor : undefined;
+  const executorModelsQuery = useQuery({
+    queryKey: ['executor-models', executorId],
+    queryFn: () => client.klient.rest!.executors.getModels(executorId!),
+    enabled: executorId !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const [manualExecutorResponse, setManualExecutorResponse] = useState<{
+    readonly executorId: string;
+    readonly response: ExecutorModelCatalogResponse;
+  }>();
+  const [executorRefreshBusy, setExecutorRefreshBusy] = useState(false);
+  const [executorRefreshFailed, setExecutorRefreshFailed] = useState(false);
+  useEffect(() => {
+    setExecutorRefreshBusy(false);
+    setExecutorRefreshFailed(false);
+  }, [executorId]);
+  const executorModelResponse = executorId !== undefined && manualExecutorResponse?.executorId === executorId
+    ? manualExecutorResponse.response
+    : executorModelsQuery.data;
+  const refreshExecutorModels = useCallback(() => {
+    if (executorId === undefined || executorRefreshBusy) return;
+    setExecutorRefreshBusy(true);
+    setExecutorRefreshFailed(false);
+    void client.klient.rest!.executors.refreshModels(executorId)
+      .then((response) => { setManualExecutorResponse({ executorId, response }); })
+      .catch(() => { setExecutorRefreshFailed(true); })
+      .finally(() => { setExecutorRefreshBusy(false); });
+  }, [client, executorId, executorRefreshBusy]);
   const invalidModelDomain = !externalExecution && engine === undefined && modelDomainState === 'blocked';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
@@ -2301,6 +2332,10 @@ export function Composer({
       <ExternalModelChoice
         choice={execution}
         engineLabel={engineLabel(execution.executor, execution.executor, executorCatalog)}
+        executorResponse={executorModelResponse}
+        executorRefreshBusy={executorRefreshBusy}
+        executorRefreshFailed={executorRefreshFailed}
+        onRefreshExecutorModels={refreshExecutorModels}
         onChange={(next) => { onChangeExecution({ ...execution, overrides: { ...execution.overrides, model: next ?? null, thinking: next === undefined ? null : execution.overrides?.thinking } }); }}
       />
     ) : (
@@ -3498,22 +3533,124 @@ function MentionMenuBody({
   );
 }
 
-function ExternalModelChoice({ choice, engineLabel, onChange }: {
+function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRefreshBusy, executorRefreshFailed, onRefreshExecutorModels, onChange }: {
   choice: ExecutionChoice;
   engineLabel: string;
+  executorResponse?: ExecutorModelCatalogResponse;
+  executorRefreshBusy: boolean;
+  executorRefreshFailed: boolean;
+  onRefreshExecutorModels: () => void;
   onChange: (model: string | undefined) => void;
 }) {
   const { t } = useI18n();
+  const now = useNow();
+  const executorCapabilities = mapExecutorCapabilities(executorResponse, now);
   const model = typeof choice.overrides?.model === 'string' ? choice.overrides.model : undefined;
+  const modelDimension = executorCapabilities.models;
+  const modelState = modelDimension.kind;
+  const reportedValues = modelState === 'ready' || modelState === 'partial'
+    ? modelDimension.values ?? []
+    : [];
+  const currentModelIsUnlisted = (modelState === 'ready' || modelState === 'partial')
+    && model !== undefined
+    && model !== ''
+    && !reportedValues.includes(model);
+  const modelOptions: readonly SearchableSelectOption[] = [
+    { value: '', label: t('composer.engineModelFollow') },
+    ...reportedValues.map((value) => ({ value, label: value })),
+    ...(model !== undefined && model !== '' && !reportedValues.includes(model)
+      ? [{
+        value: model,
+        label: model,
+        badges: currentModelIsUnlisted
+          ? [{ label: t('composer.engineModelNotInList'), tone: 'caution' as const }]
+          : undefined,
+      }]
+      : []),
+  ];
+  const statusMessage = modelState === 'loading'
+    ? t('composer.engineModelLoading')
+    : modelState === 'partial'
+      ? t('composer.engineModelPartial', { count: reportedValues.length })
+      : modelState === 'unavailable'
+        ? t('composer.engineModelUnavailable')
+        : modelState === 'unknown' ? t('composer.engineModelUnknown') : undefined;
+  const hasCapabilityResponse = executorCapabilities.freshness !== 'absent';
+  const stateLabel = (kind: ExecutorCapabilityKind): string => t(`composer.engineCapabilityState.${kind}` as I18nKey);
+  const sourceLabel = executorCapabilities.source === 'negotiated'
+    ? t('composer.engineCapabilitySourceNegotiated')
+    : executorCapabilities.source === 'cli_probe'
+      ? t('composer.engineCapabilitySourceCliProbe')
+      : undefined;
+  const freshnessLabel = executorCapabilities.freshness === 'stale'
+    ? t('composer.engineCapabilityStale')
+    : executorCapabilities.freshness === 'fresh' ? t('composer.engineCapabilityFresh') : undefined;
+  const provenanceLine = hasCapabilityResponse && sourceLabel !== undefined && freshnessLabel !== undefined
+    ? executorCapabilities.engine_version === undefined
+      ? t('composer.engineCapabilityProvenance', { source: sourceLabel, freshness: freshnessLabel })
+      : t('composer.engineCapabilityProvenanceVersion', {
+        source: sourceLabel,
+        version: executorCapabilities.engine_version,
+        freshness: freshnessLabel,
+      })
+    : undefined;
+  const capabilityFacts = hasCapabilityResponse ? [
+    t('composer.engineCapabilityContext', { state: stateLabel(executorCapabilities.context.kind) }),
+    t('composer.engineCapabilityControlModelSwitch', { state: stateLabel(executorCapabilities.controls.model_switch.kind) }),
+    t('composer.engineCapabilityControlThinkingSwitch', { state: stateLabel(executorCapabilities.controls.thinking_switch.kind) }),
+    t('composer.engineCapabilityControlManualCompact', { state: stateLabel(executorCapabilities.controls.manual_compact.kind) }),
+  ] : [];
+  const diagnostics = hasCapabilityResponse ? [
+    modelDimension.diagnostic,
+    executorCapabilities.context.diagnostic,
+    executorCapabilities.controls.model_switch.diagnostic,
+    executorCapabilities.controls.thinking_switch.diagnostic,
+    executorCapabilities.controls.manual_compact.diagnostic,
+  ].filter((diagnostic): diagnostic is string => diagnostic !== undefined && diagnostic !== '') : [];
+  const hasStatus = hasCapabilityResponse || executorRefreshFailed;
+  const panelFooter = (
+    <div data-external-model-footer className="border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-faint">
+      {hasStatus ? (
+        <div data-external-model-status>
+          {statusMessage !== undefined ? <p>{statusMessage}</p> : null}
+          {provenanceLine !== undefined ? <p data-external-model-provenance className="mt-0.5 truncate text-[11px]" title={provenanceLine}>{provenanceLine}</p> : null}
+          {capabilityFacts.length > 0 ? (
+            <ul data-external-capability-facts className="mt-0.5 space-y-0.5 text-[11px]">
+              {capabilityFacts.map((fact) => <li key={fact}>{fact}</li>)}
+            </ul>
+          ) : null}
+          {diagnostics.map((diagnostic, index) => (
+            <p
+              key={`${diagnostic}-${index}`}
+              data-external-model-diagnostic
+              className="mt-0.5 truncate text-[11px]"
+              title={diagnostic}
+            >
+              {diagnostic}
+            </p>
+          ))}
+          {executorRefreshFailed ? <p data-external-model-refresh-error className="mt-0.5">{t('composer.engineCapabilityRefreshFailed')}</p> : null}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        data-external-model-refresh
+        aria-label={t('composer.engineCapabilityRefreshAria')}
+        title={t('composer.engineCapabilityRefreshAria')}
+        disabled={executorRefreshBusy}
+        onClick={onRefreshExecutorModels}
+        className="mt-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
+      >
+        {executorRefreshBusy ? t('composer.engineCapabilityRefreshing') : t('composer.engineCapabilityRefresh')}
+      </button>
+    </div>
+  );
   return (
     <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
       <SearchableSelect
         id="composer-engine-model-select"
         value={model ?? ''}
-        options={[
-          { value: '', label: t('composer.engineModelFollow') },
-          ...(model === undefined ? [] : [{ value: model, label: model }]),
-        ]}
+        options={modelOptions}
         allowCustomValue
         customValueLabel={(value) => value}
         searchPlaceholder={t('composer.engineModelId')}
@@ -3525,6 +3662,7 @@ function ExternalModelChoice({ choice, engineLabel, onChange }: {
         placement="above"
         hideChevron
         panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-80 ${POPOVER_SURFACE_CLASS}`}
+        panelFooter={panelFooter}
         buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${model === undefined ? '' : STATUS_SEGMENT_SET}`}
       />
     </ComposerPanelOrigin>

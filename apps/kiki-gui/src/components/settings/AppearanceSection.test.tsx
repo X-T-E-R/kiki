@@ -25,9 +25,14 @@ import {
 import { AppearanceSection } from './AppearanceSection';
 import { openOptions, openPanel } from './testControls';
 
+const appearanceConnection = vi.hoisted(() => ({
+  meta: null as { server_id: string; current_space_id?: string } | null,
+}));
+
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     config: { url: 'http://127.0.0.1:1', token: 'test-token' },
+    meta: appearanceConnection.meta,
     client: {
       listSkins: vi.fn().mockResolvedValue({ items: [], directory: '/home/fixture/.kiki/themes', skipped: [] }),
       getSkin: vi.fn(),
@@ -39,7 +44,18 @@ vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 const reactAct = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 let container: HTMLDivElement;
 let root: Root;
+let queryClient: QueryClient;
 let stopSync: () => void;
+
+async function renderAppearance() {
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider><AppearanceSection /></I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+}
 
 beforeAll(() => {
   vi.stubGlobal('navigator', { language: 'en-US' });
@@ -62,6 +78,7 @@ const PACK = {
 };
 
 beforeEach(async () => {
+  appearanceConnection.meta = null;
   localStorage.clear();
   resetBackgroundPrefsCache();
   writeBackgroundPrefs({ light: null, dark: null, linked: true });
@@ -78,14 +95,8 @@ beforeEach(async () => {
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider><AppearanceSection /></I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await renderAppearance();
 });
 
 afterEach(async () => {
@@ -115,6 +126,33 @@ describe('AppearanceSection', () => {
     expect(container.querySelector('[data-settings-draft]')).toBeNull();
     // Nothing to restore at the defaults.
     expect(container.querySelector('[data-appearance-restore]')).toBeNull();
+  });
+
+  it('marks appearance cards as device-scoped without an identified space', () => {
+    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-appearance-packs']) {
+      expect(container.querySelector<HTMLElement>(`#${id} [data-settings-panel-scope]`)?.dataset['settingsPanelScope'], id).toBe('app');
+    }
+    expect(container.querySelector('#st-card-appearance-packs')?.textContent).not.toContain('connected server');
+  });
+
+  it('marks portable appearance cards as space-scoped and keeps device-only controls clear', async () => {
+    appearanceConnection.meta = { server_id: 'server-a', current_space_id: 'h-acme' };
+    await renderAppearance();
+
+    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout']) {
+      expect(container.querySelector<HTMLElement>(`#${id} [data-settings-panel-scope]`)?.dataset['settingsPanelScope'], id).toBe('space');
+    }
+    const packs = container.querySelector<HTMLElement>('#st-card-appearance-packs [data-settings-panel-scope]');
+    expect(packs?.dataset['settingsPanelScope']).toBe('space');
+    expect(packs?.textContent).toContain(translate('en', 'st.scope.space'));
+
+    const skinFiles = container.querySelector<HTMLElement>('#st-card-skin-files [data-settings-panel-scope]');
+    expect(skinFiles?.dataset['settingsPanelScope']).toBe('app');
+    expect(skinFiles?.textContent).toContain(translate('en', 'st.scope.device'));
+
+    const motionField = container.querySelector('[data-motion-choice]')?.closest('[data-settings-field]');
+    expect(motionField?.textContent).toContain(translate('en', 'st.scope.device'));
+    expect(motionField?.textContent).not.toContain(translate('en', 'st.scope.appliesTo'));
   });
 
   it('applies motion and prose choices at once and mirrors them onto <html>', async () => {

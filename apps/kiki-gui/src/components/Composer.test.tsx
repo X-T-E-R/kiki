@@ -37,6 +37,8 @@ const setPluginUsage = vi.fn();
 const listPlugins = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listExecutors = vi.fn();
+const getExecutorModels = vi.fn();
+const refreshExecutorModels = vi.fn();
 const getConfig = vi.fn();
 const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
@@ -106,7 +108,10 @@ vi.mock('../state/connection', () => ({
       uploadFile,
       meta,
       klient: {
-        rest: { ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } },
+        rest: {
+          ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove },
+          executors: { getModels: getExecutorModels, refreshModels: refreshExecutorModels },
+        },
         // The composer's MCP picker reads this conversation through the agent
         // facade: the session port when the build has it, the runtime list and
         // the management catalog where it does not.
@@ -210,6 +215,8 @@ beforeEach(() => {
     ] satisfies NamedAgentProfile[],
   });
   listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
+  getExecutorModels.mockReset().mockReturnValue(new Promise(() => {}));
+  refreshExecutorModels.mockReset();
   getConfig.mockReset().mockResolvedValue({});
 });
 
@@ -2966,6 +2973,223 @@ describe('Composer restored selection diagnostics', () => {
     await click(container.querySelector('[role="option"][title="vendor/model-id"]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
     expect(container.querySelector('[role="option"][title="vendor/model-id"]')).toBeNull();
+  });
+
+  it('offers only the external engine models, never native catalog aliases', async () => {
+    listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', max_context_size: 128000 }] });
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['claude/sonnet', 'claude/opus'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-option-value="claude/sonnet"]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="claude/opus"]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
+    expect(container.querySelector('[data-external-model-provenance]')?.textContent).toContain('CLI probe');
+    expect(container.querySelector('[data-external-model-provenance]')?.textContent).toContain('fresh');
+    expect(container.querySelector('[data-external-capability-facts]')?.textContent).toContain('Manual compaction · unavailable');
+  });
+
+  it('shows partial engine models with the count still being reported', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'partial', values: ['vendor/model-a', 'vendor/model-b'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    await click(container.querySelector('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-option-value="vendor/model-a"]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="vendor/model-b"]')).not.toBeNull();
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('2 models so far; the engine is still reporting.');
+  });
+
+  it('keeps an unavailable external model picker usable and preserves its saved value', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'unavailable', observed_at: Date.now(),
+      effective: {
+        models: { state: 'unavailable', diagnostic: 'CLI probe timed out' }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution });
+    expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
+    await click(container.querySelector('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('This engine did not report its models.');
+    expect(container.querySelector('[data-external-model-diagnostic]')?.textContent).toContain('CLI probe timed out');
+    expect(container.querySelector('[data-option-value="vendor/saved-model"]')?.getAttribute('aria-selected')).toBe('true');
+
+    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'vendor/typed-model');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container.querySelector('[role="option"][title="vendor/typed-model"]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/typed-model', thinking: undefined } });
+  });
+
+  it('shows the external model loading line without disabling free text', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'loading', observed_at: Date.now(),
+      effective: {
+        models: { state: 'loading' }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'unknown', apply_state: 'unknown' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: undefined };
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution });
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!;
+    expect(trigger.disabled).toBe(false);
+    await click(trigger);
+    expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('Reading this engine\'s models…');
+    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'vendor/loading-model');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(container.querySelector('[role="option"][title="vendor/loading-model"]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/loading-model', thinking: undefined } });
+  });
+
+  it('marks a saved external model that is absent from a ready catalog without replacing it', async () => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/current-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
+    const trigger = container.querySelector('#composer-engine-model-select')!;
+    expect(trigger.textContent).toContain('vendor/saved-model');
+    await click(trigger);
+    const saved = container.querySelector('[data-option-value="vendor/saved-model"]')!;
+    expect(saved.textContent).toContain('not in this engine\'s list');
+    expect(saved.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
+  });
+
+  it('leaves the absent-data picker usable without importing native aliases', async () => {
+    const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/saved-model' } };
+    const { container } = await renderComposer({ execution: choice, onChangeExecution: vi.fn() });
+    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-option-value=""]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="vendor/saved-model"]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
+  });
+
+  it('refreshes the typed executor catalog only from the explicit affordance', async () => {
+    const observed = {
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/old-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    };
+    const refreshed = {
+      ...observed,
+      revision: '2',
+      observed_at: Date.now(),
+      effective: { ...observed.effective, models: { state: 'ready' as const, values: ['vendor/new-model'] } },
+    };
+    const refreshResult = deferred<typeof refreshed>();
+    getExecutorModels.mockResolvedValue(observed);
+    refreshExecutorModels.mockReturnValue(refreshResult.promise);
+    const { container } = await renderComposer({
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+    });
+    expect(refreshExecutorModels).not.toHaveBeenCalled();
+    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-option-value="vendor/old-model"]')).not.toBeNull();
+    const refreshButton = container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!;
+    await click(refreshButton);
+    expect(refreshButton.disabled).toBe(true);
+    expect(refreshButton.textContent).toContain('Refreshing…');
+    await act(async () => { refreshResult.resolve(refreshed); });
+    await settle();
+    expect(refreshExecutorModels).toHaveBeenCalledExactlyOnceWith('claude-acp');
+    expect(container.querySelector('[data-option-value="vendor/new-model"]')).not.toBeNull();
+    expect(container.querySelector('[data-option-value="vendor/old-model"]')).toBeNull();
+  });
+
+  it('keeps the last known values and says so when refresh fails', async () => {
+    const observed = {
+      executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/known-model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    };
+    getExecutorModels.mockResolvedValue(observed);
+    refreshExecutorModels.mockRejectedValue(new Error('refresh unavailable'));
+    const { container } = await renderComposer({
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+    });
+    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    await click(container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!);
+    await settle();
+    expect(refreshExecutorModels).toHaveBeenCalledExactlyOnceWith('claude-acp');
+    expect(container.querySelector('[data-option-value="vendor/known-model"]')).not.toBeNull();
+    expect(container.querySelector('[data-external-model-refresh-error]')?.textContent).toContain('Refresh failed; showing the last known values.');
+  });
+
+  it.each([
+    { applicability: 'unsupported' as const, apply_state: 'unsupported' as const },
+    { applicability: 'unknown' as const, apply_state: 'unknown' as const },
+  ])('offers no compact action entry point for $applicability control state', async (manualCompact) => {
+    getExecutorModels.mockResolvedValue({
+      executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(),
+      effective: {
+        models: { state: 'ready', values: ['vendor/model'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { ...manualCompact, diagnostic: 'compact is not available' },
+        },
+      },
+    });
+    const { container } = await renderComposer({
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+    });
+    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    expect(container.querySelector('[data-executor-action="manual_compact"]')).toBeNull();
+    expect(container.textContent).toContain('compact is not available');
   });
 
   it('clears explicit external model and thinking overrides when following the engine again', async () => {

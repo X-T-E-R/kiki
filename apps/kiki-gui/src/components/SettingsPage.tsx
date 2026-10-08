@@ -9,6 +9,7 @@ import {
   resolveSettingsRoute,
   settingsGroupForSection,
   settingsSectionIsDeviceOnly,
+  settingsSectionSupportsSpace,
   workspaceSettingsIdFromQuery,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
@@ -48,6 +49,7 @@ import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace } from '../lib/spaces';
+import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { SubagentsSection } from './settings/SubagentsSection';
 import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
 import { TasksSection } from './settings/TasksSection';
@@ -203,6 +205,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const rawNavigate = useNavigate();
   const dirty = useDirtyGuard()?.dirty === true;
   const remoteAddress = useRemoteServerAddress();
+  const { client, meta } = useConnection();
+  const inSpace = spaceSettingsTargetIsSpace(spaceSettingsTargetOf(client, meta));
   const [cardRequest, setCardRequest] = useState<{ cardId: string; section: string; locationKey: string; nonce: number } | null>(null);
   const [flashCard, setFlashCard] = useState<{ cardId: string; nonce: number } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -214,6 +218,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const resolution = resolveSettingsRoute(section, hash);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
+  const pageScope = active === null ? 'server'
+    : settingsSectionSupportsSpace(active) && inSpace ? 'space'
+    : settingsSectionIsDeviceOnly(active) ? 'app'
+    : 'server';
   // Workspace-scoped sections (Skills' catalog, MCP's config card) report
   // the workspace their edits target; the scope header names it. Reset on
   // page change — the next section reports its own selection.
@@ -481,7 +489,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <div className="mx-auto max-w-[720px]">
                 <SpaceBand />
                 <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
-                <SettingsPageScopeContext.Provider value={settingsSectionIsDeviceOnly(active) ? 'app' : 'server'}>
+                <SettingsPageScopeContext.Provider value={pageScope}>
                   <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
                 </SettingsPageScopeContext.Provider>
               </div>
