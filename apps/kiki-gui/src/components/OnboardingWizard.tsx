@@ -1,25 +1,18 @@
 /**
- * OnboardingWizard — the first-run dialog, steps that each say one thing:
+ * OnboardingWizard — the first-run dialog, three steps that each say one thing:
  * welcome (language, theme, palette, an optional background picture — all
  * applied live), how much it may do on its own (default permission mode), and
- * what else Kiki can do (the capability rows, then the guided tour). There is
- * no workspace question: /new already defaults to the most recent workspace,
- * else a fresh folder in Kiki Home.
+ * one invitation to the guided tour. There is no workspace question: /new
+ * already defaults to the most recent workspace, else a fresh folder in Kiki
+ * Home.
  *
- * Connecting a model is not a step of its own. It is stated where it is
- * actually needed: the closing guide page carries the current connection — read
- * from the server's own `auth` and provider probes — and opens the Connections
- * card in Settings, which already owns account sign-in and the API-key form.
- * So there is one real page that writes a provider, reached in context rather
- * than a second welcome page to get past, and the current model and settings
- * stay untouched until something is saved there.
- *
- * Finish is the one step a form cannot finish: it opens a new conversation with
- * a short `/kiki-ops` request in its composer, the same hand-off the optional
- * capability rows use, and Kiki then asks what the user is here for, offers a
- * first agent, and helps choose Explore's model and effort (or leaves it alone,
- * or turns that role off). Nothing is sent — the user reads it and presses
- * send.
+ * The last step is a sentence and one action. It opens the real /discover hub,
+ * which owns the routes, the resume state and the model connection — read from
+ * the server's own `auth` and provider probes — so the welcome invents no
+ * second copy of any of them. Connecting a model happens where it is needed,
+ * in the existing Connections card that already owns account sign-in and the
+ * API-key form; nothing in this run writes a provider, and the current model
+ * and settings stay untouched.
  *
  * Every primary advance button persists the current step before moving on, so
  * leaving the wizard after any Next loses nothing. Nothing here holds an
@@ -45,16 +38,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
-import { writeDraft } from '@kiki/session-core/composer';
-import {
-  currentDiscoveryScope,
-  discoveryDestination,
-  discoveryRoute,
-  readDiscoveryState,
-  reduceDiscoveryState,
-  writeDiscoveryState,
-  type DiscoveryRouteId,
-} from '@kiki/session-core/discovery';
 import { errorText, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
@@ -70,26 +53,24 @@ import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permission
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { OnboardingAppearanceStep, OnboardingRow } from './OnboardingAppearanceStep';
-import { OnboardingCapabilitiesStep } from './OnboardingCapabilitiesStep';
 import { needsProviderSetup } from './NewSessionDraft';
 import { FeedbackLine, type Feedback } from './controls';
-import { useOptionalDiscovery } from './discovery/DiscoveryContext';
 import { useGuardedNavigate } from './dirtyGuard';
 import { mergeConfigEcho } from './settings/configEcho';
 import { SettingsSegmented } from './settings/SettingsPrimitives';
-import { INPUT, PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { Wordmark } from './Wordmark';
 
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'permissions', 'capabilities'] as const;
+const STEPS = ['welcome', 'permissions', 'discover'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.step.welcome',
   permissions: 'onboarding.step.permissions',
-  capabilities: 'onboarding.step.capabilities',
+  discover: 'onboarding.step.discover',
 } as const;
 
 /**
@@ -220,14 +201,11 @@ function PermissionOption({
 
 
 export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) {
-  const { client, scopeId = 'local' } = useConnection();
+  const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
   const navigate = useGuardedNavigate();
-  const discovery = useOptionalDiscovery();
   const queryClient = useQueryClient();
   const [step, setStep] = useState<OnboardingStep>('welcome');
-  const [finishing, setFinishing] = useState(false);
-  const [finishFeedback, setFinishFeedback] = useState<Feedback>(null);
 
   // Whether the step still has content below the fold, so the edge can say so.
   const stepScrollRef = useRef<HTMLDivElement>(null);
@@ -351,10 +329,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       setStep('permissions');
       return;
     }
-    // The permission default is saved on leaving its step, so the optional
-    // capabilities page after it never holds anything unsaved.
+    // The permission default is saved on leaving its step, so the closing
+    // invitation after it never holds anything unsaved.
     if (step === 'permissions' && await savePermissionMode()) {
-      setStep('capabilities');
+      setStep('discover');
     }
   };
 
@@ -382,73 +360,17 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     setStep(STEPS[index + 1]!);
   };
 
-  // Finish: open the guided first-run conversation. The wizard has done what a
-  // form can — the look, the permission default — and what remains is the user
-  // saying what they want done and Kiki doing it once, so the same hand-off the
-  // capability rows use carries that request into a new session. Nothing is
-  // sent: the user reads it and presses send.
-  //
-  // A rejected create leaves the wizard open with the reason, and since
-  // `askKiki` marks completion only after the session exists, the run is still
-  // unmarked and the same button retries. That is the whole guarantee, and it
-  // covers a create that fails and nothing after it: once the session is
-  // written, this hand-off has the ordinary exposure — the session and its
-  // draft exist, and a later failure leaves the wizard still showing.
-  const finish = async () => {
-    if (finishing) return;
-    setFinishing(true);
-    try {
-      await askKiki(t('onboarding.caps.firstRun.prompt'));
-    } catch (error) {
-      setFinishing(false);
-      setFinishFeedback({ tone: 'error', text: t('onboarding.caps.askFailed', { detail: errorText(locale, error) }) });
-    }
-  };
-
-  // A capability's settings card: the wizard is done once the user leaves for it.
-  const openCapability = (href: string) => {
+  /**
+   * The last step's one action: open the real /discover hub. It is the page
+   * that owns the routes, the resume state and the model connection, so the
+   * welcome hands over instead of growing a second copy of them — and leaving
+   * the run (completing it, closing the dialog) happens exactly as it does for
+   * any other exit.
+   */
+  const openDiscovery = () => {
     markOnboardingCompleted();
     onClose();
-    navigate(href);
-  };
-
-  // A hand-off into a conversation: a fresh session (no workspace → a new
-  // folder in Kiki Home, like /new's automatic choice) with the /kiki-ops
-  // request waiting in its composer. The capability rows and the wizard's last
-  // button differ only in the request. Nothing is sent; the user reads it and
-  // presses send.
-  const askKiki = async (prompt: string) => {
-    const session = await client.createSession({});
-    writeDraft(session.id, prompt);
-    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-    markOnboardingCompleted();
-    onClose();
-    navigate(`/s/${session.id}`);
-  };
-
-  const startDiscoveryTour = async (routeId: DiscoveryRouteId) => {
-    if (discovery) {
-      const committed = await discovery.startRoute(routeId);
-      if (committed) {
-        markOnboardingCompleted();
-        onClose();
-      }
-      return;
-    }
-    const scope = currentDiscoveryScope(scopeId);
-    const nextState = reduceDiscoveryState(readDiscoveryState(scope), { type: 'start', route: routeId });
-    const firstStationId = discoveryRoute(routeId).stations[0];
-    const destination = discoveryDestination(firstStationId, {
-      sessionId: undefined,
-      sessionReachable: false,
-      online: true,
-      currentHref: '/new',
-      anchors: [],
-    });
-    navigate(destination.href);
-    writeDiscoveryState(scope, nextState);
-    markOnboardingCompleted();
-    onClose();
+    navigate('/discover');
   };
 
   const stepIndex = STEPS.indexOf(step);
@@ -459,9 +381,6 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       onClose={dismiss}
       ariaLabel={t('onboarding.title')}
       overlayId="onboarding-wizard"
-      // Stacked so a dialog opened from a step (the skill install preview)
-      // owns Escape and focus while it is up.
-      stacked
       // This run ends when it closes, and it carries choices the user has made
       // about their own setup, so it leaves on the header's close button or on
       // an explicit action inside it — never on a backdrop click or a stray
@@ -469,7 +388,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       dismissible={false}
       // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
       // its header/body/footer insets so the scroll region meets the dividers.
-      panelClassName="anim-enter flex h-[85vh] w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
+      // A cap, not a fixed height: a short step keeps the panel short instead of
+      // reserving an empty 85vh, and a tall one still scrolls inside the cap.
+      panelClassName="anim-enter flex max-h-[85vh] min-h-0 w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
       <div className="flex shrink-0 items-start justify-between gap-4 border-b border-hairline px-6 pb-4 pt-5">
         <div className="min-w-0">
@@ -499,10 +420,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           same mask the composer seat uses. No text, and it disappears the
           moment the end is reached. */}
       {/* `min-h-0` lets this flex child shrink so the step scrolls inside its
-          own box and the footer below keeps its row, however long the step is. */}
-      {/* A definite height, not just a cap: the scroller fills this row
-          absolutely, and an absolute child needs a sized parent to fill. */}
-      <div className="relative min-h-0 flex-1 shrink overflow-hidden">
+          own box and the footer below keeps its row, however long the step is.
+          `grow shrink` keeps an automatic basis, so a short step contributes its
+          own height to the panel and the cap only bites when the content is
+          taller than the window. */}
+      <div className="relative min-h-0 shrink grow overflow-hidden">
         <div
           ref={stepScrollRef}
           data-onboarding-step-scroll
@@ -531,8 +453,12 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           </div>
         ) : null}
 
-        {step === 'capabilities' ? (
-          <OnboardingCapabilitiesStep onOpen={openCapability} onAsk={askKiki} onStartDiscovery={startDiscoveryTour} />
+        {step === 'discover' ? (
+          <div className="mt-3" data-onboarding-discover>
+            <p className="max-w-[52ch] text-[13px] leading-relaxed text-ink-soft">
+              {t('onboarding.discover.body')}
+            </p>
+          </div>
         ) : null}
 
         {step === 'permissions' ? (
@@ -576,15 +502,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           {last ? t('onboarding.closeRun') : t('onboarding.skip')}
         </button>
         {/* A failed hand-off belongs to the button that made it: the step is
-            unchanged and only the retry is missing. It sits inline on a wide
-            footer, and wraps onto its own full-width row on a narrow one —
-            squeezed between two buttons it broke "Set up later" and the error
-            text mid-word. */}
-        {last && finishFeedback !== null ? (
-          <div className="order-last w-full min-w-0 sm:order-none sm:w-auto sm:flex-1">
-            <FeedbackLine feedback={finishFeedback} />
-          </div>
-        ) : null}
+            unchanged and only the retry is missing. */}
         <div className="flex shrink-0 items-center gap-2">
           {stepIndex > 0 ? (
             <button
@@ -599,11 +517,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             <button
               type="button"
               data-autofocus
-              disabled={finishing}
-              onClick={() => { void finish(); }}
+              data-onboarding-discover-start
+              onClick={openDiscovery}
               className={PRIMARY_BUTTON}
             >
-              {finishing ? t('st.auth.working') : t('onboarding.finishFirstRun')}
+              {t('discovery.title')}
             </button>
           ) : (
             <button

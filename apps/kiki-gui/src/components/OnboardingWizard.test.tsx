@@ -2,11 +2,9 @@
 
 /**
  * OnboardingWizard — the first-run dialog: the auto-popup decision rule
- * (shouldOfferOnboarding), the three-step walk (nothing here configures a
- * model: the guide states the current connection and opens the real Settings
- * card that owns it), the save semantics of every advance (finish persists the
- * permission default), exit state, and the finish hand-off (/new hero with its
- * own target default, nothing prefilled or sent).
+ * (shouldOfferOnboarding), the three-step walk (nothing here configures a model
+ * and the closing step hands over to /discover), the save semantics of every
+ * advance (Next persists the permission default), and exit state.
  */
 
 import { act, useEffect } from 'react';
@@ -293,8 +291,8 @@ async function toPermissionsStep(): Promise<void> {
   await flush();
 }
 
-/** … → approvals → (Next saves the mode) → the guide. */
-async function toCapabilitiesStep(): Promise<void> {
+/** … → approvals → (Next saves the mode) → the closing invitation. */
+async function toDiscoverStep(): Promise<void> {
   await toPermissionsStep();
   await click(buttonByText('Next'));
   await flush();
@@ -339,7 +337,7 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Next'));
     await flush();
     expect(dialog().textContent).toContain('Step 3 of 3');
-    expect(dialog().querySelector('[data-onboarding-discovery-section]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
 
     await click(buttonByText('Back'));
     expect(dialog().textContent).toContain('Step 2 of 3');
@@ -425,7 +423,7 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Next'));
     await flush();
     expect(dialog().textContent).toContain('Step 2 of 3');
-    expect(dialog().querySelector('[data-onboarding-capabilities]')).toBeNull();
+    expect(dialog().querySelector('[data-onboarding-discover]')).toBeNull();
   });
 
   it('a replay shows the server’s explicit permission choice instead of forcing auto', async () => {
@@ -459,13 +457,13 @@ describe('OnboardingWizard', () => {
     // Skipping past the step must not silently discard the choice already made.
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
     expect(onClose).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-onboarding-capabilities]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
   });
 
   it('"Set up later" on the last step closes the run, keeping the original meaning', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toCapabilitiesStep();
+    await toDiscoverStep();
     // There is no next step to move to, so this one keeps its original job:
     // end the run here, without starting a session or routing anywhere.
     await click(buttonByText('Close setup'));
@@ -476,401 +474,56 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('"Get started with Kiki" opens the guided first-run session with a short request waiting, and sends nothing', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    expect(dialog().querySelector('[data-workspace-choice]')).toBeNull();
-    await click(buttonByText('Get started with Kiki'));
-    await flush();
-    // No workspace address: the server gives the session a new folder in Kiki Home.
-    expect(createSession).toHaveBeenCalledWith({});
-    expect(createSession).toHaveBeenCalledTimes(1);
-    const draft = readDraft('s_onboarding_1');
-    // The composer is what the user reads before sending, so it names the skill
-    // and asks for one thing at a time; the rest lives in the skill, not here.
-    expect(draft).toMatch(/^\/kiki-ops /);
-    expect(draft).toMatch(/one question at a time/i);
-    // The first run is about the user's task, not about Kiki's settings: the
-    // request asks what they want done, and only says what the run may set up.
-    expect(draft).toMatch(/what I most want to get done/i);
-    expect(draft).toMatch(/set up whatever that step needs/i);
-    expect(draft).toMatch(/leave what already works alone/i);
-    // Explore's model and agent profiles are the skill's job, asked at the
-    // moment the run needs them — never part of the opening request.
-    expect(draft).not.toMatch(/explore/i);
-    expect(draft).not.toMatch(/agent profile|first agent/i);
-    expect(draft.length).toBeLessThan(260);
-    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  it('prefills the exact Chinese first-task welcome without submitting a prompt', async () => {
-    localStorage.setItem('kiki.locale', 'zh');
-    await mount();
-    await click(buttonByText('下一步'));
-    await flush();
-    await click(buttonByText('下一步'));
-    await flush();
-    await click(buttonByText('让 Kiki 带你上手'));
-    await flush();
-    expect(createSession).toHaveBeenCalledExactlyOnceWith({});
-    expect(readDraft('s_onboarding_1')).toBe('/kiki-ops 用两三句话告诉我你能做什么，再问我现在最想完成哪件事，带我真做一次：这一步需要哪个能力就顺手配上，已经能用的设置保持原样。一次只问一个问题。');
-    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
-  });
-
-  it('never overwrites a draft the user already typed elsewhere', async () => {
-    const { writeDraft } = await import('@kiki/session-core/composer');
-    writeDraft('new', 'half-typed thought');
-    writeDraft('s_other', 'another session in progress');
-    await mount();
-    await toCapabilitiesStep();
-    await click(buttonByText('Get started with Kiki'));
-    await flush();
-    expect(readDraft('new')).toBe('half-typed thought');
-    expect(readDraft('s_other')).toBe('another session in progress');
-  });
-
-  it('a rejected create leaves the wizard open, unmarked, and the same button retries', async () => {
-    createSession.mockRejectedValueOnce(new Error('server offline'));
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(buttonByText('Get started with Kiki'));
-    await flush();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(navigate).not.toHaveBeenCalled();
-    // Not marked complete: the auto-popup must still be able to fire for a run
-    // that never reached its own hand-off.
-    expect(localStorage.getItem('kiki.onboarding')).toBeNull();
-    expect(dialog().textContent).toContain('server offline');
-    // The same button retries, and one success is one session.
-    await click(buttonByText('Get started with Kiki'));
-    await flush();
-    expect(createSession).toHaveBeenCalledTimes(2);
-    expect(readDraft('s_onboarding_1')).toMatch(/^\/kiki-ops /);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  // ── capabilities page ──────────────────────────────────────────────────
-
-  it('lists grouped capabilities, each with a way to set it up, and walks back to approvals', async () => {
-    await mount();
-    await toCapabilitiesStep();
-    expect(dialog().textContent).toContain('What else Kiki can do');
-    const rows = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-cap]')];
-    expect(rows.map((row) => row.dataset['onboardingCap'])).toEqual([
-      'search', 'memory', 'ssh', 'engines', 'extensions', 'host-skill', 'cron', 'board', 'bots',
-    ]);
-    for (const row of rows) {
-      expect(row.querySelectorAll('button').length, row.dataset['onboardingCap']).toBeGreaterThan(0);
-    }
-    expect(dialog().querySelectorAll('[data-onboarding-cap-group]')).toHaveLength(3);
-    await click(buttonByText('Back'));
-    expect(dialog().textContent).toContain('Step 2 of 3');
-    expect(dialog().querySelector('[data-permission-choice]')).not.toBeNull();
-  });
-
-  it('a settings button leaves the wizard for that card', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(dialog().querySelector('[data-onboarding-cap="ssh"] [data-cap-open]')!);
-    expect(navigate).toHaveBeenCalledWith('/settings/ssh#st-card-ssh-hosts');
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  it('every settings target is a real card or route', async () => {
-    const { resolveSettingsRoute } = await import('@kiki/session-core/settings');
-    const { ONBOARDING_CAPABILITIES } = await import('./OnboardingCapabilitiesStep');
-    const hrefs = ONBOARDING_CAPABILITIES.flatMap((group) => group.items)
-      .flatMap((item) => item.actions)
-      .flatMap((action) => (action.kind === 'open' ? [action.href] : []));
-    expect(hrefs.length).toBeGreaterThan(0);
-    for (const href of hrefs) {
-      if (!href.startsWith('/settings/')) {
-        expect(['/board', '/cron', '/personas']).toContain(href);
-        continue;
-      }
-      const [path, hash] = href.split('#');
-      const section = path!.slice('/settings/'.length);
-      const resolved = resolveSettingsRoute(section, `#${hash}`);
-      expect(resolved.status, href).toBe('ok');
-      expect(resolved.section, href).toBe(section);
-      expect(resolved.cardId, href).toBe(hash);
-    }
-  });
-
-  it('"Let Kiki set it up" creates a session with the request waiting in its composer', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(dialog().querySelector('[data-onboarding-cap="ssh"] [data-cap-ask]')!);
-    await flush();
-    // No workspace: the server gives the session a new folder in Kiki Home.
-    expect(createSession).toHaveBeenCalledWith({});
-    expect(readDraft('s_onboarding_1')).toMatch(/^\/kiki-ops .*SSH remote host/);
-    expect(navigate).toHaveBeenCalledWith('/s/s_onboarding_1');
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  it('a failed "Let Kiki set it up" stays on the page with the reason', async () => {
-    createSession.mockRejectedValueOnce(new Error('server offline'));
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(dialog().querySelector('[data-onboarding-cap="cron"] [data-cap-ask]')!);
-    await flush();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(navigate).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-onboarding-cap="cron"]')?.textContent).toContain('server offline');
-    // The ask buttons are usable again for a retry.
-    expect((dialog().querySelector('[data-cap-ask]') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('the skill install previews the target and writes only after confirming', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(dialog().querySelector('[data-cap-install="claude"]')!);
-    await flush();
-    expect(previewHostSkillInstall).toHaveBeenCalledWith('claude');
-    expect(installHostSkill).not.toHaveBeenCalled();
-    const installDialog = document.querySelector('[data-host-skill-dialog="ready"]')!;
-    expect(installDialog.querySelector('[data-host-skill-path]')?.textContent).toContain('.claude/skills/kiki-as-subagent/SKILL.md');
-    expect(installDialog.querySelector('[data-host-skill-overwrites="true"]')).not.toBeNull();
-    await click(installDialog.querySelector('[data-host-skill-confirm]')!);
-    await flush();
-    expect(installHostSkill).toHaveBeenCalledWith('claude', 'rev-1');
-    expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
-    expect(dialog().querySelector('[data-onboarding-cap="host-skill"]')?.textContent).toContain('Installed for Claude Code.');
-    // Installing is a side trip: the wizard stays open on its page.
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('cancelling the skill preview writes nothing', async () => {
-    await mount();
-    await toCapabilitiesStep();
-    await click(dialog().querySelector('[data-cap-install="codex"]')!);
-    await flush();
-    const cancel = [...document.querySelectorAll('[data-host-skill-dialog] button')].find((button) => button.textContent === 'Cancel')!;
-    await click(cancel);
-    expect(installHostSkill).not.toHaveBeenCalled();
-    expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
-  });
-
-  it('the hand-off uses none of the optional rows on the capabilities page', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(buttonByText('Get started with Kiki'));
-    await flush();
-    expect(previewHostSkillInstall).not.toHaveBeenCalled();
-    expect(installHostSkill).not.toHaveBeenCalled();
-    // One session for the hand-off, not one per optional row.
-    expect(createSession).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('closing the last step ends the run without a session, navigation or draft', async () => {
-    const onClose = vi.fn();
-    await mount(onClose);
-    await toCapabilitiesStep();
-    await click(buttonByText('Close setup'));
-    await flush();
-    expect(createSession).not.toHaveBeenCalled();
-    // It dismisses; it does not route anywhere, so whatever the user was
-    // looking at when the wizard opened is what they return to.
-    expect(navigate).not.toHaveBeenCalled();
-    expect(readDraft('new')).toBe('');
-    // The /new draft is untouched and keeps its own default (recent workspace,
-    // else a new folder in Kiki Home) for whenever they open a session there.
-    expect(readNewSessionDraft().workspaceId).toBeUndefined();
-    expect(readNewSessionDraft().cwd).toBeUndefined();
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-  });
-
-  describe('onboarding wizard discovery entry', () => {
-    it('offers overview and four interest routes on the last capabilities step', async () => {
+  describe('the closing step invites the tour', () => {
+    it('is one invitation and one action, with no capability list, route grid or model row of its own', async () => {
       await mount();
-      await toCapabilitiesStep();
-      expect(dialog().querySelector('[data-discovery-onboarding-overview]')).not.toBeNull();
-      const routes = [...dialog().querySelectorAll('[data-discovery-onboarding-route]')].map((el) =>
-        el.getAttribute('data-discovery-onboarding-route'),
-      );
-      expect(routes).toEqual(['do-first', 'understand', 'sustain', 'extend']);
-    });
+      await toDiscoverStep();
 
-    it('starts the overview discovery route and completes onboarding when clicking take a tour', async () => {
-      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
-      const onClose = vi.fn();
-      await mount(onClose);
-      await toCapabilitiesStep();
-      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
-      await act(async () => {
-        overviewBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      await flush();
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-      expect(navigate).toHaveBeenCalledWith('/new');
-      const discState = readDiscoveryState(currentDiscoveryScope('local'));
-      expect(discState.lifecycle).toBe('left');
-      expect(discState.route).toBe('overview');
-    });
-
-    it('starts an interest discovery route when chosen from the capabilities step', async () => {
-      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
-      const onClose = vi.fn();
-      await mount(onClose);
-      await toCapabilitiesStep();
-      const routeBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-route="do-first"]')!;
-      await act(async () => {
-        routeBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      await flush();
-      expect(onClose).toHaveBeenCalledTimes(1);
-      const discState = readDiscoveryState(currentDiscoveryScope('local'));
-      expect(discState.lifecycle).toBe('left');
-      expect(discState.route).toBe('do-first');
-    });
-
-    it('welcome discovery entry with mounted DiscoveryProvider commits and finishes onboarding', async () => {
-      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
-      const onClose = vi.fn();
-      await mountWithDiscovery({ onClose, dirty: false });
-      await toCapabilitiesStep();
-
-      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
-      await act(async () => {
-        overviewBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      await flush();
-
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-      const discState = readDiscoveryState(currentDiscoveryScope('local'));
-      expect(discState.lifecycle).toBe('left');
-      expect(discState.route).toBe('overview');
-      expect(discState.station).toBe('workspace');
-    });
-
-    it('welcome discovery entry preserves wizard and discovery state when dirty guard cancelled', async () => {
-      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
-      const onClose = vi.fn();
-      const { cancelAction, router } = await mountWithDiscovery({ onClose, dirty: true });
-      await toCapabilitiesStep();
-
-      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
-      await act(async () => {
-        overviewBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      await flush();
-
-      // Dirty guard prompt is waiting; user cancels it
-      await cancelAction();
-      await flush();
-
-      // Wizard must stay open, onboarding must not be completed, discovery must not start, router must remain
-      expect(router.state.location.pathname).toBe('/settings/providers');
-      expect(onClose).not.toHaveBeenCalled();
-      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
-      const discState = readDiscoveryState(currentDiscoveryScope('local'));
-      expect(discState.lifecycle).toBe('new');
-    });
-
-    it('welcome discovery entry commits when dirty guard confirmed', async () => {
-      const { readDiscoveryState, currentDiscoveryScope } = await import('@kiki/session-core/discovery');
-      const onClose = vi.fn();
-      const { confirmAction, router } = await mountWithDiscovery({ onClose, dirty: true });
-      await toCapabilitiesStep();
-
-      const overviewBtn = dialog().querySelector<HTMLButtonElement>('[data-discovery-onboarding-overview]')!;
-      await act(async () => {
-        overviewBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      await flush();
-
-      // Prior to confirming: router has not committed and discovery has not persisted
-      expect(router.state.location.pathname).toBe('/settings/providers');
-      expect(readDiscoveryState(currentDiscoveryScope('local')).lifecycle).toBe('new');
-
-      // User confirms dirty navigation
-      await confirmAction();
-      await flush();
-
-      // After router commit: location is /new, wizard closed, completedAt recorded, discovery persisted
-      expect(router.state.location.pathname).toBe('/new');
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-      const discState = readDiscoveryState(currentDiscoveryScope('local'));
-      expect(discState.lifecycle).toBe('left');
-      expect(discState.route).toBe('overview');
-    });
-  });
-
-  describe('the guide states the model connection', () => {
-    it('reports nothing connected and opens the real Settings card', async () => {
-      const onClose = vi.fn();
-      await mount(onClose);
-      await toCapabilitiesStep();
-
-      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
-      expect(row?.getAttribute('data-model-connection')).toBe('missing');
-      expect(dialog().textContent).toContain('Not connected yet');
-
-      await click(dialog().querySelector('[data-model-connection-open]')!);
-      // The wizard owns no provider form: the one real page that writes a
-      // provider is the Connections card, and leaving for it ends the run.
-      expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-providers-add');
-      expect(onClose).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
-      expect(createProvider).not.toHaveBeenCalled();
-    });
-
-    it('names the model the server already reports, and writes nothing', async () => {
-      getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, providers_count: 1, default_model: 'kimi-for-coding' });
-      await mount();
-      await toCapabilitiesStep();
-
-      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
-      expect(row?.getAttribute('data-model-connection')).toBe('ready');
-      expect(row?.textContent).toContain('kimi-for-coding');
-      expect(dialog().querySelector('[data-model-connection-open]')?.textContent).toContain('Model settings');
-      expect(createProvider).not.toHaveBeenCalled();
-    });
-
-    it('does not claim a state it could not read', async () => {
-      getAuth.mockRejectedValue(new Error('auth probe failed'));
-      await mount();
-      await toCapabilitiesStep();
-
-      const row = dialog().querySelector('[data-onboarding-model-connection] [data-model-connection]');
-      expect(row?.getAttribute('data-model-connection')).toBe('unknown');
-      expect(dialog().textContent).not.toContain('Not connected yet');
-    });
-
-    it('configures no model anywhere in the run', async () => {
-      await mount();
-      await toCapabilitiesStep();
-      expect(dialog().querySelector('[data-connection-choice]')).toBeNull();
-      expect(dialog().querySelector('[data-onboarding-model-id]')).toBeNull();
-      expect(createProvider).not.toHaveBeenCalled();
-      expect(probeProviderDraft).not.toHaveBeenCalled();
       expect(dialog().textContent).toContain('Step 3 of 3');
+      expect(dialog().textContent).toContain('Look around Kiki');
+      expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
+      // Everything the hub owns stays on the hub: no second copy in the welcome.
+      expect(dialog().querySelector('[data-onboarding-cap], [data-cap-ask], [data-cap-open], [data-cap-install]')).toBeNull();
+      expect(dialog().querySelector('[data-discovery-onboarding-route], [data-discovery-onboarding-overview]')).toBeNull();
+      expect(dialog().querySelector('[data-model-connection], [data-onboarding-model-connection]')).toBeNull();
+      expect(dialog().textContent).not.toContain('What else Kiki can do');
+      // One primary, and it is the tour.
+      const starts = [...dialog().querySelectorAll('[data-onboarding-discover-start]')];
+      expect(starts.map((element) => element.textContent)).toEqual(['Discover Kiki']);
+    });
+
+    it('opens the real /discover hub and completes the run, creating nothing', async () => {
+      const onClose = vi.fn();
+      await mount(onClose);
+      await toDiscoverStep();
+
+      await click(dialog().querySelector('[data-onboarding-discover-start]')!);
+      await flush();
+
+      expect(navigate).toHaveBeenCalledWith('/discover');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(readDraft('new')).toBe('');
+      expect(readNewSessionDraft().workspaceId).toBeUndefined();
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
+    });
+
+    it('closes the run without a session, a draft or a navigation when the action is skipped', async () => {
+      const onClose = vi.fn();
+      await mount(onClose);
+      await toDiscoverStep();
+
+      await click(buttonByText('Close setup'));
+      await flush();
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+      expect(readDraft('new')).toBe('');
+      expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
     });
   });
+
 });
 
 async function mountWithDiscovery(options: {
@@ -1029,5 +682,58 @@ describe('discovery route map model connection', () => {
     expect(state.lifecycle).toBe('left');
     expect(state.route).toBe('overview');
     expect(state.station).toBe('agents');
+  });
+
+  it('never reads a saved provider record as a usable connection', async () => {
+    // The counterexample this row exists for: a managed sign-in can be
+    // configured while its login chain is not, so `auth.ready` is false with a
+    // provider already saved. A record proves configuration, not readiness.
+    getAuth.mockResolvedValue({ ...AUTH_EMPTY, providers_count: 1 });
+    listProviders.mockResolvedValue({ items: [{ id: 'managed:kimi-code', revision: 'r1' }] });
+
+    await mountWithDiscovery({
+      initialRoute: '/discover',
+      children: <DiscoveryPage onToggleSidebar={() => {}} />,
+    });
+    await flush();
+
+    const row = document.querySelector('[data-discovery-model-connection] [data-model-connection]');
+    expect(row?.getAttribute('data-model-connection')).toBe('configured');
+    expect(row?.textContent).toContain('saved, but Kiki cannot use it right now');
+    expect(row?.textContent).not.toContain('A connection is ready');
+    expect(document.querySelector('[data-model-connection-open]')?.textContent).toContain('Review connection');
+    expect(createProvider).not.toHaveBeenCalled();
+  });
+
+  it('says ready only when the auth probe says so, and names that model', async () => {
+    getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, providers_count: 1, default_model: 'kimi-for-coding' });
+    listProviders.mockResolvedValue({ items: [{ id: 'managed:kimi-code', revision: 'r1' }] });
+
+    await mountWithDiscovery({
+      initialRoute: '/discover',
+      children: <DiscoveryPage onToggleSidebar={() => {}} />,
+    });
+    await flush();
+
+    const row = document.querySelector('[data-discovery-model-connection] [data-model-connection]');
+    expect(row?.getAttribute('data-model-connection')).toBe('ready');
+    expect(row?.textContent).toContain('kimi-for-coding');
+    expect(document.querySelector('[data-model-connection-open]')?.textContent).toContain('Model settings');
+    expect(createProvider).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a state it could not read', async () => {
+    getAuth.mockRejectedValue(new Error('auth probe failed'));
+
+    await mountWithDiscovery({
+      initialRoute: '/discover',
+      children: <DiscoveryPage onToggleSidebar={() => {}} />,
+    });
+    await flush();
+
+    const row = document.querySelector('[data-discovery-model-connection] [data-model-connection]');
+    expect(row?.getAttribute('data-model-connection')).toBe('unknown');
+    expect(row?.textContent).not.toContain('A connection is ready');
+    expect(row?.textContent).not.toContain('Not connected yet');
   });
 });

@@ -275,7 +275,7 @@ const scenarios = [
 
       // Past the last step there is nowhere to go, so it keeps its original job.
       await wizard.getByRole('button', { name: text.setUpLater, exact: true }).click();
-      await wizard.locator('[data-onboarding-capabilities]').waitFor({ timeout: 8000 });
+      await wizard.locator('[data-onboarding-discover]').waitFor({ timeout: 8000 });
       await wizard.getByRole('button', { name: text.closeSetup, exact: true }).first().click();
       await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 8000 });
       expect(page.url().includes('/new'), `closing returns to where the user was, saw ${page.url()}`);

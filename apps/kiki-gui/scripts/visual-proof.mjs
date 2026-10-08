@@ -187,7 +187,7 @@ const SOURCES = {
   onboardingNext: { key: 'onboarding.next' },
   onboardingBack: { key: 'onboarding.back' },
   onboardingSaveNext: { key: 'onboarding.saveNext' },
-  onboardingFinish: { key: 'onboarding.finishFirstRun' },
+  onboardingDiscover: { key: 'discovery.title' },
   onboardingSkipForNow: { key: 'onboarding.skipForNow' },
   onboardingSkip: { key: 'onboarding.skip' },
   onboardingRecommended: { key: 'onboarding.permissions.recommended' },
@@ -5980,33 +5980,28 @@ async function scenarioFirstRun() {
   console.log(`[check] onboarding offers ${offered} permission modes`);
   await shot('onboarding-2-permissions-checked');
 
-  // The wizard gained a capabilities page after permissions, so the primary
-  // button on the permissions step advances rather than finishes.
+  // The last step is one invitation and one action, and the action is the real
+  // /discover hub — which owns the capability list, the routes and the model
+  // connection, so the welcome carries none of them.
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-onboarding-capabilities]').waitFor({ timeout: 5000 });
-  await shot('onboarding-5-capabilities');
+  await wizard().locator('[data-onboarding-discover]').waitFor({ timeout: 5000 });
+  await shot('onboarding-5-discover');
 
-  await wizardButton(S.onboardingFinish).click();
+  await wizardButton(S.onboardingDiscover).click();
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
-  // Finish is the hand-off, not a router stop: it opens a real session whose
-  // composer holds the /kiki-ops request, and sends nothing.
-  await page.waitForURL(/\/s\//, { timeout: 15_000 });
-  const composer = page.locator('textarea').first();
-  await composer.waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(600);
-  const draft = await composer.inputValue();
-  if (!draft.startsWith('/kiki-ops ')) {
-    throw new Error(`finish must leave the /kiki-ops request waiting in the composer, saw "${draft.slice(0, 80)}"`);
-  }
-  await shot('onboarding-6-finished');
-  await page.fill('textarea', '');
+  await page.waitForURL(/\/discover/, { timeout: 15_000 });
+  await page.waitForSelector('[data-discovery-page]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('onboarding-6-discover-hub');
 
-  // Nothing is configured in this fixture and the run no longer creates a
-  // provider, so the first session is expected to say so rather than greet the
-  // user with a stale selection. Creating a provider is the connections proofs'
-  // subject (visual-proof-models-page.mjs), not this walk's.
-  const diagnostics = await page.locator('[data-selection-diagnostic]').allTextContents();
-  console.log(`[first-run] diagnostics on /new with nothing configured=${JSON.stringify(diagnostics)}`);
+  // Nothing is configured in this fixture, and the hub states that instead of
+  // greeting the user with a stale selection. Creating a provider is the
+  // connections proofs' subject (visual-proof-models-page.mjs), not this walk's.
+  const hubModelState = await page.locator('[data-discovery-model-connection] [data-model-connection]').getAttribute('data-model-connection');
+  if (hubModelState !== 'missing') {
+    throw new Error(`with nothing configured the hub must say so, saw "${hubModelState}"`);
+  }
+  console.log(`[first-run] model connection on the hub with nothing configured=${hubModelState}`);
 
   // No reload check here: this fixture's own context script clears
   // `kiki.onboarding` on every load (that is what makes the wizard auto-open at

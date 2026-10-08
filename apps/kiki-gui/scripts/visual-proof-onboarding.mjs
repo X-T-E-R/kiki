@@ -1,27 +1,28 @@
 /**
- * Visual proof for the first-run onboarding run and the guide it ends on, plus
- * the tour's own model row, over the `first-run` fixture (nothing configured, so
- * the wizard auto-opens).
+ * Visual proof for the first-run onboarding run and the hub its last step opens,
+ * over the `first-run` fixture (nothing configured, so the wizard auto-opens).
  *
  *   node scripts/visual-proof-onboarding.mjs [--matrix=all] [--only=onboarding-walk]
  *
  * The run has three steps: the welcome page (language + appearance), the
- * permission default, and the guide. Connecting a model is not a page of its
- * own: the guide states the current connection — read from the server's own
- * `auth` and provider probes — and opens the Connections card in Settings that
- * actually owns sign-in and the API-key form. So the walks below check that the
- * row reaches that real card, that nothing is written from the wizard, and that
- * the tour's own row reaches it too and keeps the way back.
+ * permission default, and one invitation to the tour. The invitation is a
+ * sentence and one action — "Discover Kiki" — which opens the real /discover
+ * hub; the capability list, the four interest routes and the model connection
+ * all live on their own real pages, not in the welcome. Connecting a model
+ * happens where it is needed: the hub's row states the current connection from
+ * the server's own `auth` and provider probes and opens the Connections card in
+ * Settings that actually owns sign-in and the API-key form.
  *
  * Walks (asserted, not just captured):
- *  - onboarding-walk — welcome → approvals → guide; the capability layout, the
- *    skill install preview (cancelled), focus, and "Let Kiki set it up" opening
- *    a session whose composer holds the /kiki-ops request, unsent.
- *  - onboarding-skip — closing from the guide starts nothing and routes nowhere.
- *  - onboarding-model-connection — the guide's model row opens the real card.
- *  - discover-model-connection — the /discover map's row opens it too, leaving
- *    the tour keeps its position, and the resume tag comes back to it. The
- *    station and resume paper tags must clear the composer and the search box.
+ *  - onboarding-walk — welcome → approvals → the invitation; the closing page is
+ *    one sentence and one action (no capability rows, no route grid, no model
+ *    row, nothing to scroll), the panel is shorter than its 85vh cap, and the
+ *    action lands on the real route map.
+ *  - onboarding-skip — closing from the invitation starts nothing and routes
+ *    nowhere.
+ *  - discover-model-connection — the /discover map's row opens the real card,
+ *    leaving the tour keeps its position, and the resume tag comes back to it.
+ *    The station and resume paper tags must clear the composer and the search box.
  */
 
 import { dirname, join } from 'node:path';
@@ -32,8 +33,8 @@ import { runProof } from '../proof/runner.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TEXT = {
-  en: { next: 'Next', closeSetup: 'Close setup', ask: 'Let Kiki set it up', cancel: 'Cancel' },
-  zh: { next: '下一步', closeSetup: '关闭引导', ask: '让 Kiki 帮你配置', cancel: '取消' },
+  en: { next: 'Next', closeSetup: 'Close setup', discover: 'Discover Kiki', cancel: 'Cancel' },
+  zh: { next: '下一步', closeSetup: '关闭引导', discover: '发现 Kiki', cancel: '取消' },
 };
 
 const CONNECTIONS_CARD = '#st-card-providers-add, [data-add-connection-panel]';
@@ -49,7 +50,7 @@ async function openWizard(page) {
   return wizard;
 }
 
-/** Welcome → approvals → the guide, through the wizard's own advance. */
+/** Welcome → approvals → the closing invitation, through the wizard's own advance. */
 async function toGuide(page, wizard, text, shot) {
   await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   if (shot !== undefined) await shot('onboarding-1-welcome');
@@ -60,34 +61,53 @@ async function toGuide(page, wizard, text, shot) {
   expect(await wizard.locator('[data-onboarding-model-id]').count() === 0, 'the run holds no model form');
   if (shot !== undefined) await shot('onboarding-2-permissions');
   await wizard.getByRole('button', { name: text.next, exact: true }).click();
-  await wizard.locator('[data-onboarding-capabilities]').waitFor({ timeout: 5000 });
+  await wizard.locator('[data-onboarding-discover]').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
 }
 
-/** Layout checks that a screenshot alone can miss. */
-async function checkCapabilitiesLayout(page, label) {
+/**
+ * The closing page is one sentence and one action, and it must not pretend to
+ * be the hub: no capability rows, no route grid, no model row of its own, and no
+ * reserved empty height — the panel is a cap, so a short page stays short. All
+ * of that is geometry and the DOM, which a screenshot alone can miss.
+ */
+async function checkClosingStepLayout(page, text, label) {
   const report = await page.evaluate(() => {
-    const panel = document.querySelector('[role="dialog"] [data-onboarding-capabilities]');
-    const rows = [...document.querySelectorAll('[data-onboarding-cap]')];
-    const overflow = rows.filter((row) => row.scrollWidth > row.clientWidth + 1).map((row) => row.dataset.onboardingCap);
-    // The accent and its hover step (the pointer may rest on the button).
-    const accentRgb = ['--color-accent', '--color-accent-deep'].map((token) => {
-      const probe = document.createElement('span');
-      probe.style.color = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
-      document.body.append(probe);
-      const rgb = getComputedStyle(probe).color;
-      probe.remove();
-      return rgb;
-    });
-    const accents = [...document.querySelectorAll('[role="dialog"] button')]
-      .filter((button) => accentRgb.includes(getComputedStyle(button).backgroundColor))
-      .map((button) => button.textContent);
-    return { rows: rows.length, overflow, accents, pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1, hasPanel: panel !== null };
+    const panel = document.querySelector('[role="dialog"]');
+    const body = document.querySelector('[role="dialog"] [data-onboarding-discover]');
+    const cta = document.querySelector('[role="dialog"] [data-onboarding-discover-start]');
+    const box = panel === null ? null : panel.getBoundingClientRect();
+    const bodyBox = body === null ? null : body.getBoundingClientRect();
+    const ctaBox = cta === null ? null : cta.getBoundingClientRect();
+    const scroller = document.querySelector('[role="dialog"] [data-onboarding-step-scroll]');
+    const inside = (inner) => inner !== null && box !== null
+      && inner.top >= box.top - 1 && inner.bottom <= box.bottom + 1;
+    return {
+      panelHeight: box === null ? -1 : Math.round(box.height),
+      viewport: window.innerHeight,
+      // 85vh is the cap; a page this short must come nowhere near it.
+      reservedCap: box === null || box.height >= window.innerHeight * 0.84,
+      bodyInside: inside(bodyBox),
+      ctaInside: inside(ctaBox),
+      ctas: [...document.querySelectorAll('[role="dialog"] [data-onboarding-discover-start]')]
+        .map((element) => element.textContent),
+      legacy: {
+        caps: document.querySelectorAll('[data-onboarding-cap], [data-onboarding-capabilities]').length,
+        routes: document.querySelectorAll('[data-discovery-onboarding-route], [data-discovery-onboarding-overview]').length,
+        model: document.querySelectorAll('[data-onboarding-model-connection] [data-model-connection]').length,
+      },
+      scrolls: scroller === null ? false : scroller.scrollHeight > scroller.clientHeight + 1,
+      pageOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+    };
   });
-  expect(report.hasPanel && report.rows === 9, `${label}: expected 9 capability rows, saw ${report.rows}`);
-  expect(report.overflow.length === 0, `${label}: rows overflow ${report.overflow.join(',')}`);
+  expect(report.ctas.length === 1 && report.ctas[0] === text.discover,
+    `${label}: expected exactly one "${text.discover}" action, saw ${JSON.stringify(report.ctas)}`);
+  expect(report.legacy.caps === 0 && report.legacy.routes === 0 && report.legacy.model === 0,
+    `${label}: the closing page repeats what the hub owns ${JSON.stringify(report.legacy)}`);
+  expect(report.reservedCap !== true, `${label}: panel reserved ${report.panelHeight}px of a ${report.viewport}px viewport`);
+  expect(report.bodyInside && report.ctaInside, `${label}: the invitation or its action falls outside the panel`);
+  expect(report.scrolls !== true, `${label}: the closing page scrolls, so it is not the short page it should be`);
   expect(!report.pageOverflow, `${label}: page overflows horizontally`);
-  expect(report.accents.length === 1, `${label}: exactly one accent-filled button, saw ${JSON.stringify(report.accents)}`);
   console.log(`[layout] ${label} ${JSON.stringify(report)}`);
 }
 
@@ -122,54 +142,33 @@ async function walk({ page, view, shot }) {
   const text = TEXT[view.locale];
   const wizard = await openWizard(page);
   await toGuide(page, wizard, text, shot);
-  await checkCapabilitiesLayout(page, `caps ${view.locale} ${view.theme} ${view.width}`);
-  await shot('onboarding-3-capabilities');
-  // The body scrolls inside the dialog; capture the lower half too.
-  await wizard.locator('[data-onboarding-cap="bots"]').scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('onboarding-3-capabilities-end');
+  await checkClosingStepLayout(page, text, `closing ${view.locale} ${view.theme} ${view.width}`);
+  await shot('onboarding-3-discover');
 
-  // The model connection closes the guide, and it is a row, not a step: the
-  // current state comes from the server's own probes.
-  const modelRow = wizard.locator('[data-onboarding-model-connection] [data-model-connection]');
-  await modelRow.waitFor({ timeout: 5000 });
-  const modelState = await modelRow.getAttribute('data-model-connection');
-  expect(['missing', 'ready', 'unknown'].includes(modelState), `unexpected model state ${modelState}`);
-  expect(await wizard.locator('[data-connection-choice]').count() === 0, 'the guide configures no model inline');
-
-  // Skill install: preview first, confirm writes; cancel here.
-  await wizard.locator('[data-cap-install="claude"]').click();
-  await page.waitForSelector('[data-host-skill-dialog="ready"] [data-host-skill-path]', { timeout: 10_000 });
+  // The narrow window is where a footer with two text buttons plus a primary
+  // runs out of room first, so the same page is measured and captured there.
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
-  await shot('onboarding-3-skill-preview');
-  await page.locator('[data-host-skill-dialog] button', { hasText: text.cancel }).click();
-  await page.waitForSelector('[data-host-skill-dialog]', { state: 'detached', timeout: 5000 });
-  expect(await page.locator('[data-onboarding-capabilities]').count() === 1, 'cancelling the install keeps the wizard on its page');
+  await checkClosingStepLayout(page, text, `closing ${view.locale} ${view.theme} 390`);
+  await shot('onboarding-3-discover-narrow');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(300);
 
-  // Keyboard focus is visible on a row action.
-  await wizard.locator('[data-onboarding-cap="ssh"] [data-cap-ask]').focus();
-  await page.keyboard.press('Shift+Tab');
-  await page.keyboard.press('Tab');
-  await page.waitForTimeout(150);
-  await shot('onboarding-3-capabilities-focus');
-
-  // "Let Kiki set it up" → a session with the request pre-filled, unsent.
-  await wizard.locator('[data-onboarding-cap="ssh"] [data-cap-ask]').click();
-  await page.waitForURL(/\/s\//, { timeout: 15_000 });
-  await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
-  const composer = page.locator('textarea').first();
-  await composer.waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(600);
-  const draft = await composer.inputValue();
-  expect(draft.startsWith('/kiki-ops ') && /SSH/.test(draft), `composer must hold the /kiki-ops SSH request, saw "${draft.slice(0, 80)}"`);
-  await shot('onboarding-4-ask-session');
+  // The one action hands over to the real hub: the route map, the resume state
+  // and the model connection are all its own.
+  await wizard.locator('[data-onboarding-discover-start]').click();
+  await page.waitForURL(/\/discover/, { timeout: 15_000 });
+  await page.waitForSelector('[data-discovery-page]', { timeout: 15_000 });
+  expect(await wizard.count() === 0, 'the invitation hands over and the run ends');
+  expect(await page.locator('[data-start-route]').count() >= 4, 'the invitation opens the real route map');
+  await page.waitForTimeout(400);
+  await shot('onboarding-4-discover-hub');
 }
 
 /**
- * Leaving the run from its last step. The wizard has no "Start" button: the
- * step's own finish is "Let Kiki set it up", which opens a session, and leaving
- * without one is the close control. This walk is the second one — it must
- * dismiss without starting anything, and without routing anywhere.
+ * Leaving the run from its last step. The step's own action is the invitation;
+ * closing without taking it must dismiss without starting anything and without
+ * routing anywhere.
  */
 async function skip({ page, view }) {
   const text = TEXT[view.locale];
@@ -179,36 +178,6 @@ async function skip({ page, view }) {
   await page.waitForSelector('[role="dialog"][aria-label]', { state: 'detached', timeout: 10_000 });
   expect(page.url().includes('/new'), `closing returns to /new, saw ${page.url()}`);
   expect(await page.locator('textarea').first().inputValue() === '', 'closing leaves the composer empty');
-}
-
-/** The guide's model row leaves the run for the one page that writes a provider. */
-async function modelConnection({ page, view, shot }) {
-  const text = TEXT[view.locale];
-  const wizard = await openWizard(page);
-  await toGuide(page, wizard, text);
-  const row = wizard.locator('[data-onboarding-model-connection] [data-model-connection]');
-  await row.waitFor({ timeout: 5000 });
-  expect(await row.getAttribute('data-model-connection') === 'missing', 'this fixture has nothing configured');
-  await row.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await shot('onboarding-3-model-connection');
-
-  // The same row at the narrow width: it must wrap, not overflow.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(300);
-  await row.scrollIntoViewIfNeeded();
-  await shot('onboarding-3-model-connection-narrow');
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(300);
-
-  await wizard.locator('[data-model-connection-open]').click();
-  await page.waitForSelector(CONNECTIONS_CARD, { timeout: 20_000 });
-  const url = new URL(page.url());
-  expect(url.pathname === '/settings/ai', `the row opens the Connections card, saw ${page.url()}`);
-  expect(url.hash === '#st-card-providers-add', `the deep link names the add card, saw ${url.hash}`);
-  await page.waitForTimeout(400);
-  await shot('onboarding-4-connections-card');
-  expect(await wizard.count() === 0, 'the run ends when it leaves for the real card');
 }
 
 /**
@@ -268,7 +237,6 @@ async function discoverModelConnection({ page, view, shot, link }) {
 const scenarios = [
   { name: 'onboarding-walk', fixture: 'first-run', onboarding: false, matrix: ['theme', 'width'], run: walk },
   { name: 'onboarding-skip', fixture: 'first-run', onboarding: false, run: skip },
-  { name: 'onboarding-model-connection', fixture: 'first-run', onboarding: false, matrix: ['width'], run: modelConnection },
   { name: 'discover-model-connection', fixture: 'first-run', matrix: ['width'], run: discoverModelConnection },
 ];
 
