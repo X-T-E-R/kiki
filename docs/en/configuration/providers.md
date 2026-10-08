@@ -76,6 +76,10 @@ api_key = "sk-xxxxx"
 
 > When using the Kimi Code managed service, running `/login` automatically configures `base_url` and credentials — no manual setup needed.
 
+For the standard managed Kimi Code credential slot, Kiki can also reuse an existing Kimi Code sign-in when its own slot has no token. It reads the original home from `KIMI_CODE_HOME`, or `~/.kimi-code` by default, and follows that installation's `credentials_store` setting. This selects a credential slot, not a verified account identity. An explicitly connected original source stays selected; disconnecting it from Kiki does not delete the original credentials.
+
+With `credentials_store = "keyring"`, an unavailable keyring is a storage error, not a signed-out account; restore keyring access before retrying. `auto` mode can use a readable file copy. Reusing the source reads its credentials in place rather than copying them into Kiki's own credential directory.
+
 ## `anthropic`
 
 For connecting to the Claude API. Standard Claude models automatically enable vision, tool use, and Thinking (where supported); custom or uncovered models need `capabilities` declared explicitly on `[models.<alias>]`.

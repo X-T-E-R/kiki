@@ -76,6 +76,10 @@ api_key = "sk-xxxxx"
 
 > 使用 Kimi Code 托管服务时，`/login` 登录后会自动配置 `base_url` 和凭证，无需手动填写。
 
+对于标准的 Kimi Code 托管凭证槽，如果 Kiki 自己的凭证槽没有 token，也可以复用已有的 Kimi Code 登录。默认读取 `~/.kimi-code`，也可以用 `KIMI_CODE_HOME` 指定原版目录，并遵循该目录的 `credentials_store` 设置。这里选择的是凭证槽，不会虚构已核实的账号身份。显式连接的原版来源会保持选中；从 Kiki 断开时不会删除原版凭证。
+
+当 `credentials_store = "keyring"` 时，keyring 不可用会报告存储错误，而不是把账号标成已登出；恢复 keyring 后再重试。`auto` 模式可以使用可读的文件副本。复用原版来源时，Kiki 会原地读取凭证，不会复制到自己的凭证目录。
+
 ## `anthropic`
 
 用于对接 Claude API。标准 Claude 模型自动启用视觉、工具调用及 Thinking（如支持）；自定义或未覆盖的模型需在 `[models.<alias>]` 里显式声明 `capabilities`。

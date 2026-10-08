@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import { OAuthError, OAuthUnauthorizedError } from './errors';
+import { KimiOriginalOAuthService } from './kimi-original';
 import { createOAuthDeviceMethod } from './oauth-device-methods';
 import { decodeJwtPayload } from './oauth-method-types';
 import { openaiCodexAccountId } from './openai-codex';
@@ -32,6 +33,7 @@ export interface LocalOriginalOAuthOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly platform?: NodeJS.Platform;
   readonly now?: () => number;
+  readonly kimi?: KimiOriginalOAuthService;
 }
 
 export class LocalOriginalOAuthError extends OAuthError {
@@ -89,7 +91,11 @@ export class LocalOriginalOAuthService {
   private readonly failures = new Map<string, { generation: string; message: string }>();
   private nativeInstance: OriginalOAuthNative | undefined;
 
-  constructor(private readonly options: LocalOriginalOAuthOptions) {}
+  readonly kimi: KimiOriginalOAuthService;
+
+  constructor(private readonly options: LocalOriginalOAuthOptions) {
+    this.kimi = options.kimi ?? new KimiOriginalOAuthService({ env: options.env, managerOptions: { now: options.now } });
+  }
 
   private native(): OriginalOAuthNative {
     return this.nativeInstance ??= this.options.native ?? nativeRuntime();
@@ -240,6 +246,7 @@ export class LocalOriginalOAuthService {
   private refreshRequired(account: OriginalAccount): boolean { return account.expiresAt - this.now() <= 300; }
 
   async probe(provider: LocalOriginalOAuthProvider, requestedHome?: string, pinned?: LocalOriginalOAuthSourceRef): Promise<LocalOriginalOAuthProbe> {
+    if (provider === 'kimi-code') return this.kimi.probe(requestedHome, pinned);
     let homeDir = requestedHome ?? '';
     let backend: LocalOriginalOAuthProbe['storageBackend'] = pinned?.storageBackend ?? null;
     try {
@@ -259,7 +266,8 @@ export class LocalOriginalOAuthService {
     }
   }
 
-  async connect(provider: LocalOriginalOAuthProvider, homeDir: string | undefined, expectedAccountId: string): Promise<LocalOriginalOAuthSourceRef> {
+  async connect(provider: LocalOriginalOAuthProvider, homeDir: string | undefined, expectedAccountId?: string): Promise<LocalOriginalOAuthSourceRef> {
+    if (provider === 'kimi-code') return this.kimi.connect(homeDir);
     const loaded = await this.load(provider, this.home(provider, homeDir));
     if (loaded.account.accountId !== expectedAccountId) throw new LocalOriginalOAuthError('account_changed', 'The original account changed before it was connected.');
     this.disconnected.delete(this.key(loaded.ref));
@@ -268,6 +276,7 @@ export class LocalOriginalOAuthService {
   }
 
   async disconnect(ref: LocalOriginalOAuthSourceRef): Promise<void> {
+    if (ref.provider === 'kimi-code') return this.kimi.disconnect(ref);
     const key = this.key(ref);
     this.disconnected.add(key);
     await this.flights.get(key)?.catch(() => {});
@@ -278,10 +287,12 @@ export class LocalOriginalOAuthService {
   }
 
   async getCachedAccessToken(ref: LocalOriginalOAuthSourceRef): Promise<string | undefined> {
+    if (ref.provider === 'kimi-code') return this.kimi.getCachedAccessToken(ref);
     try { return (await this.load(ref.provider, this.home(ref.provider, ref.homeDir), ref)).account.accessToken; } catch { return undefined; }
   }
 
   getAccessToken(ref: LocalOriginalOAuthSourceRef, options?: { readonly force?: boolean }): Promise<string> {
+    if (ref.provider === 'kimi-code') return this.kimi.getAccessToken(ref, options);
     const key = this.key(ref);
     if (this.disconnected.has(key)) return Promise.reject(new LocalOriginalOAuthError('signed_out', 'This original account source is disconnected from Kiki.'));
     const flight = this.flights.get(key);

@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import { KIMI_CODE_FLOW_CONFIG } from './constants';
 import { OAuthUnauthorizedError } from './errors';
+import { KimiOriginalOAuthService } from './kimi-original';
+import type { LocalOriginalOAuthSourceRef } from './local-original-types';
 import {
   assertKimiHostIdentity,
   createKimiDefaultHeaders,
@@ -57,6 +59,7 @@ export interface KimiOAuthToolkitOptions<TConfig = unknown> {
   readonly deviceCodeTimeoutMs?: number | undefined;
   readonly refreshThreshold?: OAuthManagerOptions['refreshThreshold'];
   readonly onRefresh?: OAuthManagerOptions['onRefresh'];
+  readonly originalKimi?: KimiOriginalOAuthService;
 }
 
 export interface KimiOAuthLoginOptions extends LoginOptions {
@@ -69,6 +72,7 @@ export interface KimiOAuthLoginOptions extends LoginOptions {
 export interface KimiOAuthTokenRef {
   readonly key?: string | undefined;
   readonly oauthHost?: string | undefined;
+  readonly source?: LocalOriginalOAuthSourceRef;
 }
 
 export interface KimiOAuthLoginResult {
@@ -97,6 +101,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
   private readonly homeDir: string;
   private readonly identity: KimiHostIdentity | undefined;
   private readonly storage: TokenStorage;
+  private readonly originalKimi: KimiOriginalOAuthService | undefined;
   private readonly flowConfig: OAuthFlowConfig;
   private readonly configAdapter: ManagedKimiConfigAdapter<TConfig> | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
@@ -113,6 +118,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     this.homeDir = options.homeDir ?? defaultKikiHome();
     const credentialsDir = options.credentialsDir ?? join(this.homeDir, 'credentials');
     this.storage = options.storage ?? new FileTokenStorage(credentialsDir);
+    this.originalKimi = options.originalKimi;
     this.flowConfig = options.flowConfig ?? KIMI_CODE_FLOW_CONFIG;
     this.configAdapter = options.configAdapter;
     this.fetchImpl = options.fetchImpl;
@@ -222,7 +228,9 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     const name = providerName ?? KIMI_CODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
     const oauthKey = oauthRef?.key ?? this.defaultOAuthKey(undefined, oauthHost);
-    await this.managerFor(name, oauthKey, oauthHost).logout();
+    const original = await this.localOriginalSource(name, oauthRef);
+    if (original !== undefined) await this.originalKimi!.disconnect(original);
+    else await this.managerFor(name, oauthKey, oauthHost).logout();
     if (this.configAdapter?.remove !== undefined && name === KIMI_CODE_PROVIDER_NAME) {
       const config = await this.configAdapter.read();
       this.configAdapter.remove(config);
@@ -241,7 +249,19 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     const name = providerName ?? KIMI_CODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(options.oauthRef);
     const oauthKey = options.oauthRef?.key ?? this.defaultOAuthKey(undefined, oauthHost);
+    const original = await this.localOriginalSource(name, options.oauthRef);
+    if (original !== undefined) return this.originalKimi!.getAccessToken(original, options);
     return this.managerFor(name, oauthKey, oauthHost).ensureFresh(options);
+  }
+
+  async localOriginalSource(providerName = KIMI_CODE_PROVIDER_NAME, oauthRef?: KimiOAuthTokenRef): Promise<LocalOriginalOAuthSourceRef | undefined> {
+    if (this.originalKimi === undefined || providerName !== KIMI_CODE_PROVIDER_NAME ||
+      (oauthRef?.key ?? KIMI_CODE_OAUTH_KEY) !== KIMI_CODE_OAUTH_KEY ||
+      normalizeOAuthHost(this.oauthHostFor(oauthRef)) !== normalizeOAuthHost(KIMI_CODE_FLOW_CONFIG.oauthHost)) return undefined;
+    if (oauthRef?.source?.provider === 'kimi-code') return oauthRef.source;
+    if (await this.storage.load('kimi-code') !== undefined) return undefined;
+    const probe = await this.originalKimi.probe();
+    return probe.canConnect ? probe.sourceRef : undefined;
   }
 
   async getCachedAccessToken(
@@ -251,6 +271,8 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     const name = providerName ?? KIMI_CODE_PROVIDER_NAME;
     const oauthHost = this.oauthHostFor(oauthRef);
     const oauthKey = oauthRef?.key ?? this.defaultOAuthKey(undefined, oauthHost);
+    const original = await this.localOriginalSource(name, oauthRef);
+    if (original !== undefined) return this.originalKimi!.getCachedAccessToken(original);
     return this.managerFor(name, oauthKey, oauthHost).getCachedAccessToken();
   }
 
@@ -258,12 +280,7 @@ export class KimiOAuthToolkit<TConfig = unknown> {
     providerName?: string | undefined,
     oauthRef?: KimiOAuthTokenRef | undefined,
   ): BearerTokenProvider {
-    const name = providerName ?? KIMI_CODE_PROVIDER_NAME;
-    const oauthHost = this.oauthHostFor(oauthRef);
-    const oauthKey = oauthRef?.key ?? this.defaultOAuthKey(undefined, oauthHost);
-    return {
-      getAccessToken: (options) => this.managerFor(name, oauthKey, oauthHost).ensureFresh(options),
-    };
+    return { getAccessToken: (options) => this.ensureFresh(providerName, { oauthRef, force: options?.force }) };
   }
 
   async getManagedUsage(

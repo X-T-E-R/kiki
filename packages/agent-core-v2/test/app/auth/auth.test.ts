@@ -10,6 +10,7 @@ import {
   OAuthAccessDeniedError,
   OAuthDeviceMethods,
   LocalOriginalOAuthService,
+  KimiOriginalOAuthService,
   type TokenInfo,
 } from '@kiki/oauth';
 
@@ -1108,6 +1109,53 @@ describe('OAuthService', () => {
       expect(models['grok-build/grok-example']).toBeUndefined();
       expect((await svc.listMethods()).find((method) => method.id === 'grok-build')).toMatchObject({ signed_in: false, connection_state: 'signed_out' });
       expect(providers[NON_OAUTH_PROVIDER]).toMatchObject({ apiKey: 'sk-test' });
+    });
+
+    it('original Kimi source connects without account identity and preserves its slot through refresh and disconnect', async () => {
+      const root = join(process.cwd(), '.tmp/original-auth-service');
+      await mkdir(root, { recursive: true });
+      const dir = await mkdtemp(join(root, 'kimi-'));
+      const credentials = join(dir, 'credentials');
+      await mkdir(credentials);
+      await writeFile(join(dir, 'config.toml'), 'credentials_store = "file"\n');
+      const credentialFile = join(credentials, 'kimi-code.json');
+      const wire = JSON.stringify({ access_token: 'example-original-access', refresh_token: 'example-original-refresh',
+        expires_at: Math.floor(Date.now() / 1000) + 7200, expires_in: 7200, scope: '', token_type: 'Bearer' });
+      await writeFile(credentialFile, wire);
+      const original = new LocalOriginalOAuthService({
+        keyring: { load: async () => undefined, save: async () => { throw new Error('unexpected keyring write'); } },
+        kimi: new KimiOriginalOAuthService(),
+        parseConfig: JSON.parse,
+        env: {},
+      });
+      (toolkit as unknown as { originalSources: LocalOriginalOAuthService }).originalSources = original;
+      providers = { [NON_OAUTH_PROVIDER]: providers[NON_OAUTH_PROVIDER]! };
+      models = { 'custom-default': { provider: NON_OAUTH_PROVIDER, model: 'example-model', maxContextSize: 8192 } };
+      defaultModel = 'custom-default';
+      const fetchMock = stubManagedModelsFetch();
+      try {
+        const svc = createService();
+        const probe = await svc.probeOriginal({ provider: 'kimi-code', home_dir: dir });
+        expect(probe).toMatchObject({ state: 'ready', account: { state: 'unknown' }, can_connect: true });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(await readFile(credentialFile, 'utf8')).toBe(wire);
+        expect(await svc.connectOriginal({ provider: 'kimi-code', home_dir: dir })).toMatchObject({ state: 'ready', account: { state: 'unknown' } });
+        const ref = providers[OAUTH_PROVIDER]!.oauth!;
+        expect(ref.source).toMatchObject({ kind: 'local_original', provider: 'kimi-code', homeDir: dir, storageBackend: 'file' });
+        expect(ref.source?.accountId).toBeUndefined();
+        expect(models['kimi-code/kimi-k2']).toMatchObject({ provider: OAUTH_PROVIDER, model: 'kimi-k2' });
+        expect(defaultModel).toBe('custom-default');
+        expect((await svc.refreshOAuthProviderModels()).failed).toEqual([]);
+        expect(providers[OAUTH_PROVIDER]!.oauth?.source).toEqual(ref.source);
+        expect(defaultModel).toBe('custom-default');
+        await svc.logout('kimi-code');
+        expect(providers[OAUTH_PROVIDER]).toBeUndefined();
+        expect(providers[NON_OAUTH_PROVIDER]).toMatchObject({ apiKey: 'sk-test' });
+        expect(defaultModel).toBe('custom-default');
+        expect(await readFile(credentialFile, 'utf8')).toBe(wire);
+        expect(toolkit.logout).not.toHaveBeenCalled();
+        await expect(original.getAccessToken(ref.source!)).rejects.toMatchObject({ name: 'OAuthUnauthorizedError' });
+      } finally { await rm(dir, { recursive: true, force: true }); }
     });
 
     it('original source connects, refreshes models without changing identity selection, and disconnects without original logout', async () => {

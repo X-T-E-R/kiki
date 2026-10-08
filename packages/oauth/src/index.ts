@@ -260,3 +260,28 @@ export { LocalOriginalOAuthError, LocalOriginalOAuthService } from './local-orig
 export type { LocalOriginalOAuthOptions } from './local-original';
 export { LocalOriginalOAuthBackendSchema, LocalOriginalOAuthProviderSchema, LocalOriginalOAuthSourceRefSchema } from './local-original-types';
 export type { LocalOriginalOAuthBackend, LocalOriginalOAuthProbe, LocalOriginalOAuthProvider, LocalOriginalOAuthSourceRef, LocalOriginalOAuthState, OriginalOAuthKeyring, OriginalOAuthNative } from './local-original-types';
+
+export { KimiOriginalOAuthService } from './kimi-original';
+export type { KimiOriginalOAuthOptions } from './kimi-original';
+export {
+  registerKeyringBackend,
+  unregisterKeyringBackend,
+  getRegisteredKeyringBackend,
+  inspectTokenStorage,
+  resolveTokenStorage,
+  resolveCredentialsStoreMode,
+  probeKeyringBackend,
+  keyringServiceForCredentialsDir,
+  OAuthStorageUnavailableError,
+  KeyringTokenStorage,
+} from './keyring-storage';
+export type {
+  KeyringApi,
+  KeyringEntry,
+  KeyringOperation,
+  KeyringStorageObserver,
+  RegisteredKeyringBackend,
+  ResolveTokenStorageDeps,
+  ResolveCredentialsStoreModeDeps,
+  CredentialsStoreMode,
+} from './keyring-storage';

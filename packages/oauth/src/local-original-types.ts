@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const LocalOriginalOAuthProviderSchema = z.enum(['openai-codex', 'grok-build']);
+export const LocalOriginalOAuthProviderSchema = z.enum(['openai-codex', 'grok-build', 'kimi-code']);
 export type LocalOriginalOAuthProvider = z.infer<typeof LocalOriginalOAuthProviderSchema>;
 
 export const LocalOriginalOAuthBackendSchema = z.enum(['file', 'keyring', 'encrypted']);
@@ -12,10 +12,17 @@ export const LocalOriginalOAuthSourceRefSchema = z.object({
   homeDir: z.string().min(1),
   storageBackend: LocalOriginalOAuthBackendSchema,
   authFile: z.string().min(1).optional(),
-  accountId: z.string().min(1),
+  accountId: z.string().min(1).optional(),
   userId: z.string().min(1).optional(),
   scope: z.string().min(1).optional(),
-}).strict();
+}).strict().superRefine((source, ctx) => {
+  if (source.provider !== 'kimi-code' && source.accountId === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['accountId'], message: 'An original account identity is required.' });
+  }
+  if (source.provider === 'kimi-code' && (source.storageBackend === 'encrypted' || source.accountId !== undefined || source.userId !== undefined || source.scope !== undefined)) {
+    ctx.addIssue({ code: 'custom', message: 'Kimi Code sources select a credential slot, not an account identity.' });
+  }
+});
 export type LocalOriginalOAuthSourceRef = z.infer<typeof LocalOriginalOAuthSourceRefSchema>;
 
 export type LocalOriginalOAuthState =

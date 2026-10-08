@@ -146,7 +146,7 @@ export function DiscoveryPage({
 
                   <div className="mt-4 flex items-center justify-between pt-2 border-t border-hairline/60">
                     <span className="text-[11px] text-ink-faint">
-                      {progress.viewed ? t('discovery.finished') : `${progress.total} 站`}
+                      {progress.viewed ? t('discovery.finished') : t('discovery.stops', { count: progress.total })}
                     </span>
                     <button
                       type="button"

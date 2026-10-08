@@ -461,7 +461,7 @@ merge_all_available_skills = true
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
@@ -746,7 +746,7 @@ enter_approval_timeout_ms = 60000
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
