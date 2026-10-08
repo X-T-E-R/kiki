@@ -3288,6 +3288,33 @@ describe('Composer restored selection diagnostics', () => {
     expect(reason.textContent).toContain('compact is not available');
   });
 
+  it('says an external engine has not reported its capabilities instead of offering compaction', async () => {
+    // The default `getExecutorModels` never answers, so this is the catalogue
+    // that is not here yet — neither a declaration nor a refusal.
+    const { container } = await renderComposer({
+      execution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+      onChangeExecution: vi.fn(),
+      contextUsage: { used: 400, limit: 1000 },
+      onCompactContext: vi.fn(),
+    });
+    const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]')!;
+    expect(meter.title).toContain('has not reported its capabilities');
+    await click(meter);
+    expect(container.querySelector('[data-executor-action="manual_compact"]')).toBeNull();
+    const reason = container.querySelector('[data-context-compact-unavailable]')!;
+    expect(reason.textContent).toContain('has not reported its capabilities');
+  });
+
+  it('keeps the plain compact action on a native session', async () => {
+    const { container } = await renderComposer({
+      contextUsage: { used: 400, limit: 1000 },
+      onCompactContext: vi.fn(),
+    });
+    await click(container.querySelector<HTMLButtonElement>('[data-context-meter]')!);
+    expect(container.querySelector('[data-executor-action="manual_compact"]')).not.toBeNull();
+    expect(container.querySelector('[data-context-compact-unavailable]')).toBeNull();
+  });
+
   it('clears explicit external model and thinking overrides when following the engine again', async () => {
     const onChangeExecution = vi.fn();
     const choice = { executor: 'claude-acp', profile: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };

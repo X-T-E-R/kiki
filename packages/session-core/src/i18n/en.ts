@@ -955,6 +955,7 @@ export const en = {
   'context.compactAction': 'Compact older context',
   'context.compactUnavailable': 'This engine does not offer manual compaction.',
   'context.compactUnknown': 'This engine has not said whether manual compaction works.',
+  'context.compactUnread': 'This engine has not reported its capabilities, so manual compaction is not offered.',
   'context.meterCompactTitle': 'Context {used} of {limit}, compacts at {point}. Click for details',
   'context.meterCompactDueTitle': 'Context {used} is past the compaction point {point}. Compacts before the next step',
   'context.compact.layer.session': 'this session',

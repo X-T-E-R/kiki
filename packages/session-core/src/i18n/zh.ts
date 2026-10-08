@@ -942,6 +942,7 @@ export const zh = {
   'context.compactAction': '压缩较早上下文',
   'context.compactUnavailable': '此引擎不提供手动压缩。',
   'context.compactUnknown': '此引擎尚未说明是否支持手动压缩。',
+  'context.compactUnread': '此引擎尚未上报能力信息，因此这里不提供手动压缩。',
   'context.meterCompactTitle': '上下文 {used} / {limit}，到 {point} 时自动压缩。点击查看详情',
   'context.meterCompactDueTitle': '上下文 {used} 已超过压缩点 {point}，下一步开始前会压缩',
   'context.compact.layer.session': '本会话',

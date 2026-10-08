@@ -780,10 +780,12 @@ body[data-pane-resizing='true'] {
   max-width: none;
 }
 
+/* Floating inspector over a fullscreen preview: it keeps the preview's right
+ * edge but starts below the preview's own header, so both top rows stay clickable. */
 .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
   .conversation-rail-slot:has(.app-rail-shell) {
   position: absolute;
-  top: 0;
+  top: 2.75rem;
   right: 0;
   bottom: 0;
   z-index: 36;

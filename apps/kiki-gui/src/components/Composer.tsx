@@ -973,12 +973,12 @@ export function Composer({
     ? manualExecutorResponse.response
     : executorModelsQuery.data;
   // Manual compaction is a real control, so its declared capability lands on
-  // the meter that offers it. Only an answered catalog gates it: no response
-  // (native engine, or the query still out) leaves the meter exactly as before.
+  // the meter that offers it: a native session keeps the plain action, while an
+  // external engine's action needs an explicit declaration.
   const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
     if (executorId === undefined) return undefined;
     const control = mapExecutorCapabilities(executorModelResponse).controls.manual_compact;
-    if (control.kind === 'absent') return undefined;
+    if (control.kind === 'absent') return { available: false, reason: t('context.compactUnread') };
     if (isExecutorActionAvailable(control)) return { available: true };
     const reason = [
       t(control.kind === 'unavailable' ? 'context.compactUnavailable' : 'context.compactUnknown'),
