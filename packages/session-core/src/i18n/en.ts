@@ -10433,8 +10433,6 @@ export const en = {
   'discovery.model.unknown': 'Could not read the current connection. Open Settings to review it.',
   'discovery.model.connect': 'Connect a model',
   'discovery.model.manage': 'Model settings',
-  'discovery.model.configured': 'A connection is saved, but it is not usable right now.',
-  'discovery.model.review': 'Review connection',
   'discovery.continue': 'Continue exploring',
   'discovery.routes': 'Change route',
   'discovery.previous': 'Previous stop',

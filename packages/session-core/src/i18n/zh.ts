@@ -10341,8 +10341,6 @@ export const zh = {
   'discovery.model.unknown': '暂时读不到当前连接，可在设置中查看。',
   'discovery.model.connect': '连接模型',
   'discovery.model.manage': '模型设置',
-  'discovery.model.configured': '已保存一个连接，但目前无法使用。',
-  'discovery.model.review': '检查连接',
   'discovery.continue': '继续看',
   'discovery.routes': '换条路线',
   'discovery.previous': '上一站',
