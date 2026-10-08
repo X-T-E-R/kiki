@@ -1897,6 +1897,50 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
+  it.each([false, true])('recovers an unloaded history preview from stale without repeating its source token (repeat stale: %s)', async (repeatStale) => {
+    const { controller, client } = await openTranscriptController({ historyPreviewBytes: 512 });
+    const target = { ...historyTurn(0), prompt: 'Original preview '.repeat(150), steps: [{ kind: 'step' as const, stepId: 'step-0', turnId: 'history-0', ordinal: 0,
+      state: 'completed' as const, frames: [{ kind: 'text' as const, frameId: 'frame-0', role: 'assistant' as const, text: 'Recorded response '.repeat(150) }] }] };
+    const stale: AgentTranscriptResponse = { agent_id: 'main', items: [], has_more: true,
+      read: { source: 'cold', readiness: 'partial', stale: { reason: 'source_changed', retry: 'authoritative' } } };
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'old-live-source-token' }), 1, true));
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [target], has_more: false });
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+      const recovery = deferred<AgentTranscriptResponse>();
+      client.getAgentTranscript.mockResolvedValueOnce(stale).mockImplementationOnce(() => recovery.promise);
+      const release = controller.retainHistoryPreview('main', target.turnId);
+      const loading = controller.loadHistoryPreview('main', target.turnId);
+      await waitFor(() => client.getAgentTranscript.mock.calls.length === 3);
+      const sameFlight = controller.loadHistoryPreview('main', target.turnId);
+      expect(historyTexts(controller)[0]).not.toBe(target.prompt);
+      expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+      recovery.resolve(repeatStale ? stale : {
+        agent_id: 'main', items: [target], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' },
+      });
+      expect(await loading).toBe(!repeatStale);
+      expect(await sameFlight).toBe(!repeatStale);
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'old-live-source-token' });
+      expect(client.getAgentTranscript.mock.calls[2]?.[2]).toMatchObject({ beforeItem: undefined, beforeTurn: 'history-1' });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+      if (repeatStale) {
+        expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+        expect(controller.getState().detailLoads['history:history-0']).toEqual({ status: 'error', message: 'History preview continuation is still stale' });
+        client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [target], has_more: false });
+        expect(await controller.loadHistoryPreview('main', target.turnId)).toBe(true);
+        expect(client.getAgentTranscript.mock.calls[3]?.[2]).toMatchObject({ beforeItem: undefined, beforeTurn: 'history-1' });
+      }
+      expect(historyTexts(controller)[0]).toBe(target.prompt);
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant' && block.turnId === target.turnId)).toMatchObject({ text: target.steps[0]!.frames[0]!.text });
+      expect(controller.getState().historyRead).toMatchObject({ source: 'cold', readiness: 'partial' });
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(await controller.loadHistoryPreview('main', target.turnId)).toBe(false);
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(repeatStale ? 4 : 3);
+      release();
+    } finally { controller.close(); }
+  });
+
   it('reads 1100 turns only on explicit continuation demand while preserving live newest messages', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     const turns = Array.from({ length: 1100 }, (_, ordinal) => historyTurn(ordinal));

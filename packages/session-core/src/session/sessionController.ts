@@ -1258,12 +1258,35 @@ export class SessionController {
     this.setDetailLoad(agentId, `history:${turnId}`, { status: 'loading' });
     const promise = (async () => {
       try {
-        const result = await this.readPreparedContent(() => this.view.transcript.page({ agentId,
-          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal }), controller.signal);
-        if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        const obsolete = () => this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation;
+        const read = () => this.view.transcript.page({ agentId,
+          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal });
+        let result = await this.readPreparedContent(read, controller.signal);
+        if (obsolete()) return false;
+        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        if (result.read?.stale !== undefined) {
+          const group = [...this.historyPreviewPages.entries()].filter(([, candidate]) => candidate.agentId === agentId &&
+            candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn);
+          const groupKeys = new Set(group.map(([candidateKey]) => candidateKey));
+          const items = this.composeAgentSnapshot(agentId).items;
+          const end = items.findLastIndex((item) => item.kind === 'turn' && groupKeys.has(`${agentId}/${item.turnId}`));
+          const next = items.slice(end + 1).find((item) => item.kind === 'turn');
+          for (const [, candidate] of group) {
+            candidate.beforeItem = undefined;
+            candidate.beforeTurn = next?.kind === 'turn' ? next.turnId : candidate.beforeTurn;
+          }
+          const flight = this.historyPreviewReads.get(requestKey);
+          if (flight !== undefined) this.historyPreviewReads.set(JSON.stringify([agentId, page.beforeItem, page.beforeTurn]), flight);
+          this.historyReads.set(agentId, result.read);
+          this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId), { historyCoverageKind: 'unknown' });
+          if (result.read.stale.retry === 'resync') { void this.resync(); return false; }
+          result = await this.readAuthoritativeTranscriptContinuation(read, 'History preview continuation is still stale', controller.signal);
+          if (obsolete()) return false;
+          if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        }
         const older = this.olderPages.get(agentId);
         if (older === undefined) return false;
-        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        if (result.read !== undefined) this.historyReads.set(agentId, result.read);
         const restored = new Map(result.items.flatMap((item) => item.kind === 'turn' ? [[item.turnId, item] as const] : []));
         if (!restored.has(turnId)) throw new Error('History preview is no longer available at its cursor');
         this.olderPages.set(agentId, { ...older, items: older.items.map((item) => {
@@ -1279,13 +1302,13 @@ export class SessionController {
         this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId));
         return true;
       } catch (error) {
-        if (!controller.signal.aborted) for (const [candidateKey, candidate] of this.historyPreviewPages) {
+        if (!this.closed && !controller.signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) for (const [candidateKey, candidate] of this.historyPreviewPages) {
           if (candidate.agentId === agentId && candidate.unloaded && candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn)
             this.setDetailLoad(agentId, `history:${candidateKey.slice(agentId.length + 1)}`, { status: 'error', message: errorMessage(error, 'Could not load history preview') });
         }
         return false;
       } finally {
-        if (this.historyPreviewReads.get(requestKey)?.controller === controller) this.historyPreviewReads.delete(requestKey);
+        for (const [flightKey, flight] of this.historyPreviewReads) if (flight.controller === controller) this.historyPreviewReads.delete(flightKey);
       }
     })();
     this.historyPreviewReads.set(requestKey, { controller, promise });
@@ -1370,9 +1393,8 @@ export class SessionController {
           void this.resync();
           return false;
         }
-        page = await read();
+        page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
         if (obsolete()) return false;
-        if (page.read?.stale !== undefined) throw new Error('History continuation is still stale');
       }
       const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
       const pageReadiness = page.read?.readiness;
@@ -1903,6 +1925,12 @@ export class SessionController {
     } finally { this.contentPumpRunning = false; }
   }
 
+  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(read: () => Promise<T>, staleMessage: string, signal?: AbortSignal): Promise<T> {
+    const result = await this.readPreparedContent(read, signal);
+    if (result.read?.stale !== undefined) throw new Error(staleMessage);
+    return result;
+  }
+
   private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     let failures = 0;
     for (;;) {
@@ -2032,9 +2060,9 @@ export class SessionController {
           this.entityPageCursors.delete(requestKey);
           cursor = undefined;
           if (page.read.stale.retry === 'resync') { void this.resync(); return false; }
-          page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
+          page = await this.readAuthoritativeTranscriptContinuation(() => read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal }),
+            'Transcript entity continuation is still stale', controller.signal);
           if (obsolete() || page.agent_id !== agentId || page.kind !== kind) return false;
-          if (page.read?.stale !== undefined) throw new Error('Transcript entity continuation is still stale');
         }
         const partial = page.read !== undefined && page.read.readiness !== 'ready';
         if (page.has_more && !(partial && page.items.length === 0) && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) throw new Error('Transcript entity page did not advance its cursor');
