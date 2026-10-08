@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- [`9d66fa1`](https://github.com/X-T-E-R/kiki/commit/9d66fa1aa9b8e23a9b90869eaf8b87c32c818988) - Prevent packaged search indexers from loading the full application during startup.
+
 - [`bc81b86`](https://github.com/X-T-E-R/kiki/commit/bc81b861cdf82184ed2d586ea81c391df35aae4a) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Preserve images, audio and embedded resources from external ACP engines.
 
 - [`e172daf`](https://github.com/X-T-E-R/kiki/commit/e172daf2bd4592e734883950ff135ed955521abd) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Fix Antigravity startup with custom home directories or unreadable auxiliary settings.
