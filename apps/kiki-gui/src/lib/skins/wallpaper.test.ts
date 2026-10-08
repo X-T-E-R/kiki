@@ -53,6 +53,18 @@ describe('wallpaper material', () => {
     expect(start, selector).toBeGreaterThanOrEqual(0);
     return css.slice(start, css.indexOf('\n}', start));
   };
+  /** Every rule whose selector list starts with `selector`. A selector may be
+   * shared by the base rule and a scoped override, so tests that pin the
+   * override ask for all of them rather than the first. */
+  const rules = (selector: string) => {
+    const pattern = new RegExp(`${selector.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,{ ]`, 'g');
+    const found: string[] = [];
+    for (let match = pattern.exec(css); match !== null; match = pattern.exec(css)) {
+      found.push(css.slice(match.index, css.indexOf('\n}', match.index)));
+    }
+    expect(found.length, selector).toBeGreaterThanOrEqual(1);
+    return found;
+  };
 
   it('makes the application shell transparent even inside root wrappers', () => {
     const shell = rule(':root[data-kiki-bg] #root .bg-canvas:has(> .app-stage)');
@@ -86,6 +98,63 @@ describe('wallpaper material', () => {
     expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-surface-filter: none;');
   });
 
+  it('splits the work surface into one material by geometry, not by heavier paper', () => {
+    const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    const layout = readFileSync(resolve(import.meta.dirname, '../../index.css'), 'utf8');
+    // Every reading region is the same paper@dial on the same corner and lies
+    // flat: a pane lift beside a flat sheet would read as a second material.
+    const regions = [
+      `${scope} .app-sheet > .conversation-shell .conversation-center`,
+      `${scope} .app-sheet > .conversation-shell :is(.app-rail, .preview-workspace:not(.preview-workspace--overlay))`,
+    ];
+    for (const selector of regions) {
+      const region = rules(selector).at(-1)!;
+      expect(region, selector).toContain('background-color: var(--kiki-surface-paper);');
+      expect(region, selector).toContain('border-radius: var(--kiki-sheet-radius);');
+      expect(region, selector).toContain('box-shadow: none;');
+    }
+    // The agent tab is a page docked inside the preview pane, so it shares that
+    // pane's paper rather than stacking a second layer of it.
+    expect(rules(`${scope} [data-agent-tab-workspace]`).at(-1)).toContain('background-color: transparent;');
+    // The wrapper is never repainted: the seams between regions show the picture.
+    expect(css).not.toContain(`${scope} .app-sheet:has(> .conversation-shell)`);
+    // Separation is geometry: the stage's own margin beside the sidebar, and the
+    // gap the row already carries between its panes.
+    expect(rule(`${scope} .app-stage`)).toContain('padding-left: var(--kiki-stage-gap);');
+    expect(layout).toMatch(/\.app-sheet > \.conversation-shell \.conversation-row \{\s*gap: var\(--kiki-stage-gap\);/);
+    // With the assist on, the desktop drops the local bands and the per-surface
+    // frost: the region ground plus ONE environmental frost carry the text.
+    const bands = [
+      `${assist} .conversation-center div:has(> [data-transcript-scroll])::before`,
+      `${assist} [data-settings-scroll] > .mx-auto::before`,
+      `${assist} [data-settings-nav-tree]::before`,
+    ];
+    for (const selector of bands) {
+      expect(rules(selector).some((text) => text.includes('display: none;')), selector).toBe(true);
+    }
+    expect(rules(`${assist} :is(.app-rail, [data-preview-workspace])`).some((text) => text.includes('backdrop-filter: none;'))).toBe(true);
+    expect(css).toContain('--kiki-surface-filter: blur(calc(var(--kiki-surface-blur, 0px) + 8px)) saturate(1.1);');
+    // The faint tier rises toward the primary ink on the work surface too.
+    const ink = rule(`${assist} .app-sheet`);
+    expect(ink).toContain('--color-ink-soft: var(--color-ink);');
+    expect(ink).toContain('--color-ink-faint: color-mix(in srgb, var(--color-ink) 92%, var(--kiki-ink-faint-base));');
+    // Everything above is the md-and-up layer: it lives inside the desktop media
+    // query, and the phone block (which keeps the bands and the frost) comes after.
+    const desktop = css.indexOf('@media (min-width: 768px)');
+    const phone = css.indexOf('@media (max-width: 767px)');
+    expect(desktop).toBeGreaterThan(-1);
+    expect(desktop).toBeLessThan(phone);
+    for (const selector of [...regions, `${scope} .app-stage`]) {
+      expect(css.lastIndexOf(selector), selector).toBeGreaterThan(desktop);
+      expect(css.lastIndexOf(selector), selector).toBeLessThan(phone);
+    }
+    expect(rules(bands[0]!)[0]).toContain('background: var(--kiki-text-paper);');
+    // Reduced transparency drops the assist's 8px with the layer it rides: the
+    // branch is later in the file at the same specificity, so it wins.
+    expect(css.lastIndexOf('--kiki-surface-filter: none;')).toBeGreaterThan(css.indexOf('blur(calc(var(--kiki-surface-blur, 0px) + 8px))'));
+  });
+
   it('keeps page and inspector washes on the dial with assist using frost instead of an opaque floor', () => {
     const scope = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
     const assist = ":root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
@@ -99,7 +168,14 @@ describe('wallpaper material', () => {
     expect(rule(`${scope} [data-task-board-page] [data-task-board-container]`)).toContain('background-color: transparent;');
     expect(css).toContain('--kiki-reading-filter: blur(max(6px, var(--kiki-surface-blur, 0px))) saturate(1.1);');
     expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-reading-filter: none;');
-    expect(css).not.toMatch(/background(?:-color)?: var\(--kiki-solid-(?:paper|panel)\)/);
+    // The solved solid floor stays off every wash surface. Its one use is the
+    // rail lifted over a fullscreen preview: that one is a floating piece, and
+    // the design says so (see the separate-papers block).
+    expect(css.match(/background(?:-color)?: var\(--kiki-solid-(?:paper|panel)\)/g)).toEqual([
+      'background-color: var(--kiki-solid-panel)',
+    ]);
+    expect(rule(`${scope} .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden])) .app-rail`))
+      .toContain('background-color: var(--kiki-solid-panel);');
   });
 
   it('sizes replaced media explicitly instead of falling back to intrinsic dimensions', () => {

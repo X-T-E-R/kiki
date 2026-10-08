@@ -410,11 +410,109 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+/* ---- separate papers: one material, split by geometry ----
+ * A picture behind the app must not merge its blocks into one wash, and it must
+ * not need a heavier material to be read: so every reading region is the same
+ * paper@dial as a sheet lying flat on the picture — the conversation column, the
+ * docked preview (whichever page it hosts: an agent tab or a code view), and the
+ * inspector. What separates them is geometry alone: the stage gap the row already
+ * carries between its panes, the shared sheet corner, and the stage's own left
+ * margin. A sheet on the picture is never lifted, so these panes drop the sheet
+ * shadow the product gives them. The conversation wrapper stays transparent
+ * (index.css: it steps aside and lets the row carry the gaps), which is what lets
+ * the seams show the picture instead of a second layer of paper.
+ *
+ * The phone layout is a different geometry — the sidebar is a drawer, the rail
+ * and the preview are overlay drawers sized to the viewport — so this block
+ * starts at md and every phone width keeps what it shipped: its local text
+ * bands, its per-surface reading frost, and solid drawers. */
+@media (min-width: 768px) {
+  /* The main column is inset from the sidebar by the same gap the panes use, so
+   * the column beside the sidebar reads as a second block on the picture. */
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-stage {
+    padding-left: var(--kiki-stage-gap);
+  }
+  /* One material and one corner per region. The column keeps the clipping the
+   * product already gives it (index.css), so the corner needs no new overflow —
+   * and the rail, which is a scroller, gets the corner without one. */
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell .conversation-center {
+    background-color: var(--kiki-surface-paper);
+    border-radius: var(--kiki-sheet-radius);
+    box-shadow: none;
+  }
+  /* The reading band and the settings bands are the phone layout's answer to a
+   * picture under text: a solved text layer drawn over the column. At this width
+   * the pane's own paper@dial plus the one environmental frost below carry the
+   * text, and a band would be exactly the opaque floor this design rejects. */
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-center div:has(> [data-transcript-scroll])::before,
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-scroll] > .mx-auto::before,
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-settings-nav-tree]::before {
+    display: none;
+  }
+  /* Same reason for the per-surface reading frost: the assist softens the
+   * picture once, environmentally, instead of blurring each pane again over its
+   * own wash (two stacked blurs are what the single-layer rule forbids). */
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet:not(:has(> .conversation-shell)):not(:has([data-settings-scroll])),
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is(.app-rail, [data-preview-workspace]) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* The assist's whole texture treatment: the one frost layer that already
+   * covers the scoped picture — seams and the margin behind the chrome included
+   * — takes 8px on top of the user's surface blur, so no second blur is stacked
+   * anywhere. Redefining the filter that layer reads means the sticky chrome that
+   * shares the token is off under the assist (see the rules above). 8px is a
+   * product constant, not a user-facing dial, and the whole declaration is
+   * dropped under prefers-reduced-transparency (the branch at the end of this
+   * file repeats it as `none`). */
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) {
+    --kiki-surface-filter: blur(calc(var(--kiki-surface-blur, 0px) + 8px)) saturate(1.1);
+  }
+  /* The faint tier of the chrome over a picture rises toward the primary ink —
+   * the same remap the sidebar and the rail already carry, extended to the work
+   * surface so the whole window answers one rule. The tier keeps its order and
+   * returns with the skin off; a dial the user lowers still trades readability by
+   * their own choice. */
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet {
+    --color-ink-soft: var(--color-ink);
+    --color-ink-faint: color-mix(in srgb, var(--color-ink) 92%, var(--kiki-ink-faint-base));
+  }
+  /* Docked panes only: below lg the rail and the preview are overlay drawers
+   * over the stage, so they keep the drawer's own lift and wash (index.css). */
+  @media (min-width: 1024px) {
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .conversation-shell :is(.app-rail, .preview-workspace:not(.preview-workspace--overlay)) {
+      background-color: var(--kiki-surface-paper);
+      border-radius: var(--kiki-sheet-radius);
+      box-shadow: none;
+    }
+    /* The agent tab is a page docked inside the preview pane, so it shares that
+     * pane's paper instead of stacking a second layer of it: the doubled wash
+     * would read as a different material from the code view next to it. (Below lg
+     * the drawer keeps its pane ground, which is panel, so this moves with it.) */
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-agent-tab-workspace] {
+      background-color: transparent;
+    }
+    /* A fullscreen preview lifts the rail over the picture: that one is a
+     * floating piece, so it keeps the solid panel token and the drawer's own
+     * lift rather than the flat-sheet treatment of the docked regions. */
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden])) .app-rail {
+      background-color: var(--kiki-solid-panel);
+      box-shadow: var(--kiki-sheet-shadow), -12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+    }
+  }
+}
+
 /* Performance and reduced-transparency: the same layers, no live blur. */
 @media (prefers-reduced-transparency: reduce) {
   :root[data-kiki-bg] {
     --kiki-surface-filter: none;
     --kiki-reading-filter: none;
+  }
+  /* The assist's 8px rides the same filter, so the same branch drops it:
+   * reduced transparency means no live blur, not a softer one. Repeating the
+   * declaration at the same specificity is what makes the branch win. */
+  :root[data-kiki-bg-assist]:is([data-kiki-bg='window'], [data-kiki-bg='main']) {
+    --kiki-surface-filter: none;
   }
 }
 /* Phone widths: the sidebar is a drawer over the sheet, not over the media,
