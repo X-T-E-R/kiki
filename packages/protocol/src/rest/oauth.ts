@@ -123,14 +123,18 @@ export type ManagedUsageResult = z.infer<typeof managedUsageResultSchema>;
 export const originalOAuthStateSchema = z.enum(['ready', 'refresh_required', 'signed_out', 'unreadable', 'unsupported', 'account_changed', 'refresh_failed']);
 export const originalOAuthStorageBackendSchema = z.enum(['file', 'keyring', 'encrypted', 'ephemeral']).nullable();
 export const originalOAuthRequestSchema = z.object({
-  provider: z.enum(['openai-codex', 'grok-build']),
+  provider: z.enum(['openai-codex', 'grok-build', 'kimi-code']),
   home_dir: z.string().min(1).optional(),
 });
 export type OriginalOAuthRequest = z.infer<typeof originalOAuthRequestSchema>;
-export const connectOriginalOAuthRequestSchema = originalOAuthRequestSchema.extend({ expected_account_id: z.string().min(1) });
+export const connectOriginalOAuthRequestSchema = originalOAuthRequestSchema.extend({ expected_account_id: z.string().min(1).optional() }).superRefine((request, ctx) => {
+  if (request.provider !== 'kimi-code' && request.expected_account_id === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['expected_account_id'], message: 'Confirm the original account identity before connecting.' });
+  }
+});
 export type ConnectOriginalOAuthRequest = z.infer<typeof connectOriginalOAuthRequestSchema>;
 export const originalOAuthProbeSchema = z.object({
-  provider: z.enum(['openai-codex', 'grok-build']),
+  provider: z.enum(['openai-codex', 'grok-build', 'kimi-code']),
   home_dir: z.string(),
   storage_backend: originalOAuthStorageBackendSchema,
   state: originalOAuthStateSchema,
