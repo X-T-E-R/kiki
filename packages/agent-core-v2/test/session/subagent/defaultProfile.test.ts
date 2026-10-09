@@ -2,12 +2,13 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import type { IConfigService } from '#/app/config/config';
 import { SubagentTool } from '#/agent/tools/agent/agentTool';
 import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
+import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import {
   DEFAULT_SUBAGENT_PROFILE,
   SUBAGENT_SECTION,
@@ -104,10 +105,40 @@ describe('SubagentToolInputSchema', () => {
 });
 
 describe('subagent workspace roots', () => {
-  it('round-trips persisted roots without admitting arbitrary metadata', () => {
+  it('round-trips persisted roots and rejects malformed metadata closed', () => {
     const meta = { labels: workspaceRootsLabels({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] }) };
     expect(subagentWorkspaceRoots(meta)).toEqual({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] });
-    expect(subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{"workDir":3}' } })).toBeUndefined();
+    expect(() => subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{"workDir":3}' } }, 'child'))
+      .toThrow(/Persisted workspace roots for agent "child" are invalid/);
+    expect(() => subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{' } }, 'child'))
+      .toThrow(/invalid JSON/);
+  });
+
+  it('uses persisted roots on cold restore instead of caller roots and fails closed when they are corrupt', async () => {
+    const persisted = { workDir: 'C:/writer', additionalDirs: ['C:/materials'] };
+    const startCreate = vi.fn((_agentId: string, opts: unknown) => Promise.resolve(opts));
+    const service = Object.create(AgentLifecycleService.prototype) as {
+      readonly createInternal: (input: Record<string, unknown>) => Promise<unknown>;
+      sessionMetadata: { read: () => Promise<unknown> };
+      slots: Map<string, unknown>;
+      startCreate: typeof startCreate;
+    };
+    service.slots = new Map();
+    service.startCreate = startCreate;
+    service.sessionMetadata = {
+      read: async () => ({ agents: { child: { labels: workspaceRootsLabels(persisted) } } }),
+    };
+
+    await service.createInternal({ agentId: 'child', workspaceRoots: { workDir: 'C:/caller' } });
+    expect(startCreate).toHaveBeenCalledWith('child', expect.objectContaining({ workspaceRoots: persisted }));
+
+    service.sessionMetadata = {
+      read: async () => ({ agents: { child: { labels: { agentWorkspaceRoots: '{' } } } }),
+    };
+    await expect(service.createInternal({ agentId: 'child' })).rejects.toMatchObject({
+      code: ErrorCodes.CONFIG_INVALID,
+      details: { agentId: 'child', label: 'agentWorkspaceRoots' },
+    });
   });
 });
 

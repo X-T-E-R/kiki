@@ -31,11 +31,13 @@ import { makeHookRunner } from '../features/externalHooks/runner-stub';
 import { IAgentProfileService, type PreparedModelSwitchBinding, type ProfileData } from '#/agent/profile/profile';
 import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentPermissionPolicyService } from '#/agent/permissionPolicy/permissionPolicy';
+import { IAgentRuntimeService, IAgentWorkspaceRootsSeed } from '#/agent/runtimeBinding/agentRuntime';
 import { ToolAccesses, type ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentUserToolService, type UserToolRegistration } from '#/agent/userTool/userTool';
 import {
@@ -69,6 +71,7 @@ import { normalizeAgentProfile, type AgentProfile } from '#/app/agentProfileCata
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { IWireService } from '#/wire/wire';
@@ -1701,6 +1704,124 @@ describe('AgentRun tool execution contract', () => {
 
     if (execution.isError === true) throw new Error('expected runnable execution');
     expect(execution.accesses).toEqual(ToolAccesses.none());
+  });
+
+  it('passes typed roots to lifecycle while preserving the parent session cwd', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    const context = createAgentToolContext(lifecycle);
+    const runtime = context.get(IAgentRuntimeService).inspect();
+    const roots = runtime.path.separator === '\\'
+      ? { workDir: 'C:\\kiki-agent-writer-root', additionalDirs: ['C:\\kiki-agent-material-root'] }
+      : { workDir: '/kiki-agent-writer-root', additionalDirs: ['/kiki-agent-material-root'] };
+    const parentCwd = context.get(ISessionWorkspaceContext).workDir;
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      profile: 'explore',
+      workDir: roots.workDir,
+      additionalDirs: roots.additionalDirs,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(lifecycle.create).toHaveBeenCalledWith(expect.objectContaining({ workspaceRoots: roots }));
+    expect(context.get(ISessionWorkspaceContext).workDir).toBe(parentCwd);
+  });
+
+  it('inherits pinned roots when a nested AgentRun omits roots', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    lifecycle.addHandle('agent-parent', 'agent');
+    const context = createAgentToolContext(
+      lifecycle,
+      agentService(IAgentScopeContext, makeAgentScopeContext({
+        agentId: 'agent-parent', parentAgentId: 'main', agentScope: 'agents/agent-parent',
+      })),
+      agentService(IAgentWorkspaceRootsSeed, {
+        _serviceBrand: undefined,
+        roots: { workDir: '/kiki-agent-writer-root', additionalDirs: ['/kiki-agent-material-root'] },
+      }),
+    );
+    Object.assign(context.get(IAgentRuntimeService), {
+      workspaceRoots: () => ({ workDir: '/kiki-agent-writer-root', additionalDirs: ['/kiki-agent-material-root'] }),
+    });
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      profile: 'explore',
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(lifecycle.create).toHaveBeenCalledWith(expect.objectContaining({
+      delegator: { kind: 'agent', agentId: 'agent-parent' },
+      workspaceRoots: { workDir: '/kiki-agent-writer-root', additionalDirs: ['/kiki-agent-material-root'] },
+    }));
+  });
+
+  it('declares external roots as implicit external accesses for the permission gate', async () => {
+    const context = createAgentToolContext();
+    const runtime = context.get(IAgentRuntimeService).inspect();
+    const args = {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      profile: 'explore',
+      workDir: runtime.path.separator === '\\' ? 'C:\\kiki-agent-writer-root' : '/kiki-agent-writer-root',
+      additionalDirs: [runtime.path.separator === '\\' ? 'C:\\kiki-agent-material-root' : '/kiki-agent-material-root'],
+    };
+
+    const execution = await agentTool(context).resolveExecution(args);
+    if (execution.isError === true) throw new Error('expected runnable execution');
+    expect(execution.accesses).toEqual([
+      {
+        kind: 'file',
+        operation: 'readwrite',
+        path: args.workDir,
+        recursive: true,
+        implicitExternal: true,
+      },
+      {
+        kind: 'file',
+        operation: 'readwrite',
+        path: args.additionalDirs[0],
+        recursive: true,
+        implicitExternal: true,
+      },
+    ]);
+
+    const decision = await context.get(IAgentPermissionPolicyService).evaluate({
+      turnId: 0,
+      signal,
+      toolCall: {
+        type: 'function',
+        id: 'call-agent-roots',
+        name: 'AgentRun',
+        arguments: JSON.stringify(args),
+      },
+      toolCalls: [],
+      args,
+      execution,
+    } satisfies ResolvedToolExecutionHookContext);
+    expect(decision).toMatchObject({
+      policyName: 'external-link-access-ask',
+      result: { kind: 'ask' },
+    });
+    context.get(IAgentPermissionModeService).setMode('yolo');
+    await expect(context.get(IAgentPermissionPolicyService).evaluate({
+      turnId: 0,
+      signal,
+      toolCall: {
+        type: 'function',
+        id: 'call-agent-roots-yolo',
+        name: 'AgentRun',
+        arguments: JSON.stringify(args),
+      },
+      toolCalls: [],
+      args,
+      execution,
+    } satisfies ResolvedToolExecutionHookContext)).resolves.toMatchObject({
+      policyName: 'yolo-mode-approve',
+      result: { kind: 'approve' },
+    });
   });
 
   it('uses the resumed agent profile in the activity description', async () => {

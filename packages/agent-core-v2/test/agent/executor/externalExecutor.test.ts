@@ -2450,18 +2450,24 @@ describe('ACP external executor', () => {
     expect(metadata?.losses).toEqual(expect.arrayContaining(['additional_directories_dropped']));
   });
 
-  it('keeps approved input roots in ACP open options on first and subsequent prompts without a loss', async () => {
+  it('uses pinned agent roots in ACP open options without changing the parent session cwd', async () => {
     const harness = createHarness({
       capabilities: { sessionCapabilities: { additionalDirectories: {} } },
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
-    Object.assign(harness.workspace, { workDir: 'C:\\worktrees\\child',
-      additionalDirs: ['C:\\materials\\review', 'C:\\materials\\profiles'] });
+    Object.assign(harness.workspace, { workDir: 'C:\\parent', additionalDirs: ['C:\\parent-shared'] });
+    Object.assign(harness.runtime, {
+      workspaceRoots: () => ({
+        workDir: 'C:\\worktrees\\child',
+        additionalDirs: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      }),
+    });
     for (const prompt of ['work', 'continue']) {
       const run = await harness.session.run({ kind: 'prompt', prompt }, { signal: new AbortController().signal });
       await run.completion;
       await harness.session.settled();
     }
+    expect(harness.workspace.workDir).toBe('C:\\parent');
     expect(harness.opens).toHaveLength(2);
     for (const opened of harness.opens) {
       expect(opened.cwd).toBe('C:\\worktrees\\child');

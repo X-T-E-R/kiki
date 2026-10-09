@@ -1,3 +1,4 @@
+import { Error2, ErrorCodes } from '#/errors';
 import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
@@ -22,21 +23,37 @@ export function workspaceRootsLabels(roots: RuntimeWorkspaceRoots): Readonly<Rec
   };
 }
 
-export function subagentWorkspaceRoots(meta: AgentMeta | undefined): RuntimeWorkspaceRoots | undefined {
+export function subagentWorkspaceRoots(
+  meta: AgentMeta | undefined,
+  agentId?: string,
+): RuntimeWorkspaceRoots | undefined {
   const raw = meta?.labels?.[AGENT_WORKSPACE_ROOTS_LABEL];
   if (raw === undefined) return undefined;
+  let parsed: { workDir?: unknown; additionalDirs?: unknown };
   try {
-    const parsed = JSON.parse(raw) as { workDir?: unknown; additionalDirs?: unknown };
-    if (typeof parsed.workDir !== 'string' || parsed.workDir.length === 0) return undefined;
-    if (parsed.additionalDirs !== undefined && (!Array.isArray(parsed.additionalDirs) ||
-      parsed.additionalDirs.some((dir) => typeof dir !== 'string'))) return undefined;
-    return {
-      workDir: parsed.workDir,
-      additionalDirs: parsed.additionalDirs as string[] | undefined,
-    };
+    parsed = JSON.parse(raw) as { workDir?: unknown; additionalDirs?: unknown };
   } catch {
-    return undefined;
+    throw invalidWorkspaceRoots(agentId, 'invalid JSON');
   }
+  if (typeof parsed.workDir !== 'string' || parsed.workDir.trim().length === 0) {
+    throw invalidWorkspaceRoots(agentId, 'workDir must be a non-empty string');
+  }
+  if (parsed.additionalDirs !== undefined && (!Array.isArray(parsed.additionalDirs) ||
+    parsed.additionalDirs.some((dir) => typeof dir !== 'string' || dir.trim().length === 0))) {
+    throw invalidWorkspaceRoots(agentId, 'additionalDirs must be an array of non-empty strings');
+  }
+  return {
+    workDir: parsed.workDir,
+    additionalDirs: parsed.additionalDirs as string[] | undefined,
+  };
+}
+
+function invalidWorkspaceRoots(agentId: string | undefined, reason: string): Error2 {
+  return new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Persisted workspace roots${agentId === undefined ? '' : ` for agent "${agentId}"`} are invalid: ${reason}`,
+    { details: { agentId, label: AGENT_WORKSPACE_ROOTS_LABEL, reason } },
+  );
 }
 
 export function withSubagentProfile(

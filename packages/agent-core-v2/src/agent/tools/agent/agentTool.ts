@@ -264,6 +264,21 @@ export class SubagentTool implements ISubagentTool {
     };
   }
 
+  private workspaceRootAccesses(
+    runtime: Runtime,
+    inherited: RuntimeWorkspaceRoots,
+    roots: RuntimeWorkspaceRoots,
+  ): ToolAccesses {
+    const inheritedView = new RuntimeWorkspaceView(runtime, inherited);
+    const candidates = [roots.workDir, ...(roots.additionalDirs ?? [])];
+    const external = [...new Set(candidates.filter((candidate) =>
+      !inheritedView.roots.some((root) => containsRuntimePath(runtime, root, candidate))))];
+    return external.flatMap((path) => ToolAccesses.file('readwrite', path, {
+      recursive: true,
+      implicitExternal: true,
+    }));
+  }
+
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
     if (args.model_alias?.trim() === 'inherit') {
       return { output: INHERIT_MODEL_ALIAS_UNAVAILABLE, isError: true };
@@ -300,7 +315,13 @@ export class SubagentTool implements ISubagentTool {
     const snapshot = this.catalog.snapshot?.();
     const runtime = this.runtime.inspect();
     const workspaceRoots = this.workspaceRoots(runtime, args);
-    const rootsForResolution = workspaceRoots ?? inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+    const inheritedRoots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+    const rootsForResolution = workspaceRoots ?? inheritedRoots;
+    const rootAccesses = this.workspaceRootAccesses(
+      runtime,
+      inheritedRoots,
+      rootsForResolution,
+    );
     let filePath: string | undefined;
     if (args.profile_file !== undefined) {
       const view = new RuntimeWorkspaceView(runtime, rootsForResolution);
@@ -313,7 +334,10 @@ export class SubagentTool implements ISubagentTool {
     }
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
-      accesses: filePath === undefined ? ToolAccesses.none() : ToolAccesses.readFile(filePath),
+      accesses: [
+        ...(filePath === undefined ? [] : ToolAccesses.readFile(filePath)),
+        ...rootAccesses,
+      ],
       display: {
         kind: 'agent_call',
         agent_name: profileNameForDisplay,
@@ -854,4 +878,13 @@ function errorMessage(error: unknown): string | undefined {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
   return undefined;
+}
+
+function containsRuntimePath(runtime: Runtime, root: string, candidate: string): boolean {
+  const relative = runtime.path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${runtime.path.separator}`) &&
+    !runtime.path.isAbsolute(relative)
+  );
 }

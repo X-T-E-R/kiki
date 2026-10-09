@@ -245,7 +245,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           labels: opts.labels ?? labelsFromAgentMeta(meta),
           delegator: opts.delegator ?? delegatorRef(meta),
           userLabel: opts.userLabel ?? meta.userLabel,
-          workspaceRoots: subagentWorkspaceRoots(meta) ?? opts.workspaceRoots,
+          workspaceRoots: subagentWorkspaceRoots(meta, opts.agentId) ?? opts.workspaceRoots,
         };
       }
     }
