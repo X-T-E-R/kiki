@@ -24,6 +24,7 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -38,6 +39,7 @@ import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import { IAgentRuntimeService, IAgentWorkspaceRootsSeed } from '#/agent/runtimeBinding/agentRuntime';
 import '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
@@ -63,7 +65,13 @@ import {
   type ForkAgentOptions,
   IAgentLifecycleService,
 } from './agentLifecycle';
-import { delegatorRef, labelsFromAgentMeta, withSubagentProfile } from './subagentMetadata';
+import {
+  delegatorRef,
+  labelsFromAgentMeta,
+  subagentWorkspaceRoots,
+  withSubagentProfile,
+  workspaceRootsLabels,
+} from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
 interface AgentCreation {
@@ -106,6 +114,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ISessionContext private readonly ctx: ISessionContext,
+    @ISessionWorkspaceContext private readonly sessionWorkspace: ISessionWorkspaceContext,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
@@ -221,21 +230,24 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   private async createInternal(input: CreateAgentOptions): Promise<IAgentScopeHandle> {
     let opts = input;
-    if (opts.agentId !== undefined && opts.restoreBinding !== undefined) {
+    if (opts.agentId !== undefined) {
       const meta = (await this.sessionMetadata.read()).agents?.[opts.agentId];
-      if (meta === undefined) {
+      if (meta === undefined && opts.restoreBinding !== undefined) {
         throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent instance "${opts.agentId}" does not exist`, {
           details: { agentId: opts.agentId },
         });
       }
-      this.validateRestoreBindingInput(opts.agentId, opts.restoreBinding);
-      opts = {
-        ...opts,
-        forkedFrom: opts.forkedFrom ?? meta.forkedFrom,
-        labels: opts.labels ?? labelsFromAgentMeta(meta),
-        delegator: opts.delegator ?? delegatorRef(meta),
-        userLabel: opts.userLabel ?? meta.userLabel,
-      };
+      if (meta !== undefined) {
+        if (opts.restoreBinding !== undefined) this.validateRestoreBindingInput(opts.agentId, opts.restoreBinding);
+        opts = {
+          ...opts,
+          forkedFrom: opts.forkedFrom ?? meta.forkedFrom,
+          labels: opts.labels ?? labelsFromAgentMeta(meta),
+          delegator: opts.delegator ?? delegatorRef(meta),
+          userLabel: opts.userLabel ?? meta.userLabel,
+          workspaceRoots: subagentWorkspaceRoots(meta) ?? opts.workspaceRoots,
+        };
+      }
     }
     const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
     for (;;) {
@@ -347,6 +359,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           : opts.delegator?.kind === 'agent'
             ? opts.delegator.agentId
             : 'main';
+    const workspaceRoots = opts.workspaceRoots ?? {
+      workDir: this.sessionWorkspace.workDir,
+      additionalDirs: this.sessionWorkspace.additionalDirs,
+    };
     const handle = createScopedChildHandle(
       this.instantiation,
       LifecycleScope.Agent,
@@ -359,6 +375,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             _serviceBrand: undefined,
             binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },
           }],
+          ...(opts.workspaceRoots === undefined ? [] : [
+            [IAgentWorkspaceRootsSeed, { _serviceBrand: undefined, roots: workspaceRoots }] as const,
+          ]),
         ],
       },
     ) as IAgentScopeHandle;
@@ -396,7 +415,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
-      const requestedLabels = withSubagentProfile(opts.labels, delegationPosition === 'main' ? undefined : profile.profileName);
+      const requestedLabels = withSubagentProfile(
+        opts.workspaceRoots === undefined ? opts.labels : { ...opts.labels, ...workspaceRootsLabels(workspaceRoots) },
+        delegationPosition === 'main' ? undefined : profile.profileName,
+      );
       const applyIdentity = (current: AgentMeta): AgentMeta => {
         const labels = { ...current.labels };
         for (const [key, value] of Object.entries(requestedLabels ?? {})) {
@@ -649,6 +671,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const child = await this.create({
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
+      workspaceRoots: source.accessor.get(IAgentRuntimeService).workspaceRoots?.(),
       forkedFrom: source.id,
       binding: overrideBinding,
       labels:

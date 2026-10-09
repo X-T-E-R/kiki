@@ -6,10 +6,10 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
 
 import type { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import type { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
-import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   PERMISSION_SECTION,
   PermissionReviewerConfigSchema,
@@ -56,7 +56,7 @@ export interface ReviewerDependencies {
   readonly config: IConfigService;
   readonly catalog: IModelCatalog;
   readonly memory: IAgentContextMemoryService;
-  readonly workspace: ISessionWorkspaceContext;
+  readonly workspace: RuntimeWorkspaceRoots;
   readonly owner: { readonly sessionId: string; readonly agentId: string; readonly parentAgentId?: string };
   readonly fetch?: typeof fetch;
   readonly apiKey?: string;
@@ -74,7 +74,7 @@ const QUESTIONS: Readonly<Record<ReviewerConfig['categories'][number], string>> 
 
 export function buildReviewerInput(
   memory: IAgentContextMemoryService,
-  workspace: ISessionWorkspaceContext,
+  workspace: RuntimeWorkspaceRoots,
   context: ResolvedToolExecutionHookContext,
   policyName: string,
   policyReason: unknown,

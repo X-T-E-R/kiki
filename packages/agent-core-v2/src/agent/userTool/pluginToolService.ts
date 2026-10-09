@@ -11,7 +11,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import type { PluginTool } from '#/app/plugin/contributions';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -82,10 +82,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
 
   private async resolveExecution(name: string, pluginId: string, definition: PluginTool, args: unknown): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
-    const view = new RuntimeWorkspaceView(inspected, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const workspace: WorkspaceConfig = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const fileTargets: { field?: string; inputIndex?: number; raw: string; path: string; operation: 'read' | 'write' }[] = [];

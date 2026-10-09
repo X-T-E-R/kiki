@@ -1,7 +1,7 @@
 import { canonicalFetchUrl, type FetchDocument, type FetchRunSyncEnvelope, type PublicError } from '@nb-corp/nb-search';
 import { parseNativeFetchInput, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 import { renderNativeEnvelope } from '#/app/nbSearch/nativeOutput';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
@@ -44,7 +44,7 @@ export class FetchURLTool implements IFetchURLTool {
       const inspected = file === undefined ? undefined : inspectAgentRuntime(this.runtime);
       const guard = (path: string): string => {
         if (inspected === undefined || inspected.workspace.supportsExternalPaths !== true || inspected.fs === undefined) throw new Error('Scoped donor file inputs require a host-path filesystem runtime.');
-        const view = new RuntimeWorkspaceView(inspected, { workDir: this.workspace.workDir, additionalDirs: this.workspace.additionalDirs });
+        const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspace));
         return view.resolve(resolvePathAccessPath(inspected.path.relative(view.workDir, path), { env: inspected.environment, workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs }, operation: 'read' }), view.workDir, true);
       };
       const path = file === undefined ? undefined : guard(file);

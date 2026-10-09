@@ -260,6 +260,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         delegator: input.delegator,
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
+        workspaceRoots: input.workspaceRoots,
       });
       reservation.bind(child.id);
       const permissionMode = child.accessor.get(IAgentPermissionModeService);

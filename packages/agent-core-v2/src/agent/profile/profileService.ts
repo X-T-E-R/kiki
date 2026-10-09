@@ -101,7 +101,7 @@ import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute
 import { restoreProfileFileSources } from '#/session/dispatch/profileFile';
 import { loadMainAgentProfileFile } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
 import type { LoopControl } from '#/agent/loop/configSection';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IEventBus } from '#/app/event/eventBus';
@@ -552,7 +552,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       agentsMdPaths,
       disallowedTools: snapshot.disallowedTools ?? [],
     });
-    this.agentsMdReminder.seedInjected(agentsMdPaths, this.sessionContext.cwd);
+    this.agentsMdReminder.seedInjected(agentsMdPaths, inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
   }
 
   async bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
@@ -926,7 +926,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       denySubagents: profile?.denySubagents, subagentLeases: profile?.subagentLeases,
       boundProfile: profile === undefined ? undefined : freezeBoundProfile(profile),
     }));
-    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
+    this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
     this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: profile?.name,
       thinkingLevel: validated.thinkingEffort ?? 'off', systemPrompt });
     await this.syncBindingMetadata();
@@ -1071,7 +1071,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       appliedLease: input.lease,
       boundProfile: freezeBoundProfile(renderProfile),
     }));
-    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
+    this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
     this.afterConfigDispatch({
       modelAlias: undefined,
       profileName: selection.baseProfile.name,
@@ -3249,9 +3249,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const lease = this.runtime.acquire(fsAvailable ? ['fs'] : []);
     const env = lease.runtime.environment;
     const runtimeId = lease.runtime.identity.runtimeId;
+    const inheritedRoots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
     const view = new RuntimeWorkspaceView(lease.runtime, {
-      workDir: this.sessionContext.cwd,
-      additionalDirs: options?.additionalDirs ?? this.workspace.additionalDirs,
+      workDir: inheritedRoots.workDir,
+      additionalDirs: options?.additionalDirs ?? inheritedRoots.additionalDirs,
     });
     const previous = this.states.get(dynamicPromptKey);
     const sampled = previous?.context.cwd === view.workDir ? previous.context : undefined;

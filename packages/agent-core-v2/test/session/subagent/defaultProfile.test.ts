@@ -23,6 +23,7 @@ import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog'
 import { renderSystemPromptResult } from '#/app/agentProfileCatalog/profile-shared';
 import { ShippedAgentProfileManagerService } from '#/app/shippedAgentProfiles/shippedAgentProfileManagerService';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { subagentWorkspaceRoots, workspaceRootsLabels } from '#/session/agentLifecycle/subagentMetadata';
 import { agentProfilesHostFs } from '#/workspace/workspaceAgentProfileLoader/internal/hostFs';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
@@ -82,6 +83,31 @@ describe('SubagentToolInputSchema', () => {
     expect(parsed.profile).toBe('explore');
     const blank = SubagentToolInputSchema.parse({ prompt: 'do it', description: 'a task', profile: '' });
     expect(blank.profile).toBeUndefined();
+  });
+
+  it('accepts typed workspace roots for new agents', () => {
+    const parsed = SubagentToolInputSchema.parse({
+      prompt: 'write it', description: 'a task', workDir: 'C:/writer', additionalDirs: ['C:/materials'],
+    });
+    expect(parsed.workDir).toBe('C:/writer');
+    expect(parsed.additionalDirs).toEqual(['C:/materials']);
+  });
+
+  it('freezes workspace roots on resume', () => {
+    expect(() => SubagentToolInputSchema.parse({
+      prompt: 'continue', description: 'a task', resume: 'child', workDir: 'C:/other',
+    })).toThrow(/workspace roots are fixed/);
+    expect(() => SubagentToolInputSchema.parse({
+      prompt: 'continue', description: 'a task', resume: 'child', additionalDirs: ['C:/other'],
+    })).toThrow(/workspace roots are fixed/);
+  });
+});
+
+describe('subagent workspace roots', () => {
+  it('round-trips persisted roots without admitting arbitrary metadata', () => {
+    const meta = { labels: workspaceRootsLabels({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] }) };
+    expect(subagentWorkspaceRoots(meta)).toEqual({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] });
+    expect(subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{"workDir":3}' } })).toBeUndefined();
   });
 });
 

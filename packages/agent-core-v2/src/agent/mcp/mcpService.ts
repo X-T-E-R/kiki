@@ -7,7 +7,7 @@ import type { Tool as KosongTool } from '#/kosong/contract/tool';
 import { type IDisposable } from "#/_base/di/lifecycle";
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import type {
   McpServerAuthState,
   McpServerLocator,
@@ -33,8 +33,10 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { McpServerEntry } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
@@ -76,6 +78,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   constructor(
     @ISessionMcpHandle private readonly mcpHandle: ISessionMcpHandle,
     @ISessionContext private readonly sessionContext: ISessionContext,
+    @ref(ISessionWorkspaceContext) private readonly workspace: LiveRef<ISessionWorkspaceContext>,
+    @ref(IAgentRuntimeService) private readonly runtime: LiveRef<IAgentRuntimeService>,
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentLoopService loop: IAgentLoopService,
@@ -153,6 +157,14 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     return this.mcpHandle.connectionManager.getRemoteServerUrl(name);
   }
 
+  private workspaceCwd(): string {
+    const runtime = this.runtime.current;
+    const workspace = this.workspace.current;
+    return runtime === undefined || workspace === undefined
+      ? this.sessionContext.cwd
+      : inspectAgentWorkspaceRoots(runtime, workspace).workDir;
+  }
+
   async reconnect(name: string, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     await this.mcpHandle.connectionManager.reconnect(name);
@@ -174,7 +186,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     await this.sessionOverridesLoaded;
     const registry = this.serverRegistry;
     if (registry === undefined) return [];
-    const catalog = await registry.list({ cwd: this.sessionContext.cwd });
+    const catalog = await registry.list({ cwd: this.workspaceCwd() });
     const effective = effectiveEntries(catalog);
     return catalog.map((entry) => this.toSessionCapability(entry, effective.get(entry.name)));
   }
@@ -189,7 +201,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     await this.waitForInitialLoad();
     const registry = this.serverRegistry;
     if (registry !== undefined) {
-      const catalog = await registry.list({ cwd: this.sessionContext.cwd });
+      const catalog = await registry.list({ cwd: this.workspaceCwd() });
       const effective = effectiveEntries(catalog);
       for (const entry of catalog) {
         const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));
@@ -231,7 +243,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   private async applyMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability> {
     await this.waitForInitialLoad();
     const registry = this.requireServerRegistry();
-    const catalog = await registry.list({ cwd: this.sessionContext.cwd });
+    const catalog = await registry.list({ cwd: this.workspaceCwd() });
     const selected = catalog.find((entry) => sameMcpLocator(toMcpLocator(entry), input.locator));
     if (selected === undefined) {
       throw new Error2(
@@ -300,7 +312,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   private async restoreSessionOverrides(): Promise<void> {
-    const catalog = await this.serverRegistry.list({ cwd: this.sessionContext.cwd });
+    const catalog = await this.serverRegistry.list({ cwd: this.workspaceCwd() });
     const effective = effectiveEntries(catalog);
     for (const entry of catalog) {
       const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));

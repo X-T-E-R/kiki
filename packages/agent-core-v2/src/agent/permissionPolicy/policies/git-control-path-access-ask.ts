@@ -1,7 +1,7 @@
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import { IGitService } from '#/app/git/git';
 import type { IGitService as GitService } from '#/app/git/git';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { ISessionWorkspaceContext as WorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type {
@@ -26,7 +26,7 @@ export class GitControlPathAccessAskPermissionPolicyService implements Permissio
   async evaluate(
     context: ResolvedToolExecutionHookContext,
   ): Promise<PermissionPolicyResult | undefined> {
-    const cwd = this.workspace.workDir;
+    const cwd = inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir;
     if (cwd.length === 0) return undefined;
     const lease = this.runtime.acquire();
     const pathClass = lease.runtime.environment.pathClass;

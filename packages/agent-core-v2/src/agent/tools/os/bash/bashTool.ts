@@ -8,7 +8,7 @@ import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
@@ -200,7 +200,7 @@ export class BashTool implements IBashTool {
     let proc: IHostProcess;
     let command: string;
     try {
-      const view = new RuntimeWorkspaceView(lease.runtime, this.workspaceCtx);
+      const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
       command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');

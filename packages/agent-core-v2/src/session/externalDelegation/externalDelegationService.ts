@@ -29,7 +29,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
 import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IModelService } from '#/kosong/model/model';
@@ -746,8 +746,9 @@ export class SessionExternalDelegationService
       );
     }
     const main = this.requireMain();
-    const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
-    const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
+    const mainRuntime = main.accessor.get(IAgentRuntimeService);
+    const runtimeLease = mainRuntime.acquire(['process']);
+    const view = new RuntimeWorkspaceView(runtimeLease.runtime, inspectAgentWorkspaceRoots(mainRuntime, this.workspace));
     const controller = new AbortController();
     const dispatchId = `dispatch_${ulid()}`;
     try {
@@ -769,6 +770,7 @@ export class SessionExternalDelegationService
         strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
+        workspaceRoots: { workDir: view.workDir, additionalDirs: view.additionalDirs },
         signal: controller.signal,
         onCreated: async (child, retain) => {
           await this.queueDispatch(

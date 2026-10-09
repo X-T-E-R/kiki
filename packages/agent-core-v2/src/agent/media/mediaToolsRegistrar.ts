@@ -12,7 +12,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { type ModelRequester } from '#/kosong/model/modelRequester';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -133,10 +133,10 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       runtime,
       workspace: {
         get workspaceDir() {
-          return workspaceCtx.workDir;
+          return inspectAgentWorkspaceRoots(runtime, workspaceCtx).workDir;
         },
         get additionalDirs() {
-          return workspaceCtx.additionalDirs;
+          return inspectAgentWorkspaceRoots(runtime, workspaceCtx).additionalDirs ?? [];
         },
         get definitionReadRoots() {
           return skillCatalog?.catalog.getSkillRoots() ?? [];

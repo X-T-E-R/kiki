@@ -14,7 +14,7 @@ import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
@@ -102,10 +102,7 @@ export class GrepTool implements IGrepTool {
     args = { ...args, path: target.path };
     const inspected = await prepareToolRuntime(this.runtime, target.host);
     const generation = inspected.identity.generation;
-    const view = new RuntimeWorkspaceView(inspected, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
     const workspace = withDefinitionReadRoots(this.workspace(view), roots, env.homeDir);

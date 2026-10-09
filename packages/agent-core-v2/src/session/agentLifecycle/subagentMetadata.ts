@@ -1,5 +1,7 @@
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
+const AGENT_WORKSPACE_ROOTS_LABEL = 'agentWorkspaceRoots';
 const REQUEST_IDENTITY_PARENT_TURN_LABEL = 'requestIdentityParentTurn';
 const REQUEST_IDENTITY_ROOT_AGENT_LABEL = 'requestIdentityRootAgent';
 const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
@@ -9,6 +11,32 @@ const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
  *  parentage itself. */
 export function subagentLabels(parentAgentId: string): Readonly<Record<string, string>> {
   return { parentAgentId };
+}
+
+export function workspaceRootsLabels(roots: RuntimeWorkspaceRoots): Readonly<Record<string, string>> {
+  return {
+    [AGENT_WORKSPACE_ROOTS_LABEL]: JSON.stringify({
+      workDir: roots.workDir,
+      additionalDirs: [...new Set(roots.additionalDirs ?? [])],
+    }),
+  };
+}
+
+export function subagentWorkspaceRoots(meta: AgentMeta | undefined): RuntimeWorkspaceRoots | undefined {
+  const raw = meta?.labels?.[AGENT_WORKSPACE_ROOTS_LABEL];
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { workDir?: unknown; additionalDirs?: unknown };
+    if (typeof parsed.workDir !== 'string' || parsed.workDir.length === 0) return undefined;
+    if (parsed.additionalDirs !== undefined && (!Array.isArray(parsed.additionalDirs) ||
+      parsed.additionalDirs.some((dir) => typeof dir !== 'string'))) return undefined;
+    return {
+      workDir: parsed.workDir,
+      additionalDirs: parsed.additionalDirs as string[] | undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export function withSubagentProfile(

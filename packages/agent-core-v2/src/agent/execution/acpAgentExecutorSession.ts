@@ -47,7 +47,7 @@ import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
@@ -65,6 +65,7 @@ import type {
   AgentRunRequest,
   RunAgentOptions,
 } from '#/session/subagent/subagent';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
@@ -128,7 +129,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #client: AcpClientLike;
   readonly #states: IAgentStateService;
   readonly #dispatcher: IEventDispatcher;
-  readonly #workspace: ISessionWorkspaceContext;
+  readonly #workspace: RuntimeWorkspaceRoots;
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #active: ActiveExternalTurn | undefined;
@@ -182,7 +183,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     this.#states = context.agent.accessor.get(IAgentStateService);
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
-    this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
+    this.#workspace = inspectAgentWorkspaceRoots(
+      runtime,
+      context.agent.accessor.get(ISessionWorkspaceContext),
+    );
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,

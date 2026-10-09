@@ -4,6 +4,7 @@ import type { Event } from '#/_base/event';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { BindAgentInput } from '#/agent/profile/profile';
 import type { DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 
 export const MAIN_AGENT_ID = 'main';
 
@@ -11,6 +12,7 @@ export interface CreateAgentOptions {
   readonly agentId?: string;
   readonly binding?: BindAgentInput;
   readonly runtimeId?: string;
+  readonly workspaceRoots?: RuntimeWorkspaceRoots;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly delegator?: DelegatorRef;

@@ -3,7 +3,7 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { assertPluginSkillUsage } from '#/agent/skill/pluginSkillUsage';
 import { ErrorCodes, isError2 } from '#/errors';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
@@ -65,7 +65,7 @@ export class SkillTool implements ISkillTool {
       execute: () => this.execution(args),
     };
     const inspected = inspectAgentRuntime(this.runtime);
-    const view = new RuntimeWorkspaceView(inspected, this.workspace);
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspace));
     const pathOptions = {
       env: inspected.environment,
       workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },

@@ -10,7 +10,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ToolAccesses,
@@ -37,10 +37,7 @@ export class EditTool implements IEditTool {
   ) {}
 
   private workspaceConfig(runtime: Runtime): WorkspaceConfig {
-    const view = new RuntimeWorkspaceView(runtime, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 

@@ -9,7 +9,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
-import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { inspectAgentWorkspaceRoots, type IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import {
   ToolAccesses,
   type AgentTool,
@@ -233,10 +233,10 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
     const inspected = await prepareToolRuntime(this.runtime, target.host);
     const generation = inspected.identity.generation;
     const env = inspected.environment;
-    const view = new RuntimeWorkspaceView(inspected, {
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, {
       workDir: this.workspace.workspaceDir,
       additionalDirs: this.workspace.additionalDirs,
-    });
+    }));
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.workspace.definitionReadRoots ?? [];
     const workspace = withDefinitionReadRoots(
       { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },

@@ -38,7 +38,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
 | `model_alias`、`effort` | 省略则沿用已保存值或默认值。 |
 
-子 Agent 在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录，`resume` 时也保留。启动会话时通过 [`--add-dir`](../reference/command.md#主命令选项) 或 Klient 的 `global.sessions.create` 中的 `additionalDirs` 字段声明输入目录；只在 `prompt` 中提到路径不会把它加入工作区。`AgentRun` 不提供单次调用的 `cwd` 或目录覆盖。需要独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
+子 Agent 默认在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录。新子 Agent 也可以用 typed `workDir` 和 `additionalDirs` 指定已经准入的独立 writer 目录；这些目录会经所选 runtime 映射，并成为该子 Agent 工具与外部执行器实际使用的根目录。只在 `prompt` 中提到路径不会把它加入工作区。`resume` 不接受 `workDir` 或 `additionalDirs`，会冻结首次派发时的根目录。需要由整个会话拥有独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
 
 继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
