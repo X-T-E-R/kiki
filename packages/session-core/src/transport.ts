@@ -385,6 +385,11 @@ export interface AgentTranscriptTask {
   readonly detached: boolean;
   readonly name?: string;
   readonly subagentName?: string;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly description?: string;
   readonly agentId?: string;
   readonly outputTail: string;

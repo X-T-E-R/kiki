@@ -2332,6 +2332,7 @@ function createPermissionModeService(initialMode: PermissionMode): IAgentPermiss
     get mode() {
       return mode;
     },
+    externalOverride: undefined,
     setMode: (nextMode) => {
       mode = nextMode;
     },

@@ -22,7 +22,7 @@ type PersistedProfileFields = Pick<ProfileModelState,
   'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
   'execution' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
-  'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortAdjusted' |
+  'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortExplicit' | 'thinkingEffortAdjusted' |
   'bindingAdvisories' | 'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
   'canSpawnSubagents' | 'allowedSubagents' | 'preferredSubagents' | 'denySubagents' | 'subagentLeases' |
   'spawnPolicy' | 'appliedLease' | 'boundProfile' | 'toolOverride' | 'memoryReadContext'>;
@@ -177,6 +177,7 @@ async function scanPersistedAgentProfileSnapshot(
     executorId: state.executorId,
     executorProtocol: state.executorProtocol,
     thinkingLevel: state.thinkingLevel,
+    thinkingEffortExplicit: state.thinkingEffortExplicit,
     thinkingEffortAdjusted: state.thinkingEffortAdjusted,
     bindingAdvisories: state.bindingAdvisories,
     serviceTier: state.serviceTier,
@@ -225,6 +226,7 @@ function persistedMetadataKey(metadata: AgentMeta | undefined): string {
     metadata?.execution,
     metadata?.model,
     metadata?.thinkingEffort,
+    metadata?.thinkingEffortExplicit,
     metadata?.executor,
     metadata?.executorProtocol,
   ]);
@@ -238,6 +240,7 @@ function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfil
     profileName: subagentProfileName(metadata),
     modelAlias: metadata.model,
     thinkingLevel: metadata.thinkingEffort,
+    thinkingEffortExplicit: metadata.thinkingEffortExplicit,
     executorId: metadata.executor,
     executorProtocol: metadata.executorProtocol,
     activeToolsKnown: false,

@@ -181,7 +181,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
 /** A subagent scope can be released when nothing in it is running, queued, or waiting for work. */
 export function isReleasable(handle: IAgentScopeHandle): boolean {
   try {
-    if (handle.accessor.get(IAgentExecutionService).status().state !== 'idle') return false;
+    const executionState = handle.accessor.get(IAgentExecutionService).status().state;
+    if (executionState !== 'idle' && executionState !== 'closed') return false;
     const loop = handle.accessor.get(IAgentLoopService).status();
     if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return false;
     const prompts = handle.accessor.get(IAgentPromptService).list();

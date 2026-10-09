@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'pathe';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -763,6 +764,39 @@ describe('AgentProfileService.bind', () => {
     expect(profileRecords).toHaveLength(1);
     expect(JSON.stringify(profileRecords)).not.toContain(secret);
     expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
+  });
+
+  it('keeps absent external effort as vendor default and preserves an explicit off choice', async () => {
+    const seen: ExecutorBinding[] = [];
+    const external = normalizeAgentProfile({
+      name: 'external-vendor-default', executor: 'grok-acp', modelAlias: 'vendor-model',
+      systemPrompt: () => 'external worker',
+    });
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent(
+      { persistence },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry(DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR, (binding) => {
+        seen.push(binding);
+        return { ok: true, binding };
+      })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data()).toMatchObject({ thinkingLevel: 'off', thinkingEffortExplicit: false });
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      thinkingEffort: 'off', thinkingEffortExplicit: false,
+    });
+
+    svc.setThinking('off');
+    expect(seen.at(-1)?.thinkingEffort).toBe('off');
+    expect(svc.data().thinkingEffortExplicit).toBe(true);
+
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data().thinkingEffortExplicit).toBe(false);
   });
 
   it.each([

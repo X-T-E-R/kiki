@@ -607,6 +607,7 @@ export interface SessionStateSnapshot {
       readonly userLabel?: string;
       readonly model?: string;
       readonly thinkingEffort?: string;
+      readonly thinkingEffortExplicit?: boolean;
       readonly executor?: string;
       readonly executorProtocol?: string;
       readonly negotiated?: /* NegotiatedExecutorCapabilities — packages/agent-core-v2/src/app/agentExecutor/capabilities.ts */ {
@@ -3588,6 +3589,7 @@ export interface AgentStateSnapshot {
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
     readonly executionRestriction?: 'research-readonly';
     readonly allowParentNotify?: boolean;
     readonly execution?: {
@@ -5059,6 +5061,7 @@ export interface AgentStateSnapshot {
           readonly roomPrompt?: string;
           readonly effectiveThinkingLevel?: 'off' | 'on' | (string & {});
           readonly thinkingEffortSource?: 'forced' | 'adjusted';
+          readonly thinkingEffortExplicit?: boolean;
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
           readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
@@ -7669,6 +7672,9 @@ export interface AgentStateSnapshot {
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;
     readonly collaborationAgentType?: string;
     readonly taskId: string;
@@ -7790,6 +7796,9 @@ export interface AgentStateSnapshot {
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;
     readonly collaborationAgentType?: string;
     readonly taskId: string;

@@ -144,6 +144,17 @@ describe('AgentListTool', () => {
     expect((await listAgents(tool)).agents).toEqual([]);
     expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('errored');
   });
+
+  it('reports a closed executor as interrupted, not running', async () => {
+    const tool = makeTool({
+      agents: { worker: childMeta({}) },
+      execution: { worker: 'closed' },
+      tasks: [{ agentId: 'worker', status: 'running' }],
+    });
+    expect((await listAgents(tool)).agents).toEqual([]);
+    expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('interrupted');
+  });
+
   it('lists a child that has no background task', async () => {
     const tool = makeTool({
       agents: {

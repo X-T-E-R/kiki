@@ -60,9 +60,13 @@ http │ ipc │ memory
   - `klient.session(id).*` — `get/setTitle/update/status/close/archive/
     restore/fork/createChild`, `approvals.*`, `questions.*`,
     `interactions.*`, `agents()`.
-  - `session.agent(id).*` — `prompt/steer/cancel/runShellCommand/
+  - `session.agent(id).*` — `prompt/steer/cancel/shutdownExecution/runShellCommand/
     cancelShellCommand/getModel/setModel/setPermission/getUsage/getContext/
     getPlan*/getTasks*/stopTask/getTaskOutput`.
+    `shutdownExecution(reason?)` permanently closes only that agent's local
+    executor, waits for owned execution cleanup, and preserves its records and
+    the enclosing session. Use `cancel()` for a resumable turn cancellation;
+    shutdown is a final management operation, not a retry or session close.
 - **Contract** — every method has a zod input tuple + output schema, validated
   on the client before send / after receive (default on; `validate: false` to
   disable). Validation is sub-µs for typical payloads — cheaper than the JSON

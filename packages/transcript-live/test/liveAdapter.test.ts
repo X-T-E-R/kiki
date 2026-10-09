@@ -1791,6 +1791,18 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getMeta().agent).toMatchObject({ model: 'k3', thinkingEffort: 'high' });
   });
 
+  it('projects external executor usage into shared context metadata without a marker', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const operations = liveAdapter.map(ev({
+      type: 'executor.runtime.update', executorId: 'claude-acp', turnId: 0, kind: 'usage',
+      value: { type: 'usage', used: 109_786, size: 200_000 },
+    }));
+    expect(operations).toEqual([{
+      op: 'meta.merge',
+      meta: { agent: { contextTokens: 109_786, maxContextTokens: 200_000, contextUsage: 0.54893 } },
+    }]);
+  });
+
   it('maps agent.activity.updated into meta.agent.phase', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

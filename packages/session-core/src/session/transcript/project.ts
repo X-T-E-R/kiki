@@ -1242,8 +1242,11 @@ function subagentBlocksFromSnapshot(
         name: task.name ?? task.subagentName ?? task.agentId,
         description: existing?.description ?? task.description,
         instruction: existing?.instruction,
-        model: existing?.model,
-        thinkingEffort: existing?.thinkingEffort,
+        model: task.model ?? existing?.model,
+        thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,
+        thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+        executorId: task.executorId ?? existing?.executorId,
+        executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
         status: mapTaskState(task.state),
         summary: task.resultSummary ?? (task.outputTail === '' ? existing?.summary : task.outputTail),
         error: task.error ?? task.stateReason ?? existing?.error,
@@ -1328,8 +1331,11 @@ function subagentBlocksFromSnapshot(
             name: task?.name ?? task?.subagentName ?? existing?.name ?? ref.agentId,
             description: existing?.description ?? task?.description ?? instruction,
             instruction: instruction ?? existing?.instruction,
-            model: existing?.model,
-            thinkingEffort: existing?.thinkingEffort,
+            model: task?.model ?? existing?.model,
+            thinkingEffort: task?.thinkingEffort ?? existing?.thinkingEffort,
+            thinkingEffortExplicit: task?.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+            executorId: task?.executorId ?? existing?.executorId,
+            executorProtocol: task?.executorProtocol ?? existing?.executorProtocol,
             status:
               task === undefined
                 ? (existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'))

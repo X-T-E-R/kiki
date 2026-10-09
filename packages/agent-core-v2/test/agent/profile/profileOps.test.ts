@@ -475,6 +475,7 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     expect(data).toMatchObject({ profileName: 'reviewer', profileDefinitionId: 'file-frozen',
       modelAlias: 'removed-historical-model', systemPrompt: 'historical rendered prompt',
       preferredSubagents: ['explore'], appliedLease: { modelAlias: 'removed-historical-model', canSpawnSubagents: false, allowedSubagents: [] } });
+    expect(data.thinkingEffortExplicit).toBeUndefined();
     expect(data.allowedSubagents).toBeUndefined();
     expect(data.subagents).toBeUndefined();
     expect(data.dispatchDecision).toEqual(decision);

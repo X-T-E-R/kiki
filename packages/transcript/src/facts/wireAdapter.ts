@@ -666,6 +666,17 @@ export class TranscriptWireAdapter {
       return [this.marker(record, ordinal, 'executor.prompt.delivery')];
     }
     if (record.type === 'executor.runtime.update') {
+      if (record['kind'] === 'usage') {
+        const value = objectOf(record['value']);
+        const used = numberOf(value?.['used']);
+        const size = numberOf(value?.['size']);
+        if (used === undefined) return [];
+        return [{ op: 'meta.merge', meta: { agent: {
+          contextTokens: used,
+          maxContextTokens: size,
+          contextUsage: size !== undefined && size > 0 ? used / size : undefined,
+        } } }];
+      }
       if (record['kind'] === 'tool_input') return this.externalToolInput(record);
       if (record['kind'] === 'tool_progress') {
         const value = objectOf(record['value']);
@@ -816,6 +827,9 @@ export class TranscriptWireAdapter {
         name: stringOf(info?.['collaborationTaskName']) ?? previous?.name,
         subagentName: stringOf(info?.['profile']) ?? previous?.subagentName,
         model: stringOf(info?.['model']) ?? previous?.model,
+        thinkingEffortExplicit: booleanOf(info?.['thinkingEffortExplicit']) ?? previous?.thinkingEffortExplicit,
+        executorId: stringOf(info?.['executorId']) ?? previous?.executorId,
+        executorProtocol: stringOf(info?.['executorProtocol']) ?? previous?.executorProtocol,
         description: stringOf(info?.['description']) ?? previous?.description,
         agentId,
         outputTail: stringOf(record['outputTail']) ?? previous?.outputTail ?? '',
@@ -912,6 +926,9 @@ export class TranscriptWireAdapter {
           name: stringOf(record['name']),
           subagentName: stringOf(record['subagentName']),
           model: stringOf(record['model']) ?? previous?.model,
+          thinkingEffortExplicit: booleanOf(record['thinkingEffortExplicit']) ?? previous?.thinkingEffortExplicit,
+          executorId: stringOf(record['executorId']) ?? previous?.executorId,
+          executorProtocol: stringOf(record['executorProtocol']) ?? previous?.executorProtocol,
           description: stringOf(record['description']) ?? previous?.description,
           agentId: subagentId,
           outputTail: previous?.outputTail ?? '',

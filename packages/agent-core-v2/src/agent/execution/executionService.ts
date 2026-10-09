@@ -69,6 +69,8 @@ export class AgentExecutionService implements IAgentExecutionService {
   private broken: unknown;
   private cancelling = false;
   private shuttingDown = false;
+  private shutdownCompleted = false;
+  private shutdownFailed = false;
   private shutdownPromise: Promise<void> | undefined;
 
   constructor(
@@ -95,11 +97,6 @@ export class AgentExecutionService implements IAgentExecutionService {
   ): Promise<AgentRunHandle> {
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
-    }
-    if (this.broken !== undefined) {
-      throw this.broken instanceof Error
-        ? this.broken
-        : new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is broken`, { cause: this.broken });
     }
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
@@ -128,11 +125,13 @@ export class AgentExecutionService implements IAgentExecutionService {
       },
     };
     let hints: ExternalPromptHint[] = [];
+    let session: AgentExecutorSession | undefined;
     try {
       await this.hooks.onWillRun.run(runContext);
       controller.signal.throwIfAborted();
-      const session = await this.resolveSession();
+      session = await this.resolveSession();
       controller.signal.throwIfAborted();
+      this.broken = undefined;
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
       const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
@@ -155,7 +154,16 @@ export class AgentExecutionService implements IAgentExecutionService {
       }
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
-      void handle.completion.then(() => this.finishRun(active), () => this.finishRun(active));
+      void handle.completion.then(
+        () => { this.finishRun(active); },
+        (error: unknown) => {
+          if (this.isFailedExternalRun(session, active)) {
+            void this.finishFailedExternalRun(active, session, error);
+          } else {
+            this.finishRun(active);
+          }
+        },
+      );
       for (const hint of hints) {
         const delivered = hint.text.length > 0;
         if (delivered && hint.id !== undefined) this.deliveredHints.add(hint.id);
@@ -172,6 +180,7 @@ export class AgentExecutionService implements IAgentExecutionService {
         executorId: this.profile.data().executorId, origin: hint.origin,
         method: 'undelivered', status: 'undelivered',
       })).catch(() => undefined);
+      if (this.isFailedExternalRun(session, active)) await this.cleanupFailedExternalSession(session, error);
       this.finishRun(active);
       throw error;
     }
@@ -206,7 +215,6 @@ export class AgentExecutionService implements IAgentExecutionService {
   }
 
   status(): AgentExecutionStatus {
-    if (this.broken !== undefined) return { state: 'broken' };
     if (this.runs.size > 0) {
       const runs = [...this.runs];
       const turnId = runs.find((run) => run.turnId !== undefined)?.turnId;
@@ -215,6 +223,12 @@ export class AgentExecutionService implements IAgentExecutionService {
       }
       return turnId === undefined ? { state: 'starting' } : { state: 'running', turnId };
     }
+    if (this.shuttingDown) {
+      if (this.shutdownCompleted) return { state: 'closed' };
+      if (this.shutdownFailed) return { state: 'broken' };
+      return { state: 'cancelling' };
+    }
+    if (this.broken !== undefined) return { state: 'broken' };
     return this.session?.status() ?? { state: 'idle' };
   }
 
@@ -260,12 +274,19 @@ export class AgentExecutionService implements IAgentExecutionService {
   }
 
   private async shutdownSession(reason?: unknown): Promise<void> {
-    this.cancel(reason);
     const session = this.session;
-    await Promise.all([this.settled(), session?.shutdown(reason)]);
-    if (this.session !== session) await this.session?.shutdown(reason);
-    this.session = undefined;
-    this.sessionBindingKey = undefined;
+    try {
+      this.cancel(reason);
+      await Promise.all([this.settled(), session?.shutdown(reason)]);
+      if (this.session !== session) await this.session?.shutdown(reason);
+      this.session = undefined;
+      this.sessionBindingKey = undefined;
+      this.shutdownCompleted = true;
+    } catch (error) {
+      this.shutdownFailed = true;
+      if (this.broken === undefined) this.broken = error;
+      throw error;
+    }
   }
 
   async attachLocalSession(source: LocalExecutorSessionSource): Promise<void> {
@@ -320,6 +341,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       ? `:host-gate:${externalPermissionHostGate({ agent: this.agent, binding, descriptor, worktree })}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
+    await this.disposeBrokenExternalSession();
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
       const status = this.session.status();
       if (status.state !== 'idle') {
@@ -351,6 +373,42 @@ export class AgentExecutionService implements IAgentExecutionService {
     } catch (error) {
       this.broken = error;
       throw error;
+    }
+  }
+
+  private isFailedExternalRun(session: AgentExecutorSession | undefined, active: ActiveRun): session is AgentExecutorSession {
+    return session !== undefined && !active.controller.signal.aborted &&
+      this.session === session && this.sessionBindingKey !== undefined && this.sessionBindingKey !== 'native';
+  }
+
+  private async finishFailedExternalRun(active: ActiveRun, session: AgentExecutorSession, error: unknown): Promise<void> {
+    await this.cleanupFailedExternalSession(session, error);
+    this.finishRun(active);
+  }
+
+  private async cleanupFailedExternalSession(session: AgentExecutorSession, error: unknown): Promise<boolean> {
+    if (this.broken === undefined) this.broken = error;
+    if (this.session !== session || this.sessionBindingKey === 'native') return true;
+    try {
+      await session.shutdown(error);
+    } catch {
+      return false;
+    }
+    if (this.session === session) {
+      this.session = undefined;
+      this.sessionBindingKey = undefined;
+    }
+    return true;
+  }
+
+  private async disposeBrokenExternalSession(): Promise<void> {
+    const session = this.session;
+    if (session === undefined || this.sessionBindingKey === 'native' ||
+        (session.status().state !== 'broken' && this.broken === undefined)) return;
+    await session.settled();
+    const reason = this.broken ?? new Error('External executor session failed before explicit resume');
+    if (!(await this.cleanupFailedExternalSession(session, reason))) {
+      throw reason instanceof Error ? reason : new Error('External executor session cleanup failed', { cause: reason });
     }
   }
 

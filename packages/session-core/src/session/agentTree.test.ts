@@ -127,6 +127,18 @@ describe('agent birth projection', () => {
   });
 });
 
+describe('executor identity projection', () => {
+  it('keeps executor identity separate from model and profile hints across roster and live sources', () => {
+    const forest = buildAgentForest(
+      [live({ subagentId: 'agent-1', model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1' })],
+      [roster({ agentId: 'agent-1', name: 'worker', model: 'shared-model' })],
+    );
+    expect(forest.byId['agent-1']).toMatchObject({
+      model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1',
+    });
+  });
+});
+
 describe('compareAgentIds', () => {
   it('puts main first and sorts agent-N numerically', () => {
     expect(['agent-10', 'main', 'agent-2'].sort(compareAgentIds)).toEqual([

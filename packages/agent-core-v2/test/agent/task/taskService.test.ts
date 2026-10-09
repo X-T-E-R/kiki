@@ -2153,9 +2153,9 @@ describe('Agent task notification XML', () => {
 });
 
 describe('running subagent status', () => {
-  it('counts live direct children and running task fallback, not idle, broken, or grandchildren', async () => {
+  it('counts live direct children and running task fallback, not idle, broken, closed, or grandchildren', async () => {
     const disposables = new DisposableStore();
-    const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken') => {
+    const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken' | 'closed') => {
       const accessor = disposables.add(new TestInstantiationService());
       accessor.stub(IAgentScopeContext, makeAgentScopeContext({
         agentId: id, agentScope: `agents/${id}`, parentAgentId,
@@ -2167,6 +2167,7 @@ describe('running subagent status', () => {
       child('agent-live', 'main', 'running'),
       child('agent-idle', 'main', 'idle'),
       child('agent-broken', 'main', 'broken'),
+      child('agent-closed', 'main', 'closed'),
       child('agent-grandchild', 'agent-live', 'running'),
     ] };
     const tasks = { list: () => [
@@ -2178,6 +2179,11 @@ describe('running subagent status', () => {
       {
         taskId: 'agent-task-broken', agentId: 'agent-broken',
         kind: 'agent' as const, description: 'broken', status: 'running' as const,
+        startedAt: 1, endedAt: null,
+      },
+      {
+        taskId: 'agent-task-closed', agentId: 'agent-closed',
+        kind: 'agent' as const, description: 'closed', status: 'running' as const,
         startedAt: 1, endedAt: null,
       },
     ] };

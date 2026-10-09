@@ -52,6 +52,7 @@ import type {
   ToolResultEvent,
 } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import type { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
+import type { ExecutorRuntimeUpdate } from '@kiki/agent-core-v2/agent/execution/externalExecutorOps';
 import type { PlanRevision } from '@kiki/agent-core-v2/features/plan/planOps';
 import type { SubagentSuspended } from '@kiki/agent-core-v2/session/subagent/subagentSuspended';
 import type { CronFired } from '@kiki/agent-core-v2/session/cron/cronOps';
@@ -169,6 +170,7 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'subagent.suspended' } & SubagentSuspended)
   | ({ readonly type: 'goal.updated' } & GoalUpdated)
   | ({ readonly type: 'agent.status.updated' } & AgentStatusUpdated)
+  | ({ readonly type: 'executor.runtime.update' } & ExecutorRuntimeUpdate)
   | AgentActivityUpdatedEvent
   | PromptSubmittedEvent
   | PromptStartedEvent
@@ -384,6 +386,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onGoalUpdated(event);
       case 'agent.status.updated':
         return this.onAgentStatusUpdated(event);
+      case 'executor.runtime.update':
+        return this.onExecutorRuntimeUpdate(event);
       case 'agent.activity.updated':
         return this.onAgentActivityUpdated(event);
       case 'prompt.submitted':
@@ -1500,6 +1504,18 @@ export class AgentTranscriptLiveAdapter {
     const ops: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: goal ?? null } }];
     if (change !== undefined) ops.push(this.markerOp('goal', { change, snapshot: goal ?? null }));
     return ops;
+  }
+
+  private onExecutorRuntimeUpdate(event: ExecutorRuntimeUpdate): TranscriptOperation[] {
+    if (event.kind !== 'usage' || typeof event.value !== 'object' || event.value === null || Array.isArray(event.value)) return [];
+    const value = event.value as { readonly used?: unknown; readonly size?: unknown };
+    if (typeof value.used !== 'number' || !Number.isFinite(value.used)) return [];
+    const size = typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : undefined;
+    return [{ op: 'meta.merge', meta: { agent: {
+      contextTokens: value.used,
+      maxContextTokens: size,
+      contextUsage: size !== undefined && size > 0 ? value.used / size : undefined,
+    } } }];
   }
 
   private onAgentStatusUpdated(event: {

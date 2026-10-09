@@ -973,8 +973,12 @@ describe('TranscriptWireAdapter', () => {
     recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
     expect(recovered.getItems().filter((item) => item.kind === 'marker')).toMatchObject([
       { marker: 'executor.session', payload: updates[0] },
-      { marker: 'executor.usage', payload: updates[1] },
     ]);
+    expect(recovered.getMeta().agent).toMatchObject({
+      contextTokens: 41_000,
+      maxContextTokens: 200_000,
+      contextUsage: 0.205,
+    });
   });
 
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {

@@ -104,6 +104,8 @@ export interface AgentFacade {
   ): Promise<void>;
   refreshPluginSessionStart(): ReturnType<IAgentPluginService['refreshSessionStart']>;
   cancel(input?: { turnId?: number }): Promise<void>;
+  /** Permanently close this agent's local executor without deleting its history or closing the session. */
+  shutdownExecution(reason?: string): Promise<void>;
   getLoopStatus(): Promise<AgentLoopStatus>;
   runShellCommand(input: { command: string; commandId?: string }): Promise<ShellCommandResult>;
   cancelShellCommand(input: { commandId: string }): Promise<void>;
@@ -220,6 +222,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       // No turnId sends an empty arg list: `[undefined]` would cross the wire
       // as `[null]`, and `cancelFromUser(null)` would not match the active turn.
       call(scope, 'agentLoopService', 'cancelFromUser', input?.turnId === undefined ? [] : [input.turnId]) as Promise<void>,
+    shutdownExecution: (reason) =>
+      call(scope, 'agentExecutionService', 'shutdown', reason === undefined ? [] : [reason]) as Promise<void>,
     getLoopStatus: () =>
       call(scope, 'agentLoopService', 'status', []) as Promise<AgentLoopStatus>,
     runShellCommand: (input) =>

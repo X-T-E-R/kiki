@@ -143,6 +143,10 @@ export const agentPluginContract = {
   refreshSessionStart: { input: z.tuple([]), output: noResult },
 } satisfies ServiceContract;
 
+export const agentExecutionContract = {
+  shutdown: { input: z.tuple([z.string().optional()]), output: noResult },
+} satisfies ServiceContract;
+
 export const agentLoopContract = {
   cancelFromUser: { input: z.tuple([z.number().optional()]), output: noResult },
   status: { input: z.tuple([]), output: agentLoopStatusSchema },

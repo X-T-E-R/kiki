@@ -43,6 +43,7 @@ import { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/s
 import { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
 import { IAgentLoopService } from '@kiki/agent-core-v2/agent/loop/loop';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
 import { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
@@ -124,6 +125,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentPromptService: IAgentPromptService,
   agentSkillService: IAgentSkillService,
   agentLoopService: IAgentLoopService,
+  agentExecutionService: IAgentExecutionService,
   agentContextInjectorService: IAgentContextInjectorService,
   agentContextMutationService: IAgentContextMutationService,
   agentContextRebuildService: IAgentContextRebuildService,

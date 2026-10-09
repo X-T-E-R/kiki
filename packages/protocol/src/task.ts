@@ -45,6 +45,9 @@ export const taskSchema = z.object({
   model: z.string().optional(),
   /** Subagent tasks only: the child's effective thinking effort at spawn. */
   thinking_effort: z.string().optional(),
+  thinking_effort_explicit: z.boolean().optional(),
+  executor_id: z.string().optional(),
+  executor_protocol: z.string().optional(),
   agent_id: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
   profile: z.string().optional(),

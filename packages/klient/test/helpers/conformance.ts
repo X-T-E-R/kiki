@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { IFlagService as importFlags } from '@kiki/agent-core-v2/app/flag/flag';
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -961,6 +962,22 @@ export function defineKlientConformance(
         await session.close();
       }
       expect(await target.klient.session('missing-resume-session').resume()).toBe(false);
+    });
+
+    it('shuts down only one local agent execution while preserving the session and records', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      await session.agent('main').getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const main = await ensureMainAgent(live);
+      const child = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'shutdown-child' });
+      try {
+        await session.agent(child.id).shutdownExecution('failed-external-cleanup');
+        expect(child.accessor.get(IAgentExecutionService).status().state).toBe('closed');
+        expect(main.accessor.get(IAgentExecutionService).status().state).toBe('idle');
+        expect((await session.agents())[child.id]).toBeDefined();
+        expect((await session.get()).id).toBe(created.id);
+      } finally { await session.close(); }
     });
 
     it('keeps local permission changes local and default changes broadcast', async () => {

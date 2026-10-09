@@ -211,7 +211,8 @@ export interface AgentExecutionStatus {
     | 'starting'
     | 'running'
     | 'cancelling'
-    | 'broken';
+    | 'broken'
+    | 'closed';
   readonly turnId?: number;
 }
 
@@ -254,6 +255,7 @@ export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot)
       roomPrompt: binding.roomPrompt,
       modelAlias: binding.modelAlias,
       thinkingLevel: binding.thinkingLevel,
+      thinkingEffortExplicit: binding.thinkingEffortExplicit,
       profileDefinitionId: binding.profileDefinitionId,
       routeId: binding.routeId,
       systemPrompt: binding.systemPrompt,

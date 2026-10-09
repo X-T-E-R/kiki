@@ -417,15 +417,26 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(profile.data()).toMatchObject({ routeId: 'example.route', lockedModelAlias: OLD, routeDetached: true });
   });
 
-  it('rejects an active child and foreign ownership without switching or launching', async () => {
+  it.each(['running', 'cancelling'] as const)('rejects a %s child and foreign ownership without switching or launching', async (state) => {
     const ctx = await host();
     const { dispatch, child, runs } = dispatchFor(ctx);
-    vi.spyOn(ctx.get(IAgentExecutionService), 'status').mockReturnValue({ state: 'running', turnId: 10 });
+    vi.spyOn(ctx.get(IAgentExecutionService), 'status').mockReturnValue({ state, turnId: 10 });
     const start = vi.spyOn(runs, 'run');
-    await expect(dispatch.runOnExisting(child, 'Must wait', options('running', { newWindow: true }))).rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
+    await expect(dispatch.runOnExisting(child, 'Must wait', options(`${state}-resume`, { newWindow: true }))).rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
     await expect(dispatch.resolveOwnedChild({ kind: 'agent', agentId: 'foreign-parent' }, CHILD)).rejects.toMatchObject({ code: ErrorCodes.AGENT_NOT_OWNED });
     expect(start).not.toHaveBeenCalled();
     expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
+  });
+
+  it('admits an explicit resume after a terminally broken execution', async () => {
+    const ctx = await host();
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    vi.spyOn(ctx.get(IAgentExecutionService), 'status').mockReturnValue({ state: 'broken' });
+    const start = vi.spyOn(runs, 'run');
+    ctx.mockNextResponse({ type: 'text', text: 'Recovered after external failure' });
+    const resumed = await dispatch.runOnExisting(child, 'Corrected effort', options('broken-resume'));
+    await (await resumed.started).completion;
+    expect(start).toHaveBeenCalledOnce();
   });
 
   it('retains todo and note values and sources through fresh resume', async () => {

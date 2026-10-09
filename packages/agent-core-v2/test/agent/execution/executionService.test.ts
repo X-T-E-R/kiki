@@ -11,7 +11,7 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService as ProfileServiceId } from '#/agent/profile/profile';
 import { IAgentScopeContext as ScopeContextId } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService as StateServiceId } from '#/agent/state/agentState';
-import { IAgentExecutorRegistry as ExecutorRegistryId } from '#/app/agentExecutor/agentExecutor';
+import { agentExecutorBindingFingerprint, IAgentExecutorRegistry as ExecutorRegistryId } from '#/app/agentExecutor/agentExecutor';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -20,7 +20,6 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentExecutionService } from '#/agent/execution/executionService';
-import { agentExecutorBindingFingerprint } from '#/app/agentExecutor/agentExecutor';
 import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { NativeAgentExecutorSession } from '#/agent/execution/nativeAgentExecutorSession';
 import { IAgentLoopService, type Turn } from '#/agent/loop/loop';
@@ -38,6 +37,7 @@ import type {
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { createHooks } from '#/hooks';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
+import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 
 const IMarker = createDecorator<string>('executionTestMarker');
 
@@ -250,6 +250,66 @@ describe('AgentExecutionService', () => {
     }
   });
 
+  it('reports closed after shutdown while retaining cancelling until active runs settle', async () => {
+    const ix = new TestInstantiationService();
+    const service = executionService(ix, scope(), profile({ executorId: 'native' }), {} as IAgentExecutorRegistry, states());
+    const release = vi.fn();
+    ix.stub(ISessionDispatchService, 'reserveTurnExecution', () => release);
+    ix.stub(IAgentLoopService, 'status', () => ({ state: 'running', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false }));
+    const completion = deferred<void>();
+    service.trackPromptRun(completion.promise, new AbortController().signal);
+    try {
+      const closing = service.shutdown('close');
+      expect(service.status()).toEqual({ state: 'cancelling', turnId: undefined });
+      completion.resolve();
+      await closing;
+      expect(service.status()).toEqual({ state: 'closed' });
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      completion.resolve();
+      await ix.dispose();
+    }
+  });
+
+  it('keeps shutdown pending as cancelling and reports broken when session shutdown fails', async () => {
+    const ix = new TestInstantiationService();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const shutdownGate = deferred<void>();
+    const failure = new Error('external shutdown failed');
+    const shutdown = vi.fn(() => shutdownGate.promise);
+    const session: AgentExecutorSession = {
+      run: async () => ({ agentId: 'agent-test', completion: Promise.resolve({ summary: 'done' }), turn: {
+        id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+      } }),
+      status: () => ({ state: 'idle' }), cancel: () => false,
+      shutdown, settled: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const registry = { resolveExecutable: async () => ({
+      descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
+      options: {}, provider: { create: () => session },
+    }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope(), profile({
+      executorId: 'fake', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+    }), registry, states());
+    try {
+      const handle = await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await handle.completion;
+      await service.settled();
+      const closing = service.shutdown('close');
+      expect(shutdown).toHaveBeenCalledWith('close');
+      expect(service.status()).toEqual({ state: 'cancelling' });
+      shutdownGate.reject(failure);
+      await expect(closing).rejects.toBe(failure);
+      expect(service.status()).toEqual({ state: 'broken' });
+    } finally {
+      shutdownGate.reject(failure);
+      await service.dispose().catch(() => {});
+      await ix.dispose().catch(() => {});
+      errors.mockRestore();
+    }
+  });
+
   it('holds shared dispatch capacity through real cancellation and admits the next execution only after settlement', async () => {
     const ix = new TestInstantiationService();
     const capacity = new DispatchCapacity();
@@ -341,7 +401,7 @@ describe('AgentExecutionService', () => {
         expect(shutdown).toHaveBeenCalledTimes(1);
         expect(cancel).toHaveBeenCalledTimes(1);
         expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
-        expect(service.status()).toEqual({ state: 'idle' });
+        expect(service.status()).toEqual({ state: 'closed' });
       } finally {
         release();
         await ix.dispose();
@@ -429,7 +489,7 @@ describe('AgentExecutionService', () => {
         expect(drain).toHaveBeenCalledTimes(1);
         expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
         await expect(service.run({ kind: 'prompt', prompt: 'late' }, { signal: controller.signal })).rejects.toThrow('shutting down');
-        expect(service.status()).toEqual({ state: 'idle' });
+        expect(service.status()).toEqual({ state: 'closed' });
         if (close === 'replacement') {
           await vi.waitFor(() => expect(child.invokeFunction((a) => a.get(IAgentExecutionService))).not.toBe(service));
         }
@@ -764,6 +824,154 @@ describe('AgentExecutionService', () => {
     expect(service.status()).toEqual({ state: 'broken' });
     void service.dispose();
     await ix.dispose();
+  });
+
+  it('recovers an explicitly retried external session construction after the first provider becomes available', async () => {
+    const ix = new TestInstantiationService();
+    let available = false;
+    const turn = {
+      id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+      result: Promise.resolve({ type: 'completed' as const, steps: 1, truncated: false }), cancel: () => false,
+    };
+    const session: AgentExecutorSession = {
+      run: vi.fn(async () => ({ agentId: 'agent-test', turn, completion: Promise.resolve({ summary: 'recovered' }) })),
+      status: () => ({ state: 'idle' }), cancel: () => false,
+      settled: async () => {}, shutdown: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const create = vi.fn<AgentExecutorProvider['create']>(() => session);
+    const provider: AgentExecutorProvider = {
+      id: 'fake-provider', protocol: 'acp-v1', validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }), create,
+    };
+    const registry = {
+      get: () => ({ id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' }),
+      resolveExecutable: async () => ({
+        descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
+        options: {}, provider: available ? provider : undefined,
+      }),
+    } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope(), profile({
+      executorId: 'fake', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+    }), registry, states());
+    try {
+      await expect(service.run(
+        { kind: 'prompt', prompt: 'first construction' },
+        { signal: new AbortController().signal },
+      )).rejects.toThrow(/has no registered provider/);
+      expect(service.status()).toEqual({ state: 'broken' });
+
+      available = true;
+      const recovered = await service.run(
+        { kind: 'prompt', prompt: 'corrected construction' },
+        { signal: new AbortController().signal },
+      );
+      await expect(recovered.completion).resolves.toEqual({ summary: 'recovered' });
+      expect(create).toHaveBeenCalledOnce();
+      expect(service.status()).toEqual({ state: 'idle' });
+    } finally {
+      await service.dispose();
+      await ix.dispose();
+    }
+  });
+
+  it('recreates a settled terminally broken external session for an explicit corrected run', async () => {
+    const ix = new TestInstantiationService();
+    const profileData: Partial<ProfileData> = {
+      executorId: 'fake', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+      modelAlias: 'model-a', thinkingLevel: 'low',
+    };
+    const profileService = profile(profileData);
+    const stored = states();
+    const prior = {
+      executorId: 'fake', descriptorRevision: 'r1',
+      bindingFingerprint: agentExecutorBindingFingerprint(profileService.data()),
+      sessionEpoch: 4,
+      sessionRef: { executorId: 'fake', version: 1, ref: { sessionId: 'persisted-session' } },
+    };
+    stored.get = () => prior as never;
+    const firstCompletion = deferred<{ summary: string }>();
+    const cleanup = deferred<void>();
+    const release = vi.fn();
+    const contexts: AgentExecutorContext[] = [];
+    const sessions: AgentExecutorSession[] = [];
+    const shutdowns: ReturnType<typeof vi.fn>[] = [];
+    const provider: AgentExecutorProvider = {
+      id: 'fake-provider',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (context) => {
+        contexts.push(context);
+        const index = sessions.length;
+        let state: 'idle' | 'running' | 'broken' = 'idle';
+        const completion = index === 0 ? firstCompletion.promise : Promise.resolve({ summary: 'recovered' });
+        const shutdown = vi.fn(async () => {
+          if (index === 0) await cleanup.promise;
+        });
+        shutdowns.push(shutdown);
+        const session: AgentExecutorSession = {
+          run: vi.fn(async () => {
+            state = 'running';
+            void completion.then(() => { state = 'idle'; }, () => { state = 'broken'; });
+            return {
+              agentId: 'agent-test',
+              turn: {
+                id: index + 1, signal: new AbortController().signal, ready: Promise.resolve(),
+                result: Promise.resolve({ type: 'completed' as const, steps: 1, truncated: false }), cancel: () => false,
+              },
+              completion,
+            };
+          }),
+          status: () => state === 'running' ? { state, turnId: index + 1 } : { state },
+          cancel: () => false,
+          settled: async () => { await completion.catch(() => undefined); },
+          shutdown,
+          hooks: createHooks(['onWillRun']),
+        };
+        sessions.push(session);
+        return session;
+      },
+    };
+    const registry = {
+      resolveExecutable: async () => ({
+        descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
+        options: {}, provider,
+      }),
+    } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope(), profileService, registry, stored, () => release);
+    try {
+      const first = await service.run(
+        { kind: 'prompt', prompt: 'invalid effort' },
+        { signal: new AbortController().signal },
+      );
+      const failure = new Error('vendor rejected model selection');
+      firstCompletion.reject(failure);
+      await expect(first.completion).rejects.toBe(failure);
+      expect(shutdowns[0]).toHaveBeenCalledWith(failure);
+      expect(release).not.toHaveBeenCalled();
+      cleanup.resolve();
+      await service.settled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(service.status()).toEqual({ state: 'broken' });
+
+      profileData.thinkingLevel = 'high';
+      const second = await service.run(
+        { kind: 'prompt', prompt: 'corrected effort' },
+        { signal: new AbortController().signal },
+      );
+      await expect(second.completion).resolves.toEqual({ summary: 'recovered' });
+      await service.settled();
+
+      expect(contexts.map((context) => context.binding.thinkingLevel)).toEqual(['low', 'high']);
+      expect(sessions).toHaveLength(2);
+      expect(shutdowns[0]).toHaveBeenCalledOnce();
+      expect(stored.get(externalExecutorKey)).toEqual(prior);
+      expect(service.status()).toEqual({ state: 'idle' });
+    } finally {
+      cleanup.resolve();
+      await service.dispose();
+      await ix.dispose();
+    }
   });
 });
 

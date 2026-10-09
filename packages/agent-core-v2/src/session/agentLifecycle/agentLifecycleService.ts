@@ -382,7 +382,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const restoreFellBack = await this.bindBootstrap(handle, opts);
       const binding = handle.accessor.get(IAgentProfileService).data();
       if (writesBinding) bootstrapBinding = { execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
-        executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
+        thinkingEffortExplicit: binding.thinkingEffortExplicit, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
         negotiated: priorAgentMeta?.executor === binding.executorId ? priorAgentMeta?.negotiated : undefined,
         allowKikiSubagents: binding.allowKikiSubagents };
       if (opts.restoreBinding !== undefined) {
@@ -411,6 +411,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           displayName: current.displayName ?? profile.routeId ?? profile.profileName,
           userLabel: opts.userLabel ?? current.userLabel,
           execution: profile.execution, model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
+          thinkingEffortExplicit: profile.thinkingEffortExplicit,
           executor: profile.executorId ?? 'native', executorProtocol: profile.executorProtocol,
           negotiated: current.executor === profile.executorId ? current.negotiated : undefined,
           allowKikiSubagents: profile.allowKikiSubagents,
@@ -439,7 +440,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         const written = appliedAgentMeta ?? bootstrapBinding!;
         await this.sessionMetadata.updateAgent(agentId, (current) => {
           const next = { ...current };
-          const bindingKeys = ['execution', 'model', 'thinkingEffort', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
+          const bindingKeys = ['execution', 'model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
           const keys = appliedAgentMeta === undefined ? bindingKeys
             : [...bindingKeys, 'homedir', 'type', 'parentAgentId', 'delegator', 'forkedFrom', 'displayName', 'userLabel'] as const;
           for (const key of keys) {
@@ -497,12 +498,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       profile.data().profileName === undefined &&
       profile.data().routeId === undefined
     ) {
+      const restoreThinking = opts.restoreBinding.executorId !== undefined && opts.restoreBinding.executorId !== 'native' &&
+        opts.restoreBinding.thinkingEffortExplicit !== true
+        ? undefined : opts.restoreBinding.thinkingEffort;
       try {
         await profile.bind({
           profile: opts.restoreBinding.profileName,
           route: opts.restoreBinding.routeId,
           model: opts.restoreBinding.modelAlias,
-          thinking: opts.restoreBinding.thinkingEffort,
+          thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
         });
       } catch (error) {
@@ -518,7 +522,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await profile.bind({
           profile: DEFAULT_AGENT_PROFILE_NAME,
           model: opts.restoreBinding.modelAlias,
-          thinking: opts.restoreBinding.thinkingEffort,
+          thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
         });
         await handle.accessor.get(IEventDispatcher).dispatch(new WarningIssued({
@@ -585,6 +589,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       routeId: data.routeId,
       modelAlias: data.modelAlias,
       thinkingEffort: data.thinkingLevel,
+      thinkingEffortExplicit: data.thinkingEffortExplicit,
       executorId: data.executorId,
       executorProtocol: data.executorProtocol,
     };

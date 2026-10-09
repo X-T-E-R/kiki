@@ -668,6 +668,19 @@ it.each(['pending', 'launching', 'recovery', 'finalizing'] as const)('blocks run
   } finally { await fx.service.dispose(); }
 });
 
+it('allows runtime unload after execution has reached the closed terminal state', async () => {
+  const fx = fixture(undefined, accessor([
+    [IAgentPromptService, { list: () => ({ active: undefined, launching: undefined, pending: [], hold: undefined }) }],
+    [IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+    [IAgentExecutionService, { status: () => ({ state: 'closed' }) }],
+    [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
+  ]));
+  try {
+    await expect(fx.service.unload('session-1')).resolves.toBe(true);
+    expect(fx.dispose).toHaveBeenCalledOnce();
+  } finally { await fx.service.dispose(); }
+});
+
 it('rechecks queued prompts after asynchronous preparation before disposing the runtime', async () => {
   let pending: object[] = [];
   const fx = fixture(undefined, accessor([

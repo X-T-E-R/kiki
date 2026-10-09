@@ -484,6 +484,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     binding: {
       modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'model-a',
       thinkingLevel: options.thinkingEffort ?? 'high',
+      thinkingEffortExplicit: options.thinkingEffort !== undefined || options.unpinModel !== true,
       systemPrompt: 'Frozen profile',
       executorPrompt: options.profileDelivery === 'system_prompt_override'
         ? { delivery: 'replace', include: [] } : undefined,
@@ -1379,6 +1380,7 @@ describe('ACP external executor', () => {
 
   it('maps normalized events to live and canonical durable records with stable losses', async () => {
     const harness = createHarness({
+      permissionMode: 'manual',
       events: mappingEvents,
       approval: async () => ({ decision: 'approved', selectedOptionId: 'allow-once' }),
     });
@@ -2281,7 +2283,7 @@ describe('ACP external executor', () => {
         expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'external-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
-        expect(harness.execution.status()).toEqual({ state: 'idle' });
+        expect(harness.execution.status()).toEqual({ state: 'closed' });
       } finally {
         await harness.ix.dispose();
         await harness.execution.shutdown();

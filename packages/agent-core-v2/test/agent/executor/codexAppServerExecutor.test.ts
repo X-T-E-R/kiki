@@ -263,6 +263,7 @@ function createHarness(options: HarnessOptions = {}) {
     binding: {
       modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'gpt-test',
       thinkingLevel: options.thinkingEffort ?? 'high',
+      thinkingEffortExplicit: options.thinkingEffort !== undefined || options.unpinModel !== true,
       systemPrompt: 'Frozen profile instructions',
       executorId: 'codex-app-server',
       executorProtocol: 'codex-app-server',
@@ -1271,7 +1272,7 @@ describe('Codex app-server external executor', () => {
         expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'codex-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
-        expect(harness.execution.status()).toEqual({ state: 'idle' });
+        expect(harness.execution.status()).toEqual({ state: 'closed' });
       } finally {
         await harness.ix.dispose();
         await harness.execution.shutdown();

@@ -30,6 +30,9 @@ export interface SubagentSpawnedPayload {
   readonly runInBackground: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly taskId?: string;
 }
 
@@ -46,6 +49,9 @@ const subagentSpawnedSchema: z.ZodType<SubagentSpawnedPayload> = z.object({
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
+  thinkingEffortExplicit: z.boolean().optional(),
+  executorId: z.string().optional(),
+  executorProtocol: z.string().optional(),
   taskId: z.string().optional(),
 });
 
@@ -140,6 +146,9 @@ export interface AgentRunSpawnedMeta {
   readonly userLabel?: string;
   readonly runInBackground?: boolean;
   readonly model?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly taskId?: string;
 }
 
@@ -177,6 +186,9 @@ export function emitAgentRunSpawned(
       runInBackground: meta.runInBackground ?? false,
       model: meta.model,
       thinkingEffort: childProfile?.getEffectiveThinkingLevel(),
+      thinkingEffortExplicit: meta.thinkingEffortExplicit ?? childProfile?.data().thinkingEffortExplicit,
+      executorId: meta.executorId ?? childProfile?.data().executorId,
+      executorProtocol: meta.executorProtocol ?? childProfile?.data().executorProtocol,
       taskId: meta.taskId,
     }),
   );

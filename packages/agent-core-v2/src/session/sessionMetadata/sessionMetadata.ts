@@ -20,6 +20,7 @@ export interface AgentMeta {
   readonly userLabel?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
   readonly executor?: string;
   readonly executorProtocol?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;

@@ -809,7 +809,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return true;
       const loop = agent.accessor.get(IAgentLoopService).status();
       if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return true;
-      if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') return true;
+      const executionState = agent.accessor.get(IAgentExecutionService).status().state;
+      if (executionState !== 'idle' && executionState !== 'closed') return true;
     }
     return false;
   }

@@ -297,7 +297,8 @@ export function bindSessionTranscript(
       event.type === 'plan.revision' ||
       event.type === 'interaction.request' ||
       event.type === 'interaction.resolved' ||
-      event.type === 'turn.cancel'
+      event.type === 'turn.cancel' ||
+      (event.type === 'executor.runtime.update' && event['kind'] === 'usage')
     ) {
       return;
     }

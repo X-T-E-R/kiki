@@ -193,6 +193,7 @@ async function resolvePromptFromSession(
         routeId: snapshot.routeId,
         modelAlias: snapshot.modelAlias,
         thinkingEffort: snapshot.thinkingLevel,
+        thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
         executorId: snapshot.executorId,
         executorProtocol: snapshot.executorProtocol,
       },

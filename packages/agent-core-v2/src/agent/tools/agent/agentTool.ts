@@ -462,6 +462,9 @@ export class SubagentTool implements ISubagentTool {
       mainProfile: this.dispatchedMainProfile(run.child, fileProfile),
       model: run.child.modelAlias,
       thinkingEffort: run.child.thinkingEffort,
+      thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
+      executorId: childProfile.executorId,
+      executorProtocol: childProfile.executorProtocol,
       thinkingEffortSource: run.child.thinkingEffortSource,
       routeDetached: run.child.routeDetached,
       profileSource: run.child.profileSource,
@@ -608,6 +611,9 @@ export class SubagentTool implements ISubagentTool {
             description: runLabel,
             runInBackground,
             model: handle.model,
+            thinkingEffortExplicit: handle.thinkingEffortExplicit,
+            executorId: handle.executorId,
+            executorProtocol: handle.executorProtocol,
             taskId,
           });
           await requester.accessor
