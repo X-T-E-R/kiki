@@ -5250,8 +5250,23 @@ async function scenarioUsageDashboard() {
   await setProofTheme('light');
 }
 
-/** Flip the stored theme preference and wait for `<html data-theme>`. */
+/** Keep the fixture's authoritative theme and the device boot value in step. */
 async function setProofTheme(theme) {
+  const headers = { authorization: `Bearer ${FIXTURE_TOKEN}` };
+  const request = async (path, data) => {
+    const response = data === undefined
+      ? await page.request.get(`${fixtureUrl()}/api${path}`, { headers })
+      : await page.request.post(`${fixtureUrl()}/api${path}`, { headers, data });
+    const body = await response.json();
+    if (!response.ok() || body.code !== 0) throw new Error(`Theme fixture request failed: ${path}: ${body.msg}`);
+    return body.data;
+  };
+  const meta = await request('/meta');
+  if (!meta.current_space_id) throw new Error('Theme fixture has no confirmed space identity');
+  const path = `/homes/${encodeURIComponent(meta.current_space_id)}/settings`;
+  const preview = await request(`${path}/preview`, { action: 'edit', changes: [{ id: 'pref:theme', value: theme }] });
+  const applied = await request(`${path}/apply`, { token: preview.token, selected: ['pref:theme'] });
+  if (!applied.detail.preference_authority || applied.detail.preferences.theme !== theme) throw new Error('Theme fixture did not confirm the requested preference');
   await page.evaluate((next) => {
     const raw = localStorage.getItem('kiki.settings');
     const settings = raw === null ? {} : JSON.parse(raw);

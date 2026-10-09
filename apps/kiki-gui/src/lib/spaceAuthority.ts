@@ -41,13 +41,15 @@ const CACHE_KEY = 'kiki.spacePreferences.cache';
 
 interface SpacePreferenceCache {
   readonly entries: Record<string, SpacePreferenceValues>;
+  /** Only values read with explicit server authority may paint before the next read. */
+  readonly authorities: Record<string, boolean>;
   /** Written on every confirm so the next launch paints before the server answers. */
   readonly lastKnown: { readonly homeId: string; readonly serverId: string; readonly values: SpacePreferenceValues } | null;
   /** Spaces whose "which look is mine" question this device has already settled. */
   readonly resolved: Record<string, true>;
 }
 
-const EMPTY_CACHE: SpacePreferenceCache = { entries: {}, lastKnown: null, resolved: {} };
+const EMPTY_CACHE: SpacePreferenceCache = { entries: {}, authorities: {}, lastKnown: null, resolved: {} };
 
 function readCache(): SpacePreferenceCache {
   try {
@@ -56,6 +58,7 @@ function readCache(): SpacePreferenceCache {
     const parsed = JSON.parse(raw) as Partial<SpacePreferenceCache>;
     return {
       entries: typeof parsed.entries === 'object' && parsed.entries !== null ? parsed.entries : {},
+      authorities: typeof parsed.authorities === 'object' && parsed.authorities !== null ? parsed.authorities : {},
       lastKnown: parsed.lastKnown ?? null,
       resolved: typeof parsed.resolved === 'object' && parsed.resolved !== null ? parsed.resolved : {},
     };
@@ -77,10 +80,12 @@ export function dropCachedSpacePreferences(identity: SpaceIdentity): void {
   const cache = readCache();
   const entries = { ...cache.entries };
   delete entries[spaceIdentityKey(identity)];
+  const authorities = { ...cache.authorities };
+  delete authorities[spaceIdentityKey(identity)];
   const resolved = { ...cache.resolved };
   delete resolved[spaceIdentityKey(identity)];
   const matchesLastKnown = cache.lastKnown?.homeId === identity.homeId && cache.lastKnown.serverId === identity.serverId;
-  writeCache({ ...cache, entries, resolved, lastKnown: matchesLastKnown ? null : cache.lastKnown });
+  writeCache({ ...cache, entries, authorities, resolved, lastKnown: matchesLastKnown ? null : cache.lastKnown });
 }
 
 // ---------------------------------------------------------------------------
@@ -153,11 +158,13 @@ function publish(next: SpaceAuthorityState): void {
 }
 
 /** Remember one space's values for the next launch, without touching the rest. */
-function rememberValues(identity: SpaceIdentity, values: SpacePreferenceValues, lastKnown = true): void {
+function rememberValues(identity: SpaceIdentity, detail: SpaceDetail, lastKnown = true): void {
   const cache = readCache();
+  const values = detail.preferences;
   writeCache({
     ...cache,
     entries: { ...cache.entries, [spaceIdentityKey(identity)]: values },
+    authorities: { ...cache.authorities, [spaceIdentityKey(identity)]: detail.preference_authority },
     lastKnown: lastKnown ? { homeId: identity.homeId, serverId: identity.serverId, values } : cache.lastKnown,
   });
 }
@@ -173,7 +180,8 @@ export function loadCachedSpacePreferences(homeId: string, serverId?: string): v
   const boot = cache.lastKnown?.homeId === homeId ? cache.lastKnown : null;
   const identity = serverId === undefined ? (boot === null ? null : { serverId: boot.serverId, homeId }) : { serverId, homeId };
   if (identity === null || (holdsIdentity(identity) && state.loaded)) return;
-  const confirmed = serverId === undefined ? boot?.values ?? null : cache.entries[spaceIdentityKey(identity)] ?? null;
+  const cached = serverId === undefined ? boot?.values ?? null : cache.entries[spaceIdentityKey(identity)] ?? null;
+  const confirmed = cache.authorities[spaceIdentityKey(identity)] === true ? cached : null;
   if (!holdsIdentity(identity)) resetGeneration();
   publish({ ...IDLE, identity, confirmed });
 }
@@ -182,7 +190,7 @@ export function loadCachedSpacePreferences(homeId: string, serverId?: string): v
 export function configureSpaceAuthority(identity: SpaceIdentity, detail: SpaceDetail): void {
   const same = holdsIdentity(identity);
   if (!same) resetGeneration();
-  rememberValues(identity, detail.preferences);
+  rememberValues(identity, detail);
   publish({
     ...(same ? state : IDLE),
     identity,
@@ -336,7 +344,7 @@ export async function writeSpacePreferenceValues(
     const result = await api.apply(identity.homeId, { token: preview.token, selected: changes.map((change) => change.id) });
     if (!current()) {
       // A legal old-space apply can finish, but not replace a newer visit's cache.
-      if (!holdsIdentity(identity)) rememberValues(identity, result.detail.preferences, false);
+      if (!holdsIdentity(identity)) rememberValues(identity, result.detail, false);
       return true;
     }
     const settled = latest();
@@ -350,7 +358,7 @@ export async function writeSpacePreferenceValues(
       delete nextDrafts[item];
       delete nextWrites[item];
     }
-    rememberValues(identity, next.preferences);
+    rememberValues(identity, next);
     publish({ ...state, confirmed: next.preferences, authoritative: next.preference_authority, loaded: true, drafts: nextDrafts, writes: nextWrites });
     const sinkIdentity = active?.identity();
     if (current() && sinkIdentity !== null && sinkIdentity !== undefined && spaceIdentityKey(sinkIdentity) === spaceIdentityKey(identity)) active?.onDetail?.(next);
@@ -393,14 +401,14 @@ export async function importDevicePreferences(
   try {
     const result = await spaceSettingsApi(client).importPreferences(identity.homeId, { values, device_id: deviceId });
     if (generation !== startedGeneration || (state.identity !== null && !holdsIdentity(identity))) {
-      if (!holdsIdentity(identity)) rememberValues(identity, result.detail.preferences, false);
+      if (!holdsIdentity(identity)) rememberValues(identity, result.detail, false);
       return { imported: result.imported, conflict: result.device_conflict };
     }
     const next = reconcileDetail(identity, result.detail, version);
     if (state.identity === null) resetGeneration();
     confirmedVersion += 1;
     for (const item of Object.keys(SPACE_ITEM_IDS) as SpacePreferenceItem[]) fieldVersions[item] = confirmedVersion;
-    rememberValues(identity, next.preferences);
+    rememberValues(identity, next);
     publish({
       ...state,
       identity,

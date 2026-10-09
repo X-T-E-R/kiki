@@ -310,7 +310,7 @@ function applyPlan(spaces, id, body) {
   if ((body.selected ?? []).length === 0) return { applied: [] };
   const space = settingsFor(spaces, id);
   const target = space.primary ? null : space.item;
-  const before = structuredClone({ prefs: target?.prefs, selections: target?.selections, credentials: target?.credentials, overrides: target?.overrides });
+  const before = structuredClone({ prefs: space.own, selections: space.choices, credentials: target?.credentials, overrides: target?.overrides });
   for (const wireId of body.selected) {
     const row = plan.rows.find((entry) => entry.id === wireId);
     if (row === undefined || row.blocked_reason !== undefined) return { error: `No plan for ${wireId}` };
@@ -321,8 +321,12 @@ function applyPlan(spaces, id, body) {
     const preference = PREFERENCE_ITEMS.find((entry) => entry.id === wireId);
     const config = CONFIG_ITEMS.find((entry) => entry.id === wireId);
     if (preference !== undefined) {
-      if (target === null) continue;
       const value = plan.changes?.find?.((entry) => entry.id === wireId)?.value ?? row.after;
+      if (target === null) {
+        spaces.settings.mainPrefs = { ...(spaces.settings.mainPrefs ?? {}), [preference.key]: value };
+        spaces.settings.mainSelections = { ...spaces.settings.mainSelections, [wireId]: { mode: 'fixed', reason: 'edited' } };
+        continue;
+      }
       target.prefs = { ...(target.prefs ?? {}), [preference.key]: value };
       target.selections = {
         ...target.selections,
@@ -387,7 +391,10 @@ function handleSpaceSettings(server, res, path, method, body) {
     const record = spaces.settings.undo.get(id);
     if (record === undefined || body?.undo_id !== record.id) { server.envelope(res, null, 40001, 'No recent change to undo'); return true; }
     const target = id === 'main' ? null : spaces.items.find((entry) => entry.id === id);
-    if (target !== null) {
+    if (target === null) {
+      spaces.settings.mainPrefs = record.before?.prefs;
+      spaces.settings.mainSelections = record.before?.selections ?? {};
+    } else {
       target.prefs = record.before?.prefs;
       target.selections = record.before?.selections ?? {};
       target.credentials = record.before?.credentials ?? target.credentials;
@@ -406,9 +413,14 @@ function handleSpaceSettings(server, res, path, method, body) {
       server.envelope(res, { detail: detailFor(spaces, id), imported: false, device_conflict: !same(body?.values, space.prefs) });
       return true;
     }
-    if (target !== null) {
-      target.prefs = { ...PROTOCOL_DEFAULTS, ...(body?.values ?? {}) };
-      target.selections = Object.fromEntries(PREFERENCE_ITEMS.map((entry) => [entry.id, { mode: 'fixed', reason: 'migrated' }]));
+    const prefs = { ...PROTOCOL_DEFAULTS, ...(body?.values ?? {}) };
+    const selections = Object.fromEntries(PREFERENCE_ITEMS.map((entry) => [entry.id, { mode: 'fixed', reason: 'migrated' }]));
+    if (target === null) {
+      spaces.settings.mainPrefs = prefs;
+      spaces.settings.mainSelections = selections;
+    } else {
+      target.prefs = prefs;
+      target.selections = selections;
     }
     spaces.log.push({ spaceImport: { id, device_id: body?.device_id } });
     server.envelope(res, { detail: detailFor(spaces, id), imported: true, device_conflict: false });

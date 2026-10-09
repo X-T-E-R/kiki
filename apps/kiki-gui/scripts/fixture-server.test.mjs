@@ -260,3 +260,38 @@ test('archive fixture deletes one archived family, holds back the excluded, and 
     assert.deepEqual(left.data.items.map((session) => session.id).sort(), [live, liveChild, stuck].sort());
   } finally { await server.stop(); }
 });
+
+
+test('main theme fixture imports once and confirms Settings preview/apply, refresh and undo', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'workspace-tools' });
+  const base = `http://127.0.0.1:${server.http.address().port}/api/homes/main/settings`;
+  const request = async (suffix = '', body) => {
+    const response = await fetch(`${base}${suffix}`, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const envelope = await response.json();
+    assert.equal(envelope.code, 0);
+    return envelope.data;
+  };
+  try {
+    assert.equal((await request()).preference_authority, false);
+    const imported = await request('/import-preferences', { values: { theme: 'light' }, device_id: 'device-example' });
+    assert.equal(imported.imported, true);
+    assert.equal(imported.detail.preference_authority, true);
+    assert.equal(imported.detail.preferences.theme, 'light');
+    const conflict = await request('/import-preferences', { values: { theme: 'dark' }, device_id: 'device-example' });
+    assert.equal(conflict.imported, false);
+    assert.equal(conflict.device_conflict, true);
+    assert.equal(conflict.detail.preferences.theme, 'light');
+    const preview = await request('/preview', { action: 'edit', changes: [{ id: 'pref:theme', value: 'dark' }] });
+    const applied = await request('/apply', { token: preview.token, selected: ['pref:theme'] });
+    assert.equal(applied.detail.preference_authority, true);
+    assert.equal(applied.detail.preferences.theme, 'dark');
+    assert.equal((await request()).preferences.theme, 'dark');
+    const undone = await request('/undo', { undo_id: applied.undo_id });
+    assert.equal(undone.detail.preferences.theme, 'light');
+    assert.equal(undone.detail.preference_authority, true);
+  } finally { await server.stop(); }
+});

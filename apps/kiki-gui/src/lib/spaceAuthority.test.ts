@@ -68,6 +68,24 @@ describe('space identity', () => {
 });
 
 describe('confirmed values and the boot cache', () => {
+  it('does not resurrect defaults from an unauthoritative or legacy cache on remount', () => {
+    configureSpaceAuthority(ACME, detail());
+    configureSpaceAuthority(ACME, detail({ preference_authority: false, preferences: { ...DEFAULT_SPACE_PREFERENCES } }));
+    clearSpaceAuthority();
+    loadCachedSpacePreferences('h-acme', 'server-a');
+    expect(spaceAuthoritySnapshot().confirmed).toBeNull();
+    clearSpaceAuthority();
+    loadCachedSpacePreferences('h-acme');
+    expect(spaceAuthoritySnapshot().confirmed).toBeNull();
+    const values = { ...DEFAULT_SPACE_PREFERENCES, theme: 'light' };
+    localStorage.setItem('kiki.spacePreferences.cache', JSON.stringify({
+      entries: { [spaceIdentityKey(ACME)]: values }, lastKnown: { ...ACME, values }, resolved: {},
+    }));
+    clearSpaceAuthority();
+    loadCachedSpacePreferences('h-acme', 'server-a');
+    expect(spaceAuthoritySnapshot().confirmed).toBeNull();
+  });
+
   it('accepts a detail as the space’s own values and remembers them for the next launch', () => {
     configureSpaceAuthority(ACME, detail());
     expect(spaceAuthoritySnapshot().authoritative).toBe(true);
