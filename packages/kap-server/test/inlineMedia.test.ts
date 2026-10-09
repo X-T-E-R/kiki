@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
 import { AgentTranscript, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
-import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
+import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionIndex, ISessionManager, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
 import * as mainAgent from '../src/transport/mainAgent';
 import * as promptMedia from '../src/lib/promptMedia';
 import { registerSkillsRoutes } from '../src/routes/skills';
@@ -149,7 +149,12 @@ describe('canonical inline media original', () => {
     const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
       handle: { accessor: { get: () => ({ open: async () => file }) } }, dispose,
     } as unknown as sessionOperation.SessionOperationLease);
-    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope); }, { prefix: '/api' });
+    const services = new Map<unknown, unknown>([
+      [ISessionIndex, { get: async () => undefined }],
+      [ISessionManager, { get: () => ({}) }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], core); }, { prefix: '/api' });
     const base = await app.listen({ host: '127.0.0.1', port: 0 });
     const disconnected = new Promise<void>((resolve) => { app.server.once('request', (_req, response) => { response.once('close', resolve); }); });
     const request = get(`${base}/api/sessions/fixture/media/file/preview`);
