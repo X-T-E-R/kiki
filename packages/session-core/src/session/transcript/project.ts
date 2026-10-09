@@ -3346,7 +3346,8 @@ export function projectAgentTranscriptView(
     todoNotesStatus: agentTodo?.notesStatus,
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
-    hasMoreHistory: snapshot.hasMoreOlder === true,
+    hasMoreHistory: snapshot.hasMoreOlder === true || snapshot.items.some((item) => item.kind === 'turn' &&
+      item.contentRefs?.some((ref) => ref.direction === 'backward') === true),
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
     // A running last turn has no tail yet; never carry the previous turn's.

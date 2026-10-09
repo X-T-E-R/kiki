@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AgentTranscript, applyContentSegment, jsonBytes, transcriptTurnSchema, type ContentWindow } from '@kiki/transcript';
+import { AgentTranscript, applyContentSegment, jsonBytes, rebindTurnContentRefs, transcriptTurnSchema, type ContentRef, type ContentWindow, type TranscriptTurn } from '@kiki/transcript';
+import { patchAgentTranscriptContent } from '../../session-core/src/session/transcript/content';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptPageSource, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
 import { inlineMediaFile } from '../src/services/inlineMedia';
@@ -232,6 +233,240 @@ describe('header-first projection', () => {
     const ref = boundedEntity(original, { kind: 'turn', id: 't1' }).contentRefs!.find((ref) => ref.path.length === 1)!;
     expect(() => readContentSegment(turn('new'), ref)).not.toThrow();
     expect(() => readContentSegment(turn('new', true), ref)).toThrow('Content changed');
+  });
+
+  it('uses tail structure windows for snapshots while keeping boundedEntity head-compatible', () => {
+    const original = transcriptTurnSchema.parse({
+      kind: 'turn', turnId: 'tail-turn', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      steps: Array.from({ length: 107 }, (_, step) => ({
+        kind: 'step', turnId: 'tail-turn', stepId: `s${step}`, ordinal: step, state: 'completed',
+        frames: Array.from({ length: 40 }, (_, frame) => ({ kind: 'text', frameId: `f${step}-${frame}`, role: 'assistant', text: `saved ${step}-${frame}` })),
+      })),
+    });
+    const snapshot = boundedTranscriptSnapshot({ items: [original], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} }, 'main');
+    const preview = snapshot.items[0]!;
+    if (preview.kind !== 'turn') throw new Error('Expected turn');
+    expect(preview.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `s${index + 99}`));
+    expect(preview.steps.at(-1)!.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `f106-${index + 32}`));
+    const stepRef = preview.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps');
+    expect(stepRef).toMatchObject({ offset: 99, total: 107, direction: 'backward' });
+    const frameRef = preview.contentRefs?.find((ref) => ref.path.length === 3 && ref.path[0] === 'steps' && ref.path[1] === 106 && ref.path[2] === 'frames');
+    expect(frameRef).toMatchObject({ offset: 32, total: 40, direction: 'backward' });
+
+    const head = boundedEntity(original, { kind: 'turn', id: 'tail-turn' }, undefined, 'main');
+    expect(head.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `s${index}`));
+    expect(head.steps[0]!.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `f0-${index}`));
+    const headRef = head.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps');
+    expect(headRef).toMatchObject({ offset: 8, total: 107 });
+    expect((headRef as { direction?: string } | undefined)?.direction).toBeUndefined();
+    expect((readContentSegment(original, headRef!).value as { stepId: string }[]).map((step) => step.stepId)).toEqual(Array.from({ length: 20 }, (_, index) => `s${index + 8}`));
+
+  });
+
+  it('reads backward structure pages to zero without repeating the inline suffix', () => {
+    const original = {
+      steps: Array.from({ length: 107 }, (_, step) => ({
+        kind: 'step', stepId: `s${step}`, ordinal: step,
+        frames: Array.from({ length: 40 }, (_, frame) => ({ kind: 'text', frameId: `f${step}-${frame}`, text: `saved ${step}-${frame}` })),
+      })),
+    };
+    const preview = boundedEntity(original, { kind: 'turn', id: 'tail-turn' }, undefined, 'main', 'tail');
+    const stepRef = preview.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps');
+    if (stepRef === undefined) throw new Error('Expected backward steps ref');
+    const omitted: string[] = [];
+    let ref: ContentRef | undefined = stepRef;
+    let pages = 0;
+    while (ref !== undefined) {
+      const segment = readContentSegment(original, ref, false, 'main', 64 * 1024);
+      const values = segment.value as { stepId: string }[];
+      expect(segment.start).toBe(ref.offset - values.length);
+      expect(segment.start).toBeGreaterThanOrEqual(0);
+      if (segment.next === undefined) expect(segment.start).toBe(0);
+      else expect(segment.next.offset).toBe(segment.start);
+      expect(values.some((step) => Number(step.stepId.slice(1)) >= stepRef.offset)).toBe(false);
+      omitted.unshift(...values.map((step) => step.stepId));
+      ref = segment.next;
+      pages += 1;
+      expect(pages).toBeLessThan(20);
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(omitted).toEqual(original.steps.slice(0, stepRef.offset).map((step) => step.stepId));
+
+    const frameRef = preview.contentRefs?.find((candidate) => candidate.path.length === 3 && candidate.path[0] === 'steps' && candidate.path[1] === 106 && candidate.path[2] === 'frames');
+    if (frameRef === undefined) throw new Error('Expected backward frames ref');
+    const frameIds: string[] = [];
+    ref = frameRef;
+    while (ref !== undefined) {
+      const segment = readContentSegment(original, ref, false, 'main', 64 * 1024);
+      const values = segment.value as { frameId: string }[];
+      expect(segment.start).toBe(ref.offset - values.length);
+      if (segment.next === undefined) expect(segment.start).toBe(0);
+      else expect(segment.next.offset).toBe(segment.start);
+      frameIds.unshift(...values.map((frame) => frame.frameId));
+      ref = segment.next;
+    }
+    expect(frameIds).toEqual(original.steps[106]!.frames.slice(0, frameRef.offset).map((frame) => frame.frameId));
+  });
+
+  it('keeps the fixed canonical watermark appendable and rejects replacement', () => {
+    const original = { steps: Array.from({ length: 24 }, (_, ordinal) => ({ kind: 'step', stepId: `s${ordinal}`, ordinal, frames: [] })) };
+    const preview = boundedEntity(original, { kind: 'turn', id: 'watermark-turn' }, undefined, 'main', 'tail');
+    const ref = preview.contentRefs?.find((candidate) => candidate.path.length === 1 && candidate.path[0] === 'steps');
+    if (ref === undefined) throw new Error('Expected backward steps ref');
+    expect(() => readContentSegment({ steps: [...original.steps, { kind: 'step', stepId: 's24', ordinal: 24, frames: [] }] }, ref)).not.toThrow();
+    expect(() => readContentSegment(original, { ...ref, offset: 0 })).toThrow('Content changed');
+    const nonCanonical = { values: Array.from({ length: 100 }, (_, index) => index) };
+    const nonCanonicalRef = boundedEntity(nonCanonical, { kind: 'task', id: 'non-canonical' }).contentRefs?.find((candidate) => candidate.path[0] === 'values');
+    if (nonCanonicalRef === undefined) throw new Error('Expected non-canonical array ref');
+    expect(() => readContentSegment(nonCanonical, { ...nonCanonicalRef, direction: 'backward' })).toThrow('Content changed');
+    const replaced = { steps: [original.steps[0]!, { kind: 'step', stepId: 'replacement', ordinal: 1, frames: [] }, ...original.steps.slice(2)] };
+    expect(() => readContentSegment(replaced, ref)).toThrow('Content changed');
+  });
+
+  it('hydrates tail structures through the transcript store without compact-path or live-tail loss', () => {
+    const longText = `long-tail-${'正文😀'.repeat(6000)}`;
+    const original: TranscriptTurn = transcriptTurnSchema.parse({
+      kind: 'turn', turnId: 'hydrate-turn', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      steps: Array.from({ length: 107 }, (_, step) => ({
+        kind: 'step', turnId: 'hydrate-turn', stepId: `s${step}`, ordinal: step, state: 'completed',
+        frames: Array.from({ length: step === 106 ? 40 : 12 }, (_, frame) => ({
+          kind: 'text', frameId: `f${step}-${frame}`, role: 'assistant',
+          text: step === 106 && frame === 39 ? longText : `saved-${step}-${frame}`,
+        })),
+      })),
+    });
+    const snapshotFor = (turn: TranscriptTurn): import('@kiki/transcript').AgentTranscriptSnapshot => ({ items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
+    const initial = boundedTranscriptSnapshot(snapshotFor(original), 'main').items[0]!;
+    if (initial.kind !== 'turn') throw new Error('Expected turn');
+    let current: TranscriptTurn = rebindTurnContentRefs(initial);
+    const structuralRefs = (current.contentRefs ?? []).filter((ref) => ref.path.length === 3 && ref.path[0] === 'steps' && ref.path[2] === 'frames');
+    expect(structuralRefs.length).toBeGreaterThan(0);
+    expect(structuralRefs.every((ref) => typeof ref.path[1] === 'number' && ref.path[1] >= 99)).toBe(true);
+    const longFrame = current.steps.at(-1)!.frames.at(-1)!;
+    expect(longFrame.contentRefs?.[0]).toMatchObject({ source: { kind: 'frame', id: 'f106-39', turnId: 'hydrate-turn', stepId: 's106' }, path: ['text'] });
+
+    const transcript = new AgentTranscript('main');
+    const syncStore = (turn: TranscriptTurn): TranscriptTurn => {
+      transcript.apply([{ op: 'reset', agentId: 'main', snapshot: snapshotFor(turn) }]);
+      const stored = transcript.getTurn(turn.turnId);
+      if (stored === undefined) throw new Error('Expected stored turn');
+      return stored;
+    };
+    current = syncStore(current);
+    transcript.apply([
+      { op: 'step.upsert', turnId: 'hydrate-turn', step: { kind: 'step', turnId: 'hydrate-turn', stepId: 's107', ordinal: 107, state: 'running' } },
+      { op: 'frame.upsert', turnId: 'hydrate-turn', stepId: 's107', frame: { kind: 'text', frameId: 'f107-live', role: 'assistant', text: 'LIVE STEP TEXT' } },
+      { op: 'frame.upsert', turnId: 'hydrate-turn', stepId: 's106', frame: { kind: 'text', frameId: 'f106-live', role: 'assistant', text: 'LIVE FRAME TEXT' } },
+    ]);
+    current = transcript.getTurn('hydrate-turn')!;
+
+    const firstRef = (turn: TranscriptTurn): ContentRef | undefined => {
+      const root = turn.contentRefs?.[0];
+      if (root !== undefined) return root;
+      for (const step of turn.steps) for (const frame of step.frames) {
+        const nested = frame.contentRefs?.[0];
+        if (nested !== undefined) return nested;
+      }
+      return undefined;
+    };
+    const sourceEntity = (ref: ContentRef): object => {
+      if (ref.source.kind === 'turn') return original;
+      if (ref.source.kind !== 'frame' || ref.source.stepId === undefined) throw new Error('Expected frame content source');
+      const step = original.steps.find((entry) => entry.stepId === ref.source.stepId);
+      const frame = step?.frames.find((entry) => entry.frameId === ref.source.id);
+      if (frame === undefined) throw new Error('Expected canonical frame');
+      return frame;
+    };
+    const expectLive = (turn: TranscriptTurn) => {
+      expect(turn.steps.find((step) => step.stepId === 's107')?.frames.find((frame) => frame.frameId === 'f107-live')).toMatchObject({ text: 'LIVE STEP TEXT' });
+      expect(turn.steps.find((step) => step.stepId === 's106')?.frames.find((frame) => frame.frameId === 'f106-live')).toMatchObject({ text: 'LIVE FRAME TEXT' });
+    };
+
+    let pages = 0;
+    for (;;) {
+      const ref = firstRef(current);
+      if (ref === undefined) break;
+      const segment = readContentSegment(sourceEntity(ref), ref, false, 'main', 64 * 1024);
+      expect(patchAgentTranscriptContent(transcript, segment)).toBe(true);
+      current = transcript.getTurn('hydrate-turn')!;
+      expectLive(current);
+      pages += 1;
+      expect(pages).toBeLessThan(1000);
+    }
+
+    expect(pages).toBeGreaterThan(100);
+    expect(firstRef(current)).toBeUndefined();
+    expect(current.steps.map((step) => step.stepId)).toEqual([...original.steps.map((step) => step.stepId), 's107']);
+    for (const expectedStep of original.steps) {
+      const actualStep = current.steps.find((step) => step.stepId === expectedStep.stepId);
+      expect(actualStep).toBeDefined();
+      const expectedFrames = expectedStep.frames.map((frame) => frame.frameId);
+      const actualFrames = actualStep!.frames.map((frame) => frame.frameId);
+      expect(actualFrames).toEqual(expectedFrames.concat(expectedStep.stepId === 's106' ? ['f106-live'] : []));
+      expect(new Set(actualFrames).size).toBe(actualFrames.length);
+      for (const expectedFrame of expectedStep.frames) {
+        const actualFrame = actualStep!.frames.find((frame) => frame.frameId === expectedFrame.frameId);
+        expect(actualFrame).toBeDefined();
+        if (expectedFrame.kind === 'text') expect(actualFrame).toMatchObject({ frameId: expectedFrame.frameId, text: expectedFrame.text });
+      }
+    }
+    expect(current.steps.find((step) => step.stepId === 's107')?.frames.map((frame) => frame.frameId)).toEqual(['f107-live']);
+  });
+
+  it('does not insert an out-of-window live frame before reverse hydration', () => {
+    const original: TranscriptTurn = transcriptTurnSchema.parse({
+      kind: 'turn', turnId: 'window-turn', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      steps: Array.from({ length: 107 }, (_, step) => ({
+        kind: 'step', turnId: 'window-turn', stepId: `s${step}`, ordinal: step, state: 'completed',
+        frames: Array.from({ length: step === 106 ? 40 : 12 }, (_, frame) => ({ kind: 'text', frameId: `f${step}-${frame}`, role: 'assistant', text: `saved-${step}-${frame}` })),
+      })),
+    });
+    const updated: TranscriptTurn = {
+      ...original,
+      steps: original.steps.map((step) => step.stepId === 's106' ? {
+        ...step,
+        frames: step.frames.map((frame, index) => index === 0 ? { ...frame, text: 'LIVE OLD FRAME TEXT' } : frame),
+      } : step),
+    };
+    const snapshot = (turn: TranscriptTurn) => ({ items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
+    const canonical = new AgentTranscript('main');
+    canonical.apply([{ op: 'reset', agentId: 'main', snapshot: snapshot(original) }]);
+    const preview = boundedTranscriptSnapshot(snapshot(original), 'main').items[0]!;
+    if (preview.kind !== 'turn') throw new Error('Expected turn');
+    const live = new AgentTranscript('main');
+    live.apply([{ op: 'reset', agentId: 'main', snapshot: snapshot(rebindTurnContentRefs(preview)) }]);
+    const sourceFrame = updated.steps[106]!.frames[0]!;
+    const bounded = boundedTranscriptOps([{ op: 'frame.upsert', turnId: 'window-turn', stepId: 's106', frame: sourceFrame }], canonical)[0]!;
+    if (bounded.op !== 'frame.upsert') throw new Error('Expected frame upsert');
+    expect((bounded as { stepIndex?: number; frameIndex?: number }).stepIndex).toBe(106);
+    expect((bounded as { stepIndex?: number; frameIndex?: number }).frameIndex).toBe(0);
+    const oldAppend = boundedTranscriptOps([{
+      op: 'append', target: { type: 'frame' as const, turnId: 'window-turn', stepId: 's106', frameId: 'f106-0' }, offset: 0, text: 'old append',
+    }], canonical)[0]!;
+    expect(oldAppend).toMatchObject({ op: 'frame.upsert', stepIndex: 106, frameIndex: 0, turnId: 'window-turn', stepId: 's106' });
+    const omittedStepAppend = boundedTranscriptOps([{
+      op: 'append', target: { type: 'frame' as const, turnId: 'window-turn', stepId: 's0', frameId: 'f0-0' }, offset: 0, text: 'old step append',
+    }], canonical)[0]!;
+    expect(omittedStepAppend).toMatchObject({ op: 'frame.upsert', stepIndex: 0, frameIndex: 0, turnId: 'window-turn', stepId: 's0' });
+    const tailAppend = boundedTranscriptOps([{
+      op: 'append', target: { type: 'frame' as const, turnId: 'window-turn', stepId: 's106', frameId: 'f106-39' }, offset: 0, text: 'tail append',
+    }], canonical)[0]!;
+    expect(tailAppend).toMatchObject({ op: 'append', stepIndex: 106, frameIndex: 39, target: { frameId: 'f106-39' } });
+    live.apply([bounded]);
+    const compact = live.getTurn('window-turn')!;
+    expect(compact.steps.find((step) => step.stepId === 's106')?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `f106-${index + 32}`));
+
+    let current = compact;
+    let ref = current.contentRefs?.find((candidate) => candidate.path.length === 3 && candidate.path[0] === 'steps' && candidate.path[1] === 106 && candidate.path[2] === 'frames');
+    if (ref === undefined) throw new Error('Expected backward frames ref');
+    while (ref !== undefined) {
+      const segment = readContentSegment(updated, ref, false, 'main', 64 * 1024);
+      expect(patchAgentTranscriptContent(live, segment)).toBe(true);
+      current = live.getTurn('window-turn')!;
+      ref = current.contentRefs?.find((candidate) => candidate.path.length === 3 && candidate.path[0] === 'steps' && candidate.path[1] === 106 && candidate.path[2] === 'frames');
+    }
+    expect(current.steps.find((step) => step.stepId === 's106')?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 40 }, (_, index) => `f106-${index}`));
+    expect(current.steps.find((step) => step.stepId === 's106')?.frames[0]).toMatchObject({ frameId: 'f106-0', text: 'LIVE OLD FRAME TEXT' });
   });
 });
 

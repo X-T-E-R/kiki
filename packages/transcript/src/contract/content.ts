@@ -11,6 +11,7 @@ export const contentSourceSchema = z.object({
   stepId: z.string().max(256).optional(),
 });
 
+/** Backward structural refs use offset as the inline suffix's canonical start and total as its fixed source watermark. Omitted direction retains forward continuation semantics. */
 export const contentRefSchema = z.object({
   source: contentSourceSchema,
   revision: z.string().min(1).max(128),
@@ -18,16 +19,19 @@ export const contentRefSchema = z.object({
   kind: z.enum(['text', 'array', 'object']),
   offset: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
+  direction: z.enum(['forward', 'backward']).optional(),
 });
 
 export const contentWindowSchema = z.object({
   contentRefs: z.array(contentRefSchema).optional(),
 });
 
+/** Backward pages carry their canonical start; next.offset equals start and disappears at zero. Values remain in source order. */
 export const contentSegmentSchema = z.object({
   ref: contentRefSchema,
   value: z.unknown(),
   next: contentRefSchema.optional(),
+  start: z.number().int().nonnegative().optional(),
   contentRefs: z.array(contentRefSchema),
 });
 
@@ -60,6 +64,10 @@ export function jsonTextPrefix(text: string, offset: number, maxBytes: number): 
 export function applyContentSegment<T extends ContentWindow>(entity: T, segment: ContentSegment): T {
   const active = entity.contentRefs?.find((ref) => sameContentRef(ref, segment.ref));
   if (active === undefined) return entity;
+  if (segment.ref.direction === 'backward' && (!isCanonicalStructure(segment.ref) || !Array.isArray(segment.value) ||
+    segment.start === undefined || segment.start + segment.value.length !== segment.ref.offset ||
+    segment.start >= segment.ref.offset || (segment.start === 0 ? segment.next !== undefined :
+      segment.next?.direction !== 'backward' || segment.next.offset !== segment.start))) throw new Error('content segment offset mismatch');
   const root = clonePath(entity, segment.ref.path, (current) => {
     if (segment.ref.kind === 'text') {
       if (typeof current !== 'string' || current.length !== segment.ref.offset || typeof segment.value !== 'string') throw new Error('content segment offset mismatch');
@@ -70,8 +78,9 @@ export function applyContentSegment<T extends ContentWindow>(entity: T, segment:
       const path = segment.ref.path;
       const structure = isCanonicalStructure(segment.ref);
       if (structure) {
-        if (current.length < segment.ref.offset) throw new Error('content segment offset mismatch');
-        return mergeCanonicalArray(current, segment.value, path.length === 1 ? 'stepId' : 'frameId', segment.ref.offset);
+        const backward = segment.ref.direction === 'backward';
+        if (!backward && current.length < segment.ref.offset) throw new Error('content segment offset mismatch');
+        return mergeCanonicalArray(current, segment.value, path.length === 1 ? 'stepId' : 'frameId', backward ? 0 : segment.ref.offset);
       }
       if (current.length !== segment.ref.offset) throw new Error('content segment offset mismatch');
       return [...current, ...segment.value];
@@ -79,12 +88,15 @@ export function applyContentSegment<T extends ContentWindow>(entity: T, segment:
     if (current === null || typeof current !== 'object' || Array.isArray(current) || segment.value === null || typeof segment.value !== 'object' || Array.isArray(segment.value)) throw new Error('invalid object content segment');
     return { ...current, ...segment.value };
   }) as T;
+  const retainedRefs = (entity.contentRefs ?? []).filter((ref) => !sameContentRef(ref, segment.ref));
+  const nextRefs = segment.next === undefined ? [] : [segment.next];
+  const candidate = { ...root, contentRefs: [...retainedRefs, ...segment.contentRefs, ...nextRefs] };
   const result = {
     ...root,
     contentRefs: [
-      ...(entity.contentRefs ?? []).filter((ref) => !sameContentRef(ref, segment.ref)),
-      ...segment.contentRefs.filter(ref => segment.ref.kind !== 'array' || !isCanonicalStructure(segment.ref) || matchesSegmentPreview(root, segment, ref)),
-      ...(segment.next === undefined ? [] : [segment.next]),
+      ...retainedRefs,
+      ...segment.contentRefs.filter(ref => segment.ref.kind !== 'array' || !isCanonicalStructure(segment.ref) || matchesSegmentPreview(candidate, segment, ref)),
+      ...nextRefs,
     ],
   };
   const versions = new Map(hydratedVersions.get(entity as object));
@@ -99,29 +111,19 @@ function isCanonicalStructure(ref: ContentRef): boolean {
     (path.length === 1 || path.length === 3 && typeof path[1] === 'number' && path[2] === 'frames');
 }
 
-function matchesSegmentPreview(root: unknown, segment: ContentSegment, ref: ContentRef): boolean {
+function matchesSegmentPreview(root: ContentWindow, segment: ContentSegment, ref: ContentRef): boolean {
   const base = segment.ref.path;
   if (!base.every((part, index) => ref.path[index] === part)) return false;
-  const index = ref.path[base.length];
-  if (typeof index !== 'number') return false;
   let saved: unknown = segment.value;
-  let merged: unknown = root;
-  for (const part of base) {
-    if (merged === null || typeof merged !== 'object') return false;
-    merged = (merged as Record<string | number, unknown>)[part];
+  const savedRefs = [...segment.contentRefs, { ...segment.ref, direction: 'backward' as const, offset: segment.start ?? segment.ref.offset }];
+  for (let position = base.length; position < ref.path.length; position += 1) {
+    const part = ref.path[position]!;
+    if (saved === null || typeof saved !== 'object') return false;
+    const key = typeof part === 'number' && Array.isArray(saved)
+      ? part - contentArrayStart(savedRefs, ref.path.slice(0, position)) : part;
+    saved = (saved as Record<string | number, unknown>)[key];
   }
-  const path = ref.path.slice(base.length);
-  for (let position = 0; position < path.length; position += 1) {
-    const part = path[position]!;
-    if (saved === null || typeof saved !== 'object' || merged === null || typeof merged !== 'object') return false;
-    saved = (saved as Record<string | number, unknown>)[position === 0 ? index - segment.ref.offset : part];
-    merged = (merged as Record<string | number, unknown>)[part];
-    if (saved !== null && typeof saved === 'object' && merged !== null && typeof merged === 'object') {
-      for (const key of ['stepId', 'frameId']) {
-        if ((saved as Record<string, unknown>)[key] !== (merged as Record<string, unknown>)[key]) return false;
-      }
-    }
-  }
+  const merged = contentPathValue(root, ref.path);
   return saved !== undefined && JSON.stringify(saved) === JSON.stringify(merged);
 }
 
@@ -167,11 +169,7 @@ export function restoreContentPreview<T extends ContentWindow>(current: T, previ
   let result = current;
   for (const ref of preview.contentRefs ?? []) {
     if (versions?.get(JSON.stringify(ref.path)) !== ref.revision) continue;
-    let value: unknown = preview;
-    for (const part of ref.path) {
-      if (value === null || typeof value !== 'object') { value = undefined; break; }
-      value = (value as Record<string | number, unknown>)[part];
-    }
+    const value = contentPathValue(preview, ref.path);
     if (value === undefined) continue;
     result = clonePath(result, ref.path, () => value) as T;
     result = { ...result, contentRefs: [...(result.contentRefs ?? []).filter((candidate) => !ref.path.every((part, index) => candidate.path[index] === part)), ref] };
@@ -189,12 +187,9 @@ export function mergeContentPreview<T extends ContentWindow>(current: T, preview
   for (const ref of preview.contentRefs ?? []) {
     const key = JSON.stringify(ref.path);
     const previous = current.contentRefs?.find((candidate) => JSON.stringify(candidate.path) === key && candidate.revision === ref.revision);
-    if (versions?.get(key) !== ref.revision || previous !== undefined && previous.offset < ref.offset) continue;
-    let value: unknown = current;
-    for (const part of ref.path) {
-      if (value === null || typeof value !== 'object') { value = undefined; break; }
-      value = (value as Record<string | number, unknown>)[part];
-    }
+    const behind = previous !== undefined && (ref.direction === 'backward' ? previous.offset > ref.offset : previous.offset < ref.offset);
+    if (versions?.get(key) !== ref.revision || behind) continue;
+    const value = contentPathValue(current, ref.path);
     if (value === undefined) continue;
     result = clonePath(result, ref.path, () => value) as T;
     const under = (candidate: ContentRef) => ref.path.every((part, index) => candidate.path[index] === part);
@@ -206,23 +201,44 @@ export function mergeContentPreview<T extends ContentWindow>(current: T, preview
 }
 
 export function sameContentRef(left: ContentRef, right: ContentRef): boolean {
-  return left.revision === right.revision && left.kind === right.kind && left.offset === right.offset &&
+  return left.revision === right.revision && left.kind === right.kind && left.offset === right.offset && left.total === right.total &&
+    (left.direction ?? 'forward') === (right.direction ?? 'forward') &&
     JSON.stringify(left.source) === JSON.stringify(right.source) && JSON.stringify(left.path) === JSON.stringify(right.path);
 }
 
-function clonePath(value: unknown, path: readonly (string | number)[], update: (value: unknown) => unknown): unknown {
-  const parents: object[] = [];
-  let selected = value;
-  for (const key of path) {
+function contentArrayStart(refs: readonly ContentRef[], path: readonly (string | number)[]): number {
+  return refs.find((ref) => ref.direction === 'backward' && JSON.stringify(ref.path) === JSON.stringify(path))?.offset ?? 0;
+}
+
+/** Resolve canonical array indices through compact structural suffixes rather than treating their first child as index zero. */
+export function contentPathValue(value: ContentWindow, path: readonly (string | number)[]): unknown {
+  let selected: unknown = value;
+  for (let position = 0; position < path.length; position += 1) {
+    if (selected === null || typeof selected !== 'object') return undefined;
+    const part = path[position]!;
+    const key = typeof part === 'number' && Array.isArray(selected)
+      ? part - contentArrayStart(value.contentRefs ?? [], path.slice(0, position)) : part;
+    selected = (selected as Record<string | number, unknown>)[key];
+  }
+  return selected;
+}
+
+function clonePath(value: ContentWindow, path: readonly (string | number)[], update: (value: unknown) => unknown): unknown {
+  const parents: { value: object; key: string | number }[] = [];
+  let selected: unknown = value;
+  for (let position = 0; position < path.length; position += 1) {
+    const part = path[position]!;
+    const key = typeof part === 'number' && Array.isArray(selected)
+      ? part - contentArrayStart(value.contentRefs ?? [], path.slice(0, position)) : part;
     if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) throw new Error('content path unavailable');
-    parents.push(selected);
+    parents.push({ value: selected, key });
     selected = (selected as Record<string | number, unknown>)[key];
   }
   let result = update(selected);
-  for (let index = path.length - 1; index >= 0; index -= 1) {
+  for (let index = parents.length - 1; index >= 0; index -= 1) {
     const parent = parents[index]!;
-    const clone = Array.isArray(parent) ? [...parent] : { ...parent };
-    Object.defineProperty(clone, path[index]!, { value: result, enumerable: true, configurable: true, writable: true });
+    const clone = Array.isArray(parent.value) ? [...parent.value] : { ...parent.value };
+    Object.defineProperty(clone, parent.key, { value: result, enumerable: true, configurable: true, writable: true });
     result = clone;
   }
   return result;

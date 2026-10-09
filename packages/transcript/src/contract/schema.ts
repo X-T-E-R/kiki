@@ -669,6 +669,8 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     op: z.literal('frame.upsert'),
     turnId: turnIdSchema,
     stepId: stepIdSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
     frame: transcriptFrameSchema,
   }),
   z.object({
@@ -678,6 +680,8 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('append'),
     target: appendTargetSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
     offset: z.number().int().nonnegative(),
     text: z.string(),
   }),

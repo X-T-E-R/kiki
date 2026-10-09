@@ -19,7 +19,8 @@ const ID_KEYS = /^(?:kind|state|status|role|op|.*Id|.*_id|mediaType|marker|inter
 const OPAQUE_FIELDS = new Set(['input', 'output', 'display', 'request', 'response', 'payload', 'content', 'customData', 'detail']);
 
 type Path = ContentRef['path'];
-interface Cut { path: Path; kind: ContentRef['kind']; offset: number; total: number }
+type StructureDirection = 'head' | 'tail';
+interface Cut { path: Path; kind: ContentRef['kind']; offset: number; total: number; direction?: ContentRef['direction'] }
 interface Budget { nodes: number }
 
 export class ContentChangedError extends Error {
@@ -58,15 +59,19 @@ function fieldRevision(entity: object, path: Path, through?: number): string {
 }
 
 function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): ContentRef[] {
-  return cuts.map((cut) => ({ ...cut, source, revision: fieldRevision(entity, cut.path) }));
+  return cuts.map((cut) => ({
+    ...cut,
+    source,
+    revision: fieldRevision(entity, cut.path, isStructurePath(cut.path) ? cut.total : undefined),
+  }));
 }
 
-export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES, agentId?: string): T & ContentWindow {
+export function boundedEntity<T extends object>(entity: T, source: ContentSource, maxBytes = source.kind === 'turn' || source.kind === 'frame' ? TIMELINE_ENTITY_BYTES : ENTITY_BYTES, agentId?: string, structureDirection: StructureDirection = 'head'): T & ContentWindow {
   if (source.kind === 'todo') {
     if ((entity as ContentWindow).contentRefs !== undefined) return entity;
     if (maxBytes >= ENTITY_BYTES) return boundedTodo(entity, source, maxBytes);
   }
-  const result = projectAt(entity, [], source, entity, maxBytes, agentId);
+  const result = projectAt(entity, [], source, entity, maxBytes, agentId, structureDirection);
   return { ...(result.value as T), contentRefs: result.refs.length === 0 ? undefined : result.refs };
 }
 
@@ -130,14 +135,14 @@ export function boundedListPreview<T extends object>(entity: T, maxBytes = 2048)
   }
 }
 
-function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string): { value: unknown; refs: ContentRef[] } {
+function projectAt(value: unknown, path: Path, source: ContentSource, entity: object, maxBytes: number, agentId?: string, structureDirection: StructureDirection = 'head'): { value: unknown; refs: ContentRef[] } {
   const media = agentId === undefined ? undefined : { source, entity, agentId };
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
   let structureWindow = 8;
   for (;;) {
     const cuts: Cut[] = [];
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media);
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
     if (textBytes > CONTENT_PREVIEW_BYTES) { textBytes = Math.floor(textBytes / 2); continue; }
@@ -173,7 +178,7 @@ function isExternalTextMarker(value: object, path: Path): boolean {
     typeof identity['clientName'] === 'string' && typeof identity['sessionRef'] === 'string';
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }): unknown {
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head'): unknown {
   budget.nodes -= 1;
   if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const projected = projectInlineToolMedia(value, path, media.source, media.entity, media.agentId);
@@ -194,8 +199,12 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     const structure = isStructurePath(path);
     const count = structure ? Math.min(value.length, structureWindow)
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
-    const projected = value.slice(0, count).map((child, index) => projectValue(child, [...path, index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media));
-    if (count < value.length) cuts.push({ path, kind: 'array', offset: count, total: value.length });
+    const start = structure && structureDirection === 'tail' ? value.length - count : 0;
+    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media, structureDirection));
+    if (count < value.length) {
+      if (structure && structureDirection === 'tail') cuts.push({ path, kind: 'array', offset: start, total: value.length, direction: 'backward' });
+      else cuts.push({ path, kind: 'array', offset: count, total: value.length });
+    }
     return projected;
   }
   const entries = Object.entries(value);
@@ -214,18 +223,21 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         return [key, Array.isArray(child) ? [] : {}];
       }
     }
-    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media)];
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection)];
   }));
 }
 
 export function readContentSegment(entity: object, ref: ContentRef, range = false, agentId?: string, pageBytes = CONTENT_PAGE_BYTES): ContentSegment {
+  const direction = ref.direction;
   const selected = selectContent(entity, ref.path);
   if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   const structure = ref.kind === 'array' && isStructurePath(ref.path);
+  if (direction === 'backward' && !structure) throw new ContentChangedError();
   if (fieldRevision(entity, ref.path, structure ? ref.total : undefined) !== ref.revision) throw new ContentChangedError();
-  const refs: ContentRef[] = [];
+  let refs: ContentRef[] = [];
   let value: unknown;
   let offset: number;
+  let start: number | undefined;
   if (ref.kind === 'text') {
     if (typeof selected !== 'string' || selected.length !== ref.total || ref.offset >= selected.length || (ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!))) throw new ContentChangedError();
     let end = Math.min(selected.length, ref.offset + 4097);
@@ -233,17 +245,38 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, pageBytes / 2) : jsonTextPrefix(selected, ref.offset, pageBytes / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
-    if (!Array.isArray(selected) || (structure ? selected.length < ref.total : selected.length !== ref.total) || ref.offset >= ref.total) throw new ContentChangedError();
-    const values: unknown[] = [];
-    offset = ref.offset;
-    while (offset < ref.total && values.length < 20) {
-      const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
-      if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
-      values.push(child.value);
-      refs.push(...child.refs);
-      offset += 1;
+    if (!Array.isArray(selected) || (structure ? selected.length < ref.total : selected.length !== ref.total)) throw new ContentChangedError();
+    if (direction === 'backward') {
+      if (ref.offset <= 0 || ref.offset > ref.total) throw new ContentChangedError();
+      let values: unknown[] = [];
+      let reverseRefs: ContentRef[] = [];
+      offset = ref.offset;
+      while (offset > 0 && values.length < 20) {
+        const index = offset - 1;
+        const child = projectAt(selected[index], [...ref.path, index], ref.source, entity, ENTITY_BYTES, agentId, 'tail');
+        const nextValues = [child.value, ...values];
+        const nextRefs = [...child.refs, ...reverseRefs];
+        if (values.length > 0 && jsonBytes({ values: nextValues, refs: nextRefs }) > pageBytes / 2) break;
+        values = nextValues;
+        reverseRefs = nextRefs;
+        offset = index;
+      }
+      value = values;
+      refs = reverseRefs;
+      start = offset;
+    } else {
+      const values: unknown[] = [];
+      offset = ref.offset;
+      if (offset >= ref.total) throw new ContentChangedError();
+      while (offset < ref.total && values.length < 20) {
+        const child = projectAt(selected[offset], [...ref.path, offset], ref.source, entity, ENTITY_BYTES, agentId);
+        if (values.length > 0 && jsonBytes({ values: [...values, child.value], refs: [...refs, ...child.refs] }) > pageBytes / 2) break;
+        values.push(child.value);
+        refs.push(...child.refs);
+        offset += 1;
+      }
+      value = values;
     }
-    value = values;
   } else {
     if (selected === null || typeof selected !== 'object' || Array.isArray(selected)) throw new ContentChangedError();
     const entries = Object.entries(selected);
@@ -260,6 +293,11 @@ export function readContentSegment(entity: object, ref: ContentRef, range = fals
     }
     value = values;
   }
-  const next = offset < ref.total ? { ...ref, offset } : undefined;
-  return { ref, value, next, contentRefs: refs };
+  const next = direction === 'backward'
+    ? offset > 0 ? { ...ref, offset } : undefined
+    : offset < ref.total ? { ...ref, offset } : undefined;
+  const segment = direction === 'backward'
+    ? { ref, value, next, contentRefs: refs, start }
+    : { ref, value, next, contentRefs: refs };
+  return segment;
 }

@@ -99,16 +99,16 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
 
 export function itemKey(item: AgentTranscriptSnapshot['items'][number]): string { return `${item.kind}:${itemId(item)}`; }
 
-function boundedItem(item: AgentTranscriptSnapshot['items'][number], agentId: string): AgentTranscriptSnapshot['items'][number] {
+function boundedItem(item: AgentTranscriptSnapshot['items'][number], agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot['items'][number] {
   if (item.kind === 'taskref' || (item.contentRefs?.length ?? 0) > 0) return item;
-  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) }, undefined, agentId);
+  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) }, undefined, agentId, direction);
   return preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
 }
 
-export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string): AgentTranscriptSnapshot {
+export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot {
   return {
     ...snapshot,
-    items: snapshot.items.map((item) => boundedItem(item, agentId)),
+    items: snapshot.items.map((item) => boundedItem(item, agentId, direction)),
     tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
     attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
     prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId }, undefined, agentId)),
@@ -123,7 +123,7 @@ function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, d
   let bytes = 2;
   for (let offset = 0; offset < items.length; offset += 1) {
     const item = items[direction === 'head' ? offset : items.length - 1 - offset]!;
-    const projected = boundedItem(item, agentId);
+    const projected = boundedItem(item, agentId, direction);
     const size = jsonBytes(projected) + 1;
     if (selected.length > 0 && bytes + size > budget) break;
     selected.push(projected);
@@ -171,12 +171,38 @@ function boundedCollection<T extends object>(
 
 function collectionCoverage(returned: number, total: number) { return { returned, total, hasMore: returned < total }; }
 
+function canonicalFrame(transcript: AgentTranscript, turnId: string, stepId: string, frameId: string): { frame: import('@kiki/transcript').TranscriptFrame; stepIndex: number; frameIndex: number; omitted: boolean } | undefined {
+  const turn = transcript.getTurn(turnId);
+  const stepIndex = turn?.steps.findIndex((candidate) => candidate.stepId === stepId) ?? -1;
+  const step = stepIndex < 0 ? undefined : turn?.steps[stepIndex];
+  const frameIndex = step?.frames.findIndex((candidate) => candidate.frameId === frameId) ?? -1;
+  if (step === undefined || frameIndex < 0) return undefined;
+  return {
+    frame: step.frames[frameIndex]!,
+    stepIndex,
+    frameIndex,
+    omitted: stepIndex < Math.max(0, (turn?.steps.length ?? 0) - 8) || frameIndex < Math.max(0, step.frames.length - 8),
+  };
+}
+
+function withFrameIndices(op: Extract<TranscriptOperation, { op: 'append' }>, context: ReturnType<typeof canonicalFrame>): TranscriptOperation {
+  return context === undefined ? op : { ...op, stepIndex: context.stepIndex, frameIndex: context.frameIndex };
+}
+
 export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transcript: AgentTranscript, entityBytes?: number): TranscriptOperation[] {
   return ops.map((op): TranscriptOperation => {
     switch (op.op) {
       case 'reset': return { ...op, snapshot: boundedTranscriptSnapshot(op.snapshot, transcript.agentId) };
-      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }, undefined, transcript.agentId) };
-      case 'frame.upsert': return { ...op, frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, undefined, transcript.agentId) };
+      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }, undefined, transcript.agentId, 'tail') };
+      case 'frame.upsert': {
+        const context = canonicalFrame(transcript, op.turnId, op.stepId, op.frame.frameId);
+        return {
+          ...op,
+          stepIndex: context?.stepIndex ?? op.stepIndex,
+          frameIndex: context?.frameIndex ?? op.frameIndex,
+          frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, undefined, transcript.agentId),
+        };
+      }
       case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }, entityBytes) };
       case 'attachment.upsert': return { ...op, attachment: boundedAttachment(op.attachment, transcript.agentId) };
       case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }, undefined, transcript.agentId) };
@@ -190,8 +216,17 @@ export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transc
           if (task !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'task.upsert', task: boundedEntity(task, { kind: 'task', id: task.taskId }) };
         } else {
           const target = op.target;
-          const frame = transcript.getTurn(target.turnId)?.steps.find((step) => step.stepId === target.stepId)?.frames.find((entry) => entry.frameId === target.frameId);
-          if (frame !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'frame.upsert', turnId: target.turnId, stepId: target.stepId, frame: boundedEntity(frame, { kind: 'frame', id: frame.frameId, turnId: target.turnId, stepId: target.stepId }, undefined, transcript.agentId) };
+          const context = canonicalFrame(transcript, target.turnId, target.stepId, target.frameId);
+          const oversized = op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192;
+          if (context !== undefined && (context.omitted || oversized)) return {
+            op: 'frame.upsert',
+            turnId: target.turnId,
+            stepId: target.stepId,
+            stepIndex: context.stepIndex,
+            frameIndex: context.frameIndex,
+            frame: boundedEntity(context.frame, { kind: 'frame', id: context.frame.frameId, turnId: target.turnId, stepId: target.stepId }, undefined, transcript.agentId),
+          };
+          return withFrameIndices(op, context);
         }
         return op;
       }

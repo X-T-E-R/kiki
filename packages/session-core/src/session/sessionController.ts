@@ -295,7 +295,7 @@ export class SessionController {
   private readonly historyPreviewReads = new Map<string, { controller: AbortController; promise: Promise<boolean> }>();
   private readonly historyPreviewBytes: number;
   private readonly contentControllers = new Map<string, AbortController>();
-  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; readers: number; blocked: boolean; ref?: ContentRef }>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; includeOlder: boolean; readers: number; blocked: boolean; ref?: ContentRef }>();
   private contentPumpRunning = false;
   private readonly contentPumpReads = new Set<string>();
   private readonly contentRanges = new Map<string, string>();
@@ -1184,9 +1184,9 @@ export class SessionController {
     }
   }
 
-  /** Read only the structure of the turn a viewport, expansion or seek needs. */
+  /** Hydrate forward structure for a mounted turn; older suffix predecessors wait for loadOlderMessages or an explicit content read. */
   retainHistoryStructure(agentId: string, turnId: string): () => void {
-    const lease = this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps']);
+    const lease = this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps'], false);
     return () => { lease.release(); };
   }
 
@@ -1366,6 +1366,27 @@ export class SessionController {
     const store = this.ensureAgentTranscript(agentId);
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
     const currentSnapshot = this.composeAgentSnapshot(agentId);
+    const olderStructure = currentSnapshot.items.flatMap((item) => {
+      if (item.kind !== 'turn') return [];
+      const refs = (item.contentRefs ?? []).filter((ref) => ref.direction === 'backward');
+      const firstStep = item.steps[0]?.ordinal;
+      const firstFrames = refs.find((ref) => ref.path.length === 3 && ref.path[1] === firstStep);
+      const steps = refs.find((ref) => ref.path.length === 1);
+      return firstFrames ?? steps ?? refs.toSorted((a, b) => Number(a.path[1]) - Number(b.path[1]));
+    })[0];
+    if (olderStructure !== undefined) {
+      const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+      this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
+      const cancel = () => { this.cancelContentSegment(agentId, olderStructure); };
+      signal.addEventListener('abort', cancel, { once: true });
+      try {
+        return !signal.aborted && await this.loadContentSegment(agentId, olderStructure);
+      } finally {
+        signal.removeEventListener('abort', cancel);
+        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+        this.publishAgentView(agentId, setLoadingOlder(current, false));
+      }
+    }
     let beforeItem = this.olderPageCursors.get(agentId);
     let beforeTurn = beforeItem === undefined
       ? this.olderPageTurns.get(agentId) ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
@@ -1741,7 +1762,8 @@ export class SessionController {
           const segment = await this.readPreparedContent(() => read({ agentId, ref }, { signal: controller.signal }), controller.signal);
           check();
           const next = applyContentSegment(entity, segment);
-          if (next === entity || segment.next !== undefined && segment.next.offset <= ref.offset) throw new Error('Copy content made no progress');
+          if (next === entity || segment.next !== undefined && (ref.direction === 'backward'
+            ? segment.next.offset >= ref.offset : segment.next.offset <= ref.offset)) throw new Error('Copy content made no progress');
           entity = next;
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
@@ -1878,9 +1900,9 @@ export class SessionController {
     this.flushFrames();
   }
 
-  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[]): { release(): void; retry(): void } {
-    const key = JSON.stringify([agentId, source, roots]);
-    const target = this.contentReaders.get(key) ?? { agentId, source, roots, readers: 0, blocked: false };
+  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[], includeOlder = true): { release(): void; retry(): void } {
+    const key = JSON.stringify([agentId, source, roots, includeOlder]);
+    const target = this.contentReaders.get(key) ?? { agentId, source, roots, includeOlder, readers: 0, blocked: false };
     target.readers += 1;
     target.blocked = false;
     this.contentReaders.set(key, target);
@@ -1910,7 +1932,8 @@ export class SessionController {
         if (this.contentPumpReads.size >= 4) break;
         if (target.readers === 0 || target.blocked || this.contentPumpReads.has(key)) continue;
         const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
-          if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate)) return false;
+          if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
+            !target.includeOlder && candidate.direction === 'backward') return false;
           return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
         });
         if (ref === undefined) continue;
@@ -1979,7 +2002,8 @@ export class SessionController {
         if (!refs.some((current) => sameContentRef(current, ref))) return false;
         const segment = await this.readPreparedContent(() => read({ agentId, ref }, { signal: controller.signal }), controller.signal);
         if (this.closed || controller.signal.aborted || (!rosterRead && (this.historyGeneration.get(agentId) ?? 0) !== generation)) return false;
-        if (segment.next !== undefined && segment.next.offset <= ref.offset || segment.contentRefs.some((candidate) => sameContentRef(candidate, ref)))
+        if (segment.next !== undefined && (ref.direction === 'backward' ? segment.next.offset >= ref.offset : segment.next.offset <= ref.offset) ||
+          segment.contentRefs.some((candidate) => sameContentRef(candidate, ref)))
           throw new Error('Content segment did not advance its reference');
         if (ref.source.kind === 'snapshot') {
           const current = this.latestSnapshot;

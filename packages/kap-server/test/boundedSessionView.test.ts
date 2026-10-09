@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptTask } from '@kiki/transcript';
+import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
 import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
+import { readColdSessionViewBaseline, readSessionViewTranscriptCatchUp, readSessionViewTranscriptContent, readSessionViewTranscriptDetails, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService {
   const transcript = new AgentTranscript('main');
@@ -214,5 +214,47 @@ describe('bounded session-view canonical reads', () => {
     expect(recovered.get('p0')).toBe('queued prompt');
     expect(recovered.get('p-old-0')).toBe('old prompt 0');
     expect(recovered.get('visible')).toBe('visible prompt');
+  });
+
+  it('uses tail structure windows for cold initial pages and baselines without changing explicit history pages', async () => {
+    const turnFor = (turnId: string, ordinal: number): TranscriptTurn => ({
+      kind: 'turn', turnId, ordinal, state: 'completed', origin: { kind: 'user' },
+      steps: Array.from({ length: 12 }, (_, step) => ({
+        kind: 'step' as const, turnId, stepId: `${turnId}-s${step}`, ordinal: step, state: 'completed' as const,
+        frames: Array.from({ length: 12 }, (_, frame) => ({ kind: 'text' as const, frameId: `${turnId}-f${step}-${frame}`, role: 'assistant' as const, text: `saved-${turnId}-${step}-${frame}` })),
+      })),
+    });
+    const source: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turnFor('t0', 0), turnFor('t1', 1)] };
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => source,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const latest = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main' });
+    const latestTurn = latest?.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+    if (latestTurn?.kind !== 'turn') throw new Error('Expected latest turn');
+    expect(latestTurn.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-s${index + 4}`));
+    expect(latestTurn.steps.at(-1)?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-f11-${index + 4}`));
+
+    const baseline = await readColdSessionViewBaseline(cold, 'fixture-session', 'main', 'delta', new AbortController().signal);
+    const baselineTurn = baseline?.snapshot.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
+    if (baselineTurn?.kind !== 'turn') throw new Error('Expected baseline turn');
+    expect(baselineTurn.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-s${index + 4}`));
+
+    const history = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't1' });
+    const historyTurn = history?.items.find((item) => item.kind === 'turn');
+    if (historyTurn?.kind !== 'turn') throw new Error('Expected history turn');
+    expect(historyTurn.turnId).toBe('t0');
+    expect(historyTurn.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `t0-s${index}`));
+    expect(historyTurn.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t0-f0-${index}`));
+
+    const newer = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', afterTurn: 't0' });
+    const newerTurn = newer?.items.find((item) => item.kind === 'turn');
+    if (newerTurn?.kind !== 'turn') throw new Error('Expected newer turn');
+    expect(newerTurn.turnId).toBe('t1');
+    expect(newerTurn.steps.map((step) => step.stepId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-s${index}`));
+    expect(newerTurn.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-f0-${index}`));
   });
 });

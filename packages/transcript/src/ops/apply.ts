@@ -408,6 +408,8 @@ function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader):
   const located = findTurn(state.items, turnId);
   const turn = located?.turn ?? skeletonTurn(turnId);
   const stepIndex = turn.steps.findIndex((step) => step.stepId === header.stepId);
+  const omitted = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+  if (stepIndex < 0 && omitted !== undefined && header.ordinal < omitted.offset) return { state, changed: false, toolCallCountDelta: 0 };
   let steps: readonly TranscriptStep[];
   let changed = true;
   if (stepIndex >= 0) {
@@ -451,6 +453,13 @@ function applyFrameUpsert(
   const stepIndex = turn.steps.findIndex((entry) => entry.stepId === op.stepId);
   const step = turn.steps[stepIndex] ?? skeletonStep(op.stepId, op.turnId);
   const frameIndex = step.frames.findIndex((frame) => frame.frameId === op.frame.frameId);
+  const omittedSteps = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+  const omittedFrames = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 3 &&
+    ref.path[0] === 'steps' && ref.path[1] === (op.stepIndex ?? step.ordinal) && ref.path[2] === 'frames');
+  if (frameIndex < 0 && (stepIndex < 0 && omittedSteps !== undefined && (op.stepIndex ?? step.ordinal) < omittedSteps.offset ||
+    op.frameIndex !== undefined && omittedFrames !== undefined && op.frameIndex < omittedFrames.offset)) {
+    return { state, changed: false, toolCallCountDelta: 0 };
+  }
   let frames: readonly TranscriptFrame[];
   let toolCallCount = state.toolCallCount;
   let toolCallCountDelta = 0;
@@ -505,6 +514,12 @@ function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
   const step = turn.steps[stepIndex];
   const frameIndex = step?.frames.findIndex((entry) => entry.frameId === frameId) ?? -1;
   const frame = step?.frames[frameIndex];
+  if (frame === undefined && (op.stepIndex !== undefined && turn.contentRefs?.some((ref) => ref.direction === 'backward' &&
+    ref.path.length === 1 && ref.path[0] === 'steps' && op.stepIndex! < ref.offset) ||
+    op.frameIndex !== undefined && turn.contentRefs?.some((ref) => ref.direction === 'backward' && ref.path.length === 3 &&
+      ref.path[0] === 'steps' && ref.path[1] === (op.stepIndex ?? step?.ordinal) && ref.path[2] === 'frames' && op.frameIndex! < ref.offset))) {
+    return { state, changed: false, toolCallCountDelta: 0 };
+  }
   if (!step || !frame || (frame.kind !== 'text' && frame.kind !== 'thinking')) {
     return { state, changed: false, gap: { expected: 0, got: op.offset } };
   }

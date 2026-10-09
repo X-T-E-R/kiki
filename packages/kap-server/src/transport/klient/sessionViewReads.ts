@@ -115,7 +115,7 @@ export async function readColdSessionViewBaseline(
   signal: AbortSignal,
 ): Promise<TranscriptResetEvent | undefined> {
   const source = await service.readColdPageSnapshot(sessionId, agentId,
-    (snapshot) => boundedTranscriptPageSource(snapshot, agentId), signal);
+    (snapshot) => boundedTranscriptPageSource(snapshot, agentId, 'tail'), signal);
   if (source === undefined) return undefined;
   signal.throwIfAborted();
   const transcript = new AgentTranscript(agentId);
@@ -192,6 +192,7 @@ async function readSessionViewTranscriptPageRaw(
   },
 ): Promise<TranscriptResponse | undefined> {
   const pageQueryInput = { agentId: input.agentId, beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
+  const sourceDirection: 'head' | 'tail' = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined ? 'head' : 'tail';
   const store = transcriptService.forSessionLive(sessionId);
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId);
@@ -199,7 +200,7 @@ async function readSessionViewTranscriptPageRaw(
     const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
       const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
-        (source) => boundedTranscriptPageSource(source, input.agentId));
+        (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection));
       if (cold === undefined) return undefined;
       const page = paginateTurns(cold.items, pageQueryFor(pageQueryInput, 'derived'));
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
@@ -238,7 +239,7 @@ async function readSessionViewTranscriptPageRaw(
     } as unknown as TranscriptResponse;
   }
   const snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId,
-    (source) => boundedTranscriptPageSource(source, input.agentId), input.signal);
+    (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), input.signal);
   if (snapshot === undefined) return undefined;
   const page = paginateTurns(snapshot.items, pageQueryFor(pageQueryInput, 'cold'));
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];

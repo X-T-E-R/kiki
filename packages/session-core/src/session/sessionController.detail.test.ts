@@ -63,6 +63,102 @@ function taskDetail(outputTail: string): SessionViewTranscriptDetail {
 }
 
 describe('SessionController transcript detail', () => {
+  it.each(['main', 'child'] as const)('keeps the %s tail visible until older structure is requested, without paging turns or another agent', async (agentId) => {
+    const source = { kind: 'turn' as const, id: 'long-turn' };
+    const steps = Array.from({ length: 107 }, (_, ordinal) => ({ kind: 'step' as const, stepId: `s${ordinal}`, turnId: source.id,
+      ordinal, state: 'completed' as const, frames: [{ kind: 'text' as const, frameId: `f${ordinal}`, role: 'assistant' as const, text: `answer ${ordinal}` }] }));
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'tail-watermark', path: ['steps'], kind: 'array', direction: 'backward', offset: 99, total: 107 };
+    const preview = { kind: 'turn' as const, turnId: source.id, ordinal: 0, state: 'running' as const,
+      origin: { kind: 'user' as const }, prompt: 'Inspect the latest output', steps: steps.slice(99), contentRefs: [ref] };
+    const content = vi.fn(async ({ ref: requested }: { ref: import('@kiki/transcript').ContentRef }) => {
+      const start = Math.max(0, requested.offset - 20);
+      return { ref: requested, start, value: steps.slice(start, requested.offset),
+        next: start === 0 ? undefined : { ...requested, offset: start }, contentRefs: [] };
+    });
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('child-view', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [preview], hasMoreOlder: false }), 2));
+    deliver(resetEvent('other', emptySnapshot({ items: [{ ...preview, turnId: 'other-turn', steps: [] }] }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const viewport = controller.retainHistoryStructure(agentId, source.id);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(content).not.toHaveBeenCalled();
+      expect(state().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(8);
+      expect(state().blocks.at(-1)).toMatchObject({ text: 'answer 106' });
+      expect(state().hasMoreHistory).toBe(true);
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      expect(content).toHaveBeenCalledTimes(1);
+      expect(state().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(28);
+      expect(state().blocks.at(-1)).toMatchObject({ text: 'answer 106' });
+      deliver(opsEvent(agentId, [{ op: 'step.upsert', turnId: source.id, step: { ...steps[106]!, stepId: 's107', ordinal: 107 } },
+        { op: 'frame.upsert', turnId: source.id, stepId: 's107', frame: { kind: 'text', frameId: 'f107', role: 'assistant', text: 'live answer' } }], 3));
+      await controller.completeContentRead(agentId, source, ['steps']);
+      expect(state().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(108);
+      expect(state().blocks.at(-1)).toMatchObject({ text: 'live answer' });
+      expect(state().hasMoreHistory).toBe(false);
+      expect(view.transcript.page).not.toHaveBeenCalled();
+      expect(content.mock.calls.every(([input]) => input.ref.source.id === source.id)).toBe(true);
+      expect(controller.contentRefsFor('other', { kind: 'turn', id: 'other-turn' })).toContainEqual(ref);
+    } finally { viewport(); controller.close(); }
+  });
+
+  it('fills the oldest inline step frames before paging into older steps, in canonical source order', async () => {
+    const source = { kind: 'turn' as const, id: 'long-frames' };
+    const stepsRef: import('@kiki/transcript').ContentRef = { source, revision: 'steps-watermark', path: ['steps'], kind: 'array', direction: 'backward', offset: 99, total: 100 };
+    const framesRef: import('@kiki/transcript').ContentRef = { source, revision: 'frames-watermark', path: ['steps', 99, 'frames'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const frame = { kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'latest' };
+    const step = { kind: 'step' as const, stepId: 's99', turnId: source.id, ordinal: 99, state: 'completed' as const, frames: [frame] };
+    const content = vi.fn(async ({ ref }: { ref: import('@kiki/transcript').ContentRef }) => ref.path.length === 3
+      ? { ref, start: 0, value: [{ ...frame, frameId: 'f0', text: 'earlier in this step' }], contentRefs: [] }
+      : { ref, start: 98, value: [{ ...step, stepId: 's98', ordinal: 98, frames: [{ ...frame, frameId: 'older', text: 'earlier step' }] }],
+        next: { ...ref, offset: 98 }, contentRefs: [] });
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, steps: [step], contentRefs: [stepsRef, framesRef] }] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(content.mock.calls[0]?.[0].ref).toEqual(framesRef);
+      expect(controller.getState().blocks.filter((block) => block.kind === 'assistant').map((block) => block.text)).toEqual(['earlier in this step', 'latest']);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(content.mock.calls[1]?.[0].ref).toEqual(stepsRef);
+      expect(controller.getState().blocks.filter((block) => block.kind === 'assistant').map((block) => block.text)).toEqual(['earlier step', 'earlier in this step', 'latest']);
+      expect(view.transcript.page).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('cancels a reverse structure page without publishing its result over the retained tail', async () => {
+    const source = { kind: 'turn' as const, id: 'cancel-tail' };
+    const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const step = { kind: 'step' as const, stepId: 's1', turnId: source.id, ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'latest' }] };
+    let resolve!: (value: import('@kiki/transcript').ContentSegment) => void;
+    let readSignal: AbortSignal | undefined;
+    const content = vi.fn((_input, options) => {
+      readSignal = options?.signal;
+      return new Promise<import('@kiki/transcript').ContentSegment>((complete) => { resolve = complete; });
+    }) as SessionViewFacade['transcript']['content'];
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, steps: [step], contentRefs: [ref] }] }), 2));
+    const request = new AbortController();
+    try {
+      const pending = controller.loadOlderMessages('main', request.signal);
+      await vi.waitFor(() => { expect(readSignal).toBeDefined(); });
+      request.abort();
+      expect(await pending).toBe(false);
+      expect(readSignal?.aborted).toBe(true);
+      resolve({ ref, start: 0, value: [{ ...step, stepId: 's0', ordinal: 0 }], contentRefs: [] });
+      await new Promise((complete) => setTimeout(complete, 30));
+      expect(controller.getState().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
+      expect(controller.contentRefsFor('main', source)).toEqual([ref]);
+      expect(controller.getState().loadingOlder).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it('loads the complete queued edit content instead of submitting its truncated media preview', async () => {
     const source = { kind: 'prompt' as const, id: 'queued-original' };
     const ref: import('@kiki/transcript').ContentRef = { source, revision: 'original', path: ['content', 1, 'source', 'data'], kind: 'text', offset: 4, total: 8 };
