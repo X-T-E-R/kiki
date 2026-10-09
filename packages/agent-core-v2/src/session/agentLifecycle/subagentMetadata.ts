@@ -29,12 +29,16 @@ export function subagentWorkspaceRoots(
 ): RuntimeWorkspaceRoots | undefined {
   const raw = meta?.labels?.[AGENT_WORKSPACE_ROOTS_LABEL];
   if (raw === undefined) return undefined;
-  let parsed: { workDir?: unknown; additionalDirs?: unknown };
+  let value: unknown;
   try {
-    parsed = JSON.parse(raw) as { workDir?: unknown; additionalDirs?: unknown };
+    value = JSON.parse(raw);
   } catch {
     throw invalidWorkspaceRoots(agentId, 'invalid JSON');
   }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidWorkspaceRoots(agentId, 'workspace roots must be an object');
+  }
+  const parsed = value as { workDir?: unknown; additionalDirs?: unknown };
   if (typeof parsed.workDir !== 'string' || parsed.workDir.trim().length === 0) {
     throw invalidWorkspaceRoots(agentId, 'workDir must be a non-empty string');
   }

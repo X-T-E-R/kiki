@@ -132,13 +132,18 @@ describe('subagent workspace roots', () => {
     await service.createInternal({ agentId: 'child', workspaceRoots: { workDir: 'C:/caller' } });
     expect(startCreate).toHaveBeenCalledWith('child', expect.objectContaining({ workspaceRoots: persisted }));
 
-    service.sessionMetadata = {
-      read: async () => ({ agents: { child: { labels: { agentWorkspaceRoots: '{' } } } }),
-    };
-    await expect(service.createInternal({ agentId: 'child' })).rejects.toMatchObject({
-      code: ErrorCodes.CONFIG_INVALID,
-      details: { agentId: 'child', label: 'agentWorkspaceRoots' },
-    });
+    startCreate.mockClear();
+    for (const raw of ['{', 'null', '[]', 'false', '42', '"writer"']) {
+      service.sessionMetadata = {
+        read: async () => ({ agents: { child: { labels: { agentWorkspaceRoots: raw } } } }),
+      };
+      await expect(service.createInternal({ agentId: 'child', workspaceRoots: { workDir: 'C:/caller' } })).rejects.toMatchObject({
+        code: ErrorCodes.CONFIG_INVALID,
+        details: { agentId: 'child', label: 'agentWorkspaceRoots',
+          reason: raw === '{' ? 'invalid JSON' : 'workspace roots must be an object' },
+      });
+    }
+    expect(startCreate).not.toHaveBeenCalled();
   });
 });
 
