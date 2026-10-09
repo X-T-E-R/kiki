@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { extname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { IHostFileSystem, type Scope } from '@kiki/agent-core-v2';
 import { peerAudience } from '../services/connections/audience';
 import { buildEtag, guessMime } from '@kiki/agent-core-v2/_base/utils/fileMeta';
@@ -13,8 +13,10 @@ import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { AdmissionError } from '../services/connections/admission';
 import type { RemoteConnectionManager } from '../services/connections/manager';
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
+import { stripPort } from '../middleware/hostnames';
 
 export const HTML_PREVIEW_CSP = `sandbox ${HTML_PREVIEW_SANDBOX}; object-src 'none'`;
+export const HTML_PREVIEW_OPAQUE_CSP = `sandbox ${HTML_PREVIEW_SANDBOX.replace('allow-same-origin ', '')}; object-src 'none'`;
 const TTL = 30 * 60 * 1000;
 const resourceOptions = { config: { htmlPreviewResource: true } };
 interface LocalPreview { root: string; expiresAt: number }
@@ -29,11 +31,11 @@ function resourcePath(value: string): string {
 }
 function previewUrl(id: string, path: string): string { return `/html-preview/${id}/${path.split('/').map(encodeURIComponent).join('/')}`; }
 function mime(path: string): string {
-  const extra: Record<string, string> = { '.htm': 'text/html', '.xhtml': 'application/xhtml+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.wasm': 'application/wasm' };
+  const extra: Record<string, string> = { '.htm': 'text/html', '.xhtml': 'application/xhtml+xml', '.mjs': 'text/javascript', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.wasm': 'application/wasm' };
   return extra[extname(path).toLowerCase()] ?? guessMime(path, true);
 }
-function security(reply: FastifyReply): void {
-  reply.header('content-security-policy', HTML_PREVIEW_CSP).header('referrer-policy', 'no-referrer').header('x-content-type-options', 'nosniff')
+function security(reply: FastifyReply, independent = false): void {
+  reply.header('content-security-policy', independent ? HTML_PREVIEW_CSP : HTML_PREVIEW_OPAQUE_CSP).header('referrer-policy', 'no-referrer').header('x-content-type-options', 'nosniff')
     .header('access-control-allow-origin', '*').header('cache-control', 'no-store');
 }
 function sendError(error: unknown, reply: FastifyReply): unknown {
@@ -46,17 +48,28 @@ function sendError(error: unknown, reply: FastifyReply): unknown {
   else throw error;
   return reply.code(status).type('application/json').send(errEnvelope(status === 400 ? 40001 : status === 404 ? 40409 : 40301, message, reply.request.id));
 }
+function requireLocalClient(req: FastifyRequest): void {
+  const host = stripPort(req.headers.host ?? '');
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || !(['localhost', '127.0.0.1', '::1', '[::1]'].includes(host))) throw new AdmissionError(403, 'html_preview_document_origin_requires_local_connection');
+}
 
 export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, manager: RemoteConnectionManager): void {
   const local = new Map<string, LocalPreview>();
   const remote = new Map<string, RemotePreview>();
   const active = new Map<string, Set<() => void>>();
+  const documents = new Map<string, FastifyInstance>();
+  const closing = new Set<Promise<void>>();
   const hostFs = core.accessor.get(IHostFileSystem);
   const release = (id: string): void => {
     const entry = remote.get(id);
     local.delete(id); remote.delete(id); entry?.dispose();
     for (const stop of active.get(id) ?? []) stop();
     active.delete(id);
+    const document = documents.get(id); documents.delete(id);
+    if (document !== undefined) {
+      const done = document.close().finally(() => closing.delete(done));
+      closing.add(done);
+    }
   };
   const track = (id: string, stop: () => void): (() => void) => {
     const set = active.get(id) ?? new Set(); set.add(stop); active.set(id, set);
@@ -85,9 +98,12 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     const path = await hostFs.realpath(input.path);
     if (!inside(root, path)) throw new AdmissionError(403, 'preview_path_outside_root');
     if (!(await hostFs.stat(path)).isFile || !/\.(html?|xhtml)$/iu.test(path)) throw new AdmissionError(400, 'html_document_required');
-    const id = randomBytes(32).toString('base64url'); const expiresAt = Date.now() + TTL;
+    const id = randomBytes(32).toString('hex'); const expiresAt = Date.now() + TTL;
     local.set(id, { root, expiresAt });
-    return { preview_id: id, expires_at: expiresAt, sandbox: HTML_PREVIEW_SANDBOX, url: previewUrl(id, relative(resolve(input.root), resolve(input.path)).split(sep).join('/')) };
+    try {
+      const url = await documentUrl(id, relative(resolve(input.root), resolve(input.path)).split(sep).join('/'));
+      return { preview_id: id, expires_at: expiresAt, sandbox: HTML_PREVIEW_SANDBOX, url };
+    } catch (error) { release(id); throw error; }
   };
   const serveLocal = async (id: string, path: string, req: FastifyRequest, reply: FastifyReply) => {
     const entry = entryOf(id);
@@ -120,36 +136,9 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
   const close = async (id: string) => {
     const entry = remote.get(id); release(id);
     if (entry !== undefined) await forward(entry.connectionId, 'htmlPreviewClose', undefined, entry.remoteId).catch(() => {});
+    await Promise.all(closing);
   };
-  app.post('/api/fs::html-preview', async (req, reply) => {
-    try {
-      if (peerAudience(req) !== undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
-      return reply.send(okEnvelope(await open(req.body), req.id));
-    } catch (error) { return sendError(error, reply); }
-  });
-  app.delete('/api/fs::html-preview/:previewId', async (req, reply) => {
-    await close((req.params as { previewId: string }).previewId); return reply.send(okEnvelope(null, req.id));
-  });
-  app.post('/api/remote-connections/:connectionId/html-preview', async (req, reply) => {
-    try {
-      reserve(); const { connectionId } = req.params as { connectionId: string };
-      const result = htmlPreviewResponseSchema.parse(await forward(connectionId, 'htmlPreviewOpen', htmlPreviewRequestSchema.parse(req.body)));
-      const id = randomBytes(32).toString('base64url');
-      const lease = manager.lease(connectionId);
-      const stop = () => release(id);
-      lease.signal.addEventListener('abort', stop, { once: true });
-      remote.set(id, { connectionId, remoteId: result.preview_id, expiresAt: result.expires_at, dispose: () => { lease.signal.removeEventListener('abort', stop); lease.release(); } });
-      const path = result.url.slice(`/html-preview/${result.preview_id}/`.length);
-      return reply.send(okEnvelope({ ...result, preview_id: id, url: `/html-preview/${id}/${path}` }, req.id));
-    } catch (error) { return sendError(error, reply); }
-  });
-  app.get('/api/html-preview/:previewId/resource', resourceOptions, async (req, reply) => {
-    security(reply);
-    try { return await serveLocal((req.params as { previewId: string }).previewId, z.object({ path: z.string() }).parse(req.query).path, req, reply); }
-    catch (error) { return sendError(error, reply); }
-  });
-  app.get('/html-preview/:previewId/*', resourceOptions, async (req, reply) => {
-    security(reply);
+  const serveResource = async (req: FastifyRequest, reply: FastifyReply) => {
     const { previewId, '*': path } = req.params as { previewId: string; '*': string };
     try {
       sweep(); const entry = remote.get(previewId);
@@ -171,6 +160,58 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
         return reply.send(stream);
       } catch (error) { cleanup(); throw error; }
     } catch (error) { return sendError(error, reply); }
+  };
+  const documentUrl = async (id: string, path: string): Promise<string> => {
+    const document = Fastify({ forceCloseConnections: true });
+    const hostname = `${id.slice(0, 32)}.kiki-document.localhost`;
+    document.addHook('onRequest', async (req, reply) => {
+      security(reply, true);
+      if (stripPort(req.headers.host ?? '') !== hostname) return reply.code(403).send();
+    });
+    document.get('/html-preview/:previewId/*', async (req, reply) => {
+      if ((req.params as { previewId: string }).previewId !== id) return reply.code(404).send();
+      return serveResource(req, reply);
+    });
+    documents.set(id, document);
+    try {
+      const address = new URL(await document.listen({ host: '127.0.0.1', port: 0 }));
+      return `http://${hostname}:${address.port}${previewUrl(id, path)}`;
+    } catch (error) { release(id); throw error; }
+  };
+  app.post('/api/fs::html-preview', async (req, reply) => {
+    try {
+      if (peerAudience(req) !== undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
+      requireLocalClient(req);
+      return reply.send(okEnvelope(await open(req.body), req.id));
+    } catch (error) { return sendError(error, reply); }
   });
-  app.addHook('preClose', async () => { clearInterval(timer); for (const id of [...local.keys(), ...remote.keys()]) await close(id); });
+  app.delete('/api/fs::html-preview/:previewId', async (req, reply) => {
+    await close((req.params as { previewId: string }).previewId); return reply.send(okEnvelope(null, req.id));
+  });
+  app.post('/api/remote-connections/:connectionId/html-preview', async (req, reply) => {
+    let id: string | undefined;
+    try {
+      requireLocalClient(req);
+      reserve(); const { connectionId } = req.params as { connectionId: string };
+      const result = htmlPreviewResponseSchema.parse(await forward(connectionId, 'htmlPreviewOpen', htmlPreviewRequestSchema.parse(req.body)));
+      id = randomBytes(32).toString('hex');
+      const lease = manager.lease(connectionId);
+      const previewId = id;
+      const stop = () => release(previewId);
+      lease.signal.addEventListener('abort', stop, { once: true });
+      remote.set(id, { connectionId, remoteId: result.preview_id, expiresAt: result.expires_at, dispose: () => { lease.signal.removeEventListener('abort', stop); lease.release(); } });
+      const prefix = `/html-preview/${result.preview_id}/`;
+      const pathname = new URL(result.url, 'http://target.invalid').pathname;
+      if (!pathname.startsWith(prefix)) throw new AdmissionError(502, 'invalid_html_preview_resource_url');
+      const path = pathname.slice(prefix.length).split('/').map(decodeURIComponent).join('/');
+      return reply.send(okEnvelope({ ...result, preview_id: id, url: await documentUrl(id, path) }, req.id));
+    } catch (error) { if (id !== undefined) await close(id); return sendError(error, reply); }
+  });
+  app.get('/api/html-preview/:previewId/resource', resourceOptions, async (req, reply) => {
+    security(reply);
+    try { return await serveLocal((req.params as { previewId: string }).previewId, z.object({ path: z.string() }).parse(req.query).path, req, reply); }
+    catch (error) { return sendError(error, reply); }
+  });
+  app.get('/html-preview/:previewId/*', resourceOptions, async (req, reply) => { security(reply); return serveResource(req, reply); });
+  app.addHook('preClose', async () => { clearInterval(timer); for (const id of [...local.keys(), ...remote.keys()]) await close(id); await Promise.all(closing); });
 }

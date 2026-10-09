@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Preserve scripts and local resources in HTML file previews.
+Preserve scripts, browser storage, and local resources in HTML file previews.

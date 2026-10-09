@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals allow-downloads';
+export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads';
 
 export const htmlPreviewRequestSchema = z.object({
   path: z.string().min(1),

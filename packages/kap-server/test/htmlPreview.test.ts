@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import Fastify from 'fastify';
 import type { Scope } from '@kiki/agent-core-v2';
 import { afterEach, describe, expect, it } from 'vitest';
-import { registerHtmlPreviewRoutes, HTML_PREVIEW_CSP } from '../src/routes/htmlPreview';
+import { registerHtmlPreviewRoutes, HTML_PREVIEW_OPAQUE_CSP } from '../src/routes/htmlPreview';
 import type { RemoteConnectionManager } from '../src/services/connections/manager';
-import { createOriginHook } from '../src/middleware/origin';
+import { createOriginHook, isOriginAllowed } from '../src/middleware/origin';
 import { createSecurityHeadersHook } from '../src/middleware/securityHeaders';
 import { ConnectionAudience } from '../src/services/connections/audience';
 import type { ConnectionAdmission } from '../src/services/connections/admission';
@@ -40,16 +40,16 @@ describe('browser document resource tree', () => {
     const { app, root, data } = await fixture();
     const document = await app.inject(data.url + '?shot=3');
     expect(document.rawPayload).toEqual(await readFile(join(root, 'slides/index.html')));
-    expect(document.headers['content-security-policy']).toBe(HTML_PREVIEW_CSP);
+    expect(document.headers['content-security-policy']).toBe(HTML_PREVIEW_OPAQUE_CSP);
     expect(data.sandbox).toContain('allow-scripts');
-    expect(data.sandbox).not.toContain('allow-same-origin');
-    const nested = new URL('../systems/index.html?shot=2#slide', 'http://localhost' + data.url);
+    expect(data.sandbox).toContain('allow-same-origin');
+    const nested = new URL('../systems/index.html?shot=2#slide', data.url);
     const resource = await app.inject(nested.pathname + nested.search);
     expect(resource.statusCode).toBe(200);
     expect(resource.body).toBe('<h1>nested</h1>');
-    const script = await app.inject(new URL('../app.js', 'http://localhost' + data.url).pathname);
+    const script = await app.inject(new URL('../app.js', data.url).pathname);
     expect(script.headers['content-type']).toContain('text/javascript');
-    const font = await app.inject({ url: new URL('../font.woff2', 'http://localhost' + data.url).pathname, headers: { origin: 'null' } });
+    const font = await app.inject({ url: new URL('../font.woff2', data.url).pathname, headers: { origin: 'null' } });
     expect(font.headers['content-type']).toBe('font/woff2');
     expect(font.headers['access-control-allow-origin']).toBe('*');
     const privateResponse = await app.inject({ url: '/api/private', headers: { origin: 'null' } });
@@ -103,7 +103,7 @@ it('serves remote-host bytes through a local capability and revokes on connectio
   expect(opened.preview_id).not.toBe(target.data.preview_id);
   const content = await broker.inject(opened.url);
   expect(content.rawPayload).toEqual(await readFile(join(target.root, 'slides/index.html')));
-  expect(content.headers['content-security-policy']).toBe(HTML_PREVIEW_CSP);
+  expect(content.headers['content-security-policy']).toBe(HTML_PREVIEW_OPAQUE_CSP);
   expect(calls).toEqual(['htmlPreviewOpen', 'htmlPreviewResource']);
   for (const controller of [...controllers]) controller.abort();
   expect((await broker.inject(opened.url)).statusCode).toBe(404);
@@ -118,4 +118,39 @@ it('requires target-owner authorization rather than treating peer credentials as
   const response = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root: '/example', path: '/example/index.html' } });
   expect(response.statusCode).toBe(403);
   expect(response.json()).toMatchObject({ code: 40301, msg: 'html_preview_target_owner_grant_required' });
+});
+
+
+it('uses a unique document origin with no API surface, rejects its API origin and closes its listener', async () => {
+  const { app, root, data } = await fixture();
+  const url = new URL(data.url);
+  expect(url.hostname).toMatch(/^[a-f0-9]{32}\.kiki-document\.localhost$/u);
+  const host = url.host; url.hostname = '127.0.0.1';
+  const { get } = await import('node:http');
+  const request = (url: URL, host: string) => new Promise<{ status: number | undefined; csp: string | undefined; body: string }>((resolve, reject) => {
+    get(url, { headers: { host } }, (response) => {
+      let body = ''; response.setEncoding('utf8'); response.on('data', (chunk: string) => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, csp: response.headers['content-security-policy'], body }));
+      response.on('error', reject);
+    }).on('error', reject);
+  });
+  const response = await request(url, host);
+  expect(response.status).toBe(200);
+  expect(response.csp).toContain('allow-same-origin');
+  expect(response.body).toBe(await readFile(join(root, 'slides/index.html'), 'utf8'));
+  expect((await request(new URL('/api/private', url), host)).status).toBe(404);
+  expect((await request(url, url.host)).status).toBe(403);
+  const other = await app.inject({ method: 'POST', url: '/api/fs:html-preview', payload: { root, path: join(root, 'slides/index.html') } });
+  const second = other.json().data as { url: string; preview_id: string };
+  expect(new URL(second.url).origin).not.toBe(new URL(data.url).origin);
+  expect((await request(new URL(new URL(second.url).pathname, url), host)).status).toBe(404);
+  expect(isOriginAllowed(new URL(data.url).origin, '127.0.0.1:1234', [new URL(data.url).origin])).toBe(false);
+  const api = await app.inject({ url: '/api/private', headers: { origin: new URL(data.url).origin } });
+  expect(api.statusCode).toBe(403);
+  expect(api.headers['access-control-allow-origin']).toBeUndefined();
+  await app.inject({ method: 'DELETE', url: '/api/fs:html-preview/' + data.preview_id });
+  await expect(fetch(url, { headers: { host } })).rejects.toThrow();
+  const nonLocal = await app.inject({ method: 'POST', url: '/api/fs:html-preview', remoteAddress: '192.0.2.10', payload: { root, path: join(root, 'slides/index.html') } });
+  expect(nonLocal.statusCode).toBe(403);
+  expect(nonLocal.json().msg).toBe('html_preview_document_origin_requires_local_connection');
 });
