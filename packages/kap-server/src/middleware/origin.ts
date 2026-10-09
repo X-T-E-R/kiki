@@ -108,6 +108,7 @@ export function createOriginHook(
     if (isOriginAllowed(origin, req.headers.host, allowed)) {
       reply.header('Access-Control-Allow-Origin', origin);
       reply.header('Access-Control-Allow-Methods', CORS_ALLOW_METHODS);
+      reply.header('Access-Control-Expose-Headers', 'ETag, Content-Disposition, Content-Range');
       reply.header(
         'Access-Control-Allow-Headers',
         req.headers['access-control-request-headers'] ?? CORS_ALLOW_HEADERS,
