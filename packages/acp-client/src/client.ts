@@ -10,10 +10,12 @@ import {
   type ClientConnection,
   type InitializeRequest,
   type NewSessionRequest,
+  type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionConfigOption,
   type SetSessionConfigOptionRequest,
 } from '@agentclientprotocol/sdk';
+import { z } from 'zod';
 
 import { AsyncQueue, type AsyncQueueReservation } from '#/async-queue';
 import { AcpClientError, AcpClientErrorCode, AcpProtocolError } from '#/errors';
@@ -42,6 +44,15 @@ import type {
   HostProcessServiceLike,
 } from '#/types';
 
+const permissionToolKind = z.enum([
+  'read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other',
+]).nullish();
+const permissionToolLocations = z.array(z.object({
+  path: z.string(),
+  line: z.number().nullish(),
+  _meta: z.record(z.string(), z.unknown()).nullish(),
+}).passthrough()).nullish();
+
 const DEFAULT_STARTUP_TIMEOUT_MS = 70_000;
 const DEFAULT_CANCEL_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
@@ -67,6 +78,7 @@ const KNOWN_UPDATE_TYPES = new Set([
 
 interface ActiveTurn {
   readonly queue: AsyncQueue<NormalizedExecutorEvent>;
+  readonly toolCalls: Map<string, Pick<RequestPermissionRequest['toolCall'], 'kind' | 'locations'>>;
   readonly requestController: AbortController;
   readonly signal: AbortSignal;
   readonly settled: Promise<void>;
@@ -538,6 +550,7 @@ export class AcpProcessClient {
     });
     const active: ActiveTurn = {
       queue,
+      toolCalls: new Map(),
       requestController,
       signal: request.signal,
       settled,
@@ -764,7 +777,12 @@ export class AcpProcessClient {
           ? context.signal
           : AbortSignal.any([context.signal, this.#activeTurn.signal]);
       try {
-        const decision = await handler(context.params, {
+        const facts = context.params.sessionId === this.#openResult?.sessionId
+          ? this.#activeTurn?.toolCalls.get(context.params.toolCall.toolCallId) : undefined;
+        const request = { ...context.params, toolCall: { ...context.params.toolCall,
+          kind: context.params.toolCall.kind === undefined ? facts?.kind : context.params.toolCall.kind,
+          locations: context.params.toolCall.locations === undefined ? facts?.locations : context.params.toolCall.locations } };
+        const decision = await handler(request, {
           signal,
           options: context.params.options,
         });
@@ -1095,6 +1113,13 @@ export class AcpProcessClient {
         (pending?.active === active || active === this.#activeTurn) &&
         mapped.sessionId === this.#openResult?.sessionId
       ) {
+        if (mapped.event.type === 'tool.call' || mapped.event.type === 'tool.update') {
+          const previous = active.toolCalls.get(mapped.event.toolCallId);
+          active.toolCalls.set(mapped.event.toolCallId, {
+            kind: mapped.event.kind === undefined ? previous?.kind : permissionToolKind.safeParse(mapped.event.kind).data,
+            locations: mapped.event.locations === undefined ? previous?.locations : permissionToolLocations.safeParse(mapped.event.locations).data,
+          });
+        }
         if (pending?.active === active) pending.reservation.commit(mapped.event);
         else active.queue.push(mapped.event);
         return;

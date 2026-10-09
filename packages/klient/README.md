@@ -230,6 +230,18 @@ Framework-free `mergeConversationItems` / `groupConversationItems` in `@kiki/ses
 
 `roomRefLink(id)` produces `/rooms/<id>`; `parseConversationLink` also accepts `/r/<id>` and `kiki://rooms/<id>` / `kiki://r/<id>` text. The GUI redirects the short route while preserving query and fragment. These are in-app link contracts; no new operating-system protocol registration is provided.
 
+## Managed executor installations (HTTP)
+
+Use `rest.executors.listInstallations(options?)` to read pinned releases, active
+and previous versions, installation phase, and errors. `install(executorId,
+options?)` installs the host's checksum-pinned release; `rollback(executorId,
+options?)` activates its previous managed installation. These authenticated
+HTTP-only methods use `/api/executors/installations` and
+`/api/executors/{id}/install` or `/rollback`; they do not accept arbitrary package
+URLs or change provider credentials. Installation returns the resulting status,
+not a model-request or login receipt. Pass an appropriate `timeoutMs` for an
+installation and inspect its status before retrying a timed-out mutation.
+
 ## Local executor sessions (HTTP)
 
 `klient.rest.executors` browses local Claude/Codex history and attaches a selected

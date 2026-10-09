@@ -52,6 +52,7 @@ async function openWithScriptedAgent(
     systemPromptOverride?: string;
     sessionMeta?: Record<string, unknown>;
     contextHookHandler?: import('../src/types').AcpContextHookHandler;
+    permissionHandler?: import('../src/types').AcpPermissionHandler;
     requireResume?: boolean;
     onFork?: import('../src/types').AcpOpenSessionOptions['onFork'];
   },
@@ -62,7 +63,7 @@ async function openWithScriptedAgent(
   const client = new AcpProcessClient(
     { spawn: async () => child },
     { id: 'fixture', command: 'fixture', startupTimeoutMs: 5_000 },
-    { platform: 'linux', contextHookHandler: options.contextHookHandler },
+    { platform: 'linux', contextHookHandler: options.contextHookHandler, permissionHandler: options.permissionHandler },
   );
   try {
     const opened = await client.openSession({
@@ -82,6 +83,48 @@ async function openWithScriptedAgent(
 }
 
 describe('AcpProcessClient session capability negotiation', () => {
+  it.each(['partial', 'explicit', 'explicit-null', 'other-session', 'next-turn'] as const)(
+    'preserves scoped permission tool facts for %s requests', async (scenario) => {
+      const script: InProcessAgentScript = {
+        promptUpdates: [{ sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Edit', kind: 'edit',
+          status: 'pending', locations: [{ path: '/workspace/example.ts' }] }],
+        permissionOptions: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+        permissionToolCall: { toolCallId: 'tool-1', title: 'Edit /workspace/example.ts',
+          rawInput: { file_path: '/workspace/example.ts', old_string: 'before', new_string: 'after' },
+          kind: scenario === 'explicit' ? 'read' : scenario === 'explicit-null' ? null : undefined,
+          locations: scenario === 'explicit' ? [{ path: '/workspace/explicit.ts' }] : scenario === 'explicit-null' ? null : undefined },
+        permissionSessionId: scenario === 'other-session' ? 'different-session' : undefined,
+      };
+      const requests: Parameters<import('../src/types').AcpPermissionHandler>[0][] = [];
+      const { client, history } = await openWithScriptedAgent(script, {
+        permissionHandler: (request) => {
+          requests.push(request);
+          return { outcome: 'selected', optionId: 'allow' };
+        },
+      });
+      try {
+        const run = async () => {
+          const turn = await client.startTurn({ prompt: 'neutral fixture', signal: new AbortController().signal,
+            session: { cwd: '/workspace' } });
+          for await (const _event of turn.events) { }
+          await turn.completion;
+        };
+        await run();
+        if (scenario === 'next-turn') {
+          Object.assign(script, { promptUpdates: [] });
+          await run();
+        }
+        const request = requests.at(-1)!;
+        expect(request.toolCall.rawInput).toEqual(script.permissionToolCall?.rawInput);
+        expect(request.toolCall.title).toBe(script.permissionToolCall?.title);
+        expect(request.toolCall.kind).toBe(scenario === 'partial' ? 'edit'
+          : scenario === 'explicit' ? 'read' : scenario === 'explicit-null' ? null : undefined);
+        expect(request.toolCall.locations).toEqual(scenario === 'partial' ? [{ path: '/workspace/example.ts' }]
+          : scenario === 'explicit' ? [{ path: '/workspace/explicit.ts' }] : scenario === 'explicit-null' ? null : undefined);
+        expect(history.permissionResponses.at(-1)).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+      } finally { await client.shutdown(); }
+    },
+  );
   it('forwards current permission context on every prompt without reopening the session', async () => {
     const { client, history } = await openWithScriptedAgent({}, {});
     try {

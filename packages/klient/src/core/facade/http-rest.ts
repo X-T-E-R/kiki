@@ -120,6 +120,28 @@ export interface NotificationCredentialCheck {
   error_kind?: NotificationErrorKind;
 }
 
+export interface HttpRestManagedAdapterInstallation {
+  readonly version: string;
+  readonly integrity: string;
+  readonly source: string;
+  readonly install_id: string;
+}
+
+export interface HttpRestManagedAdapterStatus {
+  readonly id: string;
+  readonly release: {
+    readonly package_name: string;
+    readonly version: string;
+    readonly integrity: string;
+    readonly source: string;
+    readonly entry: string;
+  };
+  readonly active?: HttpRestManagedAdapterInstallation;
+  readonly previous?: HttpRestManagedAdapterInstallation;
+  readonly phase: 'idle' | 'downloading' | 'verifying' | 'installing' | 'activating' | 'failed';
+  readonly error?: string;
+}
+
 /** HTTP deadlines and cancellation remain active until the response body is consumed. */
 export interface HttpRestRequestOptions {
   readonly signal?: AbortSignal;
@@ -564,6 +586,9 @@ export interface HttpRestFacade {
 
   readonly executors: {
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+    listInstallations(options?: HttpRestRequestOptions): Promise<{ readonly items: readonly HttpRestManagedAdapterStatus[] }>;
+    install(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
+    rollback(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
     getModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').GetExecutorModelsResponse>;
     refreshModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').RefreshExecutorModelsResponse>;
     listLocalSessions(executorId: string, query?: { readonly limit?: number }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDirectory>;

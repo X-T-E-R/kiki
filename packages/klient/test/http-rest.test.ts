@@ -431,6 +431,29 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('manages checksum-pinned executor installations through typed authenticated REST endpoints', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const status = { id: 'codex-acp', phase: 'idle', release: { package_name: 'example-adapter',
+      version: '1.0.0', integrity: 'sha512-example', source: 'https://example.test/adapter.tgz', entry: 'dist/index.js' } };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer example-token');
+      return envelope(path.endsWith('/installations') ? { items: [status] } : status);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'example-token', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.executors.listInstallations()).resolves.toEqual({ items: [status] });
+      await expect(channel.rest.executors.install('codex/acp')).resolves.toEqual(status);
+      await expect(channel.rest.executors.rollback('codex/acp')).resolves.toEqual(status);
+      expect(calls).toEqual([
+        { path: '/api/executors/installations', method: 'GET', body: undefined },
+        { path: '/api/executors/codex%2Facp/install', method: 'POST', body: {} },
+        { path: '/api/executors/codex%2Facp/rollback', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('browses and attaches local sessions using encoded source IDs and typed REST requests', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {

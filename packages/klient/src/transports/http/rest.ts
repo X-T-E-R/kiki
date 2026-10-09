@@ -554,6 +554,13 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     executors: {
       list: () => transport.json('/executors'),
+      listInstallations: (options) => transport.json('/executors/installations', options),
+      install: (executorId, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/install`, { ...options, method: 'POST', body: {} },
+      ),
+      rollback: (executorId, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/rollback`, { ...options, method: 'POST', body: {} },
+      ),
       getModels: (executorId, options) => transport.json<import('@kiki/protocol').GetExecutorModelsResponse>(
         `/executors/${encodeURIComponent(executorId)}/models`, options,
       ),

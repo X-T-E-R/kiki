@@ -87,6 +87,15 @@ state. Unknown updates retain their method and bounded source payload when
 available so downstream diagnostics can show what arrived without treating it
 as assistant text.
 
+## Permission requests
+
+The permission handler receives the original request input and options. If an
+agent sends a partial tool call in `session/request_permission`, the client fills
+missing `kind` and `locations` from that tool's preceding updates in the same
+active turn and remote session. Request-supplied fields take precedence. Facts
+are discarded at turn completion and never reused across sessions or turns.
+The handler still owns the decision; enrichment does not grant permission.
+
 ## Durable session refs
 
 `parseExecutorSessionRefEnvelope`, `serializeExecutorSessionRefEnvelope`, and
