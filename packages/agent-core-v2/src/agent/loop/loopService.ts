@@ -1022,6 +1022,36 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       this.lastRequestTraceId = request.trace.traceId;
       this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      if (
+        this.scope.parentAgentId !== undefined &&
+        response.providerFinishReason === 'completed' &&
+        response.message.content.length === 0 &&
+        response.message.toolCalls.length === 0
+      ) {
+        markStepStarted();
+        this.context.appendLoopEvent({
+          type: 'step.end',
+          uuid: stepUuid,
+          turnId: String(turnId),
+          step: currentStep,
+          finishReason: 'error',
+          usage: response.usage,
+          messageId: response.providerMessageId,
+          providerFinishReason: response.providerFinishReason,
+          rawFinishReason: response.rawFinishReason,
+        });
+        stepEndAppended = true;
+        throw new Error2(ErrorCodes.LOOP_EMPTY_COMPLETION,
+          'The subagent provider completed without content or tool calls; no task receipt was produced. Inspect preserved work before resuming with a new prompt ID.',
+          { details: {
+            turnId,
+            step: currentStep,
+            messageId: response.providerMessageId,
+            providerFinishReason: response.providerFinishReason,
+            rawFinishReason: response.rawFinishReason,
+            usage: response.usage,
+          } });
+      }
       const finishReason = await this.executeStepTools(
         turnId,
         signal,

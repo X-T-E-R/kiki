@@ -1,6 +1,11 @@
 import { getMaxListeners } from 'node:events';
 
 import { type ToolCall } from '#/kosong/contract/message';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
+import type { ChatProvider } from '#/kosong/contract/provider';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,6 +35,7 @@ import { userCancellationReason } from '#/_base/utils/abort';
 
 import {
   agentService,
+  appService,
   createTestAgent,
   permissionModeServices,
   type TestAgentContext,
@@ -1903,6 +1909,80 @@ describe('llm requester attempt retry', () => {
       expect(contentParts[0]?.['uuid']).toBe(assistantDeltas[1]?.partId);
     } finally {
       await ctx.dispose();
+    }
+  });
+});
+
+describe('native empty provider completion', () => {
+  it.each([true, false])('classifies raw Messages output=0 with subagent=%s without retrying', async (subagent) => {
+    const create = vi.fn().mockImplementation(async () => (async function* () {
+      yield { type: 'message_start', message: { id: 'example-empty', usage: { input_tokens: 30189, output_tokens: 0, cache_read_input_tokens: 20677 } } };
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
+      yield { type: 'message_stop' };
+    })());
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+      clientFactory: () => ({ messages: { create } }) as unknown as import('@anthropic-ai/sdk').default,
+    });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const local = createTestAgent(permissionModeServices('manual'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    if (subagent) Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({
+        id: 'example-empty-prompt',
+        message: { role: 'user', content: [{ type: 'text', text: 'Complete the task and report the result.' }], toolCalls: [] },
+      });
+      const terminal = await handle.completion;
+      expect(terminal).toMatchObject({ state: subagent ? 'failed' : 'completed', result: { type: subagent ? 'failed' : 'completed' } });
+      if (subagent) expect(terminal.result).toMatchObject({ error: { code: 'loop.empty_completion', details: {
+        providerFinishReason: 'completed', rawFinishReason: 'end_turn', messageId: 'example-empty',
+        usage: { output: 0, inputOther: 30189, inputCacheRead: 20677 },
+      } } });
+      const records = await local.persistedWireRecords();
+      expect(records.find((record) => record.type === 'turn.ended')).toMatchObject({ reason: subagent ? 'failed' : 'completed' });
+      expect(records.find((record) => record.type === 'prompt.outcome_committed')).toMatchObject({ terminal: { state: subagent ? 'failed' : 'completed' } });
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each([true, false])('preserves text-free tool execution with stopTurn=%s', async (stopTurn) => {
+    const local = createTestAgent(permissionModeServices('yolo'));
+    Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      local.get(IAgentToolRegistryService).register({
+        name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => ({ output: 'work saved', stopTurn }) }),
+      });
+      local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+      local.mockNextResponse({ type: 'function', id: 'example-work', name: 'FinishWork', arguments: '{}' });
+      if (!stopTurn) local.mockNextResponse({ type: 'text', text: 'Work saved.' });
+      const handle = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Complete work.' }], toolCalls: [],
+      } });
+      expect(await handle.completion).toMatchObject({ state: 'completed' });
+      expect(local.llmCalls).toHaveLength(stopTurn ? 1 : 2);
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('preserves a completed thinking-only subagent step', async () => {
+    const local = createTestAgent(permissionModeServices('manual'));
+    Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      local.mockNextResponse({ type: 'think', think: 'deliberate silent completion' });
+      const handle = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Do not add a public reply.' }], toolCalls: [],
+      } });
+      expect(await handle.completion).toMatchObject({ state: 'completed' });
+    } finally {
+      await local.dispose();
     }
   });
 });

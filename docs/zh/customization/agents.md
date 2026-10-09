@@ -44,6 +44,10 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。
 
+供应商报告完成，不等于任务已交付回执。原生子 Agent 以无内容、无工具调用的响应结束时，以 `loop.empty_completion` 失败；Agent 任务返回的最终文本为空或只有空白时，以 `task.empty_agent_receipt` 失败。没有正文的工具步骤、已完成的纯思考响应仍是合法模型步骤，但 Agent 任务仍须提交书面结果。
+
+恢复前先检查原轮次与已保存改动，再用新提示词唤回同一个子 Agent，要求它完成工作并报告结果。SDK 调用方须使用新的 prompt ID；重复已结束的 ID 只会重放保存的结果。Kiki 不为这两类失败自动重试，也不改写旧任务记录。
+
 新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要 `allow_model_change: true`。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 以及 route / caller lease 的 pin 都是软建议：满足硬规则的覆盖会带着结构化 advisory 继续执行。`allowed_models`、`deny_models`、`allowed_efforts` 在任何作用域都是硬规则。机器级 `[subagent].deny_models`、不受支持的模型能力、route 身份、缺少换模确认以及 executor / thread 限制都是硬错误；外部 executor 无法修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。
