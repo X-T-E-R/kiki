@@ -37,8 +37,8 @@ export class UsageExportService {
     this.vibeAuth = new VibeCafeDeviceAuth((id) => {
       if (!this.store.writer) throw new Error('export-writer-unavailable');
       return this.store.get(id);
-    }, async (input) => {
-      const destination = await this.saveDraft(input);
+    }, async (input, automaticStorage) => {
+      const destination = await this.saveDraftWithStorage(input, automaticStorage);
       return this.store.update(destination.id, { enabled: false, consent_fingerprint: null, state: 'draft', next_at: null });
     }, options.vibeAuthRequest, this.now);
     for (const adapter of adapters) this.registerAdapter(adapter);
@@ -54,7 +54,8 @@ export class UsageExportService {
     const target = destination.target.kind === 'script' ? { kind: 'script', command: destination.target.command } : { kind: destination.target.kind, endpoint: destination.target.endpoint, private_grant: destination.target.private_grant, authentication: destination.target.kind === 'webhook' ? destination.target.authentication : 'bearer' };
     return digest({ policy: 'kiki.usage.bucket.v1', target, account: destination.account_fingerprint, scope: destination.scope, stream: destination.stream_id, adapter: this.adapters.get(destination.target.kind)?.mappingVersion ?? 'unavailable' });
   }
-  async saveDraft(input: UsageExportSave): Promise<UsageExportDestination> {
+  async saveDraft(input: UsageExportSave): Promise<UsageExportDestination> { return this.saveDraftWithStorage(input, false); }
+  private async saveDraftWithStorage(input: UsageExportSave, automaticStorage: boolean): Promise<UsageExportDestination> {
     if (!this.store.writer) throw new Error('export-writer-unavailable');
     const { draft, secret } = usageExportSaveSchema.parse(input); validateExportTarget(draft.target);
     const id = draft.id ?? randomUUID(); const previous = draft.id === undefined ? undefined : this.store.get(id);
@@ -72,10 +73,18 @@ export class UsageExportService {
     }
     this.controllers.get(id)?.abort();
     if (secret !== undefined) {
-      await this.secrets.save(id, secret.value, secret.storage, secret.acknowledge_file_storage);
-      if (previous !== undefined && previous.credential_storage !== storage && previous.credential_storage !== 'none') await this.secrets.remove(id, previous.credential_storage);
-    }
-    this.store.save(next); if (next.enabled) await this.store.refreshDestinationAsync(id); this.scheduleTimer(); return next;
+      next.credential_storage = await this.secrets.save(id, secret.value, automaticStorage ? 'auto' : secret.storage, secret.acknowledge_file_storage);
+      const obsoleteStorage = next.credential_storage === 'keyring' ? 'private-file' : previous?.credential_storage === 'keyring' || automaticStorage ? 'keyring' : this.store.meta(`credential-cleanup:${id}`) ?? '';
+      this.store.saveWithMetadata(next, { [`credential-cleanup:${id}`]: obsoleteStorage });
+    } else this.store.save(next);
+    await this.cleanupCredential(id).catch(() => {});
+    if (next.enabled) await this.store.refreshDestinationAsync(id); this.scheduleTimer(); return next;
+  }
+  private async cleanupCredential(id: string): Promise<void> {
+    const storage = this.store.meta(`credential-cleanup:${id}`);
+    if (storage !== 'keyring' && storage !== 'private-file') return;
+    if (this.store.list().find((destination) => destination.id === id)?.credential_storage !== storage) await this.secrets.remove(id, storage);
+    this.store.setMeta(`credential-cleanup:${id}`, '');
   }
   async preview(id: string): Promise<UsageExportPreview> {
     await this.scan(); const preview = await this.store.previewAsync(id); const destination = this.store.get(id);
@@ -171,6 +180,7 @@ export class UsageExportService {
     const destination = this.store.get(id); const queue = this.store.queue(id);
     if (queue.pending + queue.inflight + queue.quarantined > 0 && !discardPending) throw new Error('remove-requires-queue-consent');
     this.disable(id); for (const [key, controller] of this.controllers) if (key.startsWith(`test:${id}:`)) controller.abort(); await this.flights.get(id);
+    await this.cleanupCredential(id).catch(() => {});
     await this.secrets.remove(id, destination.credential_storage); this.store.remove(id); this.scheduleTimer(); return { removed: true };
   }
   handoff(id: string): UsageExportHandoff | null {
@@ -301,6 +311,10 @@ export class UsageExportService {
     if (!this.store.tryPromote()) { this.electionTimer = setTimeout(() => this.start(), 2000); this.electionTimer.unref(); return; }
     this.started = true;
     this.recoveryFlight = (async () => {
+      for (const id of this.store.pendingCredentialCleanup()) {
+        if (this.closing) break;
+        await this.cleanupCredential(id).catch(() => {});
+      }
       for (const destination of this.store.list()) {
         if (this.closing) break;
         if (this.store.meta(`handoff-arm:${destination.id}`)) await this.finishHandoffArm(destination.id).catch(() => { if (!this.closing) this.store.update(destination.id, { enabled: false, state: 'disabled', error_category: 'handoff-recovery-needs-new-cutoff' }); });

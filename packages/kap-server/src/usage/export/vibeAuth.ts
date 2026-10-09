@@ -21,7 +21,7 @@ interface Flow {
 export class VibeCafeDeviceAuth {
   private readonly flows = new Map<string, Flow>();
   private closed = false;
-  constructor(private readonly get: (id: string) => UsageExportDestination, private readonly save: (input: UsageExportSave) => Promise<UsageExportDestination>, private readonly send: VibeAuthRequest = requestVibeAuth, private readonly now: () => number = Date.now) {}
+  constructor(private readonly get: (id: string) => UsageExportDestination, private readonly save: (input: UsageExportSave, automaticStorage: boolean) => Promise<UsageExportDestination>, private readonly send: VibeAuthRequest = requestVibeAuth, private readonly now: () => number = Date.now) {}
   async begin(id: string, input: UsageExportVibeAuthInput): Promise<UsageExportVibeAuth> {
     if (this.closed) throw new Error('vibe-auth-unavailable');
     const parsed = usageExportVibeAuthInputSchema.parse(input);
@@ -73,7 +73,7 @@ export class VibeCafeDeviceAuth {
         const destination = this.get(flow.snapshot.destination_id);
         if (JSON.stringify(destination) !== flow.original) return this.finish(flow, 'error', 'vibe-auth-destination-changed');
         flow.committing = true;
-        await this.save({ draft: { id: destination.id, label: destination.label, target: destination.target, scope: destination.scope, schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] }, secret: { value: result.apiKey, ...flow.input } });
+        await this.save({ draft: { id: destination.id, label: destination.label, target: destination.target, scope: destination.scope, schedule_minutes: destination.schedule_minutes as UsageExportSave['draft']['schedule_minutes'] }, secret: { value: result.apiKey, storage: flow.input.storage === 'private-file' ? 'private-file' : 'keyring', acknowledge_file_storage: flow.input.acknowledge_file_storage } }, flow.input.storage === 'auto');
         return this.finish(flow, 'connected');
       }
       if (result.error === 'authorization_pending') { flow.snapshot.error_category = null; return this.view(flow); }
