@@ -85,7 +85,14 @@ export interface VideoUploadInput {
   readonly filename?: string | undefined;
 }
 
+export interface RawResponseObserver {
+  start(response: { status: number; contentType: string | null; requestId: string | null; alternateRequestId: string | null; traceId: string | null }): void;
+  chunk(bytes: Uint8Array): void;
+  end(outcome: string): void;
+}
+
 export interface GenerateOptions {
+  rawResponseObserver?: RawResponseObserver;
   signal?: AbortSignal;
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;

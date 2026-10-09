@@ -88,6 +88,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import {
   IRequestIdentityInstallation,
   IRequestIdentityRegistry,
@@ -254,6 +255,7 @@ function createService(
     fields: [],
   });
   const profile: Partial<IAgentProfileService> = {
+    getRecipeModelSettings: () => undefined,
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
       modelCapabilities: requester.model.capabilities,
@@ -465,6 +467,7 @@ function createService(
   registerTestEventDispatcher(ix);
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
+  ix.stub(IAppendLogStore, { append: () => {}, flush: async () => {} });
 
   return {
     identityCatalog: catalog,
@@ -2195,5 +2198,31 @@ describe('AgentLLMRequesterService governance attribution', () => {
     const { service } = createService(requester, undefined, { env: { KIKI_INFINITE_RETRY: 'true' } });
     await expect(service.request()).rejects.toMatchObject({ code });
     expect(calls.value).toBe(1);
+  });
+});
+
+
+describe('Anthropic raw capture management port', () => {
+  it('defaults off and admits only the addressed identity and exact normal request binding', async () => {
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const params = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { agentId: 'example-child', sessionId: 'example-session', thinkingLevel: 'medium' });
+    expect(await service.anthropicResponseCaptureStatus()).toBeNull();
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    const input = { sessionId: 'example-session', agentId: 'example-child', providerId: 'p', model: 'wire-model', thinkingEffort: 'medium', expiresAt: Date.now() + 3_600_000, maxResponses: 20 };
+    expect(() => service.armAnthropicResponseCapture({ ...input, sessionId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, agentId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, expiresAt: Date.now() - 1 })).toThrow('future expiry');
+    const armed = service.armAnthropicResponseCapture(input);
+    expect(() => service.armAnthropicResponseCapture(input)).toThrow('Stop the existing');
+    await service.request({ source: { type: 'turn', turnId: 7, step: 3 } });
+    expect(params.at(-1)?.rawResponseObserver).toBeDefined();
+    expect(await service.anthropicResponseCaptureStatus()).toMatchObject({ responses: 1, completed: 1, flushed: true });
+    await expect(service.stopAnthropicResponseCapture('other')).rejects.toThrow('id does not match');
+    expect(await service.stopAnthropicResponseCapture(armed.captureId)).toMatchObject({ enabled: false, closedReason: 'operator', flushed: true });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    service.armAnthropicResponseCapture({ ...input, providerId: 'other' });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
   });
 });
