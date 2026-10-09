@@ -2038,18 +2038,18 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
   });
 
-  it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
+  it('keeps token accounting out of goal notices while preserving canonical budget state', () => {
     const records = [
       { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },
       ...Array.from({ length: 12 }, (_, index) => ({ type: 'goal.update', tokensUsed: index + 1, time: 2000 + index })),
     ];
     const snapshot = replayAgentWire('main', records);
     const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
-    expect(snapshot.items).toHaveLength(13);
+    expect(snapshot.items).toHaveLength(1);
     const latest = snapshot.items.at(-1);
     expect(first.blocks).toEqual([expect.objectContaining({
       id: `agent-marker-${latest?.kind === 'marker' ? latest.markerId : ''}`,
-      kind: 'notice', text: 'goal', markerRepeatCount: 13, createdAt: new Date(2011).toISOString(),
+      kind: 'notice', text: 'goal', goalChange: { kind: 'created' }, createdAt: new Date(1000).toISOString(),
     })]);
     expect(snapshot.meta.goal?.budgetUsed).toBe(12);
     const reset = projectAgentTranscriptView(first, 'main', snapshot);
@@ -2057,7 +2057,21 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const appended = projectAgentTranscriptView(reset, 'main', replayAgentWire('main', [
       ...records, { type: 'goal.update', tokensUsed: 13, time: 3000 },
     ]));
-    expect(appended.blocks).toEqual([expect.objectContaining({ markerRepeatCount: 14, createdAt: new Date(3000).toISOString() })]);
+    expect(appended.blocks).toEqual(first.blocks);
+    const lifecycle = projectAgentTranscriptView(appended, 'main', replayAgentWire('main', [
+      ...records,
+      { type: 'goal.update', budgetLimits: { tokenBudget: 20, turnBudget: 3, wallClockBudgetMs: 1000 }, time: 3000 },
+      { type: 'goal.update', turnsUsed: 1, wallClockMs: 200, time: 3001 },
+      { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', time: 4000 },
+      { type: 'goal.update', status: 'active', time: 5000 },
+      { type: 'goal.update', status: 'blocked', reason: 'Needs input', time: 6000 },
+      { type: 'goal.update', status: 'active', time: 7000 },
+      { type: 'goal.update', status: 'complete', time: 8000 },
+    ]));
+    expect(lifecycle.blocks.filter((block) => block.kind === 'notice').map((block) => block.goalChange?.kind))
+      .toEqual(['created', 'updated', 'paused', 'resumed', 'blocked', 'resumed', 'completed']);
+    expect(lifecycle.goal).toMatchObject({ goalId: 'goal-example', tokensUsed: 12, turnsUsed: 1, wallClockMs: 200,
+      budget: { remainingTokens: 8, remainingTurns: 2, remainingWallClockMs: 800 } });
   });
 
   it('folds live marker operations idempotently and recomputes counts when older history arrives', () => {

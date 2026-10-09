@@ -1657,7 +1657,10 @@ describe('AgentTranscriptLiveAdapter', () => {
     const ops = liveAdapter.map(ev({ type: 'goal.updated', snapshot, change: { kind: 'lifecycle' } }));
     tx.apply(ops);
 
-    expect(tx.getMeta().goal).toEqual({
+    expect(tx.getMeta().goal).toMatchObject({
+      goalId: 'g1',
+      turnsUsed: 3,
+      wallClockMs: 5000,
       objective: 'ship it',
       status: 'active',
       completionCriterion: 'tests green',
@@ -1667,12 +1670,73 @@ describe('AgentTranscriptLiveAdapter', () => {
       budgetLimit: 50000,
     });
     const marker = tx.getItems().find((item) => item.kind === 'marker');
-    expect(marker).toMatchObject({ marker: 'goal', payload: { snapshot } });
+    expect(marker).toMatchObject({ marker: 'goal', payload: { change: { kind: 'created' }, snapshot: tx.getMeta().goal } });
 
     const clearedOps = liveAdapter.map(ev({ type: 'goal.updated', snapshot: null }));
     expect(clearedOps[0]).toEqual({ op: 'meta.merge', meta: { goal: null } });
     tx.apply(clearedOps);
     expect(tx.getMeta().goal).toBeUndefined();
+  });
+
+  it('aligns goal semantics across wire, live snapshots and seeded accounting without duplicate notices', () => {
+    const records: TranscriptWireRecord[] = [
+      { type: 'goal.create', goalId: 'example-goal', objective: 'Complete the experiment', completionCriterion: 'Verified results', time: 1 },
+      { type: 'context.append_message', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Run the checks' }] }, time: 1.1 },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Checking results' }],
+        toolCalls: [{ id: 'example-tool', name: 'Read', arguments: '{"path":"example.txt"}' }] }, time: 1.2 },
+      { type: 'goal.update', tokensUsed: 100, time: 2 },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Results received' }], toolCalls: [] }, time: 2.1 },
+      { type: 'goal.update', tokensUsed: 200, turnsUsed: 1, wallClockMs: 50, time: 3 },
+      { type: 'goal.update', objective: 'Complete the experiment', controlRevision: 2, time: 4 },
+      { type: 'goal.update', objective: 'Use the revised requirements', completionCriterion: null, time: 5 },
+      { type: 'goal.update', budgetLimits: { tokenBudget: 500, turnBudget: 3, wallClockBudgetMs: 1000 }, time: 6 },
+      { type: 'goal.update', budgetLimits: {}, time: 7 },
+      { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', wallClockMs: 100, time: 8 },
+      { type: 'goal.update', status: 'active', actor: 'user', time: 9 },
+      { type: 'goal.update', status: 'blocked', reason: 'Needs input', actor: 'model', time: 10 },
+      { type: 'goal.update', status: 'active', time: 11 },
+      { type: 'goal.update', status: 'complete', reason: 'Verified', time: 12 },
+      { type: 'goal.clear', time: 13 },
+      { type: 'goal.update', tokensUsed: 999, time: 14 },
+    ];
+    const wireTx = new AgentTranscript('main');
+    const liveTx = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(wireTx);
+    const live = new AgentTranscriptLiveAdapter('main');
+    const seeded = new AgentTranscriptLiveAdapter('main', { goal: () => wireTx.getMeta().goal });
+    for (const record of records) {
+      reducer.apply(adapter.add(record));
+      const goal = wireTx.getMeta().goal;
+      const snapshot = goal === undefined ? null : {
+        goalId: goal.goalId, objective: goal.objective, status: goal.status,
+        completionCriterion: goal.completionCriterion, followUpTiming: goal.followUpTiming,
+        controlRevision: goal.controlRevision, terminalReason: goal.terminalReason,
+        tokensUsed: goal.budgetUsed, turnsUsed: goal.turnsUsed, wallClockMs: goal.wallClockMs,
+        budget: { tokenBudget: goal.budgetLimit ?? null, turnBudget: goal.turnBudget ?? null,
+          wallClockBudgetMs: goal.wallClockBudgetMs ?? null },
+      };
+      const event = ev({ type: 'goal.updated', snapshot,
+        change: { reason: record['reason'], actor: record['actor'] } });
+      liveTx.apply(live.map(event));
+      expect(liveTx.getMeta().goal).toEqual(goal);
+      expect(seeded.map(event).filter((op) => op.op === 'marker.upsert')).toEqual([]);
+      if (record.time === 2 || record.time === 3 || record.time === 4 || record.time === 14) {
+        expect(adapter.add({ ...record, time: Number(record.time) + 100 }).flatMap((fact) => fact.operations)
+          .filter((op) => op.op === 'marker.upsert')).toEqual([]);
+      }
+    }
+    expect(wireTx.getItems().flatMap((item) => item.kind === 'turn' ? item.steps.flatMap((step) => step.frames) : []))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'tool', name: 'Read' }),
+        expect.objectContaining({ kind: 'text', text: 'Results received' })]));
+    const kinds = (tx: AgentTranscript) => tx.getItems().flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
+      ? [(item.payload as { change: { kind: string } }).change.kind] : []);
+    expect(kinds(wireTx)).toEqual(['created', 'updated', 'updated', 'updated', 'paused', 'resumed', 'blocked', 'resumed', 'completed']);
+    expect(kinds(liveTx)).toEqual(kinds(wireTx));
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(adapter.checkpoint());
+    expect(restored.add({ type: 'goal.update', tokensUsed: 1000 }).flatMap((fact) => fact.operations)
+      .filter((op) => op.op === 'marker.upsert')).toEqual([]);
   });
 
   it('mirrors plan mode slices into meta.modes (only when provided)', () => {

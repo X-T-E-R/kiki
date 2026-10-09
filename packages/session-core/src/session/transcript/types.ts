@@ -380,6 +380,7 @@ export interface SubagentEventBlock {
 }
 
 export interface NoticeBlock {
+  readonly goalChange?: import('@kiki/transcript').GoalMarkerChange;
   readonly compactionPhase?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   readonly compactionFailure?: string;
   readonly compactionHistory?: readonly {

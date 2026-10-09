@@ -732,6 +732,20 @@ function markerToBlock(item: {
     turnId: normalizeTurnId(payloadRecord?.['turnId']),
   };
 
+  if (item.marker === 'goal') {
+    const change = payloadRecord?.['change'];
+    if (typeof change === 'object' && change !== null && 'kind' in change &&
+      (change.kind === 'created' || change.kind === 'updated' || change.kind === 'paused' ||
+        change.kind === 'resumed' || change.kind === 'blocked' || change.kind === 'completed' || change.kind === 'cleared')) {
+      return { ...base, text: item.marker, i18n: { key: 'transcript.marker.goal' },
+        goalChange: { kind: change.kind,
+          reason: 'reason' in change && typeof change.reason === 'string' ? change.reason : undefined,
+          actor: 'actor' in change && typeof change.actor === 'string' ? change.actor : undefined } };
+    }
+    if (payloadRecord?.['type'] === 'goal.update' &&
+      !['objective', 'completionCriterion', 'status', 'budgetLimits', 'followUpTiming'].some((key) => key in payloadRecord)) return undefined;
+  }
+
   if (item.marker === 'model.switch') {
     const from = payloadRecord?.['from'];
     const to = payloadRecord?.['to'];
@@ -2978,6 +2992,7 @@ function foldConsecutiveMarkerDividers(blocks: readonly Block[]): Block[] {
   for (const block of blocks) {
     const previous = folded.at(-1);
     if (isMarkerDivider(block) && isMarkerDivider(previous) &&
+      block.goalChange === undefined && previous.goalChange === undefined &&
       (block.compactionPhase === undefined || block.compactionPhase === 'completed' && previous.compactionPhase === 'completed') &&
       block.text === previous.text && block.tone === previous.tone &&
       block.turnId === previous.turnId && block.i18n?.key === previous.i18n?.key &&
@@ -3082,38 +3097,38 @@ export function appendLocalUserMessage(
   });
 }
 
-function projectGoalSnapshot(goal: {
-  readonly objective: string;
-  readonly status: GoalSnapshot['status'];
-  readonly completionCriterion?: string;
-  readonly budgetUsed?: number;
-  readonly budgetLimit?: number;
-  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
-  readonly controlRevision?: number;
-}): GoalSnapshot {
+function projectGoalSnapshot(goal: import('@kiki/transcript').GoalMeta): GoalSnapshot {
   const tokenBudget = goal.budgetLimit ?? null;
+  const turnBudget = goal.turnBudget ?? null;
+  const wallClockBudgetMs = goal.wallClockBudgetMs ?? null;
   const tokensUsed = goal.budgetUsed ?? 0;
+  const turnsUsed = goal.turnsUsed ?? 0;
+  const wallClockMs = goal.wallClockMs ?? 0;
+  const tokenBudgetReached = tokenBudget !== null && tokensUsed >= tokenBudget;
+  const turnBudgetReached = turnBudget !== null && turnsUsed >= turnBudget;
+  const wallClockBudgetReached = wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs;
   return {
-    goalId: 'transcript',
+    goalId: goal.goalId ?? 'transcript',
     objective: goal.objective,
     completionCriterion: goal.completionCriterion,
     status: goal.status,
     followUpTiming: goal.followUpTiming,
     controlRevision: goal.controlRevision,
-    turnsUsed: 0,
+    terminalReason: goal.terminalReason,
+    turnsUsed,
     tokensUsed,
-    wallClockMs: 0,
+    wallClockMs,
     budget: {
       tokenBudget,
-      turnBudget: null,
-      wallClockBudgetMs: null,
+      turnBudget,
+      wallClockBudgetMs,
       remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
-      remainingTurns: null,
-      remainingWallClockMs: null,
-      tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
-      turnBudgetReached: false,
-      wallClockBudgetReached: false,
-      overBudget: tokenBudget !== null && tokensUsed > tokenBudget,
+      remainingTurns: turnBudget === null ? null : Math.max(0, turnBudget - turnsUsed),
+      remainingWallClockMs: wallClockBudgetMs === null ? null : Math.max(0, wallClockBudgetMs - wallClockMs),
+      tokenBudgetReached,
+      turnBudgetReached,
+      wallClockBudgetReached,
+      overBudget: tokenBudgetReached || turnBudgetReached || wallClockBudgetReached,
     },
   };
 }

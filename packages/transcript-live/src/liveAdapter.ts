@@ -63,6 +63,8 @@ import type {
 } from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  projectGoalChange,
+  type GoalMeta,
   mediaUrlFromPart,
   parseDaemonFileRefFileId,
   sessionMediaIdFromBlobUrl,
@@ -224,6 +226,7 @@ export interface LiveAdapterLookups {
   readonly turn?: LiveAdapterTurnLookup;
   readonly turnDetails?: LiveAdapterTurnDetailsLookup;
   readonly task?: (taskId: string) => TranscriptTask | undefined;
+  readonly goal?: () => GoalMeta | undefined;
 }
 
 interface OpenTextFrame {
@@ -1472,39 +1475,30 @@ export class AgentTranscriptLiveAdapter {
     return [{ op: 'task.upsert', task }];
   }
 
-  private onGoalUpdated(event: {
-    readonly type: string;
-    snapshot: {
-      objective: string;
-      status: 'active' | 'paused' | 'blocked' | 'complete';
-      completionCriterion?: string;
-      followUpTiming?: 'subagents_done' | 'tasks_done';
-      controlRevision?: number;
-      tokensUsed: number;
-      budget: { tokenBudget: number | null };
-    } | null;
-  }): TranscriptOperation[] {
-    const ops: TranscriptOperation[] = [];
+  private goal: GoalMeta | undefined;
+
+  private onGoalUpdated(event: Pick<GoalUpdated, 'snapshot' | 'change'>): TranscriptOperation[] {
     const snapshot = event.snapshot;
-    if (snapshot === null) {
-      ops.push({ op: 'meta.merge', meta: { goal: null } });
-    } else {
-      ops.push({
-        op: 'meta.merge',
-        meta: {
-          goal: {
-            objective: snapshot.objective,
-            status: snapshot.status,
-            completionCriterion: snapshot.completionCriterion,
-            followUpTiming: snapshot.followUpTiming,
-            controlRevision: snapshot.controlRevision,
-            budgetUsed: snapshot.tokensUsed,
-            budgetLimit: snapshot.budget.tokenBudget ?? undefined,
-          },
-        },
-      });
-    }
-    ops.push(this.markerOp('goal', restOf(event)));
+    const before = this.lookups?.goal === undefined ? this.goal : this.lookups.goal();
+    const goal: GoalMeta | undefined = snapshot === null ? undefined : {
+      goalId: snapshot.goalId,
+      objective: snapshot.objective,
+      status: snapshot.status,
+      completionCriterion: snapshot.completionCriterion,
+      followUpTiming: snapshot.followUpTiming,
+      controlRevision: snapshot.controlRevision,
+      budgetUsed: snapshot.tokensUsed,
+      turnsUsed: snapshot.turnsUsed,
+      wallClockMs: snapshot.wallClockMs,
+      budgetLimit: snapshot.budget.tokenBudget ?? undefined,
+      turnBudget: snapshot.budget.turnBudget ?? undefined,
+      wallClockBudgetMs: snapshot.budget.wallClockBudgetMs ?? undefined,
+      terminalReason: snapshot.terminalReason,
+    };
+    this.goal = goal;
+    const change = projectGoalChange(before, goal, event.change);
+    const ops: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: goal ?? null } }];
+    if (change !== undefined) ops.push(this.markerOp('goal', { change, snapshot: goal ?? null }));
     return ops;
   }
 

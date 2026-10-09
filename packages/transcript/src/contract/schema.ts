@@ -328,6 +328,12 @@ export const transcriptTaskSchema = z.object({
 });
 
 export const goalMetaSchema = z.object({
+  goalId: z.string().optional(),
+  turnsUsed: z.number().optional(),
+  wallClockMs: z.number().optional(),
+  turnBudget: z.number().optional(),
+  wallClockBudgetMs: z.number().optional(),
+  terminalReason: z.string().optional(),
   objective: z.string(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
   completionCriterion: z.string().optional(),

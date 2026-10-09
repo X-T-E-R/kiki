@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
@@ -708,47 +709,55 @@ export class TranscriptWireAdapter {
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];
     }
-    if (record.type === 'goal.create') {
+    if (record.type === 'goal.create' || record.type === 'goal.update' || record.type === 'goal.clear') {
+      const before = this.#goal;
       const status = stringOf(record['status']);
-      this.#goal = {
-        objective: stringOf(record['objective']) ?? '',
-        status: isGoalStatus(status) ? status : 'active',
-        completionCriterion: stringOf(record['completionCriterion']),
-        followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
-        controlRevision: numberOf(record['controlRevision']) ?? 1,
-        budgetUsed: 0,
-      };
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.update') {
-      if (this.#goal !== undefined) {
-        const status = stringOf(record['status']);
-        const tokenBudget = numberOf(objectOf(record['budgetLimits'])?.['tokenBudget']);
-        const completionCriterion = record['completionCriterion'];
+      const limits = objectOf(record['budgetLimits']);
+      if (record.type === 'goal.create') {
         this.#goal = {
-          ...this.#goal,
-          objective: stringOf(record['objective']) ?? this.#goal.objective,
+          goalId: stringOf(record['goalId']),
+          objective: stringOf(record['objective']) ?? '',
+          status: isGoalStatus(status) ? status : 'active',
+          completionCriterion: stringOf(record['completionCriterion']),
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
+          controlRevision: numberOf(record['controlRevision']) ?? 1,
+          budgetUsed: 0,
+          turnsUsed: 0,
+          wallClockMs: 0,
+          budgetLimit: numberOf(limits?.['tokenBudget']),
+          turnBudget: numberOf(limits?.['turnBudget']),
+          wallClockBudgetMs: numberOf(limits?.['wallClockBudgetMs']),
+        };
+      } else if (record.type === 'goal.clear') {
+        this.#goal = undefined;
+      } else if (before !== undefined) {
+        const completionCriterion = record['completionCriterion'];
+        const nextStatus = isGoalStatus(status) ? status : before.status;
+        this.#goal = {
+          ...before,
+          objective: stringOf(record['objective']) ?? before.objective,
           completionCriterion: completionCriterion === null
-            ? undefined
-            : stringOf(completionCriterion) ?? this.#goal.completionCriterion,
-          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? this.#goal.followUpTiming,
-          controlRevision: numberOf(record['controlRevision']) ?? this.#goal.controlRevision,
-          status: isGoalStatus(status) ? status : this.#goal.status,
-          budgetUsed: numberOf(record['tokensUsed']) ?? this.#goal.budgetUsed,
-          budgetLimit: tokenBudget ?? this.#goal.budgetLimit,
+            ? undefined : stringOf(completionCriterion) ?? before.completionCriterion,
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? before.followUpTiming,
+          controlRevision: numberOf(record['controlRevision']) ?? before.controlRevision,
+          status: nextStatus,
+          terminalReason: nextStatus !== before.status
+            ? nextStatus === 'active' ? undefined : stringOf(record['reason']) : before.terminalReason,
+          budgetUsed: numberOf(record['tokensUsed']) ?? before.budgetUsed,
+          turnsUsed: numberOf(record['turnsUsed']) ?? before.turnsUsed,
+          wallClockMs: numberOf(record['wallClockMs']) ?? before.wallClockMs,
+          budgetLimit: limits === undefined ? before.budgetLimit : numberOf(limits['tokenBudget']),
+          turnBudget: limits === undefined ? before.turnBudget : numberOf(limits['turnBudget']),
+          wallClockBudgetMs: limits === undefined ? before.wallClockBudgetMs : numberOf(limits['wallClockBudgetMs']),
         };
       }
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.clear') {
-      this.#goal = undefined;
-      return [{ op: 'meta.merge', meta: { goal: null } }];
+      const change = record.type === 'goal.create' ? { kind: 'created' as const }
+        : projectGoalChange(before, this.#goal, {
+          reason: stringOf(record['reason']), actor: stringOf(record['actor']),
+        });
+      const operations: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: this.#goal ?? null } }];
+      if (change !== undefined) operations.push(this.marker(record, ordinal, 'goal', { change, snapshot: this.#goal ?? null }));
+      return operations;
     }
     if (record.type === 'plan_mode.enter') {
       this.#plan = undefined;

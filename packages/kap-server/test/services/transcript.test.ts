@@ -3031,7 +3031,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(9);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(10);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -3041,7 +3041,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -3059,6 +3059,11 @@ describe('TranscriptService live integration', () => {
         { type: 'prompt.enqueued', promptId: 'scheduled-example', userMessageId: 'scheduled-example',
           message: { origin: { kind: 'cron_job', jobId: 'job-example' }, content: [{ type: 'text', text: 'Scheduled message body' }] },
           createdAt: new Date(19_000).toISOString(), queueIndex: 0, time: 19_000 },
+        { type: 'goal.create', goalId: 'example-goal', objective: 'Verify results', time: 20_000 },
+        { type: 'goal.update', tokensUsed: 100, turnsUsed: 1, wallClockMs: 50, time: 20_001 },
+        { type: 'goal.update', tokensUsed: 200, time: 20_002 },
+        { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', time: 21_000 },
+        { type: 'goal.update', status: 'active', time: 22_000 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -3093,14 +3098,22 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(9);
+        expect(checkpoint?.format).toBe(10);
+        expect(expected?.meta.goal).toMatchObject({ budgetUsed: 200, turnsUsed: 1, wallClockMs: 50 });
+        expect(expected?.items.flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
+          ? [(item.payload as { change: { kind: string } }).change.kind] : [])).toEqual(['created', 'paused', 'resumed']);
+        const originalWire = await fsPromises.readFile(wirePath);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
-          snapshot: { ...checkpoint!.snapshot, meta: {}, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },
+          snapshot: { ...checkpoint!.snapshot, meta: {}, items: [
+            { kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] },
+            { kind: 'marker', markerId: 'stale-accounting', marker: 'goal', payload: { type: 'goal.update', tokensUsed: 100 } },
+          ] },
         });
         second = createService();
         expect(await second.readColdSnapshot('s1', 'main')).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
+        expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
       } finally {
         first.dispose();
         second?.dispose();

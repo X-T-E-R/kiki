@@ -165,6 +165,7 @@ export function bindSessionTranscript(
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         turnDetails: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
+        goal: () => store.getAgent(agentId)?.getMeta().goal,
       });
       for (const agent of agents.list()) {
         if (agent.id !== agentId) continue;

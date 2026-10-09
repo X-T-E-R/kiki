@@ -3,7 +3,19 @@ import type { StepUsage } from './turn';
 
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
 
+export interface GoalMarkerChange {
+  readonly kind: 'created' | 'updated' | 'paused' | 'resumed' | 'blocked' | 'completed' | 'cleared';
+  readonly reason?: string;
+  readonly actor?: string;
+}
+
 export interface GoalMeta {
+  readonly goalId?: string;
+  readonly turnsUsed?: number;
+  readonly wallClockMs?: number;
+  readonly turnBudget?: number;
+  readonly wallClockBudgetMs?: number;
+  readonly terminalReason?: string;
   readonly objective: string;
   readonly status: GoalStatus;
   readonly completionCriterion?: string;
