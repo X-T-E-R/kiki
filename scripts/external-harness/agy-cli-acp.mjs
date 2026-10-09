@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, open, unlink } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { registerProjectHook, recoverProjectHook } from './agy-hook-registration.mjs';
@@ -12,8 +12,15 @@ const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT = 'engine-default';
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
+function processAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+}
+
 export function launchArgs(session) {
+  validateEffort(session.model, session.effort);
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
+  if (session.conversationId) args.push('--conversation', session.conversationId);
   if (session.model !== DEFAULT) args.push('--model', session.model);
   if (session.effort !== DEFAULT) args.push('--effort', session.effort);
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
@@ -52,9 +59,22 @@ export function promptText(blocks) {
   return text;
 }
 
+export function encodedEffort(model) {
+  return EFFORTS.find(effort => model.endsWith(`-${effort}`));
+}
+
+export function validateEffort(model, effort) {
+  if (![DEFAULT, ...EFFORTS].includes(effort)) throw new Error('Unsupported AGY effort selection');
+  const encoded = encodedEffort(model);
+  if (effort !== DEFAULT && encoded && effort !== encoded) {
+    throw new Error(`AGY model ID ${model} encodes effort ${encoded} and conflicts with effort ${effort}; select the corresponding raw AGY model ID instead`);
+  }
+}
+
 export function configOptions(session) {
+  const effort = encodedEffort(session.model);
   return [{ id: 'effort', name: 'AGY effort', category: 'thought_level', type: 'select', currentValue: session.effort,
-    options: [{ value: DEFAULT, name: 'Follow AGY settings' }, ...EFFORTS.map(value => ({ value, name: value }))] }];
+    options: [{ value: DEFAULT, name: 'Follow AGY settings' }, ...(effort ? [{ value: effort, name: effort }] : [])] }];
 }
 
 async function terminate(child) {
@@ -89,7 +109,7 @@ export class AgyBridge {
 
   initialize(version) {
     return { protocolVersion: version, agentInfo: { name: 'agy-cli-acp', version: '0.1.0' },
-      agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false },
+      agentCapabilities: { loadSession: Boolean(this.auditDir), promptCapabilities: { image: false, audio: false, embeddedContext: false },
         mcpCapabilities: { http: false, sse: false }, sessionCapabilities: { additionalDirectories: {} } },
       authMethods: [] };
   }
@@ -129,38 +149,88 @@ export class AgyBridge {
     }
     const allow = response?.outcome?.outcome === 'selected' && ['allow_once', 'allow_always'].includes(response.outcome.optionId);
     const permissionOverrides = allow ? toolPermissionResources(name, args) : undefined;
+    if (allow) (active.hostApproved ??= new Set()).add(id);
     await this.audit(session, 'permission_decision', { toolCallId: id, decision: allow ? 'allow' : 'deny', permissionOverrides });
     return allow ? { decision: 'allow', reason: 'Approved by the current Kiki permission gate', permissionOverrides }
       : reject('The current Kiki permission gate rejected or cancelled this action');
   }
 
-  async newSession(params) {
+  async newSession(params, id = randomUUID(), event = 'session_new') {
     if (params.mcpServers?.length) throw new Error('AGY MCP forwarding is not supported; retain AGY own configured MCP');
     if (params._meta?.systemPromptOverride !== undefined) throw new Error('System replacement is unsupported; use explicit Kiki preamble delivery');
     if (!isAbsolute(params.cwd)) throw new Error('AGY workspace must be absolute');
     const dirs = params.additionalDirectories ?? [];
     if (!Array.isArray(dirs) || dirs.some(d => typeof d !== 'string' || !isAbsolute(d))) throw new Error('Additional directories must be absolute');
-    const session = { id: randomUUID(), cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
+    const session = { id, cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
       permission: undefined, hostGate: false, permissionIdentity: permissionChannelIdentity(),
       permissionRequests: new Set(), permissionChannel: undefined, permissionRegistration: undefined,
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map() };
     this.permissionSnapshot(session, params._meta?.['kiki.permission']);
     this.sessions.set(session.id, session);
-    await this.audit(session, 'session_new', { cwd: session.cwd, additionalDirectories: dirs, delivery: 'first_user_preamble', systemOverride: false });
+    await this.audit(session, event, { cwd: session.cwd, additionalDirectories: dirs, delivery: event === 'session_new' ? 'first_user_preamble' : 'native_conversation', systemOverride: false });
     return { sessionId: session.id, configOptions: configOptions(session) };
+  }
+
+  async loadSession(params) {
+    if (!this.auditDir) throw new Error('AGY native load requires the existing adapter audit directory');
+    if (!/^[0-9a-f-]{36}$/i.test(params.sessionId)) throw new Error('Invalid AGY adapter session ID');
+    if (this.sessions.has(params.sessionId)) throw new Error('AGY session is already owned by this connection');
+    const records = (await readFile(resolve(this.auditDir, `${params.sessionId}.ndjson`), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const workspace = records.find(record => record.type === 'session_new');
+    const launch = records.findLast(record => record.type === 'launch');
+    const init = records.findLast(record => record.type === 'agy_init');
+    if (!workspace || !launch || !init?.conversationId || records.indexOf(init) < records.indexOf(launch)) {
+      throw new Error('AGY session has no confirmed native conversation to load; retain the failed attempt and create a new session');
+    }
+    if (resolve(params.cwd) !== resolve(workspace.cwd)
+      || JSON.stringify(params.additionalDirectories ?? []) !== JSON.stringify(workspace.additionalDirectories ?? [])) {
+      throw new Error('AGY native load workspace differs from its original binding');
+    }
+    const argValue = name => { const index = launch.args.lastIndexOf(name); return index < 0 ? DEFAULT : launch.args[index + 1]; };
+    const model = argValue('--model') === DEFAULT ? init.model : argValue('--model');
+    if (typeof model !== 'string' || !model || this.model !== DEFAULT && model !== this.model) throw new Error('AGY native load model differs from its original binding or was not confirmed');
+    const effort = argValue('--effort');
+    validateEffort(model, effort);
+    if (processAlive(launch.pid)) throw new Error('AGY native conversation still has an owned process; close it before loading');
+    const path = resolve(this.auditDir, `${params.sessionId}.resume-lock`);
+    const claim = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
+    let file;
+    try { file = await open(path, 'wx'); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const previous = await readFile(path, 'utf8');
+      if (processAlive(JSON.parse(previous).pid)) throw new Error('AGY native conversation is already being loaded');
+      throw new Error(`AGY native load lease is stale; recover only this exact owned lease after confirming no live adapter: ${path}`);
+    }
+    await file.writeFile(claim);
+    await file.close();
+    const release = async () => {
+      try { if (await readFile(path, 'utf8') === claim) await unlink(path); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    };
+    try {
+      await this.newSession(params, params.sessionId, 'session_loaded');
+      const session = this.session(params.sessionId);
+      session.model = model;
+      session.effort = effort;
+      session.conversationId = init.conversationId;
+      session.releaseResume = release;
+      return { configOptions: configOptions(session) };
+    } catch (error) { await release(); this.sessions.delete(params.sessionId); throw error; }
   }
 
   session(id) {
     const session = this.sessions.get(id);
-    if (!session) throw new Error('Unknown AGY session; resume/load/fork are unsupported');
+    if (!session) throw new Error('Unknown AGY session; use session/load for exact audited native recovery. Fork is unsupported');
     return session;
   }
 
   setConfig(params) {
     const session = this.session(params.sessionId);
     const key = params.configId === 'effort' ? 'effort' : undefined;
-    if (!key || ![DEFAULT, ...EFFORTS].includes(params.value)) throw new Error('Unsupported AGY effort selection; model is selected by argv in its own namespace');
+    if (!key) throw new Error('Unsupported AGY config option; model is selected by argv in its own namespace');
     if (session.child && session[key] !== params.value) throw new Error('AGY model/effort is frozen after process launch; select a fresh session');
+    validateEffort(session.model, params.value);
     session[key] = params.value;
     return { configOptions: configOptions(session) };
   }
@@ -248,6 +318,7 @@ export class AgyBridge {
         for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
         await session.permissionChannel?.close();
         await session.permissionRegistration?.close();
+        await session.releaseResume?.();
       });
       session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
     });
@@ -269,6 +340,7 @@ export class AgyBridge {
       if (session.init) throw new Error('AGY sent duplicate init');
       const init = event.init;
       if (session.model !== DEFAULT && init?.model !== session.model) throw new Error('AGY init model does not match the explicit binding');
+      if (session.conversationId && event.conversation_id !== session.conversationId) throw new Error('AGY init conversation does not match the exact native resume binding');
       session.init = event;
       await this.audit(session, 'agy_init', { conversationId: event.conversation_id, model: init?.model,
         agent: init?.agent, cwd: init?.cwd, permissionMode: init?.permission_mode, tools: init?.tools });
@@ -298,6 +370,10 @@ export class AgyBridge {
           const error = step.tool_info?.error ?? step.error;
           const errorText = typeof error === 'string' ? error : error?.message;
           const output = step.tool_info?.output ?? errorText ?? (failed ? 'AGY tool reported an error' : undefined);
+          if (failed && active.hostApproved?.has(id) && /permission.*(?:denied|failed)|vendor resource permission denied/i.test(errorText ?? output ?? '')) {
+            (active.vendorRejected ??= new Set()).add(id);
+            await this.audit(session, 'vendor_denied_after_host_allow', { toolCallId: id, error: errorText ?? output });
+          }
           await active.client.notify('session/update', { sessionId: session.id,
             update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: failed ? 'failed' : 'completed',
               rawOutput: output, content: typeof output === 'string'
@@ -315,7 +391,9 @@ export class AgyBridge {
     if (session.denied || result.denied_actions?.length) {
       session.denied = false;
       const actions = [...new Set((result.denied_actions ?? []).map(action => typeof action?.action === 'string' ? action.action : 'unknown'))];
-      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; the action was not approved by the current permission policy`;
+      const message = `AGY permission denied${actions.length ? ` for ${actions.join(', ')}` : ''}; ${active.vendorRejected?.size
+        ? 'the native AGY permission engine rejected a tool after Kiki approved this exact call; retain the denial and restore the vendor approval contract before retrying'
+        : 'the native AGY permission policy did not approve the action'}`;
       await this.settlePendingTools(session, active, 'failed', message);
       process.stderr.write(`${message}\n`);
       const error = new Error(message);
@@ -396,6 +474,7 @@ export class AgyBridge {
         }
         await session.cleanup;
         await session.permissionRegistration?.close();
+        await session.releaseResume?.();
         await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
       }
     }));
@@ -410,6 +489,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
   const connection = acp.agent({ name: 'agy-cli-acp', version: '0.1.0' })
     .onRequest('initialize', () => bridge.initialize(acp.PROTOCOL_VERSION))
     .onRequest('session/new', ctx => bridge.newSession(ctx.params))
+    .onRequest('session/load', ctx => bridge.loadSession(ctx.params))
     .onRequest('session/set_config_option', ctx => bridge.setConfig(ctx.params))
     .onRequest('session/prompt', async ctx => {
       try { return await bridge.prompt(ctx.params, ctx.client); }

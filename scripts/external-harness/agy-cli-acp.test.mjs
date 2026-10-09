@@ -681,3 +681,120 @@ test('per-call resources cross downstream vendor command and write checks withou
     await assert.rejects(readFile(join(root, 'command-executed.txt')), { code: 'ENOENT' });
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+
+test('raw model effort suffix is authoritative, not the generic CLI effort menu', async () => {
+  const { configOptions } = await import('./agy-cli-acp.mjs');
+  for (const [model, effort] of [['claude-opus-5-5-high', 'high'], ['gemini-3.8-flash-medium', 'medium'], ['example-model-xhigh', 'xhigh']]) {
+    const b = bridge(model); const id = await session(b);
+    assert.deepEqual(configOptions(b.session(id))[0].options.map(option => option.value), ['engine-default', effort]);
+    const before = b.session(id).effort;
+    assert.throws(() => b.setConfig({ sessionId: id, configId: 'effort', value: effort === 'max' ? 'low' : 'max' }), /conflicts with effort/);
+    assert.equal(b.session(id).effort, before);
+    assert.equal(b.session(id).child, undefined);
+    b.setConfig({ sessionId: id, configId: 'effort', value: effort });
+    assert.ok(launchArgs(b.session(id)).includes(effort));
+    await b.close();
+  }
+  assert.deepEqual(configOptions({ model: 'engine-default', effort: 'engine-default' })[0].options.map(option => option.value), ['engine-default']);
+  assert.throws(() => launchArgs({ model: 'claude-opus-5-5-high', effort: 'max', additionalDirectories: [] }), /conflicts with effort/);
+});
+
+test('native load uses only exact audited conversation and binding, owns a lease, and never copies history', async () => {
+  const { mkdtemp, readFile, rm, appendFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-exact-load-'));
+  const auditDir = join(root, 'audit');
+  const first = bridge('gemini-3.8-flash-medium'); first.auditDir = auditDir;
+  const id = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+  const loaded = bridge('gemini-3.8-flash-medium'); loaded.auditDir = auditDir;
+  const competitor = bridge('gemini-3.8-flash-medium'); competitor.auditDir = auditDir;
+  try {
+    first.setConfig({ sessionId: id, configId: 'effort', value: 'medium' });
+    await turn(first, id, 'original user prompt', []);
+    await assert.rejects(loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /owned process/);
+    await first.close();
+    await assert.rejects(loaded.loadSession({ sessionId: id, cwd, mcpServers: [] }), /workspace differs/);
+    const otherModel = bridge('claude-opus-5-5-high'); otherModel.auditDir = auditDir;
+    await assert.rejects(otherModel.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /model differs/);
+    await loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] });
+    assert.equal(loaded.initialize(1).agentCapabilities.loadSession, true);
+    assert.equal(loaded.session(id).effort, 'medium');
+    await assert.rejects(competitor.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /already being loaded/);
+    const args = launchArgs(loaded.session(id));
+    assert.equal(args[args.indexOf('--conversation') + 1], 'fixture-conversation');
+    assert.equal(args.includes('--continue'), false);
+    const messages = [];
+    assert.equal((await turn(loaded, id, 'only new user prompt', messages)).stopReason, 'end_turn');
+    assert.equal(loaded.session(id).init.conversation_id, 'fixture-conversation');
+    await loaded.close();
+    await assert.rejects(readFile(join(auditDir, `${id}.resume-lock`)), { code: 'ENOENT' });
+    const audit = await readFile(join(auditDir, `${id}.ndjson`), 'utf8');
+    assert.equal(audit.includes('original user prompt'), false);
+    assert.equal(audit.includes('only new user prompt'), false);
+    await appendFile(join(auditDir, `${id}.ndjson`), JSON.stringify({ type: 'launch', args: [], pid: 999999 }) + '\n');
+    await assert.rejects(competitor.loadSession({ sessionId: id, cwd: root, mcpServers: [] }), /no confirmed native conversation/);
+    await assert.rejects(competitor.loadSession({ sessionId: '../../other', cwd: root, mcpServers: [] }), /Invalid.*session ID/);
+  } finally { await first.close(); await loaded.close(); await competitor.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('native denial after exact host approval retains failed tool receipt and names the vendor layer', async () => {
+  const b = bridge(); const id = await session(b); const s = b.session(id);
+  const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
+  b.permissionSnapshot(s, permission);
+  s.init = { conversation_id: 'fixture-approved-then-denied' };
+  const messages = []; let rejected;
+  s.active = { client: { notify: async (_method, event) => messages.push(event), request: async () => ({ outcome: { outcome: 'selected', optionId: 'allow_once' } }) }, reject: error => { rejected = error; } };
+  const args = { CommandLine: 'git status --short' };
+  const hook = await b.requestPermission(s, { conversationId: s.init.conversation_id, stepIdx: 2, toolCall: { name: 'run_command', args } });
+  assert.equal(hook.decision, 'allow');
+  assert.deepEqual(hook.permissionOverrides, ['command(git status --short)']);
+  await b.event(s, { event: 'step_update', conversation_id: s.init.conversation_id, step_update: { step_type: 'tool', step_index: 2, tool_name: 'run_command', state: 'ERROR', tool_info: { parameters: args, error: 'permission check failed for command: user denied permission' } } });
+  await b.event(s, { event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'command' }], response: '' } });
+  assert.match(rejected.message, /native AGY permission engine rejected a tool after Kiki approved this exact call/);
+  assert.equal(messages.at(-1).update.status, 'failed');
+  assert.equal([...s.toolIds.values()].includes('pending'), false);
+  assert.equal(s.active, undefined);
+  await b.close();
+});
+
+
+test('real ACP session/load restores exact native argv after adapter EOF without handoff replay', { timeout: 15000 }, async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-acp-load-'));
+  const auditDir = join(root, 'audit');
+  const sdkPath = process.env.AGY_TEST_ACP_SDK_PATH;
+  const script = `import { runBridge } from ${JSON.stringify(new URL('./agy-cli-acp.mjs', import.meta.url).href)}; await runBridge(${JSON.stringify({ sdkPath, cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], model: 'gemini-3.8-flash-medium', auditDir })});`;
+  function transport() {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+    const closed = new Promise((done, reject) => { child.once('error', reject); child.once('close', code => done(code)); });
+    const replies = new Map(); const frames = []; let id = 0; let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const reader = createInterface({ input: child.stdout });
+    reader.on('line', line => { const frame = JSON.parse(line); frames.push(frame); if (frame.id !== undefined) { replies.get(frame.id)?.(frame); replies.delete(frame.id); } });
+    return { frames, request(method, params) { const next = ++id; return new Promise(done => { replies.set(next, done); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: next, method, params }) + '\n'); }); }, async close() { child.stdin.end(); assert.equal(await closed, 0, stderr); reader.close(); } };
+  }
+  let first; let second;
+  try {
+    first = transport();
+    assert.equal((await first.request('initialize', { protocolVersion: 1, clientCapabilities: {} })).result.agentCapabilities.loadSession, true);
+    const created = await first.request('session/new', { cwd: root, mcpServers: [] });
+    const sessionId = created.result.sessionId;
+    assert.equal((await first.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'original' }] })).result.stopReason, 'end_turn');
+    await first.close(); first = undefined;
+    second = transport();
+    await second.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    assert.ok((await second.request('session/load', { sessionId, cwd: root, mcpServers: [] })).result);
+    assert.equal((await second.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'new message only' }] })).result.stopReason, 'end_turn');
+    await second.close(); second = undefined;
+    const records = (await readFile(join(auditDir, `${sessionId}.ndjson`), 'utf8')).trim().split('\n').map(JSON.parse);
+    const launches = records.filter(record => record.type === 'launch');
+    assert.equal(launches.length, 2);
+    assert.equal(launches[1].args[launches[1].args.indexOf('--conversation') + 1], 'fixture-conversation');
+    assert.equal(launches[1].args.includes('--continue'), false);
+    assert.equal(records.filter(record => record.type === 'agy_init').at(-1).conversationId, 'fixture-conversation');
+    assert.equal(records.filter(record => record.type === 'prompt_sent').length, 2);
+    await assert.rejects(readFile(join(auditDir, `${sessionId}.resume-lock`)), { code: 'ENOENT' });
+  } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
+});
