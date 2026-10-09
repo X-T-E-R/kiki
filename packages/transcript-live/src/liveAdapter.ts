@@ -275,6 +275,11 @@ export class AgentTranscriptLiveAdapter {
     readonly agentId: string;
     readonly name?: string;
     readonly subagentName?: string;
+    readonly model?: string;
+    readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
     readonly description: string;
     readonly status: string;
     readonly detached: boolean;
@@ -289,6 +294,11 @@ export class AgentTranscriptLiveAdapter {
       detached: info.detached,
       name: info.name,
       subagentName: info.subagentName,
+      model: info.model ?? prev?.model,
+      thinkingEffort: info.thinkingEffort ?? prev?.thinkingEffort,
+      thinkingEffortExplicit: info.thinkingEffortExplicit ?? prev?.thinkingEffortExplicit,
+      executorId: info.executorId ?? prev?.executorId,
+      executorProtocol: info.executorProtocol ?? prev?.executorProtocol,
       description: info.description,
       agentId: info.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1359,6 +1369,11 @@ export class AgentTranscriptLiveAdapter {
     description?: string;
     runInBackground: boolean;
     taskId?: string;
+    model?: string;
+    thinkingEffort?: string;
+    thinkingEffortExplicit?: boolean;
+    executorId?: string;
+    executorProtocol?: string;
   }): TranscriptOperation[] {
     const taskKey = event.taskId ?? event.subagentId;
     if (event.taskId !== undefined) {
@@ -1386,6 +1401,11 @@ export class AgentTranscriptLiveAdapter {
         detached: event.runInBackground,
         name: event.name,
         subagentName: event.subagentName,
+        model: event.model ?? previous?.model,
+        thinkingEffort: event.thinkingEffort ?? previous?.thinkingEffort,
+        thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous?.thinkingEffortExplicit,
+        executorId: event.executorId ?? previous?.executorId,
+        executorProtocol: event.executorProtocol ?? previous?.executorProtocol,
         description: event.description ?? previous?.description,
         agentId: event.subagentId,
         outputTail: previous?.outputTail ?? '',

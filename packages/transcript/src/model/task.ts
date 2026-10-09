@@ -43,6 +43,7 @@ export interface TranscriptTask extends ContentWindow {
   readonly name?: string;
   readonly subagentName?: string;
   readonly model?: string;
+  readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;

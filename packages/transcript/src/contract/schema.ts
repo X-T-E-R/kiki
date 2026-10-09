@@ -316,6 +316,7 @@ export const transcriptTaskSchema = z.object({
   name: z.string().optional(),
   subagentName: z.string().optional(),
   model: z.string().optional(),
+  thinkingEffort: z.string().optional(),
   thinkingEffortExplicit: z.boolean().optional(),
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
