@@ -436,7 +436,7 @@ const IMAGE_REHYPE_PLUGINS = Object.entries(defaultRehypePlugins).map(([name, pl
   const schema = plugin[1] as { protocols?: Record<string, string[]> };
   return [plugin[0], {
     ...schema,
-    protocols: { ...schema.protocols, src: [...(schema.protocols?.src ?? []), 'data', 'blob', 'kimi-file'] },
+    protocols: { ...schema.protocols, src: [...(schema.protocols?.['src'] ?? []), 'data', 'blob', 'kimi-file'] },
   }] as typeof plugin;
 });
 

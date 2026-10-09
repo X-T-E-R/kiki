@@ -179,3 +179,11 @@ it('shows timeline data and URL images without weakening link or HTML sanitizati
   expect(container.querySelector('script, [onerror], a[href^="javascript:"]')).toBeNull();
   expect(readHostFileBytes).not.toHaveBeenCalled();
 });
+
+
+it('keeps a local Markdown image unloaded when its connection is unavailable', async () => {
+  connectionMock.activeClient = undefined;
+  const container = await render('![diagram](./assets/diagram.png)', '/work/docs');
+  expect(container.querySelector('img')?.getAttribute('src')).toBeNull();
+  expect(readHostFileBytes).not.toHaveBeenCalled();
+});

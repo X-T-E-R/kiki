@@ -88,7 +88,11 @@ describe('pdf page proportions', () => {
 
 describe('pdf page document lifecycle', () => {
   it('reads and opens one source once while paging, cancels render work, and disposes on source change', async () => {
-    const firstRenderDone = Promise.withResolvers<void>();
+    let finishFirstRender = () => {};
+    const firstRenderDone = {
+      promise: new Promise<void>((resolve) => { finishFirstRender = resolve; }),
+      resolve: () => { finishFirstRender(); },
+    };
     const firstRenderCancel = vi.fn();
     const secondRenderCancel = vi.fn();
     const firstPage = {
@@ -160,8 +164,9 @@ describe('pdf page document lifecycle', () => {
     firstRenderDone.resolve();
     await flush();
 
-    let resolveSource: ((value: { bytes: Uint8Array; mime: string }) => void) | undefined;
-    const pendingSource = new Promise<{ bytes: Uint8Array; mime: string }>((resolve) => { resolveSource = resolve; });
+    type AssetResponse = Awaited<ReturnType<typeof readDocumentPreviewAsset>>;
+    let resolveSource: ((value: AssetResponse) => void) | undefined;
+    const pendingSource = new Promise<AssetResponse>((resolve) => { resolveSource = resolve; });
     readDocumentPreviewAsset.mockImplementationOnce(async () => pendingSource);
     await act(async () => {
       root.render(createElement(I18nProvider, null, createElement(PdfPageView, { client, assetUrl: '/asset-3', sourceKey: 'scope:other-source', page: 1, name: 'other.pdf' })));

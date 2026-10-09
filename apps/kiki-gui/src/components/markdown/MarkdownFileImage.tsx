@@ -49,7 +49,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   const name = safeImagePreviewName({ path });
   const label = name ?? t('media.image');
   const description = safeImagePreviewName({ name: alt }) ?? label;
-  const url = path === undefined ? src : image?.client === client && image.path === path ? image.url : undefined;
+  const url = path === undefined ? src : image !== undefined && image.client === client && image.path === path ? image.url : undefined;
   if (failure) return <button type="button" onClick={() => { setFailure(false); setAttempt((value) => value + 1); }}>{t('preview.failed')} · {t('transcript.detail.retry')}</button>;
   const content = <img {...props} src={url} alt={description} decoding="async" onError={() => { setFailure(true); }} className="max-w-full h-auto" />;
   if (preview === null) return content;
