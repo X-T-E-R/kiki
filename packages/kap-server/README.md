@@ -78,6 +78,11 @@ cacheable catalog, and `kiki_list` returns only owned children and
 continuations. This edge does not configure the external executors or harnesses
 Kiki itself uses to run subagents.
 
+Context tools advertise their original JSON Schema in `tools/list`, including
+root unions and local references. Tool calls still use the same registered
+validator before reaching the context procedure; a complete catalog is not
+permission to omit required arguments or bypass the bound session's policy.
+
 ## Launcher operations
 
 `scripts/codex-kiki-mcp.ps1` manages the per-workspace KAP processes it spawns.

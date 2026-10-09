@@ -1,6 +1,8 @@
 import { isAbsolute } from 'node:path';
 
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+import { ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   createSeatKlient,
   contextReadOnlyTools,
@@ -86,6 +88,7 @@ export function createKikiMcpServer(
     return closePromise;
   };
   const tools = new Map<string, RegisteredTool>();
+  const inputSchemas = new Map<string, Tool['inputSchema']>();
 
   (server as unknown as { createToolError(message: string): unknown }).createToolError = (message) => {
     const payload = {
@@ -137,10 +140,13 @@ export function createKikiMcpServer(
       }),
     );
     tools.set(procedure.mcp.toolName, tool);
+    inputSchemas.set(procedure.mcp.toolName, { ...toJsonSchemaCompat(codec.schema, {
+      strictUnions: true, pipeStrategy: 'input',
+    }), type: 'object' });
   }
 
   for (const tool of options.contextCatalog?.tools ?? []) {
-    registrar.registerTool(tool.toolName, {
+    const registered = registrar.registerTool(tool.toolName, {
       description: tool.description,
       inputSchema: z.fromJSONSchema(tool.parameters),
       annotations: { readOnlyHint: contextReadOnlyTools.has(tool.toolName), destructiveHint: !contextReadOnlyTools.has(tool.toolName), openWorldHint: false },
@@ -153,7 +159,15 @@ export function createKikiMcpServer(
         return toolResult(async () => { throw error; });
       }
     });
+    tools.set(tool.toolName, registered);
+    inputSchemas.set(tool.toolName, { ...tool.parameters, type: 'object' });
   }
+  if (tools.size > 0) server.server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: [...tools].filter(([, tool]) => tool.enabled).map(([name, tool]) => ({
+      name, title: tool.title, description: tool.description, inputSchema: inputSchemas.get(name)!,
+      annotations: tool.annotations, execution: tool.execution, _meta: tool._meta,
+    })),
+  }));
   return server;
 }
 
