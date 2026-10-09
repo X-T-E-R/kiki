@@ -93,14 +93,16 @@ export class SessionViewTarget implements BroadcastTarget {
     if (this.recoveryRequired) return undefined;
     if (envelope.volatile === true) {
       if (envelope.type !== 'agent.status.updated' || envelope.payload === null || typeof envelope.payload !== 'object') return undefined;
-      const event = envelope.payload as { agentId?: unknown; phase?: { kind?: unknown; turnId?: unknown } };
+      const event = envelope.payload as { agentId?: unknown; model?: unknown; thinkingEffort?: unknown; phase?: { kind?: unknown; turnId?: unknown } };
       if (typeof event.agentId !== 'string' || event.agentId === '' || event.agentId === 'main' || typeof event.phase?.kind !== 'string') return undefined;
       const kind = event.phase.kind;
       const status = kind === 'idle' || kind === 'ended' || kind === 'awaiting_approval' ? kind : 'active';
       const turnId = typeof event.phase.turnId === 'string' || typeof event.phase.turnId === 'number'
         ? String(event.phase.turnId)
         : '';
-      const key = `${status}:${turnId}`;
+      const key = JSON.stringify([status, turnId,
+        typeof event.model === 'string' ? event.model : undefined,
+        typeof event.thinkingEffort === 'string' ? event.thinkingEffort : undefined]);
       if (this.rosterActivity.get(event.agentId) === key) return undefined;
       this.rosterActivity.set(event.agentId, key);
       return { type: 'sessionCursorAdvanced', cursor: { seq: envelope.seq, epoch: envelope.epoch }, generation: this.generation, rosterAgentId: event.agentId };

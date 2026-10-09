@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
 import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
@@ -53,6 +53,7 @@ import {
   rosterFromSnapshotSubagents,
   sessionAgentForest,
   sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   splitSystemReminders,
   turnExecutionFromItem,
   type AssistantBlock,
@@ -6029,6 +6030,115 @@ describe('durable subagent turn outcomes', () => {
       { type: 'turn.prompt', turnId: 1, input: [{ type: 'text', text: 'Continue' }], origin: { kind: 'other' }, time: Date.parse(FIXED_AT) + 5_000 },
     ]);
     expect(forestFor(resumed).byId[CHILD_AGENT_ID]?.turnOutcome).toBeUndefined();
+  });
+});
+
+describe('resumed agent forest bindings and retained graph reads', () => {
+  const roster = compactSnapshotSubagent({
+    id: CHILD_AGENT_ID, status: 'running', activity_status: 'running', status_source: 'runtime',
+    model: 'example/old', thinking_effort: 'high', live: true,
+  });
+
+  it('uses the child committed binding independently of the parent run status and spawn model', () => {
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const child = emptySnapshot({ meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } });
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    snapshots.set(CHILD_AGENT_ID, { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'low' } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
+  });
+
+  it('does not roll a current roster binding back to a retained cold child binding', () => {
+    const snapshots = new Map([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } })],
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [
+      { ...roster, model: 'example/new', thinking_effort: 'xhigh' },
+    ], new Set([CHILD_AGENT_ID]));
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+  });
+
+  it('reuses retained transcript relation scans without dropping nested nodes or drill-in links', () => {
+    let scans = 0;
+    const source = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const items = source.items.map((item) => item.kind !== 'turn' ? item : {
+      ...item, get steps() { scans += 1; return item.steps; },
+    });
+    const snapshots = new Map([['main', { ...source, items, meta: { agent: { phase: { kind: 'idle' as const } } } }]]);
+    const first = sessionAgentForestFromAgentSnapshots(snapshots);
+    const coldScans = scans;
+    expect(coldScans).toBeGreaterThan(0);
+    const retained = sessionAgentForestFromAgentSnapshots(snapshots);
+    expect(retained).toEqual(first);
+    expect(retained.byId[CHILD_AGENT_ID]?.parentAgentId).toBe('main');
+    expect(retained.byId['main']?.childIds).toContain(CHILD_AGENT_ID);
+    expect(scans).toBe(coldScans);
+    const nested = applyOpsToSnapshot(emptySnapshot(), spawnChildOps().map((op) =>
+      op.op === 'frame.upsert' && op.frame.kind === 'tool'
+        ? { ...op, frame: { ...op.frame, agentRefs: [{ agentId: 'nested', role: 'child' as const }] } }
+        : op));
+    snapshots.set('main', { ...source, items: [...items, ...nested.items], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId['nested']?.parentToolCallId).toBe(TOOL_CALL_ID);
+    expect(scans).toBe(coldScans);
+    snapshots.set('main', { ...source, items: [], tasks: [], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it('retains the whole query until binding, task, inventory, count or cold ownership changes', () => {
+    const query = new SessionAgentForestQuery();
+    const child = emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } });
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    const rows = [roster];
+    const first = query.read(snapshots, rows);
+    expect(query.read(new Map([...snapshots].map(([id, snap]) => [id, { ...snap }])), rows)).toBe(first);
+    const changed = { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } };
+    snapshots.set(CHILD_AGENT_ID, changed);
+    const next = query.read(snapshots, rows);
+    expect(next).not.toBe(first);
+    expect(next.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    const cold = query.read(snapshots, rows, new Set([CHILD_AGENT_ID]));
+    expect(cold.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, rows, new Set([CHILD_AGENT_ID]))).toBe(cold);
+    snapshots.set(CHILD_AGENT_ID, { ...changed, toolCallCount: 7 });
+    expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.toolCallCount).toBe(7);
+    snapshots.set('main', { ...parent, tasks: [...parent.tasks, {
+      taskId: 'nested-task', kind: 'subagent', agentId: 'nested', state: 'completed',
+      detached: false, outputTail: '',
+    }] });
+    expect(query.read(snapshots, rows).byId['nested']?.parentAgentId).toBe('main');
+    snapshots.delete(CHILD_AGENT_ID);
+    const afterRemoval = query.read(snapshots, rows);
+    expect(afterRemoval.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, [{ ...roster, model: 'example/latest' }]).byId[CHILD_AGENT_ID]?.model).toBe('example/latest');
+  });
+
+  it('expires a refreshing roster lease even when the inputs retain their identities', () => {
+    const query = new SessionAgentForestQuery();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const rows = [{ ...roster, refreshing: true, refreshing_until: new Date(now + 10).toISOString() }];
+      const snapshots = new Map([['main', emptySnapshot()]]);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBe(true);
+      clock.mockReturnValue(now + 11);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('invalidates the query when reordered evidence changes a shared child parent', () => {
+    const query = new SessionAgentForestQuery();
+    const source = (name: string) => emptySnapshot({ tasks: [{
+      taskId: name, kind: 'subagent', agentId: 'shared-child', name, state: 'running',
+      detached: false, outputTail: '',
+    }] });
+    const a = source('first');
+    const b = source('second');
+    expect(query.read(new Map([['parent-a', a], ['parent-b', b]])).byId['shared-child']?.parentAgentId).toBe('parent-b');
+    expect(query.read(new Map([['parent-b', b], ['parent-a', a]])).byId['shared-child']?.parentAgentId).toBe('parent-a');
   });
 });
 

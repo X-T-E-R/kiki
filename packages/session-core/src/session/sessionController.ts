@@ -53,7 +53,7 @@ import {
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
-  sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   setLoadError,
   setLoadingOlder,
   setOlderError,
@@ -74,7 +74,7 @@ import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
 import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import type { QueuedPromptMeta } from './transcript/types';
-import { stabilizeAgentForest, type AgentForest } from './agentTree';
+import type { AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
 import { preserveSubmission } from '../composer/submissionRecovery';
 
@@ -275,6 +275,12 @@ export class SessionController {
   private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
   private readonly unprojectedQueueReceipts = new Map<string, PromptSubmitResult>();
   private publishedForest: AgentForest | undefined;
+  private readonly forestQuery = new SessionAgentForestQuery();
+  private readonly composedSnapshots = new Map<string, {
+    live: AgentTranscriptSnapshot;
+    older: AgentTranscriptSnapshot;
+    snapshot: AgentTranscriptSnapshot;
+  }>();
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
   private focusedAgentId: string | undefined;
   private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
@@ -639,6 +645,7 @@ export class SessionController {
     this.clearHiddenFrameTimer();
     this.pendingTranscriptBatches.clear();
     this.pendingTranscriptAgents.clear();
+    this.composedSnapshots.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
     this.contentBodies.clear();
@@ -2410,7 +2417,19 @@ export class SessionController {
   private composeAgentSnapshot(agentId: string): AgentTranscriptSnapshot {
     const live = this.ensureAgentTranscript(agentId).snapshot();
     const older = this.olderPages.get(agentId);
-    return older === undefined ? live : prependOlderTranscriptSnapshot(live, older);
+    if (older === undefined) {
+      this.composedSnapshots.delete(agentId);
+      return live;
+    }
+    const cached = this.composedSnapshots.get(agentId);
+    if (cached?.older === older && cached.live.items === live.items && cached.live.tasks === live.tasks &&
+        cached.live.interactions === live.interactions && cached.live.attachments === live.attachments &&
+        cached.live.todos === live.todos && cached.live.prompts === live.prompts && cached.live.meta === live.meta &&
+        cached.live.toolCallCount === live.toolCallCount && cached.live.toolCallCountKnown === live.toolCallCountKnown &&
+        cached.live.hasMoreOlder === live.hasMoreOlder) return cached.snapshot;
+    const snapshot = prependOlderTranscriptSnapshot(live, older);
+    this.composedSnapshots.set(agentId, { live, older, snapshot });
+    return snapshot;
   }
 
   private publishProjectedAgent(
@@ -2495,7 +2514,7 @@ export class SessionController {
     }
     const previous = this.publishedForest;
     const coldAgents = new Set([...this.transcriptCursors].filter(([, cursor]) => cursor.epoch?.startsWith('cold:') === true).map(([agentId]) => agentId));
-    this.publishedForest = stabilizeAgentForest(previous, sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents, coldAgents));
+    this.publishedForest = this.forestQuery.read(snapshots, this.state.snapshotSubagents, coldAgents);
     this.forestPublishCount += 1;
     return previous !== this.publishedForest;
   }

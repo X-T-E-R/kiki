@@ -19,7 +19,7 @@ import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
-import { ASSISTANT_FRAME_ID, emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
@@ -214,6 +214,47 @@ function fakeAnimationFrames() {
     },
   };
 }
+
+it('publishes resumed model and effort facts to the child state and subscribed forest without a new phase', async () => {
+  const client = { snapshot: vi.fn(async () => snapshot({ subagents: [{
+    id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, session_id: 'session_test', kind: 'subagent',
+    description: 'worker', status: 'running', activity_status: 'running', status_source: 'runtime',
+    model: 'example/old', thinking_effort: 'high', live: true, parent_agent_id: 'main',
+  }] })) };
+  const { scheduler, flushAll } = manualScheduler();
+  const controller = new SessionController(client as unknown as KikiClient, fakeView(client, {}), 'session_test', { scheduler });
+  try {
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.handleTranscript(opsEvent('main', spawnChildOps(), 2));
+    controller.handleTranscript(resetEvent(CHILD_AGENT_ID, emptySnapshot({
+      meta: { agent: { model: 'example/old', thinkingEffort: 'high', phase: { kind: 'idle' } } },
+    }), 1));
+    controller.flushFrames();
+    flushAll();
+    const observed: string[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      const node = controller.getForest()?.byId[CHILD_AGENT_ID];
+      observed.push(`${node?.model}:${node?.thinkingEffort}`);
+    });
+    controller.handleTranscript(opsEvent(CHILD_AGENT_ID, [{
+      op: 'meta.merge', meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } },
+    }], 2));
+    controller.flushFrames();
+    flushAll();
+    expect(controller.getAgentState(CHILD_AGENT_ID)).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    expect(observed).toContain('example/new:xhigh');
+    const retained = controller.getForest();
+    controller.handleTranscript(opsEvent(CHILD_AGENT_ID, [{
+      op: 'meta.merge', meta: { agent: { thinkingEffort: 'low' } },
+    }], 3));
+    controller.flushFrames();
+    flushAll();
+    expect(controller.getForest()).not.toBe(retained);
+    expect(observed).toContain('example/new:low');
+    unsubscribe();
+  } finally { controller.close(); }
+});
 
 function visibilityDocument(initial: 'hidden' | 'visible') {
   const target = new EventTarget() as EventTarget & { readonly visibilityState: string };

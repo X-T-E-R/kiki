@@ -87,6 +87,24 @@ describe('SessionViewTarget', () => {
     expect(signals).toEqual([{ type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: 0, epoch: 'new-epoch' }, generation: 2 }]);
   });
 
+  it('refreshes a child binding change within the same idle phase without token churn', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    const status = (model: string, thinkingEffort: string, contextTokens = 1) => ({
+      ...durable(12), type: 'agent.status.updated', volatile: true,
+      payload: { type: 'agent.status.updated', agentId: 'child', phase: { kind: 'idle' },
+        model, thinkingEffort, contextTokens },
+    });
+    target.begin(1);
+    target.finish({ seq: 12, epoch: 'session-epoch' }, false);
+    target.send(status('example/old', 'high'));
+    target.send(status('example/new', 'high'));
+    target.send(status('example/new', 'xhigh'));
+    target.send(status('example/new', 'xhigh', 500));
+    expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child'))
+      .toHaveLength(3);
+  });
+
   it('ignores other sessions global fanout while retaining its suppressed durable cursor', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

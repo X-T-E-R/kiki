@@ -111,6 +111,7 @@ export {
   rosterFromTranscriptResponse,
   sessionAgentForest,
   sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   sessionAgentForestFromTranscript,
   taskItemsFromSessionTasks,
   taskItemsFromTranscriptTasks,
