@@ -305,11 +305,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         effort: this.context.binding.execution !== undefined ? this.context.binding.execution.effective.thinking
           : this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel,
         approvalPolicy: this.#approvalPolicy(),
-        sandboxPolicy: this.context.binding.execution !== undefined ? undefined : {
-          type: 'workspaceWrite',
-          writableRoots: roots.additionalDirs,
-          networkAccess: false,
-        },
+        sandboxPolicy: undefined,
       }, controller.signal, recorder.record.bind(recorder));
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
         executionGeneration: this.context.binding.execution?.generation,
@@ -504,7 +500,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
           approvalPolicy: undefined,
-          sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
+          sandbox: undefined,
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
@@ -555,7 +551,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
       approvalPolicy: undefined,
-      sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
+      sandbox: undefined,
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;

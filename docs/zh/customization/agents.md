@@ -40,7 +40,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 子 Agent 在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录，`resume` 时也保留。启动会话时通过 [`--add-dir`](../reference/command.md#主命令选项) 或 Klient 的 `global.sessions.create` 中的 `additionalDirs` 字段声明输入目录；只在 `prompt` 中提到路径不会把它加入工作区。`AgentRun` 不提供单次调用的 `cwd` 或目录覆盖。需要独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
 
-Kiki 通过外部执行器支持的目录接口传递这些根目录；ACP 执行器未声明支持额外目录时，会记录 `additional_directories_dropped`。加入目录不会关闭权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
+继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
 继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。
 

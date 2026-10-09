@@ -573,8 +573,35 @@ describe('Codex app-server external executor', () => {
     try {
       const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_USER' }, { signal: new AbortController().signal });
       await handle.completion;
-      expect(JSON.parse(JSON.stringify(harness.starts[0]))).toEqual({ cwd: 'C:/workspace', model: 'gpt-test', approvalPolicy: 'on-request' });
+      expect(JSON.parse(JSON.stringify(harness.starts[0]))).toEqual({ cwd: 'C:/workspace', model: 'gpt-test' });
       expect(JSON.parse(JSON.stringify(harness.prompts[0]))).toEqual({ threadId: 'thread-new', model: 'gpt-test', effort: 'high', approvalPolicy: 'on-request', input: [{ type: 'text', text: 'ONLY_USER' }] });
+    } finally { await session.shutdown(); }
+  });
+  it('keeps legacy Codex defaults bare on start, after clearing controls, and on cold resume', async () => {
+    const harness = createHarness({ unpinModel: true, thinkingEffort: 'off' });
+    const binding = { ...harness.context.binding, systemPrompt: '', kikiContext: [], allowKikiSubagents: false };
+    const session = harness.createSession({ ...harness.context, binding });
+    try {
+      await (await session.run({ kind: 'prompt', prompt: 'DEFAULT_USER' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(JSON.parse(JSON.stringify(harness.starts[0]))).toEqual({ cwd: 'C:/workspace' });
+      expect(JSON.parse(JSON.stringify(harness.prompts[0]))).toEqual({ threadId: 'thread-new', input: [{ type: 'text', text: 'DEFAULT_USER' }] });
+      session.updateBinding({ ...binding, modelAlias: 'gpt-test', thinkingLevel: 'high', permissionMode: 'auto' });
+      await (await session.run({ kind: 'prompt', prompt: 'EXPLICIT_USER' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(JSON.parse(JSON.stringify(harness.prompts[1]))).toEqual({ threadId: 'thread-new', model: 'gpt-test', effort: 'high', approvalPolicy: 'on-request', input: [{ type: 'text', text: 'EXPLICIT_USER' }] });
+      session.updateBinding(binding);
+      await (await session.run({ kind: 'prompt', prompt: 'CLEARED_USER' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(JSON.parse(JSON.stringify(harness.prompts[2]))).toEqual({ threadId: 'thread-new', input: [{ type: 'text', text: 'CLEARED_USER' }] });
+      await session.shutdown();
+      const cold = harness.createSession({ ...harness.context, binding });
+      try {
+        await (await cold.run({ kind: 'prompt', prompt: 'COLD_USER' }, { signal: new AbortController().signal })).completion;
+        expect(JSON.parse(JSON.stringify(harness.resumes[0]))).toEqual({ threadId: 'thread-new', cwd: 'C:/workspace' });
+        expect(harness.starts).toHaveLength(1);
+        expect(JSON.parse(JSON.stringify(harness.prompts[3]))).toEqual({ threadId: 'thread-new', input: [{ type: 'text', text: 'COLD_USER' }] });
+      } finally { await cold.shutdown(); }
     } finally { await session.shutdown(); }
   });
   it('starts a bare new Codex thread at a generation boundary and reuses it after cold restore', async () => {
@@ -630,14 +657,14 @@ describe('Codex app-server external executor', () => {
     await expect(handle.completion).resolves.toMatchObject({ summary: 'done' });
     expect(harness.starts[0]).toMatchObject({
       model: 'gpt-test',
-      approvalPolicy: 'on-request',
-      sandbox: 'workspace-write',
+      approvalPolicy: undefined,
+      sandbox: undefined,
       developerInstructions: 'Frozen profile instructions',
     });
     expect(harness.prompts[0]).toMatchObject({
       effort: 'high',
-      approvalPolicy: 'on-request',
-      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+      approvalPolicy: undefined,
+      sandboxPolicy: undefined,
     });
     expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({
       protocol: 'codex-app-server',
@@ -1267,9 +1294,9 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       expect(approvalFlags(harness.spawns[0]!)).toEqual(explicit ? ['mcp_servers.kiki-harness.default_tools_approval_mode="approve"'] : []);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/mcp_servers\.(?!kiki-harness\.)[^.=]+\.default_tools_approval_mode/);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/approval_policy|sandbox_mode|danger-full-access|bypass/);
-      expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: 'workspace-write' });
+      expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: undefined });
       expect(harness.prompts[0]).toMatchObject({ approvalPolicy: explicit ? 'on-request' : undefined,
-        sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } });
+        sandboxPolicy: undefined });
     } finally { await harness.session.shutdown(); }
   });
 
