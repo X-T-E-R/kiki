@@ -37,6 +37,12 @@ export function createConnectionTransport(options: ConnectionHttpOptions): { fet
   const brokerFetch: typeof fetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const method = init.method ?? (input instanceof Request ? input.method : 'GET');
+    if ((method === 'POST' && url.pathname === '/api/fs:html-preview') || (method === 'DELETE' && /^\/api\/fs:html-preview\/[^/]+$/.test(url.pathname))) {
+      const headers = new Headers({ 'content-type': 'application/json' });
+      if (options.token !== undefined) headers.set('authorization', `Bearer ${options.token}`);
+      const target = method === 'POST' ? prefix + '/html-preview' : endpoint + url.pathname;
+      return fetchImpl(target, { ...init, headers, method, redirect: 'error', credentials: 'same-origin' });
+    }
     const matched = matchConnectionOperation(method, url.pathname);
     if (matched === undefined) throw new RPCError(40301, 'Operation is not available to a remote space');
     const query: Record<string, string | string[]> = {};

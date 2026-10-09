@@ -58,6 +58,7 @@ export * from './rest/space-preferences';
 export * from './rest/work-presets';
 export * from './rest/desktop-lifecycle';
 export * from './rest/document-preview';
+export * from './rest/html-preview';
 export * from './rest/nbSearch';
 export * from './rest/requestIdentity';
 export * from './rest/secrets';

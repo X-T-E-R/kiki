@@ -612,6 +612,8 @@ export interface HttpRestFacade {
   };
 
   readonly filesystem: {
+    openHtmlPreview(input: import('@kiki/protocol').HtmlPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').HtmlPreviewResponse>;
+    closeHtmlPreview(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
     readHostFile(path: string, options?: HttpRestRequestOptions): Promise<string>;
     previewHostFile(path: string, maxBytes: number, options?: HttpRestRequestOptions): Promise<{ readonly text: string; readonly truncated: boolean }>;
     readHostFileBytes(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;

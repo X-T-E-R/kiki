@@ -31,6 +31,18 @@ max_detail_cache_bytes = 268435456
 
 `max_detail_cache_bytes` is a nonnegative integer byte budget, defaulting to 256 MiB. `0` disables the large-detail slot, not reading; the ordinary 4 MiB detail cache remains. Raising it can avoid replaying a large target repeatedly. Changes apply on the next cache admission or eviction check and do not cancel an active read. The resident settings govern the live tail, not how much saved history can be opened.
 
+## Browser HTML documents
+
+Use `klient.rest.filesystem.openHtmlPreview({ path, root })` to obtain a browser document URL. Both paths are absolute paths on the client's selected host. An authenticated owner's explicit open authorizes that resource tree for this preview, under the same host-file authority as `/api/fs:content`; it does not register a workspace. Supply the actual workspace or declared input root, not a root inferred from the file's directory. The server rejects drive roots, files outside the root, and resource symlinks that resolve outside it. These routes are unavailable when server authentication is bypassed.
+
+The REST calls are `POST /api/fs:html-preview` and `DELETE /api/fs:html-preview/{previewId}`. The open result is `{ preview_id, url, expires_at, sandbox }`, defined in `@kiki/protocol`. Resolve `url` against the client's server base URL. Use it as the iframe's `src`, use the returned `sandbox`, and set `referrerPolicy="no-referrer"` and `allowFullscreen`. Do not add `allow-same-origin` or pass an API token into the document. Keep the frame mounted when switching to source mode; remove it and call `closeHtmlPreview(preview_id)` when its tab closes or its connection changes.
+
+`/html-preview/{capability}/{root-relative-path}` serves the original bytes without parsing or rewriting HTML. The browser resolves relative scripts, styles, fonts, images, nested documents, query strings and hashes against that URL tree; `../` may reach siblings within the authorized root. Responses carry `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads; object-src 'none'`, `Access-Control-Allow-Origin: *` without credential permission, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`. This allows resource CORS requests from the document's opaque origin while keeping it separate from the parent and API. Storage and other origin-dependent browser features remain unavailable in this sandbox. Kiki's app CSP is unchanged.
+
+Capabilities expire after 30 minutes. Closing one immediately stops active streams and rejects subsequent resource loads; already loaded JavaScript continues until the consumer removes the frame. A `404` with `html_preview_expired` requires reopening the preview. A single file without workspace/input context needs the user to choose a resource root; do not silently grant a drive or omit sibling dependencies.
+
+Remote clients use the same typed call and the existing authenticated connection broker. The URL is a local broker capability, never a remote bearer token, and resources are fetched from the selected remote host. A peer connection currently cannot mint a host-root grant: `40301` / `html_preview_target_owner_grant_required` means the target owner must authorize the document's resource root. Treat that as unavailable remote preview authorization, not malformed HTML, and keep source/download available. This slice does not provide that target-owner grant exchange and must not fall back to reading a similarly named local file.
+
 ## Connecting an external tool to Kiki
 
 For a caller such as Cursor, Claude Code, or Codex:

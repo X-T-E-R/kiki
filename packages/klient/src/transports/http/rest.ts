@@ -609,6 +609,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     filesystem: {
+      openHtmlPreview: (input, options) => transport.json('/fs:html-preview', { ...options, method: 'POST', body: input }),
+      closeHtmlPreview: (previewId, options) => transport.json(`/fs:html-preview/${encodeURIComponent(previewId)}`, { ...options, method: 'DELETE' }),
       readHostFile: (path: string, options) => transport.raw(
         '/fs:content',
         { method: 'GET', query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs },

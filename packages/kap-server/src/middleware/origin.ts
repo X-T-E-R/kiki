@@ -54,6 +54,7 @@ export function isOriginAllowed(
   host: string | undefined,
   allowed: readonly string[],
 ): boolean {
+  if (origin === 'null') return false;
   const oh = originHost(origin);
   if (oh === undefined) {
     return true;
@@ -102,6 +103,7 @@ export function createOriginHook(
   const allowed = opts.allowedOrigins ?? [];
   return async (req, reply) => {
     const origin = req.headers.origin;
+    if (origin === 'null' && req.url.startsWith('/api/')) return reply.code(403).send({ code: 40101, msg: 'opaque_origin_not_allowed' });
     if (origin === undefined) {
       return;
     }
