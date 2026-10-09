@@ -25,7 +25,7 @@ describe('session agent metadata counts', () => {
     const bindingReads: string[] = [];
     const services = new Map<unknown, unknown>([
       [IFileSystemStorageService, { size: async () => 0, mtime: async () => 0 }],
-      [IAppendLogStore, { read: async function* (scope: string) { bindingReads.push(scope); } }],
+      [IAppendLogStore, { read: async function* (scope: string) { bindingReads.push(scope); yield* []; } }],
       [ISessionManager, manager], [ISessionIndex, { get: async () => ({ ...meta, workspaceId: 'wd_fixture_000000000000' }) }],
       [IAtomicDocumentStore, { get: readMetadata }], [IWorkspaceService, { get: async () => ({ root: 'C:/fixture' }) }],
     ]);
@@ -59,6 +59,21 @@ describe('session agent metadata counts', () => {
 
 
 describe('lightweight metadata roster', () => {
+  it('prefers the current committed binding over an old spawn snapshot', () => {
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 20, archived: false, agents: { child: {
+      model: 'example/current-model', thinkingEffort: 'max', thinkingEffortExplicit: false, executor: 'codex', executorProtocol: 'app-server',
+    } } };
+    const roster = sessionAgentRoster(meta.id, meta, [{ ...row('child', 'running'), model: 'example/spawn-model', thinking_effort: 'low',
+      thinking_effort_explicit: true, executor_id: 'native', executor_protocol: 'native', subagent_phase: 'working' }]);
+    expect(roster[0]).toMatchObject({ model: 'example/current-model', thinking_effort: 'max', thinking_effort_explicit: false,
+      executor_id: 'codex', executor_protocol: 'app-server' });
+    expect(sessionAgentRoster(meta.id, { ...meta, agents: { child: { thinkingEffortExplicit: true } } }, roster)[0]).toMatchObject({
+      model: 'example/current-model', thinking_effort: 'max', thinking_effort_explicit: false, executor_id: 'codex', executor_protocol: 'app-server',
+    });
+    expect(sessionAgentRoster(meta.id, { ...meta, agents: { child: { executor: 'native', thinkingEffort: 'high' } } }, roster)[0]).toMatchObject({
+      executor_id: 'native', executor_protocol: undefined, thinking_effort: 'high', thinking_effort_explicit: undefined,
+    });
+  });
   it('uses immutable metadata birth for queued and resumed runs and leaves legacy unknown', () => {
     const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 2, archived: false,
       agents: { child: { createdAt: 100 }, legacy: {} } };

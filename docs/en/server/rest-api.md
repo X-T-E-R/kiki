@@ -193,6 +193,8 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 
 Snapshot `subagents` roster rows carry an optional `created_at` UTC ISO timestamp for the agent's immutable creation time. A newly created agent has it before its first run starts, including while queued; resuming the same agent, restoring its scope, restarting the server, or switching its model does not change it. A fork that creates a new agent records a new creation time. The separate optional `started_at` identifies the run described by the row and may change on a later run.
 
+Model, effort and executor fields prefer the current committed agent metadata over its spawn snapshot, with spawn values used only when current values are unavailable. Effort provenance and executor protocol stay with their selected source; a current binding alone does not prove which model served a request.
+
 An agent whose saved metadata has no creation time omits `created_at`; treat it as unknown, not as the session creation time, run start, attachment time, or a value inferred from its ID. Creation timestamps use the host's wall clock, not a dispatch or turn identity: equal timestamps, clock changes, or missing comparison boundaries do not establish which dispatch created an agent.
 
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.

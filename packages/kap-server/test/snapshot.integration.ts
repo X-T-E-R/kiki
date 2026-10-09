@@ -104,6 +104,9 @@ describe('server-v2 snapshot route enrichment', () => {
       displayName: 'explore',
       model: 'provider/metadata-model',
       thinkingEffort: 'high',
+      thinkingEffortExplicit: false,
+      executor: 'codex',
+      executorProtocol: 'app-server',
       status: undefined as 'completed' | 'failed' | 'cancelled' | undefined,
       completedAt: undefined as number | undefined,
       toolCallCount: undefined as number | undefined,
@@ -209,11 +212,17 @@ describe('server-v2 snapshot route enrichment', () => {
           session_id: sessionId,
           kind: 'subagent',
           description: 'task agent-1',
+          model: 'provider/spawn-model',
+          thinking_effort: 'low',
+          thinking_effort_explicit: true,
+          executor_id: 'native',
+          executor_protocol: 'native',
           status: 'running',
           subagent_phase: 'working',
           parent_tool_call_id: 'tc_child_1',
           tool_call_count: 5,
           run_in_background: false,
+          started_at: new Date(now).toISOString(),
           created_at: new Date(now).toISOString(),
         },
       ],
@@ -329,6 +338,9 @@ describe('server-v2 snapshot route enrichment', () => {
     expect(legacy.subagents?.[0]).toMatchObject({
       model: 'provider/metadata-model',
       thinking_effort: 'high',
+      thinking_effort_explicit: false,
+      executor_id: 'codex',
+      executor_protocol: 'app-server',
     });
 
     persistedAgent.status = 'completed';
