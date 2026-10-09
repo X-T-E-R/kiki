@@ -30,6 +30,12 @@ export function hasPromptRuntimeControls(binding: PromptExecutionBinding | undef
 }
 
 export function validatePromptRuntimeControls(accessor: ServicesAccessor, binding: PromptExecutionBinding | undefined): void {
+  if (binding?.afterModelSwitch !== undefined && (binding.model !== undefined || binding.thinking !== undefined || binding.profile !== undefined || binding.execution !== undefined || binding.modelSwitchMode !== undefined)) {
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'A legacy model switch dependency cannot be combined with a new prompt execution selection.');
+  }
+  if (binding?.modelSwitchMode !== undefined && (!['direct', 'compact', 'fresh'].includes(binding.modelSwitchMode) || binding.model === undefined || binding.profile !== undefined || binding.execution !== undefined)) {
+    throw new Error2(ErrorCodes.REQUEST_INVALID, 'A prompt-bound model switch requires a model and cannot replace its profile or executor.');
+  }
   if (!hasPromptRuntimeControls(binding) || binding === undefined) return;
   if (accessor.get(IAgentScopeContext).agentId !== 'main') {
     throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompt runtime controls are only supported by the main agent');

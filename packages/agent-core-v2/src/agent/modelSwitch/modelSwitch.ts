@@ -27,6 +27,8 @@ export interface ModelSwitchReceipt {
 
 export interface ModelSwitchExecuteOptions {
   readonly binding?: PreparedModelSwitchBinding;
+  /** Acquires a shared caller reservation, retained during uncertain commit recovery. */
+  readonly quiescence?: () => import('#/_base/di/lifecycle').IDisposable;
   readonly signal?: AbortSignal;
   readonly boundary?: import('#/agent/loop/loop').StepBoundary;
 }

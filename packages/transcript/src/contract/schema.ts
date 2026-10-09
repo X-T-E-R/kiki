@@ -579,6 +579,7 @@ export const transcriptPromptRuntimeControlsSchema = z.object({
   }).optional(),
   profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
+  modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
   thinking: z.string().min(1).optional(),
   permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
   planGate: z.enum(['free', 'gated']).optional(),

@@ -522,6 +522,7 @@ function promptFromSnapshot(
       execution: snapshot.execution.execution,
       profile: snapshot.execution.profile,
       model: snapshot.execution.model,
+      modelSwitchMode: snapshot.execution.modelSwitchMode,
       thinking: snapshot.execution.thinking,
       permissionMode: snapshot.execution.permissionMode,
       planGate: snapshot.execution.planGate,

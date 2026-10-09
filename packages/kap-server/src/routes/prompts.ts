@@ -543,6 +543,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const execution: PromptExecutionBinding | undefined =
           req.body.execution === undefined && req.body.profile === undefined &&
             req.body.model === undefined &&
+            req.body.model_switch_mode === undefined &&
             req.body.thinking === undefined &&
             req.body.permission_mode === undefined &&
             req.body.plan_gate === undefined &&
@@ -557,6 +558,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             : {
                 execution: req.body.execution,
                 afterModelSwitch: req.body.after_model_switch,
+                modelSwitchMode: req.body.model_switch_mode,
                 profile: req.body.profile,
                 model: req.body.model,
                 thinking: req.body.thinking,
@@ -914,6 +916,7 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
       execution: prompt.execution.execution,
       profile: prompt.execution.profile,
       model: prompt.execution.model,
+      modelSwitchMode: prompt.execution.modelSwitchMode,
       thinking: prompt.execution.thinking,
       permissionMode: prompt.execution.permissionMode,
       planGate: prompt.execution.planGate,

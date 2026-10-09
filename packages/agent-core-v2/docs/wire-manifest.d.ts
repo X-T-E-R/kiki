@@ -948,6 +948,7 @@ interface PromptEnqueuedPayload {
   execution?: {
     execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
+    modelSwitchMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
@@ -1120,6 +1121,7 @@ interface PromptReplacedPayload {
   execution?: {
     execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
+    modelSwitchMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;

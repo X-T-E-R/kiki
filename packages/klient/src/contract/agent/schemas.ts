@@ -42,6 +42,7 @@ export const emptyPayloadSchema = z.object({});
 export const promptExecutionBindingSchema = z.object({
   execution: executionSelectionSchema.optional(),
   afterModelSwitch: z.string().min(1).optional(),
+  modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
   personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),
   model: z.string().optional(),

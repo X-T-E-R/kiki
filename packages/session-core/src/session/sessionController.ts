@@ -2563,6 +2563,7 @@ export class SessionController {
      * binding by definition).
      */
     afterModelSwitch?: string;
+    modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     promptId?: string;
     skills?: import('@kiki/protocol').PromptSubmission['skills'];
     personaGreetingReply?: boolean;
@@ -2590,6 +2591,7 @@ export class SessionController {
       goal_control: input.goalControl,
       append_timing: input.appendTiming,
       after_model_switch: input.afterModelSwitch,
+      model_switch_mode: input.modelSwitchMode,
       prompt_id: promptId,
       skills: input.skills,
       persona_greeting_reply: input.personaGreetingReply,
@@ -2975,6 +2977,7 @@ export class SessionController {
     readonly profile?: string;
     readonly execution?: ExecutionSelection;
     readonly model?: string;
+    readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     readonly thinking?: string;
     readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
@@ -3006,6 +3009,7 @@ export class SessionController {
         profile: input.profile,
         execution: input.execution,
         model: input.model,
+        model_switch_mode: input.modelSwitchMode,
         thinking: input.thinking,
         permission_mode: input.permissionMode,
         plan_mode: input.planMode,

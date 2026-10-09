@@ -30,6 +30,7 @@ export interface TranscriptPromptRuntimeControls {
   };
   readonly profile?: string;
   readonly model?: string;
+  readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
   readonly thinking?: string;
   readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
   readonly planGate?: 'free' | 'gated';
