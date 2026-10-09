@@ -304,8 +304,8 @@ describe('AgentExecutionService', () => {
       expect(service.status()).toEqual({ state: 'broken' });
     } finally {
       shutdownGate.reject(failure);
-      await service.dispose().catch(() => {});
-      await ix.dispose().catch(() => {});
+      await Promise.resolve(service.dispose()).catch(() => {});
+      await Promise.resolve(ix.dispose()).catch(() => {});
       errors.mockRestore();
     }
   });
