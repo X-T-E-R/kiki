@@ -245,17 +245,56 @@ describe('wallpaper material', () => {
   });
 
   it('keeps a card only where the app means one action or one place', () => {
-    // The two raised marks in the sidebar column are real surfaces and keep
-    // their own fill from the app's own classes: "New session" is a paper
-    // chip and the selected conversation a paper card. The pane rule above is
-    // about ground, so it does not touch either.
+    // The two raised marks in the sidebar column are real surfaces with their
+    // own markup: "New session" is a paper chip and the selected conversation
+    // row carries its own selection state. The pane rule above is about
+    // ground, so it does not touch either; over a picture their fill follows
+    // the chip rule below instead of the theme's own class.
     const sidebar = readFileSync(resolve(import.meta.dirname, '../../components/Sidebar.tsx'), 'utf8');
     expect(sidebar).toContain('data-new-session');
     expect(sidebar).toContain('data-session-selected');
     expect(sidebar).toMatch(/data-new-session[\s\S]{0,400}bg-paper/);
-    // The skin layer never restyles the app's own cards.
-    expect(css).not.toMatch(/\[data-new-session\][^{]*\{[^}]*background/);
-    expect(css).not.toMatch(/\[data-session-selected\][^{]*\{[^}]*background/);
+  });
+
+  it('speaks the lifted chips in the dial’s paper and panel over a picture', () => {
+    // Over a wallpaper the five lifted chips keep their two-step vocabulary
+    // but read the dial's own paper/panel, so a chip lying on the picture is
+    // tinted like the chrome beside it instead of rising on a solid fill.
+    const sidebar = ":root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar'])";
+    const main = ":root:is([data-kiki-bg='window'], [data-kiki-bg='main'])";
+    // "New session" and the sidebar's selected row drop both the card fill and
+    // its shadow: the row keeps its own mark, without a lifted slab around it.
+    for (const selector of [`${sidebar} .app-sidebar [data-new-session]`, `${sidebar} .app-sidebar .row-interactive[aria-current]`]) {
+      expect(rule(selector), selector).toContain('background-color: var(--kiki-surface-paper);');
+      expect(rule(selector), selector).toContain('box-shadow: none;');
+    }
+    // The sidebar's wallpaper scope names `.app-sidebar` on every row rule, so
+    // it never reaches a selected row outside the column, and the scope itself
+    // carries no unprefixed row rule.
+    expect(css).not.toContain(`${sidebar} .row-interactive[aria-current] {`);
+    // The header's expanded toggles and the preview's active tab follow the
+    // same step-up, one material over.
+    expect(rule(`${main} :is([data-preview-toggle], [data-rail-toggle])[aria-expanded='true']`))
+      .toContain('background-color: var(--kiki-surface-panel);');
+    expect(rule(`${main} [data-preview-tab][aria-selected='true']`))
+      .toContain('background-color: var(--kiki-surface-paper);');
+    // Rest and hover keep today's relationship: hover steps up to panel.
+    expect(rule(`${sidebar} .app-sidebar [data-new-session]:hover`))
+      .toContain('background-color: var(--kiki-surface-panel);');
+    expect(rule(`${main} :is([data-preview-toggle], [data-rail-toggle]):not([aria-expanded='true']):hover`))
+      .toContain('background-color: var(--kiki-surface-panel);');
+    // One material only: no fixed alpha, no second blur, no solved floor.
+    const start = css.indexOf('/* ---- control chips on the picture');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = css.slice(start, css.indexOf('\n}\n', start));
+    expect(block).not.toMatch(/\bopacity\s*:/);
+    expect(block).not.toMatch(/backdrop-filter/);
+    expect(block).not.toMatch(/color-mix/);
+    // The block is wallpaper-scoped chrome, not a phone or reduced-transparency
+    // branch: it sits inside the tablet-and-up media query.
+    const media = css.lastIndexOf('@media (min-width: 768px)', start);
+    expect(media).toBeGreaterThanOrEqual(0);
+    expect(css.slice(media, start)).not.toMatch(/\n\}\n/);
   });
 });
 

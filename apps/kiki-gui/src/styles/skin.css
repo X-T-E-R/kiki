@@ -500,6 +500,38 @@
       box-shadow: var(--kiki-sheet-shadow), -12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
     }
   }
+  /* ---- control chips on the picture: the same material, one step up ----
+   * The app's lifted chips — "New session", the sidebar's selected row, the header's
+   * expanded Preview and panel toggles, the preview's active tab — keep their
+   * two-step paper→panel vocabulary inside a wallpaper scope, but spoken in
+   * the dial's translucent paper/panel instead of the solid theme colors, and
+   * without the sheet shadow: a chip lying on the picture is tinted, not
+   * lifted. Rest and hover keep today's relationship, the selected/expanded
+   * state stays the strongest mark in its row, and no opacity or extra blur
+   * is involved — text and icons keep full ink. The tokens fall back to the
+   * solid colors when no picture is up, so nothing changes off-scope. */
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-new-session] {
+    background-color: var(--kiki-surface-paper);
+    box-shadow: none;
+  }
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar .row-interactive[aria-current] {
+    background-color: var(--kiki-surface-paper);
+    box-shadow: none;
+  }
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle])[aria-expanded='true'] {
+    background-color: var(--kiki-surface-panel);
+  }
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-preview-tab][aria-selected='true'] {
+    background-color: var(--kiki-surface-paper);
+  }
+  @media (hover: hover) {
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='sidebar']) .app-sidebar [data-new-session]:hover {
+      background-color: var(--kiki-surface-panel);
+    }
+    :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-preview-toggle], [data-rail-toggle]):not([aria-expanded='true']):hover {
+      background-color: var(--kiki-surface-panel);
+    }
+  }
 }
 
 /* Performance and reduced-transparency: the same layers, no live blur. */
