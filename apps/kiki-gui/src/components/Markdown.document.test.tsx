@@ -16,6 +16,23 @@ const renderMermaid = vi.hoisted(() => vi.fn(async (_id: string, _code: string) 
   svg: '<svg xmlns="http://www.w3.org/2000/svg" />',
 })));
 const connectionMock = vi.hoisted(() => ({ activeClient: null as unknown, defaultClient: null as unknown }));
+const parseCounts = vi.hoisted(() => ({ documents: 0, blockLexes: 0 }));
+vi.mock('streamdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('streamdown')>();
+  function observeDocumentParse() {
+    return () => { parseCounts.documents += 1; };
+  }
+  return {
+    ...actual,
+    defaultRemarkPlugins: { ...actual.defaultRemarkPlugins, observeDocumentParse },
+    Streamdown: (props: import('react').ComponentProps<typeof actual.Streamdown>) => (
+      <actual.Streamdown {...props} parseMarkdownIntoBlocksFn={props.parseMarkdownIntoBlocksFn ?? ((text) => {
+        parseCounts.blockLexes += 1;
+        return actual.parseMarkdownIntoBlocks(text);
+      })} />
+    ),
+  };
+});
 vi.mock('@streamdown/mermaid', () => ({
   mermaid: { getMermaid: () => ({ render: renderMermaid }) },
 }));
@@ -25,7 +42,7 @@ connectionMock.activeClient = fakeClient;
 connectionMock.defaultClient = fakeClient;
 vi.mock('../state/connection', async (importOriginal) => ({
   ...await importOriginal<typeof import('../state/connection')>(),
-  useOptionalConnection: () => ({ client: connectionMock.activeClient }),
+  useOptionalConnection: () => ({ client: connectionMock.activeClient, scopeId: 'local' }),
 }));
 
 const roots: Root[] = [];
@@ -186,4 +203,40 @@ it('keeps a local Markdown image unloaded when its connection is unavailable', a
   const container = await render('![diagram](./assets/diagram.png)', '/work/docs');
   expect(container.querySelector('img')?.getAttribute('src')).toBeNull();
   expect(readHostFileBytes).not.toHaveBeenCalled();
+});
+
+
+it('parses static documents once without unused streaming lexing or navigation reparses', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  containers.push(container);
+  const root = createRoot(container);
+  roots.push(root);
+  const text = '# Beginning\n\n[local](./other.md)\n\n## End\n\nComplete final paragraph.';
+  const draw = (navigation: { path: string } | undefined, content = text, directory = '/work') => (
+    <MemoryRouter><I18nProvider>
+      <Markdown mode="static" text={content} documentDirectory={directory} documentPath={`${directory}/readme.md`} headingNavigation={navigation} />
+    </I18nProvider></MemoryRouter>
+  );
+  parseCounts.documents = 0;
+  parseCounts.blockLexes = 0;
+  await act(async () => { root.render(draw({ path: '/work/readme.md' })); });
+  expect(parseCounts.documents).toBe(1);
+  expect(parseCounts.blockLexes).toBe(0);
+  const originalHeading = container.querySelector('h2');
+  expect(originalHeading?.textContent).toBe('End');
+
+  await act(async () => { root.render(draw(undefined)); });
+  expect(parseCounts.documents).toBe(1);
+  expect(container.querySelector('h2')).toBe(originalHeading);
+  expect(container.textContent).toContain('Complete final paragraph.');
+
+  await act(async () => { root.render(draw(undefined, `${text}\n\nChanged final content.`)); });
+  expect(parseCounts.documents).toBe(2);
+  expect(container.textContent).toContain('Changed final content.');
+
+  await act(async () => { root.render(draw(undefined, `${text}\n\nChanged final content.`, '/other')); });
+  expect(parseCounts.documents).toBe(3);
+  expect(container.querySelector('h2')).not.toBe(originalHeading);
+  expect(container.textContent).toContain('Changed final content.');
 });

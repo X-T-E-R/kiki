@@ -440,6 +440,15 @@ const IMAGE_REHYPE_PLUGINS = Object.entries(defaultRehypePlugins).map(([name, pl
   }] as typeof plugin;
 });
 
+// Static mode parses children directly. Its unused streaming-block state must
+// stay stable, otherwise a text change schedules a second full-document parse.
+const NO_STREAMING_BLOCKS: string[] = [];
+const staticDocumentBlock = (): string[] => NO_STREAMING_BLOCKS;
+const LINK_SAFETY = { enabled: false };
+const CONTROLS = { table: false, code: false, mermaid: false };
+const STREAM_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS];
+const DOCUMENT_PLUGINS = [...Object.values(defaultRemarkPlugins), ...DOCUMENT_REMARK_PLUGINS];
+
 const components: Components = {
   pre: KikiMarkdownPre as Components['pre'],
   a: MarkdownAnchor as Components['a'],
@@ -511,12 +520,9 @@ export const Markdown = memo(function Markdown({
         : [...IMAGE_REHYPE_PLUGINS, rehypeAnnotationMarks(annotationTargets)],
     [annotationTargets],
   );
-  // Streamdown's own memo does not compare rehypePlugins, so an annotation
-  // arriving after this message already rendered would never reach the mark
-  // plugin. Keying by the target ids remounts exactly when this block's
-  // annotation set changes; the transcript keeps the array identity stable
-  // otherwise (useStableAnnotationTargets), so unrelated renders never thrash.
-  const annotationKey = JSON.stringify(annotationTargets ?? []);
+  // Streamdown's memo omits components and rehypePlugins. Remount only when
+  // annotation content or the document's relative-reference scope changes.
+  const renderKey = JSON.stringify([annotationTargets ?? [], documentDirectory, documentPath]);
   const renderers = useMemo<Components>(() => {
     const next: Components = { ...components };
     if (documentDirectory !== undefined) {
@@ -540,15 +546,15 @@ export const Markdown = memo(function Markdown({
   return (
     <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
       <Streamdown
-        key={annotationKey}
+        key={renderKey}
         mode={annotationTargets?.length ? 'static' : mode}
         parseIncompleteMarkdown={mode === 'streaming' && !annotationTargets?.length}
+        parseMarkdownIntoBlocksFn={mode === 'static' || annotationTargets?.length ? staticDocumentBlock : undefined}
         plugins={plugins}
         // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
         // spread them back in — dropping remark-gfm kills GFM tables,
         // strikethrough, task-lists, and autolinks.
-        remarkPlugins={[...Object.values(defaultRemarkPlugins), ...(documentDirectory === undefined
-          ? REMARK_PLUGINS : DOCUMENT_REMARK_PLUGINS)]}
+        remarkPlugins={documentDirectory === undefined ? STREAM_REMARK_PLUGINS : DOCUMENT_PLUGINS}
         rehypePlugins={rehypePlugins}
         components={renderers}
         // Streamdown's link safety defaults to ON and blocks any href it
@@ -561,9 +567,9 @@ export const Markdown = memo(function Markdown({
         // autolink had absorbed a trailing `**` into, so a bold preview URL
         // read as literal markdown next to a broken bold marker. The real
         // boundaries — the sanitizer and our own anchor — stay on.
-        linkSafety={{ enabled: false }}
+        linkSafety={LINK_SAFETY}
         // kiki draws its own chrome; streamdown's built-in action rows stay off.
-        controls={{ table: false, code: false, mermaid: false }}
+        controls={CONTROLS}
       >
         {text}
       </Streamdown>
