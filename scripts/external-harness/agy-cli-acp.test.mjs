@@ -29,6 +29,45 @@ test('bare launch preserves AGY model, effort, permissions and context settings'
     ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'gemini-3.8-flash-medium', '--effort', 'medium']);
 });
 
+test('frozen writer roots reach the real fixture process without changing the parent or vendor permissions', async () => {
+  const { mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { join, resolve } = await import('node:path');
+  const parentCwd = process.cwd();
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-writer-'));
+  const writer = join(root, 'writer space 中文');
+  const materials = join(root, 'materials 中文');
+  await mkdir(writer); await mkdir(materials);
+  const b = bridge('claude-opus-5-5-high');
+  const originalSpawn = b.spawnProcess;
+  let launch;
+  b.spawnProcess = (exe, args, options) => {
+    launch = { exe, args, cwd: options.cwd };
+    return originalSpawn(exe, args, options);
+  };
+  try {
+    const id = (await b.newSession({ cwd: writer, additionalDirectories: [materials], mcpServers: [] })).sessionId;
+    b.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+    assert.equal((await turn(b, id, 'writer fixture', [])).stopReason, 'end_turn');
+    assert.equal(resolve(b.session(id).init.init.cwd), resolve(writer));
+    assert.equal(launch.cwd, writer);
+    assert.deepEqual(launch.args.slice(1), ['--input-format', 'stream-json', '--output-format', 'stream-json',
+      '--model', 'claude-opus-5-5-high', '--effort', 'high', '--add-dir', materials]);
+    assert.equal(process.cwd(), parentCwd);
+    assert.equal(b.session(id).permissionRegistration, undefined);
+  } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('native init rejects another project or missing cwd before accepting its context', async () => {
+  const b = bridge();
+  const id = await session(b);
+  const s = b.session(id);
+  for (const init of [{ cwd: tmpdir() }, {}]) {
+    await assert.rejects(b.event(s, { event: 'init', conversation_id: 'fixture-conversation', init }), /cwd does not match/);
+    assert.equal(s.init, undefined);
+  }
+  await b.close();
+});
+
 test('text-only boundary rejects rich content instead of dropping it', () => {
   assert.equal(promptText([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]), 'one\ntwo');
   assert.throws(() => promptText([{ type: 'image', data: 'x' }]), /text prompts only/);
