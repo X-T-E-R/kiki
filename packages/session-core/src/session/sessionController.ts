@@ -2077,14 +2077,14 @@ export class SessionController {
         }
         store.apply(ops);
         if (page.next_cursor !== undefined && page.has_more) this.entityPageCursors.set(requestKey, page.next_cursor);
-        else if (partial) this.entityPageCursors.delete(requestKey);
+        else if (partial && page.has_more) this.entityPageCursors.delete(requestKey);
         else this.entityPageCursors.set(requestKey, null);
         const snapshot = store.snapshot();
         const field = { task: 'tasks', attachment: 'attachments', prompt: 'prompts', interaction: 'interactions', todo: 'todos' }[kind] as 'tasks' | 'attachments' | 'prompts' | 'interactions' | 'todos';
         const count = snapshot[field].length;
         const full = (returned: number) => ({ returned, total: returned, hasMore: false });
         const previous: NonNullable<AgentTranscriptSnapshot['globalCoverage']> = this.globalCoverage.get(agentId) ?? { version: 1, tasks: full(snapshot.tasks.length), attachments: full(snapshot.attachments.length), prompts: full(snapshot.prompts.length) };
-        this.globalCoverage.set(agentId, { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more || partial } });
+        this.globalCoverage.set(agentId, { ...previous, [field]: { returned: count, total: Math.max(count, page.total ?? previous[field]?.total ?? count), hasMore: page.has_more } });
         this.forestDirtyAgents.add(agentId);
         this.publishProjectedAgent(agentId, store);
         return page.items.length > 0;

@@ -1640,16 +1640,30 @@ describe('live and event chrome', () => {
     expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
   });
 
-  it('renders twelve consecutive goal updates as one divider with a repeat count', async () => {
-    const snapshot = replayAgentWire('main', Array.from({ length: 12 }, (_, index) => ({
-      type: 'goal.update', tokensUsed: index + 1, time: 1000 + index,
-    })));
-    const state = projectAgentTranscriptView(createViewState('marker-fold'), 'main', snapshot);
+  it('names each real goal change and keeps accounting updates out of the timeline', async () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'turn.prompt', turnId: 1, promptId: 'p1', time: 1000, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Take the input area down to what is really waiting' }] },
+      { type: 'goal.create', objective: 'Remove the composer noise that never ends', time: 1100 },
+      { type: 'goal.update', tokensUsed: 1, time: 1200 },
+      { type: 'goal.update', tokensUsed: 2, turnsUsed: 1, wallClockMs: 900, time: 1300 },
+      { type: 'goal.update', status: 'paused', reason: 'waiting for the reader', time: 1400 },
+      { type: 'goal.update', tokensUsed: 3, turnsUsed: 2, time: 1500 },
+      { type: 'goal.update', status: 'active', time: 1600 },
+      { type: 'turn.prompt', turnId: 2, promptId: 'p2', time: 1700, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Continue with the transcript labels' }] },
+    ]);
+    const state = projectAgentTranscriptView(createViewState('goal-changes'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
-    const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]');
-    expect(dividers).toHaveLength(1);
-    expect(dividers[0]?.textContent).toBe('Goal updated ×12');
-    expect(container.querySelector('[data-block-id]')?.getAttribute('data-block-id')).toBe(state.blocks[0]?.id);
+    const dividers = [...container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]')];
+    // Accounting-only updates (tokens, turns, wall clock) are not changes and
+    // never grow a divider; each real change keeps its own kind, so a pause and
+    // the resume that follows it are two facts rather than one folded line.
+    expect(dividers.map((divider) => divider.getAttribute('data-goal-change'))).toEqual(['created', 'paused', 'resumed']);
+    expect(dividers.map((divider) => divider.textContent)).toEqual(['Goal set', 'Goal paused', 'Goal resumed']);
+    // The engine's own reason rides on the hover title, not on a wall of text.
+    expect(dividers[1]?.getAttribute('title')).toContain('waiting for the reader');
+    // The conversation itself still reads around the markers.
+    expect(container.textContent).toContain('Take the input area down to what is really waiting');
+    expect(container.textContent).toContain('Continue with the transcript labels');
   });
 
   it('labels folded compactions as successful commits and expands every time and reason', async () => {

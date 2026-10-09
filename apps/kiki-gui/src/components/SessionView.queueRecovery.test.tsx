@@ -11,7 +11,9 @@ import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, resetDraftMemoryForTests, readComposerState } from '@kiki/session-core/composer';
 import { createViewState } from '@kiki/session-core/session';
 
-const fixture = vi.hoisted(() => ({ autoCompact: true, queued: true, partialPrompts: false, loadEntities: vi.fn(async () => true) }));
+const fixture = vi.hoisted(() => ({ autoCompact: true, queued: true, partialPrompts: false, structureUnread: false, loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true) }));
+/** A snapshot field the header shows, cut in the window — the composer's remainder. */
+const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
@@ -46,12 +48,14 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
       session: { id: 'session-example', title: 'Queue recovery example', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
       blocks: fixture.queued ? [{ kind: 'user' as const, id: 'queued-example', promptId: 'queued-example', promptStatus: 'queued' as const, text: 'retain this queued message', createdAt: '2026-01-01T00:00:00Z' }] : [],
       queuedPromptIds: fixture.queued ? ['queued-example'] : [],
+      contentRefs: fixture.structureUnread ? [STRUCTURE_REF] : undefined,
       globalCoverage: fixture.partialPrompts ? { version: 1 as const,
         tasks: { returned: 0, total: 0, hasMore: false }, attachments: { returned: 0, total: 0, hasMore: false },
         prompts: { returned: 8, total: 12, hasMore: true },
       } : undefined,
     };
     loadTranscriptEntities = fixture.loadEntities;
+    loadContentSegment = fixture.loadContent;
     getState = () => this.state;
     getAgentState = () => this.state;
     setFocusedAgent() {}
@@ -73,7 +77,9 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.queued = true;
   fixture.partialPrompts = false;
+  fixture.structureUnread = false;
   fixture.loadEntities.mockClear();
+  fixture.loadContent.mockClear();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   resetDraftMemoryForTests();
@@ -139,4 +145,38 @@ it('keeps partial prompt records reachable with no loaded queued row and request
   await act(async () => action!.click());
   expect(fixture.loadEntities).toHaveBeenCalledExactlyOnceWith('main', 'prompt');
   expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
+});
+
+it('reads session structure a window did not carry without waiting for a press', async () => {
+  fixture.queued = false;
+  fixture.structureUnread = true;
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  // The outlet is for a read in flight or one that failed, never for a ref that
+  // is merely waiting: this one was read on its own, so nothing hangs as
+  // "session content not loaded".
+  expect(fixture.loadContent).toHaveBeenCalledExactlyOnceWith('main', STRUCTURE_REF);
+});
+
+it('parks a remainder read that advanced nothing instead of retrying it', async () => {
+  fixture.queued = false;
+  fixture.structureUnread = true;
+  fixture.loadContent.mockResolvedValue(false);
+  root = createRoot(container);
+  await act(async () => root!.render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+        <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+      </Routes></MemoryRouter></I18nProvider>
+    </QueryClientProvider>));
+  for (let i = 0; i < 6; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  // A ref that cannot advance is skipped rather than read again on every render,
+  // so a stuck structure cannot spin the drain.
+  expect(fixture.loadContent).toHaveBeenCalledExactlyOnceWith('main', STRUCTURE_REF);
 });

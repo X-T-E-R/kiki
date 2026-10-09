@@ -2066,7 +2066,7 @@ describe('SessionController transcript authority', () => {
     } finally { held.resolve({ agent_id: 'main', items: [], has_more: true }); controller.close(); }
   });
 
-  it('recovers a structured stale entity cursor without losing prior entities or marking partial complete', async () => {
+  it('recovers a structured stale entity cursor without losing prior entities and stops on the server\'s own end', async () => {
     const prompt = (promptId: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:00.000Z' });
     const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
       .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('retained')], has_more: true, next_cursor: 'live-bound' })
@@ -2080,8 +2080,14 @@ describe('SessionController transcript authority', () => {
       expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(true);
       expect(entities.mock.calls[2]?.[0]).toMatchObject({ cursor: undefined });
       expect(controller.getState().blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['retained', 'recovered']);
-      expect(controller.getState().globalCoverage?.prompts.hasMore).toBe(true);
+      // The page says there is no more. A read that was not authoritative is
+      // not a reason to keep a continuation the reader could press forever:
+      // `has_more` is the server's own statement about what is left.
+      expect(controller.getState().globalCoverage?.prompts.hasMore).toBe(false);
       expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+      expect(entities).toHaveBeenCalledTimes(3);
+      // An exhausted collection parks itself: the next press asks for nothing.
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(false);
       expect(entities).toHaveBeenCalledTimes(3);
     } finally { controller.close(); }
   });

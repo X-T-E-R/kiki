@@ -29,7 +29,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { shiftTextPresentation, type TextPresentation, type ContentRef } from '@kiki/transcript';
+import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -1629,6 +1629,20 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
   };
 }
 
+// A goal notice names the actual change (set, paused, resumed, blocked,
+// completed, cleared) instead of flattening every lifecycle event into
+// "goal updated". The engine's reason, when present, rides on the hover
+// title only, so the timeline line itself never grows a wall.
+const GOAL_CHANGE_I18N_KEY: Record<GoalMarkerChange['kind'], I18nKey> = {
+  created: 'transcript.marker.goal.created',
+  updated: 'transcript.marker.goal.updated',
+  paused: 'transcript.marker.goal.paused',
+  resumed: 'transcript.marker.goal.resumed',
+  blocked: 'transcript.marker.goal.blocked',
+  completed: 'transcript.marker.goal.completed',
+  cleared: 'transcript.marker.goal.cleared',
+};
+
 /**
  * A notice is a boundary, not an event: compaction, a marker, the start of a
  * plan. It gets the divider rule so the log reads as regions. A danger notice
@@ -1639,7 +1653,9 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
-  const baseText = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
+  const baseText = block.goalChange !== undefined
+    ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
+    : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
   const text = block.reasonCodes?.includes('notes_directives_budget') ? t('transcript.marker.reason.notes_directives_budget') : baseText;
   // Why a compaction took the path it did (e.g. summary instead of a fresh
   // window): one sentence per engine reason code; an unknown code reads as-is.
@@ -1651,7 +1667,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const reasons = [...(block.reasonCodes ?? []).map(reasonText), ...(block.compactionFailure === undefined ? [] : [block.compactionFailure])];
   const history = block.compactionHistory ?? [];
   const expandable = reasons.length > 0 || history.length > 0;
-  const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
+  const title = [time.absoluteTime(block.createdAt), ...(block.goalChange?.reason === undefined ? [] : [block.goalChange.reason]), ...reasons].filter(Boolean).join('\n');
   const count = block.markerRepeatCount ?? 1;
   const repeatedText = count > 1 ? history.length > 0
     ? t('transcript.marker.compactionRepeated', { label: text, count }) : `${text} ×${count}` : text;
@@ -1661,7 +1677,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
       <TimelineDivider
         tone={block.tone === 'danger' ? 'warn' : 'plain'}
         title={title}
-        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
+        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key, 'data-goal-change': block.goalChange?.kind }}
       >
         {expandable ? (
           <button
