@@ -2448,22 +2448,34 @@ describe('ACP external executor', () => {
     expect(metadata?.losses).toEqual(expect.arrayContaining(['additional_directories_dropped']));
   });
 
-  it('keeps additional directories without a loss once the harness declares support', async () => {
+  it('keeps approved input roots in ACP open options on first and subsequent prompts without a loss', async () => {
     const harness = createHarness({
       capabilities: { sessionCapabilities: { additionalDirectories: {} } },
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
-
-    const run = await harness.session.run(
-      { kind: 'prompt', prompt: 'work' },
-      { signal: new AbortController().signal },
-    );
-    await run.completion;
-
-    const metadata = harness.events.find(
+    Object.assign(harness.workspace, { workDir: 'C:\\worktrees\\child',
+      additionalDirs: ['C:\\materials\\review', 'C:\\materials\\profiles'] });
+    for (const prompt of ['work', 'continue']) {
+      const run = await harness.session.run({ kind: 'prompt', prompt }, { signal: new AbortController().signal });
+      await run.completion;
+      await harness.session.settled();
+    }
+    expect(harness.opens).toHaveLength(2);
+    for (const opened of harness.opens) {
+      expect(opened.cwd).toBe('C:\\worktrees\\child');
+      expect(opened.additionalDirectories).toEqual(['C:\\materials\\review', 'C:\\materials\\profiles']);
+      expect(opened.sessionMeta?.['kiki.permission']).toMatchObject({ workspace: {
+        cwd: 'C:\\worktrees\\child', additionalDirectories: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      } });
+    }
+    expect(harness.opens[0]?.sessionRef).toBeUndefined();
+    expect(harness.opens[1]?.sessionRef?.ref).toEqual({ sessionId: 'remote-2' });
+    const metadata = harness.events.filter(
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
-    expect(metadata?.losses).not.toContain('additional_directories_dropped');
+    expect(metadata).toHaveLength(2);
+    for (const event of metadata) expect(event.losses).not.toContain('additional_directories_dropped');
+    await harness.session.shutdown();
   });
 
   it('attributes resumed-session usage as a delta of the persisted cumulative counters', async () => {

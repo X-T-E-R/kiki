@@ -38,6 +38,10 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
 | `model_alias`、`effort` | 省略则沿用已保存值或默认值。 |
 
+子 Agent 在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录，`resume` 时也保留。启动会话时通过 [`--add-dir`](../reference/command.md#主命令选项) 或 Klient 的 `global.sessions.create` 中的 `additionalDirs` 字段声明输入目录；只在 `prompt` 中提到路径不会把它加入工作区。`AgentRun` 不提供单次调用的 `cwd` 或目录覆盖。需要独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
+
+Kiki 通过外部执行器支持的目录接口传递这些根目录；ACP 执行器未声明支持额外目录时，会记录 `additional_directories_dropped`。加入目录不会关闭权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
+
 继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。
 
 新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要 `allow_model_change: true`。

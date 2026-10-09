@@ -122,6 +122,9 @@ import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import '#/agent/media/mediaToolsRegistrar';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { SessionWorkspaceContextService } from '#/session/workspaceContext/workspaceContextService';
+import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import {
   IRuntimeResolver,
@@ -1796,6 +1799,40 @@ describe('AgentLifecycleService', () => {
     await ix.get(IAgentLifecycleService).create({ agentId: 'main' });
 
     expect(permissionModeSetMode).not.toHaveBeenCalled();
+  });
+
+  it('shares approved input roots with new and recreated Agent scopes without admitting sibling roots', async () => {
+    const workDir = resolve('/worktrees/child');
+    const additionalDirs = [resolve('/materials/review'), resolve('/materials/profiles')];
+    ix.stub(ISessionContext, { ...ix.get(ISessionContext), cwd: workDir });
+    ix.stub(ISessionWorkspaceInfo, { _serviceBrand: undefined, ready: Promise.resolve(), additionalDirs,
+      onDidChange: Event.None });
+    ix.set(ISessionWorkspaceContext, new SyncDescriptor(SessionWorkspaceContextService));
+    const runtime = new FakeRuntime({ workspaceId: 'ws_test', runtimeId: 'local', generation: 'input-roots' },
+      { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
+    ix.stub(IRuntimeResolver, { _serviceBrand: undefined, inspect: () => runtime,
+      acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }) });
+    const workspace = ix.get(ISessionWorkspaceContext);
+    const lifecycle = ix.get(IAgentLifecycleService);
+    const parent = await lifecycle.create({ agentId: 'main' });
+    const child = await lifecycle.create({ agentId: 'input-review', delegator: { kind: 'agent', agentId: parent.id } });
+    const checkRoots = (agent: IAgentScopeHandle): void => {
+      expect(agent.accessor.get(ISessionWorkspaceContext)).toBe(workspace);
+      const view = new RuntimeWorkspaceView(agent.accessor.get(IAgentRuntimeService).inspect(), workspace);
+      expect(view.workDir).toBe(runtime.path.resolve(workDir));
+      expect(view.additionalDirs).toEqual(additionalDirs.map((root) => runtime.path.resolve(root)));
+      const inputPath = runtime.path.join(view.additionalDirs[0]!, 'source.txt');
+      expect(view.resolve(inputPath)).toBe(inputPath);
+      expect(() => view.resolve(resolve('/materials/private/source.txt'))).toThrow('outside runtime workspace');
+      expect(() => view.resolve(resolve('/worktrees/other/source.txt'))).toThrow('outside runtime workspace');
+    };
+    checkRoots(parent);
+    checkRoots(child);
+    await lifecycle.remove(child.id);
+    const recreated = await lifecycle.create({ agentId: child.id, delegator: { kind: 'agent', agentId: parent.id } });
+    checkRoots(recreated);
+    expect(workspace.additionalDirs.map((root) => runtime.path.resolve(root)))
+      .toEqual(additionalDirs.map((root) => runtime.path.resolve(root)));
   });
 
   it('restores the runtime binding without persisting a generation', async () => {

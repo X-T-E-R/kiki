@@ -469,6 +469,7 @@ interface TaskRecord {
 interface LaneOptions {
   readonly pathClass?: 'posix' | 'win32';
   readonly workDir?: string;
+  readonly additionalDirs?: readonly string[];
   readonly capacity?: { readonly maxDirectChildren: number; readonly maxTotalSubagents: number };
   readonly defaultProfile?: string;
   readonly profile?: AgentProfile;
@@ -1070,7 +1071,7 @@ function createLane(
   ix.stub(ISessionWorkspaceContext, {
     _serviceBrand: undefined,
     workDir: options.workDir ?? '/workspace',
-    additionalDirs: [],
+    additionalDirs: options.additionalDirs ?? [],
   });
   ix.stub(ISessionManager, { onWillCloseSession: undefined });
   ix.stub(ILogService, {
@@ -1626,6 +1627,31 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.subagentRun).toHaveBeenCalledTimes(1);
     lane.completions[0]!.resolve({ summary: 'child done' });
     await started.completion;
+  });
+
+  it('AgentRun uses approved input roots outside an independent cwd and retains them on resume', async () => {
+    const additionalDirs = ['/materials/profiles', '/materials/review'];
+    const lane = createLane(disposables, 'internal', { workDir: '/worktrees/child', additionalDirs });
+    const runtime = lane.ix.get(IAgentRuntimeService).inspect();
+    const readText = vi.fn(async () => '---\nname: coder\ndescription: File role\nmodel_alias: parity-model\n---\nFILE ROLE');
+    Object.defineProperty(runtime, 'fs', { value: { realpath: async (path: string) => path, readText } });
+    const launched = await lane.runInternal({ profile_file: '/materials/profiles/reviewer.md', name: 'input_review',
+      prompt: 'Read approved review material', description: 'Review inputs', background: true });
+    expect(launched.isError, launched.output).not.toBe(true);
+    expect(readText).toHaveBeenCalledWith('/materials/profiles/reviewer.md');
+    expect(lane.lifecycleCreate.mock.calls[0]?.[0]?.runtimeId).toBe('local');
+    await complete(lane, 0);
+    const resumed = await lane.runInternal({ resume: 'input_review', prompt: 'Continue reading approved inputs',
+      description: 'Continue review', background: true });
+    expect(resumed.isError, resumed.output).not.toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+    expect(lane.subagentRun.mock.calls.map((call) => call[0])).toEqual(['agent_child_1', 'agent_child_1']);
+    expect(lane.ix.get(ISessionWorkspaceContext)).toMatchObject({ workDir: '/worktrees/child', additionalDirs });
+    expect(readText).toHaveBeenCalledTimes(1);
+    await complete(lane, 1);
+    await expect(lane.ix.get(ISubagentTool).resolveExecution({ profile_file: '/materials/private/reviewer.md',
+      prompt: 'Read unrelated inputs', description: 'Outside root' })).rejects.toMatchObject({ code: 'fs.path_escapes' });
+    expect(readText).toHaveBeenCalledTimes(1);
   });
 
   it('dispatches a Windows profile_file when realpath uses different drive casing and separators', async () => {

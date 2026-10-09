@@ -38,6 +38,10 @@ The main `agent` profile gets three child-agent tools with no experiment flag: `
 | `background` | Omitted, main runs it in the background and a subagent waits in the foreground. `true` and `false` force background and synchronous waiting respectively. |
 | `model_alias`, `effort` | Omitted, the saved or default values are kept. |
 
+A child runs inside the current session and inherits its working directory and declared additional workspace directories, including on `resume`. Declare input directories when starting the session with [`--add-dir`](../reference/command.md#main-command-options) or the `additionalDirs` field of Klient's `global.sessions.create`; mentioning a path in `prompt` does not add it. `AgentRun` has no per-call `cwd` or directory override. For a separate working directory or worktree, configure that session's working directory first, then dispatch its children.
+
+Kiki forwards those roots to an external executor through its supported directory interface; an ACP executor that does not declare additional-directory support records `additional_directories_dropped`. Adding a directory does not disable permission rules, persisted worktree restrictions or the engine's own sandbox.
+
 To continue a direct child, set `resume` to its name or agent id; it rejects `name`, `profile`, `profile_file` and `route`. `allow_model_change` only matters on `resume` with an explicit `model_alias` that resolves to a different canonical model.
 
 A new launch picks its model from the concrete `model_alias` parameter, then the effective profile, route or caller-lease pin, then an explicitly configured `[subagent].default_model`. With none of those it fails with `model.not_configured` and no child is created, and an unknown alias is an error. Effort resolves separately, from the tool call, the route, the caller lease, the profile, or the model itself — [the full order is below](#named-profile-routes-experimental). Omitted `model_alias` and `effort` on `resume` keep the saved binding; an alias resolving to the same canonical model is a no-op, and a different one needs `allow_model_change: true`.
