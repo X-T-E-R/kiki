@@ -3031,7 +3031,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(10);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(11);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -3041,7 +3041,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -3064,6 +3064,8 @@ describe('TranscriptService live integration', () => {
         { type: 'goal.update', tokensUsed: 200, time: 20_002 },
         { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', time: 21_000 },
         { type: 'goal.update', status: 'active', time: 22_000 },
+        { type: 'executor.runtime.update', kind: 'usage', value: { used: 109786, size: 200000 }, time: 23_000 },
+        { type: 'subagent.spawned', subagentId: 'external-child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1', time: 24_000 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -3091,14 +3093,15 @@ describe('TranscriptService live integration', () => {
         expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'model.switch')).toEqual([
           expect.objectContaining({ payload: { from: 'example/old', to: 'example/new' } }),
         ]);
-        expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
+        expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low', contextTokens: 109786, maxContextTokens: 200000, contextUsage: 0.54893 });
+        expect(expected?.tasks).toContainEqual(expect.objectContaining({ thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' }));
         expect(expected?.items.filter((item) => item.kind === 'marker' && item.marker === 'compaction')).toEqual([
           expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'committed summary' }) }),
           expect.objectContaining({ payload: expect.objectContaining({ phase: 'cancelled' }) }),
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(10);
+        expect(checkpoint?.format).toBe(11);
         expect(expected?.meta.goal).toMatchObject({ budgetUsed: 200, turnsUsed: 1, wallClockMs: 50 });
         expect(expected?.items.flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
           ? [(item.payload as { change: { kind: string } }).change.kind] : [])).toEqual(['created', 'paused', 'resumed']);
@@ -3114,6 +3117,15 @@ describe('TranscriptService live integration', () => {
         expect(await second.readColdSnapshot('s1', 'main')).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
+        second.dispose();
+        second = createService();
+        expect(await second.readColdSnapshot('s1', 'main')).toEqual(expected);
+        expect(starts.at(-1)).toBe(originalWire.byteLength);
+        second.dispose();
+        await appendFile(wirePath, `${JSON.stringify({ type: 'executor.runtime.update', kind: 'usage', value: { used: 120000, size: 200000 }, time: 25_000 })}\n`);
+        second = createService();
+        expect((await second.readColdSnapshot('s1', 'main'))?.meta.agent).toMatchObject({ contextTokens: 120000, maxContextTokens: 200000, contextUsage: 0.6 });
+        expect(starts.at(-1)).toBe(originalWire.byteLength);
       } finally {
         first.dispose();
         second?.dispose();
