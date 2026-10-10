@@ -44,6 +44,9 @@ import { ToolAccesses, type ToolAccesses as ToolAccessList } from '#/tool/toolCo
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { authorizeExternalTool, externalPermissionMeta } from '#/agent/execution/externalPermission';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
+import { isToolActive } from '@kiki/agent-profiles/toolPolicy';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { AgentPermissionGate } from '#/agent/permissionGate/permissionGateService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -232,6 +235,36 @@ describe('AgentPermissionPolicyService chain', () => {
     rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
     expect(await authorizeExternalTool(context, tool, 1, 'inherit', signal, display)).toBe('inherit');
     expect(await authorizeExternalTool(context, { name: 'Read', input: { path: '/workspace/notes.md' } }, 1, 'deny', signal, display)).toBe('deny');
+  });
+
+  it.each([true, false])('does not promote native catalog ceilings into external declarations (inherit=%s)', async (inherit) => {
+    mode = 'yolo';
+    const base = externalContext(inherit);
+    const context = { ...base, binding: { ...base.binding,
+      activeToolNames: ['Read'], toolAllowPolicies: [['Read'], ['Read', 'Bash']] } };
+    const tool = { name: 'manage_task', input: { Action: 'status', TaskId: 'example/task-1' } };
+    const display = { kind: 'external_permission' as const, options: [], summary: tool.name, detail: tool.input };
+    expect(isToolActive({ toolAllowPolicies: context.binding.toolAllowPolicies }, tool.name)).toBe(false);
+    expect(await authorizeExternalTool(context, tool, 1, 'vendor-status', signal, display)).toBe(inherit ? 'inherit' : 'allow');
+    expect(externalPermissionMeta(context, '/workspace').hostGate).toBe(!inherit);
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'manage_task' });
+    expect(await authorizeExternalTool(context, tool, 1, 'real-deny', signal, display)).toBe('deny');
+  });
+
+  it('preserves and clears an explicitly declared external profile allowlist without using native catalogs', async () => {
+    mode = 'yolo';
+    const base = externalContext();
+    const bind = (tools: readonly string[] | undefined) => ({ ...base, binding: { ...base.binding,
+      toolAllowPolicies: [['Read']], boundProfile: freezeBoundProfile(normalizeAgentProfile({
+        name: 'example', executor: 'example-acp', tools, systemPrompt: 'Example',
+      })) } });
+    const tool = { name: 'manage_task', input: { Action: 'status' } };
+    const display = { kind: 'external_permission' as const, options: [], summary: tool.name, detail: tool.input };
+    expect(await authorizeExternalTool(bind(['Read']), tool, 1, 'excluded', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(bind([]), tool, 1, 'empty', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(bind(['manage_task']), tool, 1, 'included', signal, display)).toBe('allow');
+    expect(await authorizeExternalTool(bind(undefined), tool, 1, 'cleared', signal, display)).toBe('allow');
+    expect(await authorizeExternalTool(bind(['*']), tool, 1, 'unrestricted', signal, display)).toBe('allow');
   });
 
   it('keeps external vendor inheritance while enforcing persisted worktree isolation without a mode override', async () => {

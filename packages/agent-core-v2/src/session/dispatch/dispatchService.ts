@@ -376,7 +376,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       const delegator = this.requireHandle(childDelegator.agentId, 'Delegator agent');
       child
         .accessor.get(IAgentPermissionModeService)
-        .setMode(delegator.accessor.get(IAgentPermissionModeService).mode);
+        .setMode(delegator.accessor.get(IAgentPermissionModeService).mode, 'ambient');
     }
     return this.childView(
       child,

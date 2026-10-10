@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isToolActive, type ToolActivationPolicy } from '@kiki/agent-profiles/toolPolicy';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -40,18 +41,32 @@ export function externalPermissionMode(context: AgentExecutorContext) {
   return externalPermissionOverride(context)?.mode;
 }
 
+export function externalToolPolicy(context: AgentExecutorContext): ToolActivationPolicy {
+  const profile = context.binding.boundProfile;
+  const lease = context.binding.appliedLease;
+  const tools = lease?.tools !== undefined ? lease.tools ?? undefined
+    : profile?.fileDefinition?.tools ?? profile?.tools;
+  const routeTools = lease?.tools !== undefined ? undefined : profile?.routeDefinition?.tools;
+  return { tools, toolAllowPolicies: routeTools === undefined ? undefined : [routeTools],
+    disallowedTools: context.binding.disallowedTools };
+}
+
+export function externalPermissionConstraints(context: AgentExecutorContext): boolean {
+  const policy = externalToolPolicy(context);
+  return context.worktree !== undefined || context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0 ||
+    context.binding.executionRestriction !== undefined || (policy.disallowedTools?.length ?? 0) > 0 ||
+    (policy.tools !== undefined && !policy.tools.includes('*'));
+}
+
 export function externalPermissionHostGate(context: AgentExecutorContext): boolean {
-  return context.worktree !== undefined || externalPermissionOverride(context) !== undefined ||
-    context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0 ||
-    context.binding.executionRestriction !== undefined || (context.binding.disallowedTools?.length ?? 0) > 0 ||
-    (context.binding.toolAllowPolicies?.length ?? 0) > 0;
+  return externalPermissionOverride(context) !== undefined || externalPermissionConstraints(context);
 }
 
 export function externalPermissionMeta(context: AgentExecutorContext, cwd: string, additionalDirectories?: readonly string[]) {
   const rules = context.agent.accessor.get(IAgentPermissionRulesService).rules;
   return { version: 1, override: externalPermissionOverride(context), hostGate: externalPermissionHostGate(context),
     policyIdentity: createHash('sha256').update(JSON.stringify({ rules,
-      disallowedTools: context.binding.disallowedTools, toolAllowPolicies: context.binding.toolAllowPolicies,
+      toolPolicy: externalToolPolicy(context),
       restriction: context.binding.executionRestriction, worktree: context.worktree })).digest('hex'),
     workspace: { cwd, additionalDirectories: additionalDirectories ?? [] },
     restriction: context.binding.executionRestriction };
@@ -98,8 +113,7 @@ export async function authorizeExternalTool(
 async function resolveExternalExecution(context: AgentExecutorContext, tool: ExternalToolPermission,
   display: ToolInputDisplay): Promise<RunnableToolExecution | undefined> {
   const { name, input } = tool;
-  if (context.binding.disallowedTools?.includes(name) ||
-      context.binding.toolAllowPolicies?.some((names) => !names.includes(name))) return undefined;
+  if (!isToolActive(externalToolPolicy(context), name, name.startsWith('mcp__') ? 'mcp' : 'builtin')) return undefined;
   const command = input['command'];
   if (name === 'Bash') {
     if (typeof command !== 'string' || command.length === 0) return undefined;
