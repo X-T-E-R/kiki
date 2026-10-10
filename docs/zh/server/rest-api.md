@@ -658,6 +658,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/fs:content` | 按绝对路径预览用户指定的本机文件（包括敏感文件；需要 bearer token，不走 Agent 工具审批） | 支持 | 支持 |
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流） | 不支持 | 不支持 |
 
+已建立索引的会话无需恢复会话即可读取规范媒体文件和暂存上传；规范文件的字节与文件名优先于暂存副本。获准访问的浏览器来源可以读取 `ETag`、`Content-Disposition` 和 `Content-Range`，分别用于缓存重验、文件名和分段响应；来源准入与鉴权规则不变。
+
 错误语义也不相同：`GET /api/files/{file_id}` 和会话媒体下载对查找和存储失败返回真实 404 / 500 状态码（文件端点的参数校验失败仍走 HTTP 200 信封），其余三个端点的失败走标准[响应信封](#响应信封)——客户端仍需检查信封中的 `code`。
 
 ## 下一步

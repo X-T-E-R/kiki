@@ -118,6 +118,7 @@ describe('createOriginHook (onRequest hook)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBe('http://localhost:80');
+    expect(res.headers['access-control-expose-headers']).toBe('ETag, Content-Disposition, Content-Range');
   });
 
   it('echoes the whitelisted cross-origin and short-circuits OPTIONS to 204', async () => {
@@ -141,6 +142,7 @@ describe('createOriginHook (onRequest hook)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect(res.headers['access-control-expose-headers']).toBeUndefined();
   });
 
   it('returns 204 without CORS headers for a non-whitelisted OPTIONS', async () => {
@@ -151,6 +153,7 @@ describe('createOriginHook (onRequest hook)', () => {
     });
     expect(res.statusCode).toBe(204);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect(res.headers['access-control-expose-headers']).toBeUndefined();
   });
 
   it('emits no CORS headers when Origin is absent', async () => {
@@ -161,6 +164,7 @@ describe('createOriginHook (onRequest hook)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    expect(res.headers['access-control-expose-headers']).toBeUndefined();
   });
 
   it('reflects Access-Control-Request-Headers in Allow-Headers for an allowed origin', async () => {

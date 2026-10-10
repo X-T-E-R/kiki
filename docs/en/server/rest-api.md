@@ -664,6 +664,8 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
 
+Indexed sessions serve canonical media and staged uploads without restoring the session. Canonical bytes and filenames take precedence over a staged-upload copy. Admitted browser origins can read `ETag`, `Content-Disposition`, and `Content-Range` for revalidation, filenames, and range receipts; this does not change origin admission or authentication.
+
 Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope), while the other three report failures through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.
 
 ## Next steps

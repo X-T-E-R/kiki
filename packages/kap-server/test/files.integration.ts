@@ -477,16 +477,69 @@ describe('GET /api/sessions/{session_id}/media/{file_id} (server-v2)', () => {
     const data = Buffer.from('staged upload bytes');
     const sessionId = await createSession(r);
     const meta = await uploadFile(r, data, 'staged.png', 'image/png');
+    const acquire = vi.spyOn(r.core.accessor.get(ISessionManager), 'acquire');
+    try {
+      const res = await appOf(r).inject({
+        method: 'GET',
+        url: `/api/sessions/${sessionId}/media/${meta.id}`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('image/png');
+      expect(res.headers['content-length']).toBe(String(data.length));
+      expect(res.rawPayload).toEqual(data);
+      expect(acquire).not.toHaveBeenCalled();
+    } finally {
+      acquire.mockRestore();
+    }
+  });
 
-    const res = await appOf(r).inject({
-      method: 'GET',
-      url: `/api/sessions/${sessionId}/media/${meta.id}`,
+  it('reads cold canonical and queued media without waiting for session restoration', async () => {
+    const r = await boot();
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const data: Buffer = picture(320, 180, [80, 120, 160]);
+    const sessionId = await createSession(r);
+    const canonical = await uploadFile(r, data, 'local image.png', 'image/png');
+    const staged = await uploadFile(r, data, 'queued image.png', 'image/png');
+    await materializeUploadedFile(r, sessionId, canonical);
+    await appOf(r).inject({ method: 'DELETE', url: `/api/files/${canonical.id}` });
+    await closeSessionById(r.core.accessor, sessionId);
+    expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+    const manager = r.core.accessor.get(ISessionManager);
+    if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
+    const acquireOriginal = manager.acquire.bind(manager);
+    const acquire = vi.spyOn(manager, 'acquire').mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return acquireOriginal(...args);
     });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toBe('image/png');
-    expect(res.headers['content-length']).toBe(String(data.length));
-    expect(res.rawPayload).toEqual(data);
+    const timings: Record<string, number> = {};
+    try {
+      for (const meta of [canonical, staged]) {
+        const started = performance.now();
+        const original = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/${meta.id}` });
+        timings[`${meta.name}:original_ms`] = performance.now() - started;
+        expect(original.statusCode).toBe(200);
+        expect(original.rawPayload).toEqual(data);
+        expect(String(original.headers['content-disposition'])).toContain(meta.name);
+        const previewStarted = performance.now();
+        const preview = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/${meta.id}/preview` });
+        timings[`${meta.name}:preview_ms`] = performance.now() - previewStarted;
+        expect(preview.statusCode).toBe(200);
+        expect(preview.headers['content-type']).toMatch(/^image\//);
+        expect(preview.rawPayload.byteLength).toBeGreaterThan(0);
+        const validated = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/${meta.id}/preview`, headers: { 'if-none-match': String(preview.headers['etag']) } });
+        expect(validated.statusCode).toBe(304);
+        expect(validated.rawPayload).toHaveLength(0);
+      }
+      console.log('local-media-cold-timing', JSON.stringify({ bytes: data.length, width: 320, height: 180, restoreDelayMs: 300, acquireCount: acquire.mock.calls.length, timings }));
+      expect(acquire).not.toHaveBeenCalled();
+      expect(getLiveSessionById(r.core.accessor, sessionId)).toBeUndefined();
+      const missing = await appOf(r).inject({ method: 'GET', url: `/api/sessions/${sessionId}/media/f_missing` });
+      expect(missing.statusCode).toBe(404);
+      expect((missing.json() as Envelope).code).toBe(40407);
+    } finally {
+      acquire.mockRestore();
+    }
   });
 
   it('returns file-not-found when neither the session store nor the staged upload holds it', async () => {

@@ -12,6 +12,10 @@ import {
   isFileError,
 } from '@kiki/agent-core-v2/app/file/fileService';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
+import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import {
   agentScopeOf,
@@ -164,9 +168,9 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
       const file = opened.file;
       if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
-      const etag = `"preview-v1-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+      const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
       r.header('etag', etag).header('accept-ranges', 'bytes');
-      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(null) as void;
+      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
       const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));
       r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
       const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
@@ -218,6 +222,20 @@ async function openSessionMedia(core: Scope, sessionId: string, fileId: string, 
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
     return summary === undefined ? { sessionExists: false } : { sessionExists: true, file: await openPersistedToolMedia(core, sessionId, summary.workspaceId, fileId) };
   }
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary !== undefined) {
+    const sessionScope = sessionScopeOf(
+      workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+      summary.id,
+    );
+    const store = new ScopedMediaStore(
+      `${sessionScope}/media`,
+      core.accessor.get(IFileSystemStorageService),
+      core.accessor.get(IAtomicDocumentStore),
+    );
+    return { sessionExists: true, file: await store.open(fileId) ?? await openStagedUpload(core, fileId) };
+  }
+  if (core.accessor.get(ISessionManager).get(sessionId) === undefined) return { sessionExists: false };
   const operation = await acquireSessionOperation(core, sessionId, 'operation');
   if (operation.handle === undefined) return { sessionExists: false, operation };
   try {
