@@ -42,6 +42,10 @@
       "types": "./src/i18n/*.ts",
       "default": "./src/i18n/*.ts"
     },
+    "./session/transcript": {
+      "types": "./src/session/transcript/index.ts",
+      "default": "./src/session/transcript/index.ts"
+    },
     "./session/*": {
       "types": "./src/session/*.ts",
       "default": "./src/session/*.ts"
