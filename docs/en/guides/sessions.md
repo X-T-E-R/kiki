@@ -48,6 +48,10 @@ After a compaction, the handoff can list up to five cards linked to the session,
 
 On the **New session** page in the desktop app or browser you can pick an existing workspace, type an absolute project directory, or choose **Automatically create a workspace** (the default when nothing is registered yet). With the automatic option, your first send creates a directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it, and opens the session there. If you picked a workspace explicitly and it was deleted since, it stays invalid until you choose another one or switch to automatic — Kiki will not quietly open a different workspace. [Data locations](../configuration/data-locations.md#directory-layout) has the layout and what cleanup touches.
 
+When one workspace is selected in the sidebar, **New session** uses that workspace. A failed workspace list is not an empty list: your draft and choices stay in place. Use **Retry**, explicitly choose automatic creation, or enter an absolute folder path.
+
+Stopping creation keeps the draft and waits for the request's result; it does not undo a session already created on the server. Once creation is confirmed, send again with the same choices to reuse that session, or choose **Open created session** without sending. If a timeout leaves the result unconfirmed, check the session list before trying again — another attempt may create a second session.
+
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
