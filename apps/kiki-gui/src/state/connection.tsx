@@ -441,6 +441,36 @@ export function nextGuiLeaseClientId(now = Date.now()): string {
   return `gui-${now.toString(36)}-${guiLeaseClientSequence.toString(36)}`;
 }
 
+/**
+ * Whether this window is attached to the backend its own shell resolves.
+ *
+ * Only `desktop` is. It is the one source whose address this window does not
+ * choose and cannot keep: the shell spawns it on a fresh random port, and a
+ * restart on this home moves that port. Every other source in the union is
+ * somewhere the user or the host put this window on purpose, so recovering a
+ * dropped socket there by re-running local discovery would move their session
+ * to an address they never picked. Naming the one source instead of listing the
+ * ones to exclude keeps a future source from being recovered by accident.
+ */
+export function isDesktopSelection(selection: ConnectionSelection | null | undefined): boolean {
+  return selection?.source === 'desktop';
+}
+
+function sameDesktopEndpoint(left: ConnectionConfig, right: ConnectionConfig): boolean {
+  return left.url.trim().replace(/\/+$/, '') === right.url.trim().replace(/\/+$/, '') &&
+    left.token.trim() === right.token.trim();
+}
+
+function desktopIdentity(previous: MetaResponse, next: MetaResponse): 'same' | 'changed' | 'unknown' {
+  for (const key of ['server_id', 'server_home_id', 'current_space_id', 'dangerous_bypass_auth'] as const) {
+    if (previous[key] !== undefined && next[key] !== undefined && previous[key] !== next[key]) return 'changed';
+  }
+  if (!previous.server_id || !next.server_id || !previous.server_home_id || !next.server_home_id ||
+      typeof previous.dangerous_bypass_auth !== 'boolean' || typeof next.dangerous_bypass_auth !== 'boolean' ||
+      previous.current_space_id !== next.current_space_id) return 'unknown';
+  return 'same';
+}
+
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const host = useHost();
   const desktopRuntime = host.kind === 'tauri';
@@ -510,6 +540,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
   const desktopCancelledRef = useRef(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
+  const socketStatusRef = useRef<WsStatus>('closed');
+  const verifiedDesktopRef = useRef<{
+    selection: ConnectionSelection; client: KikiClient; meta: MetaResponse; homeId: string; scopeId: string;
+  } | null>(null);
+  const desktopRecoveryRef = useRef<{ client: KikiClient; phase: 'checking' | 'failed' } | null>(null);
   const controllersRef = useRef(new LiveControllerRegistry());
   const connectionEpochRef = useRef(0);
   const sshAttemptRef = useRef(0);
@@ -527,6 +562,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
   const leaseClientIdRef = useRef(nextGuiLeaseClientId());
+  /** Set by the desktop recovery effect; called when the local socket drops. */
+  const rediscoverRef = useRef<(() => void) | undefined>(undefined);
 
   useEffect(() => {
     host.connection.setWorkspaceScope?.(selection?.source === 'ssh' ? 'ssh' : 'local');
@@ -569,33 +606,91 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     desktopCancelledRef.current = false;
     let unlisten: (() => void) | undefined;
 
-    const resolveDesktopConnection = () => {
+    const retainedDesktop = () => {
+      const known = verifiedDesktopRef.current;
+      return known !== null && known.selection === selectionRef.current && known.client === localClientRef.current &&
+        known.homeId === (activeSpace()?.homeId ?? 'main') && known.scopeId === (selectionRef.current?.scopeId ?? 'local')
+        ? known : null;
+    };
+    const keepDisconnected = (error: unknown): boolean => {
+      const known = retainedDesktop();
+      if (known === null) return false;
+      desktopRecoveryRef.current = { client: known.client, phase: 'failed' };
+      setWsStatus('closed');
+      setDesktopBoot(null);
+      setDesktopFailure(normalizeDesktopFailure(error));
+      return true;
+    };
+    let resolving = false;
+    const resolveDesktopConnection = (readyConfig?: ConnectionConfig) => {
+      if (cancelled || (resolving && readyConfig === undefined) || desktopCancelledRef.current) return;
+      resolving = true;
       const generation = ++resolveGeneration;
+      const known = retainedDesktop();
+      const retained = known !== null && (readyConfig === undefined || sameDesktopEndpoint(known.selection.config, readyConfig)) ? known : null;
+      if (retained === null) {
+        if (isDesktopSelection(selectionRef.current)) {
+          const previous = verifiedDesktopRef.current;
+          if (previous !== null && previous.selection === selectionRef.current) scopesRef.current.get(previous.scopeId)?.clear();
+          connectionEpochRef.current += 1;
+          selectionRef.current = null;
+          setSelection(null);
+          setMeta(null);
+          verifiedDesktopRef.current = null;
+          desktopRecoveryRef.current = null;
+        }
+        updateLocalSelection(null);
+      } else {
+        desktopRecoveryRef.current = { client: retained.client, phase: 'checking' };
+        setWsStatus('connecting');
+      }
+      if (selectionRef.current === null) setDesktopBoot((boot) => ({ stage: 'waiting', startedAtMs: boot?.startedAtMs ?? Date.now() }));
+      const startedFor = selectionRef.current;
+      const startedEpoch = connectionEpochRef.current;
+      const stillWanted = () => !cancelled && !desktopCancelledRef.current && generation === resolveGeneration &&
+        selectionRef.current === startedFor && connectionEpochRef.current === startedEpoch;
       const resume = reloadSelectionRef.current;
-      resume.promise ??= (host.connection.takeScopeConnection?.() ?? Promise.resolve(null)).then((handoff): ConnectionSelection | null => {
+      if (readyConfig === undefined) resume.promise ??= (host.connection.takeScopeConnection?.() ?? Promise.resolve(null)).then((handoff): ConnectionSelection | null => {
         if (handoff === null) return null;
         const resolved = handoff.connection;
         return { config: resolved.config, persist: false, source: 'ssh', scopeId: `ssh:${handoff.profile.id}`, profile: handoff.profile,
           tunnelId: resolved.tunnelId, serverHomeId: resolved.serverHomeId, serverInstanceId: resolved.serverInstanceId,
           serverVersion: resolved.serverVersion, buildId: resolved.buildId, buildChannel: resolved.buildChannel };
       }).catch(() => null);
-      void Promise.all([host.connection.discover(), resume.consumed ? Promise.resolve(null) : resume.promise]).then(
-        ([connection, handoff]) => {
-          if (cancelled || generation !== resolveGeneration) return;
+      const discovery = readyConfig === undefined ? host.connection.discover() : Promise.resolve({ config: readyConfig, persist: false });
+      void Promise.all([discovery, resume.consumed || readyConfig !== undefined ? Promise.resolve(null) : resume.promise]).then(
+        async ([connection, handoff]) => {
+          if (cancelled || desktopCancelledRef.current || generation !== resolveGeneration) return;
+          // A native SSH handoff is a separately authorized destination.
+          if (handoff === null && !stillWanted()) return;
           setDesktopBoot(null);
           setDesktopFailure(null);
+          const onPeer = !isDesktopSelection(selectionRef.current) && selectionRef.current !== null;
           if (connection === null) {
+            if (keepDisconnected(new Error('Desktop connection discovery returned no verified endpoint.'))) return;
             updateLocalSelection(null);
-            if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
+            if (onPeer) return;
             setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
             return;
           }
-          const local: ConnectionSelection = {
-            config: connection.config,
-            persist: false,
-            source: 'desktop',
-            scopeId: 'local',
-          };
+          if (retained !== null && handoff === null && sameDesktopEndpoint(retained.selection.config, connection.config)) {
+            const nextMeta = await retained.client.meta();
+            if (!stillWanted() || retainedDesktop() !== retained) return;
+            const identity = desktopIdentity(retained.meta, nextMeta);
+            if (identity === 'unknown') {
+              keepDisconnected(new Error('The desktop backend identity could not be verified.'));
+              return;
+            }
+            if (identity === 'same') {
+              verifiedDesktopRef.current = { ...retained, meta: nextMeta };
+              desktopRecoveryRef.current = null;
+              setMeta(nextMeta);
+              setConnectError(null);
+              setWsStatus(socketStatusRef.current);
+              return;
+            }
+          }
+          const local: ConnectionSelection = { config: connection.config, persist: false, source: 'desktop', scopeId: 'local' };
           updateLocalSelection(local);
           if (handoff !== null && !resume.consumed) {
             resume.consumed = true;
@@ -606,44 +701,70 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             setSelection(handoff);
             return;
           }
-          if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
+          if (onPeer || !stillWanted()) return;
+          if (retained !== null) scopesRef.current.get(retained.scopeId)?.clear();
+          verifiedDesktopRef.current = null;
+          desktopRecoveryRef.current = null;
+          setMeta(null);
+          setConnectError(null);
           connectionEpochRef.current += 1;
+          selectionRef.current = local;
           setSelection(local);
         },
-        (error: unknown) => {
-          if (cancelled || generation !== resolveGeneration) return;
-          updateLocalSelection(null);
-          if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
-          connectionEpochRef.current += 1;
-          setDesktopBoot(null);
-          setMeta(null);
-          setSelection(null);
-          if (desktopCancelledRef.current) return;
-          setDesktopFailure(normalizeDesktopFailure(error));
-        },
-      );
+      ).catch((error: unknown) => {
+        if (!stillWanted() || keepDisconnected(error)) return;
+        updateLocalSelection(null);
+        if (!isDesktopSelection(selectionRef.current) && selectionRef.current !== null) return;
+        connectionEpochRef.current += 1;
+        setDesktopBoot(null);
+        setMeta(null);
+        selectionRef.current = null;
+        setSelection(null);
+        setDesktopFailure(normalizeDesktopFailure(error));
+      }).finally(() => { if (generation === resolveGeneration) resolving = false; });
     };
 
-    // Runtime recovery reuses the boot stage event. Each waiting stage resolves
-    // the newly spawned sidecar connection because its random port may change.
-    void host.connection.onBackendStage((payload) => {
-      if (scopePreparingRef.current) return;
-      if (payload === 'waiting') {
-        updateLocalSelection(null);
-        if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') {
-          resolveDesktopConnection();
-          return;
-        }
-        connectionEpochRef.current += 1;
-        setDesktopFailure(null);
-        setConnectError(null);
-        setSelection(null);
-        setMeta(null);
-        setDesktopBoot((boot) => ({
-          stage: 'waiting',
-          startedAtMs: boot?.startedAtMs ?? Date.now(),
-        }));
+    // Recovery is triggered by a lost owned connection, not by startup progress.
+    // Repeated socket notifications share the outstanding discovery; the short
+    // timer only groups socket events and is not process admission control.
+    let rediscovery: ReturnType<typeof setTimeout> | undefined;
+    rediscoverRef.current = undefined;
+    const rediscoverLocal = () => {
+      if (rediscovery !== undefined) return;
+      rediscovery = setTimeout(() => {
+        rediscovery = undefined;
+        if (cancelled) return;
+        // Desktop sockets and the retained local-control socket may request
+        // recovery. The resolver preserves an SSH/remote active selection.
+        const source = selectionRef.current?.source;
+        if (!isDesktopSelection(selectionRef.current) && source !== 'ssh' && source !== 'remote') return;
+        if (scopePreparingRef.current) return;
         resolveDesktopConnection();
+      }, 250);
+    };
+    rediscoverRef.current = rediscoverLocal;
+
+    // Stage events describe work owned by native, never request more work.
+    // Native recovery supplies its authenticated ready endpoint directly.
+    // SSH/remote windows only refresh local control; manual sources stay put.
+    const stageKeepsActiveSelection = () => selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote';
+    const stageMayRetarget = () => selectionRef.current === null || isDesktopSelection(selectionRef.current);
+    void host.connection.onBackendStage((payload) => {
+      if (cancelled || desktopCancelledRef.current || scopePreparingRef.current) return;
+      if (payload === 'waiting') {
+        if (!resolving || !stageMayRetarget()) return;
+        setDesktopBoot((boot) => ({ stage: 'waiting', startedAtMs: boot?.startedAtMs ?? Date.now() }));
+        return;
+      }
+      if (payload !== null && typeof payload === 'object' && 'stage' in payload && payload.stage === 'ready' && 'connection' in payload) {
+        if ((!stageMayRetarget() && !stageKeepsActiveSelection()) || (resolving && retainedDesktop() === null)) return;
+        const config = payload.connection;
+        if (config === null || typeof config !== 'object' || !('url' in config) || typeof config.url !== 'string' || !('token' in config) || typeof config.token !== 'string') return;
+        if (stageKeepsActiveSelection()) {
+          updateLocalSelection({ config: { url: config.url, token: config.token }, persist: false, source: 'desktop', scopeId: 'local' });
+        } else {
+          resolveDesktopConnection({ url: config.url, token: config.token });
+        }
         return;
       }
       if (
@@ -655,9 +776,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ) {
         return;
       }
+      if (!stageMayRetarget()) return;
       resolveGeneration += 1;
+      resolving = false;
+      if (keepDisconnected(payload.failure)) return;
       updateLocalSelection(null);
-      if (selectionRef.current?.source === 'ssh' || selectionRef.current?.source === 'remote') return;
       connectionEpochRef.current += 1;
       setMeta(null);
       setSelection(null);
@@ -680,9 +803,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       resolveGeneration += 1;
+      if (rediscovery !== undefined) clearTimeout(rediscovery);
+      // The socket's status handler outlives this effect, so the ref it calls
+      // has to stop naming a timer from a torn-down effect.
+      if (rediscoverRef.current === rediscoverLocal) rediscoverRef.current = undefined;
       unlisten?.();
     };
   }, [host, desktopAttempt, updateLocalSelection]);
+
 
   const retryDesktopBoot = useCallback(() => {
     setDesktopFailure(null);
@@ -719,6 +847,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => { void instance.klient.close(); };
   }, [localSelection, localEndpoint, localToken, requestTimeoutMs]);
 
+  useEffect(() => {
+    if (host.kind !== 'tauri' || localClient === null || (selection?.source !== 'ssh' && selection?.source !== 'remote')) return;
+    return localClient.klient.terminal.onStatus((status) => {
+      if (status === 'closed') rediscoverRef.current?.();
+    });
+  }, [host, localClient, selection?.source]);
+
   const endpoint = config?.url.trim().replace(/\/+$/, '') ?? null;
   const token = config?.token.trim() ?? null;
   const [clients, setClients] = useState<{
@@ -744,6 +879,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     const controllers = controllersRef.current;
     return () => {
       // Parked views are bound to this client's socket; they cannot outlive it.
+      if (verifiedDesktopRef.current?.client === instance) verifiedDesktopRef.current = null;
+      if (desktopRecoveryRef.current?.client === instance) desktopRecoveryRef.current = null;
       controllers.evictScope(instance);
       if (instance !== selectedLocalClient) void instance.klient.close();
     };
@@ -783,6 +920,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (selection?.source !== 'remote' && selection?.persist === true && config !== null) writeStoredConfig(config);
+        if (selection?.source === 'desktop' && selection === selectionRef.current) {
+          verifiedDesktopRef.current = { selection, client, meta: value, homeId: spaceKey, scopeId };
+          desktopRecoveryRef.current = null;
+        }
         setMeta(value);
       },
       (error: unknown) => {
@@ -852,7 +993,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => { active = false; window.clearInterval(interval); };
   }, [connected, selection?.source, selection?.profile?.id, selection?.tunnelId, host]);
 
-  const socket = connected ? klient?.terminal ?? null : null;
+  const socket = useMemo(() => {
+    const terminal = connected ? klient?.terminal ?? null : null;
+    if (terminal === null || !usesLocalControl) return terminal;
+    return {
+      ...terminal,
+      nudge: () => {
+        terminal.nudge();
+        if (desktopRecoveryRef.current?.client === client) rediscoverRef.current?.();
+      },
+    };
+  }, [connected, klient, client, usesLocalControl]);
 
   useEffect(() => {
     if (socket === null || klient === null) return;
@@ -870,7 +1021,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
     let searchIndex = subscribeSearchIndex();
     const offStatus = socket.onStatus((status) => {
-      setWsStatus(status);
+      if (!active) return;
+      socketStatusRef.current = status;
+      // Socket loss is not proof of a backend replacement. Keep the view while
+      // discovery and /meta establish whether this is still the same instance.
+      if (status === 'closed' && host.kind === 'tauri' && isDesktopSelection(selectionRef.current)) {
+        if (client !== null && verifiedDesktopRef.current?.client === client) desktopRecoveryRef.current = { client, phase: 'checking' };
+        rediscoverRef.current?.();
+      }
+      const recovery = desktopRecoveryRef.current?.client === client ? desktopRecoveryRef.current : null;
+      setWsStatus(recovery?.phase === 'failed' ? 'closed' : recovery !== null && status === 'open' ? 'connecting' : status);
+      if (status === 'open' && recovery?.phase === 'failed') rediscoverRef.current?.();
       if (status === 'open') {
         searchIndex.dispose();
         searchIndex = subscribeSearchIndex();
