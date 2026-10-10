@@ -47,6 +47,7 @@ import {
   selectionCarryoverPresentation,
   buildQuotePrefix,
   type TimelineAnnotation,
+  type ComposerAttachment,
   appendToDraft,
   prepareThreadRefContext,
   findThreadRefs,
@@ -179,7 +180,7 @@ import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentTool
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
-import { useContentContinuation, useTranscriptDetail } from './transcriptDetail';
+import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
@@ -298,7 +299,8 @@ export function projectUserText(text: string): ReactNode {
 export interface TranscriptRowActions {
   /** Turn running / resyncing: mutating actions render but disable. */
   disabled: boolean;
-  onEditMessage: (block: UserBlock, text: string, presentation?: TextPresentation) => void;
+  onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[], presentation?: TextPresentation) => void | Promise<void>;
+  loadEditAttachments?: (block: UserBlock) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
@@ -464,11 +466,14 @@ const UserMessage = memo(function UserMessage({
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={bodyText}
-          onSubmit={async (text) => {
-            const prepared = prepareThreadRefContext(text, threadRefDirectory.info);
-            const selections = selectionCarryoverPresentation(carry.annotations, carry.quote, carry.quoteSource);
+          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : () => rowActions.loadEditAttachments!(block)}
+          onSubmit={async (text, attachments, editedPresentation) => {
+            const prepared = editedPresentation === undefined
+              ? prepareThreadRefContext(text, threadRefDirectory.info)
+              : { text, presentation: editedPresentation };
+            const selections = selectionCarryoverPresentation(carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })), carry.quote, carry.quoteSource);
             const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
-            await rowActions.onEditMessage(block, selections.prefix + prepared.text, presentation);
+            await rowActions.onEditMessage(block, selections.prefix + prepared.text, attachments, presentation);
             setEditing(false);
           }}
           onCancel={() => { setEditing(false); }}
@@ -1053,8 +1058,10 @@ function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['sta
       // should know", which the timeline never needs to say.
       return 'bg-ink-faint';
     case 'failed':
+    case 'lost':
       return 'bg-danger';
     case 'cancelled':
+    case 'idle':
     case 'unknown':
       return 'bg-ink-faint';
     case 'suspended':
@@ -1399,15 +1406,21 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
           {childCount > 0 ? (
             <div className="flex items-center gap-1">
+              {/* A chevron and the count: the button disclosed the child cards,
+                  and the count says how many without a second line of words. */}
               <button
                 type="button"
+                data-subagent-children={block.subagentId}
                 aria-expanded={expanded}
+                aria-label={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
+                title={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
                 onClick={() => {
                   setExpanded((value) => !value);
                 }}
-                className="mt-1 min-h-7 rounded-md px-2 text-[12px] text-ink-faint transition-colors hover:bg-panel hover:text-ink"
+                className="mt-1 inline-flex min-h-7 items-center gap-1 rounded-md px-1.5 text-[12px] tabular-nums text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
               >
-                {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
+                <DisclosureChevron open={expanded} className="text-current" />
+                {childCount}
               </button>
             </div>
           ) : null}
@@ -2719,6 +2732,18 @@ function JumpToBottom({
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
     </button>
   );
+}
+
+function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; turnId: string; state: SessionViewState }) {
+  const controller = useTranscriptController();
+  const { t } = useI18n();
+  useEffect(() => controller?.retainHistoryPreview(agentId, turnId), [controller, agentId, turnId]);
+  if (!controller?.historyPreviewPending(agentId, turnId)) return null;
+  const status = state.detailLoads[`history:${turnId}`];
+  return <div role="status" data-history-preview className="flex items-center gap-2 text-[12px] text-ink-faint">
+    {status?.status === 'error' ? <><span>{status.message}</span><button type="button" onClick={() => { void controller.loadHistoryPreview(agentId, turnId); }}>{t('transcript.retryEarlier')}</button></>
+      : <><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />{t('transcript.loadingEarlier')}</>}
+  </div>;
 }
 
 function TopEdge({ state, onLoadOlder }: {
@@ -4314,6 +4339,7 @@ export function Transcript({
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
                   {first ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : onLoadOlder} /> : null}
+                  {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>
                       <MessageViewRow

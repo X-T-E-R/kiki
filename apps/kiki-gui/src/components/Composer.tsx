@@ -45,7 +45,7 @@ import {
   ACCEPTED_IMAGE_MIMES,
   prepareThreadRefContext,
   fileToImageAttachment,
-  findThreadRefs,
+  findConversationRefs,
   formatBytes,
   hasMention,
   insertDroppedPaths,
@@ -69,6 +69,7 @@ import {
   projectedProfileModelRuleSource,
   resolveCatalogModel,
   resolveSelectedEffort,
+  sortThinkingEffortsForDisplay,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeSettings,
@@ -100,7 +101,8 @@ import { useComposerContextMenu } from './ComposerContextMenu';
 import { Icon } from './icons';
 import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
-import { ThreadRefChip } from './ThreadRefChip';
+import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
+import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
 import { useExecutorCatalog } from './settings/profileEditor/engines';
@@ -232,26 +234,8 @@ function withoutRefusedActions<T extends { readonly kind: string; readonly actio
   return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || (item.action !== 'fork' && item.action !== 'btw')) : items;
 }
 
-const PERSONA_OPTION_PREFIX = 'persona:';
-
-/** The agent picker's last row on /new: where personas are made. */
-function PersonaPickerFooter() {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  return (
-    <div className="border-t border-hairline p-1.5">
-      <button
-        type="button"
-        data-composer-persona-manage
-        onClick={() => { void navigate('/personas'); }}
-        className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink pointer-coarse:min-h-11"
-      >
-        <Icon name="persona" size={14} className="text-ink-faint" />
-        {t('persona.pickerManage')}
-      </button>
-    </div>
-  );
-}
+/** A zero-width tail so the backdrop's final line still paints; never shown. */
+const ZERO_WIDTH_TAIL = '\u200b';
 
 type ComposerMenu =
   | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
@@ -334,6 +318,8 @@ export function Composer({
   onAbort,
   abortPending = false,
   queueEditing = false,
+  messageEditing = false,
+  attachmentScopeKey,
   onQueueEditConfirm,
   onQueueEditCancel,
   header,
@@ -584,7 +570,11 @@ export function Composer({
    * classification is skipped: the draft is verbatim message text here.
    */
   queueEditing?: boolean;
-  onQueueEditConfirm?: (text: string, presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<unknown>;
+  /** Inline history edit: submit verbatim content to the existing edit-resend action. */
+  messageEditing?: boolean;
+  /** Draft/edit identity for delayed clipboard and native picker results. */
+  attachmentScopeKey?: string;
+  onQueueEditConfirm?: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<unknown>;
   onQueueEditCancel?: () => void;
   onQueueEditRemove?: () => void;
   /**
@@ -674,8 +664,21 @@ export function Composer({
   // Keyboard and menu paste share the native file-copy / browser media policy.
   type ClipboardContent = { text: string; files: File[] };
   const pasteContentRef = useRef<(read: () => Promise<ClipboardContent>) => Promise<void>>(async () => {});
+  const attachmentOwner = `${sessionId ?? ''}:${connectionId ?? ''}:${scopeId}:${attachmentScopeKey ?? ''}:${queueEditing}:${messageEditing}`;
+  const attachmentOwnerRef = useRef({ key: attachmentOwner });
+  if (attachmentOwnerRef.current.key !== attachmentOwner) attachmentOwnerRef.current = { key: attachmentOwner };
+  const owner = attachmentOwnerRef.current;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const ownsAttachmentResult = () => mountedRef.current && attachmentOwnerRef.current === owner;
   const pasteDraftRef = useRef({ text, sessionId, connectionId, scopeId });
   pasteDraftRef.current = { text, sessionId, connectionId, scopeId };
+  const ownsReservedAttachmentResult = () => mountedRef.current &&
+    (queueEditing || messageEditing ? ownsAttachmentResult() :
+      pasteDraftRef.current.sessionId === sessionId && pasteDraftRef.current.connectionId === connectionId && pasteDraftRef.current.scopeId === scopeId);
   const { onContextMenu: onComposerContextMenu, menu: composerContextMenu } =
     useComposerContextMenu({ textareaRef, onChange, onPasteContent: (read) => pasteContentRef.current(read) });
   // Event handlers can run several times before a controlled prop rerender.
@@ -691,7 +694,7 @@ export function Composer({
     if (typeof next === 'function') {
       onChangeAttachments((current) => {
         const updated = next(current);
-        attachmentBaselineRef.current = updated;
+        if (ownsAttachmentResult()) attachmentBaselineRef.current = updated;
         return updated;
       });
       return;
@@ -1050,13 +1053,10 @@ export function Composer({
       (attachment.kind === 'upload' && attachment.fileId === undefined),
   );
 
-  // Queue-edit mode only gates on the text itself: the model catalog and
-  // attachment reads belong to a real send, not to an in-place queue edit.
-  // Selection carry-overs (annotation chips, the quote chip) count as content
-  // exactly like attachments: an otherwise empty draft still sends, with the
-  // prefix-only text assembled by the parent.
-  const canSend = queueEditing
-    ? text.trim() !== '' && !disabled && !sendDisabled && !turnInFlight
+  // Edits bypass send-only model selection, but still wait for all media.
+  const canSend = queueEditing || messageEditing
+    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quote != null) &&
+      !disabled && !sendDisabled && !turnInFlight && !pendingAttachments
     : (text.trim() !== '' ||
         attachments.length > 0 ||
         (annotations !== undefined && annotations.length > 0) ||
@@ -1084,16 +1084,26 @@ export function Composer({
     onChange(text.replace(/^\/\S*\s*/, ''));
     textareaRef.current?.focus();
   };
-  // Thread links in the draft: one tray chip each (title, workspace, status),
-  // a tinted token in the text, and whole-link deletion.
-  const threadRefs = useMemo(() => findThreadRefs(text), [text]);
-  const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.sessionId), [threadRefs]);
+  // Conversation links in the draft — threads and rooms alike: one tray chip
+  // each, a tinted token in the text, and whole-link deletion.
+  const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
+  const threadRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'session'), [conversationRefs]);
+  const roomRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'room'), [conversationRefs]);
+  const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.id), [threadRefs]);
+  const roomRefIds = useMemo(() => roomRefs.map((ref) => ref.id), [roomRefs]);
   const fetchThreadSession = useCallback((id: string) => client.getSession(id), [client]);
   const fetchThreadHostId = useCallback(() => client.klient.global.threads.hostId(), [client]);
   const threadRefDirectory = useThreadRefDirectory(threadRefIds, fetchThreadSession, fetchThreadHostId);
+  const roomRefDirectory = useRoomRefDirectory(roomRefIds, roomRefFetcher(client));
+  // The model gets the room's identity and what the client knows about it;
+  // an unresolved room still carries its id and nothing invented.
+  const roomRefInfoOf = useCallback(
+    (roomId: string) => ({ id: roomId, ...roomRefDirectory.lookup(roomId) }),
+    [roomRefDirectory],
+  );
   const threadRefBackdropRef = useRef<HTMLDivElement>(null);
-  const removeThreadRefAt = (index: number) => {
-    const ref = threadRefs[index];
+  const removeConversationRefAt = (index: number) => {
+    const ref = conversationRefs[index];
     if (ref === undefined) return;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
     historyIndexRef.current = null;
@@ -1101,7 +1111,7 @@ export function Composer({
     applyTextChange(next.text, next.cursor);
   };
   const hasTray =
-    threadRefs.length > 0 ||
+    conversationRefs.length > 0 ||
     draftSkill !== undefined ||
     (quote !== undefined && quote !== null) ||
     (annotations !== undefined && annotations.length > 0) ||
@@ -1432,6 +1442,7 @@ export function Composer({
       accepted.map(async (file) => fileToImageAttachment(await file.read())),
     )
       .then((images) => {
+        if (!ownsReservedAttachmentResult()) return;
         updateAttachments((current) =>
           current.flatMap((item) => {
             const stubIndex = stubs.indexOf(item);
@@ -1442,9 +1453,10 @@ export function Composer({
         );
       })
       .catch((error: unknown) => {
+        if (!ownsReservedAttachmentResult()) return;
         // Reads failed wholesale: drop this batch's stubs, keep the rest.
         updateAttachments((current) => current.filter((item) => !stubs.includes(item)));
-        setAttachmentError(errorText(locale, error));
+        if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
       });
   };
 
@@ -1470,12 +1482,15 @@ export function Composer({
         .read()
         .then((contents) => client.uploadFile(contents))
         .then((meta) => {
+          if (!ownsReservedAttachmentResult()) return;
           updateAttachments((current) =>
             current.map((item) => (item === stub ? { ...stub, fileId: meta.id } : item)),
           );
         })
         .catch((error: unknown) => {
+          if (!ownsReservedAttachmentResult()) return;
           updateAttachments((current) => current.filter((item) => item !== stub));
+          if (!ownsAttachmentResult()) return;
           setAttachmentError(
             `${issueText(locale, { key: 'attach.uploadFailed', params: { name: file.name } })} — ${errorText(locale, error)}`,
           );
@@ -1486,11 +1501,11 @@ export function Composer({
   // Late async arrivals (native picker resolving after the composer turned
   // disabled, a queued file-input change) must not add attachments.
   const disabledRef = useRef(disabled);
-  disabledRef.current = disabled || queueEditing;
+  disabledRef.current = disabled;
 
   /** Explicit attachments and preclassified clipboard media: images stay image parts; other attachments upload. */
   const addFiles = (files: readonly SelectedAttachmentFile[]) => {
-    if (disabledRef.current) return;
+    if (disabledRef.current || !ownsAttachmentResult()) return;
     const images: SelectedAttachmentFile[] = [];
     const uploads: SelectedAttachmentFile[] = [];
     for (const file of files) {
@@ -1516,7 +1531,7 @@ export function Composer({
       const native = await host.readClipboardFiles?.();
       const browser = native == null ? await read() : null;
       const latest = pasteDraftRef.current;
-      if (textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
+      if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
       if (latest.text !== draft.text) {
         setAttachmentError(t('composer.pasteDraftChanged'));
         return;
@@ -1550,7 +1565,7 @@ export function Composer({
       if (media.length > 0) addFiles(media);
       if (missingPaths) setAttachmentError(t('composer.pastePathUnavailable'));
     } catch (error) {
-      setAttachmentError(errorText(locale, error));
+      if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
     }
   };
 
@@ -1561,7 +1576,7 @@ export function Composer({
    */
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openAttachPicker = () => {
-    if (disabled || queueEditing) return;
+    if (disabled) return;
     if (host.pickFiles === undefined) {
       fileInputRef.current?.click();
       return;
@@ -1570,7 +1585,7 @@ export function Composer({
       .then((files) => {
         if (files !== null && files.length > 0) addFiles(files);
       })
-      .catch((error: unknown) => { setAttachmentError(errorText(locale, error)); });
+      .catch((error: unknown) => { if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error)); });
   };
 
   // Drag-highlight depth counter: dragenter/dragleave fire on every child
@@ -1612,8 +1627,21 @@ export function Composer({
 
   // The native bridge binds once per host while the inserter closes over a
   // fresh `text` every render — the ref keeps the delivered callback current.
-  const insertDroppedFilePathsRef = useRef(insertDroppedFilePaths);
-  insertDroppedFilePathsRef.current = insertDroppedFilePaths;
+  const insertNativeDrop = (paths: readonly string[]) => {
+    if (!(queueEditing || messageEditing) || host.readDroppedFiles === undefined) {
+      insertDroppedFilePaths(paths);
+      return;
+    }
+    void host.readDroppedFiles(paths).then((result) => {
+      if (!ownsAttachmentResult() || disabledRef.current) return;
+      addFiles(result.media);
+      insertDroppedFilePaths(result.paths);
+    }).catch((error: unknown) => {
+      if (ownsAttachmentResult()) setAttachmentError(errorText(locale, error));
+    });
+  };
+  const insertDroppedFilePathsRef = useRef(insertNativeDrop);
+  insertDroppedFilePathsRef.current = insertNativeDrop;
 
   // Desktop file drops: Tauri intercepts HTML5 drag-and-drop, so real drops
   // arrive through the host bridge carrying absolute paths. Only drops that
@@ -1701,11 +1729,12 @@ export function Composer({
     // Queue-edit mode: the draft IS a queued message's text. Confirming hands
     // it to the queue round-trip (in-place replace at the original slot) —
     // never to command classification, skill activation, or a fresh send.
-    if (queueEditing) {
+    if (queueEditing || messageEditing) {
       setMenu(null);
-      const edited = prepareThreadRefContext(text.trim(), threadRefDirectory.info);
+      const edited = prepareThreadRefContext(text.trim(), threadRefDirectory.info, roomRefInfoOf);
       runAgentTurn(async () => {
-        await onQueueEditConfirm?.(edited.text, edited.presentation);
+        if (queueEditing) await onQueueEditConfirm?.(edited.text, attachments, edited.presentation);
+        else await onSend(edited.text, attachments, { presentation: edited.presentation });
       });
       return;
     }
@@ -1775,7 +1804,11 @@ export function Composer({
     setInputFocused(false);
     // Linked threads ride along as a trailing <thread_refs> context block the
     // model reads; the transcript strips it back off and shows chips.
-    const withContext = (prepared: string) => prepareThreadRefContext(prepared, threadRefDirectory.info);
+    const withContext = (prepared: string) => prepareThreadRefContext(
+      prepared,
+      threadRefDirectory.info,
+      roomRefInfoOf,
+    );
     // Hosts joined to a live session live on the server's session host list and
     // ride no message, so a send in a session carries exactly the draft's own
     // attachments. On /new there is no session yet: the preselected hosts ride
@@ -1998,9 +2031,9 @@ export function Composer({
     }
     // Queue-edit mode: Escape hands the pre-edit draft back (one Esc per
     // layer — an open menu or history browse above eats its own first).
-    if (event.key === 'Escape' && queueEditing) {
+    if (event.key === 'Escape' && (queueEditing || messageEditing)) {
       event.preventDefault();
-      onQueueEditCancel?.();
+      if (!turnInFlight) onQueueEditCancel?.();
       return;
     }
     // The Mode menu and composer-local undo/redo (the controlled value defeats
@@ -2023,6 +2056,13 @@ export function Composer({
     if (matchesShortcutAction(chordEvent, 'composer-undo')) {
       event.preventDefault();
       undoEdit();
+      return;
+    }
+    if (messageEditing) {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+        event.preventDefault();
+        send();
+      }
       return;
     }
     // History recall lives strictly below the menu branches: an open slash or
@@ -2147,26 +2187,9 @@ export function Composer({
     onChangeGoalObjective,
   };
 
-  // The agent chip names the profile; the default `agent` reads as "Kiki".
-  const agentDisplayName = (name: string) =>
-    name === DEFAULT_AGENT_PROFILE ? t('composer.agentDefaultName') : name;
-  const agentChipLabel = agentProfile === undefined
-    ? undefined
-    : agentProfilePending
-      ? t('composer.agentPendingSuffix', { name: agentDisplayName(agentProfile) })
-      : agentDisplayName(agentProfile);
-
-  // /new: the profile list stays profiles-only — a bot persona is not an
-  // agent profile. A picked persona still rides the chip (personaPick.value)
-  // and PersonaPickerFooter reaches the persona manager from the panel.
-  const agentOptions: readonly SearchableSelectOption[] = agentProfileOptions;
-  const agentSelectValue = personaPick?.value !== undefined
-    ? `${PERSONA_OPTION_PREFIX}${personaPick.value.id}`
-    : agentProfile ?? DEFAULT_AGENT_PROFILE;
-  const changeAgent = (value: string) => {
-    personaPick?.onChange(undefined);
-    onChangeAgentProfile?.(value);
-  };
+  // A picked persona still rides the chip (personaPick.value) on /new: the
+  // panel behind it stays the execution list, and the persona's own manager is
+  // reached from its chip menu.
   const pickedPersona = personaPick?.value;
 
   // The status line under the input: ordered segments, each a quiet trigger
@@ -2422,7 +2445,9 @@ export function Composer({
             const files = [...event.dataTransfer.files];
             if (files.length === 0) return;
             event.preventDefault();
-            insertDroppedFilePaths(files.map(droppedFilePath));
+            const images = queueEditing || messageEditing ? files.filter((file) => ACCEPTED_IMAGE_MIMES.includes(file.type)) : [];
+            if (images.length > 0) addFiles(readyAttachmentFiles(images));
+            insertDroppedFilePaths(files.filter((file) => !images.includes(file)).map(droppedFilePath));
           }}
         >
           {dragActive ? (
@@ -2476,6 +2501,7 @@ export function Composer({
                 type="button"
                 aria-label={t('composer.queueEditCancel')}
                 title={t('composer.queueEditCancel')}
+                disabled={turnInFlight}
                 onClick={() => { onQueueEditCancel?.(); }}
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
               >
@@ -2515,15 +2541,24 @@ export function Composer({
               right above the input — state (goal/queue) stays in the header. */}
           {hasTray ? (
             <div data-context-tray role="group" aria-label={t('composer.contextTrayAria')} className="flex flex-wrap items-center gap-1.5 px-3 pt-2 pb-0.5">
-              {threadRefs.map((ref, index) => (
-                <ThreadRefChip
-                  key={`thread-${ref.start}`}
-                  sessionId={ref.sessionId}
-                  entry={threadRefDirectory.lookup(ref.sessionId)}
-                  group={threadRefs.map((item) => threadRefDirectory.lookup(item.sessionId))}
-                  onRemove={() => { removeThreadRefAt(index); }}
-                />
-              ))}
+              {conversationRefs.map((ref, index) =>
+                ref.kind === 'room' ? (
+                  <RoomRefChip
+                    key={`room-${ref.start}`}
+                    roomId={ref.id}
+                    entry={roomRefDirectory.lookup(ref.id)}
+                    onRemove={() => { removeConversationRefAt(index); }}
+                  />
+                ) : (
+                  <ThreadRefChip
+                    key={`thread-${ref.start}`}
+                    sessionId={ref.id}
+                    entry={threadRefDirectory.lookup(ref.id)}
+                    group={threadRefs.map((item) => threadRefDirectory.lookup(item.id))}
+                    onRemove={() => { removeConversationRefAt(index); }}
+                  />
+                ),
+              )}
               {draftSkill !== undefined ? (
                 <SkillChip name={draftSkill.name} description={draftSkill.description} onRemove={removeDraftSkill} />
               ) : null}
@@ -2558,6 +2593,15 @@ export function Composer({
                       );
                     }
                     if (attachment.kind === 'retained') {
+                      const part = attachment.content;
+                      const src = part.type === 'image' && part.source.kind === 'base64'
+                        ? `data:${part.source.media_type};base64,${part.source.data}`
+                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined;
+                      if (src !== undefined) return (
+                        <ImageTile key={`retained-${index}`} src={src} name={attachment.name}
+                          onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
+                          onRemove={remove} removeLabel={t('composer.removeAttachment', { name: attachment.name })} />
+                      );
                       return (
                         <TextTile
                           key={`retained-${index}`}
@@ -2711,24 +2755,24 @@ export function Composer({
             {slashPreviewItem !== null ? (
               <SkillPreviewCard item={slashPreviewItem} />
             ) : null}
-            {/* Thread links read as tokens: a tinted backdrop mirrors the draft
-                behind the (transparent) textarea and tints each link's range.
-                Only mounted while the draft carries a link. */}
-            {threadRefs.length > 0 ? (
+            {/* Conversation links read as tokens: a tinted backdrop mirrors
+                the draft behind the (transparent) textarea and tints each
+                link's range. Only mounted while the draft carries a link. */}
+            {conversationRefs.length > 0 ? (
               <div
                 ref={threadRefBackdropRef}
                 aria-hidden
                 data-thread-ref-backdrop
                 className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
-                {threadRefs.map((ref, index) => (
+                {conversationRefs.map((ref, index) => (
                   <span key={ref.start}>
-                    {text.slice(index === 0 ? 0 : threadRefs[index - 1]!.end, ref.start)}
-                    <mark data-thread-ref-token className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
+                    {text.slice(index === 0 ? 0 : conversationRefs[index - 1]!.end, ref.start)}
+                    <mark data-thread-ref-token data-ref-kind={ref.kind} className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
                   </span>
                 ))}
-                {text.slice(threadRefs.at(-1)!.end)}
-                {'​'}
+                {text.slice(conversationRefs.at(-1)!.end)}
+                {ZERO_WIDTH_TAIL}
               </div>
             ) : null}
             <textarea
@@ -2755,6 +2799,8 @@ export function Composer({
                 refreshMenu(node.value, node.selectionStart);
               }}
               data-composer
+              data-composer-session={sessionId}
+              data-composer-agent={agentId}
               onScroll={(event) => {
                 const backdrop = threadRefBackdropRef.current;
                 if (backdrop !== null) backdrop.scrollTop = event.currentTarget.scrollTop;
@@ -2831,7 +2877,7 @@ export function Composer({
               type="file"
               multiple
               className="hidden"
-              disabled={disabled || queueEditing}
+              disabled={disabled}
               onChange={(event) => {
                 const files = [...(event.target.files ?? [])];
                 // Reset so re-picking the same file fires change again.
@@ -2842,7 +2888,7 @@ export function Composer({
             <AddMenu
               view={addView}
               onViewChange={setAddView}
-              attachDisabled={disabled || queueEditing}
+              attachDisabled={disabled}
               onAttach={openAttachPicker}
               onRebuild={onRebuildContext === undefined ? undefined : () => { setContextRebuildConfirm(true); }}
               rebuildDisabled={busy || contextRebuildBusy}
@@ -2878,7 +2924,7 @@ export function Composer({
                   icons do the separating. Who answers (mode, agent, model)
                   sits on the left; what it may do (approvals) is pushed right,
                   next to the meter. Agent and model truncate first. */}
-              {statusSegments.map((segment) => (
+              {(messageEditing ? [] : statusSegments).map((segment) => (
                 <div
                   key={segment.key}
                   data-status-segment={segment.key}
@@ -2915,6 +2961,7 @@ export function Composer({
                 // confirm). Turn abort resumes when the edit ends.
                 <button
                   type="button"
+                  disabled={turnInFlight}
                   onClick={() => {
                     if (!queueEditRemoveArmed) {
                       setQueueEditRemoveArmed(true);
@@ -2997,7 +3044,7 @@ export function Composer({
                   aria-expanded={sendTimingAvailable ? sendTimingOpen : undefined}
                   aria-controls={sendTimingOpen ? sendTimingMenuId : undefined}
                   title={
-                    queueEditing
+                    messageEditing ? t('transcript.editSubmitTitle') : queueEditing
                       ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
                       : sendDisabled && !disabled && sendDisabledTitle !== undefined
                         ? sendDisabledTitle
@@ -3007,7 +3054,8 @@ export function Composer({
                           ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
                           : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
                   }
-                  aria-label={queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
+                  aria-label={messageEditing ? t('transcript.editSubmit') : queueEditing ? t('composer.queueEditConfirm') : busy ? t(busySendsNow ? 'composer.sendNowAria' : 'composer.queueAria') : t('composer.sendAria')}
+                  data-edit-submit={messageEditing ? '' : undefined}
                   data-send-ready={canSend ? '' : undefined}
                   // Filled accent only once there is something to send; at rest
                   // the button is a quiet ink glyph on paper.
@@ -3386,7 +3434,8 @@ function ModelChip({
   readonly onChangeEffort: (effort: string) => void;
 }) {
   const { t } = useI18n();
-  const showEffort = efforts !== undefined && efforts.length > 0 && effort !== undefined;
+  const displayEfforts = sortThinkingEffortsForDisplay(efforts ?? []);
+  const showEffort = displayEfforts.length > 0 && effort !== undefined;
   const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
@@ -3447,7 +3496,7 @@ function ModelChip({
       buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${
         modelSource === 'override' ? STATUS_SEGMENT_SET : ''
       } disabled:cursor-not-allowed disabled:opacity-60`}
-      triggerIcon={<EffortGauge efforts={efforts} effort={showEffort ? effort : undefined} />}
+      triggerIcon={<EffortGauge efforts={displayEfforts} effort={showEffort ? effort : undefined} />}
       triggerLabel={shortLabel}
       triggerSuffix={
         showEffort ? (
@@ -3488,7 +3537,7 @@ function ModelChip({
               aria-label={t('composer.effortTitle')}
               className="ml-auto flex items-center gap-0.5 rounded-md bg-paper p-0.5"
             >
-              {efforts.map((level) => (
+              {displayEfforts.map((level) => (
                 <button
                   key={level}
                   type="button"

@@ -18,6 +18,7 @@ import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
+import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
@@ -31,6 +32,7 @@ import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
 import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
+import { SubmissionRecovery } from './SubmissionRecovery';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from './model-switch/ModelSwitchNotice';
@@ -66,6 +68,8 @@ import {
   selectionCarryoverPresentation,
   stripThreadRefContext,
   buildPromptContent,
+  retainedAttachmentsFromContent,
+  fileToImageAttachment,
   buildSkillActivation,
   flushDrafts,
   parseSelectionCarryovers,
@@ -1798,6 +1802,8 @@ export function SessionView({
   // before the edit parked itself there.
   const [queueEdit, setQueueEdit] = useState<{
     readonly promptId: string;
+    readonly owner: string;
+    readonly attachments: readonly ComposerAttachment[];
     readonly savedDraft: string;
     readonly savedQuote: string | null;
     readonly savedQuoteSource?: SelectionSourceAnchor | null;
@@ -2772,9 +2778,17 @@ export function SessionView({
         if (options?.now === true && !rebindsAgent) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
-          updateDraft('');
-          updateAttachments([]);
-          setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
+          let compositionReleased = false;
+          const releaseComposition = () => {
+            if (compositionReleased) return;
+            compositionReleased = true;
+            if (draftRef.current === stripThreadRefContext(text)
+              && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments)) {
+              updateDraft('');
+              updateAttachments([]);
+            }
+            setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
+          };
           return controller
             .sendPromptNow({
               text: echoText,
@@ -2782,11 +2796,21 @@ export function SessionView({
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
               modelSwitchMode: modelControlTouched ? modelSwitchMode : undefined,
+              // The steer runs inside the ACTIVE turn, which cannot rebind, so it
+              // takes the same projection as the ordinary path rather than the
+              // raw display value: a bare harness must not have Kiki's approval
+              // mode injected into the message it is already running.
               permissionMode: profileSwitch.permissionMode,
               planMode,
               planGate,
+              onPreservation: (persisted) => {
+                if (persisted) releaseComposition();
+                else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+              },
+              onAcknowledged: releaseComposition,
             })
             .then((result) => {
+              releaseComposition();
               setQuote(null);
               completeControls();
               if (result.outcome === 'queued') {
@@ -2848,17 +2872,30 @@ export function SessionView({
         const submitCaptured = (first = false): Promise<void> | undefined => {
           if (!composerOwnerActive.current || (!first && (accepted || pendingSendRef.current))) return;
           pendingSendRef.current = true;
-          // Only X's recovered composition leaves; a newer Y stays untouched.
-          if (first || (draftRef.current === stripThreadRefContext(text)
-            && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments))) {
-            updateDraft('');
-            updateAttachments([]);
-          }
-          setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+          let compositionReleased = false;
+          const releaseComposition = (force = false) => {
+            if (compositionReleased) return;
+            compositionReleased = true;
+            // Only X's recovered composition leaves; a newer Y stays untouched.
+            if (force || (draftRef.current === stripThreadRefContext(text)
+              && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments))) {
+              updateDraft('');
+              updateAttachments([]);
+            }
+            setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+          };
           setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
-          return controller.sendPrompt(submission)
+          return controller.sendPrompt({
+            ...submission,
+            onPreservation: (persisted) => {
+              if (persisted) releaseComposition(first);
+              else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+            },
+            onAcknowledged: () => releaseComposition(),
+          })
           .then((result) => {
             accepted = true;
+            releaseComposition();
             setQuote((current) => current === quote ? null : current);
             setGoalMode(false);
             // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
@@ -3047,12 +3084,8 @@ export function SessionView({
           });
         });
       },
-      editQueued: (promptId: string, text: string, presentation?: import('@kiki/transcript').TextPresentation) =>
-        replaceQueuedPrompt(
-          promptId,
-          text,
-          (id, replacement) => controller.replaceQueued(id, replacement, undefined, presentation),
-        ).catch((error: unknown) => {
+      editQueued: (promptId: string, text: string, media: readonly MessageContent[], presentation?: import('@kiki/transcript').TextPresentation) =>
+        controller.replaceQueued(promptId, text, media, presentation).catch((error: unknown) => {
           pushToast({
             tone: 'error',
             text: t('sv.editQueuedFailed', {
@@ -3211,7 +3244,7 @@ boundExecution,
           });
       } else {
         void compactSessionContext(actionContext, record)
-          .then(() => { pushToast({ tone: 'success', text: t('action.compactRequestedSession') }); })
+          .then((receipt) => { pushToast({ tone: 'success', text: t(receipt.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) }); })
           .catch((error: unknown) => {
             pushToast({
               tone: 'error',
@@ -3270,17 +3303,53 @@ boundExecution,
 
   // ---- message-closure row actions (edit-resend / regenerate / fork) ----
 
+  const loadMessageEditAttachments = useCallback(async (block: UserBlock): Promise<readonly ComposerAttachment[]> => {
+    if (block.queuedContent !== undefined) return retainedAttachmentsFromContent(block.queuedContent);
+    return Promise.all((block.media ?? []).map(async (media): Promise<ComposerAttachment> => {
+      let url = media.blobHash === undefined ? media.url : `blobref:${media.mime};${media.blobHash}`;
+      let fileId = media.fileId;
+      if (media.detail !== undefined) {
+        const detail = await client.klient.session(sessionId).view.transcript.detail?.({
+          agentId: media.detail.agentId, kind: 'attachment', id: media.detail.attachmentId,
+        });
+        if (detail?.kind !== 'attachment' || detail.attachment.source === undefined) throw new Error(t('preview.failed'));
+        const source = detail.attachment.source;
+        if (source.kind === 'url') url = source.url;
+        else fileId = source.fileId;
+      }
+      if (media.kind === 'file') {
+        if (fileId === undefined) throw new Error(t('preview.failed'));
+        return { kind: 'retained', name: media.name ?? fileId, content: { type: 'file', file_id: fileId, name: media.name ?? fileId, media_type: media.mime ?? 'application/octet-stream', size: media.size ?? 0 } };
+      }
+      const blob = /^blobref:([^;]+);([0-9a-f]{64})$/.exec(url ?? '');
+      const originalId = blob === null ? fileId : `blobref:main:${blob[2]}`;
+      if (originalId !== undefined && (originalId.startsWith('inline:') || originalId.startsWith('blobref:'))) {
+        const original = await client.readSessionMediaBytes(sessionId, originalId, client.readingOptions());
+        const bytes = await fileToImageAttachment(new File([original.bytes as Uint8Array<ArrayBuffer>], media.name ?? media.kind, { type: media.mime ?? blob?.[1] ?? original.mime }));
+        if (media.kind === 'image') return bytes;
+        return { kind: 'retained', name: bytes.name, content: { type: 'video', source: { kind: 'base64', media_type: bytes.mediaType, data: bytes.data } } };
+      }
+      if (url === undefined && fileId === undefined) throw new Error(t('preview.failed'));
+      return {
+        kind: 'retained', name: media.name ?? media.kind,
+        content: { type: media.kind, source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: fileId! } },
+      };
+    }));
+  }, [client, sessionId, t]);
   const handleEditMessage = useCallback(
-    (block: UserBlock, text: string, presentation?: import('@kiki/transcript').TextPresentation) => {
+    async (block: UserBlock, text: string, editedAttachments: readonly ComposerAttachment[] = [], presentation?: import('@kiki/transcript').TextPresentation) => {
       if (controller === null || block.userMessageId === undefined) return;
-      const content = buildPromptContent(text, [], presentation);
+      const content = buildPromptContent(text, editedAttachments, presentation);
       if (content === null) return;
-      controller.editMessage(block.userMessageId, { text, content }).catch((error: unknown) => {
+      try {
+        await controller.editMessage(block.userMessageId, { text, content });
+      } catch (error: unknown) {
         pushToast({
           tone: 'error',
           text: t('action.editFailed', { detail: sessionActionErrorText(locale, error) }),
         });
-      });
+        throw error;
+      }
     },
     [controller, t, locale],
   );
@@ -3347,13 +3416,14 @@ boundExecution,
     () => ({
       disabled: state.busy || state.resyncing || state.resyncFailed,
       onEditMessage: handleEditMessage,
+      loadEditAttachments: loadMessageEditAttachments,
       onRegenerate: handleRegenerate,
       onFork: handleForkMessage,
       canFork: composerEngine?.fork !== false,
       // Resume after a user stop re-runs the stopped reply (same path as regenerate).
       onResumeStopped: handleRegenerate,
     }),
-    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage, composerEngine?.fork],
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, loadMessageEditAttachments, handleRegenerate, handleForkMessage, composerEngine?.fork],
   );
 
   const forestRaw = useMemo(
@@ -3596,6 +3666,8 @@ boundExecution,
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
       setQueueEdit({
         promptId,
+        owner: crypto.randomUUID(),
+        attachments: retainedAttachmentsFromContent(item.content ?? []),
         savedDraft: draftRef.current,
         savedQuote: quote,
         savedQuoteSource: quoteSource,
@@ -3621,11 +3693,20 @@ boundExecution,
     },
     [queueEdit, queuedItems, state.blocks, quote, quoteSource, annotations, updateDraft],
   );
+  const updateQueueEditAttachments = useCallback((next: readonly ComposerAttachment[] | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[])) => {
+    const owner = queueEdit?.owner;
+    setQueueEdit((current) => current === null || current.owner !== owner ? current : {
+      ...current,
+      attachments: typeof next === 'function' ? next(current.attachments) : next,
+    });
+  }, [queueEdit?.owner]);
   const handleQueueEditConfirm = useCallback(
-    (text: string, argumentPresentation?: import('@kiki/transcript').TextPresentation): Promise<void> => {
+    (text: string, editedAttachments: readonly ComposerAttachment[], argumentPresentation?: import('@kiki/transcript').TextPresentation): Promise<void> => {
       const edit = queueEdit;
       if (edit === null) return Promise.resolve();
       const exit = () => {
+        if (!composerOwnerActive.current || queueEditRef.current?.owner !== edit.owner) return;
+        queueEditRef.current = null;
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
         setQuote(edit.savedQuote);
@@ -3644,18 +3725,17 @@ boundExecution,
           })),
         ],
       };
-      const finalText = `${carry.prefix}${text}`;
-      // Row vanished (sent/cleared elsewhere) or text unchanged: nothing to
-      // replace — just restore the draft.
-      if (item === undefined || stripThreadRefContext(item.text) === finalText || actions === null) {
+      const content = buildPromptContent(`${carry.prefix}${text}`, editedAttachments, presentation);
+      if (item === undefined) {
         exit();
         return Promise.resolve();
       }
+      if (actions === null || content === null) return Promise.resolve();
+      const finalText = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
+      const media = content.filter((part) => part.type !== 'text');
       return actions
-        .editQueued(edit.promptId, finalText, presentation)
-        .then(() => { exit(); })
-        // editQueued already toasted the failure; keep the edit open so the
-        // text can be retried or cancelled.
+        .editQueued(edit.promptId, finalText, media, presentation)
+        .then(exit)
         .catch(() => undefined);
     },
     [queueEdit, queuedItems, quote, quoteSource, annotations, actions, updateDraft],
@@ -3666,6 +3746,7 @@ boundExecution,
     setQuote(queueEdit.savedQuote);
     setQuoteSource(queueEdit.savedQuoteSource);
     setAnnotations(queueEdit.savedAnnotations);
+    queueEditRef.current = null;
     setQueueEdit(null);
   }, [queueEdit, updateDraft]);
   const handleQueueEditRemove = useCallback(() => {
@@ -3680,7 +3761,10 @@ boundExecution,
   }, [queueEdit, updateDraft, handleCancelQueued]);
   const handleMoveQueued = useCallback(
     (promptId: string, targetIndex: number) =>
-      controller?.moveQueued(promptId, targetIndex).catch((error: unknown) => {
+      controller?.moveQueued(promptId, targetIndex).then(() => {
+        // Message moves also shift the control items' shared queue slots.
+        if (modelSwitches.switches.some((entry) => entry.queueIndex >= 0)) modelSwitches.refresh();
+      }).catch((error: unknown) => {
         pushToast({
           tone: 'error',
           text: t('queue.moveFailed', {
@@ -3688,7 +3772,7 @@ boundExecution,
           }),
         });
       }) ?? Promise.resolve(),
-    [controller, t],
+    [controller, t, modelSwitches.switches, modelSwitches.refresh],
   );
   const handleQueuedTiming = useCallback(
     (promptId: string, timing: DeferredAppendTiming) =>
@@ -3794,7 +3878,7 @@ boundExecution,
   ]);
 
   // Away notifications from the live stream: the open session reports a new
-  // approval / question or a turn that just ended without waiting for the
+  // approval / question or a turn that failed without waiting for the
   // list poll. The shared notifier only delivers while the window is in the
   // background, applies the per-kind switches and rate-limits per session,
   // so the list watcher reporting the same transition later stays quiet.
@@ -3821,7 +3905,7 @@ boundExecution,
     const previous = lastTurnTailRef.current;
     lastTurnTailRef.current = key;
     if (previous === undefined || key === null || key === previous) return;
-    if (turnTail?.state !== 'completed' && turnTail?.state !== 'failed') return;
+    if (turnTail?.state !== 'failed') return;
     reportAttention([{ sessionId, agentId: MAIN_AGENT_ID, turnId: turnTail.turnId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
@@ -3846,6 +3930,7 @@ boundExecution,
     (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
   // The main agent's automatic-compaction point, read from the server for the
   // meter's adjustable track (absent on engines that do not report one).
+  const compactionProgress = useCompactionProgress(client, sessionId);
   const contextAutoCompact = useContextMeterAutoCompact({
     sessionId,
     agentId: MAIN_AGENT_ID,
@@ -3975,13 +4060,14 @@ boundExecution,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel,
   ]);
-  const composerHeader = headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
+  const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
-  );
+  ), [headerGoalSection, headerQueueSection, state.loaded]);
 
   // Keep recovery controls mounted until the engine releases the queue hold.
   const [recoveryPending, setRecoveryPending] = useState(false);
-  const recoveryHold = state.promptQueueHold !== undefined;
+  const recoveryHoldCount = state.promptQueueHold?.count ?? 0;
+  const recoveryHold = recoveryHoldCount > 0;
   const handleRecoveryConfirm = useCallback(() => {
     setRecoveryPending(true);
     void client
@@ -4132,7 +4218,7 @@ boundExecution,
           disabled={composerDisabled}
         />
       ) : (
-        <ContextBreakdownProvider value={state.contextBreakdown}>
+        <ContextBreakdownProvider value={state.contextBreakdown} compaction={compactionProgress}>
           <Composer
             busy={composerBusy}
             disabled={composerDisabled}
@@ -4178,8 +4264,9 @@ boundExecution,
             workspaceId={profileWorkspaceId}
             agentProfileCatalogMode={agentProfileCatalogMode}
             fsSearch={handleFsSearch}
-            attachments={queueEdit === null ? attachments : []}
-            onChangeAttachments={updateAttachments}
+            attachments={queueEdit?.attachments ?? attachments}
+            attachmentScopeKey={queueEdit?.owner}
+            onChangeAttachments={queueEdit === null ? updateAttachments : updateQueueEditAttachments}
             quote={quote}
             onRemoveQuote={handleRemoveQuote}
             annotations={annotations}
@@ -4255,6 +4342,7 @@ boundExecution,
     contextUsed,
     contextLimit,
     contextAutoCompact,
+    compactionProgress,
     sessionId,
     profileWorkspaceId,
     agentProfileCatalogMode,
@@ -4273,6 +4361,7 @@ boundExecution,
     handleComposerSendNow,
     handleComposerAbort,
     queueEdit,
+    updateQueueEditAttachments,
     handleQueueEditConfirm,
     handleQueueEditCancel,
     handleQueueEditRemove,
@@ -4428,13 +4517,14 @@ boundExecution,
             onQuote={handleQuoteSelection} onAnnotate={handleAnnotateSelection}
           />,
           dock: <>
+            <SubmissionRecovery sessionId={sessionId} state={state} />
             <ResyncStatusBanner
               resyncing={state.resyncing} resyncFailed={state.resyncFailed}
               error={state.resyncError}
               onRetry={controller === null ? undefined : () => { void controller.resync(); }}
             />
             {recoveryHold ? (
-              <RecoveryHoldBar count={state.queuedPromptIds.length} pending={recoveryPending}
+              <RecoveryHoldBar count={recoveryHoldCount} pending={recoveryPending}
                 onConfirm={handleRecoveryConfirm} />
             ) : null}
             {state.session?.ephemeral === true ? (
@@ -4551,7 +4641,13 @@ boundExecution,
         overlayId="confirm-profile-switch"
         title={t('profile.switchTitle', { profile: profileSwitchConfirm ?? '' })}
         body={t('profile.switchBody')}
-        consequences={[t('profile.switchModelReset'), t('profile.switchSubagents')]}
+        consequences={[
+          t('profile.switchModelReset'),
+          t('profile.switchSubagents'),
+          // Only worth saying when a turn is actually in flight: it is the one
+          // thing a user switching mid-run is unsure about.
+          ...(composerBusy ? [t('profile.switchRunningTurn')] : []),
+        ]}
         confirmLabel={t('profile.switchConfirm')}
         tone="default"
         onConfirm={confirmProfileSwitchRun}
