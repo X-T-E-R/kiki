@@ -77,6 +77,17 @@ describe('mediaFromContentParts', () => {
 });
 
 describe('extractToolOutputMedia', () => {
+  it('uses saved ACP image, audio and resource originals without inline payloads', () => {
+    expect(extractToolOutputMedia([
+      { type: 'image_url', imageUrl: { url: 'kimi-file://image', attachment: { fileId: 'image', mimeType: 'image/png', size: 3, name: 'answer.png' } } },
+      { type: 'audio_url', audioUrl: { url: 'kimi-file://audio', attachment: { fileId: 'audio', mimeType: 'audio/wav', size: 2, name: 'answer.wav' } } },
+      { type: 'text', text: 'embedded body', attachment: { fileId: 'resource', mimeType: 'application/octet-stream', size: 3, name: 'resource.bin' } },
+    ])).toEqual({ text: 'embedded body', media: [
+      { kind: 'image', fileId: 'image', mime: 'image/png', size: 3, name: 'answer.png' },
+      { kind: 'file', fileId: 'audio', mime: 'audio/wav', size: 2, name: 'answer.wav' },
+      { kind: 'file', fileId: 'resource', mime: 'application/octet-stream', size: 3, name: 'resource.bin' },
+    ] });
+  });
   it('extracts engine image_url parts and their <image path> wrapper', () => {
     const output = [
       { type: 'text', text: '<image path="/work/shots/home.png">' },

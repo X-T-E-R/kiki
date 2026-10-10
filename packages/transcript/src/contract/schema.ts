@@ -138,6 +138,10 @@ export const textFrameSchema = z.object({
   role: z.enum(['assistant', 'user']),
   text: z.string(),
   attachmentIds: z.array(z.string()).optional(),
+  resourceLink: z.object({
+    uri: z.string(), name: z.string().optional(), mimeType: z.string().optional(), size: z.number().optional(),
+    title: z.string().optional(), description: z.string().optional(),
+  }).optional(),
   taskId: taskIdSchema.optional(),
   origin: z.unknown().optional(),
 });
@@ -174,6 +178,7 @@ export const toolCallFrameSchema = z.object({
   state: z.enum(['running', 'done', 'error', 'interrupted']),
   input: z.unknown().optional(),
   output: z.unknown().optional(),
+  attachmentIds: z.array(z.string()).optional(),
   display: z.unknown().optional(),
   error: z.string().optional(),
   errorCode: z.string().optional(),

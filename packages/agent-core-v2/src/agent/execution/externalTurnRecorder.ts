@@ -1,4 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
+
+import { redactCtx } from '#/_base/log/formatter';
+import { redactMemorySecrets } from '#/app/memory/memorySafety';
 
 import type {
   NormalizedExecutorContent,
@@ -23,7 +28,13 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { toKimiErrorPayload } from '#/errors';
-import type { ContentPart } from '#/kosong/contract/message';
+import type {
+  ContentPart,
+  ContentPartAttachment,
+  ResourceLinkMetadata,
+} from '#/kosong/contract/message';
+import { mediaExtensionForMime, mediaKindForMime, buildDaemonFileUrl } from '#/agent/media/mediaRef';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -43,7 +54,22 @@ import {
   type ExecutorResumeMode,
 } from './externalExecutorOps';
 
-export type ExternalExecutorContent = NormalizedExecutorContent;
+type ExternalStructuredToolContent =
+  | {
+      readonly type: 'diff';
+      readonly path: string;
+      readonly oldText?: string | null;
+      readonly newText: string;
+      readonly meta?: unknown;
+    }
+  | {
+      readonly type: 'terminal';
+      readonly terminalId: string;
+      readonly output?: string;
+      readonly meta?: unknown;
+    };
+
+export type ExternalExecutorContent = NormalizedExecutorContent | ExternalStructuredToolContent;
 export type ExternalExecutorEvent = NormalizedExecutorEvent;
 
 export interface ExternalTurnRecorderMetadata {
@@ -90,6 +116,7 @@ interface RecordedTool {
   status?: string;
   rawInput?: unknown;
   acp?: AcpToolState;
+  outputSnapshot?: string | readonly ContentPart[] | null;
   terminal: boolean;
 }
 
@@ -103,6 +130,7 @@ export class ExternalTurnRecorder {
   readonly #wire: IWireService;
   readonly #context: IAgentContextMemoryService;
   readonly #usage: IAgentUsageService;
+  readonly #mediaStore: ISessionMediaStore | undefined;
   #segment: Segment | undefined;
   readonly #userSegments: UserSegment[] = [];
   readonly #tools = new Map<string, RecordedTool>();
@@ -121,6 +149,11 @@ export class ExternalTurnRecorder {
     this.#wire = agent.accessor.get(IWireService);
     this.#context = agent.accessor.get(IAgentContextMemoryService);
     this.#usage = agent.accessor.get(IAgentUsageService);
+    try {
+      this.#mediaStore = agent.accessor.get(ISessionMediaStore);
+    } catch {
+      this.#mediaStore = undefined;
+    }
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
@@ -246,20 +279,42 @@ export class ExternalTurnRecorder {
       this.#userDelta(event);
       return;
     }
-    if (event.content.type !== 'text') {
+    if (event.messageId === undefined) this.losses.add('message_id_missing');
+    const part = await this.#contentPart(event.content);
+    if (part === undefined) {
       this.losses.add('unknown_update_dropped');
       return;
     }
-    if (event.messageId === undefined) this.losses.add('message_id_missing');
-    const segment = this.#appendSegment('text', event.messageId, event.content.text);
-    this.#lastAssistantText += event.content.text;
+    if (part.type === 'text' && part.attachment === undefined && part.resourceLink === undefined) {
+      const segment = this.#appendSegment('text', event.messageId, part.text);
+      this.#lastAssistantText += part.text;
+      await this.#dispatcher.dispatch(
+        new AssistantDelta({
+          turnId: this.turnId,
+          step: 1,
+          stepId: this.stepId,
+          partId: segment.id,
+          delta: part.text,
+        }),
+      );
+      return;
+    }
+    this.#flushSegment();
+    const partId = `${this.stepId}:part:${this.#partOrdinal++}`;
+    this.#context.appendLoopEvent({
+      type: 'content.part', stepUuid: this.stepId, part, uuid: partId,
+      turnId: String(this.turnId), step: 1,
+    });
+    const delta = part.type === 'text' ? part.text : '';
+    if (delta.length > 0) this.#lastAssistantText += delta;
     await this.#dispatcher.dispatch(
       new AssistantDelta({
         turnId: this.turnId,
         step: 1,
         stepId: this.stepId,
-        partId: segment.id,
-        delta: event.content.text,
+        partId,
+        delta,
+        part,
       }),
     );
   }
@@ -282,6 +337,142 @@ export class ExternalTurnRecorder {
         delta: event.content.text,
       }),
     );
+  }
+
+  async #contentPart(content: ExternalExecutorContent): Promise<ContentPart | undefined> {
+    switch (content.type) {
+      case 'text':
+        return { type: 'text', text: content.text };
+      case 'image':
+        return this.#materializeMedia(content.data, content.mimeType, content.uri, 'image');
+      case 'audio':
+        return this.#materializeMedia(content.data, content.mimeType, undefined, 'audio');
+      case 'resource_link': {
+        const resourceLink: ResourceLinkMetadata = {
+          uri: content.uri,
+          name: content.name,
+          mimeType: content.mimeType,
+          size: content.size,
+          title: content.title,
+          description: content.description,
+        };
+        return {
+          type: 'text',
+          text: resourceLinkText(content.name, content.uri),
+          resourceLink,
+        };
+      }
+      case 'resource':
+        if (content.resource.type === 'text') {
+          return { type: 'text', text: content.resource.text, resourceLink: {
+            uri: content.resource.uri,
+            mimeType: content.resource.mimeType,
+          } };
+        }
+        return this.#materializeMedia(
+          content.resource.blob,
+          content.resource.mimeType ?? 'application/octet-stream',
+          content.resource.uri,
+          'resource',
+        );
+      case 'diff':
+      case 'terminal':
+        return { type: 'text', text: stringifyKnownToolContent(content) };
+      case 'opaque': {
+        const detail = diagnosticPayload(content.payload);
+        const suffix = detail === undefined ? '' : `${String.fromCodePoint(10)}${stringifyOutput(detail)}`;
+        return { type: 'text', text: `[Unsupported external content: ${content.contentType}]${suffix}` };
+      }
+    }
+  }
+
+  async #toolContentParts(content: readonly unknown[] | undefined): Promise<readonly ContentPart[] | undefined> {
+    if (content === undefined) return undefined;
+    const parts: ContentPart[] = [];
+    let diagnostic = false;
+    let structured = false;
+    for (const value of content) {
+      const normalized = normalizeRawExternalContent(value);
+      if (normalized === undefined) continue;
+      diagnostic ||= normalized.type === 'opaque';
+      structured ||= normalized.type === 'diff' || normalized.type === 'terminal';
+      const part = await this.#contentPart(normalized);
+      if (part !== undefined) parts.push(part);
+    }
+    if (parts.length === 0) return undefined;
+    return !diagnostic && !structured && parts.every((part) => part.type === 'text' && part.attachment === undefined && part.resourceLink === undefined)
+      ? undefined : parts;
+  }
+
+  async #toolSnapshot(content: readonly unknown[]): Promise<string | readonly ContentPart[] | undefined> {
+    const parts = await this.#toolContentParts(content);
+    if (parts !== undefined) return parts;
+    const summary = summarizeContent(content);
+    return summary.length === 0 ? undefined : summary;
+  }
+
+  async #rawOutput(value: unknown): Promise<string | readonly ContentPart[] | undefined> {
+    if (typeof value === 'string') return value;
+    const values = Array.isArray(value) ? value : [value];
+    const parts: ContentPart[] = [];
+    for (const item of values) {
+      const normalized = normalizeRawExternalContent(item);
+      if (normalized === undefined) continue;
+      const part = await this.#contentPart(normalized);
+      if (part !== undefined) parts.push(part);
+    }
+    return parts.length === 0 ? undefined : parts;
+  }
+
+  async #materializeMedia(
+    encoded: string,
+    mimeType: string,
+    sourceUri: string | undefined,
+    kind: 'image' | 'audio' | 'resource',
+  ): Promise<ContentPart> {
+    const bytes = decodeAcpBase64(encoded);
+    const mime = normalizeMimeType(mimeType);
+    if (bytes === undefined) {
+      this.losses.add('unknown_update_dropped');
+      return { type: 'text', text: `[External ${kind} body unavailable: invalid base64]` };
+    }
+    if (this.#mediaStore === undefined) {
+      this.losses.add('unknown_update_dropped');
+      return { type: 'text', text: `[External ${kind} body unavailable: media storage is unavailable]` };
+    }
+    const hash = createHash('sha256').update(mime).update(String.fromCodePoint(0)).update(bytes).digest('hex');
+    const fileId = `f_acp_${hash}`;
+    const extension = mediaExtensionForMime(mime) ?? '.bin';
+    const name = resourceName(sourceUri, extension);
+    const path = await this.#mediaStore.materialize({
+      fileId,
+      size: bytes.length,
+      name,
+      mimeType: mime,
+      stream: () => Readable.from([bytes]),
+    }).catch(() => undefined);
+    if (path === undefined) {
+      this.losses.add('unknown_update_dropped');
+      return { type: 'text', text: `[External ${kind} body unavailable: media storage rejected it]` };
+    }
+    const attachment: ContentPartAttachment = { fileId, mimeType: mime, size: bytes.length, name };
+    const mediaKind = mediaKindForMime(mime);
+    if (mediaKind === 'image') {
+      return { type: 'image_url', imageUrl: {
+        url: buildDaemonFileUrl(fileId), id: fileId, name, mimeType: mime, size: bytes.length, attachment,
+      } };
+    }
+    if (mediaKind === 'audio') {
+      return { type: 'audio_url', audioUrl: {
+        url: buildDaemonFileUrl(fileId), id: fileId, name, mimeType: mime, size: bytes.length, attachment,
+      } };
+    }
+    if (mediaKind === 'video') {
+      return { type: 'video_url', videoUrl: {
+        url: buildDaemonFileUrl(fileId), id: fileId, name, mimeType: mime, size: bytes.length, attachment,
+      } };
+    }
+    return { type: 'text', text: resourceText(sourceUri), attachment };
   }
 
   #userDelta(event: Extract<ExternalExecutorEvent, { type: 'message.delta' }>): void {
@@ -340,6 +531,7 @@ export class ExternalTurnRecorder {
       status: event.status,
       rawInput: this.metadata.protocol === 'acp-v1' ? event.rawInput : boundedUnknown(event.rawInput),
       acp: this.metadata.protocol === 'acp-v1' ? mergeAcpToolState(undefined, event) : undefined,
+      outputSnapshot: event.content === undefined ? undefined : (await this.#toolSnapshot(event.content)) ?? null,
       terminal: false,
     };
     if (event.rawInput === undefined) this.losses.add('tool_input_partial');
@@ -371,6 +563,9 @@ export class ExternalTurnRecorder {
       }),
     );
     if (tool.acp !== undefined) await this.#acpToolUpdate(tool, event);
+    else if (TERMINAL_TOOL_STATUSES.has(event.status ?? '')) {
+      await this.#toolUpdate({ ...event, type: 'tool.update' });
+    }
   }
 
   async #toolUpdate(event: Extract<ExternalExecutorEvent, { type: 'tool.update' }>): Promise<void> {
@@ -405,6 +600,7 @@ export class ExternalTurnRecorder {
         await this.#acpToolSnapshot(tool);
         return;
       }
+      if (tool.terminal) return;
     }
     if (tool.acp !== undefined) {
       await this.#acpToolUpdate(tool, event);
@@ -414,6 +610,7 @@ export class ExternalTurnRecorder {
     if (event.kind !== undefined) tool.kind = event.kind;
     if (event.status !== undefined) tool.status = event.status;
     if (event.rawInput !== undefined) tool.rawInput = boundedUnknown(event.rawInput);
+    if (event.content !== undefined) tool.outputSnapshot = (await this.#toolSnapshot(event.content)) ?? null;
     if (!TERMINAL_TOOL_STATUSES.has(event.status ?? '')) {
       await this.#dispatcher.dispatch(
         new ToolProgress({
@@ -433,17 +630,27 @@ export class ExternalTurnRecorder {
       return;
     }
     const isError = event.status === 'failed';
-    const output = event.rawOutput === undefined
-      ? summarizeContent(event.content)
-      : stringifyOutput(event.rawOutput);
-    if (event.rawOutput === undefined) this.losses.add('tool_output_summary_only');
+    let output: string | readonly ContentPart[];
+    let summarized = false;
+    if (event.rawOutput !== undefined) {
+      const rawOutput = await this.#rawOutput(event.rawOutput);
+      output = rawOutput ?? stringifyOutput(event.rawOutput);
+      summarized = rawOutput === undefined;
+    } else if (tool.outputSnapshot !== undefined) {
+      output = tool.outputSnapshot ?? '';
+      summarized = typeof output === 'string';
+    } else {
+      output = summarizeContent(event.content);
+      summarized = true;
+    }
+    if (summarized) this.losses.add('tool_output_summary_only');
     this.#context.appendLoopEvent({
       type: 'tool.result',
       toolCallId: tool.namespacedId,
       result: {
         output,
         isError,
-        note: event.rawOutput === undefined
+        note: summarized
           ? 'External tool output summarized from external executor content'
           : undefined,
         errorCode: isError ? event.errorCode : undefined,
@@ -466,9 +673,14 @@ export class ExternalTurnRecorder {
     tool.acp = mergeAcpToolState(tool.acp, event);
     tool.title = tool.acp.title;
     tool.rawInput = tool.acp.rawInput;
+    if (event.content?.length) tool.outputSnapshot = await this.#toolSnapshot(event.content);
+    if (event.rawOutput !== undefined) {
+      const raw = await this.#rawOutput(event.rawOutput);
+      if (raw !== undefined) tool.outputSnapshot = raw;
+    }
     const terminal = ['completed', 'failed', 'cancelled'].includes(tool.acp.status ?? '');
     if (terminal && !tool.terminal) {
-      const output = tool.acp.text || (tool.acp.rawOutput === undefined ? '' : JSON.stringify(tool.acp.rawOutput) ?? '');
+      const output = tool.outputSnapshot ?? (tool.acp.text || (tool.acp.rawOutput === undefined ? '' : JSON.stringify(tool.acp.rawOutput) ?? ''));
       const isError = tool.acp.status === 'failed';
       this.#context.appendLoopEvent({
         type: 'tool.result', toolCallId: tool.namespacedId,
@@ -486,7 +698,12 @@ export class ExternalTurnRecorder {
     await this.#dispatcher.dispatch(new ExecutorToolDisplay({
       turnId: this.turnId, stepId: this.stepId, toolCallId: tool.namespacedId,
       name: acp.title, input: acp.rawInput, display: acpToolDisplay(acp),
-      output: { ...acpToolOutput(acp, this.remoteSessionId, tool.remoteId), synthetic },
+      output: { ...acpToolOutput(acp, this.remoteSessionId, tool.remoteId),
+        content: Array.isArray(tool.outputSnapshot) ? tool.outputSnapshot : acp.content,
+        rawOutput: Array.isArray(tool.outputSnapshot) ? tool.outputSnapshot : acp.rawOutput,
+        text: Array.isArray(tool.outputSnapshot) ? tool.outputSnapshot.map((part) => part.type === 'text' ? part.text : '').filter(Boolean).join('\n') : acp.text,
+        media: Array.isArray(tool.outputSnapshot) ? tool.outputSnapshot : [],
+        synthetic },
       state: state ?? (acp.status === 'completed' ? 'done' : acp.status === 'failed' ? 'error' : acp.status === 'cancelled' ? 'interrupted' : 'running'),
       synthetic,
     }));
@@ -517,18 +734,21 @@ export class ExternalTurnRecorder {
         if (synthetic) tool.acp.text = 'External tool did not report a terminal result before the turn ended.';
         this.#context.appendLoopEvent({
           type: 'tool.result', toolCallId: tool.namespacedId,
-          result: { output: tool.acp.text, isError: synthetic },
+          result: { output: tool.outputSnapshot ?? tool.acp.text, isError: synthetic },
           parentUuid: `${this.stepId}:tool:${tool.remoteId}`,
         });
         await this.#acpToolSnapshot(tool, synthetic ? 'error' : 'interrupted', synthetic);
         tool.terminal = true;
         continue;
       }
+      const output = tool.outputSnapshot === undefined || tool.outputSnapshot === null
+        ? 'External tool did not report a terminal result before the turn ended.'
+        : tool.outputSnapshot;
       this.#context.appendLoopEvent({
         type: 'tool.result',
         toolCallId: tool.namespacedId,
         result: {
-          output: 'External tool did not report a terminal result before the turn ended.',
+          output,
           isError: true,
         },
         parentUuid: `${this.stepId}:tool:${tool.remoteId}`,
@@ -537,7 +757,7 @@ export class ExternalTurnRecorder {
         new ToolResultEvent({
           turnId: this.turnId,
           toolCallId: tool.namespacedId,
-          output: 'External tool did not report a terminal result before the turn ended.',
+          output,
           isError: true,
           synthetic: true,
         }),
@@ -685,10 +905,142 @@ function externalContentText(content: ExternalExecutorContent): string {
       return content.text;
     case 'image':
       return `[External image: ${content.mimeType}]`;
+    case 'audio':
+      return `[External audio: ${content.mimeType}]`;
     case 'resource_link':
-      return `[External resource: ${content.name ?? content.uri} (${content.uri})]`;
-    case 'opaque':
-      return `[External content: ${content.contentType}]`;
+      return resourceLinkText(content.name, content.uri);
+    case 'resource':
+      return content.resource.type === 'text'
+        ? content.resource.text
+        : `[External resource body: ${content.resource.mimeType ?? 'application/octet-stream'}]`;
+    case 'diff':
+    case 'terminal':
+      return stringifyKnownToolContent(content);
+    case 'opaque': {
+      const detail = diagnosticPayload(content.payload);
+      return `[External content: ${content.contentType}]${detail === undefined ? '' : ` ${stringifyOutput(detail)}`}`;
+    }
+  }
+}
+
+function normalizeRawExternalContent(value: unknown): ExternalExecutorContent | undefined {
+  const candidate = objectOf(value);
+  const block = objectOf(candidate?.['content']) ?? candidate;
+  if (block === undefined) return undefined;
+  const type = stringOf(block['type']);
+  if (type === 'text') {
+    const text = stringOf(block['text']);
+    return text === undefined ? undefined : { type, text };
+  }
+  if (type === 'image') {
+    const mimeType = stringOf(block['mimeType']);
+    const data = stringOf(block['data']);
+    return mimeType === undefined || data === undefined ? undefined : {
+      type, mimeType, data, uri: stringOf(block['uri']),
+    };
+  }
+  if (type === 'audio') {
+    const mimeType = stringOf(block['mimeType']);
+    const data = stringOf(block['data']);
+    return mimeType === undefined || data === undefined ? undefined : { type, mimeType, data };
+  }
+  if (type === 'diff') {
+    const path = stringOf(block['path']);
+    const newText = stringOf(block['newText']);
+    const oldTextValue = block['oldText'];
+    const oldText = oldTextValue === null ? null : stringOf(oldTextValue);
+    if (path === undefined || newText === undefined || oldTextValue !== undefined && oldTextValue !== null && oldText === undefined) {
+      return { type: 'opaque', contentType: type, payload: diagnosticPayload(block) };
+    }
+    return {
+      type,
+      path: redactMemorySecrets(path),
+      oldText: oldText === null || oldText === undefined ? oldText : redactMemorySecrets(oldText),
+      newText: redactMemorySecrets(newText),
+      meta: block['_meta'] === undefined || block['_meta'] === null ? undefined : diagnosticPayload(block['_meta']),
+    };
+  }
+  if (type === 'terminal') {
+    const terminalId = stringOf(block['terminalId']);
+    if (terminalId === undefined) return { type: 'opaque', contentType: type, payload: diagnosticPayload(block) };
+    const output = stringOf(block['output']) ?? stringOf(block['text']);
+    return {
+      type,
+      terminalId: redactMemorySecrets(terminalId),
+      output: output === undefined ? undefined : redactMemorySecrets(output),
+      meta: block['_meta'] === undefined || block['_meta'] === null ? undefined : diagnosticPayload(block['_meta']),
+    };
+  }
+  if (type === 'resource_link') {
+    const uri = stringOf(block['uri']);
+    if (uri === undefined) return undefined;
+    return {
+      type,
+      uri,
+      name: stringOf(block['name']),
+      mimeType: stringOf(block['mimeType']),
+      size: numberOf(block['size']),
+      description: stringOf(block['description']),
+      title: stringOf(block['title']),
+    };
+  }
+  if (type === 'resource') {
+    const resource = objectOf(block['resource']);
+    const uri = stringOf(resource?.['uri']);
+    if (resource === undefined || uri === undefined) return undefined;
+    const mimeType = stringOf(resource['mimeType']);
+    const text = stringOf(resource['text']);
+    if (text !== undefined) return { type, resource: { type: 'text', uri, text, mimeType } };
+    const blob = stringOf(resource['blob']);
+    if (blob !== undefined) return { type, resource: { type: 'blob', uri, blob, mimeType } };
+    return { type: 'opaque', contentType: type, payload: diagnosticPayload(block) };
+  }
+  if (type === undefined) return undefined;
+  return { type: 'opaque', contentType: type, payload: diagnosticPayload(block) };
+}
+
+function decodeAcpBase64(value: string): Buffer | undefined {
+  const compact = value.replaceAll(/\s/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) return undefined;
+  const bytes = Buffer.from(compact, 'base64');
+  const canonical = bytes.toString('base64');
+  if (canonical !== compact && canonical.replace(/=+$/, '') !== compact) return undefined;
+  return bytes;
+}
+
+function normalizeMimeType(value: string): string {
+  const mime = value.split(';', 1)[0]!.trim().toLowerCase();
+  return mime.length === 0 ? 'application/octet-stream' : mime;
+}
+
+function resourceName(uri: string | undefined, extension: string): string {
+  if (uri !== undefined) {
+    const withoutQuery = uri.split(/[?#]/, 1)[0]!;
+    const last = withoutQuery.slice(Math.max(withoutQuery.lastIndexOf('/'), withoutQuery.lastIndexOf('\\')) + 1);
+    if (/^[A-Za-z0-9._-]{1,128}$/.test(last)) return last;
+  }
+  return `external-resource${extension}`;
+}
+
+function resourceLinkText(name: string | undefined, uri: string): string {
+  return `[External resource: ${name ?? uri} (${uri})]`;
+}
+
+function resourceText(uri: string | undefined): string {
+  return uri === undefined ? '[Embedded external resource]' : `[Embedded external resource: ${uri}]`;
+}
+
+function stringifyKnownToolContent(
+  content: Extract<ExternalExecutorContent, { type: 'diff' | 'terminal' }>,
+): string {
+  const value = content.type === 'diff'
+    ? { type: 'diff', path: content.path, oldText: content.oldText, newText: content.newText, _meta: content.meta }
+    : { type: 'terminal', terminalId: content.terminalId, output: content.output, _meta: content.meta };
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? Object.prototype.toString.call(value) : json;
+  } catch {
+    return Object.prototype.toString.call(value);
   }
 }
 
@@ -705,6 +1057,28 @@ function boundedUnknown(value: unknown): unknown {
     return { truncated: true, preview: json.slice(0, MAX_BOUNDED_JSON_BYTES) };
   } catch {
     return Object.prototype.toString.call(value);
+  }
+}
+
+function diagnosticPayload(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  const scrub = (input: unknown): unknown => {
+    if (typeof input === 'string') return redactMemorySecrets(input);
+    if (Array.isArray(input)) return input.map(scrub);
+    if (input !== null && typeof input === 'object') {
+      return Object.fromEntries(Object.entries(input).map(([key, item]) => [key,
+        /credential|private.?key|signature/i.test(key) ? '[REDACTED]' : scrub(item)]));
+    }
+    return input;
+  };
+  try {
+    const sanitized = scrub(redactCtx({ payload: value })['payload']);
+    const json = JSON.stringify(sanitized);
+    if (json === undefined) return undefined;
+    if (Buffer.byteLength(json) <= 8192) return sanitized;
+    return { truncated: true, preview: new StringDecoder('utf8').write(Buffer.from(json).subarray(0, 8192)) };
+  } catch {
+    return { unavailable: true };
   }
 }
 
@@ -739,4 +1113,8 @@ function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined
 
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function numberOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

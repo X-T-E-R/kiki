@@ -71,6 +71,7 @@ import {
   type ToolCallFrame,
   type ToolFrameProgress,
   type TranscriptAttachment,
+  type AttachmentSource,
   type TranscriptFrame,
   type TranscriptInteraction,
   type TranscriptMarker,
@@ -743,12 +744,63 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onTextDelta(
-    event: { turnId: number; step?: number; stepId?: string; partId?: string; delta: string },
+    event: { turnId: number; step?: number; stepId?: string; partId?: string; delta: string; part?: unknown },
     kind: 'assistant' | 'thinking',
   ): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     const turnId = `t${event.turnId}`;
     const step = this.ensureStep(turnId, ops, event.stepId, event.step);
+    if (kind === 'assistant') {
+      const resourceLink = contentPartResourceLink(event.part);
+      if (resourceLink !== undefined) {
+        this.flushOpenFrames(ops);
+        const frameId = event.partId ?? `${step.stepId}.f${++this.frameOrdinal}`;
+        const part = {
+          partId: frameId,
+          messageId: step.stepId,
+          revision: 0,
+          provenance: { source: 'engine' as const },
+        };
+        ops.push({
+          op: 'frame.upsert', turnId, stepId: step.stepId,
+          frame: { kind: 'text', frameId, part, role: 'assistant', text: event.delta, resourceLink },
+        });
+        return ops;
+      }
+      const media = contentPartMedia(event.part);
+      if (media !== undefined) {
+        this.flushOpenFrames(ops);
+        const frameId = event.partId ?? `${step.stepId}.f${++this.frameOrdinal}`;
+        const attachmentId = `${frameId}.att1`;
+        const part = {
+          partId: frameId,
+          messageId: step.stepId,
+          revision: 0,
+          provenance: { source: 'engine' as const },
+        };
+        ops.push({
+          op: 'attachment.upsert',
+          attachment: {
+            attachmentId,
+            mediaType: media.mediaType,
+            name: media.name,
+            size: media.size,
+            source: media.source,
+            owner: { kind: 'frame', turnId, stepId: step.stepId, frameId },
+          },
+        });
+        ops.push({
+          op: 'frame.upsert',
+          turnId,
+          stepId: step.stepId,
+          frame: {
+            kind: 'text', frameId, part, role: 'assistant', text: event.delta,
+            attachmentIds: [attachmentId],
+          },
+        });
+        return ops;
+      }
+    }
     let open = kind === 'assistant' ? this.openText : this.openThinking;
     const partId = event.partId ?? open?.frameId ?? `${step.stepId}.f${++this.frameOrdinal}`;
     if (open !== undefined && open.frameId !== partId) {
@@ -1015,17 +1067,31 @@ export class AgentTranscriptLiveAdapter {
     const hit = this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId);
     if (hit === undefined) return [];
     const isError = event.isError === true;
+    const media = contentPartMediaList(event.output);
+    const attachmentIds = media.length === 0
+      ? hit.frame.attachmentIds
+      : media.map((_, index) => `${hit.frame.frameId}.att${index + 1}`);
     const frame: ToolCallFrame = {
       ...hit.frame,
       state: isError ? 'error' : 'done',
       output: event.output,
+      attachmentIds,
       error: isError && typeof event.output === 'string' ? event.output : undefined,
       endedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
     };
     this.toolFrames.set(event.toolCallId, { ...hit, frame });
-    const ops: TranscriptOperation[] = [
-      { op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame },
-    ];
+    const ops: TranscriptOperation[] = media.map((item, index) => ({
+      op: 'attachment.upsert',
+      attachment: {
+        attachmentId: attachmentIds![index]!,
+        mediaType: item.mediaType,
+        name: item.name,
+        size: item.size,
+        source: item.source,
+        owner: { kind: 'frame', turnId: hit.turnId, stepId: hit.stepId, frameId: hit.frame.frameId },
+      },
+    }));
+    ops.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
     return ops;
   }
 
@@ -1900,6 +1966,93 @@ function mapTaskKind(kind: string): TranscriptTask['kind'] {
     default:
       return 'other';
   }
+}
+
+interface LiveContentMedia {
+  readonly mediaType: string;
+  readonly source?: AttachmentSource;
+  readonly name?: string;
+  readonly size?: number;
+}
+
+function contentPartResourceLink(value: unknown): {
+  readonly uri: string;
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly size?: number;
+  readonly title?: string;
+  readonly description?: string;
+} | undefined {
+  const part = objectRecord(value);
+  const link = objectRecord(part?.['resourceLink']);
+  const uri = stringValue(link?.['uri']);
+  if (uri === undefined) return undefined;
+  return {
+    uri,
+    name: stringValue(link?.['name']),
+    mimeType: stringValue(link?.['mimeType']),
+    size: numberValue(link?.['size']),
+    title: stringValue(link?.['title']),
+    description: stringValue(link?.['description']),
+  };
+}
+
+function contentPartMedia(value: unknown): LiveContentMedia | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const part = value as Record<string, unknown>;
+  const type = typeof part['type'] === 'string' ? part['type'] : undefined;
+  const attachment = objectRecord(part['attachment']);
+  const nestedKey = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : type === 'audio_url' ? 'audioUrl' : undefined;
+  const nested = nestedKey === undefined ? undefined : objectRecord(part[nestedKey]);
+  const nestedAttachment = objectRecord(nested?.['attachment']);
+  const metadata = nestedAttachment ?? attachment;
+  const fileId = stringValue(metadata?.['fileId']) ?? stringValue(metadata?.['file_id'])
+    ?? stringValue(nested?.['id']) ?? stringValue(part['fileId']);
+  const mimeType = stringValue(metadata?.['mimeType']) ?? stringValue(metadata?.['mediaType'])
+    ?? stringValue(nested?.['mimeType']);
+  const kind = type === 'image_url' || type === 'image' ? 'image'
+    : type === 'video_url' || type === 'video' ? 'video'
+      : type === 'audio_url' || type === 'audio' ? 'audio' : undefined;
+  if (type === 'text' && metadata !== undefined) {
+    return {
+      mediaType: mimeType ?? 'application/octet-stream',
+      source: fileId === undefined ? undefined : { kind: 'session_media', fileId },
+      name: stringValue(metadata['name']),
+      size: numberValue(metadata['size']),
+    };
+  }
+  if (kind === undefined) return undefined;
+  const url = stringValue(nested?.['url']);
+  const source = fileId === undefined
+    ? url === undefined ? undefined : { kind: 'url' as const, url }
+    : { kind: 'session_media' as const, fileId };
+  return {
+    mediaType: mimeType ?? `${kind}/*`,
+    source,
+    name: stringValue(metadata?.['name']) ?? stringValue(nested?.['name']),
+    size: numberValue(metadata?.['size']) ?? numberValue(nested?.['size']),
+  };
+}
+
+function contentPartMediaList(value: unknown): LiveContentMedia[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    const media = contentPartMedia(part);
+    return media === undefined ? [] : [media];
+  });
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 const TODO_LIST_TOOL_NAME = 'TodoList';

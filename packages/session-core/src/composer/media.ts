@@ -177,6 +177,20 @@ export function extractToolOutputMedia(output: unknown): ToolOutputMedia | undef
   for (const item of output) {
     if (typeof item !== 'object' || item === null) continue;
     const part = item as Record<string, unknown>;
+    const type = part['type'];
+    const nested = type === 'image_url' ? part['imageUrl'] : type === 'audio_url' ? part['audioUrl'] : type === 'video_url' ? part['videoUrl'] : undefined;
+    const ref = typeof nested === 'object' && nested !== null ? nested as Record<string, unknown> : undefined;
+    const metadata = ref?.['attachment'] ?? part['attachment'];
+    if (typeof metadata === 'object' && metadata !== null) {
+      const attachment = metadata as Record<string, unknown>;
+      if (typeof attachment['fileId'] === 'string') {
+        media.push({ kind: type === 'image_url' ? 'image' : type === 'video_url' ? 'video' : 'file',
+          fileId: attachment['fileId'], name: typeof attachment['name'] === 'string' ? attachment['name'] : undefined,
+          mime: typeof attachment['mimeType'] === 'string' ? attachment['mimeType'] : undefined,
+          size: typeof attachment['size'] === 'number' ? attachment['size'] : undefined });
+        if (type !== 'text') continue;
+      }
+    }
     if (part['type'] === 'text') {
       const text = part['text'];
       if (typeof text !== 'string') continue;

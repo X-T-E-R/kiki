@@ -983,6 +983,37 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('projects ACP assistant and tool media bodies as stable session attachments', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt', turnId: 0, promptId: 'acp-prompt', input: [{ type: 'text', text: 'work' }], origin: { kind: 'user' }, time: 1,
+      },
+      { type: 'context.append_loop_event', turnId: 0, time: 2, event: { type: 'step.begin', turnId: '0', uuid: 'acp-step', step: 1 } },
+      { type: 'context.append_loop_event', turnId: 0, time: 3, event: {
+        type: 'content.part', turnId: '0', stepUuid: 'acp-step', uuid: 'assistant-image', part: {
+          type: 'image_url', imageUrl: { id: 'f_acp_image', url: 'kimi-file://f_acp_image', name: 'answer.png', mimeType: 'image/png', size: 3,
+            attachment: { fileId: 'f_acp_image', mimeType: 'image/png', size: 3, name: 'answer.png' } },
+        },
+      } },
+      { type: 'context.append_loop_event', turnId: 0, time: 4, event: { type: 'tool.call', stepUuid: 'acp-step', toolCallId: 'acp-tool', name: 'inspect' } },
+      { type: 'context.append_loop_event', turnId: 0, time: 5, event: { type: 'tool.result', toolCallId: 'acp-tool', result: { output: [
+        { type: 'text', text: '[Embedded external resource]', attachment: { fileId: 'f_acp_resource', mimeType: 'application/octet-stream', size: 3, name: 'resource.bin' } },
+      ] } } },
+      { type: 'context.append_loop_event', turnId: 0, time: 6, event: { type: 'step.end', turnId: '0', uuid: 'acp-step', step: 1, finishReason: 'stop' } },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7 },
+    ]);
+    const step = transcript.getTurn('t0')?.steps[0];
+    expect(step?.frames.find((frame) => frame.kind === 'text')).toMatchObject({ attachmentIds: ['assistant-image.att1'] });
+    const tool = step?.frames.find((frame) => frame.kind === 'tool');
+    expect(tool).toMatchObject({ attachmentIds: ['acp-step.acp-tool.att1'] });
+    expect(transcript.getAttachment('assistant-image.att1')).toMatchObject({
+      mediaType: 'image/png', source: { kind: 'session_media', fileId: 'f_acp_image' }, owner: { kind: 'frame', frameId: 'assistant-image' },
+    });
+    expect(transcript.getAttachment('acp-step.acp-tool.att1')).toMatchObject({
+      mediaType: 'application/octet-stream', source: { kind: 'session_media', fileId: 'f_acp_resource' },
+    });
+  });
+
   it('keeps legacy mailbox deliveries inside the proven active turn without consuming turn ids', () => {
     const mailbox = (id: string, time: number): TranscriptWireRecord => ({
       type: 'context.append_message', time,
