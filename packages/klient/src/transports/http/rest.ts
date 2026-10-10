@@ -664,6 +664,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     plugins: {
+      navigation: () => transport.json('/plugins/navigation'),
       marketplace: () => transport.json('/plugins/marketplace'),
       preview: (input) => transport.json('/plugins:preview', {
         method: 'POST',

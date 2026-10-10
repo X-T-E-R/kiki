@@ -29,7 +29,7 @@ import {
 import { readDefaultPluginCatalog } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { z } from 'zod';
 import {
-  pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema,
+  pluginSettingsResponseSchema, pluginSettingsPatchSchema, pluginPrerequisiteInstallSchema, pluginNavigationSchema,
   pluginPanelSummarySchema, pluginPanelDocumentSchema, pluginPanelBridgeRequestSchema, pluginPanelBridgeResponseSchema,
 } from '@kiki/protocol';
 
@@ -97,6 +97,11 @@ export function registerPluginsRoutes(
   core: Scope,
   opts: PluginsRouteOptions,
 ): void {
+  const navigationRoute = defineRoute({ method: 'GET', path: '/plugins/navigation', success: { data: pluginNavigationSchema }, errors: {},
+    description: 'Read the latest live-session focus request from an App plugin', tags: ['plugins'] }, (req, reply) => {
+      reply.send(okEnvelope({ request: core.accessor.get(IPluginHostService).navigation() }, req.id));
+    });
+  app.get(navigationRoute.path, navigationRoute.options, navigationRoute.handler as Parameters<PluginsRouteHost['get']>[2]);
   const marketplaceRoute = defineRoute(
     {
       method: 'GET',

@@ -616,6 +616,7 @@ export interface HttpRestFacade {
   };
 
   readonly plugins: {
+    navigation(): Promise<import('@kiki/protocol').PluginNavigation>;
     marketplace(): Promise<HttpRestPluginMarketplaceResponse>;
     preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
     install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;

@@ -63,3 +63,8 @@ export type PluginPrerequisiteInstall = z.infer<typeof pluginPrerequisiteInstall
 export type PluginPreviewRequest = z.infer<typeof pluginPreviewRequestSchema>;
 export type PluginInstallRequest = z.infer<typeof pluginInstallRequestSchema>;
 export type PluginInstallPlan = z.infer<typeof pluginInstallPlanSchema>;
+
+export const pluginNavigationSchema = z.object({
+  request: z.object({ id: z.number().int(), pluginId: z.string(), sessionId: z.string(), at: z.number() }).optional(),
+});
+export type PluginNavigation = z.infer<typeof pluginNavigationSchema>;
