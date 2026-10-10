@@ -169,7 +169,7 @@ export class RemoteConnectionManager {
   }
   lease(id: string, parent?: AbortSignal, purpose: 'gui' | 'bridge' = 'gui'): ConnectionLease {
     const record = this.get(id);
-    if (this.stopped || !record.enabled || record.state === 'identity_changed' || (purpose === 'gui' && record.state === 'authentication_required')) throw new AdmissionError(409, record.lastError ?? 'connection_paused');
+    if (this.stopped || !record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
     const controller = new AbortController();
     const abort = (): void => controller.abort(parent?.reason);
     parent?.addEventListener('abort', abort, { once: true }); if (parent?.aborted) abort();
@@ -194,7 +194,7 @@ export class RemoteConnectionManager {
   }
   async connect(id: string, signal: AbortSignal): Promise<{ record: RemoteConnection; credential: Credential; transport: ConnectionTransport }> {
     const record = this.get(id);
-    if (!record.enabled || ['authentication_required', 'identity_changed'].includes(record.state)) throw new AdmissionError(409, record.lastError ?? 'connection_paused');
+    if (!record.enabled || record.state === 'identity_changed') throw new AdmissionError(409, record.lastError ?? 'connection_paused');
     if (!record.purposes.includes('gui')) throw new AdmissionError(403, 'gui_connection_required');
     try {
       const credential = await this.secrets.read<Credential>({ connectionId: record.credentialRef, purpose: 'gui' });
@@ -213,7 +213,7 @@ export class RemoteConnectionManager {
     if (record.summary !== undefined) record.summary.stale = true;
     const reason = error instanceof Error ? error.message : 'connection_failed'; record.lastError = reason;
     record.state = error instanceof AdmissionError && error.reason === 'identity_changed' ? 'identity_changed'
-      : error instanceof AdmissionError && [401, 403].includes(error.status) ? 'authentication_required' : 'offline';
+      : error instanceof AdmissionError && (error.status === 401 || (error.status === 403 && error.reason !== 'inbound_disabled')) ? 'authentication_required' : 'offline';
     if (record.state !== 'offline') this.stop(id, record.state === 'identity_changed' ? undefined : 'gui');
     void this.change(async () => undefined).catch(() => {});
   }
@@ -235,7 +235,12 @@ export class RemoteConnectionManager {
       ...input.headers?.range === undefined ? {} : { range: input.headers.range } };
     try {
       const response = await fetch(url, { method, headers, body: rawBody ?? (input.body === undefined ? undefined : JSON.stringify(input.body)), redirect: 'error', signal, duplex: rawBody === undefined ? undefined : 'half' } as RequestInit);
-      if (response.status === 401 || response.status === 403) { await response.body?.cancel(); throw new AdmissionError(response.status, 'connection_not_approved'); }
+      if (response.status === 401 || response.status === 403) {
+        const refusal = await readConnectionRefusal(response, signal);
+        if (refusal?.code === 40301 && typeof refusal.msg === 'string' && ['htmlPreviewOpen', 'htmlPreviewResource', 'htmlPreviewClose'].includes(operation) && ['html_preview_target_owner_grant_required', 'html_preview_document_origin_requires_local_connection', 'preview_path_outside_root', 'preview_resource_forbidden'].includes(refusal.msg)) return new Response(refusal.body, { status: response.status, statusText: response.statusText, headers: response.headers });
+        void response.body?.cancel().catch(() => {});
+        throw new AdmissionError(response.status, refusal?.code === 40301 && refusal.msg === 'inbound_disabled' ? 'inbound_disabled' : 'connection_not_approved');
+      }
       return response;
     } catch (error) { this.failed(id, error); throw error; }
   }
@@ -246,7 +251,13 @@ export class RemoteConnectionManager {
   private async jsonRequest(url: string, init: RequestInit, bytes: number): Promise<unknown> {
     const signal = init.signal === undefined || init.signal === null ? AbortSignal.timeout(15000) : AbortSignal.any([init.signal, AbortSignal.timeout(15000)]);
     const response = await fetch(url, { ...init, signal, redirect: 'error' });
-    if (!response.ok) { await response.body?.cancel(); throw new AdmissionError(response.status, response.status === 403 ? 'inbound_disabled' : 'authentication_required'); }
+    if (!response.ok) {
+      const envelope = await readBoundedJsonBody(response, 8192).catch(() => undefined) as { msg?: unknown } | undefined;
+      const reasons = ['inbound_disabled', 'dangerous_auth_bypass', 'identity_changed', 'local_owner_required', 'invalid_owner_credential', 'connection_not_approved'];
+      const reason = typeof envelope?.msg === 'string' && reasons.includes(envelope.msg) ? envelope.msg
+        : response.status === 401 ? 'authentication_required' : 'connection_request_rejected';
+      throw new AdmissionError(response.status, reason);
+    }
     return readBoundedJsonBody(response, bytes);
   }
   private change<T>(work: () => Promise<T>): Promise<T> { const result = this.tail.then(async () => { const value = await work(); await writePrivateFile(this.path, JSON.stringify(this.records)); return value; }); this.tail = result.catch(() => undefined); return result; }
@@ -258,4 +269,30 @@ export function validateEndpoint(raw: string): string {
   if (url.username || url.password || url.search || url.hash || !['http:', 'https:'].includes(url.protocol) || (url.pathname !== '/' && url.pathname !== '')) throw new AdmissionError(400, 'invalid_connection_endpoint');
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new AdmissionError(400, 'connection_requires_tls');
   return url.origin;
+}
+
+async function readConnectionRefusal(response: Response, signal: AbortSignal): Promise<{ body: Uint8Array<ArrayBuffer>; code: unknown; msg: unknown } | undefined> {
+  if (response.status !== 403 || !/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/iu.test(response.headers.get('content-type') ?? '') || response.body === null) return undefined;
+  const reader = response.body.getReader();
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
+  const cancel = (): void => { void reader.cancel(deadline.reason).catch(() => {}); };
+  const chunks: Uint8Array[] = []; let bytes = 0; let complete = false;
+  deadline.addEventListener('abort', cancel, { once: true });
+  try {
+    for (;;) {
+      deadline.throwIfAborted();
+      const chunk = await reader.read();
+      deadline.throwIfAborted();
+      if (chunk.done) { complete = true; break; }
+      bytes += chunk.value.byteLength;
+      if (bytes > 8192) return undefined;
+      chunks.push(chunk.value);
+    }
+    const body = new Uint8Array(bytes); let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    const envelope: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
+    if (typeof envelope !== 'object' || envelope === null || !('code' in envelope) || !('msg' in envelope)) return undefined;
+    return { body, code: envelope.code, msg: envelope.msg };
+  } catch { return undefined; }
+  finally { deadline.removeEventListener('abort', cancel); if (!complete) cancel(); reader.releaseLock(); }
 }

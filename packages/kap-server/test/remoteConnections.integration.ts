@@ -113,6 +113,34 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     expect(restarted.admission.status().grants.find((g) => g.id === ab.grantId)?.status).toBe('revoked');
     await aView.close(); await cView.close();
   });
+  it('recovers an ordinary remote call after inbound is restored without reconnect approval', async () => {
+    const a = await boot(); const b = await boot(); const { record } = await connect(a, b);
+    const client = createConnectionKlient({ endpoint: endpoint(a), token: a.localOwnerToken, connectionId: record.id });
+    try {
+      await b.admission.setEnabled(false);
+      await expect(client.rest!.meta()).rejects.toThrow('inbound_disabled');
+      expect(a.remoteConnections.get(record.id)).toMatchObject({ state: 'offline', lastError: 'inbound_disabled' });
+      expect(b.admission.status().enabled).toBe(false);
+      await b.admission.setEnabled(true);
+      expect((await client.rest!.meta()).server_home_id).toBe(b.admission.identity.homeId);
+      expect(a.remoteConnections.get(record.id).state).toBe('online');
+    } finally { await client.close(); }
+  });
+  it('still rejects a revoked grant on ordinary attempts and recovers when the stored grant is replaced', async () => {
+    const a = await boot(); const b = await boot(); const { record, grantId } = await connect(a, b);
+    const client = createConnectionKlient({ endpoint: endpoint(a), token: a.localOwnerToken, connectionId: record.id });
+    try {
+      await b.admission.revoke(grantId);
+      await expect(client.rest!.meta()).rejects.toThrow('connection_not_approved');
+      expect(a.remoteConnections.get(record.id).state).toBe('authentication_required');
+      await expect(client.rest!.meta()).rejects.toThrow('connection_not_approved');
+      const invitation = await b.admission.invite(a.admission.identity, 'Replacement');
+      const credential = await b.admission.claim(invitation.invitation, a.admission.identity);
+      await a.remoteConnections.secrets.write({ connectionId: record.credentialRef, purpose: 'gui' }, { ownerToken: b.authTokenService.getToken(), ...credential });
+      expect((await client.rest!.meta()).server_home_id).toBe(b.admission.identity.homeId);
+      expect(a.remoteConnections.get(record.id).state).toBe('online');
+    } finally { await client.close(); }
+  });
   it('keeps credentials out of the directory and pauses on token rotation, home drift, disable and removal', async () => {
     const a = await boot(); const b = await boot(); const { record } = await connect(a, b);
     await a.remoteConnections.pollSummaries();
