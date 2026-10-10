@@ -62,6 +62,39 @@ await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect"
 
 TOML 不能在同一个 key 下同时写 `[[hooks]]` 和 `[hooks]`，已有数组继续照常工作。要在 v2 文档里保留 legacy 命令，把它们显式移到 `[[hooks.legacy]]`，保留 `event`、`matcher`、`command` 和以秒计的 `timeout`；它们仍按 legacy runner 和输出协议执行。
 
+## Recipe 脚本 hooks
+
+[Recipe 模型配方](./prompt-fields.md#recipe-模型配方)可以携带脚本，只为引用它的原生模型或 profile 绑定运行。在 `recipe.toml` 中声明 hook，并列出命令需要的全部 UTF-8 脚本和配套文件：
+
+```toml
+[[hooks]]
+event = "UserPromptSubmit"
+command = "node hooks/cue.mjs"
+files = ["hooks/cue.mjs"]
+timeout = 5
+```
+
+`hooks/cue.mjs` 从标准输入接收事件 JSON，按既有[脚本响应协议](#返回值)返回指导文本：
+
+```js
+let input = '';
+for await (const part of process.stdin) input += part;
+const event = JSON.parse(input);
+if (event.hook_event_name === 'UserPromptSubmit') {
+  console.log(JSON.stringify({ message: '回答前核对目标和已有证据。' }));
+}
+```
+
+预览列出实际命令、事件、来源和资源指纹。含脚本的包安装时只需明确确认一次，授权这一份执行内容。脚本以 Kiki 服务端的操作系统用户运行，能访问该主机的文件和网络；它不是沙箱，也不改变 Agent 的工具权限。预览、打开编辑器或取消安装都不会运行脚本。无脚本的包不增加脚本确认，已接受的绑定或恢复的会话也不会每次触发都再问。
+
+命令的工作目录是已接受资源快照的受管目录，不是作者的实时源目录。`KIKI_RECIPE_ROOT` 指向这个资源目录，事件 JSON 的 `cwd` 仍指会话工作区。使用主机已有的解释器，并按 Shell 规则为路径加引号。`matcher` 和 `timeout` 沿用下文的 legacy 字段，超时默认 30 秒，接受 1–600 的整数秒。路径必须留在包内，每个引用文本文件最多 256 KiB。可选 `root` 指定包内的相对资源目录，`files` 相对于它；导出的包用此字段隔离继承链中同名的脚本。
+
+父子 hooks 追加，顶层 `hooks = "off"` 移除继承的脚本。模型和 profile 引用各自贡献；关闭某引用后，在下一次绑定或重建上下文时停止该层，包和原配置仍保留。已有会话继续使用冻结的脚本，安装包接受更新也不会暗中替换它，显式重建才采用新版本。
+
+修改命令、脚本资源或执行来源后，要走同一套预览和确认才能发布；只改提示词、执行内容不变时不再问。自动 `follow` 更新遇到新脚本需要确认时保留旧版本。复制或继承已接受的 Recipe 会复用未变脚本的授权；导出只分享资源、不分享授权，因此接收者首次安装需要确认。
+
+Recipe 脚本支持[事件一览](#事件一览)中的 Agent 绑定事件，不接受 `SessionStart`、`SessionEnd`、`SessionHeartbeat`、`SubagentStart` 和 `SubagentStop`；原用户与插件配置的这些事件照常工作。外部执行器不运行 Recipe 脚本。声明式的 `hooks-inspect` 视图不能证明脚本已执行，请核对脚本结果和目标事件的真实效果。
+
 ## Legacy 命令 hook
 
 以下都是 legacy 协议：一条规则写明触发事件、要匹配的目标，以及要执行的 Shell 命令。

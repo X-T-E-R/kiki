@@ -8,7 +8,13 @@ import { Event } from '#/_base/event';
 import { resolvedRecipeSchema } from '@kiki/protocol';
 import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
-import { IRecipeService } from '#/app/recipes/recipes';
+import { IRecipeService, IRecipeSourceReader } from '#/app/recipes/recipes';
+import { RecipeService } from '#/app/recipes/recipeService';
+import { RecipeSourceReader } from '#/os/backends/node-fs/recipeSourceReader';
+import { stringify } from 'smol-toml';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooks';
+import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import { IModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutation';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { GenerateOptions } from '#/kosong/contract/provider';
@@ -35,6 +41,7 @@ import {
   appServices,
   llmGenerateServices,
   sessionService,
+  externalHookServices,
   type TestAgentContext,
 } from '../../harness';
 
@@ -105,6 +112,58 @@ describe('per-model cognition overlay', () => {
       const anchor = await ctx.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false });
       expect(anchor).toContain('RECIPE ANCHOR'); expect(anchor).toContain('ROLE HOST BODY'); expect(anchor).toContain('PERSONA BODY'); expect(anchor).toContain('ROOM BODY'); expect(anchor).not.toContain('RECIPE MAIN');
     }
+  });
+
+  it('runs consented Recipe scripts through the real prompt and request, cold-freezes them and disables only the removed layer', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const directory = join(homeDir, 'bundle'); await mkdir(directory);
+    const script = (text: string) => `let input = ''; for await (const part of process.stdin) input += part; const value = JSON.parse(input); if (value.hook_event_name === 'UserPromptSubmit') console.log(JSON.stringify({ message: ${JSON.stringify(text)} }));`;
+    await writeFile(join(directory, 'cue.mjs'), script('OLD SCRIPT GUIDANCE'));
+    await writeFile(join(directory, 'recipe.toml'), stringify({ schema_version: 1, id: 'example-hooks', name: 'Example hooks', version: '1.0.0', hooks: [{ event: 'UserPromptSubmit', command: 'node cue.mjs', files: ['cue.mjs'], timeout: 5 }] }));
+    let installation: string | undefined; let observed = '';
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
+        reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+      }), externalHookServices(makeHookRunner([])), llmGenerateServices(async (_provider, _system, _tools, messages) => {
+        observed = JSON.stringify(messages);
+        return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, recipe: installation }, [OTHER_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, model: OTHER_MODEL, recipe: 'off' } } };
+      return ctx;
+    };
+    let agent = create(); let recipes = agent.get(IRecipeService);
+    const preview = await recipes.preview({ source: { locator: directory } });
+    await expect(recipes.install({ preview_id: preview.preview_id })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect(await recipes.list()).toEqual([]);
+    installation = (await recipes.install({ preview_id: preview.preview_id, consent: true, update_mode: 'pinned' })).installation_id;
+    await agent.dispose(); agent = create(); recipes = agent.get(IRecipeService);
+    let profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    agent.get(IAgentExternalHooksService);
+    const submit = async () => {
+      const input = { promptMessage: { role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }], toolCalls: [], origin: { kind: 'user' as const } }, isSteer: false, block: false };
+      expect(await profile.getRecipeScriptHooks()).toHaveLength(1);
+      await agent.get(IAgentPromptService).hooks.onBeforeSubmitPrompt.run(input);
+      expect(input.block).toBe(false);
+      expect(JSON.stringify(agent.get(IAgentContextMemoryService).get())).toContain('SCRIPT GUIDANCE');
+      await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    };
+    await submit(); expect(observed).toContain('OLD SCRIPT GUIDANCE');
+    const frozen = structuredClone(await profile.getCognitionBinding());
+    await writeFile(join(directory, 'cue.mjs'), script('NEW SCRIPT GUIDANCE'));
+    const updated = await recipes.preview({ source: preview.summary.source, installation_id: installation, expected_revision: preview.digest });
+    await recipes.install({ preview_id: updated.preview_id, consent: true });
+    await agent.get(IWireService).flush(); await agent.dispose();
+    await rm(directory, { recursive: true });
+    agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService); recipes = agent.get(IRecipeService);
+    await profile.syncBindingMetadata(); agent.get(IAgentExternalHooksService);
+    expect(await profile.getCognitionBinding()).toEqual(frozen);
+    await submit(); expect(observed).toContain('OLD SCRIPT GUIDANCE'); expect(observed).not.toContain('NEW SCRIPT GUIDANCE');
+    await profile.rebuildPromptContext(); await submit(); expect(observed).toContain('NEW SCRIPT GUIDANCE');
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: installation, systemPrompt: () => 'ROLE BODY' });
+    await profile.bind({ resolvedProfile: role, model: OTHER_MODEL }); expect(await profile.getRecipeScriptHooks()).toHaveLength(1);
+    await profile.bind({ resolvedProfile: { ...role, recipe: 'off' }, model: OTHER_MODEL }); expect(await profile.getRecipeScriptHooks()).toEqual([]);
+    expect(await recipes.list()).toHaveLength(1);
   });
 
   it('freezes the effective request and cold recovery, adopts explicit rebuilds, and restores original model settings when switching away', async () => {

@@ -9,6 +9,7 @@ export interface IRecipeService {
   get(id: string): Promise<RecipeDetail | undefined>;
   export(id: string): Promise<RecipeExport>;
   resolve(id: string): Promise<ResolvedRecipe>;
+  scriptHooks(recipe: ResolvedRecipe): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]>;
   preview(input: RecipePreviewInput): Promise<RecipePreview>;
   install(input: RecipeInstallInput): Promise<RecipeSummary>;
   checkUpdates(): Promise<RecipeSummary[]>;
@@ -31,5 +32,6 @@ export interface IRecipeSourceReader {
   readonly _serviceBrand: undefined;
   open(source: RecipeSource): Promise<RecipePackageReader>;
   catalog(url: string): Promise<unknown>;
+  materializeHooks(hooks: readonly import('@kiki/protocol').RecipeScriptHook[]): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]>;
 }
 export const IRecipeSourceReader: ServiceIdentifier<IRecipeSourceReader> = createDecorator<IRecipeSourceReader>('recipeSourceReader');

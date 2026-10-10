@@ -65,6 +65,8 @@ steering_interval_steps = 0
 
 `prompts.fields` accepts every registered, writable prompt field and uses its normal variable and empty-value validation. `model` uses the existing [per-model configuration](../configuration/config-files.md#models) syntax and validation for tuning settings, including parameters, usage budgets and behavior. It cannot change provider routing, credentials, request identity or permissions. Parameters and behavior remain shared across agent positions; existing main/independent usage budgets retain their separate meanings.
 
+A package may also carry [script hooks](./hooks.md#recipe-script-hooks). Inspect `preview.hooks` and obtain the user's explicit installation consent before sending `consent: true` for a script-bearing package; never set it automatically from `consent_required`. The hook-free example below needs no script confirmation.
+
 To install and select a local package with an already connected client:
 
 ```ts

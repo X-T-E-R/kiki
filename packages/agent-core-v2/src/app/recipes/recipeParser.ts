@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { recipeDigest, recipeFailure, validateRecipePath } from './recipePrimitives';
 import { parse } from 'smol-toml';
 import { valid } from 'semver';
 import { z } from 'zod';
@@ -7,6 +7,8 @@ import type { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry
 import type { RecipePackageReader } from './recipes';
 import { Error2, ErrorCodes } from '#/errors';
 import { recipeModelSettingsFromToml, mergeRecipeModelSettings, recipeModelLeaves } from './recipeModelSettings';
+import { recipeHookManifestSchema } from './recipeHooks';
+export { recipeDigest, recipeFailure, validateRecipePath } from './recipePrimitives';
 
 const sourceSchema = z.union([z.object({ text: z.string() }).strict(), z.object({ file: z.string().min(1) }).strict()]);
 const slotSchema = z.union([sourceSchema, z.array(sourceSchema).min(1).max(64), z.literal('off')]);
@@ -21,6 +23,7 @@ export const recipeManifestSchema = z.object({
   version: z.string().refine((v) => valid(v) !== null, 'Expected semver'), description: z.string().optional(),
   extends: z.object({ source: z.string().min(1), sha256: recipeSourceSchema.shape.sha256, revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional() }).strict().optional(),
   model: z.union([z.literal('off'), z.record(z.string(), z.unknown())]).optional(),
+  hooks: z.union([z.literal('off'), z.array(recipeHookManifestSchema).max(64)]).optional(),
   prompts: contentSchema.extend({ main: z.union([z.enum(['off', 'same']), contentSchema]).optional(), independent: z.union([z.enum(['off', 'same']), contentSchema]).optional() }).strict().optional(),
 }).strict();
 export type RecipeManifest = z.infer<typeof recipeManifestSchema>;
@@ -35,22 +38,21 @@ export interface RecipeContent extends z.infer<typeof cadenceSchema> {
 export interface RecipeDeclaration extends RecipeContent {
   main?: RecipeContent | 'same' | 'off'; independent?: RecipeContent | 'same' | 'off';
   model?: Record<string, unknown> | 'off'; modelOrigins?: Record<string, Origin>;
+  hooks?: import('@kiki/protocol').RecipeScriptHook[] | 'off';
 }
 export interface RecipeSnapshot { source: RecipeSource; requestedSource: RecipeSource; manifest: RecipeManifest; files: Record<string, string>; declaration: RecipeDeclaration; resolved: ResolvedRecipe }
 
-export function recipeFailure(message: string, source?: string, path?: string): never {
-  throw new Error2(ErrorCodes.VALIDATION_FAILED, message, { details: { source, path } });
-}
-export function validateRecipePath(file: string): string {
-  if (file.includes('\\') || file.includes(':') || file.startsWith('/') || file.includes('\0') || file.split('/').some((part) => part === '..' || part === '.' || part.length === 0)) recipeFailure('Recipe file must be a relative path inside its package', undefined, file);
-  return file;
-}
 export async function parseRecipe(reader: RecipePackageReader, registry: IPromptFieldRegistry): Promise<{ manifest: RecipeManifest; files: Record<string, string>; declaration: RecipeDeclaration }> {
   const files: Record<string, string> = {};
   files['recipe.toml'] = await reader.read('recipe.toml');
   let manifest: RecipeManifest;
   try { manifest = recipeManifestSchema.parse(parse(files['recipe.toml'])); }
-  catch (cause) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Invalid Recipe manifest', { cause, details: { source: reader.source.locator } }); }
+  catch (cause) {
+    const issues = cause instanceof z.ZodError ? cause.issues.flatMap((issue) => issue.code === 'invalid_union' ? issue.errors.flat() : [issue]) : [];
+    const issue = issues.find((issue) => issue.code === 'custom') ?? issues[0];
+    const detail = issue === undefined ? '' : `: ${issue.path.join('.')}: ${issue.message}`;
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, `Invalid Recipe manifest${detail}`, { cause, details: { source: reader.source.locator, path: issue?.path.join('.') } });
+  }
   const base: Origin = { source: reader.source.locator, manifest_id: manifest.id, version: manifest.version };
   const text = async (slot: z.infer<typeof slotSchema>): Promise<TextValue | 'off'> => {
     if (slot === 'off') return 'off';
@@ -85,7 +87,20 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
   try { model = manifest.model === undefined || manifest.model === 'off' ? manifest.model : recipeModelSettingsFromToml(manifest.model); }
   catch (cause) { throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Invalid Recipe model settings', { cause, details: { source: reader.source.locator, path: 'model' } }); }
   const modelOrigins = typeof model === 'object' ? Object.fromEntries(recipeModelLeaves(model).map((key) => [key, base])) : {};
-  return { manifest, files, declaration: { ...await content(raw), model, modelOrigins,
+  let hooks: RecipeDeclaration['hooks'] = manifest.hooks === 'off' ? 'off' : undefined;
+  if (Array.isArray(manifest.hooks)) {
+    hooks = [];
+    for (const hook of manifest.hooks) {
+      const resources: Record<string, string> = {};
+      if (hook.root !== undefined) validateRecipePath(hook.root);
+      for (const file of hook.files) {
+        validateRecipePath(file); const location = hook.root === undefined ? file : `${hook.root}/${file}`;
+        files[location] ??= await reader.read(location); resources[file] = files[location]!;
+      }
+      hooks.push({ event: hook.event, command: hook.command, matcher: hook.matcher, timeout: hook.timeout, files: resources, source: reader.source.locator, manifest_id: manifest.id });
+    }
+  }
+  return { manifest, files, declaration: { ...await content(raw), model, modelOrigins, hooks,
     main: typeof raw.main === 'object' ? await content(raw.main) : raw.main, independent: typeof raw.independent === 'object' ? await content(raw.independent) : raw.independent } };
 }
 export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration): RecipeDeclaration {
@@ -97,7 +112,8 @@ export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration)
   const branch = (a: RecipeDeclaration['main'], b: RecipeDeclaration['main']): RecipeDeclaration['main'] => b === undefined ? a : typeof a === 'object' && typeof b === 'object' ? content(a, b) : b;
   const model = child.model === undefined ? parent.model : typeof child.model === 'object' && typeof parent.model === 'object' ? mergeRecipeModelSettings(parent.model, child.model) : child.model;
   const modelOrigins = child.model === 'off' ? {} : { ...(parent.model === 'off' ? {} : parent.modelOrigins), ...child.modelOrigins };
-  return { ...content(parent, child), model, modelOrigins, main: branch(parent.main, child.main), independent: branch(parent.independent, child.independent) };
+  const hooks = child.hooks === 'off' ? 'off' : child.hooks === undefined ? parent.hooks : [...(Array.isArray(parent.hooks) ? parent.hooks : []), ...child.hooks];
+  return { ...content(parent, child), model, modelOrigins, hooks, main: branch(parent.main, child.main), independent: branch(parent.independent, child.independent) };
 }
 export function resolveRecipe(declaration: RecipeDeclaration, dependencies: RecipeLockEntry[]): ResolvedRecipe {
   const origins: RecipeValueOrigin[] = [];
@@ -120,9 +136,8 @@ export function resolveRecipe(declaration: RecipeDeclaration, dependencies: Reci
   const branches = { main: resolve('main'), sub: resolve('sub'), independent: resolve('independent') };
   const model = typeof declaration.model === 'object' ? declaration.model : {};
   const model_origins = declaration.modelOrigins ?? {};
-  const resolved = { branches, dependencies, origins, model, model_origins };
+  const hooks = Array.isArray(declaration.hooks) && declaration.hooks.length > 0 ? declaration.hooks : undefined;
+  if (hooks !== undefined && (hooks.length > 64 || Buffer.byteLength(JSON.stringify(hooks)) > 4 * 1024 * 1024)) recipeFailure('Resolved Recipe hooks exceed package budget', undefined, 'hooks');
+  const resolved = { branches, dependencies, origins, model, model_origins, hooks };
   return { revision: recipeDigest(resolved), ...resolved };
-}
-export function recipeDigest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }

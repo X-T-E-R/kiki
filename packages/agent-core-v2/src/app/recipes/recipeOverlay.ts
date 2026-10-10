@@ -27,7 +27,8 @@ export function composeRecipeLayers(layers: RecipeResolvedLayer[], overrides?: M
     }
     return result;
   };
-  const content = { model, model_origins, branches: { main: branch('main'), sub: branch('sub'), independent: branch('independent') },
+  const hooks = layers.flatMap((layer) => layer.resolved.hooks ?? []);
+  const content = { model, model_origins, hooks: hooks.length === 0 ? undefined : hooks, branches: { main: branch('main'), sub: branch('sub'), independent: branch('independent') },
     origins: layers.flatMap((layer) => layer.resolved.origins), dependencies: layers.flatMap((layer) => layer.resolved.dependencies), layers };
   return { ...content, revision: recipeDigest(content) };
 }

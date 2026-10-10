@@ -36,6 +36,7 @@ import { toKimiErrorPayload } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentProfileService } from '#/agent/profile/profile';
 
 import { IAgentExternalHooksService } from './agentExternalHooks';
 import {
@@ -78,6 +79,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @IAgentProfileService private readonly profile?: IAgentProfileService,
   ) {
     super();
     this.states.contributeState(externalHooksStopHookContinuationUsedKey);
@@ -126,6 +128,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
         matcherValue,
         signal,
         sessionId: this.sessionContext.sessionId,
+        additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
         inputData: this.withSessionFacts(inputData),
       });
     } catch {}
@@ -311,6 +314,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       matcherValue: ctx.toolCall.name,
       signal: ctx.signal,
       sessionId: this.sessionContext.sessionId,
+      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({
         toolName: ctx.toolCall.name,
         toolInput,
@@ -350,6 +354,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       matcherValue: input,
       signal,
       sessionId: this.sessionContext.sessionId,
+      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({ prompt: input, isSteer: ctx.isSteer }),
     });
     signal.throwIfAborted();
@@ -420,6 +425,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     const block = await this.runner.triggerBlock('Stop', {
       signal: ctx.signal,
       sessionId: this.sessionContext.sessionId,
+      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({ stopHookActive: false }),
     });
     ctx.signal.throwIfAborted();
@@ -433,6 +439,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       matcherValue: ctx.trigger,
       signal,
       sessionId: this.sessionContext.sessionId,
+      additionalHooks: () => this.profile?.getRecipeScriptHooks() ?? Promise.resolve([]),
       inputData: this.withSessionFacts({
         trigger: ctx.trigger,
         tokenCount: ctx.tokenCount,
