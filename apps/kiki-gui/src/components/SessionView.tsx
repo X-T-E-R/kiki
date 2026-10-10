@@ -153,6 +153,7 @@ import { pushToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
+import { useLayerHistory } from '../lib/layerHistory';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import {
   activeTerminalManager,
@@ -237,6 +238,12 @@ function useActiveController(
   return controller;
 }
 
+/** The ☰ count on a phone: the same inbox the sidebar's bell reports. */
+export interface SidebarBadge {
+  readonly total: number;
+  readonly needsYou: boolean;
+}
+
 function Header({
   controller,
   railOpen,
@@ -246,6 +253,7 @@ function Header({
   onToggleRail,
   onToggleTerminal,
   onToggleSidebar,
+  sidebarBadge,
   onRenameSession,
   onSessionAction,
   freshContextAvailable = false,
@@ -266,6 +274,7 @@ function Header({
   onToggleRail: () => void;
   onToggleTerminal: () => void;
   onToggleSidebar: () => void;
+  sidebarBadge?: SidebarBadge;
   onRenameSession: (title: string) => Promise<void>;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => void;
   freshContextAvailable?: boolean;
@@ -308,9 +317,19 @@ function Header({
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
         data-sidebar-menu=""
-        className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
+        className="relative -ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >
         <Icon name="menu" size={16} />
+        {sidebarBadge !== undefined ? (
+          <span
+            aria-hidden
+            className={`pointer-events-none absolute top-1 right-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-[3px] text-[10px] leading-none font-semibold tabular-nums text-on-accent ring-2 ring-paper ${
+              sidebarBadge.needsYou ? 'bg-attention' : 'bg-accent'
+            }`}
+          >
+            {sidebarBadge.total > 99 ? '99+' : sidebarBadge.total}
+          </span>
+        ) : null}
       </button>
       {/* The one history-return entry for this visit: it appears in the title
           row only while a predecessor visit exists. */}
@@ -591,16 +610,19 @@ export function SessionRouteView({
   sessionId,
   onToggleSidebar,
   sessions,
+  sidebarBadge,
 }: {
   sessionId: string | undefined;
   onToggleSidebar: () => void;
   sessions: readonly Session[];
+  sidebarBadge?: SidebarBadge;
 }) {
   return (
     <SessionView
       key={sessionId}
       onToggleSidebar={onToggleSidebar}
       sessions={sessions}
+      sidebarBadge={sidebarBadge}
     />
   );
 }
@@ -1512,10 +1534,12 @@ export function PreviewFocusBridge({ onFocusedAgent }: { onFocusedAgent: (agentI
 export function SessionView({
   onToggleSidebar,
   sessions,
+  sidebarBadge,
 }: {
   onToggleSidebar: () => void;
   /** Polled session records owned by App (page-1 polling there). */
   sessions: readonly Session[];
+  sidebarBadge?: SidebarBadge;
 }) {
   const host = useHost();
   const { id } = useParams<{ id: string }>();
@@ -1584,11 +1608,28 @@ export function SessionView({
   const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
   const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
-  const railOpen = !isNarrowScreen && userRailOpen;
-  // Whether a rail can open at all at this width: the one truth every rail
-  // entry point reads, so below lg none of them renders a control that cannot
-  // do anything (the main header, the routed agent page, the preview tab).
-  const railAvailable = !isNarrowScreen;
+  // Below lg the rail is an overlay layer (full-screen on a phone): it opens
+  // only from an explicit toggle this visit, never from the saved default —
+  // a deep link must land on the conversation, not under a drawer. The wide
+  // preference is untouched, so widening the window restores the inline rail.
+  const [narrowRailOpen, setNarrowRailOpen] = useState(false);
+  const railOpen = isNarrowScreen ? narrowRailOpen : userRailOpen;
+  // The rail works at every width now (an overlay layer below lg), so its
+  // entry points — the header toggle, the session title, the preview tab —
+  // render unconditionally.
+  const railAvailable = true;
+  const toggleRail = useCallback(() => {
+    // Wide and narrow remember separately: the overlay layer's open state is
+    // per-visit, the inline rail keeps the saved preference.
+    if (isNarrowScreen) setNarrowRailOpen((value) => !value);
+    else setUserRailOpen((value) => !value);
+  }, [isNarrowScreen]);
+  const closeRail = useCallback(() => {
+    if (isNarrowScreen) setNarrowRailOpen(false);
+    else setUserRailOpen(false);
+  }, [isNarrowScreen]);
+  // The phone's back closes the rail layer before route navigation.
+  useLayerHistory('session-rail', railOpen && isNarrowScreen, closeRail);
   const cockpit = railOpen && railMode === 'cockpit';
   const railIsOverlay = false;
   // Focused panel-tab agent: the active agent panel tab in the preview
@@ -1816,12 +1857,12 @@ export function SessionView({
       }
       if (!railOpen && !terminalOpen) return;
       event.preventDefault();
-      setUserRailOpen(false);
+      closeRail();
       if (terminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [railOpen, terminalOpen, toggleTerminalPanel]);
+  }, [railOpen, terminalOpen, closeRail, toggleTerminalPanel]);
 
   // Per-session composer drafts + chrome. Attachments and pill overrides are
   // seeded by the initializers on first mount (the /new hand-off wins, then
@@ -3264,12 +3305,6 @@ boundExecution,
     },
     [location.pathname, navigateVisits, sessionId],
   );
-  const toggleRail = useCallback(() => {
-    setUserRailOpen((value) => !value);
-  }, []);
-  const closeRail = useCallback(() => {
-    setUserRailOpen(false);
-  }, []);
   const agentWorkspaceNavigation = useMemo<AgentWorkspaceNavigation>(
     () => ({ openAgent, openAgentRoute, openSession, sharedRail: { open: railOpen, toggle: toggleRail, available: railAvailable } }),
     [openAgent, openAgentRoute, openSession, railOpen, toggleRail, railAvailable],
@@ -4192,7 +4227,7 @@ boundExecution,
             controller={controller} railOpen={railOpen} railAvailable={railAvailable}
             terminalAvailable={terminalAvailable} terminalOpen={terminalOpen}
             onToggleRail={toggleRail} onToggleTerminal={toggleTerminalPanel}
-            onToggleSidebar={onToggleSidebar} onRenameSession={renameSession}
+            onToggleSidebar={onToggleSidebar} sidebarBadge={sidebarBadge} onRenameSession={renameSession}
             onSessionAction={runSessionAction}
             freshContextAvailable={conversationStarted}
             onSideQuestion={() => { startSideQuestion(); }}

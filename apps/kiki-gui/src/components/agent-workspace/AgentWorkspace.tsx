@@ -54,6 +54,7 @@ import { useConnection } from '../../state/connection';
 import { locateSpawnTarget } from '../../lib/timelineLocate';
 import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
 import { NavBackButton } from '../NavBackButton';
+import { useMediaQuery } from '../../lib/layoutHooks';
 import { AgentBreadcrumb, AgentRelations } from '../AgentBreadcrumb';
 import {
   EMPTY_SLOTS,
@@ -114,9 +115,9 @@ export interface AgentWorkspaceProps {
   readonly forest: AgentForest;
   readonly navigation: AgentWorkspaceNavigation;
   readonly railOpen: boolean;
-  /** True where the rail floats over the conversation. The session shell hides
-   * the rail outright below lg instead (see `railAvailable`), so it passes
-   * false today; embedding shells may still overlay. */
+  /** True where the rail floats over the conversation. Below lg the rail is
+   * that overlay layer itself (full-screen on a phone); the shell still passes
+   * false — the drawer's own styles carry it. */
   readonly railIsOverlay: boolean;
   readonly onToggleRail: () => void;
   readonly onCloseRail: () => void;
@@ -199,6 +200,9 @@ function WorkspaceSurface({
   timelineOverlay?: ReactNode;
 }) {
   const { t } = useI18n();
+  // Below lg the rail is an overlay layer for every shell (the session's too),
+  // so the open rail gets the same tap-outside backdrop an overlay shell has.
+  const narrowOverlay = useMediaQuery('(max-width: 1023px)');
   const loadDetail = useCallback(
     (agentId: string, kind: TranscriptDetailKind, id: string) =>
       controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false),
@@ -240,7 +244,7 @@ function WorkspaceSurface({
       {timelineOverlay}
       {slots.dock !== null ? createPortal(dock, slots.dock) : null}
       {slots.rail !== null && railOpen ? createPortal(rail, slots.rail) : null}
-      {railIsOverlay && railOpen ? (
+      {(railIsOverlay || narrowOverlay) && railOpen ? (
         <div role="button" tabIndex={-1} aria-label={t('sv.closePanel')}
           className="app-overlay-backdrop lg:hidden" onClick={onCloseRail}
           onKeyDown={(event) => { if (event.key === 'Escape') onCloseRail(); }} />
@@ -322,7 +326,7 @@ function AgentWorkspaceHeader({
   showPreviewToggle: boolean;
   /** Off in the embedded panel tab: the toggle's railOpen state is a local no-op. */
   showRailToggle: boolean;
-  /** Off where no rail can open (below lg): the entry would do nothing. */
+  /** Off where no rail can open; the rail is an overlay layer below lg, so this stays on there too. */
   railAvailable?: boolean;
   /** Off in narrow containers (tabs): the relations row below keeps the navigation. */
   showBreadcrumb: boolean;

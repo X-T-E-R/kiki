@@ -111,6 +111,26 @@ describe('ComposerHeader', () => {
     expect(queue.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('closes from the sheet backdrop (the phone outside-tap path)', async () => {
+    const { container } = await renderHeader({ queue: section('queue') });
+    const queue = half(container, 'queue');
+    expect(container.querySelector('[data-header-backdrop]')).toBeNull();
+    await click(queue);
+    const backdrop = container.querySelector<HTMLElement>('[data-header-backdrop]')!;
+    expect(backdrop).not.toBeNull();
+    await act(async () => { backdrop.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(queue.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('ignores the backdrop while a detail is pinned open (the queue edit hold)', async () => {
+    const { container } = await renderHeader({ queue: section('queue', { forceOpen: true }) });
+    const queue = half(container, 'queue');
+    expect(queue.getAttribute('aria-expanded')).toBe('true');
+    const backdrop = container.querySelector<HTMLElement>('[data-header-backdrop]')!;
+    await act(async () => { backdrop.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(queue.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('fades the queue text once when its count grows after the session settled, never on the cold load', async () => {
     let now = 1_000;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);

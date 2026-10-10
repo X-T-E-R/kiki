@@ -33,6 +33,44 @@ export function useLayoutPreferences(): LayoutPreferences {
   return useSyncExternalStore(subscribeLayoutPreferences, getSnapshot, getServerSnapshot);
 }
 
+/** Touch-first devices (phones): IME Enter, hit targets and layer history follow the phone contract. */
+export function useCoarsePointer(): boolean {
+  return useMediaQuery('(pointer: coarse)');
+}
+
+/**
+ * Software-keyboard fallback. `interactive-widget=resizes-content` (see
+ * index.html) lets Chromium shrink the layout viewport itself; elsewhere
+ * (iOS Safari) the layout viewport never shrinks for the keyboard, so this
+ * mirrors visualViewport.height into `--kiki-visual-height` on :root. CSS
+ * opts in per surface with `height: var(--kiki-visual-height, 100%)` — where
+ * the API is absent nothing is set and every rule keeps its 100% fallback.
+ */
+export function useVisualViewportHeightVar(): void {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (viewport === null || viewport === undefined) return;
+    const root = document.documentElement;
+    let frame = 0;
+    const write = () => {
+      frame = 0;
+      root.style.setProperty('--kiki-visual-height', `${Math.round(viewport.height)}px`);
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(write);
+    };
+    write();
+    viewport.addEventListener('resize', schedule);
+    window.addEventListener('orientationchange', schedule);
+    return () => {
+      if (frame !== 0) cancelAnimationFrame(frame);
+      viewport.removeEventListener('resize', schedule);
+      window.removeEventListener('orientationchange', schedule);
+      root.style.removeProperty('--kiki-visual-height');
+    };
+  }, []);
+}
+
 function setDragging(active: boolean) {
   document.body.dataset['paneResizing'] = active ? 'true' : 'false';
 }

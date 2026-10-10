@@ -178,6 +178,20 @@ body,
   height: 100%;
 }
 
+/* Phone keyboard + dynamic toolbars: `interactive-widget=resizes-content`
+ * (see index.html) lets Chromium shrink the layout viewport itself; elsewhere
+ * (iOS Safari) the layout viewport never shrinks for the software keyboard,
+ * so the app height chain follows --kiki-visual-height, mirrored from
+ * visualViewport by useVisualViewportHeightVar. Coarse pointers only: desktop
+ * pinch-zoom must keep the layout height. */
+@media (pointer: coarse) {
+  html,
+  body,
+  #root {
+    height: var(--kiki-visual-height, 100%);
+  }
+}
+
 body {
   margin: 0;
   background: var(--color-paper);
@@ -570,13 +584,31 @@ body[data-pane-resizing='true'] {
     left: 0;
     top: 0;
     z-index: 40;
+    /* Fixed boxes resolve % heights against the layout viewport, which a
+     * phone keyboard never shrinks — follow the visual viewport mirror. */
+    height: var(--kiki-visual-height, 100%);
     max-width: calc(100vw - 3rem);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     transform: translateX(-100%);
     transition: transform 200ms ease-out, box-shadow 200ms ease-out;
   }
   .app-sidebar.open {
     transform: translateX(0);
     box-shadow: var(--kiki-sheet-shadow), 12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+  }
+}
+
+/* On a phone the session list is a full-screen layer, not a peeking drawer:
+ * the conversation returns with one ✕ or one back, and the thumb never aims
+ * at a 3rem sliver of the previous screen. */
+@media (max-width: 639px) {
+  .app-sidebar {
+    width: 100%;
+    max-width: none;
+  }
+  .app-sidebar.open {
+    box-shadow: none;
   }
 }
 
@@ -587,7 +619,9 @@ body[data-pane-resizing='true'] {
     right: 0;
     top: 0;
     z-index: 30;
+    height: var(--kiki-visual-height, 100%);
     max-width: calc(100vw - 3rem);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     transform: translateX(100%);
     transition: transform 200ms ease-out;
   }
@@ -599,6 +633,18 @@ body[data-pane-resizing='true'] {
    * shadow alone is invisible on the dark ground), the deep shadow the lift. */
   .app-rail.open {
     box-shadow: var(--kiki-sheet-shadow), -12px 0 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+  }
+}
+
+/* Phone: the inspector is a full-screen layer too, matching the session list. */
+@media (max-width: 639px) {
+  .app-rail-shell,
+  .app-rail {
+    width: 100%;
+    max-width: none;
+  }
+  .app-rail.open {
+    box-shadow: none;
   }
 }
 
@@ -852,6 +898,23 @@ body[data-pane-resizing='true'] {
   }
 }
 
+/* 1360–1679px with a docked preview open: four docked columns squeeze the
+ * conversation under its reading width, so the inspector stops claiming row
+ * width and rides as a layer over the preview's right edge — the same lift
+ * the fullscreen preview uses above. The open/closed choice is untouched:
+ * reopening the inspector shows the layer, and it docks again when the
+ * preview closes or the window grows. */
+@media (min-width: 1360px) and (max-width: 1679px) {
+  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen]))
+    .app-sheet > .conversation-shell .conversation-rail-slot:has(.app-rail-shell) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 36;
+  }
+}
+
 /* Room for the preview, between md and 1360px. Sidebar + conversation +
  * preview + inspector cannot all dock at a readable width, so an open docked
  * preview takes the room it needs instead of anything floating over it:
@@ -942,7 +1005,9 @@ body[data-pane-resizing='true'] {
     right: 0;
     top: 0;
     z-index: 30;
+    height: var(--kiki-visual-height, 100%);
     max-width: 94vw;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
   }
 }
@@ -955,6 +1020,17 @@ body[data-pane-resizing='true'] {
   z-index: 30;
   max-width: 94vw;
   box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
+}
+
+/* Phone: the preview covers the whole screen — a 94vw code viewer with a sliver
+ * of transcript behind it helps nobody. */
+@media (max-width: 639px) {
+  .preview-workspace,
+  .preview-workspace--overlay {
+    width: 100%;
+    max-width: none;
+    box-shadow: none;
+  }
 }
 
 /* CodeMirror fills the tab panel's flex height. */
@@ -1213,6 +1289,37 @@ body[data-pane-resizing='true'] {
     transform var(--kiki-motion-slow) var(--kiki-ease-out) var(--kiki-motion-instant);
 }
 
+/* Phone: the goal/queue detail is a bottom sheet — every queued prompt sits
+ * in the thumb's arc and the conversation behind dims. The panel stays fixed
+ * through the close collapse (data-header-panel lingers until the transition
+ * ends), so it never jumps back above the card mid-collapse. */
+.composer-header-backdrop {
+  display: none;
+}
+@media (max-width: 767px) {
+  .composer-header-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 44;
+    background-color: rgb(var(--kiki-shadow-ink) / 0.22);
+  }
+  .composer-header-panel[data-header-panel] {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 45;
+  }
+  .composer-header-panel[data-header-panel] .composer-header-scroll {
+    max-height: min(70vh, calc(var(--kiki-visual-height, 100vh) - 96px));
+    margin: 0;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    border-radius: 12px 12px 0 0;
+    box-shadow: var(--kiki-sheet-shadow), 0 -12px 40px -16px rgb(var(--kiki-shadow-ink) / 0.4);
+  }
+}
+
 /* A new queued prompt: the queue text fades in once (two identical keyframes
  * so the next growth replays). Opacity only; reduced motion collapses it. */
 .composer-header-queue[data-bump='a'] .composer-header-label {
@@ -1314,6 +1421,14 @@ input[data-add-search]:focus-visible {
   );
 }
 
+/* Phone: the seat's solid paper extends into the home-indicator strip so the
+ * composer card never docks against it. */
+@media (max-width: 767px) {
+  .conversation-shell[data-phase='active'] .conversation-seat {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
 /* Settling (cold /s/:id load, transcript still opening): keep the seat
  * mounted but invisible so neither the hero nor the docked layout flashes
  * before the phase lands. */
@@ -1345,7 +1460,7 @@ input[data-add-search]:focus-visible {
 
 .conversation-shell[data-phase='hero'] .conversation-seat {
   /* Foot inside the centered box floats the stack a bit above true center. */
-  padding-bottom: 32px;
+  padding-bottom: max(32px, env(safe-area-inset-bottom, 0px));
 }
 
 /* Warm glow centered on the hero input card: the card's resting center sits

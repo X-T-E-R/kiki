@@ -417,6 +417,7 @@ export function Sidebar({
   onSortBy,
   navBadges,
   className,
+  onClose,
 }: {
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
@@ -446,6 +447,8 @@ export function Sidebar({
   /** Opens the new-session draft (the /new page stays the no-session landing). */
   onNewSession: () => void;
   className?: string;
+  /** Phone-drawer exit (a ✕ in the wordmark row); absent where the sidebar is docked. */
+  onClose?: () => void;
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
@@ -1038,6 +1041,19 @@ export function Sidebar({
             </span>
           ) : null}
         </button>
+        {onClose !== undefined ? (
+          // The phone drawer's exit sits in the thumb's top-left arc, beside
+          // the utilities; the browser back closes the layer too (App wires
+          // the history entry).
+          <button
+            type="button"
+            aria-label={t('app.closeSidebar')}
+            onClick={onClose}
+            className={`${HEADER_ICON} pointer-coarse:h-9 pointer-coarse:w-9 md:hidden`}
+          >
+            <Icon name="close" size={16} />
+          </button>
+        ) : null}
       </div>
 
       <div className="space-y-1 px-2 pb-3">

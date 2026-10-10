@@ -152,6 +152,7 @@ export function SearchableSelect({
   hideFilter = false,
   allowCustomValue = false,
   customValueLabel,
+  openSignal,
   density = 'comfortable',
 }: {
   id?: string;
@@ -212,6 +213,12 @@ export function SearchableSelect({
   readonly allowCustomValue?: boolean;
   readonly customValueLabel?: (value: string) => string;
   /**
+   * Bump to open the panel from outside — a recovery affordance that shares
+   * this trigger's menu (the invalid-model diagnostic) instead of building a
+   * second selector. Mirrors the trigger click: the list starts from the top.
+   */
+  readonly openSignal?: number;
+  /**
    * `compact`: a dense two-line row (label, then badges as faint inline facts
    * followed by the mono hint) for long pickers opened from a tight spot such
    * as the composer status line. Descriptions stay in the row tooltip.
@@ -245,6 +252,14 @@ export function SearchableSelect({
     if (!open) { setOwnerId(undefined); return; }
     setOwnerId(owningModalId(triggerRef.current));
   }, [open]);
+  const openSignalRef = useRef(openSignal);
+  useEffect(() => {
+    if (openSignal === undefined || openSignal === openSignalRef.current) return;
+    openSignalRef.current = openSignal;
+    if (disabled) return;
+    setActiveIndex(0);
+    setOpen(true);
+  }, [openSignal, disabled]);
   const panelStyle = useViewportPlacement(
     ownsPanel && open,
     triggerRef,

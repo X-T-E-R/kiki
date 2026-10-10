@@ -666,6 +666,18 @@ describe('Sidebar header controls', () => {
     expect(container.querySelector('[data-nav-activity]')?.getAttribute('aria-label'))
       .toBe('2 new items in Activity');
   });
+
+  it('shows the phone-drawer exit only where the shell wires onClose', async () => {
+    const docked = await mount();
+    expect(docked.container.querySelector('button[aria-label="Close sidebar"]')).toBeNull();
+
+    const onClose = vi.fn();
+    const { container } = await mount({ onClose });
+    const exit = container.querySelector<HTMLButtonElement>('button[aria-label="Close sidebar"]')!;
+    expect(exit).not.toBeNull();
+    await act(async () => { exit.click(); });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });
 
 describe('Sidebar session row states', () => {

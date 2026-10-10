@@ -84,6 +84,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type ModelSwitchMode, type NamedAgentProfile } from '../lib/client';
 import { registerOverlay } from '../lib/uiBusy';
+import { useCoarsePointer } from '../lib/layoutHooks';
 import { pastedMediaType } from '../lib/pastedFiles';
 import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
@@ -112,18 +113,18 @@ import {
   COMPOSER_PANEL_START,
   ComposerCardContext,
   ComposerPanelOrigin,
-  MENU_ROW_CLASS,
   PermissionSelect,
   POPOVER_LABEL_CLASS,
   RunModeChip,
+  SendTimingRows,
   STATUS_SEGMENT_CLASS,
   STATUS_SEGMENT_ICON_CLASS,
   STATUS_SEGMENT_SET,
   usePopover,
   type RunMode,
   type RunModeControls,
+  type SendTimingChoice,
 } from './ComposerControls';
-import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
@@ -145,9 +146,6 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
-
-/** The deferred queue timings the send-timing menu offers as one-shot picks. */
-const SEND_TIMING_PICKS = ['subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
 
 const isTransientCatalogError = (error: unknown): boolean =>
   error instanceof ApiError && (error.code === API_CODES.TIMEOUT || error.code === -1);
@@ -662,6 +660,9 @@ export function Composer({
     settingsSnapshot,
     settingsServerSnapshot,
   ).sendShortcut;
+  // Phone contract: the IME's Enter is the newline key (sending belongs to
+  // the button), and the input text stays ≥16px so iOS never zooms on focus.
+  const coarsePointer = useCoarsePointer();
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
@@ -701,6 +702,9 @@ export function Composer({
   // goal locally (`localGoalArmed`).
   const [modeOpen, setModeOpen] = useState(false);
   const [addView, setAddView] = useState<AddMenuView>('closed');
+  // The invalid-model diagnostic opens the model chip's own menu through this
+  // counter (the chip keeps owning the menu and its catalog).
+  const [modelMenuSignal, setModelMenuSignal] = useState(0);
   // SSH hosts joined to this session (native_ssh flag); main composer only.
   const ssh = useComposerSsh(sessionId, variant !== 'subagent' && !vscodeRuntime);
   const [localGoalArmed, setLocalGoalArmed] = useState(false);
@@ -2033,6 +2037,11 @@ export function Composer({
       },
       sendShortcut,
     );
+    if (coarsePointer && enterAction === 'send') {
+      // A software keyboard's Enter is the newline key; only ⌘/Ctrl+Enter
+      // (a hardware keyboard on a tablet) still sends from the keyboard.
+      return;
+    }
     if (enterAction === 'send' || enterAction === 'send-now') {
       event.preventDefault();
       send(enterAction === 'send-now' && busy);
@@ -2199,6 +2208,7 @@ export function Composer({
         // read-only here, with the engine named in the tooltip.
         hasCatalog={engine === undefined && models.length > 0}
         engineLabel={engine?.label}
+        openSignal={modelMenuSignal}
         model={model}
         resolvedModelKey={resolvedModelKey}
         effectiveModel={effectiveModel}
@@ -2311,7 +2321,15 @@ export function Composer({
           {selectionLoading ? <p className="text-ink-soft">{t('selection.loading')}</p> : null}
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
           {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
-          {invalidModel ? <p>{t('selection.modelInvalid', { value: validatingModel! })}</p> : null}
+          {invalidModel ? (
+            <p>
+              {/* The sentence is the recovery: it opens the model chip's own
+                  menu, which already lists the catalog that just loaded. */}
+              <button type="button" className="underline" onClick={() => { setModelMenuSignal((n) => n + 1); }}>
+                {t('selection.modelInvalid', { value: validatingModel! })}
+              </button>
+            </p>
+          ) : null}
           {invalidModelDomain ? <p data-model-menu-blocked>{modelDomainState === 'unknown'
             ? t(frozenMenuQuery.isPending ? 'selection.modelMenuPending' : 'selection.modelMenuError')
             : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
@@ -2677,7 +2695,7 @@ export function Composer({
                 ref={threadRefBackdropRef}
                 aria-hidden
                 data-thread-ref-backdrop
-                className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
+                className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
                 {threadRefs.map((ref, index) => (
                   <span key={ref.start}>
@@ -2693,6 +2711,7 @@ export function Composer({
               ref={textareaRef}
               data-composer-input
               rows={1}
+              enterKeyHint={coarsePointer ? 'enter' : undefined}
               // A catalog/seat rerender can precede the browser's IME input
               // event. Never restore an older controlled prop over preedit text.
               value={composingRef.current ? textareaRef.current?.value ?? compositionText ?? text : text}
@@ -2771,7 +2790,7 @@ export function Composer({
               }
               // The card's focus-within border is the focus indicator; the
               // global :focus-visible ring would draw a box inside the card.
-              className="relative max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+              className="relative max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 
@@ -2816,6 +2835,15 @@ export function Composer({
                 scopeKey: mentionScopeKey ?? sessionId ?? 'none',
                 onMention: mentionFromMenu,
               }}
+              timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
+                defaultTiming: sendTimingDefault,
+                canSendNow: onSendNow !== undefined,
+                onPick: (choice: SendTimingChoice) => {
+                  if (choice === 'default') send();
+                  else if (choice === 'now') send(true);
+                  else send(false, choice);
+                },
+              } : undefined}
             />
             <div
               data-composer-status
@@ -2987,6 +3015,25 @@ export function Composer({
                     </svg>
                   )}
                 </button>
+                {/* Coarse pointers have no hover and no long-press: an explicit
+                    caret opens the same menu the hover / ↑↓ paths open (split-
+                    button convention: closed ▼, open ▲, as SearchableSelect). */}
+                {sendTimingAvailable ? (
+                  <button
+                    type="button"
+                    aria-label={t('composer.sendTimingAria')}
+                    aria-haspopup="menu"
+                    aria-expanded={sendTimingOpen}
+                    aria-controls={sendTimingOpen ? sendTimingMenuId : undefined}
+                    onClick={() => {
+                      if (sendTimingOpen) { closeSendTiming(); return; }
+                      setSendTimingOpen(true);
+                    }}
+                    className="ml-0.5 hidden h-8 w-6 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:flex pointer-coarse:h-10 pointer-coarse:w-8"
+                  >
+                    <Icon name="chevron" size={12} className={`transition-transform ${sendTimingOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                ) : null}
                 {sendTimingOpen && sendTimingDefault !== undefined ? (
                   <div
                     role="menu"
@@ -2996,54 +3043,16 @@ export function Composer({
                     className={`anim-enter absolute right-0 bottom-full z-40 mb-1.5 w-60 p-1 ${POPOVER_SURFACE_CLASS}`}
                   >
                     <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-menu-row
-                      data-send-timing="default"
-                      onClick={() => { closeSendTiming(); send(); }}
-                      className={`${MENU_ROW_CLASS} items-start`}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
-                        <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
-                          {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[sendTimingDefault]) })}
-                        </span>
-                      </span>
-                    </button>
-                    {onSendNow !== undefined ? (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        data-menu-row
-                        data-send-timing="now"
-                        onClick={() => { closeSendTiming(); send(true); }}
-                        className={`${MENU_ROW_CLASS} items-start`}
-                      >
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-medium text-ink">{t('composer.sendTiming.now')}</span>
-                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('composer.sendTiming.nowHint')}</span>
-                        </span>
-                      </button>
-                    ) : null}
-                    {SEND_TIMING_PICKS.map((timing) => (
-                      <button
-                        key={timing}
-                        type="button"
-                        role="menuitem"
-                        data-menu-row
-                        data-send-timing={timing}
-                        onClick={() => { closeSendTiming(); send(false, timing); }}
-                        className={`${MENU_ROW_CLASS} items-start`}
-                      >
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-medium text-ink">
-                            {t('composer.sendTiming.timed', { timing: t(TIMING_SHORT_KEY[timing]) })}
-                          </span>
-                          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(TIMING_HINT_KEY[timing])}</span>
-                        </span>
-                      </button>
-                    ))}
+                    <SendTimingRows
+                      defaultTiming={sendTimingDefault}
+                      canSendNow={onSendNow !== undefined}
+                      onPick={(choice) => {
+                        closeSendTiming();
+                        if (choice === 'default') send();
+                        else if (choice === 'now') send(true);
+                        else send(false, choice);
+                      }}
+                    />
                   </div>
                 ) : null}
               </div>
@@ -3330,10 +3339,13 @@ function ModelChip({
   effort,
   onChangeEffort,
   engineLabel,
+  openSignal,
 }: {
   readonly modelOptions: readonly SearchableSelectOption[];
   /** Set when an external engine serves the model: the label is read-only. */
   readonly engineLabel?: string;
+  /** The invalid-model diagnostic bumps this to open the menu as its recovery. */
+  readonly openSignal?: number;
   /** False when `GET /models` returned nothing — no model is pickable. */
   readonly hasCatalog: boolean;
   readonly model: string | undefined;
@@ -3395,6 +3407,7 @@ function ModelChip({
         );
       }}
       disabled={disabled}
+      openSignal={openSignal}
       title={title}
       ariaLabel={t('composer.modelAria')}
       emptyText={t('composer.inheritDefault')}

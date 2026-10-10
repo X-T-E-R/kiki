@@ -2747,6 +2747,21 @@ describe('Composer restored selection diagnostics', () => {
     expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
   });
 
+  it('opens the model chip menu straight from the invalid-model sentence', async () => {
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({ model: 'fixture/deleted', value: 'hello', onChangeModel });
+    const sentence = container.querySelector('[data-selection-diagnostic] button')!;
+    expect(sentence.textContent).toContain('fixture/deleted');
+    expect(container.querySelector('#composer-model-select')?.getAttribute('aria-expanded')).toBe('false');
+
+    // The sentence is the recovery: one tap opens the chip's own catalog menu.
+    await click(sentence);
+    expect(container.querySelector('#composer-model-select')?.getAttribute('aria-expanded')).toBe('true');
+    const valid = [...container.querySelectorAll('[role="option"]')].find((node) => node.getAttribute('data-option-value') === 'fixture/kiki-pro')!;
+    await click(valid);
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
+  });
+
   it('preserves an incompatible effort without inventing a reset for a model with no default', async () => {
     const onChangeEffort = vi.fn();
     const { container } = await renderComposer({ effort: 'high', value: 'hello', onChangeEffort });
@@ -2929,6 +2944,67 @@ describe('Composer projected profile model menu', () => {
   });
 });
 
+describe('Composer on coarse pointers (phone contract)', () => {
+  // jsdom has no matchMedia; `(pointer: coarse)` is the only query the
+  // composer asks about. Stubbed per test so the desktop suites keep running
+  // without the API at all.
+  const mediaWindow = window as unknown as Record<string, unknown>;
+  let originalMatchMedia: unknown;
+
+  function stubCoarsePointer(): void {
+    mediaWindow['matchMedia'] = (query: string) => ({
+      matches: query === '(pointer: coarse)',
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    });
+  }
+
+  beforeEach(() => {
+    originalMatchMedia = mediaWindow['matchMedia'];
+  });
+
+  afterEach(() => {
+    if (originalMatchMedia === undefined) delete mediaWindow['matchMedia'];
+    else mediaWindow['matchMedia'] = originalMatchMedia;
+  });
+
+  it('turns the software-keyboard Enter into a newline; sending belongs to the button', async () => {
+    stubCoarsePointer();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'mobile draft', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    expect(textarea.getAttribute('enterkeyhint')).toBe('enter');
+
+    await pressKey(textarea, { key: 'Enter' });
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('still sends from a hardware keyboard: Ctrl/Cmd+Enter steers the running turn', async () => {
+    stubCoarsePointer();
+    const onSend = vi.fn();
+    const onSendNow = vi.fn();
+    const { container } = await renderComposer({ value: 'steer this', busy: true, onSend, onSendNow });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+
+    await pressKey(textarea, { key: 'Enter', ctrlKey: true });
+    await settle();
+    expect(onSendNow).toHaveBeenCalledWith('steer this', []);
+    expect(onSend).not.toHaveBeenCalled();
+
+    // …while the IME's plain Enter stays the newline key even mid-turn.
+    await pressKey(textarea, { key: 'Enter' });
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSendNow).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Composer send-timing menu', () => {
   const sendButton = (container: HTMLDivElement) =>
     container.querySelector<HTMLButtonElement>('button[data-send-ready]')!;
@@ -2983,6 +3059,27 @@ describe('Composer send-timing menu', () => {
       'Send after subagentsStarts once the running subagents finish',
       'Send after tasksStarts once every running task finishes; resident services excluded',
     ]);
+  });
+
+  it('opens the same menu from the caret — the tap path where hover does not exist', async () => {
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    const caret = container.querySelector<HTMLButtonElement>('button[aria-label="Send timing"]')!;
+    expect(caret.getAttribute('aria-haspopup')).toBe('menu');
+    expect(caret.getAttribute('aria-expanded')).toBe('false');
+    expect(menu(container)).toBeNull();
+
+    await click(caret);
+    expect(menu(container)).not.toBeNull();
+    expect(caret.getAttribute('aria-expanded')).toBe('true');
+    expect(caret.getAttribute('aria-controls')).toBe(menu(container)!.id);
+
+    await click(caret);
+    expect(menu(container)).toBeNull();
+  });
+
+  it('offers no caret where the menu itself is unavailable (idle: every timing starts immediately)', async () => {
+    const { container } = await renderComposer({ busy: false, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
+    expect(container.querySelector('button[aria-label="Send timing"]')).toBeNull();
   });
 
   it('names a non-default configured timing on the plain row', async () => {

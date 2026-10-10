@@ -45,7 +45,7 @@ import {
   shouldOfferOnboarding,
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
-import { ActivityPage } from './components/ActivityPage';
+import { ActivityPage, useSessionSeen } from './components/ActivityPage';
 import { useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
@@ -53,7 +53,7 @@ import { ConversationShell } from './components/ConversationShell';
 import { MemoryPage } from './components/MemoryPage';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
-import { SessionRouteView } from './components/SessionView';
+import { SessionRouteView, type SidebarBadge } from './components/SessionView';
 import { PersonasPage } from './components/persona/PersonasPage';
 import { PersonaDailyRoute } from './components/persona/PersonaDailyRoute';
 import { RoomPage } from './components/room/RoomPage';
@@ -69,6 +69,7 @@ import { UsagePage } from './components/UsagePage';
 import { useHost, type DesktopUpdate } from './host';
 import {
   arrangePinnedFirst,
+  buildConversationInbox,
   dedupeSessions,
   groupConversationItems,
   mergeSessionFirstPage,
@@ -87,7 +88,8 @@ import {
   type AutoUpdateMode,
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
-import { useLayoutPreferences } from './lib/layoutHooks';
+import { useLayoutPreferences, useMediaQuery, useVisualViewportHeightVar } from './lib/layoutHooks';
+import { useLayerHistory } from './lib/layerHistory';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
@@ -209,6 +211,14 @@ export function App() {
   // Remapped keys apply app-wide, so the saved table loads with the shell.
   useShortcutPreferencesSync();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => { setSidebarOpen(false); }, []);
+  // Phone keyboard: mirror the visual viewport into the app height chain
+  // (index.css consumes --kiki-visual-height on coarse pointers).
+  useVisualViewportHeightVar();
+  // While the drawer is open on a phone it owns one history entry, so the
+  // device back closes it before route navigation (lib/layerHistory).
+  const drawerStage = useMediaQuery('(max-width: 767px)');
+  useLayerHistory('app-sidebar', sidebarOpen && drawerStage, closeSidebar);
   const layoutPrefs = useLayoutPreferences();
   // Sidebar filters persist in layoutPrefs. The fetch mirrors the two
   // server-side narrowings (archived visibility, exactly one workspace); the
@@ -393,6 +403,14 @@ export function App() {
     [sessionsQuery.data],
   );
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
+  // The phone header's ☰ carries the same count as the sidebar bell: a
+  // session waiting on the user stays visible from the conversation the
+  // drawer hides.
+  const seen = useSessionSeen();
+  const sidebarBadge = useMemo<SidebarBadge | undefined>(() => {
+    const inbox = buildConversationInbox(sessions, conversations.rooms, seen, workspaceOptions);
+    return inbox.total === 0 ? undefined : { total: inbox.total, needsYou: inbox.needsYou.length > 0 };
+  }, [sessions, conversations.rooms, seen, workspaceOptions]);
   const sessionGroups = useMemo<readonly SessionGroup<ConversationListItem>[]>(() => {
     // A Bot's home and a room member's own session keep their single address
     // (the Bot rows above, the room's row); everything else lists here.
@@ -602,6 +620,7 @@ export function App() {
         sortBy={layoutPrefs.sortBy}
         onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
         onNewSession={() => { navigate(newSessionPath); }}
+        onClose={closeSidebar}
       />
 
       {/* Stage: the canvas-side frame; the routed page floats on it as one
@@ -657,6 +676,7 @@ export function App() {
                     sessionId={activeSessionId}
                     onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
                     sessions={sessions}
+                    sidebarBadge={sidebarBadge}
                   />
                 </SpaceViewState>
               }

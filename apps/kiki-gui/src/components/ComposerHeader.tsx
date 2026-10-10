@@ -23,6 +23,8 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
+import { useMediaQuery } from '../lib/layoutHooks';
+import { useLayerHistory } from '../lib/layerHistory';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 
 export interface ComposerHeaderSection {
@@ -72,6 +74,16 @@ export function ComposerHeader({
   const effectiveOpen = forced ?? (openId !== null && sections[openId] !== undefined ? openId : null);
   const openSection = effectiveOpen === null ? undefined : sections[effectiveOpen];
   const pinned = openSection?.forceOpen === true;
+
+  // Phone: the open detail is a bottom sheet, so it joins the layer stack —
+  // the device back closes it before route navigation. A pinned edit (a
+  // queued prompt parked in the composer) is exempt, same as Esc.
+  const sheetStage = useMediaQuery('(max-width: 767px)');
+  useLayerHistory(
+    'composer-header',
+    effectiveOpen !== null && !pinned && sheetStage,
+    () => { setOpenId(null); },
+  );
 
   // Count growth → one fade of the queue text (alternating keyframes replay).
   const countRef = useRef<number | null>(null);
@@ -170,6 +182,16 @@ export function ComposerHeader({
       data-header-open={effectiveOpen ?? undefined}
       className="composer-header"
     >
+      {shown !== undefined ? (
+        // Backdrop of the phone bottom sheet (CSS keeps it display:none at
+        // ≥768px); tapping it is the outside-tap close.
+        <div
+          data-header-backdrop
+          aria-hidden
+          className="composer-header-backdrop"
+          onPointerDown={() => { if (!pinned) setOpenId(null); }}
+        />
+      ) : null}
       <div
         id={panelId}
         role="region"

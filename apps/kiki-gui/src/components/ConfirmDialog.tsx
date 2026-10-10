@@ -111,10 +111,10 @@ export function ConfirmDialog({
       ) : null}
       {children}
       <div className="mt-6 flex justify-end gap-2">
-        <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onCancel}>
+        <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={`${SECONDARY_BUTTON} pointer-coarse:py-3`} disabled={busy} onClick={onCancel}>
           {cancelLabel ?? t('common.cancel')}
         </button>
-        <button type="button" data-confirm-action="confirm" className={tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} disabled={busy} onClick={onConfirm}>
+        <button type="button" data-confirm-action="confirm" className={`${tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`} disabled={busy} onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>
@@ -126,8 +126,18 @@ export function ConfirmDialog({
     </Dialog>
   );
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4" onClick={onCancel}>
-      <div role="alertdialog" aria-modal="true" aria-label={title} className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`} onClick={(event) => { event.stopPropagation(); }} onKeyDown={onKeyDown}>
+    // Phone: decision surfaces are bottom sheets — the choice lands in the
+    // thumb's reach and the home-indicator strip stays padded. Tablet/desktop
+    // keep the centered dialog.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4 max-md:items-end max-md:p-0" onClick={onCancel}>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-md:max-w-none max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))]`}
+        onClick={(event) => { event.stopPropagation(); }}
+        onKeyDown={onKeyDown}
+      >
         {content}
       </div>
     </div>

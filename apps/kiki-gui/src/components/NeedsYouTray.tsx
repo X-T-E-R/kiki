@@ -161,7 +161,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
   const questions = items.length - approvals;
   const currentId = itemId(current);
   const headAction =
-    'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-9 font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
+    'inline-flex min-h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[12px] pointer-coarse:min-h-11 font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none';
   const currentCard = current.kind === 'approval' ? (
     <ApprovalCard
       key={currentId}
@@ -338,7 +338,7 @@ export const NeedsYouTray = forwardRef<NeedsYouTrayHandle, {
                     type="button"
                     data-tray-item={id}
                     onClick={() => { setPinned(id); }}
-                    className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+                    className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:min-h-11"
                   >
                     <span className="shrink-0 text-[12px] font-medium text-ink-soft">
                       {item.kind === 'approval' ? t('pending.kind.approval') : t('pending.kind.question')}

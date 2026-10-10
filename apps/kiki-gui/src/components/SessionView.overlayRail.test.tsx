@@ -272,13 +272,25 @@ describe('message-view controls and the persona menu', () => {
 });
 
 describe('right rail responsive layout', () => {
-  it('does not render the rail or a header entry below the lg breakpoint', async () => {
+  it('opens the rail as a backdroped overlay layer below the lg breakpoint', async () => {
     const view = await mountAt('narrow');
     try {
+      // Closed on arrival (a deep link is never covered by the drawer), but
+      // the header keeps the entry: the rail is a layer now, not hidden.
       expect(view.rail()).toBeNull();
       expect(view.host.querySelector('.app-overlay-backdrop')).toBeNull();
-      expect(view.toggle()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
       expect(view.host.querySelector('[data-agent-rail-toggle]')).toBeNull();
+
+      await act(async () => { view.toggle()!.click(); });
+      expect(view.rail()).not.toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('true');
+      const backdrop = view.host.querySelector<HTMLElement>('.app-overlay-backdrop');
+      expect(backdrop).not.toBeNull();
+
+      await act(async () => { backdrop!.click(); });
+      expect(view.rail()).toBeNull();
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
     } finally {
       await view.unmount();
     }
@@ -312,7 +324,9 @@ describe('right rail responsive layout', () => {
 
       await resizeTo('narrow');
       expect(view.rail()).toBeNull();
-      expect(view.toggle()).toBeNull();
+      // The narrow layer starts closed on every visit; the untouched
+      // wide-screen preference is what must survive the round trip.
+      expect(view.toggle()?.getAttribute('aria-expanded')).toBe('false');
 
       await resizeTo('wide');
       expect(view.rail()).toBeNull();

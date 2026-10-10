@@ -23,7 +23,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { FsSearchHit, PermissionMode } from '@kiki/protocol';
+import type { DeferredAppendTiming, FsSearchHit, PermissionMode } from '@kiki/protocol';
 import { filterSlashItems, type SlashItem } from '@kiki/session-core/commands';
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 
@@ -32,6 +32,7 @@ import { registerOverlay } from '../lib/uiBusy';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { Icon } from './icons';
+import { TIMING_HINT_KEY, TIMING_SHORT_KEY } from './QueueStrip';
 
 /**
  * Status-line trigger. Each segment is one picker and says what it changes by
@@ -57,6 +58,12 @@ export const POPOVER_LABEL_CLASS = 'px-3 pt-1.5 pb-1 text-[12px] font-medium tex
 
 export const MENU_ROW_CLASS =
   'flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:opacity-50';
+
+/** The deferred queue timings the send-timing menu offers as one-shot picks. */
+export const SEND_TIMING_PICKS = ['subagents_done', 'tasks_done'] as const satisfies readonly DeferredAppendTiming[];
+
+/** One-shot choice from either send-timing menu (the ＋ view, the send button's hover menu). */
+export type SendTimingChoice = 'default' | 'now' | DeferredAppendTiming;
 
 export type RunMode = 'normal' | 'plan' | 'goal';
 
@@ -410,7 +417,7 @@ function RunModePanel({ controls }: { controls: RunModeControls }) {
  * The panel floats above the whole composer card (useComposerPanelAnchor),
  * never over the card's own chips or header.
  */
-export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention';
+export type AddMenuView = 'closed' | 'root' | 'mode' | 'ssh' | 'skills' | 'mention' | 'timing';
 
 /** One SSH host as the ＋ search lists it (the SSH view owns the full panel). */
 export interface AddMenuHost {
@@ -508,6 +515,76 @@ function FileRow({ hit, onMention, result = false }: { hit: FsSearchHit; onMenti
   );
 }
 
+/**
+ * The send-timing rows, shared by the send button's hover menu and the ＋
+ * menu's timing view (the phone path, where there is no hover): send with the
+ * session's default timing, send into the running turn, or defer until
+ * subagents / tasks finish.
+ */
+export function SendTimingRows({
+  defaultTiming,
+  canSendNow,
+  onPick,
+}: {
+  readonly defaultTiming: DeferredAppendTiming;
+  readonly canSendNow: boolean;
+  readonly onPick: (choice: SendTimingChoice) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <>
+      <button
+        type="button"
+        role="menuitem"
+        data-menu-row
+        data-send-timing="default"
+        onClick={() => { onPick('default'); }}
+        className={`${MENU_ROW_CLASS} items-start`}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block font-medium text-ink">{t('composer.sendTiming.send')}</span>
+          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
+            {t('composer.sendTiming.sendHint', { timing: t(TIMING_SHORT_KEY[defaultTiming]) })}
+          </span>
+        </span>
+      </button>
+      {canSendNow ? (
+        <button
+          type="button"
+          role="menuitem"
+          data-menu-row
+          data-send-timing="now"
+          onClick={() => { onPick('now'); }}
+          className={`${MENU_ROW_CLASS} items-start`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium text-ink">{t('composer.sendTiming.now')}</span>
+            <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t('composer.sendTiming.nowHint')}</span>
+          </span>
+        </button>
+      ) : null}
+      {SEND_TIMING_PICKS.map((timing) => (
+        <button
+          key={timing}
+          type="button"
+          role="menuitem"
+          data-menu-row
+          data-send-timing={timing}
+          onClick={() => { onPick(timing); }}
+          className={`${MENU_ROW_CLASS} items-start`}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium text-ink">
+              {t('composer.sendTiming.timed', { timing: t(TIMING_SHORT_KEY[timing]) })}
+            </span>
+            <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">{t(TIMING_HINT_KEY[timing])}</span>
+          </span>
+        </button>
+      ))}
+    </>
+  );
+}
+
 export function AddMenu({
   view,
   onViewChange,
@@ -516,6 +593,7 @@ export function AddMenu({
   onRebuild,
   rebuildDisabled,
   runMode,
+  timing,
   ssh,
   skills,
   files,
@@ -529,6 +607,13 @@ export function AddMenu({
   readonly rebuildDisabled?: boolean;
   /** Absent hides the Mode row (subagent composer). */
   readonly runMode?: RunModeControls;
+  /** Send-timing view (queue-while-busy choices); absent hides the row. The
+   * phone path to timing: the send button's hover menu never opens on touch. */
+  readonly timing?: {
+    readonly defaultTiming: DeferredAppendTiming;
+    readonly canSendNow: boolean;
+    readonly onPick: (choice: SendTimingChoice) => void;
+  };
   /** SSH hosts row + view (components/ssh/ComposerSsh); absent hides it. */
   readonly ssh?: {
     readonly count: number;
@@ -573,7 +658,7 @@ export function AddMenu({
   // With Attach as the only action (the subagent composer) a menu would be
   // one pointless extra click: ＋ attaches directly.
   const attachOnly =
-    runMode === undefined && onRebuild === undefined && ssh === undefined && skills === undefined && files === undefined;
+    runMode === undefined && timing === undefined && onRebuild === undefined && ssh === undefined && skills === undefined && files === undefined;
   const searchable = skills !== undefined || files !== undefined || (ssh?.hosts !== undefined && ssh.hosts.length > 0);
 
   const trimmed = query.trim();
@@ -815,13 +900,18 @@ export function AddMenu({
               ssh.count > 0 ? <span className="text-[12px] text-ink-faint tabular-nums">{ssh.count}</span> : undefined, { 'data-add-menu-ssh': '' })
           : null}
       </div>
-      {runMode !== undefined || onRebuild !== undefined ? (
+      {runMode !== undefined || onRebuild !== undefined || timing !== undefined ? (
         <div role="group" aria-label={t('composer.addMenu.sessionGroup')} className="mt-1 border-t border-hairline pt-1">
           <GroupLabel>{t('composer.addMenu.sessionGroup')}</GroupLabel>
           {runMode !== undefined
             ? drillRow('mode', <MenuIcon d="M2.5 4h7M2.5 8h7M4.5 2.5v3M7.5 6.5v3" />, t('composer.addMenu.mode'),
                 <span className="text-[12px] text-ink-faint">{t(RUN_MODES.find((mode) => mode.id === runMode.runMode)!.labelKey)}</span>,
                 { 'data-add-menu-mode': '' })
+            : null}
+          {timing !== undefined
+            ? drillRow('timing', <MenuIcon d="M6 2.8A3.2 3.2 0 1 0 6 9.2 3.2 3.2 0 0 0 6 2.8M6 4.3V6l1.2 1.2" />, t('composer.addMenu.timing'),
+                <span className="text-[12px] text-ink-faint">{t(TIMING_SHORT_KEY[timing.defaultTiming])}</span>,
+                { 'data-add-menu-timing': '' })
             : null}
           {onRebuild !== undefined ? (
             <button
@@ -895,6 +985,7 @@ export function AddMenu({
           aria-label={
             view === 'ssh' ? t('composer.ssh.heading')
               : view === 'mode' ? t('composer.runModeHeading')
+              : view === 'timing' ? t('composer.sendTimingAria')
               : view === 'skills' ? t('composer.addMenu.skills')
               : view === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
@@ -914,6 +1005,15 @@ export function AddMenu({
             <>
               {backRow(t('composer.addMenu.ssh'))}
               {ssh.renderPanel(close)}
+            </>
+          ) : view === 'timing' && timing !== undefined ? (
+            <>
+              {backRow(t('composer.addMenu.timing'))}
+              <SendTimingRows
+                defaultTiming={timing.defaultTiming}
+                canSendNow={timing.canSendNow}
+                onPick={(choice) => { close(); timing.onPick(choice); }}
+              />
             </>
           ) : runMode !== undefined ? (
             <>
