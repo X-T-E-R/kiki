@@ -2,7 +2,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
 import { AgentNotesSection, NOTE_SECTION_LABELS, type AgentNotesSectionProps } from './AgentNotesSection';
@@ -145,16 +145,18 @@ describe('AgentNotesSection', () => {
     await cleanup();
   });
 
-  it('clamps a long section to four lines with the shared show-more toggle', async () => {
+  it('shows a long section in full on first open without a second field toggle', async () => {
     const long = Array.from({ length: 30 }, (_, index) => `evidence line ${index}`).join('\n');
     const { container, cleanup } = await render({ notes: { goal: 'g', evidence: long }, meta, loaded: true });
-    await openSection(container);
-    const evidence = container.querySelector('[data-agent-notes-part="evidence"]')!;
-    const paragraph = evidence.querySelector('dd p')!;
-    expect(paragraph.className).toContain('line-clamp-4');
-    expect(paragraph.className).toContain('whitespace-pre-wrap');
-    expect(paragraph.textContent).toContain('evidence line 29');
-    await cleanup();
+    try {
+      await openSection(container);
+      const evidence = container.querySelector('[data-agent-notes-part="evidence"]')!;
+      const paragraph = evidence.querySelector('dd p')!;
+      expect(paragraph.className).not.toContain('line-clamp');
+      expect(paragraph.className).toContain('whitespace-pre-wrap');
+      expect(paragraph.textContent).toBe(long);
+      expect(evidence.querySelector('button')).toBeNull();
+    } finally { await cleanup(); }
   });
 
   it('settles back to the empty state when the agent clears its notes', async () => {
@@ -173,4 +175,34 @@ describe('AgentNotesSection', () => {
     expect(container.textContent).toContain('No working notes yet.');
     await cleanup();
   });
+});
+
+it('keeps omitted and failed note content distinct from empty and releases its read when folded', async () => {
+  const release = vi.fn();
+  const retry = vi.fn();
+  const beginRead = vi.fn(() => ({ release, retry }));
+  const props: AgentNotesSectionProps = { notes: {}, meta, loaded: true, beginRead, contentStatus: 'loading', contentSignature: 'notes-ref-1' };
+  const { container, rerender, cleanup } = await render(props);
+  try {
+    expect(container.textContent).toContain('Expand to read working notes.');
+    expect(container.textContent).not.toContain('No working notes yet.');
+    expect(beginRead).not.toHaveBeenCalled();
+    await openSection(container);
+    expect(beginRead).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-agent-notes-read-status]')?.textContent).toBe('Reading working notes…');
+    await rerender({ ...props, contentStatus: 'error' });
+    expect(container.querySelector('[data-agent-notes-state="error"]')).not.toBeNull();
+    expect(container.textContent).toContain('Could not read working notes');
+    const retryBefore = retry.mock.calls.length;
+    const retryButton = container.querySelector<HTMLButtonElement>('[data-agent-notes-read-status] button')!;
+    await act(async () => { retryButton.click(); });
+    expect(retry).toHaveBeenCalledTimes(retryBefore + 1);
+    await rerender({ ...props, notes: { evidence: 'Newest complete evidence' }, meta: { ...meta, rev: 5 }, contentStatus: undefined, contentSignature: '[]' });
+    expect(container.querySelector('[data-agent-notes-part="evidence"] dd')?.textContent).toBe('Newest complete evidence');
+    expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 5');
+    expect(container.querySelector('[data-agent-notes-read-status]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    expect(release).toHaveBeenCalledTimes(1);
+  } finally { await cleanup(); }
 });

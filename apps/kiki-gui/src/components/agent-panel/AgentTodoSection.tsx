@@ -8,6 +8,7 @@ export interface AgentTodoSectionProps {
   readonly todos: readonly AgentPanelTodo[];
   readonly onToggleTodo?: (id: string) => void;
   readonly onNewTodo?: () => void;
+  readonly incomplete?: boolean;
 }
 
 // A ticked todo is a settled fact: neutral, not the success tone (that is
@@ -28,6 +29,7 @@ export const AgentTodoSection = memo(function AgentTodoSection({
   todos,
   onToggleTodo,
   onNewTodo,
+  incomplete = false,
 }: AgentTodoSectionProps) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
@@ -45,9 +47,9 @@ export const AgentTodoSection = memo(function AgentTodoSection({
           <span className="text-[12px] font-medium text-ink-soft transition-colors group-hover:text-ink">
             {t('inspector.todos')}
           </span>
-          <span className="text-[12px] text-ink-faint tabular-nums">
+          {!incomplete ? <span className="text-[12px] text-ink-faint tabular-nums">
             {doneCount}/{todos.length}
-          </span>
+          </span> : null}
           <InspectorChevron open={!collapsed} />
         </button>
 

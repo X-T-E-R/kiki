@@ -52,7 +52,7 @@ const NO_WAITING: ReadonlySet<string> = new Set();
  * exists at all. A subagent without its own state reads as an unloaded empty
  * state, never as the session's main agent.
  */
-function useAgentViewState(sessionId: string, agentId: string): SessionViewState | undefined {
+function useAgentViewState(sessionId: string, agentId: string): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
   const registry = useOptionalControllerRegistry();
   const subscribeRegistry = useCallback(
     (listener: () => void) => (registry === null ? noopSubscribe() : registry.subscribe(listener)),
@@ -92,7 +92,8 @@ function useAgentViewState(sessionId: string, agentId: string): SessionViewState
           : controller.getAgentState(agentId),
     [controller, agentId],
   );
-  return useSyncExternalStore(subscribeAgent, readAgentState);
+  const agentState = useSyncExternalStore(subscribeAgent, readAgentState);
+  return { controller, agentState };
 }
 
 /**
@@ -124,7 +125,36 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const navigate = useNavigate();
   const query = { session_id: state.sessionId, agent_id: agentId };
   const node = forest.byId[agentId];
-  const agentState = useAgentViewState(state.sessionId, agentId);
+  const { controller, agentState } = useAgentViewState(state.sessionId, agentId);
+  const readsTodos = visible && (part === 'all' || part === 'work');
+  const todoRead = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
+  useEffect(() => {
+    if (!readsTodos || controller === undefined) return;
+    const lease = controller.beginContentRead(agentId, { kind: 'todo', id: 'todo' }, ['items']);
+    todoRead.current = lease;
+    return () => { lease.release(); todoRead.current = undefined; };
+  }, [controller, agentId, readsTodos]);
+  const todoCoverage = agentState?.globalCoverage?.todos;
+  useEffect(() => {
+    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore) void controller?.loadTranscriptEntities(agentId, 'todo');
+  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned]);
+  const todoRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
+  const todoReadFailed = todoRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
+    todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
+  const todoRefSignature = JSON.stringify(todoRefs);
+  useEffect(() => {
+    if (readsTodos && !todoReadFailed && todoRefSignature !== '[]') todoRead.current?.retry();
+  }, [controller, agentId, readsTodos, todoReadFailed, todoRefSignature]);
+  const retryTodos = () => {
+    todoRead.current?.retry();
+    if (todoCoverage?.hasMore) void controller?.loadTranscriptEntities(agentId, 'todo');
+  };
+  const notesRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' &&
+    (ref.path[0] === 'notes' || ref.path[0] === 'notesMeta')) ?? [];
+  const notesReadFailed = notesRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
+    todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
+  const notesContentStatus = notesReadFailed ? 'error' : notesRefs.length > 0 || todoCoverage?.hasMore === true ? 'loading' : undefined;
+  const beginNotesRead = useCallback(() => controller?.beginContentRead(agentId, { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']), [controller, agentId]);
   // Poll cadence follows THIS agent's activity — its own view state or its
   // forest node. The routed agent being busy must neither start nor stop it.
   const active = agentState?.busy === true || node?.busy === true ||
@@ -192,18 +222,24 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   });
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
 
-  // Only this agent's own state feeds the checklist, and it renders only when
-  // there is something to show: no per-agent data and a still-loading agent
-  // both render nothing visible (a status marker stays for assistive tech),
-  // and neither ever falls back to the routed agent's todos.
-  const todoSection =
-    agentState !== undefined && loaded
-      ? todos.length > 0
-        ? <AgentTodoSection todos={todos.map((todo, index) => ({ ...todo, id: `${agentId}:${index}` }))} />
-        : null
-      : agentState !== undefined && node !== undefined
-        ? <p role="status" data-agent-todos-status="loading" className="sr-only">{t('diagnostics.loading')}</p>
-        : <p role="status" data-agent-todos-status="unknown" className="sr-only">{t('diagnostics.unknown')}</p>;
+  const todoStatus = agentState === undefined
+    ? 'unknown'
+    : todoReadFailed || !loaded && agentState.loadError !== undefined
+      ? 'error'
+      : !loaded || todoRefs.length > 0 || todoCoverage?.hasMore === true
+        ? 'loading'
+        : undefined;
+  const todoSection = <>
+    {todos.length > 0 ? <AgentTodoSection
+      key={`${state.sessionId}:${agentId}`}
+      todos={todos.map((todo, index) => ({ ...todo, id: `${agentId}:${index}` }))}
+      incomplete={todoStatus !== undefined}
+    /> : null}
+    {todoStatus !== undefined ? <p role="status" data-agent-todos-status={todoStatus} className="text-[12px] leading-relaxed text-ink-faint">
+      {t(todoStatus === 'error' ? 'agentPanel.todos.loadFailed' : todoStatus === 'loading' ? 'agentPanel.todos.loading' : 'agentPanel.todos.unknown')}
+      {todoStatus === 'error' && loaded ? <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={retryTodos}>{t('common.retry')}</button> : null}
+    </p> : null}
+  </>;
   const planSection = agentState !== undefined ? <AgentPlanSection
     key={`${state.sessionId}:${agentId}`}
     sessionId={state.sessionId}
@@ -216,7 +252,12 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // (TodoList), read-only here, from this agent's state only. The section
   // itself tells a still-loading agent from one that has no notes yet.
   const notesSection = agentState !== undefined
-    ? <AgentNotesSection notes={agentState.todoNotes} meta={agentState.todoNotesMeta} status={agentState.todoNotesStatus} loaded={loaded} />
+    ? <AgentNotesSection
+      key={`notes:${state.sessionId}:${agentId}`}
+      notes={agentState.todoNotes} meta={agentState.todoNotesMeta} status={agentState.todoNotesStatus} loaded={loaded}
+      beginRead={readsTodos ? beginNotesRead : undefined}
+      contentStatus={notesContentStatus} contentSignature={JSON.stringify(notesRefs)}
+    />
     : null;
   // Which hook rules this agent runs with, and from which file: an on-demand
   // detail under its notes, asked only when this agent has live state.
