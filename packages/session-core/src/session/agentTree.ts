@@ -50,6 +50,9 @@ export interface AgentLiveSource {
   readonly label?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
@@ -83,6 +86,9 @@ export interface AgentRosterDescriptor {
   readonly label?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
@@ -115,6 +121,12 @@ export interface AgentTaskItem {
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinking_effort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly thinking_effort_explicit?: boolean;
+  readonly executorId?: string;
+  readonly executor_id?: string;
+  readonly executorProtocol?: string;
+  readonly executor_protocol?: string;
   readonly startedAt?: string;
   readonly started_at?: string;
   readonly endedAt?: string;
@@ -152,6 +164,9 @@ export interface AgentTreeNode {
   readonly label: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
@@ -240,6 +255,9 @@ interface DraftNode {
   label: string | undefined;
   model: string | undefined;
   thinkingEffort: string | undefined;
+  thinkingEffortExplicit: boolean | undefined;
+  executorId: string | undefined;
+  executorProtocol: string | undefined;
   contextTokens: number | undefined;
   maxContextTokens: number | undefined;
   usage: AgentUsageSummary | undefined;
@@ -345,6 +363,9 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.label === b.label &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
+    a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
+    a.executorId === b.executorId &&
+    a.executorProtocol === b.executorProtocol &&
     a.contextTokens === b.contextTokens &&
     a.maxContextTokens === b.maxContextTokens &&
     usageSummaryEqual(a.usage, b.usage) &&
@@ -527,6 +548,9 @@ export function buildAgentForest(
       label: present(draft.label) ? draft.label : name,
       model: draft.model,
       thinkingEffort: draft.thinkingEffort,
+      thinkingEffortExplicit: draft.thinkingEffortExplicit,
+      executorId: draft.executorId,
+      executorProtocol: draft.executorProtocol,
       contextTokens: draft.contextTokens,
       maxContextTokens: draft.maxContextTokens,
       usage: draft.usage,
@@ -724,6 +748,9 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     label: undefined,
     model: undefined,
     thinkingEffort: undefined,
+    thinkingEffortExplicit: undefined,
+    executorId: undefined,
+    executorProtocol: undefined,
     contextTokens: undefined,
     maxContextTokens: undefined,
     usage: undefined,
@@ -782,6 +809,9 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   if (!accepted) return;
   draft.model = firstPresent(task.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(task.thinkingEffort, task.thinking_effort) ?? draft.thinkingEffort;
+  draft.thinkingEffortExplicit = task.thinkingEffortExplicit ?? task.thinking_effort_explicit ?? draft.thinkingEffortExplicit;
+  draft.executorId = firstPresent(task.executorId, task.executor_id) ?? draft.executorId;
+  draft.executorProtocol = firstPresent(task.executorProtocol, task.executor_protocol) ?? draft.executorProtocol;
   draft.startedAt ??= startedAt;
   draft.endedAt ??= endedAt;
   draft.summary = draft.summary ?? firstPresent(task.summary, task.output_preview);
@@ -833,6 +863,9 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   if (!accepted) return;
   draft.model = firstPresent(entry.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(entry.thinkingEffort) ?? draft.thinkingEffort;
+  draft.thinkingEffortExplicit = entry.thinkingEffortExplicit ?? draft.thinkingEffortExplicit;
+  draft.executorId = firstPresent(entry.executorId) ?? draft.executorId;
+  draft.executorProtocol = firstPresent(entry.executorProtocol) ?? draft.executorProtocol;
   draft.contextTokens = entry.contextTokens ?? draft.contextTokens;
   draft.maxContextTokens = entry.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = entry.usage ?? draft.usage;
@@ -884,6 +917,9 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   if (!accepted) return;
   draft.model = firstPresent(block.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(block.thinkingEffort) ?? draft.thinkingEffort;
+  draft.thinkingEffortExplicit = block.thinkingEffortExplicit ?? draft.thinkingEffortExplicit;
+  draft.executorId = firstPresent(block.executorId) ?? draft.executorId;
+  draft.executorProtocol = firstPresent(block.executorProtocol) ?? draft.executorProtocol;
   draft.contextTokens = block.contextTokens ?? draft.contextTokens;
   draft.maxContextTokens = block.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = block.usage ?? draft.usage;

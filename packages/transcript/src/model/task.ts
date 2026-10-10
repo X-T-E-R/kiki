@@ -43,6 +43,10 @@ export interface TranscriptTask extends ContentWindow {
   readonly name?: string;
   readonly subagentName?: string;
   readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   /** Human-readable one-liner (command line, agent description, …). */
   readonly description?: string;
   /** For kind 'subagent': the spawned agent's transcript to subscribe. */

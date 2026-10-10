@@ -24,6 +24,7 @@ import {
 import {
   liveSourcesFromAgentSnapshots,
   sessionAgentForestFromAgentSnapshots,
+  taskItemsFromSessionTasks,
 } from './transcript/forest';
 
 function live(overrides: Partial<AgentLiveSource> & Pick<AgentLiveSource, 'subagentId'>): AgentLiveSource {
@@ -1733,5 +1734,48 @@ describe('applyNewestAgentPage / resetAgentHistoryCache', () => {
     const cache = applyNewestAgentPage(null, 'agent-1', page([block({ id: 'a' })], { oldestTurnId: 't1' }));
     expect(resetAgentHistoryCache(cache, 'agent-2')).toBeNull();
     expect(resetAgentHistoryCache(cache, 'agent-1')).toBe(cache);
+  });
+});
+
+describe('executor identity projection', () => {
+  it('keeps executor identity separate from model and profile hints across roster and live sources', () => {
+    const forest = buildAgentForest(
+      [live({ subagentId: 'agent-1', model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1' })],
+      [roster({ agentId: 'agent-1', name: 'worker', model: 'shared-model' })],
+    );
+    expect(forest.byId['agent-1']).toMatchObject({
+      model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1',
+    });
+  });
+});
+
+describe('session task metadata projection', () => {
+  it('carries the session task effort and executor provenance into the roster item', () => {
+    type SessionTask = Parameters<typeof taskItemsFromSessionTasks>[0][number];
+    const task = {
+      id: 'task-1',
+      kind: 'subagent',
+      agent_id: 'agent-1',
+      description: 'work',
+      status: 'running',
+      model: 'shared-model',
+      thinking_effort: 'high',
+      thinking_effort_explicit: true,
+      executor_id: 'claude-acp',
+      executor_protocol: 'acp-v1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: null,
+      output_preview: '',
+    } as unknown as SessionTask;
+    expect(taskItemsFromSessionTasks([task])[0]).toMatchObject({
+      id: 'task-1',
+      agentId: 'agent-1',
+      status: 'running',
+      model: 'shared-model',
+      thinking_effort: 'high',
+      thinking_effort_explicit: true,
+      executor_id: 'claude-acp',
+      executor_protocol: 'acp-v1',
+    });
   });
 });

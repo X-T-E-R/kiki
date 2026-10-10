@@ -677,7 +677,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
 
     const thinking = this.context.binding.execution === undefined
-      ? this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel : this.context.binding.execution.effective.thinking;
+      ? this.context.binding.thinkingEffortExplicit === true && this.context.binding.thinkingLevel !== 'off'
+        ? this.context.binding.thinkingLevel : undefined
+      : this.context.binding.execution.effective.thinking;
     if (thinking !== undefined) {
       const thought = selectConfigIfAvailable(
         configured.configOptions,

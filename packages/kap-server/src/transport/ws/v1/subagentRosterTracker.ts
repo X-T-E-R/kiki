@@ -187,6 +187,15 @@ export class SubagentRosterTracker {
               ? event.thinkingEffort
               : (event.thinkingEffort ?? existing?.thinking_effort)
             : existing!.thinking_effort,
+          thinking_effort_explicit: acceptedRun
+            ? restarted ? event.thinkingEffortExplicit : (event.thinkingEffortExplicit ?? existing?.thinking_effort_explicit)
+            : existing!.thinking_effort_explicit,
+          executor_id: acceptedRun
+            ? restarted ? event.executorId : (event.executorId ?? existing?.executor_id)
+            : existing!.executor_id,
+          executor_protocol: acceptedRun
+            ? restarted ? event.executorProtocol : (event.executorProtocol ?? existing?.executor_protocol)
+            : existing!.executor_protocol,
           created_at: acceptedRun
             ? restarted
               ? createdAt
@@ -493,6 +502,15 @@ export class SubagentRosterTracker {
         thinking_effort: restarted
           ? info.thinkingEffort
           : (info.thinkingEffort ?? existing?.thinking_effort),
+        thinking_effort_explicit: restarted
+          ? info.thinkingEffortExplicit
+          : (info.thinkingEffortExplicit ?? existing?.thinking_effort_explicit),
+        executor_id: restarted
+          ? info.executorId
+          : (info.executorId ?? existing?.executor_id),
+        executor_protocol: restarted
+          ? info.executorProtocol
+          : (info.executorProtocol ?? existing?.executor_protocol),
         created_at: restarted ? startedAt : (existing?.created_at ?? startedAt),
         started_at: restarted ? startedAt : (existing?.started_at ?? startedAt),
         completed_at: restarted ? endedAt : (existing?.completed_at ?? endedAt),
@@ -561,6 +579,15 @@ export class SubagentRosterTracker {
       thinking_effort: restarted
         ? info.thinkingEffort
         : (info.thinkingEffort ?? existing?.thinking_effort),
+      thinking_effort_explicit: restarted
+        ? info.thinkingEffortExplicit
+        : (info.thinkingEffortExplicit ?? existing?.thinking_effort_explicit),
+      executor_id: restarted
+        ? info.executorId
+        : (info.executorId ?? existing?.executor_id),
+      executor_protocol: restarted
+        ? info.executorProtocol
+        : (info.executorProtocol ?? existing?.executor_protocol),
       created_at: restarted ? startedAt : (existing?.created_at ?? startedAt),
       started_at: restarted ? startedAt : (existing?.started_at ?? startedAt),
       completed_at: undefined,

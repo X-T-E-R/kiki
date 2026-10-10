@@ -86,6 +86,7 @@ export interface ProfileData extends AgentConfigData {
   readonly roomPrompt?: string;
   readonly effectiveThinkingLevel?: ThinkingEffort;
   readonly thinkingEffortSource?: ThinkingEffortSource;
+  readonly thinkingEffortExplicit?: boolean;
   readonly routeDetached?: boolean;
   readonly profileSource?: ProfileBindingSource;
   readonly permissionMode?: import('@kiki/agent-profiles/agentProfile').AgentPermissionMode;
@@ -130,6 +131,7 @@ export type ProfileUpdateData = Partial<{
   modelAlias: string;
   profileName: string;
   thinkingLevel: string;
+  thinkingEffortExplicit: boolean;
   thinkingEffortAdjusted: boolean;
   bindingAdvisories: readonly BindingAdvisory[];
   allowParentNotify: boolean;
@@ -158,6 +160,7 @@ export interface ProfileBindingSnapshot {
   readonly permissionMode?: import('@kiki/agent-profiles/agentProfile').AgentPermissionMode;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
   readonly execution?: import('@kiki/protocol').ExecutionBinding;

@@ -34,7 +34,11 @@ An approval appears in the timeline before a protected operation runs, with the 
 
 ## Right rail
 
-The rail describes one agent at a time — whichever you last clicked into or focused. The main agent and every subagent get the same page, and the rail follows you into a subagent's transcript. It shows what that agent is doing now, the items waiting on you as rows you can decide from, the activity feed, and a folded capabilities block. **Dispatch capabilities** opens the panel showing how the agent hands work to subagents, and from there you can inspect a subagent's profile (its configuration file), route and executor, plus where its default model and thinking effort (how much reasoning the model invests) come from — see [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
+The rail describes one agent at a time — whichever you last clicked into or focused. The main agent and every subagent get the same page, and the rail follows you into a subagent's transcript. It shows what that agent is doing now, the items waiting on you as rows you can decide from, the activity feed, and a folded capabilities block.
+
+The agent tree labels external executors beside each agent's name. An **off** thinking effort is shown only when it was explicitly selected.
+
+**Dispatch capabilities** opens the panel showing how the agent hands work to subagents, and from there you can inspect a subagent's profile (its configuration file), route and executor, plus where its default model and thinking effort (how much reasoning the model invests) come from — see [Agents and subagents](../customization/agents.md#rebuilding-a-session-context).
 
 On desktop-width screens the rail is open by default. **Standard / Cockpit** in its header widens it over the preview space while the conversation and composer stay in the main column; **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back.
 

@@ -23,6 +23,9 @@ export type SubagentHandle = {
   readonly mainProfile?: boolean;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly thinkingEffortSource?: import('#/agent/profile/profile').ThinkingEffortSource;
   readonly routeDetached?: boolean;
   readonly profileSource?: import('#/agent/profile/profile').ProfileBindingSource;
@@ -75,6 +78,9 @@ export class SubagentTask implements AgentTask {
   readonly parentToolCallId?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly collaborationTaskName?: string;
   readonly collaborationAgentType?: string;
 
@@ -89,6 +95,9 @@ export class SubagentTask implements AgentTask {
     this.parentToolCallId = handle.parentToolCallId;
     this.model = handle.model;
     this.thinkingEffort = handle.thinkingEffort;
+    this.thinkingEffortExplicit = handle.thinkingEffortExplicit;
+    this.executorId = handle.executorId;
+    this.executorProtocol = handle.executorProtocol;
     this.collaborationTaskName = collaboration?.taskName;
     this.collaborationAgentType = collaboration?.agentType;
   }
@@ -128,6 +137,9 @@ export class SubagentTask implements AgentTask {
       parentToolCallId: this.parentToolCallId,
       model: this.model,
       thinkingEffort: this.thinkingEffort,
+      thinkingEffortExplicit: this.thinkingEffortExplicit,
+      executorId: this.executorId,
+      executorProtocol: this.executorProtocol,
       collaborationTaskName: this.collaborationTaskName,
       collaborationAgentType: this.collaborationAgentType,
     };

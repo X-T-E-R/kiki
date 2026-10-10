@@ -34,7 +34,11 @@ Agent 忙碌时，新消息默认进入输入框上方的队列，而不是打�
 
 ## 右侧栏
 
-右栏一次只描述一个 Agent：你最后点进去或聚焦的那个。main agent 和每个 subagent 用的是同一套页面，进到 subagent 的记录里，右栏也跟着你走。它显示这个 Agent 此刻在做什么、等着你处理的条目（可以直接在行上做决定）、活动流，以及一个折起来的能力区块。**Dispatch capabilities** 打开的是 Agent 派发 subagent 的配置面板，从那里可以看到某个 subagent 的配置档案（profile）、路由和执行器，以及它的默认模型与思考力度（effort，模型投入多少推理）来自哪里——见 [Agent 与 subagent](../customization/agents.md#重建会话上下文)。
+右栏一次只描述一个 Agent：你最后点进去或聚焦的那个。main agent 和每个 subagent 用的是同一套页面，进到 subagent 的记录里，右栏也跟着你走。它显示这个 Agent 此刻在做什么、等着你处理的条目（可以直接在行上做决定）、活动流，以及一个折起来的能力区块。
+
+Agent 树会在名称旁标出外部执行器；只有明确选择过 **off** 时，思考力度才会显示这个值。
+
+**Dispatch capabilities** 打开的是 Agent 派发 subagent 的配置面板，从那里可以看到某个 subagent 的配置档案（profile）、路由和执行器，以及它的默认模型与思考力度（effort，模型投入多少推理）来自哪里——见 [Agent 与 subagent](../customization/agents.md#重建会话上下文)。
 
 桌面宽度下右栏默认展开。页头的 **Standard / Cockpit** 让它临时加宽、占用预览区，对话和输入框仍留在主列；选 **Standard** 或 **退出驾驶舱**会把原来的预览内容、页签、草稿和宽度还原。
 

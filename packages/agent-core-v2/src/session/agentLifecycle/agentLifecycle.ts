@@ -30,6 +30,7 @@ export interface AgentRestoreBinding {
   readonly routeId?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
 }

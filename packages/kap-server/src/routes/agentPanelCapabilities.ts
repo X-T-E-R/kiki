@@ -296,6 +296,7 @@ function panelProfile(
       : data.appliedLease?.modelAlias !== undefined ? 'caller-lease'
         : data.lockedModelAlias !== undefined && routeDetached !== true ? 'route' : 'profile',
     thinking_effort: thinkingEffort,
+    thinking_effort_explicit: data.thinkingEffortExplicit,
     effort_source: panelEffortSource(scope, data, definition, thinkingEffort, routeDetached),
     thinking_effort_source: data.thinkingEffortSource,
     route_detached: routeDetached,

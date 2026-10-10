@@ -308,6 +308,9 @@ export interface SubagentBlock {
   readonly instruction?: string;
   readonly model: string | undefined;
   readonly thinkingEffort: string | undefined;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly status: 'unknown' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
   readonly summary: string | undefined;
   readonly error: string | undefined;

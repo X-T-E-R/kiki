@@ -328,7 +328,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         input: [{ type: 'text', text: remotePrompt }, ...codexAttachments(externalAttachments(request))],
         model: this.context.binding.modelAlias,
         effort: this.context.binding.execution !== undefined ? this.context.binding.execution.effective.thinking
-          : this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel,
+          : this.context.binding.thinkingEffortExplicit === true && this.context.binding.thinkingLevel !== 'off'
+            ? this.context.binding.thinkingLevel : undefined,
         approvalPolicy,
         sandboxPolicy: undefined,
       }, controller.signal, recorder.record.bind(recorder));

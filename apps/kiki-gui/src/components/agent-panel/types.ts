@@ -24,6 +24,9 @@ export interface AgentIdentity {
   readonly context: 'live' | 'draft';
   readonly roleParameters?: Record<string, string | number | boolean>;
   readonly isMain?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
+  readonly thinkingEffortExplicit?: boolean;
   readonly rawProfile?: import('@kiki/protocol').AgentCapabilitiesResponse['profile'];
 }
 

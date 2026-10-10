@@ -2348,3 +2348,12 @@ describe('AgentTranscript transcript task vocabulary', () => {
     expect(states).toHaveLength(6);
   });
 });
+
+it('preserves subagent task effort and provenance through live spawn and attach seed', () => {
+  const facts = { thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' };
+  const adapter = new AgentTranscriptLiveAdapter('main');
+  const spawned = adapter.map(ev({ type: 'subagent.spawned', time: 1, subagentId: 'child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, taskId: 'task', ...facts }));
+  expect(spawned.find((op) => op.op === 'task.upsert')).toMatchObject({ task: facts });
+  const seeded = new AgentTranscriptLiveAdapter('main').seedSubagentTask({ taskId: 'task', agentId: 'child', description: 'work', status: 'running', detached: true, startedAt: 1, ...facts });
+  expect(seeded.find((op) => op.op === 'task.upsert')).toMatchObject({ task: facts });
+});

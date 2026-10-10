@@ -101,8 +101,14 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         ? 'bg-amber-rule'
         : 'bg-ink-soft';
 
-  const effortValue =
+  const rawEffort =
     identity.thinkingEffort ?? identity.roleParameters?.['thinkingEffort'] ?? identity.roleParameters?.['effort'];
+  const effortValue =
+    rawEffort === undefined || rawEffort === ''
+      ? undefined
+      : (String(rawEffort).toLowerCase() === 'off' && identity.thinkingEffortExplicit !== true)
+        ? undefined
+        : rawEffort;
 
 
   const known = (val: number | null | undefined): val is number => val !== null && val !== undefined;

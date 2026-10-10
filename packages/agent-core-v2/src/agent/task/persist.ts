@@ -382,6 +382,9 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     parentToolCallId: record.parentToolCallId,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
+    thinkingEffortExplicit: record.thinkingEffortExplicit,
+    executorId: record.executorId,
+    executorProtocol: record.executorProtocol,
     collaborationTaskName: record.collaborationTaskName,
     collaborationAgentType: record.collaborationAgentType,
   };

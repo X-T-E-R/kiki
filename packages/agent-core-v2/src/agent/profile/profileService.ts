@@ -492,6 +492,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         routeId: snapshot.routeId,
         lockedModelAlias: snapshot.lockedModelAlias,
         lockedThinkingEffort: snapshot.lockedThinkingEffort,
+        thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
         executorId: snapshot.executorId,
         executorProtocol: snapshot.executorProtocol,
         executorOptions: snapshot.executorOptions,
@@ -767,6 +768,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorOptions: undefined,
       executorDescriptorRevision: 'native',
       thinkingEffort: thinkingLevel,
+      thinkingEffortExplicit: baseThinkingSelection.source !== 'model-default',
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
       bindingAdvisories,
       serviceTier: profile.serviceTier,
@@ -909,6 +911,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
       profileName: profile?.name, profileDefinitionId: profile?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
+      thinkingEffortExplicit: execution.effective.thinking !== undefined,
       executorPrompt, kikiContext: execution.effective.kiki_context,
       allowKikiSubagents: execution.effective.allow_kiki_subagents,
       systemPrompt, agentsMdPaths: [], disallowedTools: profile?.disallowedTools ?? [],
@@ -930,6 +933,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const executor = binding.executorId ?? 'native';
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
       ...current, execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      thinkingEffortExplicit: binding.thinkingEffortExplicit,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
       allowKikiSubagents: binding.allowKikiSubagents,
@@ -1045,6 +1049,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: selection.baseProfile.name,
       profileDefinitionId: selection.baseProfile.definitionId,
       thinkingEffort: 'off' as ThinkingEffort,
+      thinkingEffortExplicit: false,
       thinkingEffortAdjusted: undefined,
       systemPrompt: '',
       environmentDisclosure: undefined,
@@ -1217,6 +1222,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       kikiContext: profile.kikiContext,
       executorDescriptorRevision: executor.descriptor.revision,
       thinkingEffort: thinkingLevel,
+      thinkingEffortExplicit: requestedThinking === undefined ? false : true,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
       bindingAdvisories,
       systemPrompt: assembled.text,
@@ -1392,7 +1398,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }
     }
     const config = this.resolveConfigPayload({
-      modelAlias: model, thinkingLevel: thinking, thinkingEffortAdjusted, bindingAdvisories,
+      modelAlias: model, thinkingLevel: thinking,
+      thinkingEffortExplicit: input.thinkingEffort === undefined ? previous.thinkingEffortExplicit : true,
+      thinkingEffortAdjusted, bindingAdvisories,
       allowParentNotify, systemPrompt, environmentDisclosure, promptBase: nextPromptBase,
     }, effectiveModel);
     if (toolOverride !== undefined) config.toolOverride = toolOverride;
@@ -1605,7 +1613,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.assertCurrentBindingConstraints(modelAlias ?? '', effort);
     const previousEffort = this.thinkingLevel;
     const requestedEffort = normalizeRequestedThinkingEffort(level) ?? level.trim().toLowerCase();
-    this.update({ thinkingLevel: effort, thinkingEffortAdjusted: requestedEffort !== effort,
+    this.update({ thinkingLevel: effort, thinkingEffortExplicit: true, thinkingEffortAdjusted: requestedEffort !== effort,
       personaOverrides: this.profileState.personaId === undefined ? undefined : { ...this.profileState.personaOverrides, thinking: level },
     });
     this.refreshCurrentBindingAdvisories(
@@ -2452,6 +2460,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeId: this.routeId,
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,
+      thinkingEffortExplicit: this.profileState.thinkingEffortExplicit,
       execution: this.profileState.execution,
       executorId: this.profileState.driver === 'external' ? undefined : this.profileState.executorId ?? 'native',
       executorProtocol: this.profileState.driver === 'external' ? undefined : this.profileState.executorProtocol ?? 'native',
@@ -2746,6 +2755,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (changed.thinkingEffortAdjusted || this.profileState.thinkingEffortAdjusted === true)
     ) {
       payload.thinkingEffortAdjusted = changed.thinkingEffortAdjusted;
+    }
+    if (changed.thinkingEffortExplicit !== undefined) {
+      payload.thinkingEffortExplicit = changed.thinkingEffortExplicit;
     }
     if (changed.thinkingLevel !== undefined || changed.modelAlias !== undefined) {
       const requested = changed.thinkingLevel;

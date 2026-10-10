@@ -937,6 +937,9 @@ export const subagentSpawnedEventSchema = z.object({
   runInBackground: z.boolean(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
+  thinkingEffortExplicit: z.boolean().optional(),
+  executorId: z.string().optional(),
+  executorProtocol: z.string().optional(),
   taskId: z.string().optional(),
 }) satisfies z.ZodType<SubagentSpawnedPayload>;
 

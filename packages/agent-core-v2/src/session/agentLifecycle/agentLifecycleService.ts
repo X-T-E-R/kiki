@@ -360,6 +360,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const restoreFellBack = await this.bindBootstrap(handle, opts);
       const binding = handle.accessor.get(IAgentProfileService).data();
       if (writesBinding) bootstrapBinding = { model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+        thinkingEffortExplicit: binding.thinkingEffortExplicit,
         executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
         negotiated: priorAgentMeta?.executor === binding.executorId ? priorAgentMeta?.negotiated : undefined,
         allowKikiSubagents: binding.allowKikiSubagents };
@@ -389,6 +390,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           displayName: current.displayName ?? profile.routeId ?? profile.profileName,
           userLabel: opts.userLabel ?? current.userLabel,
           model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
+          thinkingEffortExplicit: profile.thinkingEffortExplicit,
           executor: profile.executorId ?? 'native', executorProtocol: profile.executorProtocol,
           negotiated: current.executor === profile.executorId ? current.negotiated : undefined,
           allowKikiSubagents: profile.allowKikiSubagents,
@@ -417,7 +419,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         const written = appliedAgentMeta ?? bootstrapBinding!;
         await this.sessionMetadata.updateAgent(agentId, (current) => {
           const next = { ...current };
-          const bindingKeys = ['model', 'thinkingEffort', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
+          const bindingKeys = ['model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
           const keys = appliedAgentMeta === undefined ? bindingKeys
             : [...bindingKeys, 'homedir', 'type', 'parentAgentId', 'delegator', 'forkedFrom', 'displayName', 'userLabel'] as const;
           for (const key of keys) {

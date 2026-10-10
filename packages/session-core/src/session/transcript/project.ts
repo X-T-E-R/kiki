@@ -910,6 +910,9 @@ function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent):
     name: block.name !== block.subagentId ? block.name : snapshotName ?? block.name,
     model: block.model ?? presentText(snapshot.model),
     thinkingEffort: block.thinkingEffort ?? presentText(snapshot.thinking_effort),
+    thinkingEffortExplicit: block.thinkingEffortExplicit ?? snapshot.thinking_effort_explicit,
+    executorId: block.executorId ?? presentText(snapshot.executor_id),
+    executorProtocol: block.executorProtocol ?? presentText(snapshot.executor_protocol),
     status: block.status === 'unknown' ? mapSnapshotSubagentStatus(snapshot) : block.status,
     description: block.description ?? presentText(snapshot.description),
     parentToolCallId: block.parentToolCallId ?? presentText(snapshot.parent_tool_call_id),
@@ -1214,6 +1217,9 @@ function subagentBlocksFromSnapshot(
         instruction: existing?.instruction,
         model: existing?.model,
         thinkingEffort: existing?.thinkingEffort,
+        thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+        executorId: task.executorId ?? existing?.executorId,
+        executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
         status: mapTaskState(task.state),
         summary: task.resultSummary ?? (task.outputTail === '' ? existing?.summary : task.outputTail),
         error: task.error ?? task.stateReason ?? existing?.error,
@@ -1300,6 +1306,9 @@ function subagentBlocksFromSnapshot(
             instruction: instruction ?? existing?.instruction,
             model: existing?.model,
             thinkingEffort: existing?.thinkingEffort,
+            thinkingEffortExplicit: task?.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
+            executorId: task?.executorId ?? existing?.executorId,
+            executorProtocol: task?.executorProtocol ?? existing?.executorProtocol,
             status:
               task === undefined
                 ? (existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'))

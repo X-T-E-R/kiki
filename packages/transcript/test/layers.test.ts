@@ -4237,3 +4237,19 @@ it('windows a resident tail independently of historical standalone headers witho
   expect(transcript.snapshot().items.map(idLabel)).toEqual(['old-marker', 'old-taskref', 't2', 'tail-marker']);
   expect(durable.items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
 });
+
+it('preserves subagent task effort and provenance through wire and schema projection', () => {
+  const adapter = new TranscriptWireAdapter('main');
+  const records: TranscriptWireRecord[] = [
+    { type: 'subagent.spawned', time: 1, subagentId: 'child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, taskId: 'task', model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' },
+    { type: 'task.terminated', time: 2, info: { kind: 'agent', taskId: 'task', agentId: 'child', status: 'completed', description: 'work', startedAt: 1, endedAt: 2, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' } },
+  ];
+  for (const record of records) {
+    const ops = adapter.add(record).flatMap((fact) => fact.operations);
+    const task = ops.find((op) => op.op === 'task.upsert');
+    expect(task?.op).toBe('task.upsert');
+    expect(transcriptOperationSchema.parse(task)).toMatchObject({ task: { thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp' } });
+  }
+  const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap((fact) => fact.operations).find((op) => op.op === 'task.upsert');
+  expect(legacy?.op === 'task.upsert' ? legacy.task.thinkingEffort : 'missing').toBeUndefined();
+});

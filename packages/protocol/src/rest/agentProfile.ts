@@ -399,6 +399,7 @@ export const agentPanelProfileSchema = z.object({
   model_constraints_active: z.boolean().optional(),
   model_source: agentCapabilityModelSourceSchema.optional(),
   thinking_effort: z.string().optional(),
+  thinking_effort_explicit: z.boolean().optional(),
   effort_source: agentCapabilityEffortSourceSchema.optional(),
   thinking_effort_source: z.enum(['forced', 'adjusted']).optional(),
   route_detached: z.boolean().optional(),

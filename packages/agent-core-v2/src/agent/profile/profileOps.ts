@@ -41,6 +41,7 @@ export interface ProfileModelState {
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
   readonly execution?: ExecutionBinding;
@@ -98,6 +99,7 @@ const profileBindSchema = z.object({
   routeId: z.string().optional(),
   lockedModelAlias: z.string().optional(),
   lockedThinkingEffort: z.string().optional(),
+  thinkingEffortExplicit: z.boolean().optional(),
   executionRestriction: z.literal('research-readonly').optional(),
   allowParentNotify: z.boolean().optional(),
   executorId: z.string().optional(),
@@ -150,6 +152,7 @@ const configUpdateSchema = z.object({
   profileName: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>().optional(),
   thinkingLevel: z.custom<ThinkingEffort>().optional(),
+  thinkingEffortExplicit: z.boolean().optional(),
   thinkingEffortAdjusted: z.boolean().optional(),
   bindingAdvisories: z.array(z.custom<BindingAdvisory>()).readonly().optional(),
   allowParentNotify: z.boolean().optional(),
@@ -225,6 +228,7 @@ export const profileKey = defineState(
     routeId: e.routeId,
     lockedModelAlias: e.lockedModelAlias,
     lockedThinkingEffort: e.lockedThinkingEffort,
+    thinkingEffortExplicit: e.thinkingEffortExplicit,
     executionRestriction: s.executionRestriction ?? e.executionRestriction,
     allowParentNotify: e.allowParentNotify ?? s.allowParentNotify,
     executorId: e.executorId,
@@ -273,6 +277,9 @@ function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: Confi
     const thinkingLevel = configUpdateThinkingLevel(e);
     if (thinkingLevel !== undefined && thinkingLevel !== s.thinkingLevel) {
       s.thinkingLevel = thinkingLevel;
+    }
+    if (e.thinkingEffortExplicit !== undefined) {
+      s.thinkingEffortExplicit = e.thinkingEffortExplicit;
     }
     if (e.thinkingEffortAdjusted !== undefined) {
       s.thinkingEffortAdjusted = e.thinkingEffortAdjusted;
