@@ -196,3 +196,19 @@ describe('disabled tool groups', () => {
     ).toBe(false);
   });
 });
+
+describe('contributed subagent opt-in default', () => {
+  const name = 'mcp__computer__click';
+  const base = { profile: {}, subagent: {}, subagentDefault: 'opt-in' as const };
+  it('uses explicit global MCP enablement without dropping any deny layer', () => {
+    expect(isToolActiveComposed(base, name, 'mcp')).toBe(false);
+    expect(isToolActiveComposed({ ...base, global: { enabled: ['*'] } }, name, 'mcp')).toBe(false);
+    const enabled = { ...base, global: { enabled: ['mcp__computer__*'] } };
+    expect(isToolActiveComposed(enabled, name, 'mcp')).toBe(true);
+    expect(isToolActiveComposed({ ...enabled, global: { ...enabled.global, disabled: ['mcp__computer__*'] } }, name, 'mcp')).toBe(false);
+    expect(isToolActiveComposed({ ...enabled, workspaceDisabledTools: [name] }, name, 'mcp')).toBe(false);
+    expect(isToolActiveComposed({ ...enabled, profile: { disallowedTools: [name] } }, name, 'mcp')).toBe(false);
+    expect(isToolActiveComposed({ ...enabled, sessionDisabledTools: [name] }, name, 'mcp')).toBe(false);
+    expect(isToolActiveComposed({ ...enabled, profile: { tools: [] } }, name, 'mcp')).toBe(false);
+  });
+});

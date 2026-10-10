@@ -49,6 +49,7 @@ export interface ToolPolicyLayers {
   readonly global?: GlobalToolsPolicy;
   readonly sessionDisabledTools?: readonly string[];
   readonly subagent?: SubagentToolPolicy;
+  readonly subagentDefault?: 'opt-in';
 }
 
 export function isToolActiveComposed(
@@ -57,7 +58,11 @@ export function isToolActiveComposed(
   source: ToolSource = 'builtin',
 ): boolean {
   return (
-    (layers.subagent === undefined || isSubagentToolAllowed(layers.subagent, name, source)) &&
+    (layers.subagent === undefined || isSubagentToolAllowed({
+      ...layers.subagent,
+      allowedTools: layers.subagentDefault === undefined ? layers.subagent.allowedTools
+        : [...(layers.subagent.allowedTools ?? []), ...(layers.global?.enabled ?? [])],
+    }, name, source, layers.subagentDefault)) &&
     isToolActive({ disallowedTools: layers.workspaceDisabledTools }, name, source) &&
     isToolActive(layers.profile, name, source) &&
     isToolActive(

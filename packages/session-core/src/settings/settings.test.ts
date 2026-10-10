@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { computerControlPreference, computerControlPreferencePatch } from './computerControl';
+import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -2005,5 +2007,16 @@ describe('MCP settings draft projection', () => {
     expect(mcpConfigFromDraft({ ...remoteDraft, bearerTokenEnvVar: '', headers: 'X-Note=value=with: colon / and spaces\nEmpty=' })).toMatchObject({
       headers: { 'X-Note': 'value=with: colon / and spaces', Empty: '' },
     });
+  });
+});
+
+describe('computer-use preference settings', () => {
+  it('defaults older servers to avoid and saves or removes a typed soft preference', () => {
+    expect(computerControlPreference({})).toBe('avoid');
+    expect(computerControlPreference({ computer_control: { usagePreference: 'prefer', usagePreferenceSource: 'home', appliesOn: 'next-model-request' } })).toBe('prefer');
+    for (const preference of ['avoid', 'prefer', null] as const) {
+      const patch = computerControlPreferencePatch(preference);
+      expect(patchConfigRequestSchema.parse(patch)).toEqual({ computer_control: { usage_preference: preference } });
+    }
   });
 });

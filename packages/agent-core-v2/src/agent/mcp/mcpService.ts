@@ -26,6 +26,8 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
 import { isComputerMcpConfig } from '#/mcpCore/computer';
+import { IConfigService } from '#/app/config/config';
+import { COMPUTER_CONFIG_SECTION, type ComputerConfig } from '#/app/computer/configSection';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
@@ -65,6 +67,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
+    @IConfigService private readonly config: IConfigService,
   ) {
     super();
     this.states.contributeState(mcpDiscoveryKey);
@@ -305,6 +308,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
               this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
             providerType: () => this.profile.getModelProviderType(),
             computerControl: isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName)),
+            computerUsagePreference: () => this.config.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
               this.mcpHandle.connectionManager.get(serverName)?.status === 'removed',

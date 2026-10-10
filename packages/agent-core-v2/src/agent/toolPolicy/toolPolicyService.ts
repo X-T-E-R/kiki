@@ -5,6 +5,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService, ProfileError, ProfileErrors } from '#/agent/profile/profile';
 import { TOOLS_SECTION, type ToolsConfig } from './configSection';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -29,6 +30,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
+    @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @ref(ISessionContext) private readonly session: LiveRef<ISessionContext>,
     @ref(ICapabilitySnapshotService) private readonly capabilities: LiveRef<ICapabilitySnapshotService>,
   ) {
@@ -117,6 +119,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
         subagent,
+        subagentDefault: this.registry.resolve(name)?.subagentDefault,
       },
       name,
       source,

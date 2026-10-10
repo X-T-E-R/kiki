@@ -19,6 +19,16 @@ describe('subagent tool defaults', () => {
   it.each(SUBAGENT_MAIN_ONLY_TOOL_NAMES)('cannot opt a child into %s', (name) => {
     expect(subagentToolDefault(name)).toBe('main-only');
     expect(isSubagentToolAllowed({ allowedTools: [name], explicitProfileTools: [name] }, name)).toBe(false);
+    expect(isSubagentToolAllowed({ allowedTools: [name] }, name, 'builtin', 'opt-in')).toBe(false);
+  });
+
+  it('allows explicit MCP patterns for a contributed opt-in default, not a blanket tools list', () => {
+    const name = 'mcp__computer__click';
+    expect(isSubagentToolAllowed({}, name, 'mcp', 'opt-in')).toBe(false);
+    expect(isSubagentToolAllowed({ explicitProfileTools: ['*'] }, name, 'mcp', 'opt-in')).toBe(false);
+    expect(isSubagentToolAllowed({ explicitProfileTools: ['mcp__computer__*'] }, name, 'mcp', 'opt-in')).toBe(true);
+    expect(isSubagentToolAllowed({ allowedTools: ['mcp__computer__click'] }, name, 'mcp', 'opt-in')).toBe(true);
+    expect(isSubagentToolAllowed({ allowedTools: ['mcp__browser__*'] }, name, 'mcp', 'opt-in')).toBe(false);
   });
 
   it('preserves MCP, user and unknown extension defaults', () => {

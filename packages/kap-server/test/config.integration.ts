@@ -137,6 +137,26 @@ describe('server-v2 /api/config', () => {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
 
+  it('round trips computer preference and removes the override without changing permissions or installing MCP', async () => {
+    await boot('default_permission_mode="manual"\n[search]\nenabled=false\n');
+    expect((await getConfig()).computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    const patch = { computer_control: { usage_preference: 'prefer' } };
+    expect(sharedPatchConfigRequestSchema.parse(patch).computer_control).toEqual(patch.computer_control);
+    const edited = await patchConfig(patch);
+    expect(edited.computer_control).toEqual({ usagePreference: 'prefer', usagePreferenceSource: 'home', appliesOn: 'next-model-request' });
+    expect(sharedConfigResponseSchema.parse(edited).computer_control).toEqual(edited.computer_control);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('usage_preference = "prefer"');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).computer_control).toEqual(edited.computer_control);
+    const reset = await patchConfig({ computer_control: { usage_preference: null } });
+    expect(reset.computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    expect(reset.permission).toEqual(edited.permission);
+    expect(reset.default_permission_mode).toBe(edited.default_permission_mode);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('usage_preference');
+    expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
+    expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { usage_preference: false } }).success).toBe(false);
+  });
+
   it('round trips question frequency guard through global REST and cold config reload', async () => {
     await boot('[search]\nenabled=false\n[interaction]\nask_user_question="blocking"\n');
     expect((await getConfig()).interaction).toEqual({ askUserQuestion: 'blocking' });

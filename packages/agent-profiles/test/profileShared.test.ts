@@ -286,6 +286,20 @@ describe('renderPromptTemplateResult', () => {
 });
 
 describe('renderSystemPromptResult', () => {
+  it('defaults to cautious computer use while following explicit user requests and saved preference', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+    const toolUse = prompt.split('# Intent, Continuity, and Tool Use\n')[1]!.split('# Reply Quality')[0]!;
+
+    expect(toolUse).toContain('tools the user has already confirmed work');
+    expect(toolUse).toContain('least costly reliable route');
+    expect(toolUse).toContain('an existing CLI, MCP server, API, or short script');
+    expect(toolUse).toContain("unless the user or the user's rules explicitly request it");
+    expect(toolUse).toContain("Follow the user's saved computer-use preference");
+    expect(toolUse).toContain('browser-specific capabilities');
+    expect(toolUse).toContain('do not replay the input');
+    expect(toolUse).toContain('Do not build a complicated script merely to avoid a GUI');
+    expect(toolUse).toContain('or require one tool to fail before choosing a better fit');
+  });
   it('renders memory maintenance in update-first order with scope and approval safeguards', () => {
     const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
     const memory = prompt.split('## Memory Across Sessions\n')[1]!.split('# Working Environment')[0]!;

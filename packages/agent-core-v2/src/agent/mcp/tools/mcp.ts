@@ -22,6 +22,7 @@ interface McpToolOptions {
   readonly reconnect?: (signal?: AbortSignal) => Promise<MCPClient | undefined>;
   readonly isRemoved?: () => boolean;
   readonly computerControl?: boolean;
+  readonly computerUsagePreference?: () => 'avoid' | 'prefer';
   readonly serverName?: string;
   readonly onUnauthorized?: (error: unknown, client: MCPClient) => Promise<boolean>;
 }
@@ -36,7 +37,12 @@ export function createMcpTool(
     activeClient.callTool(tool.name, (args ?? {}) as Record<string, unknown>, signal);
   return {
     name: qualifiedName,
-    description: options.computerControl === true ? computerToolDescription(tool.name, tool.description) : tool.description,
+    get description() {
+      return options.computerControl === true
+        ? computerToolDescription(tool.name, tool.description, options.computerUsagePreference?.())
+        : tool.description;
+    },
+    subagentDefault: options.computerControl === true ? 'opt-in' : undefined,
     parameters: tool.parameters,
     resolveExecution: (args) => ({
       approvalRule: qualifiedName,

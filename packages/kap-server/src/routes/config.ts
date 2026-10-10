@@ -15,6 +15,8 @@ import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
+import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
@@ -78,7 +80,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -160,6 +162,8 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
+          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['usagePreference'] === null) {
+            await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
           } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
             await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
           } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
@@ -180,7 +184,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config);
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -215,7 +219,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       const config = core.accessor.get(IConfigService);
       const domain = snakeToCamel(req.body.domain);
       await config.removeOverride(domain, req.body.key_path);
-      const response = toConfigResponse(config.getAll(), config);
+      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
       core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
       reply.send(okEnvelope(response, req.id));
     } catch (error) {
@@ -334,7 +338,7 @@ async function clearSubagentDefaultModel(config: IConfigService, patch: Record<s
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService): ConfigResponse {
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default'): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -377,6 +381,12 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   if (wire['providers'] === undefined) {
     wire['providers'] = {};
   }
+  const computer = resolved[COMPUTER_CONFIG_SECTION] as ComputerConfig | undefined;
+  wire['computer_control'] = {
+    usagePreference: computer?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE,
+    usagePreferenceSource: computerPreferenceSource,
+    appliesOn: 'next-model-request',
+  };
   return configResponseWireSchema.parse(wire);
 }
 

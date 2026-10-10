@@ -191,6 +191,7 @@ export * from '#/app/config/configService';
 export * from '#/app/config/configSectionContributions';
 export * from '#/app/ssh/sshService';
 export * from '#/app/browser/browserConfig';
+export * from '#/app/computer/configSection';
 export * from '#/app/browser/browserConnectionStore';
 export * from '#/app/browser/browser';
 import '#/app/browser/browserBackend';

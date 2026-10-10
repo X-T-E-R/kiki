@@ -7,6 +7,17 @@ import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearc
 import { requestGovernanceConfigPatchSchema } from './requestGovernance';
 import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 
+export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
+export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
+export const computerControlConfigResponseSchema = z.object({
+  usagePreference: computerUsagePreferenceSchema,
+  usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']),
+  appliesOn: z.literal('next-model-request'),
+}).strict();
+export const computerControlConfigPatchSchema = z.object({
+  usage_preference: computerUsagePreferenceSchema.nullable().optional(),
+}).strict();
+
 export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
 
 const modelSwitchPatternSchema = z.string().min(1).refine((value) => value.trim().length > 0, {
@@ -208,6 +219,7 @@ export const interactionConfigPatchSchema = z.object({
 }).strict();
 
 export const configResponseSchema = z.object({
+  computer_control: computerControlConfigResponseSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
@@ -249,6 +261,7 @@ export const configResponseSchema = z.object({
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  computer_control: computerControlConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),

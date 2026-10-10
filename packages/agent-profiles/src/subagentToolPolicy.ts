@@ -1,4 +1,4 @@
-import { isToolExplicitlyNamed, type ToolSource } from './toolPolicy';
+import { isToolActive, isToolExplicitlyNamed, isMcpToolName, type ToolSource } from './toolPolicy';
 
 export const SUBAGENT_OPT_IN_TOOL_NAMES = [
   'BoardRead', 'BoardWrite', 'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
@@ -52,9 +52,16 @@ export function isSubagentToolAllowed(
   policy: SubagentToolPolicy,
   name: string,
   source: ToolSource = 'builtin',
+  defaultAccess?: 'opt-in',
 ): boolean {
-  const access = subagentToolDefault(name, source);
-  if (access === 'main-only') return false;
+  const baseAccess = subagentToolDefault(name, source);
+  if (baseAccess === 'main-only') return false;
+  const access = defaultAccess ?? baseAccess;
   if (access === 'allowed') return true;
-  return isToolExplicitlyNamed(policy.allowedTools, name) || isToolExplicitlyNamed(policy.explicitProfileTools, name);
+  const explicitlyAllows = (tools: readonly string[] | undefined): boolean => {
+    if (source !== 'mcp') return isToolExplicitlyNamed(tools, name);
+    const patterns = tools?.filter(isMcpToolName);
+    return patterns !== undefined && patterns.length > 0 && isToolActive({ tools: patterns }, name, source);
+  };
+  return explicitlyAllows(policy.allowedTools) || explicitlyAllows(policy.explicitProfileTools);
 }

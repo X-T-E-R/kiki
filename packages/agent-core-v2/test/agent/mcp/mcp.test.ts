@@ -11,6 +11,15 @@ import { Event } from '#/_base/event';
 import { abortError } from '#/_base/utils/abort';
 import type { Event2 } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
+import { IConfigService } from '#/app/config/config';
+import { COMPUTER_CONFIG_SECTION, type ComputerUsagePreference } from '#/app/computer/configSection';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
+import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
+import type { ProfileData } from '#/agent/profile/profile';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { McpConnectionManager, McpServerEntry } from '#/mcpCore/connection-manager';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
@@ -219,6 +228,7 @@ describe('AgentMcpService', () => {
   let dispatcher: IEventDispatcher;
   let wireRecordListeners: Set<(record: WireRecord) => void>;
   let profileProviderType: string | undefined;
+  let computerPreference: ComputerUsagePreference | undefined;
   let attachmentStore: { materialize: (input: SessionMediaMaterializeInput) => Promise<string | undefined> };
 
   beforeEach(() => {
@@ -228,6 +238,8 @@ describe('AgentMcpService', () => {
     telemetryEvents = [];
     wireRecordListeners = new Set();
     profileProviderType = undefined;
+    computerPreference = undefined;
+    ix.stub(IConfigService, { get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference } : undefined) as T });
     attachmentStore = { materialize: async () => undefined };
     ix.stub(IEventBus, {
       publish: (event) => {
@@ -609,6 +621,61 @@ describe('AgentMcpService', () => {
     })).rejects.toMatchObject({ code: 'mcp.oauth_failed', message: expect.stringContaining('needs-auth') });
     expect(counter.calls).toBe(1);
     expect(reconnects).toBe(0);
+  });
+
+  it('consumes saved preference through the real registry without changing computer availability', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    manager.setResolved('browser', client, await discoverTools(client));
+    createService(manager);
+    manager.connect('kiki-computer'); manager.connect('browser');
+    const registry = ix.get(IAgentToolRegistryService);
+    const computer = registry.resolve('mcp__kiki-computer__echo')!;
+    const browser = registry.resolve('mcp__browser__echo')!;
+    const originalBrowser = browser.description;
+    expect(computer.subagentDefault).toBe('opt-in');
+    expect(browser.subagentDefault).toBeUndefined();
+    expect(registry.list().find((entry) => entry.name === computer.name)?.description).toContain('generally avoid');
+    computerPreference = 'prefer';
+    expect(registry.list().find((entry) => entry.name === computer.name)?.description).toContain('prefer computer control');
+    expect(browser.description).toBe(originalBrowser);
+    computerPreference = undefined;
+    expect(computer.description).toContain('generally avoid');
+  });
+
+  it.each([
+    { identity: 'main', parent: undefined, tools: undefined, allowed: true },
+    { identity: 'independent', parent: undefined, tools: undefined, allowed: true },
+    { identity: 'sub', parent: 'main', tools: undefined, allowed: false },
+    { identity: 'sub-blanket', parent: 'main', tools: ['*'], allowed: false },
+    { identity: 'sub-explicit', parent: 'main', tools: ['mcp__kiki-computer__*'], allowed: true },
+    { identity: 'sub-empty', parent: 'main', tools: [], allowed: false },
+  ])('applies computer defaults through registered tools and actual policy for $identity', async ({ identity, parent, tools, allowed }) => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    createService(manager); manager.connect('kiki-computer');
+    let data: ProfileData = { modelCapabilities: UNKNOWN_CAPABILITY, thinkingLevel: '', systemPrompt: '', activeToolNames: tools };
+    ix.stub(IAgentProfileService, { data: () => data });
+    ix.stub(IAgentScopeContext, { agentId: identity, parentAgentId: parent });
+    let allowedTools: string[] = [];
+    let disabled: string[] = [];
+    ix.stub(IConfigService, { get: <T>(domain: string) => (domain === 'subagent' ? { allowedTools } : undefined) as T });
+    ix.stub(ISessionToolPolicy, { disabledTools: () => disabled });
+    ix.stub(ISessionToolPolicyGate, { disabledTools: [] });
+    ix.set(IAgentToolPolicyService, new SyncDescriptor(AgentToolPolicyService));
+    const policy = ix.get(IAgentToolPolicyService);
+    const name = 'mcp__kiki-computer__echo';
+    expect(policy.isToolActive(name, 'mcp')).toBe(allowed);
+    allowedTools = ['mcp__kiki-computer__*'];
+    expect(policy.isToolActive(name, 'mcp')).toBe(tools?.length !== 0);
+    disabled = ['mcp__kiki-computer__*'];
+    expect(policy.isToolActive(name, 'mcp')).toBe(false);
+    disabled = [];
+    data = { ...data, disallowedTools: ['mcp__kiki-computer__*'] };
+    expect(policy.isToolActive(name, 'mcp')).toBe(false);
+    expect(policy.isToolActiveForProfile({ tools: ['mcp__kiki-computer__*'], disallowedTools: ['mcp__kiki-computer__*'] }, name, 'mcp')).toBe(false);
   });
 
   it('does not replay a computer call after transport loss', async () => {

@@ -73,11 +73,17 @@ describe('StdioMcpClient', () => {
     expect(isComputerMcpConfig({ transport: 'stdio', command: 'cua-driver', args: ['doctor'] })).toBe(false);
   });
 
-  it('adds only the necessary action outcome hint while preserving observation descriptions', () => {
-    expect(computerToolDescription('list_windows', 'List exact windows.')).toBe('List exact windows.');
-    expect(computerToolDescription('type_text', 'Type foreground text.')).toContain('observe again');
-    const upstream = 'Click the exact window. Do not replay unconfirmed input.';
-    expect(computerToolDescription('click', upstream)).toBe(upstream);
+  it('adds cautious guidance to observations and preserves action recovery in both preferences', () => {
+    const observation = computerToolDescription('list_windows', 'List exact windows.');
+    expect(observation).toContain('List exact windows.');
+    expect(observation).toContain('generally avoid computer control unless');
+    expect(observation).not.toContain('observe again');
+    for (const preference of ['avoid', 'prefer'] as const) {
+      expect(computerToolDescription('type_text', 'Type foreground text.', preference)).toContain('observe again');
+      const upstream = 'Click the exact window. Do not replay unconfirmed input.';
+      expect(computerToolDescription('click', upstream, preference).split(upstream)).toHaveLength(2);
+    }
+    expect(computerToolDescription('screenshot', 'Observe.', 'prefer')).toContain('prefer computer control for suitable interactive tasks');
   });
 
   it('captures running children and closes admission before any awaited stop work', async () => {
