@@ -3,6 +3,14 @@ name: Kiki Release Version Preparation
 on:
   workflow_dispatch:
     inputs:
+      stage:
+        description: 'Version metadata or generated candidate sources; neither publishes a release'
+        required: true
+        default: version
+        type: choice
+        options:
+          - version
+          - generate
       base_sha:
         description: 'Exact prepared commit SHA; the version patch applies only to this commit'
         required: true
@@ -23,6 +31,7 @@ concurrency:
 
 jobs:
   prepare:
+    if: ${{ inputs.stage == 'version' || inputs.stage == '' }}
     name: Generate version patch only
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -143,5 +152,113 @@ jobs:
         with:
           name: kiki-version-${{ inputs.expected_version }}-${{ inputs.base_sha }}
           path: ${{ runner.temp }}/kiki-version-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  generate:
+    if: ${{ inputs.stage == 'generate' }}
+    name: Generate candidate manifests and Cargo lock only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BASE_SHA: ${{ inputs.base_sha }}
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      WORKFLOW_CODE_SHA: ${{ github.workflow_sha }}
+      KIKI_HOME: ${{ runner.temp }}/kiki-generation-home
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.base_sha }}
+          persist-credentials: false
+      - name: Validate exact source and stable version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          test -z "$(git status --porcelain)"
+          test "$(node apps/kiki-gui/scripts/desktop-version.mjs check)" = "$EXPECTED_VERSION"
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Generate from normal project commands
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import datetime, hashlib, json, os, pathlib, subprocess, tomllib
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'kiki-generated-output'
+          output.mkdir(parents=True, exist_ok=True)
+          commands = [
+              ['pnpm', 'install', '--frozen-lockfile'],
+              ['pnpm', '--filter', '@kiki/agent-core-v2', 'run', 'gen:state-manifest'],
+              ['pnpm', '--filter', '@kiki/agent-core-v2', 'run', 'gen:wire-manifest'],
+              ['pnpm', '--filter', '@kiki/agent-core-v2', 'run', 'gen:config-manifest'],
+              ['cargo', 'update', '--workspace', '--manifest-path', 'apps/kiki-gui/src-tauri/Cargo.toml'],
+          ]
+          exits = []
+          for command in commands:
+              print('+ ' + ' '.join(command), flush=True)
+              result = subprocess.run(command)
+              exits.append({'command': command, 'exitCode': result.returncode})
+              (output / 'commands.json').write_text(json.dumps(exits, indent=2) + '\n')
+              if result.returncode != 0:
+                  raise SystemExit(result.returncode)
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          base = os.environ['BASE_SHA']
+          if git('rev-parse', 'HEAD').decode().strip() != base:
+              raise RuntimeError('Source SHA changed')
+          allowed = {
+              'packages/agent-core-v2/docs/state-manifest.d.ts',
+              'packages/agent-core-v2/docs/wire-manifest.d.ts',
+              'packages/agent-core-v2/docs/config-manifest.toml',
+              'apps/kiki-gui/src-tauri/Cargo.lock',
+          }
+          raw = git('diff', '--name-status', '-z', '--no-renames', 'HEAD').decode().split('\0')
+          changes = [{'status': raw[i], 'path': raw[i+1]} for i in range(0, len(raw)-1, 2)]
+          if git('ls-files', '--others', '--exclude-standard', '-z').strip(b'\0'):
+              raise RuntimeError('Unexpected untracked generated source')
+          for change in changes:
+              if change['path'] not in allowed or change['status'] != 'M':
+                  raise RuntimeError(f'Unexpected generation output: {change}')
+              name = change['path']
+              before, after = git('show', f'{base}:{name}'), pathlib.Path(name).read_bytes()
+              change.update(beforeSha256=hashlib.sha256(before).hexdigest(), afterSha256=hashlib.sha256(after).hexdigest(), afterBytes=len(after))
+          lock = tomllib.loads(pathlib.Path('apps/kiki-gui/src-tauri/Cargo.lock').read_text())
+          desktop = [entry for entry in lock['package'] if entry['name'] == 'kiki-desktop']
+          if len(desktop) != 1 or desktop[0]['version'] != os.environ['EXPECTED_VERSION']:
+              raise RuntimeError('Normal Cargo update did not synchronize the desktop version')
+          patch = git('diff', '--binary', '--full-index', '--no-ext-diff', '--no-renames', 'HEAD')
+          patch_path = output / 'generated.patch'
+          patch_path.write_bytes(patch)
+          if patch:
+              subprocess.run(['git', 'apply', '--reverse', '--check', str(patch_path)], check=True)
+          receipt = {
+              'schemaVersion': 1, 'repository': os.environ['GITHUB_REPOSITORY'],
+              'baseSha': base, 'sourceTree': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+              'workflowCodeSha': os.environ['WORKFLOW_CODE_SHA'],
+              'version': os.environ['EXPECTED_VERSION'], 'commandExits': exits,
+              'runUrl': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'generatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'patchFile': 'generated.patch', 'patchSha256': hashlib.sha256(patch).hexdigest(),
+              'changes': changes, 'allowedPaths': sorted(allowed), 'cargoDesktopVersion': desktop[0]['version'],
+          }
+          (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
+      - name: Upload generated source patch and command receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-generated-${{ inputs.expected_version }}-${{ inputs.base_sha }}
+          path: ${{ runner.temp }}/kiki-generated-output/
           if-no-files-found: error
           retention-days: 7
