@@ -45,6 +45,7 @@ import {
   overlaySnapshotSubagentFields,
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
+  projectMessageContent,
   reminderCategory,
   queuedPromptPreviews,
   resolveActiveFloorId,
@@ -116,14 +117,14 @@ function unknownChildBlock(agentId = CHILD_AGENT_ID): SubagentBlock {
 }
 
 describe('classifyTranscriptText', () => {
-  it('separates image compression captions from user text in occurrence order', () => {
+  it('keeps shape-only historical image captions and reminders literal', () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost.';
     const text = `Look at these.\n<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>\n<system>${caption} The original is at "/example/second.png".</system>`;
     expect(classifyTranscriptText({ text, role: 'user', origin: { kind: 'user' } })).toMatchObject({
-      lane: 'you', text: 'Look at these.',
-      reminders: [caption, 'Daemon note.', `${caption} The original is at "/example/second.png".`],
+      lane: 'you', text, reminders: [],
     });
-    expect(splitSystemReminders(`<system>${caption}</system>`)).toEqual({ text: '', reminders: [caption] });
+    expect(classifyTranscriptText({ text, role: 'user' })).toMatchObject({ lane: 'you', text, reminders: [] });
+    expect(splitSystemReminders(`<system>${caption}</system>`)).toEqual({ text: `<system>${caption}</system>`, reminders: [] });
   });
 
   it('preserves unrelated system envelopes and incomplete compression captions', () => {
@@ -131,10 +132,10 @@ describe('classifyTranscriptText', () => {
     expect(splitSystemReminders(text)).toEqual({ text, reminders: [] });
   });
 
-  it('splits system reminders and classifies user, skill, and shell lanes', () => {
-    const split = splitSystemReminders('Do the thing.\n<system-reminder>\nDaemon note.\n</system-reminder>');
-    expect(split.text).toBe('Do the thing.');
-    expect(split.reminders).toEqual(['Daemon note.']);
+  it('classifies origin-specific generated lanes while keeping unknown reminder shapes literal', () => {
+    const generated = '<system-reminder>\nDaemon note.\n</system-reminder>';
+    const split = splitSystemReminders(generated);
+    expect(split).toEqual({ text: generated, reminders: [] });
     expect(classifyTranscriptText({ text: 'hello', role: 'user', origin: { kind: 'user' } }).lane).toBe('you');
     expect(
       classifyTranscriptText({
@@ -297,17 +298,13 @@ describe('classifyTranscriptText', () => {
     expect(outputOnly.shell?.output).toBe('only output');
   });
 
-  it('keeps task notification envelopes off the user lane', () => {
+  it('keeps task notification envelopes literal without a task origin', () => {
     const notification =
       '<notification id="task:task-2:completed" category="task" type="task.completed" source_kind="background_task" source_id="task-2">\n' +
       'Title: Background agent completed\nreview finished\n</notification>';
     expect(
       classifyTranscriptText({ text: notification, role: 'user', origin: { kind: 'user' } }),
-    ).toMatchObject({
-      lane: 'system',
-      systemVariant: 'task',
-      text: 'Title: Background agent completed\nreview finished',
-    });
+    ).toMatchObject({ lane: 'you', text: notification });
     expect(
       classifyTranscriptText({
         text: '<notification category="product">ordinary user text</notification>',
@@ -315,6 +312,13 @@ describe('classifyTranscriptText', () => {
         origin: { kind: 'user' },
       }).lane,
     ).toBe('you');
+    expect(
+      classifyTranscriptText({
+        text: notification,
+        role: 'user',
+        origin: { kind: 'task', taskId: 'task-2' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'task', text: 'Title: Background agent completed\nreview finished' });
   });
 });
 
@@ -667,6 +671,91 @@ describe('transcript authority projection', () => {
     expect(first.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind))).toEqual(['t1', 't2']);
     expect(second.items).toEqual(first.items);
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
+  });
+
+  it('covers a readonly queue lifecycle and reaches the delivered row through an older page', () => {
+    const promptId = 'p-queue';
+    const userMessageId = 'um-queue';
+    const body = 'queued body';
+    const content = [{ type: 'text' as const, text: body }];
+    const userOrigin = { kind: 'user' as const, payload: { promptId, userMessageId } };
+    const queuedPrompt = {
+      promptId,
+      userMessageId,
+      status: 'queued' as const,
+      content,
+      createdAt: FIXED_AT,
+      queuePosition: 0,
+    };
+    const queued = emptySnapshot({
+      items: [{
+        kind: 'turn' as const,
+        turnId: 't110',
+        ordinal: 110,
+        state: 'running' as const,
+        origin: userOrigin,
+        prompt: body,
+        startedAt: FIXED_AT,
+        steps: [],
+      }],
+      prompts: [queuedPrompt],
+      meta: { activity: 'turn' },
+      hasMoreOlder: true,
+    });
+    const queuedState = projectAgentTranscriptView(createViewState('session_test'), 'main', queued);
+    const queuedRows = queuedState.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
+    expect(queuedState.queuedPromptIds).toEqual([promptId]);
+    expect(queuedRows).toHaveLength(1);
+    expect(queuedRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't110', promptId, promptStatus: 'queued' });
+
+    const completedPrompt = { ...queuedPrompt, status: 'completed' as const, queuePosition: undefined, finishedAt: FIXED_AT_2 };
+    const deliveredTurn = {
+      kind: 'turn' as const,
+      turnId: 't111',
+      ordinal: 111,
+      state: 'completed' as const,
+      origin: userOrigin,
+      prompt: body,
+      startedAt: FIXED_AT_1,
+      endedAt: FIXED_AT_2,
+      delivery: {
+        deliveryId: 'delivery-queue', messageId: userMessageId, turnId: 't111', stepId: 't111.1', step: 1,
+        deliveredAt: FIXED_AT_1, origin: 'queue' as const,
+      },
+      steps: [],
+    };
+    const delivered = emptySnapshot({ items: [deliveredTurn], prompts: [completedPrompt], meta: { activity: 'idle' } });
+    const deliveredState = projectAgentTranscriptView(queuedState, 'main', delivered);
+    const deliveredRows = deliveredState.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
+    expect(deliveredState.queuedPromptIds).toEqual([]);
+    expect(deliveredRows).toHaveLength(1);
+    expect(deliveredRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't111', promptId, promptStatus: undefined });
+
+    const resident = emptySnapshot({
+      items: [
+        { kind: 'turn' as const, turnId: 't113', ordinal: 113, state: 'completed' as const, origin: { kind: 'other' as const }, startedAt: FIXED_AT_1, steps: [] },
+        { kind: 'turn' as const, turnId: 't114', ordinal: 114, state: 'completed' as const, origin: { kind: 'other' as const }, startedAt: FIXED_AT_2, steps: [] },
+      ],
+      prompts: [completedPrompt],
+      hasMoreOlder: true,
+    });
+    const residentState = projectAgentTranscriptView(deliveredState, 'main', resident);
+    expect(resident.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t113', 't114']);
+    expect(resident.prompts).toEqual([completedPrompt]);
+    expect(residentState.blocks.some((block) => block.kind === 'user' && block.userMessageId === userMessageId)).toBe(false);
+
+    const olderPage = {
+      items: [
+        deliveredTurn,
+        { kind: 'turn' as const, turnId: 't112', ordinal: 112, state: 'completed' as const, origin: { kind: 'other' as const }, startedAt: FIXED_AT_1, steps: [] },
+      ],
+      attachments: [],
+      hasMoreOlder: false,
+    };
+    const loaded = projectAgentTranscriptView(residentState, 'main', prependOlderTranscriptSnapshot(resident, olderPage));
+    const loadedRows = loaded.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
+    expect(loadedRows).toHaveLength(1);
+    expect(loadedRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't111', promptId, userMessageId });
   });
 
   it('anchors Agent entries on the real tool frame agentRefs', () => {
@@ -1333,6 +1422,50 @@ describe('transcript projection cache', () => {
 });
 
 describe('canonical product gates via projectAgentTranscriptView', () => {
+  it('keeps text presentation on optimistic and queued prompt replacement', () => {
+    const first = { spans: [{ start: 0, end: 5, kind: 'selection' as const, quote: 'hello' }] };
+    const second = { spans: [{ start: 0, end: 5, kind: 'source' as const, quote: 'hello' }] };
+    const initial = appendLocalUserMessage(createViewState('session_test'), {
+      userMessageId: 'um-presentation',
+      promptId: 'p-presentation',
+      text: 'hello',
+      createdAt: FIXED_AT,
+      status: 'queued',
+      content: [{ type: 'text', text: 'hello', presentation: first }],
+    });
+    expect(initial.blocks.find((block): block is UserBlock => block.kind === 'user')).toMatchObject({
+      text: 'hello', presentation: first, queuedContent: [{ type: 'text', text: 'hello', presentation: first }],
+    });
+    const replaced = appendLocalUserMessage(initial, {
+      userMessageId: 'um-presentation',
+      promptId: 'p-presentation',
+      text: 'hello',
+      createdAt: FIXED_AT,
+      status: 'queued',
+      content: [{ type: 'text', text: 'hello', presentation: second }],
+    });
+    expect(replaced.blocks.find((block): block is UserBlock => block.kind === 'user')?.presentation).toEqual(second);
+  });
+
+  it('projects attachment presentation spans into queue media and contentless turn/frame user blocks', () => {
+    const attachment = { path: '/repo/notes.txt', name: 'notes.txt', mime: 'text/plain', size: 12 };
+    const presentation = { spans: [{ start: 0, end: 4, kind: 'attachment' as const, attachment }] };
+    const projectedContent = projectMessageContent([{ type: 'text', text: 'open', presentation }]);
+    expect(projectedContent.media).toEqual([{ kind: 'file', ...attachment }]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't-attachment', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+        prompt: 'open', presentation,
+        steps: [{
+          kind: 'step', stepId: 's-attachment', turnId: 't-attachment', ordinal: 1, state: 'completed',
+          frames: [{ kind: 'text', frameId: 'f-attachment', role: 'user', text: 'frame', presentation }],
+        }],
+      }],
+    }));
+    const users = projected.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users.map((block) => block.media)).toEqual([[{ kind: 'file', ...attachment }], [{ kind: 'file', ...attachment }]]);
+  });
+
   it('updates an optimistic prompt when only its media changes', () => {
     const initial = appendLocalUserMessage(createViewState('session_test'), {
       userMessageId: 'um-media',
@@ -4147,7 +4280,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       content: [{ type: 'text', text: '<system>Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.</system>\nReview this.\n<system-reminder>Daemon note.</system-reminder>' }],
     }]));
     const earlier = projected.blocks.find((block) => block.id === EARLIER_PROMPT_OUTCOMES_ID);
-    expect(earlier?.kind === 'notice' && earlier.earlierPromptOutcomes?.find((outcome) => outcome.promptId === 'p-old-image')?.text).toBe('Review this.');
+    expect(earlier?.kind === 'notice' && earlier.earlierPromptOutcomes?.find((outcome) => outcome.promptId === 'p-old-image')?.text)
+      .toBe('<system>Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.</system>\nReview this.\n<system-reminder>Daemon note.</system-reminder>');
   });
 
   it('merges prompts settled outside the loaded window into one neutral row', () => {
@@ -4682,7 +4816,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.find((block) => block.kind === 'skill')).toMatchObject({ name: 'review' });
   });
 
-  it('projects historical image captions outside the user block without changing the source', () => {
+  it('keeps historical image captions literal in the user block without changing the source', () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. The original is at "/example/original.png".';
     const prompt = `Look at this.\n<system>${caption}</system>`;
     const snapshot = emptySnapshot({ items: [{
@@ -4690,10 +4824,8 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       origin: { kind: 'user' }, prompt, startedAt: FIXED_AT, steps: [],
     }] });
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
-    expect(projected.blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['Look at this.']);
-    expect(projected.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([
-      expect.objectContaining({ text: caption, turnId: 't-image' }),
-    ]);
+    expect(projected.blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual([prompt]);
+    expect(projected.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([]);
     expect(snapshot.items[0]).toMatchObject({ prompt });
   });
 
@@ -4727,12 +4859,11 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       }),
     );
     const reminders = projected.blocks.filter((block) => block.kind === 'system-reminder');
-    expect(reminders.map((block) => block.text)).toEqual(['TodoList has not been updated recently.', 'Image compressed to fit.']);
+    expect(reminders.map((block) => block.text)).toEqual(['TodoList has not been updated recently.']);
     expect(reminders[0]).toMatchObject({ variant: 'todo_list_reminder', disclosure: { kind: 'directive', triggers: ['E1'], epoch: 1 } });
     expect(reminders[0]).toMatchObject({ category: { kind: 'directive', triggers: ['E1'], epoch: 1 } });
-    expect(reminders[1]?.disclosure).toBeUndefined();
-    expect(reminders[1]?.category).toBeUndefined();
-    expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Ship it.');
+    expect(projected.blocks.find((block) => block.kind === 'user')?.text)
+      .toBe('Ship it.\n<system-reminder>\nImage compressed to fit.\n</system-reminder>');
     expect(projected.blocks.some((block) => block.kind === 'system' && block.text === '')).toBe(false);
   });
 
@@ -4799,7 +4930,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(blocks.some((block) => block.kind === 'system' && block.variant === 'task')).toBe(false);
   });
 
-  it('still classifies genuine task notification text without origin as a task system block', () => {
+  it('keeps task notification-shaped text literal without origin metadata', () => {
     const item: AgentTranscriptResponse['items'][number] = {
       kind: 'turn',
       turnId: 't-notify',
@@ -4808,10 +4939,10 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       steps: [],
     };
     const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
-    expect(blocks.find((block) => block.kind === 'system')).toMatchObject({
-      variant: 'task',
-      text: 'nightly finished',
+    expect(blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: '<notification task_id="task-9" status="completed">nightly finished</notification>',
     });
+    expect(blocks.find((block) => block.kind === 'system')).toBeUndefined();
   });
 
   it('marks only the final assistant frame of a cancelled turn as stopped', () => {
@@ -5323,10 +5454,11 @@ describe('queued prompt scheduling projection', () => {
     })]);
   });
 
-  it('keeps captions and system reminders out of queued and running message updates', () => {
+  it('keeps unknown historical captions and reminders literal in queued and running message updates', () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.';
     const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } };
     const content = [{ type: 'text' as const, text: 'review' }, { type: 'text' as const, text: `<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>` }, image];
+    const literalText = `review\n<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>`;
     const echo = (status: 'queued' | 'running', parts = content) => ({
       promptId: 'p-photo', userMessageId: 'um-photo', text: 'review', status, createdAt: FIXED_AT, content: parts,
     });
@@ -5334,24 +5466,26 @@ describe('queued prompt scheduling projection', () => {
     for (const status of ['queued', 'queued', 'running'] as const) {
       state = appendLocalUserMessage(state, echo(status));
       expect(state.blocks.filter((block) => block.kind === 'user')).toEqual([
-        expect.objectContaining({ text: 'review', promptStatus: status, media: [expect.objectContaining({ kind: 'image' })] }),
+        expect.objectContaining({ text: literalText, promptStatus: status, media: [expect.objectContaining({ kind: 'image' })] }),
       ]);
-      expect(state.blocks.filter((block) => block.kind === 'system-reminder').map((block) => block.text)).toEqual([caption, 'Daemon note.']);
-      if (status === 'queued') expect(queuedPromptPreviews(state)[0]).toMatchObject({ text: 'review', content });
+      expect(state.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([]);
+      if (status === 'queued') expect(queuedPromptPreviews(state)[0]).toMatchObject({ text: literalText, content });
     }
     const cleared = appendLocalUserMessage(state, echo('running', [content[0]!, image]));
     expect(cleared.blocks.filter((block) => block.kind === 'system-reminder')).toEqual([]);
     expect(content[1]).toMatchObject({ type: 'text', text: `<system>${caption}</system>\n<system-reminder>Daemon note.</system-reminder>` });
   });
 
-  it('keeps an image-only prompt visible without making its caption a user bubble', () => {
+  it('keeps an image-only prompt literal when its caption has no generated origin', () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244.';
     const state = appendLocalUserMessage(createViewState('session_test'), {
       promptId: 'p-image', userMessageId: 'um-image', text: '', status: 'running', createdAt: FIXED_AT,
       content: [{ type: 'text', text: `<system>${caption}</system>` }, { type: 'image', source: { kind: 'url', url: 'https://example.test/photo.png' } }],
     });
-    expect(state.blocks.find((block) => block.kind === 'user')).toMatchObject({ text: '', media: [expect.objectContaining({ kind: 'image' })] });
-    expect(state.blocks.find((block) => block.kind === 'system-reminder')).toMatchObject({ text: caption });
+    expect(state.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: `<system>${caption}</system>`, media: [expect.objectContaining({ kind: 'image' })],
+    });
+    expect(state.blocks.find((block) => block.kind === 'system-reminder')).toBeUndefined();
   });
 
   it('updates exact queued parts even when their projected text and media match, then clears them on launch', () => {

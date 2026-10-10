@@ -752,9 +752,13 @@ describe('Agent context', () => {
       final: { width: 2000, height: 408, byteLength: 282 * 1024, mimeType: 'image/png' },
       originalPath: '/tmp/originals/shot.png',
     });
+    const prefix = 'inspect this image ';
+    const text = `${prefix}${caption}`;
     ctx.mockNextResponse({ type: 'text', text: 'done' });
     await ctx.rpc.prompt({
-      input: [{ type: 'text', text: `inspect this image ${caption}` }],
+      input: [{ type: 'text', text, presentation: {
+        spans: [{ start: prefix.length, end: text.length, kind: 'image_compression' }],
+      } }],
     });
     await ctx.untilTurnEnd();
 

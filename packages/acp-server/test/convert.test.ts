@@ -154,9 +154,12 @@ describe('compressPromptImageParts', () => {
 
     // caption text part immediately precedes the re-encoded image part.
     expect(out).toHaveLength(2);
-    const caption = out[0] as { text: string };
+    const caption = out[0] as { text: string; presentation?: unknown };
     const image = out[1] as { imageUrl: { url: string } };
     expect(caption.text).toContain('Image compressed to fit model limits');
+    expect(caption.presentation).toEqual({
+      spans: [{ start: 0, end: caption.text.length, kind: 'image_compression' }],
+    });
     expect(caption.text).toContain('128x128');
     expect(caption.text).toContain(originalsDir);
     expect(image.imageUrl.url).not.toBe(url);

@@ -202,3 +202,23 @@ export function isCoarsePointer(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
   return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 }
+
+export function selectionCarryoverPresentation(
+  annotations: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[],
+  quote: string | null,
+  quoteSource?: SelectionSourceAnchor | null,
+): { prefix: string; presentation: import('@kiki/transcript').TextPresentation } {
+  let prefix = '';
+  const spans: import('@kiki/transcript').TextPresentationSpan[] = [];
+  for (const annotation of annotations) {
+    const start = prefix.length;
+    prefix += buildAnnotationBlock(annotation);
+    spans.push({ start, end: prefix.length, kind: 'selection', quote: annotation.quote, comment: annotation.comment, source: annotation.source });
+  }
+  if (quote !== null) {
+    const start = prefix.length;
+    prefix += buildQuotePrefix(quote, quoteSource);
+    spans.push({ start, end: prefix.length, kind: 'selection', quote, source: quoteSource });
+  }
+  return { prefix, presentation: { spans } };
+}

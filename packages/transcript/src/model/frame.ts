@@ -44,6 +44,7 @@ export interface TextFrame {
   readonly part?: TranscriptPartIdentity;
   readonly role: 'assistant' | 'user';
   readonly text: string;
+  readonly presentation?: import('../contract/presentation').TextPresentation;
   /** Attachments carried by this message (entities in `attachments`). */
   readonly attachmentIds?: readonly AttachmentId[];
   readonly resourceLink?: {

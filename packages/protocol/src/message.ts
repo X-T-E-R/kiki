@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { textPresentationSchema } from '@kiki/transcript';
 
 import { isoDateTimeSchema } from './time';
 
@@ -8,6 +9,7 @@ export type MessageRole = z.infer<typeof messageRoleSchema>;
 export const textContentSchema = z.object({
   type: z.literal('text'),
   text: z.string(),
+  presentation: textPresentationSchema.optional(),
 });
 export type TextContent = z.infer<typeof textContentSchema>;
 

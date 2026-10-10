@@ -1,4 +1,5 @@
 import { parseDaemonFileUrl, type ContextMessage } from '@kiki/agent-core-v2';
+import { readTextPresentation } from '@kiki/transcript';
 
 import type { Message, MessageContent, MessageRole, ToolUseContent } from '../../protocol/message';
 
@@ -16,7 +17,7 @@ function toProtocolRole(role: ContextMessage['role']): MessageRole {
 function mapContentPart(part: ContextMessage['content'][number]): MessageContent {
   switch (part.type) {
     case 'text':
-      return { type: 'text', text: part.text };
+      return { type: 'text', text: part.text, presentation: readTextPresentation(part.presentation) };
     case 'think': {
       const sig = part.encrypted;
       return sig !== undefined

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { contentWindowSchema } from './content';
+import { textPresentationSchema } from './presentation';
 import { transcriptReadSchema } from './read';
 
 export const turnIdSchema = z.string().min(1);
@@ -138,6 +139,7 @@ export const textFrameSchema = z.object({
   part: transcriptPartIdentitySchema.optional(),
   role: z.enum(['assistant', 'user']),
   text: z.string(),
+  presentation: textPresentationSchema.optional(),
   attachmentIds: z.array(z.string()).optional(),
   resourceLink: z.object({
     uri: z.string(), name: z.string().optional(), mimeType: z.string().optional(), size: z.number().optional(),
@@ -256,6 +258,7 @@ export const transcriptTurnSchema = z.object({
   message: transcriptMessageIdentitySchema.optional(),
   delivery: messageDeliverySchema.optional(),
   prompt: z.string().optional(),
+  presentation: textPresentationSchema.optional(),
   attachmentIds: z.array(z.string()).optional(),
   steps: z.array(transcriptStepSchema),
   startedAt: z.string().optional(),

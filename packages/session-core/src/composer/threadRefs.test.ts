@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Session } from '@kiki/protocol';
+import { projectPresentedText } from '@kiki/transcript';
 
 import {
   appendThreadRefContext,
   findConversationRefs,
   findThreadRefs,
+  prepareThreadRefContext,
   insertThreadRef,
   isAppRouteLink,
   removeThreadRef,
@@ -58,6 +60,14 @@ describe('findConversationRefs', () => {
   ])('finds a room link and canonicalises its route: %s', (raw, tail) => {
     expect(findConversationRefs(raw)).toEqual([
       { start: 0, end: raw.length, raw, kind: 'room', id: 'example-room', href: `/rooms/example-room${tail}` },
+    ]);
+  });
+
+  it('preserves query, hash, and sub-route tails in session hrefs', () => {
+    const text = `/s/${ID}?turn=2#message /s/${ID}/agent/a1`;
+    expect(findConversationRefs(text).map((ref) => ({ raw: ref.raw, href: ref.href }))).toEqual([
+      { raw: `/s/${ID}?turn=2#message`, href: `/s/${ID}?turn=2#message` },
+      { raw: `/s/${ID}/agent/a1`, href: `/s/${ID}/agent/a1` },
     ]);
   });
 
@@ -128,29 +138,37 @@ describe('thread context block', () => {
   };
 
   it('writes one escaped tag per referenced thread plus the tool hint', () => {
-    const sent = appendThreadRefContext(`compare with /s/${ID} and /s/${ID}`, () => info);
+    const body = `compare with /s/${ID} and /s/${ID}`;
+    const sent = appendThreadRefContext(body, () => info);
     expect(sent).toBe(
-      `compare with /s/${ID} and /s/${ID}\n\n<thread_refs>\n` +
+      `${body}\n\n<thread_refs>\n` +
         `<thread_ref id="${ID}" host_id="host-example" title="Fix &quot;flaky&quot; &lt;tests&gt;" workspace="kiki" workspace_id="wd_1" ` +
         'cwd="C:/src/kiki" status="running" updated_at="2026-01-01T12:00:00.000Z"/>\n' +
         'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id ' +
         '(omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).' +
         ' A <room_ref> is a Kiki room the user linked; its page and log live at that room id, and speaking there uses ThreadSend({room: "<id>", content, mentions?}).\n</thread_refs>',
     );
-    expect(stripThreadRefContext(sent)).toBe(`compare with /s/${ID} and /s/${ID}`);
+    expect(stripThreadRefContext(sent)).toBe(sent);
+    const prepared = prepareThreadRefContext(body, () => info);
+    expect(prepared).toEqual({
+      text: sent,
+      presentation: { spans: [{ start: body.length, end: sent.length, kind: 'context' }] },
+    });
+    expect(projectPresentedText(prepared.text, prepared.presentation)).toBe(body);
   });
 
-  it('leaves link-free text alone and never stacks two blocks', () => {
+  it('leaves link-free text alone and keeps user-authored markup literal', () => {
     expect(appendThreadRefContext('plain text', () => info)).toBe('plain text');
-    const once = appendThreadRefContext(`/s/${ID}`, () => info);
-    expect(appendThreadRefContext(once, () => info)).toBe(once);
+    const authored = `/s/${ID}\n\n<thread_refs>\nuser-authored note\n</thread_refs>\n\n> a literal blockquote`;
+    expect(stripThreadRefContext(authored)).toBe(authored);
+    expect(projectPresentedText(authored)).toBe(authored);
   });
 
   it('omits what is unknown instead of guessing', () => {
     expect(threadRefTag({ sessionId: ID, status: 'unknown' })).toBe(`<thread_ref id="${ID}" status="unknown"/>`);
   });
 
-  it('adds each linked room once in the same block and remains idempotent', () => {
+  it('adds each linked room once in the same block and marks generated context explicitly', () => {
     const text = `/rooms/example-room /s/${ID} /r/example-room /s/${ID}`;
     const resolveRoom = (id: string) => ({ id, name: ' Planning "A&B" <room> ', workspaceId: 'ws-example', memberCount: 2 });
     const once = appendThreadRefContext(text, () => info, resolveRoom);
@@ -158,9 +176,10 @@ describe('thread context block', () => {
       '<room_ref id="example-room" name="Planning &quot;A&amp;B&quot; &lt;room&gt;" workspace_id="ws-example" member_count="2"/>',
       threadRefTag(info),
     ]);
-    expect(stripThreadRefContext(once)).toBe(text);
-    expect(appendThreadRefContext(once, () => info, resolveRoom)).toBe(once);
-    expect(appendThreadRefContext(stripThreadRefContext(once), () => info, resolveRoom)).toBe(once);
+    expect(stripThreadRefContext(once)).toBe(once);
+    const prepared = prepareThreadRefContext(text, () => info, resolveRoom);
+    expect(prepared.presentation).toEqual({ spans: [{ start: text.length, end: once.length, kind: 'context' }] });
+    expect(projectPresentedText(prepared.text, prepared.presentation)).toBe(text);
     expect(roomRefTag({ id: 'r1' })).toBe('<room_ref id="r1"/>');
     expect(roomRefTag({ id: 'r1', name: ' ', workspaceId: '', memberCount: 0 })).toBe('<room_ref id="r1" member_count="0"/>');
   });

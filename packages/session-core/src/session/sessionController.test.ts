@@ -2366,11 +2366,12 @@ describe('SessionController transcript authority', () => {
       content: [{ type: 'text', text: 'echo' }],
       created_at: '2026-01-01T00:00:00.000Z',
     }));
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'replaced' }] };
     client.replacePrompt = vi.fn(async () => ({
       prompt_id: 'p-local',
       user_message_id: 'um-local',
       status: 'queued',
-      content: [{ type: 'text', text: 'replaced' }],
+      content: [{ type: 'text', text: 'replaced', presentation }],
       created_at: '2026-01-01T00:00:00.000Z',
     }));
     await controller.sendPrompt({ text: 'echo', permissionMode: 'manual' });
@@ -2397,9 +2398,12 @@ describe('SessionController transcript authority', () => {
     }));
     flushAll();
     expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
-    await controller.replaceQueued('p-local', 'replaced');
+    await controller.replaceQueued('p-local', 'replaced', undefined, presentation);
+    expect(client.replacePrompt).toHaveBeenCalledWith('session_test', 'p-local', {
+      content: [{ type: 'text', text: 'replaced', presentation }], replace_attachments: undefined,
+    });
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
-      text: 'replaced',
+      text: 'replaced', presentation,
     });
     controller.close();
   });

@@ -21,6 +21,7 @@ export interface ResourceLinkMetadata {
 export interface TextPart {
   type: 'text';
   text: string;
+  presentation?: unknown;
   attachment?: ContentPartAttachment;
   resourceLink?: ResourceLinkMetadata;
 }

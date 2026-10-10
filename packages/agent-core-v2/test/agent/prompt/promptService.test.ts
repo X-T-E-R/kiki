@@ -1642,17 +1642,21 @@ describe('AgentPromptService', () => {
     await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
   });
 
-  it('delivers a blocked prompt’s compression captions right after their host message', async () => {
+  it('delivers a blocked prompt’s marked compression captions right after their host message', async () => {
     const { prompt, context } = harness();
     prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
-    const handle = await prompt.enqueue({
-      id: 'prompt-caption',
-      message: message(
-        '<system>Image compressed to fit model limits: 800x600</system>look at this',
-      ),
-    });
+    const caption = '<system>Image compressed to fit model limits: 800x600</system>';
+    const text = `${caption}look at this`;
+    const messageWithCaption: ContextMessage = {
+      ...message(text),
+      content: [{ type: 'text', text, presentation: {
+        spans: [{ start: 0, end: caption.length, kind: 'image_compression' }],
+      } }],
+    };
+    const handle = await prompt.enqueue({ id: 'prompt-caption', message: messageWithCaption });
     await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
 
+    expect(handle.message.content).toEqual(messageWithCaption.content);
     const history = context.get();
     expect(history).toHaveLength(2);
     expect(history[0]?.origin).toEqual({
@@ -1661,12 +1665,25 @@ describe('AgentPromptService', () => {
       ownerPromptId: 'prompt-caption',
     });
     expect(history[1]?.origin).toEqual({ kind: 'user' });
-    expect(history[1]?.content).toEqual([{ type: 'text', text: 'look at this' }]);
+    expect(history[1]?.content).toEqual([{ type: 'text', text: 'look at this', presentation: undefined }]);
     const captionPart = history[0]?.content[0];
     expect(captionPart?.type).toBe('text');
     expect((captionPart as { text: string }).text).toContain(
       'Image compressed to fit model limits: 800x600',
     );
+  });
+
+  it('leaves an unmarked caption-shaped user prompt untouched', async () => {
+    const { prompt, context } = harness();
+    prompt.hooks.onBeforeSubmitPrompt.register('block', async (ctx, next) => { ctx.block = true; await next(); });
+    const text = '<system>Image compressed to fit model limits: 800x600</system>keep this literal';
+    const handle = await prompt.enqueue({ id: 'prompt-literal-caption', message: message(text) });
+    await expect(handle.completion).resolves.toMatchObject({ state: 'blocked' });
+
+    expect(context.get()).toEqual([expect.objectContaining({
+      origin: { kind: 'user' },
+      content: [{ type: 'text', text }],
+    })]);
   });
 
   it('settles the prompt as failed when the loop throws on launch', async () => {

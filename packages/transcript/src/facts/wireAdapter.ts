@@ -2,6 +2,7 @@ import type { TranscriptFact } from './reducer';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
+import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
 import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
@@ -46,6 +47,7 @@ export interface PendingSteer {
   readonly promptId: string;
   readonly explicitPromptId?: string;
   readonly text: string;
+  readonly presentation?: import('../contract/presentation').TextPresentation;
   readonly media: readonly PendingSteerMedia[];
   readonly revision: number;
   readonly provenance: {
@@ -1227,6 +1229,7 @@ export class TranscriptWireAdapter {
         lineage: lineageOf(record['lineage']),
       },
       prompt: materialized?.prompt ?? (headerOnly ? undefined : prompt.length > 0 ? prompt : undefined),
+      presentation: materialized?.presentation ?? contentTextPresentation(openingInput),
       attachmentIds: materialized?.attachmentIds ?? (attachmentIds.length > 0 ? attachmentIds : undefined),
       startedAt: materialized?.startedAt ?? isoOf(record.time),
     };
@@ -1259,6 +1262,7 @@ export class TranscriptWireAdapter {
       promptId,
       explicitPromptId,
       text,
+      presentation: contentTextPresentation(input),
       media,
       revision: numberOf(record['revision']) ?? 0,
       provenance: {
@@ -1319,6 +1323,7 @@ export class TranscriptWireAdapter {
           },
           role: 'user',
           text: steer.text,
+          presentation: steer.presentation,
           origin: projectTranscriptUserOrigin(steer.origin) ?? steer.origin,
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
@@ -1436,6 +1441,7 @@ export class TranscriptWireAdapter {
           provenance: { source: 'legacy-wire', recordOrdinal: ordinal },
         },
         prompt: prompt.length > 0 ? prompt : undefined,
+        presentation: contentTextPresentation(openingContent),
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         startedAt: isoOf(record.time),
       };
@@ -1533,6 +1539,7 @@ export class TranscriptWireAdapter {
     if (turn?.message?.messageId === messageId) {
       const deliveredTurn: TurnHeader = {
         ...turn, prompt: text.length === 0 ? undefined : text,
+        presentation: contentTextPresentation(content),
         attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds, delivery,
       };
       this.#turnHeaders.set(turn.turnId, deliveredTurn);
@@ -1545,7 +1552,7 @@ export class TranscriptWireAdapter {
         item: {
           kind: 'marker', markerId: `message-delivery:${messageId}`, marker: 'message.delivery',
           at: delivery.deliveredAt,
-          payload: { messageId, text, origin: message['origin'], delivery, attachmentIds },
+          payload: { messageId, text, presentation: contentTextPresentation(content), origin: message['origin'], delivery, attachmentIds },
         },
       });
       return operations;
@@ -1569,6 +1576,7 @@ export class TranscriptWireAdapter {
           provenance: { source: canonical === undefined ? 'legacy-wire' : 'engine', recordOrdinal: canonical === undefined ? ordinal : undefined },
         },
         role: 'user', text,
+        presentation: contentTextPresentation(content),
         origin: projectTranscriptUserOrigin(message['origin']) ?? message['origin'],
         delivery, attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds,
       },
@@ -1622,6 +1630,7 @@ export class TranscriptWireAdapter {
             },
             role: 'assistant',
             text: stringOf(part?.['text']) ?? '',
+            presentation: readTextPresentation(part?.['presentation']),
           },
         });
       } else if (type === 'think') {
@@ -1805,6 +1814,7 @@ export class TranscriptWireAdapter {
             part: identity,
             role: 'assistant',
             text: stringOf(part['text']) ?? '',
+            presentation: readTextPresentation(part['presentation']),
             resourceLink: resourceLinkOf(part),
           },
         },
@@ -2042,6 +2052,7 @@ export class TranscriptWireAdapter {
       message: previous?.message,
       delivery: previous?.delivery,
       prompt: previous?.prompt,
+      presentation: previous?.presentation,
       attachmentIds: previous?.attachmentIds,
       startedAt: previous?.startedAt,
       endedAt,
@@ -2861,7 +2872,7 @@ function projectPromptContent(value: unknown): unknown[] {
     const part = objectOf(raw);
     if (part === undefined) continue;
     if (stringOf(part['type']) === 'text') {
-      parts.push({ type: 'text', text: stringOf(part['text']) ?? '' });
+      parts.push({ type: 'text', text: stringOf(part['text']) ?? '', presentation: readTextPresentation(part['presentation']) });
       continue;
     }
     const media = mediaOf(part);

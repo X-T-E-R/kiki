@@ -2785,11 +2785,11 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
-        { type: 'turn.prompt', turnId: 1, origin: { kind: 'other' }, time: 10_000 },
+        { type: 'turn.prompt', turnId: 1, origin: { kind: 'user' }, input: [{ type: 'text', text: 'typed generated', presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } }], time: 10_000 },
         { type: 'turn.step.retrying', turnId: 1, step: 1, failedAttempt: 2, nextAttempt: 3,
           maxAttempts: 5, delayMs: 100, errorName: 'APIConnectionError', errorMessage: 'Connection closed', time: 11_000 },
         { type: 'turn.ended', turnId: 1, reason: 'cancelled', time: 12_000 },
@@ -2815,7 +2815,7 @@ describe('TranscriptService live integration', () => {
         const key = 'ws\0s1\0main';
         const checkpoint = await query.get<{ format: number; snapshot: AgentTranscriptSnapshot }>('__transcript_projection_checkpoint__', key);
         const recoveredTurn = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't1');
-        expect(recoveredTurn).toMatchObject({ state: 'cancelled' });
+        expect(recoveredTurn).toMatchObject({ state: 'cancelled', prompt: 'typed generated', presentation: { spans: [{ start: 5, end: 15, kind: 'context' }] } });
         expect(recoveredTurn?.kind === 'turn' && recoveredTurn.steps.find((step) => step.retry !== undefined)?.retry)
           .toMatchObject({ failedAttempt: 2, nextAttempt: 3, maxAttempts: 5, delayMs: 100,
             errorName: 'APIConnectionError', errorMessage: 'Connection closed' });
@@ -2823,7 +2823,7 @@ describe('TranscriptService live integration', () => {
           expect.objectContaining({ payload: { from: 'example/old', to: 'example/new' } }),
         ]);
         expect(expected?.meta.agent).toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
-        expect(checkpoint?.format).toBe(5);
+        expect(checkpoint?.format).toBe(7);
         await query.put('__transcript_projection_checkpoint__', key, {
           ...checkpoint, format,
           snapshot: { ...checkpoint!.snapshot, meta: {}, items: [{ kind: 'turn', turnId: 't999', ordinal: 999, state: 'completed', origin: { kind: 'user' }, prompt: 'stale phantom', steps: [] }] },

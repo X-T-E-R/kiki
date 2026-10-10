@@ -2298,10 +2298,10 @@ export class SessionController {
     await this.refreshPrompts();
   }
 
-  async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[]): Promise<void> {
+  async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[], presentation?: import('@kiki/transcript').TextPresentation): Promise<void> {
     assertSessionWritable(this.state);
     const result = await this.client.replacePrompt(this.sessionId, promptId, {
-      content: [{ type: 'text', text }, ...(retainedAttachments ?? [])],
+      content: [...(text.trim() === '' ? [] : [{ type: 'text' as const, text, presentation }]), ...(retainedAttachments ?? [])],
       replace_attachments: retainedAttachments === undefined ? undefined : true,
     });
     const projection = projectMessageContent(result.content);
@@ -2426,6 +2426,7 @@ export class SessionController {
       this.setPendingSteer(MAIN_AGENT_ID, {
         promptId,
         text: queued.text,
+        presentation: queued.presentation,
         media: queued.media,
         createdAt: new Date().toISOString(),
         phase: 'sending',
@@ -2481,10 +2482,12 @@ export class SessionController {
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
+    const projection = projectMessageContent(content);
     this.setPendingSteer(agentId, {
       promptId,
       text: input.text,
-      media: input.media ?? nonEmpty(projectMessageContent(content).media),
+      presentation: projection.presentation,
+      media: input.media ?? nonEmpty(projection.media),
       createdAt: new Date().toISOString(),
       phase: 'sending',
     });

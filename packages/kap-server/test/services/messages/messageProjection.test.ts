@@ -15,6 +15,16 @@ function userText(text: string): ContextMessage {
 }
 
 describe('toProtocolMessage', () => {
+  it('preserves validated presentation on user text and keeps raw content intact', () => {
+    const text = 'Typed body\n\n<thread_refs>generated</thread_refs>';
+    const presentation = { spans: [{ start: 'Typed body'.length, end: text.length, kind: 'context' as const }] };
+    const message: ContextMessage = { role: 'user', content: [{ type: 'text', text, presentation }], toolCalls: [] };
+    expect(toProtocolMessage(SESSION_ID, 0, message, CREATED_AT).content).toEqual([{ type: 'text', text, presentation }]);
+    expect(message.content).toEqual([{ type: 'text', text, presentation }]);
+    message.content = [{ type: 'text', text, presentation: { spans: [{ start: -1, end: 4, kind: 'context' }] } }];
+    expect(toProtocolMessage(SESSION_ID, 0, message, CREATED_AT).content).toEqual([{ type: 'text', text }]);
+  });
+
   it('maps text/think/image/audio/video content parts', () => {
     const msg: ContextMessage = {
       role: 'user',

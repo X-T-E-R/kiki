@@ -1,5 +1,6 @@
 import { daemonFileRefFromPart, type ContentPart } from '@kiki/agent-core-v2';
 import type { MessageContent } from '@kiki/protocol';
+import { readTextPresentation } from '@kiki/transcript';
 
 /**
  * Prompt content (engine kosong parts) → the v1 wire `messageContentSchema`
@@ -26,7 +27,7 @@ export function projectPromptContentParts(content: readonly ContentPart[]): Mess
       });
       continue;
     }
-    if (part.type === 'text') parts.push({ type: 'text', text: part.text });
+    if (part.type === 'text') parts.push({ type: 'text', text: part.text, presentation: readTextPresentation(part.presentation) });
     else if (part.type === 'image_url') {
       const match = /^data:([^;]+);base64,(.*)$/.exec(part.imageUrl.url);
       parts.push(match === null
