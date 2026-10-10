@@ -14,6 +14,7 @@ import { StreamSave } from '../../../vscode/src/stream-save';
 import { I18nProvider } from '../i18n';
 import { KikiClient } from '../lib/client';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { MediaLightbox } from './MediaLightbox';
 
 const fixture = vi.hoisted(() => ({ client: null as unknown, openSaveSink: vi.fn() }));
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: fixture.client, scopeId: 'fixture' }) }));
@@ -105,7 +106,10 @@ async function openAttachment() {
   }
   expect(container.querySelector('img')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-  return [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Download')!;
+  await act(async () => {
+    document.querySelector('[data-attachment-preview]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+  });
+  return document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
 }
 
 describe('media original GUI stream', () => {
@@ -262,10 +266,42 @@ describe('media preview budget and ownership', () => {
     expect(header!.textContent).toContain('image/png');
 
     const downloadBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Download');
-    expect(downloadBtn).toBeDefined();
-    expect(downloadBtn!.className).toContain('focus-visible:outline-selected-ink');
+    expect(downloadBtn).toBeUndefined();
+    const surface = dialog!.querySelector<HTMLElement>('[data-attachment-preview]')!;
+    await act(async () => { surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    expect(document.querySelector('[data-attachment-image-menu] [data-menu-item="save-image"]')).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.querySelector('[data-attachment-image-menu]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    await act(async () => { surface.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })); });
+    const save = document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
+    expect(document.activeElement).toBe(save);
+    fixture.openSaveSink.mockResolvedValue(null);
+    await act(async () => { save.click(); });
+    expect(fixture.openSaveSink).toHaveBeenCalledWith('step-after.png');
     const closeBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.getAttribute('aria-label') === 'Close');
     expect(closeBtn).toBeDefined();
     expect(closeBtn!.className).toContain('focus-visible:outline-selected-ink');
   });
+});
+
+it('saves a lightbox image from the keyboard context menu without a persistent Download button', async () => {
+  const close = vi.fn();
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    expect(this.download).toBe('example.png');
+    expect(this.getAttribute('href')).toBe('blob:original');
+  });
+  try {
+    await act(async () => { root.render(<I18nProvider><MediaLightbox src="blob:original" name="example.png" onClose={close} /></I18nProvider>); });
+    expect([...document.querySelectorAll('button')].some((button) => button.textContent === 'Download')).toBe(false);
+    const image = document.querySelector('img')!;
+    await act(async () => { image.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })); });
+    const save = document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!;
+    expect(document.activeElement).toBe(save);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => { image.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!.click(); });
+    expect(click).toHaveBeenCalledOnce();
+  } finally { click.mockRestore(); }
 });

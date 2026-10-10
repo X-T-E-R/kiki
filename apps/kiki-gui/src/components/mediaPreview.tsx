@@ -46,6 +46,7 @@ import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
 import { MediaLightbox } from './MediaLightbox';
+import { MiniContextMenu } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
   MediaPreviewContext,
@@ -435,6 +436,10 @@ function AttachmentPreviewDialog({
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
   const title = t('preview.openFile', { name });
   const imageSurface = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+  const [imageMenu, setImageMenu] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (imageMenu !== null) document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [role="menuitem"]')?.focus();
+  }, [imageMenu]);
   useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
   const download = async () => {
     if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined))) return;
@@ -503,7 +508,7 @@ function AttachmentPreviewDialog({
 
   return (
     <Dialog
-      onClose={() => { if (transfer.status !== 'saving') onClose(); }}
+      onClose={() => { if (imageMenu !== null) setImageMenu(null); else if (transfer.status !== 'saving') onClose(); }}
       ariaLabel={title}
       overlayId="session-attachment-preview"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
@@ -527,14 +532,14 @@ function AttachmentPreviewDialog({
             {t('preview.loadFullFile')}
           </button>
         ) : null}
-        <button
+        {!imageSurface ? <button
           type="button"
           disabled={transfer.status === 'downloading' || transfer.status === 'saving'}
           onClick={() => { void download(); }}
           className="shrink-0 rounded-lg border border-hairline bg-paper/80 px-3 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
         >
           {t('media.download')}
-        </button>
+        </button> : null}
         <button
           type="button"
           data-autofocus
@@ -554,9 +559,25 @@ function AttachmentPreviewDialog({
           </> : transfer.status === 'saving' ? t('preview.saving') : transfer.status === 'saved' ? t('preview.saved') : <span className="text-danger">{transfer.message}</span>}
         </div>
       ) : null}
-      <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
+      <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto"
+        tabIndex={imageSurface ? 0 : undefined}
+        onContextMenu={(event) => {
+          if (!imageSurface || transfer.status === 'downloading' || transfer.status === 'saving') return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          setImageMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top });
+        }}
+        onKeyDown={(event) => {
+          if (!imageSurface || transfer.status === 'downloading' || transfer.status === 'saving' ||
+              (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10'))) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          setImageMenu({ x: rect.left, y: rect.top });
+        }}
+      >
         {body}
       </div>
+      {imageMenu === null ? null : <MiniContextMenu x={imageMenu.x} y={imageMenu.y} entries={[{ key: 'save-image', label: t('media.download'), run: download }]} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
     </Dialog>
   );
 }

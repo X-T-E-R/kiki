@@ -1,15 +1,16 @@
 /**
  * MediaLightbox — fullscreen image viewer over the Dialog primitive: dark
- * backdrop, click/Esc to close, fit↔actual-size zoom toggle, and a download
- * button. The image itself never closes the overlay on click (it zooms);
+ * backdrop, click/Esc to close, fit↔actual-size zoom toggle, and image saving
+ * from the context menu. The image itself never closes the overlay on click (it zooms);
  * closing happens from the backdrop, the × button, or Escape. Actual size is
  * one image pixel per device pixel, and a mouse drag pans it.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
+import { MiniContextMenu } from './MiniContextMenu';
 import { Icon } from './icons';
 import { useDevicePixelRatio, useDragPan } from './ImageViewport';
 
@@ -28,6 +29,10 @@ export function MediaLightbox({
   const dpr = useDevicePixelRatio();
   const pan = useDragPan(actualSize);
   const label = name ?? t('media.viewImage');
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (menu !== null) document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [role="menuitem"]')?.focus();
+  }, [menu]);
 
   const download = () => {
     const anchor = document.createElement('a');
@@ -43,7 +48,7 @@ export function MediaLightbox({
 
   return (
     <Dialog
-      onClose={onClose}
+      onClose={() => { if (menu !== null) setMenu(null); else onClose(); }}
       ariaLabel={label}
       overlayId="media-lightbox"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/85 p-4"
@@ -58,9 +63,7 @@ export function MediaLightbox({
         >
           {actualSize ? t('media.zoomFit') : t('media.zoomActual')}
         </button>
-        <button type="button" onClick={download} className={controlClass}>
-          {t('media.download')}
-        </button>
+
         <button type="button" onClick={onClose} aria-label={t('common.close')} className={controlClass}>
           <Icon name="close" />
         </button>
@@ -76,6 +79,18 @@ export function MediaLightbox({
         <img
           src={src}
           alt={label}
+          tabIndex={0}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top });
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMenu({ x: rect.left, y: rect.top });
+          }}
           draggable={false}
           onLoad={(event) => { setNaturalWidth(event.currentTarget.naturalWidth); }}
           onClick={() => {
@@ -90,6 +105,7 @@ export function MediaLightbox({
           }
         />
       </div>
+      {menu === null ? null : <MiniContextMenu x={menu.x} y={menu.y} entries={[{ key: 'save-image', label: t('media.download'), run: download }]} onClose={() => { setMenu(null); }} ariaLabel={label} overlayId="lightbox-image-menu" dataAttribute="data-lightbox-image-menu" modalOwnerId="media-lightbox" />}
     </Dialog>
   );
 }

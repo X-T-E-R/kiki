@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
-import { registerOverlay } from '../lib/uiBusy';
+import { nextModalDepth, registerOverlay } from '../lib/uiBusy';
 
 export type MiniMenuEntry =
   | {
@@ -31,6 +31,7 @@ export function MiniContextMenu({
   ariaLabel,
   overlayId,
   dataAttribute,
+  modalOwnerId,
 }: {
   readonly x: number;
   readonly y: number;
@@ -39,6 +40,7 @@ export function MiniContextMenu({
   readonly ariaLabel: string;
   readonly overlayId: string;
   readonly dataAttribute: string;
+  readonly modalOwnerId?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
@@ -88,10 +90,11 @@ export function MiniContextMenu({
     <div
       ref={menuRef}
       {...containerProps}
+      data-modal-escape={modalOwnerId}
       role="menu"
       aria-label={ariaLabel}
       className="anim-enter fixed z-50 w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      style={{ left: position.left, top: position.top }}
+      style={{ left: position.left, top: position.top, zIndex: modalOwnerId === undefined ? undefined : 50 + nextModalDepth() }}
     >
       {entries.map((entry, index) =>
         'separator' in entry ? (
