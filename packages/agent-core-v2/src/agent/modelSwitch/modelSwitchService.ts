@@ -99,7 +99,9 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       this.assertSameInput(completed.input, input);
       if (this.confirmedCompletions.get(input.operationId) === completed.receipt) return completed.receipt;
     }
-    const quiescence = this.compaction.isCompacting() ? undefined : this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary: options.boundary });
+    const quiescence = this.compaction.isCompacting() ? undefined : options.quiescence === undefined
+      ? this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary: options.boundary })
+      : options.quiescence();
     if (quiescence === undefined) return Promise.reject(new Error2(ErrorCodes.TURN_AGENT_BUSY, 'Model switching requires an idle agent.'));
     const receipt: ModelSwitchReceipt = completed === undefined
       ? { operationId: input.operationId, agentId: this.scope.agentId, state: 'preparing', fromModel: this.profile.getModel(), toModel: input.model, mode: input.mode }

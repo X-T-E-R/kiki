@@ -16,7 +16,29 @@ export interface TranscriptPromptDetailRef {
   readonly promptId: PromptId;
 }
 
+export interface TranscriptPromptRuntimeControls {
+  readonly execution?: {
+    readonly executor: string;
+    readonly profile?: string;
+    readonly overrides?: {
+      readonly model?: string | null;
+      readonly thinking?: string | null;
+      readonly permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+      readonly kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
+      readonly allow_kiki_subagents?: boolean | null;
+    };
+  };
+  readonly profile?: string;
+  readonly model?: string;
+  readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
+  readonly thinking?: string;
+  readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
+  readonly planGate?: 'free' | 'gated';
+  readonly planMode?: boolean;
+}
+
 export interface TranscriptPrompt extends ContentWindow {
+  readonly runtimeControls?: TranscriptPromptRuntimeControls;
   readonly promptId: PromptId;
   readonly status: TranscriptPromptStatus;
   /** The user message this prompt materialized as, when it did. */

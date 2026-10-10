@@ -546,8 +546,30 @@ export const transcriptGlobalCoverageSchema = z.object({
   todos: transcriptGlobalEntityCoverageSchema.optional(),
 });
 
+export const transcriptPromptRuntimeControlsSchema = z.object({
+  execution: z.object({
+    executor: z.string().min(1),
+    profile: z.string().min(1).optional(),
+    overrides: z.object({
+      model: z.string().min(1).nullable().optional(),
+      thinking: z.string().min(1).nullable().optional(),
+      permission_mode: z.enum(['manual', 'auto', 'review', 'yolo']).nullable().optional(),
+      kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).nullable().optional(),
+      allow_kiki_subagents: z.boolean().nullable().optional(),
+    }).optional(),
+  }).optional(),
+  profile: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
+  thinking: z.string().min(1).optional(),
+  permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
+  planGate: z.enum(['free', 'gated']).optional(),
+  planMode: z.boolean().optional(),
+});
+
 export const transcriptPromptSchema = z.object({
   ...contentWindowSchema.shape,
+  runtimeControls: transcriptPromptRuntimeControlsSchema.optional(),
   promptId: z.string(),
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
   userMessageId: z.string().optional(),

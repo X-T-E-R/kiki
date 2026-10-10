@@ -549,6 +549,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const execution: PromptExecutionBinding | undefined =
           req.body.profile === undefined &&
             req.body.model === undefined &&
+            req.body.model_switch_mode === undefined &&
             req.body.thinking === undefined &&
             req.body.permission_mode === undefined &&
             req.body.plan_gate === undefined &&
@@ -562,6 +563,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             ? undefined
             : {
                 afterModelSwitch: req.body.after_model_switch,
+                modelSwitchMode: req.body.model_switch_mode,
                 profile: req.body.profile,
                 model: req.body.model,
                 thinking: req.body.thinking,
@@ -909,6 +911,16 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
     user_message_id: prompt.userMessageId,
     status,
     content: projectPromptContentParts(content),
+    runtime_controls: prompt.execution === undefined ? undefined : {
+      execution: prompt.execution.execution,
+      profile: prompt.execution.profile,
+      model: prompt.execution.model,
+      modelSwitchMode: prompt.execution.modelSwitchMode,
+      thinking: prompt.execution.thinking,
+      permissionMode: prompt.execution.permissionMode,
+      planGate: prompt.execution.planGate,
+      planMode: prompt.execution.planMode,
+    },
     created_at: prompt.createdAt,
     append_timing: prompt.appendTiming ?? 'agent_idle',
     revision: prompt.revision ?? 0,

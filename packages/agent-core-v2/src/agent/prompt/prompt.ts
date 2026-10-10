@@ -34,6 +34,7 @@ export type DeferredAppendTiming = 'agent_idle' | 'subagents_done' | 'tasks_done
 export interface PromptExecutionBinding {
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly afterModelSwitch?: string;
+  readonly modelSwitchMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
   readonly personaGreetingReply?: boolean;
   readonly profile?: string;
   readonly model?: string;

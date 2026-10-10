@@ -28,6 +28,12 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.plan_mode).toBeUndefined();
   });
 
+  it('preserves the prompt-bound model switch mode with model and effort', () => {
+    const body = { content: [{ type: 'text', text: 'Continue on this binding.' }], model: 'example/model', thinking: 'high', model_switch_mode: 'compact' };
+    expect(promptSubmissionSchema.parse(body)).toEqual(body);
+    expect(promptSubmissionSchema.safeParse({ ...body, model_switch_mode: 'unknown' }).success).toBe(false);
+  });
+
   it('preserves after_model_switch and rejects an empty dependency id', () => {
     const parsed = promptSubmissionSchema.parse({
       content: [{ type: 'text', text: 'continue' }],

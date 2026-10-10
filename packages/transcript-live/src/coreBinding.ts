@@ -466,6 +466,16 @@ function promptFromSnapshot(
   return {
     promptId: snapshot.id,
     status,
+    runtimeControls: snapshot.execution === undefined ? undefined : {
+      execution: snapshot.execution.execution,
+      profile: snapshot.execution.profile,
+      model: snapshot.execution.model,
+      modelSwitchMode: snapshot.execution.modelSwitchMode,
+      thinking: snapshot.execution.thinking,
+      permissionMode: snapshot.execution.permissionMode,
+      planGate: snapshot.execution.planGate,
+      planMode: snapshot.execution.planMode,
+    },
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,

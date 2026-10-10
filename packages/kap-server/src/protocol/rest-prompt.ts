@@ -32,6 +32,7 @@ export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
   after_model_switch: z.string().min(1).optional(),
+  model_switch_mode: z.enum(['direct', 'compact', 'fresh']).optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),

@@ -2002,6 +2002,7 @@ export class SessionController {
      * binding by definition).
      */
     afterModelSwitch?: string;
+    modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     promptId?: string;
     personaGreetingReply?: boolean;
   }): Promise<PromptSubmitResult> {
@@ -2022,6 +2023,7 @@ export class SessionController {
       goal_control: input.goalControl,
       append_timing: input.appendTiming,
       after_model_switch: input.afterModelSwitch,
+      model_switch_mode: input.modelSwitchMode,
       prompt_id: input.promptId,
       persona_greeting_reply: input.personaGreetingReply,
     });
@@ -2328,6 +2330,7 @@ export class SessionController {
     readonly media?: PendingSteer['media'];
     readonly promptId?: string;
     readonly model?: string;
+    readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     readonly thinking?: string;
     readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
@@ -2351,6 +2354,7 @@ export class SessionController {
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
         model: input.model,
+        model_switch_mode: input.modelSwitchMode,
         thinking: input.thinking,
         permission_mode: input.permissionMode,
         plan_mode: input.planMode,
