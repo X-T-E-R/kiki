@@ -28,6 +28,7 @@ import {
   type TranscriptGradeSpec,
   type TranscriptOperation,
   type TranscriptRead,
+  type TranscriptTodo,
   type TranscriptTurn,
 } from '@kiki/transcript';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
@@ -1508,6 +1509,37 @@ export class SessionController {
     this.contentControllers.get(`${agentId}/content:${JSON.stringify(ref)}`)?.abort();
   }
 
+  private todoPageWins(agentId: string, current: TranscriptTodo | undefined, todo: TranscriptTodo, read: TranscriptRead | undefined): boolean {
+    if (current === undefined) return true;
+    if (todo.todoId !== 'todo' || read?.readiness !== 'ready' || read.stale !== undefined ||
+        todo.notesStatus !== undefined || todo.contentRefs?.some((ref) => ref.path[0] !== 'items') === true ||
+        todo.notesMeta === undefined || todo.notesMeta.rev <= (current.notesMeta?.rev ?? -1)) return false;
+    const watermark = read.watermark?.transcript;
+    const cursor = this.transcriptCursors.get(agentId);
+    const observed = this.todoReads.get(agentId)?.watermark?.transcript;
+    return watermark !== undefined && cursor !== undefined && watermark.epoch !== undefined && watermark.epoch === cursor.epoch &&
+      watermark.seq >= cursor.seq && (observed === undefined || observed.epoch === watermark.epoch && watermark.seq >= observed.seq);
+  }
+
+  private observeCanonicalTodoRead(agentId: string, previous: TranscriptTodo | undefined, ops: readonly TranscriptOperation[], cursor: TranscriptCursor): void {
+    const appliedCursor = this.transcriptCursors.get(agentId);
+    for (const op of ops) {
+      if (op.op !== 'todo.upsert' || op.todo.todoId !== 'todo') continue;
+      const next = op.todo;
+      const advancesNotes = next.notesMeta !== undefined && next.notesMeta.rev > (previous?.notesMeta?.rev ?? -1);
+      previous = next;
+      const watermark = this.todoReads.get(agentId)?.watermark?.transcript ?? appliedCursor;
+      const advancesRead = watermark !== undefined && watermark.epoch !== undefined && watermark.epoch === cursor.epoch &&
+        cursor.seq > watermark.seq && (appliedCursor === undefined || appliedCursor.epoch === cursor.epoch && cursor.seq > appliedCursor.seq);
+      if (!advancesNotes || !advancesRead) continue;
+      const complete = next.notes !== undefined && next.notesStatus === undefined &&
+        next.contentRefs?.some((ref) => ref.path[0] !== 'items') !== true;
+      this.todoReads.set(agentId, { source: cursor.epoch?.startsWith('cold:') === true ? 'cold' : 'live',
+        readiness: complete ? 'ready' : 'partial', reason: complete ? undefined : 'source_unverified',
+        watermark: { transcript: cursor } });
+    }
+  }
+
   async loadTranscriptEntities(agentId: string, kind: import('@kiki/transcript').TranscriptDetailListResponse['kind']): Promise<boolean> {
     const read = this.view.transcript.entities?.bind(this.view.transcript);
     const key = `entities:${kind}`;
@@ -1523,6 +1555,7 @@ export class SessionController {
       try {
         const page = await read({ agentId, kind, cursor: this.entityPageCursors.get(requestKey) ?? undefined, limit: 20 }, { signal: controller.signal });
         if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        if (!this.flushPendingTranscriptBatch(agentId)) return false;
         const store = this.ensureAgentTranscript(agentId);
         const ops: TranscriptOperation[] = [];
         switch (page.kind) {
@@ -1530,10 +1563,10 @@ export class SessionController {
           case 'attachment': for (const attachment of page.items) if (store.getAttachment(attachment.attachmentId) === undefined) ops.push({ op: 'attachment.upsert', attachment }); break;
           case 'prompt': for (const prompt of page.items) if (store.getPrompt(prompt.promptId) === undefined) ops.push({ op: 'prompt.upsert', prompt }); break;
           case 'interaction': for (const interaction of page.items) if (!store.getInteractions().has(interaction.interactionId)) ops.push({ op: 'interaction.upsert', interaction }); break;
-          case 'todo': for (const todo of page.items) if (!store.getTodos().has(todo.todoId)) ops.push({ op: 'todo.upsert', todo }); break;
+          case 'todo': for (const todo of page.items) if (this.todoPageWins(agentId, store.getTodo(todo.todoId), todo, page.read)) ops.push({ op: 'todo.upsert', todo }); break;
         }
-        store.apply(ops);
-        if (kind === 'todo') {
+        const applied = store.apply(ops);
+        if (applied.accepted.some((op) => op.op === 'todo.upsert' && op.todo.todoId === 'todo')) {
           if (page.read === undefined) this.todoReads.delete(agentId);
           else this.todoReads.set(agentId, page.read);
         }
@@ -1646,6 +1679,7 @@ export class SessionController {
         : batch.cursor;
     const store = this.ensureAgentTranscript(agentId);
     const priorCursor = this.transcriptCursors.get(agentId);
+    const previousTodo = store.getTodo('todo');
     const result = store.apply(batch.ops);
     if (result.gap !== undefined) {
       this.toolCountSpans.delete(agentId);
@@ -1661,6 +1695,7 @@ export class SessionController {
       if (startCatchUp) void this.catchUpAgent(agentId);
       return false;
     }
+    this.observeCanonicalTodoRead(agentId, previousTodo, result.accepted, batch.cursor);
     this.recordToolCountSpan(agentId, priorCursor, resumeCursor, result.toolCallCountDelta);
     this.transcriptCursors.set(agentId, resumeCursor);
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
@@ -1734,11 +1769,18 @@ export class SessionController {
       for (const page of pages) for (const batch of page.batches) {
         recoveredOps.push(...(batch.ops as readonly TranscriptOperation[]));
       }
+      let previousTodo = store.getTodo('todo');
       const recovered = store.apply(recoveredOps);
       if (recovered.gap !== undefined) {
         this.catchupReplay.delete(agentId);
         await this.resync();
         return;
+      }
+      const accepted = new Set(recovered.accepted);
+      for (const page of pages) for (const batch of page.batches) {
+        const ops = batch.ops.filter((op) => accepted.has(op as TranscriptOperation)) as readonly TranscriptOperation[];
+        this.observeCanonicalTodoRead(agentId, previousTodo, ops, { seq: batch.seq, epoch: page.epoch });
+        for (const op of ops) if (op.op === 'todo.upsert' && op.todo.todoId === 'todo') previousTodo = op.todo;
       }
       let changed = recovered.accepted.length > 0;
       if (opsAffectForest(recovered.accepted)) this.forestDirtyAgents.add(agentId);
@@ -1750,11 +1792,13 @@ export class SessionController {
       const pending = this.catchupReplay.get(agentId);
       this.catchupReplay.delete(agentId);
       if (pending !== undefined) {
+        const previousTodo = store.getTodo('todo');
         const retry = store.apply(pending.ops);
         if (retry.gap !== undefined) {
           await this.resync();
           return;
         }
+        this.observeCanonicalTodoRead(agentId, previousTodo, retry.accepted, pending.cursor);
         if (pending.cursor.seq > cursor.seq) cursor = pending.cursor;
         if (retry.accepted.length > 0) changed = true;
         if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);

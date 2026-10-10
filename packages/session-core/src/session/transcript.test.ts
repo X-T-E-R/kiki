@@ -1718,6 +1718,26 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it.each(['main', 'child'])('keeps %s native todos ahead of external plans without hiding external-only plans (NP-LAST-TODO)', (agentId) => {
+    const store = new AgentTranscript(agentId);
+    const native = { todoId: 'todo', items: [{ title: 'Native task', status: 'pending' as const }], notes: { goal: 'Native notes' } };
+    const external = { todoId: 'external-plan', items: [{ title: 'ACP task', status: 'in_progress' as const }] };
+    const project = () => projectAgentTranscriptView(createViewState('session_test'), agentId, store.snapshot());
+    store.apply([{ op: 'todo.upsert', todo: external }]);
+    expect(project().todos).toEqual(external.items);
+    expect(project().todoNotes).toBeUndefined();
+    store.apply([{ op: 'todo.upsert', todo: { ...external, items: [] } }]);
+    expect(project().todos).toEqual([]);
+    store.apply([{ op: 'todo.upsert', todo: native }, { op: 'todo.upsert', todo: external }]);
+    expect(project()).toMatchObject({ todos: native.items, todoNotes: native.notes });
+    store.apply([{ op: 'todo.upsert', todo: { ...external, items: [] } }]);
+    expect(project()).toMatchObject({ todos: native.items, todoNotes: native.notes });
+    store.apply([{ op: 'todo.upsert', todo: { ...native, items: [] } }, { op: 'todo.upsert', todo: external }]);
+    expect(project()).toMatchObject({ todos: [], todoNotes: native.notes });
+    const reversed = emptySnapshot({ todos: [native, external] });
+    expect(projectAgentTranscriptView(createViewState('session_test'), agentId, reversed).todos).toEqual(native.items);
+  });
+
   it('exposes current agent notes, revision and covered step alongside todos', () => {
     const notesMeta = {
       rev: 3, hash: '1234', writtenTurn: 5, writtenStep: 't5.2',

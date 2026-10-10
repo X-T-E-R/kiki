@@ -134,6 +134,7 @@ export function bindSessionTranscript(
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         tool: (toolCallId) => toolFrameFor(agentId, toolCallId),
         task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
+        todo: (todoId) => store.getAgent(agentId)?.getTodo(todoId),
       });
       wireAdapters.set(agentId, adapter);
     }

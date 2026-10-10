@@ -24,6 +24,7 @@ export interface TranscriptWireAdapterLookups {
     | { readonly turnId: string; readonly stepId: string; readonly frame: ToolCallFrame }
     | undefined;
   readonly task?: (taskId: string) => TranscriptTask | undefined;
+  readonly todo?: (todoId: string) => TranscriptTodo | undefined;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -603,21 +604,23 @@ export class TranscriptWireAdapter {
       return marker === undefined ? [] : [this.marker(record, ordinal, marker)];
     }
     if (record.type === 'tools.update_store' && record['key'] === 'todo') {
+      const previous = this.#todo ?? this.lookups?.todo?.('todo');
       this.#todo = {
+        ...previous,
         todoId: 'todo',
         items: todoItemsOf(record['value']),
-        notes: this.#todo?.notes,
-        notesMeta: this.#todo?.notesMeta,
-        notesStatus: this.#todo?.notesStatus,
+        contentRefs: previous?.contentRefs?.filter((ref) => ref.path[0] !== 'items'),
         updatedAt: isoOf(record.time),
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];
     }
     if (record.type === 'tools.update_store' && record['key'] === 'todo_notes') {
+      const previous = this.#todo ?? this.lookups?.todo?.('todo');
       const value = todoNotesUpdateSchema.safeParse(record['value']);
       if (!value.success) {
         this.#todo = {
-          todoId: 'todo', items: this.#todo?.items ?? [], notes: this.#todo?.notes, notesMeta: this.#todo?.notesMeta,
+          ...previous,
+          todoId: 'todo', items: previous?.items ?? [],
           notesStatus: { state: 'incompatible', wireOrdinal: ordinal, schemaVersion: 1,
             fields: value.error.issues.map((issue) => issue.path.map(String).join('.') || 'value') },
           updatedAt: isoOf(record.time),
@@ -626,9 +629,10 @@ export class TranscriptWireAdapter {
       }
       this.#todo = {
         todoId: 'todo',
-        items: this.#todo?.items ?? [],
+        items: previous?.items ?? [],
         notes: value.data.notes,
         notesMeta: value.data.notesMeta,
+        contentRefs: previous?.contentRefs?.filter((ref) => ref.path[0] === 'items'),
         updatedAt: isoOf(record.time),
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];

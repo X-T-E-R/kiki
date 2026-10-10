@@ -52,7 +52,11 @@ function harness(detail: SessionViewFacade['transcript']['detail'], content?: Se
   const deliver = (event: Parameters<SessionController['handleTranscript']>[0]) => {
     signal!({ type: 'transcript', event, generation: 1 });
   };
-  return { controller, deliver, view };
+  const publish = (event: Parameters<SessionController['handleTranscript']>[0]) => {
+    deliver(event);
+    controller.flushFrames();
+  };
+  return { controller, deliver, publish, view };
 }
 
 const shellOf = (controller: SessionController) =>
@@ -63,6 +67,101 @@ function taskDetail(outputTail: string): SessionViewTranscriptDetail {
 }
 
 describe('SessionController transcript detail', () => {
+  it.each(['main', 'child'] as const)('binds %s todo provenance to adopted notes in both page/live orders (SOL-02)', async (agentId) => {
+    const meta = (rev: number) => ({ rev, hash: `notes-${rev}`, writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 });
+    const partial = { source: 'derived' as const, readiness: 'partial' as const, reason: 'source_unverified' as const,
+      watermark: { transcript: { seq: 4, epoch: 'epoch-canonical' } } };
+    let resolvePage!: (page: Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>) => void;
+    const page = { session_id: 'session_test', agent_id: agentId, kind: 'todo' as const,
+      items: [{ todoId: 'todo', items: [], notes: { goal: 'Partial four' }, notesMeta: meta(4) }], has_more: false, read: partial };
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>(() => new Promise((resolve) => { resolvePage = resolve; }));
+    const { controller, publish: deliver } = harness(undefined, undefined, entities);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('notes-child', agentId, 'delta');
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const live = { todoId: 'todo', items: [], notes: { goal: 'Complete five' }, notesMeta: meta(5) };
+    try {
+      deliver(resetEvent(agentId, emptySnapshot(), 2));
+      const late = controller.loadTranscriptEntities(agentId, 'todo');
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: live }], 5));
+      resolvePage(page);
+      await late;
+      expect(state().todoNotesMeta?.rev).toBe(5);
+      expect(state().todoRead).toMatchObject({ source: 'live', readiness: 'ready', watermark: { transcript: { seq: 5 } } });
+      deliver(resetEvent(agentId, emptySnapshot(), 6));
+      const first = controller.loadTranscriptEntities(agentId, 'todo');
+      resolvePage(page);
+      await first;
+      expect(state().todoRead).toEqual(partial);
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: live }], 7));
+      expect(state().todoNotes).toEqual(live.notes);
+      expect(state().todoRead).toMatchObject({ source: 'live', readiness: 'ready', watermark: { transcript: { seq: 7 } } });
+      expect((agentId === 'main' ? controller.getAgentState('child') : controller.getState()).todoRead).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('does not promote %s incomplete or non-advancing canonical notes (SOL-02)', async (agentId) => {
+    const meta = (rev: number) => ({ rev, hash: `notes-${rev}`, writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 });
+    const read = { source: 'derived' as const, readiness: 'partial' as const, reason: 'source_unverified' as const,
+      watermark: { transcript: { seq: 10, epoch: 'epoch-canonical' } } };
+    const initial = { todoId: 'todo', items: [], notes: { goal: 'Partial four' }, notesMeta: meta(4) };
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>(async () => ({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [initial], has_more: false, read }));
+    const { controller, publish: deliver } = harness(undefined, undefined, entities);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('notes-child', agentId, 'delta');
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      deliver(resetEvent(agentId, emptySnapshot(), 2));
+      await controller.loadTranscriptEntities(agentId, 'todo');
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { ...initial, items: [{ title: 'Checklist only', status: 'done' }] } }], 3));
+      expect(state().todoRead).toEqual(read);
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { ...initial, notesMeta: meta(5) } }], 9));
+      expect(state().todoRead).toEqual(read);
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { todoId: 'todo', items: [], notesMeta: meta(6) } }], 11));
+      expect(state().todoRead?.readiness).toBe('partial');
+      const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'todo', id: 'todo' }, revision: 'notes-7', path: ['notes', 'goal'], kind: 'text', offset: 4, total: 20 };
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { ...initial, notesMeta: meta(7), contentRefs: [ref] } }], 12));
+      expect(state().todoRead?.readiness).toBe('partial');
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { ...initial, notesMeta: meta(8), notesStatus: { state: 'incompatible', wireOrdinal: 13, schemaVersion: 1, fields: ['notes'] } } }], 13));
+      expect(state().todoRead?.readiness).toBe('partial');
+      deliver(opsEvent(agentId, [{ op: 'todo.upsert', todo: { ...initial, notesMeta: meta(9) } }], 14));
+      expect(state().todoRead).toMatchObject({ readiness: 'ready', watermark: { transcript: { seq: 14 } } });
+    } finally { controller.close(); }
+  });
+
+  it.each(['main', 'child'] as const)('adopts only %s newer verified todo entity pages (NP-PAGE-INSERT)', async (agentId) => {
+    const meta = (rev: number) => ({ rev, hash: `notes-${rev}`, writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 });
+    const initial = { todoId: 'todo', items: [], notes: { goal: 'Saved five' }, notesMeta: meta(5) };
+    const fresh = { ...initial, notes: { goal: 'Verified six' }, notesMeta: meta(6) };
+    const ready = { source: 'live' as const, readiness: 'ready' as const, watermark: { transcript: { seq: 5, epoch: 'epoch-canonical' } } };
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>();
+    const { controller, deliver } = harness(undefined, undefined, entities);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('notes-child', agentId, 'delta');
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        const seq = 5 + index;
+        const verified = { ...ready, watermark: { transcript: { seq, epoch: 'epoch-canonical' } } };
+        const read = [undefined, { ...verified, readiness: 'partial' as const }, { ...verified, watermark: { transcript: { seq: seq - 1, epoch: 'epoch-canonical' } } }, verified][index];
+        deliver(resetEvent(agentId, emptySnapshot({ todos: [initial] }), seq));
+        entities.mockResolvedValueOnce({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [fresh], has_more: false, read });
+        await controller.loadTranscriptEntities(agentId, 'todo');
+        expect(state().todoNotesMeta?.rev).toBe(index === 3 ? 6 : 5);
+        expect(state().todoRead).toEqual(index === 3 ? verified : undefined);
+      }
+      deliver(resetEvent(agentId, emptySnapshot(), 10));
+      const partial = { ...ready, readiness: 'partial' as const, watermark: { transcript: { seq: 20, epoch: 'epoch-canonical' } } };
+      entities.mockResolvedValueOnce({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [initial], has_more: true, next_cursor: 'next-todo', read: partial });
+      await controller.loadTranscriptEntities(agentId, 'todo');
+      entities.mockResolvedValueOnce({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [fresh], has_more: false,
+        read: { ...ready, watermark: { transcript: { seq: 11, epoch: 'epoch-canonical' } } } });
+      await controller.loadTranscriptEntities(agentId, 'todo');
+      expect(state().todoNotesMeta?.rev).toBe(5);
+      expect(state().todoRead).toEqual(partial);
+    } finally { controller.close(); }
+  });
+
   it.each(['main', 'child'] as const)('preserves the %s todo entity read source and readiness until its next baseline', async (agentId) => {
     const notes = { goal: 'Retained goal', next: 'Retained next action' };
     const notesMeta = { rev: 4, hash: 'notes-four', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };

@@ -191,6 +191,44 @@ describe('bindSessionTranscript', () => {
     } as unknown as ISessionScopeHandle;
   }
 
+  it.each(['main', 'child'])('preserves %s cold-seeded notes on the first live items-only update (NP-LIVE-FOLD)', (agentId) => {
+    const agents = new FakeAgents();
+    const selected = agents.add(agentId);
+    const otherId = agentId === 'main' ? 'child' : 'main';
+    agents.add(otherId);
+    const store = new TranscriptStore('session_notes');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents), undefined, undefined, true);
+    onTestFinished(() => binding.dispose());
+    const cold = new AgentTranscript(agentId);
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter(agentId);
+    const notes = { goal: 'Cold saved goal', next: 'Continue after attach' };
+    const notesMeta = { rev: 4, hash: 'notes-four', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };
+    for (const record of [
+      { type: 'tools.update_store', key: 'todo_notes', value: { notes, notesMeta }, time: 1000 },
+      { type: 'tools.update_store', key: 'todo', value: [{ title: 'Cold task', status: 'pending' }], time: 1001 },
+    ]) reducer.apply(adapter.add(record));
+    const items = [{ title: 'Live task', status: 'in_progress' }];
+    selected.bus.emit({ type: 'tools.update_store', key: 'todo', value: items, time: 1002 } as unknown as Event2);
+    const transcript = store.ensureAgent(agentId);
+    transcript.apply(cold.snapshot().todos.map((todo) => ({ op: 'todo.upsert' as const, todo })));
+    binding.finishReplay(agentId);
+    expect(transcript.getTodo('todo')).toMatchObject({ items, notes, notesMeta });
+    const projected = projectAgentTranscriptView(createViewState('session_notes'), agentId, transcript.snapshot());
+    expect(projected).toMatchObject({ todos: items, todoNotes: notes, todoNotesMeta: notesMeta });
+    expect(store.getAgent(otherId)?.getTodo('todo')).toBeUndefined();
+    selected.bus.emit({ type: 'tools.update_store', key: 'todo_notes', value: { notes: 42 }, time: 1003 } as unknown as Event2);
+    expect(transcript.getTodo('todo')).toMatchObject({ items, notes, notesMeta, notesStatus: { state: 'incompatible' } });
+    const clearedMeta = { ...notesMeta, rev: 5, hash: 'cleared-five' };
+    selected.bus.emit({ type: 'tools.update_store', key: 'todo_notes', value: { notesMeta: clearedMeta }, time: 1004 } as unknown as Event2);
+    expect(transcript.getTodo('todo')).toMatchObject({ items, notesMeta: clearedMeta });
+    expect(transcript.getTodo('todo')?.notes).toBeUndefined();
+    expect(transcript.getTodo('todo')?.notesStatus).toBeUndefined();
+    selected.bus.emit({ type: 'tools.update_store', key: 'todo', value: [], time: 1005 } as unknown as Event2);
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [], notesMeta: clearedMeta });
+    expect(transcript.getTodo('todo')?.notes).toBeUndefined();
+  });
+
   it.each(['main', 'child'])('keeps %s working notes authoritative through TodoList results and cold replay', (agentId) => {
     const agents = new FakeAgents();
     const selected = agents.add(agentId);

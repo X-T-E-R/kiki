@@ -2993,7 +2993,7 @@ export function projectAgentTranscriptView(
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
     abortableTurnId: runningTurn?.ordinal,
     pendingInteraction,
-    todos: todos.at(-1)?.items ?? [],
+    todos: (agentTodo ?? todos.find((todo) => todo.todoId === 'external-plan'))?.items ?? [],
     todoNotes: agentTodo?.notes,
     todoNotesMeta: agentTodo?.notesMeta,
     todoNotesStatus: agentTodo?.notesStatus,
