@@ -549,6 +549,24 @@ describe('resolveControlledSkillSubmission', () => {
     expect(request?.model).toBeUndefined();
     expect(request?.thinking).toBeUndefined();
   });
+  it.each(['direct', 'compact', 'fresh'] as const)('freezes confirmed %s mode on the actual skill prompt, not a separate control', (modelSwitchMode) => {
+    const request = captureSkillRequest(resolveControlledSkillSubmission({ ...input, modelTouched: true, modelSwitchMode })!);
+    expect(request).toMatchObject({ model: input.model, model_switch_mode: modelSwitchMode, skills: [{ name: input.name }] });
+    const selection = { modelOverride: input.model, modelSwitchMode };
+    const captured = skillControlSelectionKey(selection);
+    expect(skillControlSelectionKey({ ...selection, modelSwitchMode: modelSwitchMode === 'fresh' ? 'direct' : 'fresh' })).not.toBe(captured);
+    const clear = vi.fn();
+    completeSkillControlSelection({ controlled: request, capturedSelection: captured, currentSelection: captured, clear, refresh: vi.fn() });
+    expect(clear).toHaveBeenCalledOnce();
+    expect(request.model_switch_mode).toBe(modelSwitchMode);
+  });
+  it('does not attach a native mode to profile/engine replacement or effort-only controls', () => {
+    for (const selection of [{ pendingProfile: 'review-profile', modelTouched: true },
+      { pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined }, modelTouched: true }, { effortTouched: true }]) {
+      const request = resolveControlledSkillSubmission({ ...input, ...selection, modelSwitchMode: 'compact' });
+      expect(request?.model_switch_mode).toBeUndefined();
+    }
+  });
 });
 
 describe('activateSkillWithConditionalClear', () => {

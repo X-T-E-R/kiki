@@ -30,6 +30,8 @@ Do not manually edit files inside the `sessions/` directory — doing so may pre
 
 In the desktop and browser GUI, the model, effort, workspace, working directory and profile (the agent's configuration file) you pick for a new session can be remembered across navigation and refresh. Turn that on with **Composer → Persist composer drafts** in Settings; turning it off clears what was saved. Drafts in the page you currently have open survive the switch, but the next refresh starts with nothing restored. This is separate from the session files above, which is why the two behave differently.
 
+An existing conversation reopens on its committed model and effort. Old composer display values do not undo a later model switch. A confirmed model choice and its direct, compact or fresh mode stay in the draft through binding refreshes and are applied by the next submitted message; they do not switch the conversation before that message is accepted. A completed model switch remains completed after recovery and needs no retry.
+
 ## Task board
 
 The task board lives behind the fixed button at the bottom of the main agent's right panel. Cards hold requirements and the sessions linked to them; an agent's own todo list stays separate and local to that agent.

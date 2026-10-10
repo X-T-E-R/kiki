@@ -1069,6 +1069,7 @@ export function resolveControlledSkillSubmission(input: Parameters<typeof resolv
   args: string;
   userInput: string;
   attachments: readonly ComposerAttachment[];
+  modelSwitchMode?: ModelSwitchMode;
 }): PromptSubmission | undefined {
   const controls = resolveProfileSwitchSubmission(input);
   if (!input.modelTouched && !input.effortTouched && input.permissionTouched !== true &&
@@ -1082,6 +1083,7 @@ export function resolveControlledSkillSubmission(input: Parameters<typeof resolv
     execution: controls.execution,
     model: controls.model,
     thinking: controls.thinking,
+    model_switch_mode: input.modelTouched && controls.profile === undefined && controls.execution === undefined ? input.modelSwitchMode : undefined,
     permission_mode: controls.permissionMode,
   };
 }
@@ -1090,15 +1092,15 @@ export function captureSkillRequest<T extends object>(request: T): T & { prompt_
   return { ...structuredClone(request), prompt_id: crypto.randomUUID() };
 }
 
-type SkillControlSelection = Pick<ReturnType<typeof readComposerState>, 'modelOverride' | 'effortOverride' | 'modelChoice' | 'effortChoice'> & {
+type SkillControlSelection = Pick<ReturnType<typeof readComposerState>, 'modelOverride' | 'effortOverride' | 'modelChoice' | 'effortChoice' | 'modelSwitchMode'> & {
   readonly pendingProfile?: string;
   readonly pendingExecution?: ExecutionChoice;
   readonly permissionOverride?: PermissionMode;
 };
 
 export function skillControlSelectionKey(input: SkillControlSelection): string {
-  const { pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, permissionOverride } = input;
-  return JSON.stringify({ pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, permissionOverride });
+  const { pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode, permissionOverride } = input;
+  return JSON.stringify({ pendingProfile, pendingExecution, modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode, permissionOverride });
 }
 
 export function completeSkillControlSelection(input: {
@@ -1628,6 +1630,7 @@ export function SessionView({
   const [effortChoice, setEffortChoice] = useState(restoredComposer.effortChoice);
   const [modelTouched, setModelTouched] = useState(restoredComposer.modelChoice !== undefined);
   const [effortTouched, setEffortTouched] = useState(restoredComposer.effortChoice !== undefined);
+  const [modelSwitchMode, setModelSwitchMode] = useState(restoredComposer.modelSwitchMode);
   // Mid-session engine switch, same two-step contract as the profile one: the
   // confirmed pick waits as `pendingExecution` and the next prompt carries it,
   // which starts a fresh remote generation instead of steering the running
@@ -1908,6 +1911,7 @@ export function SessionView({
       effortOverride,
       modelChoice,
       effortChoice,
+      modelSwitchMode,
       execution: pendingExecution,
     });
   }, [
@@ -1923,6 +1927,7 @@ export function SessionView({
     effortOverride,
     modelChoice,
     effortChoice,
+    modelSwitchMode,
     pendingExecution,
   ]);
 
@@ -2112,7 +2117,7 @@ export function SessionView({
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
   const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
   const skillBindingChangeRef = useRef<ComposerModelBindingChange | undefined>(undefined);
-  const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice,
+  const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode,
     conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending,
     binding: { model: sessionModel, thinking: state.thinkingEffort }, acceptedBindingChange: skillBindingChangeRef.current });
   useEffect(() => {
@@ -2191,16 +2196,14 @@ export function SessionView({
           mode: choice.mode,
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
+        modelSwitches.refresh();
       } else {
-        await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
-          operationId: crypto.randomUUID(),
-          model: choice.toModel,
-          mode: choice.mode,
-          selectedFromModel: choice.fromModel,
-        });
+        setModelOverride(choice.toModel);
+        setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
+        setModelTouched(true);
+        setModelSwitchMode(choice.mode);
       }
       setModelSwitchDialog(undefined);
-      modelSwitches.refresh();
     } catch (error) {
       pushToast({
         tone: 'error',
@@ -2232,7 +2235,7 @@ export function SessionView({
         }),
       });
     }
-  }, [client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, t]);
+  }, [client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, sessionModel, state.thinkingEffort, t]);
   // Opens the confirm panel per the effective preference, or accepts straight
   // away when the rule/default says not to ask. `explicitMode` is the user's
   // own choice (the same-model fresh entry), which outranks rule matching.
@@ -2252,23 +2255,30 @@ export function SessionView({
   // touched too — otherwise a bare engine would swallow the user's own pick
   // along with the display value it is withholding.
   const handleModelChange = useCallback((model: string | undefined) => {
-    // An empty conversation has nothing to hand over: the pick rides the next
-    // prompt as before, exactly like a pick made while a profile is pending.
-    if (pendingProfile !== undefined || executionPending || !conversationStarted) {
+    if (model === undefined) {
+      setModelOverride(undefined);
+      setModelChoice(undefined);
+      setModelTouched(false);
+      setModelSwitchMode(undefined);
+      return;
+    }
+    const target = canonicalModel(model);
+    if (target === undefined || (target === currentBoundModel && pendingProfile === undefined && !executionPending)) {
+      setModelOverride(undefined);
+      setModelChoice(undefined);
+      setModelTouched(false);
+      setModelSwitchMode(undefined);
+      return;
+    }
+    if (pendingProfile !== undefined || executionPending || (state.loaded && !sessionHasStartedConversation(state.blocks))) {
       setModelOverride(model);
       setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
       setModelTouched(true);
+      setModelSwitchMode(undefined);
       return;
     }
-    // A live conversation switches the bound model instead: the pick is a
-    // queue control item, so the model on screen stays the actual one.
-    setModelOverride(undefined);
-    setModelChoice(undefined);
-    setModelTouched(false);
-    const target = canonicalModel(model ?? inheritedDefault);
-    if (target === undefined || target === currentBoundModel) return;
     openModelSwitchPanel(target);
-  }, [canonicalModel, conversationStarted, currentBoundModel, inheritedDefault, openModelSwitchPanel, pendingProfile, executionPending, sessionModel, state.thinkingEffort]);
+  }, [canonicalModel, currentBoundModel, executionPending, openModelSwitchPanel, pendingProfile, sessionModel, state.blocks, state.loaded, state.thinkingEffort]);
 
   const runModelSwitchAction = useCallback((
     operationId: string,
@@ -2356,6 +2366,7 @@ export function SessionView({
     setEffortTouched(false);
     setModelChoice(undefined);
     setEffortChoice(undefined);
+    setModelSwitchMode(undefined);
   }, []);
 
   const applyPendingProfile = useCallback((name: string) => {
@@ -2531,7 +2542,7 @@ export function SessionView({
   }, [controller, t, terminalOpen, selectedAgentId, railIsOverlay]);
 
   const skillSelection = skillControlSelectionKey({ pendingProfile, pendingExecution, modelOverride, effortOverride,
-    modelChoice, effortChoice, permissionOverride });
+    modelChoice, effortChoice, modelSwitchMode, permissionOverride });
   const skillSelectionRef = useRef(skillSelection);
   skillSelectionRef.current = skillSelection;
 
@@ -2576,6 +2587,22 @@ export function SessionView({
         // path: a steered message runs inside the ACTIVE turn, which cannot
         // change the binding.
         const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
+        const completeControls = () => completeSkillControlSelection({
+          controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
+            model: profileSwitch.model, thinking: profileSwitch.thinking },
+          capturedSelection: skillSelection,
+          currentSelection: skillSelectionRef.current,
+          binding: { model: sessionModel, thinking: state.thinkingEffort },
+          preserveBindingChange: (change) => { skillBindingChangeRef.current = change; },
+          clear: () => {
+            setPendingProfile(undefined);
+            setPendingExecution(undefined);
+            setModelOverride(undefined);
+            setEffortOverride(undefined);
+            clearTouchedControls();
+          },
+          refresh: () => { void controller.refreshSession(); },
+        });
         if (options?.now === true && !rebindsAgent) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
@@ -2588,12 +2615,14 @@ export function SessionView({
               content,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
+              modelSwitchMode: modelControlTouched ? modelSwitchMode : undefined,
               permissionMode: profileSwitch.permissionMode,
               planMode,
               planGate,
             })
             .then((result) => {
               setQuote(null);
+              completeControls();
               if (result.outcome === 'queued') {
                 // The turn ended while it was on the way: it runs next, from
                 // the queue — say so instead of letting it look lost.
@@ -2640,6 +2669,7 @@ export function SessionView({
           execution: profileSwitch.execution,
           model: profileSwitch.model,
           thinking: profileSwitch.thinking,
+          modelSwitchMode: modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
           permissionMode: profileSwitch.permissionMode,
           planMode,
           planGate,
@@ -2681,14 +2711,7 @@ export function SessionView({
                 });
               });
             }
-            if (rebindsAgent) {
-              setPendingProfile(undefined);
-              setPendingExecution(undefined);
-              clearTouchedControls();
-              // No WS frame carries the binding — re-read the record so the
-              // chip shows the new engine and profile immediately.
-              void controller.refreshSession();
-            }
+            completeControls();
           })
           .catch((error: unknown) => {
             setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
@@ -2710,16 +2733,6 @@ export function SessionView({
                 },
               },
             });
-            // Only a definitive server-side business rejection (e.g.
-            // route-locked) drops the pending pick; a network failure or
-            // timeout keeps the selection and the draft for a manual retry.
-            if (
-              profileSwitch.profile !== undefined &&
-              shouldClearPendingProfileOnSendError(error)
-            ) {
-              setPendingProfile(undefined);
-              clearTouchedControls();
-            }
           })
           .finally(() => {
             pendingSendRef.current = false;
@@ -2755,6 +2768,7 @@ export function SessionView({
           modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
           effortTouched: effortTouched && composerSelection.effortChoice === effortChoice,
           model: effectiveModel, thinking: effectiveEffort,
+          modelSwitchMode,
           permissionTouched: permissionTouchedRef.current,
           permissionMode: permissionOverride ?? state.permissionMode,
         });
@@ -2780,7 +2794,7 @@ export function SessionView({
                 await controller.sendPrompt({ promptId: controlled.prompt_id, text: submitted.draft,
                   content: controlled.content, skills: controlled.skills, profile: controlled.profile,
                   execution: controlled.execution, model: controlled.model, thinking: controlled.thinking,
-                  permissionMode: controlled.permission_mode });
+                  modelSwitchMode: controlled.model_switch_mode, permissionMode: controlled.permission_mode });
                 completeSkillControlSelection({ controlled, capturedSelection: skillSelection,
                   currentSelection: skillSelectionRef.current, binding: { model: sessionModel, thinking: state.thinkingEffort },
                   preserveBindingChange: (change) => { skillBindingChangeRef.current = change; },
