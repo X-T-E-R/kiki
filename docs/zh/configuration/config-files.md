@@ -672,6 +672,19 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 每个条目通过 `type`（`agent-browser-profile` 或 `agent-browser-cdp`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
 
+## `computer_control`
+
+`computer_control` 保存模型选择电脑工具时的软倾向。可在[电脑控制](../guides/settings.md#电脑控制)中编辑，也可写入 `config.toml`：
+
+```toml
+[computer_control]
+usage_preference = "avoid"
+```
+
+`usage_preference` 可设为 `"avoid"`（默认）或 `"prefer"`。`"avoid"` 提示模型：除非用户或用户规则明确要求，否则一般不用电脑控制，优先已有 CLI、API、MCP、短脚本及浏览器专用能力。`"prefer"` 偏好用电脑控制处理适合的交互任务。两种倾向都以用户当前明确要求、正确性、工具可用性与权限规则为先。改动在下次模型请求生效，无需重连，也不会安装组件；删除字段会恢复继承。
+
+已识别的 cua-driver MCP 电脑工具默认向每个会话的 main agent 暴露，独立会话也有自己的 main agent。子 Agent 需要在 profile、route 或派发的工具选择、`[subagent].allowed_tools` 或 `[tools].enabled` 中显式指定 MCP 工具模式。安装所得连接可用 `mcp__kiki-computer__*` 开启；仅有 `tools: ["*"]` 不算明确开启。现有允许范围上限、deny 规则和已停用连接继续生效。输入结果未知的调用不会重放：先重连并观察，再决定下一步操作。
+
 ## `nb_search`
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。

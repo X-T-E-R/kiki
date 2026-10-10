@@ -1,9 +1,10 @@
 /**
- * Settings → 电脑控制. Three flat blocks in the order a person decides:
+ * Settings → 电脑控制. Four flat blocks in the order a person decides:
  *
  *   A  which server this drives (its real platform/arch) and a re-check
  *   B  whether the open-source executor is installed, with the install plan
- *   C  the existing computer MCP connections — list, then one editor
+ *   C  model usage preference (avoid vs prefer)
+ *   D  the existing computer MCP connections — list, then one editor
  *
  * Nothing here is predicted: the machine line is the connected server's own
  * `platform`/`arch`, the readiness line is the capability service's state, and
@@ -12,10 +13,16 @@
  * a claim that the desktop is being controlled or that it is idle.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import {
+  computerControlPreference,
+  computerControlPreferencePatch,
+} from '@kiki/session-core/settings';
+
+type ComputerUsagePreference = ReturnType<typeof computerControlPreference>;
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -25,10 +32,25 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
+import {
+  SettingsDraftFooter,
+  SettingsSegmented,
+  type SettingsChoice,
+} from './SettingsPrimitives';
+import { useSavedTick } from './useSavedTick';
 import { ComputerConnectionCard } from './computerControl/ComputerConnectionCard';
 import { platformDisplay } from './computerControl/computerMcp';
 
 const CAPABILITY_ID = 'kiki-computer';
+
+const PREFERENCE_SOURCE_KEYS: Readonly<Record<string, I18nKey>> = {
+  default: 'st.computer.source.default',
+  preset: 'st.computer.source.preset',
+  base: 'st.computer.source.base',
+  home: 'st.computer.source.home',
+  env: 'st.computer.source.env',
+  memory: 'st.computer.source.memory',
+};
 
 /**
  * Step ids the capability reports, in the state words the capability UIs
@@ -65,6 +87,90 @@ export function ComputerControlSection() {
     queryFn: () => client.getCapability(CAPABILITY_ID),
     refetchInterval: (result) => result.state.data?.install.running === true ? 1_000 : false,
   });
+  const configQuery = useQuery({
+    queryKey: ['config', scopeId],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+  });
+
+  const effectivePreference = configQuery.data !== undefined
+    ? computerControlPreference(configQuery.data)
+    : 'avoid';
+  const preferenceSource = configQuery.data?.computer_control?.usagePreferenceSource ?? 'default';
+  const isOverriddenByHigherSource = preferenceSource === 'env' || preferenceSource === 'memory';
+
+  const [draftPreference, setDraftPreference] = useState<ComputerUsagePreference | null>(null);
+  const [preferenceSaving, setPreferenceSaving] = useState(false);
+  const [preferenceFeedback, setPreferenceFeedback] = useState<Feedback>(null);
+  const [preferenceSaved, pingPreferenceSaved] = useSavedTick();
+  const [savedGeneration, setSavedGeneration] = useState(0);
+  const scopeGenerationRef = useRef(0);
+  const nextPreferenceRequestRef = useRef(0);
+  const latestPreferenceRequestsRef = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    scopeGenerationRef.current += 1;
+    setDraftPreference(null);
+    setPreferenceSaving(false);
+    setPreferenceFeedback(null);
+    return () => { scopeGenerationRef.current += 1; };
+  }, [scopeId]);
+
+  const isPreferenceSaved = preferenceSaved && savedGeneration === scopeGenerationRef.current;
+  const activePreference = draftPreference ?? effectivePreference;
+  const isPreferenceDirty = !isOverriddenByHigherSource && draftPreference !== null && draftPreference !== effectivePreference;
+
+  const persistPreference = async (targetPreference: ComputerUsagePreference | null) => {
+    const targetScopeId = scopeId;
+    const requestGen = scopeGenerationRef.current;
+    const requestId = ++nextPreferenceRequestRef.current;
+    latestPreferenceRequestsRef.current.set(targetScopeId, requestId);
+    const queryKey = ['config', targetScopeId] as const;
+    const dataUpdateCount = queryClient.getQueryState(queryKey)?.dataUpdateCount ?? 0;
+    const isLatestRequest = () => latestPreferenceRequestsRef.current.get(targetScopeId) === requestId;
+    const ownsCurrentUi = () => isLatestRequest() && scopeGenerationRef.current === requestGen;
+
+    setPreferenceSaving(true);
+    setPreferenceFeedback(null);
+    try {
+      const echoed = await client.patchConfig(computerControlPreferencePatch(targetPreference));
+      if (!isLatestRequest() || (queryClient.getQueryState(queryKey)?.dataUpdateCount ?? 0) !== dataUpdateCount) return;
+      queryClient.setQueryData(queryKey, echoed);
+      if (ownsCurrentUi()) {
+        setDraftPreference(null);
+        setSavedGeneration(requestGen);
+        pingPreferenceSaved();
+      }
+    } catch (error) {
+      if (ownsCurrentUi()) {
+        setPreferenceFeedback({ tone: 'error', text: errorText(locale, error) });
+      }
+    } finally {
+      if (ownsCurrentUi()) {
+        setPreferenceSaving(false);
+      }
+    }
+  };
+
+  const savePreference = async () => {
+    if (draftPreference === null || draftPreference === effectivePreference || isOverriddenByHigherSource || preferenceSaving) return;
+    await persistPreference(draftPreference);
+  };
+
+  const discardPreference = () => {
+    setDraftPreference(null);
+    setPreferenceFeedback(null);
+  };
+
+  const resetToInherited = async () => {
+    if (isOverriddenByHigherSource || preferenceSaving) return;
+    await persistPreference(null);
+  };
+
+  const preferenceChoices: readonly SettingsChoice<ComputerUsagePreference>[] = [
+    { value: 'avoid', label: t('st.computer.preference.avoid') },
+    { value: 'prefer', label: t('st.computer.preference.prefer') },
+  ];
 
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -214,7 +320,92 @@ export function ComputerControlSection() {
         </div>
       </SectionCard>
 
-      {/* C / D / E — the connections themselves */}
+      {/* C — model usage guidance preference */}
+      <SectionCard id="st-card-computer-preference" title={t('st.computer.preferenceTitle')}>
+        <div className="space-y-3">
+          {configQuery.isPending && configQuery.data === undefined ? (
+            <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-preference-state="loading">
+              <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+              {t('st.computer.preferenceLoading')}
+            </p>
+          ) : configQuery.isError && configQuery.data === undefined ? (
+            <div className="space-y-2" data-computer-preference-state="failed">
+              <p className="text-[12px] text-danger" role="alert">{t('st.computer.preferenceLoadFailed')}</p>
+              <InlineError error={configQuery.error} />
+              <button type="button" className={SECONDARY_BUTTON} data-computer-preference-retry
+                onClick={() => { void configQuery.refetch(); }}>
+                {t('common.retry')}
+              </button>
+            </div>
+          ) : (
+            <>
+              <SettingField
+                label={t('st.computer.preferenceLabel')}
+                labelId="computer-preference-label"
+                help={t('st.computer.preferenceHint')}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <SettingsSegmented
+                    choices={preferenceChoices}
+                    value={activePreference}
+                    onChange={(next) => {
+                      setPreferenceFeedback(null);
+                      setDraftPreference(next === effectivePreference ? null : next);
+                    }}
+                    disabled={isOverriddenByHigherSource || preferenceSaving}
+                    ariaLabelledBy="computer-preference-label"
+                    dataAttr="data-computer-preference-choice"
+                  />
+                  <span
+                    className="inline-flex items-center rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] text-ink-soft"
+                    data-computer-preference-source={preferenceSource}
+                  >
+                    {t('st.computer.sourceTag', {
+                      source: t(PREFERENCE_SOURCE_KEYS[preferenceSource] ?? 'st.computer.source.default'),
+                    })}
+                  </span>
+                  {preferenceSource === 'home' && !isOverriddenByHigherSource ? (
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON}
+                      data-computer-preference-reset
+                      disabled={preferenceSaving}
+                      onClick={() => { void resetToInherited(); }}
+                    >
+                      {t('st.computer.restoreInherit')}
+                    </button>
+                  ) : null}
+                </div>
+              </SettingField>
+
+              {isOverriddenByHigherSource ? (
+                <p className="text-[12px] text-ink-soft" data-computer-preference-override-notice>
+                  {t('st.computer.sourceOverridden', {
+                    source: t(PREFERENCE_SOURCE_KEYS[preferenceSource] ?? 'st.computer.source.default'),
+                  })}
+                </p>
+              ) : null}
+
+              {configQuery.isError && configQuery.data !== undefined ? (
+                <InlineError error={configQuery.error} />
+              ) : null}
+
+              <FeedbackLine feedback={preferenceFeedback} />
+
+              <SettingsDraftFooter
+                id="computer-preference"
+                dirty={isPreferenceDirty}
+                saving={preferenceSaving}
+                saved={isPreferenceSaved}
+                onSave={() => { void savePreference(); }}
+                onDiscard={discardPreference}
+              />
+            </>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* D — the connections themselves */}
       <SectionCard id="st-card-computer-mcp" title={t('st.computer.connectionsTitle')}>
         <div className="space-y-3">
           <Hint>{t('st.computer.connectionsHint')}</Hint>

@@ -94,11 +94,13 @@ Browser control is off by default. Turn on `native_browser` under **Settings →
 
 ## Computer control
 
-**Settings → Computer control** drives the desktop of the machine running the Kiki server, through a pinned open-source executor. Nothing is installed or configured by default, so the page starts empty.
+**Settings → Computer control** brings together the connected machine, executor installation, model usage preference, and computer MCP connections. Desktop actions run on the machine hosting the Kiki server, through a pinned open-source executor; nothing is installed or connected automatically.
+
+**Model usage preference** defaults to **Avoid**: models generally avoid computer control unless you or your rules explicitly request it, and prefer existing CLI, API, MCP, short-script, and browser-specific capabilities. **Prefer** favors computer control for suitable interactive tasks. Both choices respect your current explicit instructions, tool availability, correctness, and permissions. Saving changes guidance on the next model request, not tool permissions or installation. The source tag shows the effective configuration layer; **Restore inherited** removes this server's override and adopts the inherited value, which can also be **Prefer**. A failed save keeps your draft.
 
 **Install executor** downloads and verifies that release, then registers a global MCP connection named `kiki-computer` (the driver's path plus `mcp` arguments). **Installed** means the files verified — it does not check that anything can actually be controlled, and it does not touch the desktop. The page names the machine that would be driven: **Kiki server** is the connected server, so over a remote or SSH connection the desktop is that host's own graphical session.
 
-The agent drives it with the executor's own tools, through the existing MCP mechanism and permissions — see [MCP](../server/mcp.md). The pinned Windows executor watches the primary display and cannot pick a different one. On macOS the desktop permission travels in the calling process, so grant it where the driver reports it missing.
+The main agent of each session uses the executor's own tools through the existing [MCP](../server/mcp.md) mechanism and permissions. Children need an explicit computer-tool opt-in; the usage preference does not enable their tools. See [`computer_control`](../configuration/config-files.md#computer-control) for the field and tool-selection rules. The pinned Windows executor watches the primary display and cannot pick a different one. On macOS the desktop permission travels in the calling process, so grant it where the driver reports it missing.
 
 **Stop control** ends the cua processes this service started and disables an editable connection's configuration. Another client or another Kiki instance may still be driving that desktop.
 

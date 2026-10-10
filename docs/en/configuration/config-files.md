@@ -686,6 +686,19 @@ Any registered flag can be overridden here by id, with a boolean value. A flag t
 
 Each entry describes one connection through its `type` (`agent-browser-profile` or `agent-browser-cdp`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
 
+## `computer_control`
+
+`computer_control` stores the model's soft preference for computer tools. Edit it in [Computer control](../guides/settings.md#computer-control), or set it in `config.toml`:
+
+```toml
+[computer_control]
+usage_preference = "avoid"
+```
+
+`usage_preference` accepts `"avoid"` (default) or `"prefer"`. `"avoid"` tells models generally not to use computer control unless the user or the user's rules explicitly request it, preferring existing CLI, API, MCP, short-script, and browser-specific capabilities. `"prefer"` favors computer control for suitable interactive tasks. Current explicit user instructions, correctness, availability, and permission rules take priority in both modes. Changes apply on the next model request without reconnecting or installing anything; removing the field restores inheritance.
+
+Computer tools from the recognized cua-driver MCP default to the main agent of each session, including an independent session. Children require explicit MCP tool patterns in their profile, route, or dispatch tool selection, `[subagent].allowed_tools`, or `[tools].enabled`. For the installed connection, `mcp__kiki-computer__*` opts in; a blanket `tools: ["*"]` does not. All existing allow ceilings, deny rules, and disabled connections still apply. A call with an unknown input outcome is not replayed: reconnect and observe before another action.
+
 ## `nb_search`
 
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
