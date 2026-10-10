@@ -110,6 +110,10 @@ describe('plugin session focus', () => {
     expect(pluginFocusSameIdentity(undefined, { homeId: 'space-b', requestId: 1 })).toBe(false);
   });
 
+  it('does not match an ack when the armed focus is the null initial value', () => {
+    expect(pluginFocusSameIdentity(null, { homeId: 'space-a', requestId: 1 })).toBe(false);
+  });
+
   it('does not publish a request that was only recorded', () => {
     const step = pluginFocusStep({
       request: { id: 7, sessionId: 'session-a' },

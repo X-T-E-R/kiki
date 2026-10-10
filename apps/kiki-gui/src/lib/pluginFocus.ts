@@ -109,10 +109,11 @@ export function desktopPluginFocusHandoff(value: unknown): DesktopPluginFocusHan
 
 /** An ack clears pending focus only when it names that same home and request. */
 export function pluginFocusSameIdentity(
-  pending: PluginFocusIdentity | undefined,
+  pending: PluginFocusIdentity | null | undefined,
   ack: PluginFocusIdentity,
 ): boolean {
-  return pending !== undefined && pending.homeId === ack.homeId && pending.requestId === ack.requestId;
+  if (pending === undefined || pending === null) return false;
+  return pending.homeId === ack.homeId && pending.requestId === ack.requestId;
 }
 
 /** Recording an id stays on this page. A focus that changes the desktop is shared for that home. */
