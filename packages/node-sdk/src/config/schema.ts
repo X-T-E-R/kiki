@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { parsePattern } from '@kiki/agent-core-v2';
 import { OAuthRefSchema } from '@kiki/agent-core-v2/kosong/provider/oauthRef';
 import { CognitionConfigSchema } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
-import { interactionConfigSchema, interactionConfigCamelPatchSchema, modelBehaviorConfigSchema } from '@kiki/protocol';
+import { interactionConfigSchema, interactionConfigCamelPatchSchema, modelBehaviorConfigSchema, modelProtocolSchema } from '@kiki/protocol';
 import { HOOK_EVENT_TYPES } from '@kiki/agent-core-v2/features/externalHooks/internal/types';
 import {
   builtInProviderRegistrations,
@@ -59,7 +59,7 @@ const ModelAliasBaseSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   displayName: z.string().optional(),
   reasoningKey: z.string().optional(),
-  protocol: z.literal('anthropic').optional(),
+  protocol: modelProtocolSchema.optional(),
   // Explicitly declare adaptive-thinking support, overriding the kosong
   // model-name version inference. Needed for custom-named Anthropic endpoints
   // whose model name does not encode a parseable Claude version.

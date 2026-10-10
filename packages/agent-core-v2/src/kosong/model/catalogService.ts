@@ -2,6 +2,7 @@ import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHea
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
+import { resolveModelProtocol } from './modelProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -10,7 +11,6 @@ import type { ProviderRequestAuth } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import {
   IProtocolAdapterRegistry,
-  ProtocolSchema,
   type Protocol,
   type ProtocolProviderOptions,
 } from '#/kosong/protocol/protocol';
@@ -559,29 +559,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     provider: ProviderConfig | undefined,
     trace: ResolutionTraceCollector,
   ): Protocol {
-    if (model.protocol !== undefined) {
-      trace.record('resolved.protocol', { kind: 'config', detail: 'model.protocol' });
-      return model.protocol;
-    }
-    const providerType = provider?.type;
-    if (providerType !== undefined) {
-      const asProtocol = ProtocolSchema.safeParse(providerType);
-      if (asProtocol.success) {
-        trace.record('resolved.protocol', {
-          kind: 'config',
-          detail: `provider type '${providerType}' is itself a wire protocol`,
-        });
-        return asProtocol.data;
-      }
-      const definition = getProviderDefinition(providerType);
-      if (definition !== undefined) {
-        trace.record('resolved.protocol', {
-          kind: 'builtin',
-          detail: `vendor '${providerType}' declared baseProtocol`,
-        });
-        return definition.baseProtocol;
-      }
-    }
+    const protocol = resolveModelProtocol(model, provider, trace);
+    if (protocol !== undefined) return protocol;
     throw new Error2(
       CONFIG_INVALID_ERROR_CODE,
       `Model "${id}" must declare a wire protocol (config: models.<id>.protocol).`,

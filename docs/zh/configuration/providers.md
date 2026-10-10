@@ -4,7 +4,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 
 ## 支持的供应商类型
 
-`providers` 表里的 `type` 字段决定使用哪种协议实现：
+`providers` 表里的 `type` 字段设置默认请求格式（API 请求体和端点），单个模型可通过 `protocol` 覆盖：
 
 | 类型 | 协议 | 典型用途 |
 | --- | --- | --- |
@@ -18,6 +18,31 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 所有供应商默认以流式方式与模型交互。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常不需要手动声明。
 
 **凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 两者都缺时启动报错。两者都从配置文件读取——`credentials.toml` 覆盖 `config.toml`——CLI 不会从 shell 环境变量自动取凭证。详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+
+### 模型请求格式覆盖
+
+同一网关下的某个模型需要不同 API 时，在模型上设置 `protocol`。可选值为 `openai`（Chat Completions）、`openai_responses`（Responses）、`anthropic`（Messages）和 `google-genai`（Google GenAI）。不填则继承供应商默认格式；删除此字段即可恢复继承。`kimi` 和 `vertexai` 是供应商类型，不是模型协议值。
+
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://example.com/v1"
+
+[models.chat]
+provider = "gateway"
+model = "remote-chat"
+max_context_size = 128000
+
+[models.responses]
+provider = "gateway"
+model = "remote-responses"
+max_context_size = 128000
+protocol = "openai_responses"
+```
+
+将示例地址和远端模型 ID 替换为实际服务的值。两个模型共用网关凭据。覆盖只改变 API 请求体和路径，不改变供应商、默认模型、请求身份或主／子智能体使用参数。端点必须支持所选 API；若请求被拒绝，改用服务支持的格式或删除覆盖。Kiki 不会静默尝试另一种协议。
+
+[模型 REST API](../server/rest-api.md#模型与供应商) 分别返回已保存的 `protocol` 和求解后的请求格式 `effective_protocol`。保存格式不会测试连接是否可用。
 
 ## `/provider` — 交互式供应商管理
 

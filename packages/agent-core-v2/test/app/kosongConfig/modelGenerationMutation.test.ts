@@ -20,6 +20,87 @@ import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
 
 describe('generation parameter entity mutations', () => {
+  it('persists model protocol overrides, clears to provider inheritance and preserves connection and usage identity', async () => {
+    const storage = new InMemoryStorageService();
+    const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', `default_model="fast"
+default_provider="edge"
+[providers.edge]
+type="openai"
+api_key="fixture-key"
+base_url="https://example.test/v1"
+default_model="fast"
+[providers.edge.request_identity]
+preset="none"
+[models.fast]
+provider="edge"
+model="remote-fast"
+max_context_size=8192
+recipe="recipe-example"
+[models.fast.parameters]
+service_tier={kind="api_default"}
+[models.fast.usage.main]
+thinking_effort="high"
+[models.fast.usage.independent]
+thinking_effort="off"
+[models.fast.request_identity]
+preset="none"
+[models.sibling]
+provider="edge"
+model="remote-other"
+max_context_size=8192
+`);
+    const host = () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog()); ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+      ix.stub(IFileSystemStorageService, storage); ix.stub(IAtomicTomlDocumentStore, store); ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry)); ix.set(IConfigService, new SyncDescriptor(ConfigService)); ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+      return ix;
+    };
+    const first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const config = first.get(IConfigService);
+      const original = await catalog.readModel('fast');
+      const providers = structuredClone(config.get(PROVIDERS_SECTION));
+      const sibling = await catalog.readModel('sibling');
+      expect(original.protocol).toBeUndefined();
+      expect(original.effective_protocol).toBe('openai');
+      const changed = await catalog.updateModel('fast', { base_revision: original.revision, protocol: 'openai_responses' });
+      expect(changed).toMatchObject({ protocol: 'openai_responses', effective_protocol: 'openai_responses', provider_id: 'edge', remote_id: 'remote-fast', recipe: 'recipe-example' });
+      expect(changed.parameters).toEqual(original.parameters);
+      expect(changed.usage).toEqual(original.usage);
+      expect(changed.request_identity).toEqual(original.request_identity);
+      expect(config.get(PROVIDERS_SECTION)).toEqual(providers);
+      expect(await catalog.readModel('sibling')).toEqual(sibling);
+      expect(config.get('defaultModel')).toBe('fast');
+      expect(config.get('defaultProvider')).toBe('edge');
+      expect((await catalog.updateModel('fast', { display_name: 'Renamed' })).protocol).toBe('openai_responses');
+      await expect(catalog.updateModel('fast', { base_revision: original.revision, protocol: 'anthropic' })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      const before = await store.getText('', 'config.toml');
+      for (const protocol of ['', 'messages', 'kimi', 'codex_compatible']) {
+        await expect(catalog.updateModel('fast', JSON.parse(JSON.stringify({ protocol })))).rejects.toMatchObject({ code: 'config.invalid' });
+      }
+      expect(await store.getText('', 'config.toml')).toBe(before);
+    } finally { await first.dispose(); }
+    const cold = host();
+    try {
+      const catalog = cold.get(IModelCatalogMutationService);
+      expect((await catalog.readModel('fast')).effective_protocol).toBe('openai_responses');
+      const cleared = await catalog.updateModel('fast', { protocol: null });
+      expect(cleared.protocol).toBeUndefined();
+      expect(cleared.effective_protocol).toBe('openai');
+      await cold.get(IConfigService).reload();
+      expect((await catalog.readModel('fast')).protocol).toBeUndefined();
+      expect((await store.getText('', 'config.toml'))).not.toContain('protocol =');
+      const created = await catalog.createModel({ id: 'messages', provider_id: 'edge', remote_id: 'remote-messages', protocol: 'anthropic', max_context_size: 8192 });
+      expect(created).toMatchObject({ protocol: 'anthropic', effective_protocol: 'anthropic' });
+      const inherited = await catalog.createModel({ id: 'inherit', provider_id: 'edge', remote_id: 'remote-inherit', max_context_size: 8192 });
+      expect(inherited.protocol).toBeUndefined(); expect(inherited.effective_protocol).toBe('openai');
+      await catalog.createProvider({ id: 'other-edge', type: 'openai', models: [{ remote_id: 'remote-nested', protocol: 'openai_responses' }] });
+      expect((await catalog.readModel('other-edge/remote-nested')).effective_protocol).toBe('openai_responses');
+    } finally { await cold.dispose(); }
+  });
   it('persists typed Kiki question behavior independently of generation and usage, then cold-reads and clears sparsely', async () => {
     const storage = new InMemoryStorageService(); const store = new TomlAtomicDocumentStore(storage);
     await store.setText('', 'config.toml', '[providers.edge]\ntype="openai"\n[models.fast]\nprovider="edge"\nmodel="remote-fast"\nmax_context_size=8192\n[models.fast.parameters]\nthinking_effort="medium"\n[models.fast.usage.main]\nthinking_effort="high"\n');

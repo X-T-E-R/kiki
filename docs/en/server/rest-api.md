@@ -141,17 +141,24 @@ The `hooks` value accepts a legacy command-rule array or a declarative object wi
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/models` | List configured model aliases |
+| `GET /api/models` | List configured model aliases, including saved and effective request formats |
+| `POST /api/models` | Create a model bound to an existing provider (201) |
+| `GET /api/models/{model_id}` | Read a model, its effective settings, and revision |
+| `PATCH /api/models/{model_id}` | Change only the supplied model fields |
 | `POST /api/models/{model_id}:set_default` | Set the global default model |
 | `GET /api/providers` | List providers |
 | `POST /api/providers` | Create a provider (201) |
 | `GET /api/providers/{provider_id}` | Read a provider (reveals the stored key) |
-| `PUT /api/providers/{provider_id}` | Replace a provider |
+| `PATCH /api/providers/{provider_id}` | Change only the supplied provider fields |
 | `DELETE /api/providers/{provider_id}` | Delete a provider (204) |
 | `POST /api/providers/{provider_id}:refresh` | Refresh one provider's model metadata |
 | `POST /api/providers:{action}` | Collection actions: `refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |
 | `GET /api/catalog/providers` | Browse the models.dev directory (server-proxied) |
 | `GET /api/catalog/providers/{catalog_id}` | Read one directory entry |
+
+Model creation accepts an optional `protocol`: `openai`, `openai_responses`, `anthropic`, or `google-genai`. PATCH accepts the same values; omitted `protocol` leaves the model unchanged, and `"protocol": null` clears the local override. Include `base_revision` from the model read to reject concurrent changes without writing. Invalid protocol values return `config.invalid` (business code `40001`) without changing configuration.
+
+Model reads expose the saved `protocol` and resolved `effective_protocol` separately. An absent saved value inherits the provider's default format; an absent effective value in the list means no usable requester was materialized. Changing a model's protocol does not write the provider connection, credentials, request identity, or default pointers. See [model request format overrides](../configuration/providers.md#model-request-format-overrides) for configuration examples and endpoint compatibility.
 
 ### Local executor sessions
 

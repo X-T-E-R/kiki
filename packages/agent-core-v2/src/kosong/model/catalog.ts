@@ -5,7 +5,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
-import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protocol';
+import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
 import { explainProviderEndpoint } from '../provider/providerDefinition';
@@ -101,6 +101,8 @@ export const modelCatalogItemSchema = z.object({
   auto_compact: z.number().int().positive().safe().optional(),
   capabilities: z.array(z.string()).optional(),
   effective_capabilities: z.array(z.string()).optional(),
+  protocol: ProtocolSchema.optional(),
+  effective_protocol: ProtocolSchema.optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
@@ -172,6 +174,8 @@ export function toProtocolModel(
   if (model.alwaysThinking) effectiveCapabilities.push('always_thinking');
   return {
     id: model.id,
+    protocol: record.protocol,
+    effective_protocol: model.protocol,
     provider_id: model.providerName,
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
@@ -202,6 +206,8 @@ export function toProtocolModelFallback(
   const remoteId = effective.name ?? effective.model ?? modelId;
   return {
     id: modelId,
+    protocol: record.protocol,
+    effective_protocol: undefined,
     provider_id: effective.provider ?? effective.providerId ?? '',
     remote_id: remoteId,
     display_name: effective.displayName ?? remoteId,

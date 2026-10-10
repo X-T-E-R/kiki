@@ -141,17 +141,24 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/models` | 列出已配置的模型别名 |
+| `GET /api/models` | 列出已配置的模型别名及已存／生效请求格式 |
+| `POST /api/models` | 创建绑定到已有供应商的模型（201） |
+| `GET /api/models/{model_id}` | 读取模型、生效设置和 revision |
+| `PATCH /api/models/{model_id}` | 只修改提供的模型字段 |
 | `POST /api/models/{model_id}:set_default` | 设置全局默认模型 |
 | `GET /api/providers` | 列出供应商 |
 | `POST /api/providers` | 创建供应商（201） |
 | `GET /api/providers/{provider_id}` | 读取供应商（含已存密钥） |
-| `PUT /api/providers/{provider_id}` | 整体替换供应商配置 |
+| `PATCH /api/providers/{provider_id}` | 只修改提供的供应商字段 |
 | `DELETE /api/providers/{provider_id}` | 删除供应商（204） |
 | `POST /api/providers/{provider_id}:refresh` | 刷新该供应商的模型元数据 |
 | `POST /api/providers:{action}` | 集合级动作：`refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |
 | `GET /api/catalog/providers` | 浏览 models.dev 目录（服务端代理） |
 | `GET /api/catalog/providers/{catalog_id}` | 读取目录中单个条目 |
+
+创建模型时可选填 `protocol`：`openai`、`openai_responses`、`anthropic` 或 `google-genai`。PATCH 接受相同值；省略 `protocol` 保持原值，`"protocol": null` 清除本地覆盖。带上模型读取结果中的 `base_revision`，可在并发修改时拒绝写入。非法协议值返回 `config.invalid`（业务错误码 `40001`），不改变配置。
+
+模型读取分别返回已保存的 `protocol` 和求解后的 `effective_protocol`。已存值缺省表示继承供应商默认格式；列表中生效值缺省表示未能构建可用 requester。修改模型协议不会写供应商连接、凭据、请求身份或默认指针。配置示例和端点兼容要求见[模型请求格式覆盖](../configuration/providers.md#模型请求格式覆盖)。
 
 ### 本机执行器会话
 

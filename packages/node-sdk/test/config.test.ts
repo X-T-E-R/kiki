@@ -161,6 +161,15 @@ describe('resolveModelAlias', () => {
 });
 
 describe('SDK config TOML', () => {
+  it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('round-trips model protocol %s without changing its provider', async (protocol) => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);
+    expect(config.models?.['example']?.protocol).toBe(protocol);
+    await writeConfigFile(path, config);
+    const saved = await readConfigFile(path);
+    expect(saved.models?.['example']?.protocol).toBe(protocol);
+    expect(saved.providers?.['edge']?.type).toBe('openai');
+  });
   it('round-trips global and model question frequency behavior with explicit false and snake-case keys', async () => {
     expect(KimiConfigPatchSchema.parse({ interaction: { askUserQuestionGuard: { enabled: true } } }).interaction).toEqual({ askUserQuestionGuard: { enabled: true } });
     const path = join(await makeTempDir(), 'config.toml');

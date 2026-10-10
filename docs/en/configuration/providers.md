@@ -4,7 +4,7 @@ Kiki can connect to multiple model providers at once. An API key is the most gen
 
 ## Supported provider types
 
-The `type` field in the `providers` table determines which protocol implementation to use:
+The `type` field in the `providers` table sets the default request format (the API payload and endpoint), which individual models can override with `protocol`:
 
 | Type | Protocol | Typical use |
 | --- | --- | --- |
@@ -18,6 +18,31 @@ The `type` field in the `providers` table determines which protocol implementati
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
 **Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > if both are absent, startup fails with an error. Both are read from the config files — `credentials.toml` overlays `config.toml` — and the CLI does not fall back to shell environment variables for credentials. See [Config overrides: provider credentials](./overrides.md#provider-credentials).
+
+### Model request format overrides
+
+Set `protocol` on a model when a shared gateway requires a different API for that model. Accepted values are `openai` (Chat Completions), `openai_responses` (Responses), `anthropic` (Messages), and `google-genai` (Google GenAI). Omit it to inherit the provider's default; remove the field to return to inheritance. `kimi` and `vertexai` are provider types, not model protocol values.
+
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://example.com/v1"
+
+[models.chat]
+provider = "gateway"
+model = "remote-chat"
+max_context_size = 128000
+
+[models.responses]
+provider = "gateway"
+model = "remote-responses"
+max_context_size = 128000
+protocol = "openai_responses"
+```
+
+Replace the example endpoint and remote IDs with your service's values. Both models reuse the gateway's credentials. The override changes the API payload and path, not the provider, default model, request identity, or main/subagent usage settings. The endpoint must support the selected API; if it rejects the request, choose a supported format or remove the override. Kiki does not silently try another protocol.
+
+The [model REST API](../server/rest-api.md#models-and-providers) reports the saved `protocol` separately from `effective_protocol`, the resolved request format. Saving a format does not test connectivity.
 
 ## `/provider` — interactive provider management
 

@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
 export * from './questionGuard';
 
+/** API payload and transport protocol, independent of request identity. */
+export const modelProtocolSchema = z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
+export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
+
 export const providerCatalogStatusSchema = z.enum([
   'connected',
   'error',
@@ -193,6 +197,8 @@ export const modelCatalogItemSchema = z.object({
   auto_compact: z.number().int().positive().safe().optional(),
   capabilities: z.array(z.string()).optional(),
   effective_capabilities: z.array(z.string()).optional(),
+  protocol: modelProtocolSchema.optional(),
+  effective_protocol: modelProtocolSchema.optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
@@ -384,7 +390,8 @@ export const modelEntitySchema = z.object({
   cognition: modelCognitionSchema.optional(),
   prompt_overrides: modelPromptOverridesSchema.optional(),
   overrides: modelOverridesSchema.optional(),
-  protocol: z.string().min(1).optional(),
+  protocol: modelProtocolSchema.optional(),
+  effective_protocol: modelProtocolSchema.optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
   issues: z.array(modelIssueSchema),
@@ -402,6 +409,7 @@ export const patchModelRequestSchema = z
   .object({
     base_revision: z.string().min(1).optional(),
     remote_id: z.string().min(1).optional(),
+    protocol: modelProtocolSchema.nullable().optional(),
     pricing_model: z.string().trim().min(1).nullable().optional(),
     display_name: z.string().min(1).nullable().optional(),
     max_context_size: z.number().int().min(1).nullable().optional(),
@@ -440,6 +448,7 @@ export const createModelRequestSchema = z
     id: z.string().min(1).optional(),
     provider_id: z.string().min(1),
     remote_id: z.string().min(1),
+    protocol: modelProtocolSchema.optional(),
     pricing_model: z.string().trim().min(1).optional(),
     display_name: z.string().min(1).optional(),
     max_context_size: z.number().int().min(1).optional(),
@@ -514,6 +523,7 @@ const modelDraftSchema = z.object({
 });
 
 export const createProviderModelSchema = modelDraftSchema.extend({
+  protocol: modelProtocolSchema.optional(),
   auto_compact: createModelRequestSchema.shape.auto_compact,
   behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),

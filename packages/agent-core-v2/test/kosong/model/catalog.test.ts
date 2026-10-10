@@ -120,6 +120,87 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('routes sibling model protocol overrides through real SDK payloads, streams and errors without changing the provider', async () => {
+    const provider = { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key', requestIdentity: { preset: 'none' as const } };
+    const common = { provider: 'edge', model: 'gpt-5', maxContextSize: 8192, capabilities: ['thinking', 'tool_use'], supportEfforts: ['high'], adaptiveThinking: true };
+    const records: ModelsSection = {
+      chat: { ...common }, responses: { ...common, protocol: 'openai_responses' }, messages: { ...common, protocol: 'anthropic' },
+    };
+    const { host, catalog, models, providers } = createHost({ providers: { edge: provider }, models: records, defaultModel: 'chat', defaultProvider: 'edge' });
+    const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let fail = false;
+    const sse = (events: Array<Record<string, unknown>>) => new Response(events.map((event) => `event: ${event['type']}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    const sink = vi.fn(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const request = new Request(input, init);
+      const body = await request.json() as Record<string, unknown>;
+      captured.push({ url: request.url, body });
+      expect(request.method).toBe('POST');
+      expect(request.headers.get(request.url.endsWith('/messages') ? 'x-api-key' : 'authorization')).toBe(request.url.endsWith('/messages') ? 'fixture-key' : 'Bearer fixture-key');
+      expect(body).toMatchObject({ model: 'gpt-5', stream: true });
+      expect(body['requestIdentity']).toBeUndefined(); expect(body['protocol']).toBeUndefined();
+      if (fail) return new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'This endpoint does not support the selected protocol' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      if (request.url.endsWith('/chat/completions')) {
+        expect(body['messages']).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user' })]));
+        expect(body['input']).toBeUndefined();
+        expect(body['tools']).toEqual([expect.objectContaining({ type: 'function', function: expect.objectContaining({ name: 'lookup' }) })]);
+        expect(body['reasoning_effort']).toBe('high');
+        return new Response('data: {"id":"chat-example","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      if (request.url.endsWith('/responses')) {
+        expect(body['input']).toEqual(expect.any(Array)); expect(body['messages']).toBeUndefined();
+        expect(body['tools']).toEqual([expect.objectContaining({ type: 'function', name: 'lookup' })]);
+        expect(body['reasoning']).toMatchObject({ effort: 'high' });
+        return sse([
+          { type: 'response.output_text.delta', delta: 'Hello' },
+          { type: 'response.completed', response: { id: 'response-example', status: 'completed', usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 } } },
+        ]);
+      }
+      expect(request.url).toBe('https://example.test/v1/messages');
+      expect(body['system']).toBeDefined(); expect(body['input']).toBeUndefined();
+      expect(body['tools']).toEqual([expect.objectContaining({ name: 'lookup', input_schema: expect.any(Object) })]);
+      expect(body['thinking']).toMatchObject({ type: 'adaptive' }); expect(body['output_config']).toMatchObject({ effort: 'high' });
+      return sse([
+        { type: 'message_start', message: { id: 'message-example', type: 'message', role: 'assistant', model: 'gpt-5', content: [], usage: { input_tokens: 3, output_tokens: 0 } } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
+        { type: 'message_stop' },
+      ]);
+    });
+    vi.stubGlobal('fetch', sink);
+    const request = async (id: string) => {
+      const events = [];
+      for await (const event of catalog.getRequester(id).request({ systemPrompt: 'System example', tools: [{ name: 'lookup', description: 'Look up a value', parameters: { type: 'object', properties: {} } }], messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], toolCalls: [] }] }, undefined, { thinkingEffort: 'high', maxCompletionTokens: 64, attribution: { logicalRequestId: 'fixture-request', sessionId: 'fixture-session', agentId: 'main', purpose: 'test', waitBudget: { waitedMs: 0 } } })) events.push(event);
+      return events;
+    };
+    try {
+      for (const id of ['chat', 'responses', 'messages']) {
+        const events = await request(id);
+        expect(events).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'part', part: { type: 'text', text: 'Hello' } }),
+          expect.objectContaining({ type: 'usage', usage: { inputOther: 3, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } }),
+          expect.objectContaining({ type: 'finish', providerFinishReason: 'completed' }),
+        ]));
+        expect(catalog.get(id).capabilities).toMatchObject({ thinking: true, tool_use: true });
+      }
+      expect(captured.map((call) => call.url)).toEqual(['https://example.test/v1/chat/completions', 'https://example.test/v1/responses', 'https://example.test/v1/messages']);
+      const items = await catalog.listModels();
+      expect(items.find((item) => item.id === 'chat')).toMatchObject({ effective_protocol: 'openai' });
+      expect(items.find((item) => item.id === 'chat')?.protocol).toBeUndefined();
+      expect(items.find((item) => item.id === 'responses')).toMatchObject({ protocol: 'openai_responses', effective_protocol: 'openai_responses' });
+      expect(catalog.inspect('responses').resolved.protocol).toBe('openai_responses');
+      expect(providers.get('edge')).toEqual(provider); expect(models.getDefaultModel()).toBe('chat');
+      fail = true;
+      for (const id of ['chat', 'responses', 'messages']) {
+        const count = captured.length;
+        await expect(request(id)).rejects.toMatchObject({ statusCode: 400 });
+        expect(captured.length).toBe(count + 1);
+      }
+      models.loadAll({ ...records, responses: { ...common } }, 'chat');
+      expect(catalog.get('responses').protocol).toBe('openai');
+    } finally { vi.unstubAllGlobals(); await host.dispose(); }
+  });
   it('projects Kiki question behavior in catalog but never into provider creation or generation requests', async () => {
     const record: ModelRecord = { provider: 'edge', model: 'remote', maxContextSize: 8192, behavior: { askUserQuestionGuard: { enabled: true, maxPerWindow: 4 } }, parameters: { temperature: 0 } };
     const { host, catalog } = createHost({ providers: { edge: { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'test-token' } }, models: { fast: record } });

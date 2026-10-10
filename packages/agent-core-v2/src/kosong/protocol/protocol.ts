@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { modelProtocolSchema, type ModelProtocol } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -7,14 +7,9 @@ import type { ChatProvider } from '#/kosong/contract/provider';
 
 import type { ProtocolBaseId, ResolvedAdapterIdentity } from './protocolBase';
 
-export const ProtocolSchema = z.enum([
-  'anthropic',
-  'openai',
-  'openai_responses',
-  'google-genai',
-]);
+export const ProtocolSchema = modelProtocolSchema;
 
-export type Protocol = z.infer<typeof ProtocolSchema>;
+export type Protocol = ModelProtocol;
 
 export interface ProtocolProviderOptions {
   readonly reasoningKey?: string;

@@ -34,9 +34,8 @@ import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
-import { ProtocolSchema } from '#/kosong/protocol/protocol';
+import { resolveModelProtocol } from '#/kosong/model/modelProtocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
-import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import {
   requestIdentityFromWire,
@@ -150,11 +149,7 @@ function resolveProviderRef(
 }
 
 function hasResolvableProtocol(record: ModelRecord, provider: ProviderConfig | undefined): boolean {
-  if (record.protocol !== undefined) return true;
-  const type = provider?.type;
-  if (type === undefined) return false;
-  if (ProtocolSchema.safeParse(type).success) return true;
-  return getProviderDefinition(type) !== undefined;
+  return resolveModelProtocol(record, provider) !== undefined;
 }
 
 function modelIssues(
@@ -273,6 +268,7 @@ function modelEntity(
     prompt_overrides: record.promptOverrides as ModelEntity['prompt_overrides'],
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
+    effective_protocol: resolveModelProtocol(record, providers[ref.providerId]),
     base_url: record.baseUrl,
     revision: revisionOf(record),
     issues: modelIssues(record, providers, ref),
@@ -385,6 +381,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('offEffort', patch.off_effort);
   setOrClear('contextBudget', patch.context_budget);
   setOrClear('requestParams', patch.request_params);
+  setOrClear('protocol', patch.protocol);
   setOrClear('promptOverrides', patch.prompt_overrides);
   setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : cognitionFromToml(patch.cognition));
   setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
@@ -598,6 +595,7 @@ export class ModelCatalogMutationService
         assertTokenBudget('max_context_size', request.max_context_size);
       }
       const record: ModelRecord = { provider: providerId, model: request.remote_id, pricingModel: request.pricing_model };
+      if (request.protocol !== undefined) record.protocol = request.protocol;
       if (request.display_name !== undefined) record.displayName = request.display_name;
       if (request.max_context_size !== undefined) record.maxContextSize = request.max_context_size;
       if (request.max_input_size !== undefined) record.maxInputSize = request.max_input_size;
@@ -719,7 +717,7 @@ export class ModelCatalogMutationService
         if (entry.max_context_size !== undefined) {
           assertTokenBudget('max_context_size', entry.max_context_size);
         }
-        const record: ModelRecord = { provider: id, model: entry.remote_id };
+        const record: ModelRecord = { provider: id, model: entry.remote_id, protocol: entry.protocol };
         if (entry.display_name !== undefined) record.displayName = entry.display_name;
         if (entry.max_context_size !== undefined) record.maxContextSize = entry.max_context_size;
         if (entry.auto_compact !== undefined) record.autoCompact = entry.auto_compact;
