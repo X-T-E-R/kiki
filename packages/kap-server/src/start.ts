@@ -144,6 +144,10 @@ import {
   drainModelPricingDisposals,
   IModelPricingService,
 } from './pricing/modelPricingService';
+import { ExternalClientHost } from './externalClients/host';
+import { NativeExternalClientListenerManager } from './externalClients/listenerManager';
+import { registerExternalClientRoutes } from './externalClients/routes';
+import { EXTERNAL_CLIENT_FLAG_ID } from './externalClients/flag';
 import { UsageExportRuntime } from './usage/export/runtime';
 import { registerUsageExportRoutes } from './routes/usageExport';
 import { registerProviderQuotaRoutes } from './routes/providerQuota';
@@ -394,6 +398,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
   await core.accessor.get(IModelPricingService).ready;
   const usageExport = core.accessor.get(IFlagService).enabled('usage_export') ? new UsageExportRuntime(core, homeDir) : undefined;
+  const externalClients = new ExternalClientHost(core);
+  const externalClientListener = new NativeExternalClientListenerManager(externalClients);
+  if (core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID)) {
+    await externalClients.initialize();
+    await externalClientListener.initialize();
+  }
 
   const runPostListenWarmup = async (): Promise<void> => {
     try {
@@ -484,7 +494,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export)(?:\/|$)/.test(path);
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {
@@ -536,6 +546,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (authMonitor !== undefined) clearInterval(authMonitor);
     const closeErrors: unknown[] = [];
     try { await web.close(); } catch (error) { closeErrors.push(error); }
+    try { await externalClientListener.close(); await externalClients.close(); } catch (error) { closeErrors.push(error); }
     try {
       leaseRegistry.dispose();
     } catch (error) {
@@ -765,6 +776,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   await registerOpenApi();
+  await app.register(async api => registerExternalClientRoutes(api, externalClients, externalClientListener,
+    () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID), transcriptService), { prefix: '/api' });
 
   await registerApiV1Routes(app, core, {
     serverVersion,
@@ -779,6 +792,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableTerminals,
     guiStore,
     notifications,
+    externalClients: core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID) ? externalClients : undefined,
     themesDir: join(homeDir, 'themes'),
     pluginBridgeServerToken: () => authTokenService.getToken(),
     pluginMarketplaceUrl: () =>

@@ -14,6 +14,7 @@ import { Event2, type SerializedEvent2 } from '#/app/event/event2';
 import type { ContentPart } from '#/kosong/contract/message';
 import { defineState } from '#/state/state';
 
+import { ExternalActivity, ExternalText } from '#/agent/execution/externalClientEvents';
 import type { TurnInterruptReason } from './turnEvents';
 
 export interface TurnModelState {
@@ -133,6 +134,8 @@ export const turnKey = defineState(
     if (!isUndoAnchorOrigin(e.origin)) return next;
     return { ...next, anchorTurnIds: [...s.anchorTurnIds, turnId] };
   })
+  .on(ExternalActivity, (s, e) => advanceTurnClock(s, Math.max(s.nextTurnId, e.turnId + 1)))
+  .on(ExternalText, () => {})
   .on(TurnSteer, () => {})
   .on(ContextUndo, (s, e) => {
     const firstRemoved = s.anchorTurnIds[s.anchorTurnIds.length - e.count];

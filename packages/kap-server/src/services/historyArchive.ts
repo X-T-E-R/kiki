@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 
 import {
   IHistoryArchive,
+  ISessionIndex,
   IThreadCommunicationService,
   type HistoryHit,
   type HistorySearchPage,
@@ -37,7 +38,7 @@ interface FallbackInput {
   readonly query: string;
   readonly mode?: 'auto' | 'all' | 'any' | 'terms' | 'literal';
   readonly includeToolOutput?: boolean;
-  readonly role?: 'user' | 'assistant' | 'tool';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'record';
   readonly after?: number;
   readonly before?: number;
   readonly sort?: 'relevance' | 'newest' | 'oldest';
@@ -76,6 +77,15 @@ function fallbackHits(
   const includeToolOutput = input.includeToolOutput === true || input.role === 'tool';
   const hits: HistoryHit[] = [];
   for (const item of snapshot.items) {
+    if(item.kind==='marker'&&item.marker==='external.text'&&(input.role===undefined||input.role==='record')) {
+      const record=item.payload as {text?:string;turnId?:number}|undefined;
+      const time=item.at===undefined?undefined:Date.parse(item.at);
+      if((input.after===undefined||time!==undefined&&time>=input.after)&&(input.before===undefined||time!==undefined&&time<input.before)&&typeof record?.text==='string') {
+        const match=matchHistoryText(record.text,plan);
+        if(match!==undefined) hits.push({sessionId:input.sessionId!,agentId:input.agentId!,role:'record',turn:record.turnId,time,
+          matched:match.matched,snippet:makeSnippet(record.text,match.matched[0]??input.query)});
+      }
+    }
     if (item.kind !== 'turn') continue;
     const time = item.startedAt === undefined ? undefined : Date.parse(item.startedAt);
     if (input.after !== undefined && (time === undefined || time < input.after)) continue;
@@ -339,13 +349,16 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
       const toolOutputScope = includeToolOutput === true || role === 'tool';
-      if (peer === true) return peerSearch(getCore().accessor.get(IThreadCommunicationService), {
+      if (peer === true && role !== 'record') return peerSearch(getCore().accessor.get(IThreadCommunicationService), {
         query, mode, workspaceId, sessionId, role, after, before, pageSize, pageToken, signal,
       });
       let unavailablePage: HistorySearchPage | undefined;
-      const indexedPhrases = source !== 'transcript' && sessionId === undefined &&
+      const summary=sessionId===undefined?undefined:await getCore().accessor.get(ISessionIndex).get(sessionId);
+      const externalMaterials=summary?.custom?.['externalClient']!==undefined||summary?.custom?.['externalSource']!==undefined;
+      const useIndex=source!=='transcript'&&role!=='record'&&!externalMaterials;
+      const indexedPhrases = useIndex && sessionId === undefined &&
         (mode === 'auto' || mode === 'all' || mode === 'any');
-      if (source !== 'transcript' && (indexedPhrases || mode === 'terms' || mode === 'literal')) {
+      if (useIndex && (indexedPhrases || mode === 'terms' || mode === 'literal')) {
         try {
           const page = await getCore().accessor.get(IGlobalSearchService).search({
             query, mode: indexedPhrases ? 'terms' : mode as 'terms' | 'literal',
@@ -391,15 +404,13 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       if (!isPlainAgentId(agentId)) throw new Error('Invalid agent id.');
       const transcript = getTranscript();
       const store = transcript.forSessionLive(sessionId);
-      let turn: TranscriptTurn | undefined;
-      if (store !== undefined) {
-        const projection = await transcript.ensureAgentHistory(sessionId, agentId);
-        turn = projection?.snapshot().items.find(
-          (item): item is TranscriptTurn => item.kind === 'turn' && item.ordinal === ordinal,
-        );
-      }
+      let snapshot: AgentTranscriptSnapshot | undefined;
+      if (store !== undefined) snapshot = (await transcript.ensureAgentHistory(sessionId, agentId))?.snapshot();
+      let turn = snapshot?.items.find(
+        (item): item is TranscriptTurn => item.kind === 'turn' && item.ordinal === ordinal,
+      );
       if (turn === undefined) {
-        const snapshot = await transcript.readColdSnapshot(sessionId, agentId);
+        snapshot = await transcript.readColdSnapshot(sessionId, agentId);
         turn = snapshot?.items.find(
           (item): item is TranscriptTurn => item.kind === 'turn' && item.ordinal === ordinal,
         );
@@ -411,7 +422,9 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
         turn: turn.ordinal,
         state: turn.state,
         origin: turn.origin,
-        ...(stepId === undefined ? { user: turn.prompt } : {}),
+        user: stepId === undefined ? turn.prompt : undefined,
+        records: snapshot?.items.filter(item=>item.kind==='marker'&&item.marker==='external.text'&&
+          (item.payload as {turnId?:number}|undefined)?.turnId===ordinal).map(item=>item.kind==='marker'?item.payload:undefined),
         steps: steps.map((step) => ({
           step_id: step.stepId,
           frames: step.frames.filter((frame) => frame.kind === 'text' || frame.kind === 'tool').map((frame) =>

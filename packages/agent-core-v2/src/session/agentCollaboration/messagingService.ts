@@ -22,7 +22,7 @@ import {
   ISessionDispatchService,
   type DispatchChild,
 } from '#/session/dispatch/dispatch';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { AgentRunRequest } from '#/session/subagent/subagent';
 
@@ -298,6 +298,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       loopStatus.hasPendingRequests ||
       prompts.pending.length > 0
     ) return false;
+    if (isExternalClientMain(await this.metadata.read(), handle.id)) return false;
     return this.startWake(handle, message, idleWake, sourceAgentId, child);
   }
 

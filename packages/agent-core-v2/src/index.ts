@@ -761,6 +761,8 @@ import '#/agent/modelSwitch/modelSwitchService';
 export * from '#/agent/execution/execution';
 export * from '#/agent/execution/executionService';
 export * from '#/agent/execution/externalExecutorOps';
+export * from '#/agent/execution/externalClientEvents';
+export * from '#/agent/execution/externalClientRecorder';
 export * from '#/agent/execution/externalTurnRecorder';
 export * from '#/agent/execution/acpAgentExecutorSession';
 export * from '#/agent/execution/acpAgentExecutorProvider';

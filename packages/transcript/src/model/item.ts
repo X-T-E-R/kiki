@@ -23,6 +23,7 @@ export const KNOWN_MARKERS = [
   'notice',
   'hook',
   'model.switch',
+  'external.text',
 ] as const;
 
 /**

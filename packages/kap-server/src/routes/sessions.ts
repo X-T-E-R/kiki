@@ -276,6 +276,7 @@ export function registerSessionsRoutes(
   broadcaster: SessionEventBroadcaster | undefined,
   onWorkspaceServed: ((workspace: string) => void | Promise<void>) | undefined,
   leaseRegistry: LeaseRegistry,
+  externalClients?: import('../externalClients/host').ExternalClientHost,
 ): void {
   registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
@@ -368,7 +369,17 @@ export function registerSessionsRoutes(
       let sessionCreated = false;
       let worktreeId: string | undefined;
       let createdSessionId: string | undefined;
+      let externalConnectionId: string | undefined;
       try {
+        const externalMark = body.metadata?.['externalClient'];
+        if (externalMark !== undefined) {
+          if (externalClients === undefined || externalMark === null || typeof externalMark !== 'object'
+            || !('driver' in externalMark) || externalMark.driver !== 'external'
+            || !('connectionId' in externalMark) || typeof externalMark.connectionId !== 'string') {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an available external client connection.');
+          }
+          externalConnectionId = externalMark.connectionId;
+        }
         const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
         if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
@@ -408,6 +419,15 @@ export function registerSessionsRoutes(
             workDir = worktree.path;
           } finally { lease.dispose(); }
         }
+        if (externalConnectionId !== undefined) {
+          createdSessionId ??= `session_${randomUUID()}`;
+          await externalClients!.prepareOwnerSession(externalConnectionId, createdSessionId, workDir,
+            body.agent_config?.permission_mode ?? 'manual',
+            body.agent_config?.profile ?? body.agent_config?.execution?.profile,
+            body.agent_config?.execution?.profile_file).catch((error: unknown) => {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
+            });
+        }
         const handle = await core.accessor.get(ISessionManager).create({
           workspaceId: touched.id,
           workDir,
@@ -418,8 +438,10 @@ export function registerSessionsRoutes(
             worktreeId: worktree.id, branch: worktree.branch,
             sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
           },
-          mainAgentBinding:
-            body.persona === undefined
+          mainAgentBinding: externalConnectionId !== undefined
+            ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
+                execution: body.agent_config?.execution }
+            : body.persona === undefined
               && body.agent_config?.model === undefined
               && body.agent_config?.profile === undefined
               && body.agent_config?.thinking === undefined
@@ -452,7 +474,14 @@ export function registerSessionsRoutes(
         ) {
           await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
         }
-        if (body.metadata !== undefined) await handle.accessor.get(ISessionMetadata).update({ custom: body.metadata });
+        if (body.metadata !== undefined) {
+          const metadata = handle.accessor.get(ISessionMetadata);
+          const current = externalConnectionId === undefined ? undefined : await metadata.read();
+          const custom = externalConnectionId === undefined ? body.metadata : {
+            ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
+          };
+          await metadata.update({ custom });
+        }
         if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
           await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
             requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
@@ -471,6 +500,9 @@ export function registerSessionsRoutes(
         );
         reply.send(okEnvelope(session, req.id));
       } catch (error) {
+        if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
+          externalClients?.cancelPreparedSession(createdSessionId);
+        }
         if (worktreeId !== undefined) {
           if (sessionCreated && createdSessionId !== undefined) {
             await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {

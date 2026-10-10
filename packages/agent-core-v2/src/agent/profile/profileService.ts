@@ -229,6 +229,16 @@ function describeInactiveToolPattern(
 
 export const PLUGIN_SECTIONS_MAX_BYTES = 64 * 1024;
 
+export const EXTERNAL_DRIVER_CAPABILITY: ModelCapability = Object.freeze({
+  image_in: true,
+  video_in: false,
+  audio_in: false,
+  thinking: false,
+  tool_use: true,
+  max_context_tokens: 0,
+  max_input_tokens: 0,
+});
+
 const NATIVE_SSH_SYSTEM_PROMPT =
   'SSH tools can target a configured remote host with the host argument or an ssh://host/path URI. ' +
   'Use host: "local" to explicitly target this machine. Remote hosts have independent filesystems and permission rules. ' +
@@ -460,6 +470,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
     void this.dispatcher.dispatch(
       new ProfileBind({
+        driver: snapshot.driver,
         execution: snapshot.execution,
         toolOverride: snapshot.toolOverride,
         memoryReadContext: snapshot.memoryReadContext,
@@ -523,6 +534,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
     await this.catalog.ready;
     await this.identity.resolved();
+    if (input.driver === 'external') {
+      await this.bindExternalDriver(input, assertCurrent);
+      return;
+    }
     if (input.execution !== undefined) {
       await this.bindExecution(input.execution, input, assertCurrent);
       return;
@@ -969,6 +984,88 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.cognitionRevision = cognition.revision;
     this.promptFieldSnapshot = fields;
     this.boundPromptDiagnostics = diagnostics;
+  }
+
+  private async bindExternalDriver(input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
+    const persona = input.personaSnapshot ?? await this.loadPersonaSnapshot(input.persona);
+    const selectedProfileName = input.profile ?? input.execution?.profile ?? persona?.definition.profile;
+    const resolvedProfile = input.execution?.profile_file === undefined ? input.resolvedProfile
+      : await this.resolveFile(input.execution.profile_file);
+    const selection = resolvedProfile !== undefined
+      ? {
+          profile: input.resolvedRoute?.effectiveProfile ?? resolvedProfile,
+          baseProfile: resolvedProfile,
+          route: input.resolvedRoute,
+        }
+      : input.route === undefined && (selectedProfileName === DEFAULT_AGENT_PROFILE_NAME ||
+          selectedProfileName === undefined)
+        ? (() => {
+            const base = this.catalog.getDefault();
+            return { profile: base, baseProfile: base, route: undefined };
+          })()
+        : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
+    const profile = selection.profile;
+    const executionRestriction = this.profileState.executionRestriction ?? input.executionRestriction;
+    const allowParentNotify = input.allowParentNotify ?? this.profileState.allowParentNotify ?? profile.allowParentNotify;
+    const toolOverride = mergeToolBindingOverride(this.profileState.toolOverride, input.toolOverride);
+    await this.sessionToolPolicy.ready;
+    const renderProfile = { ...profile, ...effectiveToolBinding(profile, toolOverride, profile as BoundProfile) };
+    assertCurrent?.();
+    this.activeProfile = profile;
+    this.activeProfileDefinitionId = selection.baseProfile.definitionId;
+    this.activeToolNamesOverlay = undefined;
+    this.personaSnapshot = persona;
+    this.promptFieldSnapshot = { values: {}, fields: [] };
+    this.promptConfigurationSignature = undefined;
+    this.cognitionBinding = undefined;
+    this.boundPromptDiagnostics = undefined;
+    this.memorySnapshot.configurePersona(this.profileState.memoryReadContext ?? memoryPersonaContext(persona));
+    await this.dispatcher.dispatch(new ProfileBind({
+      driver: 'external',
+      toolOverride,
+      memoryReadContext: input.memoryReadContext ?? this.profileState.memoryReadContext,
+      executionRestriction,
+      allowParentNotify,
+      personaId: persona?.definition.id,
+      personaRevision: persona?.revision,
+      personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
+        profile: input.profile ?? input.route,
+        model: input.model,
+        thinking: input.thinking,
+      },
+      persona,
+      roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
+      modelAlias: undefined,
+      profileName: selection.baseProfile.name,
+      profileDefinitionId: selection.baseProfile.definitionId,
+      thinkingEffort: 'off' as ThinkingEffort,
+      thinkingEffortAdjusted: undefined,
+      systemPrompt: '',
+      environmentDisclosure: undefined,
+      agentsMdPaths: [],
+      activeToolNames: renderProfile.tools,
+      toolAllowPolicies: renderProfile.toolAllowPolicies,
+      disallowedTools: renderProfile.disallowedTools ?? [],
+      disabledToolGroups: renderProfile.disabledToolGroups,
+      canSpawnSubagents: renderProfile.canSpawnSubagents,
+      allowedSubagents: renderProfile.allowedSubagents,
+      preferredSubagents: renderProfile.preferredSubagents,
+      denySubagents: renderProfile.denySubagents,
+      subagentLeases: renderProfile.subagentLeases,
+      dispatchDecision: input.dispatchDecision,
+      spawnPolicy: input.spawnPolicy,
+      appliedLease: input.lease,
+      boundProfile: freezeBoundProfile(renderProfile),
+    }));
+    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
+    this.afterConfigDispatch({
+      modelAlias: undefined,
+      profileName: selection.baseProfile.name,
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      agentsMdPaths: [],
+    });
+    await this.syncBindingMetadata();
   }
 
   private async bindExternal(
@@ -2277,6 +2374,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
     const toolPolicy = effectiveToolBinding(toolPolicyBase, this.profileState.toolOverride, this.profileState.boundProfile);
     return {
+      driver: this.profileState.driver,
       toolOverride: this.profileState.toolOverride,
       toolPolicyBase,
       memoryReadContext: this.profileState.memoryReadContext,
@@ -2293,8 +2391,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,
       execution: this.profileState.execution,
-      executorId: this.profileState.executorId ?? 'native',
-      executorProtocol: this.profileState.executorProtocol ?? 'native',
+      executorId: this.profileState.driver === 'external' ? undefined : this.profileState.executorId ?? 'native',
+      executorProtocol: this.profileState.driver === 'external' ? undefined : this.profileState.executorProtocol ?? 'native',
       executorOptions:
         this.profileState.executorOptions === undefined
           ? undefined
@@ -2432,6 +2530,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getModelCapabilities(): ModelCapability {
+    if (this.profileState.driver === 'external') return EXTERNAL_DRIVER_CAPABILITY;
     if (this.isExternalExecutor) return UNKNOWN_CAPABILITY;
     const model = this.tryResolveRawModel();
     if (model === undefined) return UNKNOWN_CAPABILITY;
@@ -2446,6 +2545,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getModelProviderType(alias?: string): string | undefined {
+    if (this.profileState.driver === 'external') return undefined;
     const effective = alias ?? this.modelAlias ?? this.config.get<string>('defaultModel');
     return this.resolveModelForThinking(effective)?.providerType;
   }
@@ -2463,10 +2563,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   isRunnable(): boolean {
+    if (this.profileState.driver === 'external') return false;
     return (this.profileName !== undefined || this.profileState.execution !== undefined) && (this.isExternalExecutor || this.hasModel());
   }
 
   hasProvider(): boolean {
+    if (this.profileState.driver === 'external') return false;
     if (this.isExternalExecutor) {
       return this.executors.provider(this.profileState.executorProtocol!) !== undefined;
     }
@@ -2818,7 +2920,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private get isExternalExecutor(): boolean {
-    return this.profileState.executorId !== undefined && this.profileState.executorId !== 'native';
+    return this.profileState.driver === 'external' ||
+      (this.profileState.executorId !== undefined && this.profileState.executorId !== 'native');
   }
 
   private requireValidBinding(result: ExecutorValidationResult): ExecutorBinding {

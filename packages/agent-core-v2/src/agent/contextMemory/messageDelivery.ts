@@ -45,6 +45,8 @@ export function deliveryOriginOf(origin: PromptOrigin | undefined): MessageDeliv
     case 'cron_missed':
     case 'shell_command':
     case 'hook_result':
+    case 'external_client':
+    case 'external_record':
     case 'compaction_summary':
       return 'queue';
   }

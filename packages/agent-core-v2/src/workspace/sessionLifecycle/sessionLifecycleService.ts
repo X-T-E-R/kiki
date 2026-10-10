@@ -57,7 +57,7 @@ import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity'
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
-import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { externalClientMetaOf, ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
@@ -94,6 +94,7 @@ import { IWorkspaceDirs } from '#/workspace/workspaceDirs/workspaceDirs';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { externalAcpForkRecords } from './internal/externalFork';
+import { externalMaterialForkRecords } from './internal/externalMaterialFork';
 import { IWorkspaceSkillCatalog } from '#/workspace/workspaceSkillCatalog/workspaceSkillCatalog';
 import { IWorkspaceInstructionsService } from '#/workspace/workspaceInstructions/workspaceInstructions';
 import { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp';
@@ -925,6 +926,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     if (sourceHandle !== undefined) {
       for (const agent of sourceHandle.accessor.get(IAgentLifecycleService).list()) {
+        if (opts.externalMaterialOnly === true && agent.id !== MAIN_AGENT_ID) continue;
         if (agent.accessor.get(IAgentActivityView).state().turn !== undefined) {
           throw new Error2(
             ErrorCodes.SESSION_FORK_ACTIVE_TURN,
@@ -956,6 +958,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           'A Session with an external delegation root cannot be forked.',
         );
       }
+      if (opts.externalMaterialOnly === true && externalClientMetaOf(sourceMeta ?? {}) === undefined) {
+        throw new Error2(
+          ErrorCodes.REQUEST_INVALID,
+          'externalMaterialOnly requires an external-client source session.',
+        );
+      }
 
       targetId = opts.newSessionId ?? createSessionId();
       await this.assertNewSession(targetId);
@@ -982,6 +990,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         sessionDirOf(this.bootstrap.homeDir, this.handlerScope, sourceId),
         targetSessionDir,
       );
+      if (opts.externalMaterialOnly === true) {
+        await this.pruneExternalMaterialForkFiles(targetSessionDir);
+      }
 
       target = await this.materializeSession({
         sessionId: targetId,
@@ -991,7 +1002,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const targetMeta = target.accessor.get(ISessionMetadata);
 
       const sourceAgents = sourceMeta?.agents ?? {};
-      const agentIds = Object.keys(sourceAgents);
+      const agentIds = opts.externalMaterialOnly === true
+        ? [MAIN_AGENT_ID]
+        : Object.keys(sourceAgents);
       const retainedAgentIds: string[] = [];
       for (const agentId of agentIds) {
         let slicedRecords: readonly WireRecord[] | undefined;
@@ -1013,7 +1026,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           agentId,
           targetSessionId: targetCtx.sessionId,
           records: externalAcpForkRecords(
-            slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId),
+            (opts.externalMaterialOnly === true && agentId === MAIN_AGENT_ID
+              ? externalMaterialForkRecords(slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId))
+              : slicedRecords ?? await this.readSourceWireRecords(sourceHandle, sourceId, agentId)),
             (id) => this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutorRegistry).get(id)?.protocol === 'acp-v1'),
             agentId === MAIN_AGENT_ID && opts.throughUserMessage === true,
           ),
@@ -1028,7 +1043,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const title = opts.title ?? `Fork: ${sourceMeta?.title || sourceId}`;
 
       for (const agentId of retainedAgentIds) {
-        const sourceAgent = sourceAgents[agentId]!;
+        const sourceAgent = sourceAgents[agentId] ?? { type: 'main' as const };
         await target.accessor.get(IAgentLifecycleService).create({
           agentId,
           forkedFrom: sourceAgent.forkedFrom,
@@ -1037,6 +1052,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         });
       }
 
+      let forkedCustom = forkCustomMetadata(sourceMeta?.custom, opts.metadata);
+      if (opts.externalMaterialOnly === true && forkedCustom !== undefined) {
+        delete forkedCustom['externalClient'];
+        if (Object.keys(forkedCustom).length === 0) forkedCustom = undefined;
+      }
       await targetMeta.update({
         title,
         titleKind: opts.title !== undefined ? 'custom' : 'replaceable',
@@ -1046,7 +1066,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         lastPrompt: turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt,
         lastTurnReason: sourceMeta?.lastTurnReason,
         usage: aggregateSessionUsage(target),
-        custom: forkCustomMetadata(sourceMeta?.custom, opts.metadata),
+        custom: forkedCustom,
       });
 
       if (turnSlice === undefined) {
@@ -1152,6 +1172,24 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       );
     }
     return records;
+  }
+
+  private async pruneExternalMaterialForkFiles(targetSessionDir: string): Promise<void> {
+    const agentsDir = join(targetSessionDir, 'agents');
+    let entries: readonly HostDirEntry[];
+    try {
+      entries = await this.hostFs.readdir(agentsDir);
+    } catch (error) {
+      if (isMissingFileError(error)) return;
+      throw error;
+    }
+    await Promise.all(entries
+      .filter((entry) => entry.name !== MAIN_AGENT_ID)
+      .map((entry) => this.hostFs.remove(join(agentsDir, entry.name))));
+    await Promise.all([
+      this.hostFs.remove(join(agentsDir, MAIN_AGENT_ID, 'tasks')),
+      this.hostFs.remove(join(agentsDir, MAIN_AGENT_ID, 'cron')),
+    ]);
   }
 
   private async pruneTruncatedForkFiles(

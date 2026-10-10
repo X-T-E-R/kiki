@@ -46,6 +46,7 @@ import { renderNotificationXml } from './notificationXml';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadata/sessionMetadata';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -126,6 +127,9 @@ export const taskNotificationDeliveryKey = defineState(
         s.push(key);
       }
     }
+  })
+  .on(TaskNotified, (s, e) => {
+    if (!s.includes(e.sourceId)) s.push(e.sourceId);
   });
 
 interface BufferedTaskOutput {
@@ -296,6 +300,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     @IAtomicDocumentStore atomicDocs: IAtomicDocumentStore,
     @IFileSystemStorageService byteStore: IFileSystemStorageService,
     @ISessionContext session: ISessionContext,
+    @ISessionMetadata private readonly sessionMetadata: ISessionMetadata | undefined,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
     @ITaskService private readonly taskService: ITaskService,
@@ -1545,6 +1550,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.scheduledNotificationKeys.delete(key);
       return;
     }
+    if (await this.isExternalClientMain()) {
+      this.markDeliveredNotification(context.origin);
+      this.fireNotificationHook(context.notification);
+      return;
+    }
     const request = new TaskNotificationStepRequest(
       {
         role: 'user',
@@ -1575,6 +1585,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private currentGoal(): ReturnType<typeof goalKey.initial> {
     return this.states.has(goalKey) ? this.states.get(goalKey) : null;
+  }
+
+  private async isExternalClientMain(): Promise<boolean> {
+    if (this.sessionMetadata === undefined) return false;
+    return isExternalClientMain(await this.sessionMetadata.read(), this.scopeContext.agentId);
   }
 
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
@@ -1633,6 +1648,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
     const context = await this.buildAgentTaskNotificationContext(info);
     if (context === undefined) return;
+    if (await this.isExternalClientMain()) {
+      this.markDeliveredNotification(context.origin);
+      this.fireNotificationHook(context.notification);
+      return;
+    }
     try {
       this.context.appendObservable({
         role: 'user',

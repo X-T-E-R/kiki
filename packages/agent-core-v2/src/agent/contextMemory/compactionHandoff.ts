@@ -191,6 +191,8 @@ export function compactionUserMessageDisposition(
     case 'cron_job':
     case 'cron_missed':
     case 'hook_result':
+    case 'external_client':
+    case 'external_record':
     case 'retry':
       return 'drop';
     default: {

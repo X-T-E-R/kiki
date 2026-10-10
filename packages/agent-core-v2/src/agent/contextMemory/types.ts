@@ -1,4 +1,5 @@
 import type { ContentPart, Message } from '#/kosong/contract/message';
+import type { ExternalClientSessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 
 import type { AgentTaskStatus } from '#/agent/task/task';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
@@ -64,6 +65,17 @@ export interface CompactionSummaryOrigin {
 export interface SystemTriggerOrigin {
   readonly kind: 'system_trigger';
   readonly name: string;
+}
+
+export interface ExternalClientOrigin extends ExternalClientSessionMeta {
+  readonly kind: 'external_client';
+}
+
+export interface ExternalRecordOrigin extends ExternalClientSessionMeta {
+  readonly kind: 'external_record';
+  readonly recordId: string;
+  readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+  readonly title?: string;
 }
 
 export interface TaskOrigin {
@@ -139,6 +151,8 @@ export type PromptOrigin =
   | ShellCommandOrigin
   | CompactionSummaryOrigin
   | SystemTriggerOrigin
+  | ExternalClientOrigin
+  | ExternalRecordOrigin
   | TaskOrigin
   | CronJobOrigin
   | CronMissedOrigin

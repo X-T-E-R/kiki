@@ -101,6 +101,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly connectionRegistry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
   readonly transcriptService: TranscriptService;
+  readonly externalClients?: import('../externalClients/host').ExternalClientHost;
   readonly leaseRegistry: LeaseRegistry;
   readonly onWorkspaceServed: (workspace: string) => void | Promise<void>;
   readonly onWorkspaceRemoved?: (workspace: string) => void | Promise<void>;
@@ -198,6 +199,7 @@ export async function registerApiV1Routes(
         opts.broadcaster,
         opts.onWorkspaceServed,
         opts.leaseRegistry,
+        opts.externalClients,
       );
       registerAutoCompactRoutes(apiV1 as unknown as Parameters<typeof registerAutoCompactRoutes>[0], core);
       registerContextStrategyRoutes(apiV1 as unknown as Parameters<typeof registerContextStrategyRoutes>[0], core);

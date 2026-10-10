@@ -5,6 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionInteractionService, isInteractionCancellation, type InteractionCancellation } from '#/session/interaction/interaction';
 
@@ -34,9 +35,21 @@ export class SessionApprovalService implements ISessionApprovalService {
       kind: 'approval',
       payload: req,
       origin,
+      detached: this.isExternalDriver(req),
     }).then((response) => isInteractionCancellation(response)
       ? { decision: 'cancelled', cancellationReason: response.reason }
       : response);
+  }
+
+  private isExternalDriver(req: ApprovalRequest): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => {
+        const handle = accessor.get(IAgentLifecycleService).get(req.agentId ?? 'main');
+        return handle?.accessor.get(IAgentProfileService).data().driver === 'external';
+      });
+    } catch {
+      return false;
+    }
   }
 
   private yoloResponse(req: ApprovalRequest): ApprovalResponse | undefined {
