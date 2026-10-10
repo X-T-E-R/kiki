@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
 import { MiniContextMenu } from './MiniContextMenu';
@@ -34,7 +35,14 @@ export function MediaLightbox({
     if (menu !== null) document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [role="menuitem"]')?.focus();
   }, [menu]);
 
-  const download = () => {
+  const host = useHost();
+  const download = async () => {
+    if (host.saveBlob !== undefined) {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error(`${t('media.unavailable', { name: label })} (${response.status})`);
+      await host.saveBlob(await response.blob(), name ?? 'image');
+      return;
+    }
     const anchor = document.createElement('a');
     anchor.href = src;
     anchor.download = name ?? 'image';

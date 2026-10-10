@@ -16,9 +16,9 @@ import { KikiClient } from '../lib/client';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { MediaLightbox } from './MediaLightbox';
 
-const fixture = vi.hoisted(() => ({ client: null as unknown, openSaveSink: vi.fn() }));
+const fixture = vi.hoisted(() => ({ client: null as unknown, openSaveSink: vi.fn(), saveBlob: undefined as ((blob: Blob, name: string) => Promise<boolean>) | undefined }));
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: fixture.client, scopeId: 'fixture' }) }));
-vi.mock('../host', () => ({ useHost: () => ({ kind: 'vscode', openSaveSink: fixture.openSaveSink }) }));
+vi.mock('../host', () => ({ useHost: () => ({ kind: 'vscode', openSaveSink: fixture.openSaveSink, saveBlob: fixture.saveBlob }) }));
 vi.mock('./PreviewWorkspace', () => ({ PreviewWorkspace: () => null, PreviewCloseConfirm: () => null }));
 
 function deferred<T>() {
@@ -79,6 +79,7 @@ beforeEach(async () => {
   const port = (server.address() as { port: number }).port;
   fixture.client = new KikiClient({ baseUrl: `http://127.0.0.1:${port}`, token: 'fixture-token' });
   fixture.openSaveSink.mockReset();
+  fixture.saveBlob = undefined;
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('IntersectionObserver', undefined);
   URL.createObjectURL = vi.fn(() => 'blob:preview');
@@ -303,5 +304,23 @@ it('saves a lightbox image from the keyboard context menu without a persistent D
     await act(async () => { image.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!.click(); });
     expect(click).toHaveBeenCalledOnce();
+  } finally { click.mockRestore(); }
+});
+
+it.each([true, false])('uses native image saving without a browser download when the save dialog returns %s', async (saved) => {
+  const blob = new Blob(['original-image'], { type: 'image/png' });
+  const saveBlob = vi.fn(async (_blob: Blob, _name: string) => saved);
+  fixture.saveBlob = saveBlob;
+  const fetchImage = vi.fn(async () => ({ ok: true, blob: async () => blob }));
+  vi.stubGlobal('fetch', fetchImage);
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  try {
+    await act(async () => { root.render(<I18nProvider><MediaLightbox src="blob:original" name="example.png" onClose={() => {}} /></I18nProvider>); });
+    const image = document.querySelector('img')!;
+    await act(async () => { image.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!.click(); });
+    expect(fetchImage).toHaveBeenCalledWith('blob:original');
+    expect(saveBlob).toHaveBeenCalledWith(blob, 'example.png');
+    expect(click).not.toHaveBeenCalled();
   } finally { click.mockRestore(); }
 });
