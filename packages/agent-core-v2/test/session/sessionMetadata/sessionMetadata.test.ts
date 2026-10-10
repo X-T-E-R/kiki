@@ -126,6 +126,16 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).agents?.['main']?.negotiated).toBeUndefined();
   });
 
+  it('persists activity recency without rewriting main prompt time or custom title', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });
+    await meta.update({ activityUpdatedAt: 5_000 }, { touchUpdatedAt: false });
+    await meta.update({ activityUpdatedAt: 3_000 }, { touchUpdatedAt: false });
+    expect(await meta.read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000, title: 'Custom title', lastPrompt: 'Main prompt' });
+    expect(mirror.recorded.at(-1)?.updatedAt).toBe(5_000);
+    expect(await createFreshMetadata(ix).read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000 });
+  });
+
   it('keeps the first live usage record incomplete without a known baseline', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.ready;

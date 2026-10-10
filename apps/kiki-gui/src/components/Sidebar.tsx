@@ -43,6 +43,7 @@ import {
   isPinnedSession,
   isSearchable,
   pinMetadataPatch,
+  projectAttachedConversationGroups,
   buildConversationInbox,
   roomRefLink,
   sessionRowState,
@@ -60,6 +61,7 @@ import {
   type SessionSortOrder,
 } from '@kiki/session-core/sessions';
 import {
+  ALL_SIDEBAR_NAV_KEYS,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -68,6 +70,7 @@ import {
   type SessionSeenMap,
   type SessionListFilters,
   type SessionStatusFilter,
+  type SidebarNavKey,
 } from '@kiki/session-core/settings';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -252,7 +255,7 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
   );
 }
 
-type NavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities' | 'discover';
+type NavKey = SidebarNavKey;
 
 const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, string>; icon: () => React.ReactNode }[] = [
   { key: 'board', route: '/board', hook: { 'data-nav-board': '' }, icon: BoardIcon },
@@ -287,43 +290,116 @@ function PrimaryNav({
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const location = useLocation();
+  const layoutPrefs = useLayoutPreferences();
+
+  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
+  const primaryItems = useMemo(() => NAV_ITEMS.filter((item) => pinnedSet.has(item.key)), [pinnedSet]);
+  const secondaryItems = useMemo(() => NAV_ITEMS.filter((item) => !pinnedSet.has(item.key)), [pinnedSet]);
+
+  const isItemActive = useCallback(
+    (item: (typeof NAV_ITEMS)[number]) =>
+      location.pathname === item.route || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities')),
+    [location.pathname],
+  );
+
+  // Folded by default: the reader sees the destinations they kept, and the
+  // ones they tucked away still carry their own direction and count.
+  const sectionCollapsed = layoutPrefs.sidebarNavSectionCollapsed ?? true;
+  const foldedItems = useMemo(
+    () => (sectionCollapsed ? secondaryItems.filter((item) => !isItemActive(item)) : []),
+    [sectionCollapsed, secondaryItems, isItemActive],
+  );
+  const foldedBadgeCount = useMemo(
+    () => foldedItems.reduce((total, item) => {
+      const badge = badges?.[item.key];
+      return total + (badge !== undefined && badge.count > 0 ? badge.count : 0);
+    }, 0),
+    [foldedItems, badges],
+  );
+
+  const renderNavItem = (item: (typeof NAV_ITEMS)[number]) => {
+    const current = isItemActive(item);
+    const badge = badges?.[item.key];
+    const Icon = item.icon;
+    return (
+      <li key={item.key}>
+        <button
+          type="button"
+          {...item.hook}
+          aria-current={current ? 'page' : undefined}
+          onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
+          className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] ${
+            current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+          }`}
+        >
+          <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
+          <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`)}</span>
+          {item.key === 'usage' ? <RequestGovernanceBadge /> : null}
+          {badge !== undefined && badge.count > 0 ? (
+            <span
+              data-nav-badge={item.key}
+              title={badge.label}
+              aria-label={badge.label}
+              className="shrink-0 px-0.5 text-[12px] leading-4 font-medium text-accent-ink tabular-nums"
+            >
+              {badge.count}
+            </span>
+          ) : null}
+        </button>
+      </li>
+    );
+  };
+
   return (
     <nav aria-label={t('nav.aria')} data-primary-nav className="px-2 pb-2">
-      <ul className="space-y-px">
-        {NAV_ITEMS.map((item) => {
-          const current = location.pathname === item.route
-            || (item.key === 'capabilities' && location.pathname.startsWith('/capabilities'));
-          const badge = badges?.[item.key];
-          const Icon = item.icon;
-          return (
-            <li key={item.key}>
+      <ul className="space-y-px">{primaryItems.map(renderNavItem)}</ul>
+      {secondaryItems.length > 0 ? (
+        <div data-sidebar-secondary-nav className="space-y-px pt-1">
+          {sectionCollapsed ? (
+            <>
+              {/* The page you are on stays visible even while folded, so the
+                * nav never hides where the reader is. */}
+              {secondaryItems.some(isItemActive) ? (
+                <ul className="space-y-px">{secondaryItems.filter(isItemActive).map(renderNavItem)}</ul>
+              ) : null}
               <button
                 type="button"
-                {...item.hook}
-                aria-current={current ? 'page' : undefined}
-                onClick={() => { navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-                className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] ${
-                  current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
-                }`}
+                data-sidebar-secondary-toggle="expand"
+                aria-expanded={false}
+                aria-label={t('sidebar.expandMoreTools')}
+                onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: false }); }}
+                className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
               >
-                <span className={current ? 'text-ink' : 'text-ink-faint'}><Icon /></span>
-                <span className="min-w-0 flex-1 truncate">{item.key === 'personas' ? t('persona.nav') : item.key === 'discover' ? t('discovery.title') : t(`nav.${item.key}`)}</span>
-                {item.key === 'usage' ? <RequestGovernanceBadge /> : null}
-                {badge !== undefined && badge.count > 0 ? (
+                <DisclosureChevron open={false} size={12} className="shrink-0 text-ink-faint" />
+                <span className="min-w-0 flex-1 truncate">{t('sidebar.moreTools')}</span>
+                {foldedBadgeCount > 0 ? (
                   <span
-                    data-nav-badge={item.key}
-                    title={badge.label}
-                    aria-label={badge.label}
-                    className="shrink-0 px-0.5 text-[12px] leading-4 font-medium text-accent-ink tabular-nums"
+                    data-secondary-badges-count
+                    className="shrink-0 px-0.5 text-[11px] font-medium text-accent-ink tabular-nums"
                   >
-                    {badge.count}
+                    {foldedBadgeCount}
                   </span>
                 ) : null}
               </button>
-            </li>
-          );
-        })}
-      </ul>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-sidebar-secondary-toggle="collapse"
+                aria-expanded={true}
+                aria-label={t('sidebar.collapseMoreTools')}
+                onClick={() => { writeLayoutPreferences({ sidebarNavSectionCollapsed: true }); }}
+                className="row-interactive flex h-7 w-full items-center gap-2 px-2 text-left text-[12px] font-medium text-ink-faint hover:text-ink transition-colors duration-[var(--kiki-motion-quick)]"
+              >
+                <DisclosureChevron open={true} size={12} className="shrink-0 text-ink-faint" />
+                <span className="min-w-0 flex-1 truncate">{t('sidebar.moreTools')}</span>
+              </button>
+              <ul className="space-y-px">{secondaryItems.map(renderNavItem)}</ul>
+            </>
+          )}
+        </div>
+      ) : null}
     </nav>
   );
 }
@@ -421,6 +497,7 @@ export function Sidebar({
   navBadges,
   className,
   onClose,
+  nowMs,
 }: {
   activeSessionId: string | undefined;
   /** Every loaded session (unfiltered); the pending badge and search read it. */
@@ -452,6 +529,9 @@ export function Sidebar({
   className?: string;
   /** Phone-drawer exit (a ✕ in the wordmark row); absent where the sidebar is docked. */
   onClose?: () => void;
+  /** Current time reference for time grouping and the recency projection;
+   *  defaults to `Date.now()`. */
+  nowMs?: number;
 }) {
   const host = useHost();
   const navigate = useGuardedNavigate();
@@ -496,7 +576,6 @@ export function Sidebar({
   const filterMenuButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [searchInput, setSearchInput] = useState('');
-  const [includeToolOutput, setIncludeToolOutput] = useState(false);
   // Search is a header icon (Codex-style): the field only takes vertical space
   // while it is in use, and `/` opens it from anywhere. Closing clears the
   // query so the list is never left silently filtered behind a collapsed box.
@@ -603,7 +682,6 @@ export function Sidebar({
     untitled,
     workspaceScope: filters.workspaces,
     allowedSessionIds,
-    includeToolOutput,
   });
 
   // `/` focuses search from anywhere that is not typing somewhere else; other
@@ -914,14 +992,32 @@ export function Sidebar({
   });
 
   // Threads a session started (ThreadCreate) and branches forked off it nest
-  // under it. Time buckets are not meaningful for a thread — it belongs with
+  // under it. When ordered by update recency, an attached child's activity
+  // lifts the parent family to the child's recency bucket while preserving
+  // each session's own timestamp and relation facts. Explicitly promoted
+  // top-level threads stay independent.
+  // Time buckets are not meaningful for an attached thread — it belongs with
   // its creator — so there a child follows its parent across buckets; the
   // workspace and pinned buckets are meaningful, so nesting stays inside one.
   // Rooms never nest: a room has no creator session, and none names it parent.
-  const sessionTree = useMemo(
-    () => nestConversationItems(sessionGroups, { crossGroups: groupBy !== 'workspace', topLevelIds: topLevelThreads }),
-    [sessionGroups, groupBy, topLevelThreads],
-  );
+  const sessionTree = useMemo(() => {
+    const projected = projectAttachedConversationGroups(sessionGroups, {
+      groupBy,
+      order: sortBy,
+      topLevelIds: topLevelThreads,
+      sessions,
+      nowMs: nowMs ?? Date.now(),
+      labels: {
+        pinned: t('sidebar.groupPinned'),
+        today: t('sidebar.groupToday'),
+        yesterday: t('sidebar.groupYesterday'),
+        week: t('sidebar.groupWeek'),
+        month: t('sidebar.groupMonth'),
+        older: t('sidebar.groupOlder'),
+      },
+    });
+    return nestConversationItems(projected, { crossGroups: groupBy !== 'workspace', topLevelIds: topLevelThreads });
+  }, [sessionGroups, groupBy, topLevelThreads, sortBy, sessions, t, nowMs]);
   // Temporary conversations stay out of the paged list (and its search and
   // grouping); they get their own block at the top while any exist. The key
   // sits under ['sessions'], so every list refresh refreshes it too.
@@ -1114,10 +1210,6 @@ export function Sidebar({
             </button>
           )}
         </div>
-        <label className="mt-1 flex w-fit cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-within:outline-2 focus-within:outline-selected-ink">
-          <input type="checkbox" data-search-tools checked={includeToolOutput} onChange={(event) => { setIncludeToolOutput(event.target.checked); setActiveResult(0); }} className="accent-selected-ink" />
-          {t('search.includeToolOutput')}
-        </label>
         </div>
         ) : null}
       </div>
@@ -1917,7 +2009,8 @@ function SessionRow({
                 temporary ? '' : menuOpen ? 'invisible' : 'group-focus-within:invisible group-hover:invisible [@media(hover:none)]:invisible'
               }`}
             >
-              <RelativeTime at={session.updated_at} />
+              {/* The row's own activity — not the family aggregate that ordered it. */}
+              <RelativeTime at={session.own_updated_at ?? session.updated_at} />
             </span>
           </span>
           {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 || externalSource !== undefined ? (
@@ -2792,6 +2885,8 @@ function SidebarViewMenu({
 }) {
   const { t } = useI18n();
   const { menuRef, style } = useAnchoredMenu(anchor, onClose, 'sidebar-view-menu', '[data-view-menu], [data-view-menu-toggle]');
+  const layoutPrefs = useLayoutPreferences();
+  const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
   const groups: readonly { value: 'time' | 'workspace' | 'none'; label: string }[] = [
     { value: 'time', label: t('sidebar.groupByTime') },
     { value: 'workspace', label: t('sidebar.groupByWorkspace') },
@@ -2836,6 +2931,35 @@ function SidebarViewMenu({
           <span className="truncate">{sortLabel[value]}</span>
         </button>
       ))}
+      <div className="mx-1 my-1 border-t border-hairline" />
+      <p className={MENU_HEADING}>{t('st.sidebarNav.title')}</p>
+      {ALL_SIDEBAR_NAV_KEYS.map((key) => {
+        const isPinned = pinnedSet.has(key);
+        const label = key === 'personas'
+          ? t('persona.nav')
+          : key === 'discover'
+            ? t('discovery.title')
+            : t(`nav.${key}`);
+        return (
+          <button
+            key={key}
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={isPinned}
+            data-nav-item-toggle={key}
+            className={`${MENU_ITEM} w-full`}
+            onClick={() => {
+              const next = isPinned
+                ? layoutPrefs.pinnedNavItems.filter((entry) => entry !== key)
+                : [...layoutPrefs.pinnedNavItems, key];
+              writeLayoutPreferences({ pinnedNavItems: next });
+            }}
+          >
+            <MenuMark on={isPinned} />
+            <span className="truncate">{label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

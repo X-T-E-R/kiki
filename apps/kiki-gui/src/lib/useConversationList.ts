@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
-import { mergeConversationItems, type ConversationWorkspace, type SessionSortOrder } from '@kiki/session-core/sessions';
+import { mergeConversationItems, mergeSessionActivity, type ConversationWorkspace, type SessionListData, type SessionSortOrder } from '@kiki/session-core/sessions';
 import { forgetRoomSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 import { ROOMS_QUERY_KEY } from './botRooms';
@@ -30,6 +30,32 @@ export function useConversationList(sessions: readonly Session[], order: Session
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
     });
     return () => { subscription.dispose(); };
+  }, [client, queryClient]);
+  // A session that just changed is the only row the reader can see move: read
+  // it once and fold the result into the loaded pages, so an attached child's
+  // activity reaches its family without waiting for the head poll. Reads are
+  // per session and re-checked while one is in flight.
+  useEffect(() => {
+    let disposed = false;
+    const inFlight = new Set<string>();
+    const dirty = new Set<string>();
+    const refresh = (sessionId: string) => {
+      dirty.add(sessionId);
+      if (inFlight.has(sessionId)) return;
+      inFlight.add(sessionId);
+      void (async () => {
+        do {
+          dirty.delete(sessionId);
+          const fresh = await client.getSession(sessionId);
+          if (disposed) return;
+          queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+        } while (dirty.has(sessionId) && !disposed);
+      })().catch(() => {
+        // The bounded head poll repairs a failed point read without dropping loaded rows.
+      }).finally(() => { inFlight.delete(sessionId); dirty.delete(sessionId); });
+    };
+    const subscription = client.klient.events.on('session.metaUpdated', (event) => refresh(event.sessionId));
+    return () => { disposed = true; subscription.dispose(); };
   }, [client, queryClient]);
   const rooms = roomsQuery.data ?? [];
   const items = useMemo(() => mergeConversationItems(sessions, rooms, seen, order, workspaces), [sessions, rooms, seen, order, workspaces]);

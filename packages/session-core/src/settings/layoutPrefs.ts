@@ -40,6 +40,29 @@ export interface SessionListPreferences {
   filters: SessionListFilters;
 }
 
+/** Sidebar navigation destinations the user can show or tuck away. */
+export type SidebarNavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities' | 'discover';
+
+export const ALL_SIDEBAR_NAV_KEYS: readonly SidebarNavKey[] = [
+  'board',
+  'cron',
+  'memory',
+  'personas',
+  'usage',
+  'capabilities',
+  'discover',
+];
+
+/** Task board, scheduled tasks and capabilities start tucked into "More
+ * tools": the everyday destinations (what Kiki remembers, who talks to you,
+ * what it costs, where the tour of the product starts) lead the nav. */
+export const DEFAULT_PINNED_NAV_ITEMS: readonly SidebarNavKey[] = [
+  'memory',
+  'personas',
+  'usage',
+  'discover',
+];
+
 export interface LayoutPreferences extends SessionListPreferences {
   /** Sidebar (left) width in px. */
   sidebarWidth: number;
@@ -51,6 +74,13 @@ export interface LayoutPreferences extends SessionListPreferences {
    * `boolean`: user explicit toggle choice overriding automatic breakpoint.
    */
   sidebarCollapsed?: boolean;
+  /**
+   * Navigation destinations shown directly in the primary nav. The rest are
+   * tucked into the secondary "More tools" section below it.
+   */
+  pinnedNavItems: readonly SidebarNavKey[];
+  /** Whether that secondary navigation section is folded. Default: folded. */
+  sidebarNavSectionCollapsed?: boolean;
 }
 
 export const SIDEBAR_DEFAULT_WIDTH = 264;
@@ -69,6 +99,8 @@ export const DEFAULT_LAYOUT_PREFERENCES: LayoutPreferences = {
   filters: DEFAULT_SESSION_LIST_FILTERS,
   sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   railWidth: RAIL_DEFAULT_WIDTH,
+  pinnedNavItems: DEFAULT_PINNED_NAV_ITEMS,
+  sidebarNavSectionCollapsed: true,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -85,6 +117,15 @@ function isSortBy(value: unknown): value is SessionSortOrder {
 }
 
 const STATUS_FILTERS: readonly SessionStatusFilter[] = ['running', 'needs-me', 'idle'];
+
+/** Tolerant nav read: unknown or duplicated entries drop out, and a malformed
+ * value falls back to the default set instead of emptying the nav. */
+export function parsePinnedNavItems(value: unknown): readonly SidebarNavKey[] {
+  if (!Array.isArray(value)) return DEFAULT_PINNED_NAV_ITEMS;
+  const valid = ALL_SIDEBAR_NAV_KEYS;
+  const parsed = [...new Set(value.filter((item): item is SidebarNavKey => typeof item === 'string' && (valid as readonly string[]).includes(item)))];
+  return parsed;
+}
 
 /** Tolerant filter read: unknown entries drop out instead of voiding the set. */
 export function parseSessionListFilters(value: unknown): SessionListFilters {
@@ -122,6 +163,10 @@ export function readLayoutPreferences(): LayoutPreferences {
   const sidebarWidth = stored['sidebarWidth'];
   const railWidth = stored['railWidth'];
   const sidebarCollapsed = stored['sidebarCollapsed'];
+  const pinnedNavItems = parsePinnedNavItems(stored['pinnedNavItems']);
+  const sidebarNavSectionCollapsed = typeof stored['sidebarNavSectionCollapsed'] === 'boolean'
+    ? stored['sidebarNavSectionCollapsed']
+    : DEFAULT_LAYOUT_PREFERENCES.sidebarNavSectionCollapsed;
   return {
     groupBy: isGroupBy(groupBy) ? groupBy : DEFAULT_LAYOUT_PREFERENCES.groupBy,
     sortBy: isSortBy(sortBy) ? sortBy : DEFAULT_LAYOUT_PREFERENCES.sortBy,
@@ -137,6 +182,8 @@ export function readLayoutPreferences(): LayoutPreferences {
       RAIL_MAX_WIDTH,
     ),
     sidebarCollapsed: typeof sidebarCollapsed === 'boolean' ? sidebarCollapsed : undefined,
+    pinnedNavItems,
+    sidebarNavSectionCollapsed,
   };
 }
 
@@ -199,6 +246,12 @@ export function writeLayoutPreferences(patch: Partial<LayoutPreferences>): Layou
     sidebarWidth: clamp(patch.sidebarWidth ?? current.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
     railWidth: clamp(patch.railWidth ?? current.railWidth, RAIL_MIN_WIDTH, RAIL_MAX_WIDTH),
     sidebarCollapsed: patch.sidebarCollapsed !== undefined ? patch.sidebarCollapsed : current.sidebarCollapsed,
+    pinnedNavItems: patch.pinnedNavItems !== undefined
+      ? parsePinnedNavItems(patch.pinnedNavItems)
+      : current.pinnedNavItems,
+    sidebarNavSectionCollapsed: patch.sidebarNavSectionCollapsed !== undefined
+      ? patch.sidebarNavSectionCollapsed
+      : current.sidebarNavSectionCollapsed,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));

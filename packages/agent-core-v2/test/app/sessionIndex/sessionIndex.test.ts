@@ -165,6 +165,18 @@ describe('FileSessionIndex (legacy)', () => {
     expect(page.items[0]?.archived).toBe(false);
   });
 
+  it('orders a cold parent by persisted child activity with the same point-read timestamp', async () => {
+    await seedSession('parent', { createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
+    await seedSession('other', { createdAt: 1, updatedAt: 50 });
+    const store = build();
+    const page = await store.listRecent({ workspaceIds: [workspaceId] });
+    expect(page.items.map((entry) => entry.id)).toEqual(['parent', 'other']);
+    expect(page.items[0]?.updatedAt).toBe((await store.get('parent'))?.updatedAt);
+    expect(page.items[0]?.updatedAt).toBe(100);
+    expect(page.items[0]?.ownUpdatedAt).toBe(10);
+    expect((await store.get('parent'))?.ownUpdatedAt).toBe(10);
+  });
+
   it('listRecent includes archived when requested', async () => {
     await seedSession('active', {});
     await seedSession('archived', { archived: true });
@@ -1057,6 +1069,29 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.get('a')).toMatchObject({ id: 'a', title: 'updated' });
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
     expect(fileStorage.listCalls).toBe(0);
+  });
+
+  it('hydrates own recency from unchanged historical metadata without rebuilding the published index', async () => {
+    await seedSession('parent', { createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
+    await seedSession('other', { createdAt: 1, updatedAt: 50 });
+    const store = build();
+    await store.prepare();
+    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    const collection = sessionCollection(manifest!.seq);
+    for (const id of ['parent', 'other']) {
+      const cached = await queryStore.get<SessionSummary>(collection, id);
+      const { ownUpdatedAt: _own, ...old } = cached!;
+      await queryStore.put(collection, id, old, { columns: { [recencyColumn(manifest!.seq)]: old.updatedAt } });
+    }
+    const page = await store.listRecent({ limit: 1 });
+    expect(page.items).toMatchObject([{ id: 'parent', updatedAt: 100, ownUpdatedAt: 10 }]);
+    expect(page.nextCursor).toBe('parent');
+    expect(await store.get('other')).toMatchObject({ updatedAt: 50, ownUpdatedAt: 50 });
+    await (mirror as SessionIndexMirror).drain();
+    expect((await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq).toBe(manifest!.seq);
+    expect(await queryStore.get(collection, 'parent')).toMatchObject({ updatedAt: 100, ownUpdatedAt: 10 });
+    const raw = JSON.parse(await fsp.readFile(join(sessionsDir, workspaceId, 'parent', 'session-meta', 'state.json'), 'utf8'));
+    expect(raw).toEqual({ createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
   });
 
   it('paginates exactly through same-millisecond ties', async () => {

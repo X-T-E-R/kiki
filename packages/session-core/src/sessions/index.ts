@@ -1,4 +1,5 @@
 export * from './activity';
+export * from './attachedRecency';
 export * from './awayAttention';
 export * from './busySessions';
 export * from './inbox';

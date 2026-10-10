@@ -46,6 +46,7 @@ export interface SessionMeta {
   readonly lastPrompt?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;

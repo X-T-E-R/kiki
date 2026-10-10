@@ -96,6 +96,19 @@ export function mergeSessionFirstPage(
   return { ...old, pages: [head, ...old.pages.slice(1)] };
 }
 
+/**
+ * Fold a point-read session back into its loaded page, and only when it is at
+ * least as fresh as the row it replaces — a late read that lost the race must
+ * not move a row backwards. Cursors, page boundaries and untouched rows stay.
+ */
+export function mergeSessionActivity(old: SessionListData | undefined, fresh: Session): SessionListData | undefined {
+  if (old === undefined) return old;
+  return { ...old, pages: old.pages.map((page) => ({
+    ...page,
+    items: page.items.map((session) => session.id === fresh.id && Date.parse(fresh.updated_at) >= Date.parse(session.updated_at) ? fresh : session),
+  })) };
+}
+
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
   const seen = new Set<string>();

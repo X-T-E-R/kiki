@@ -44,6 +44,8 @@ describe('readLayoutPreferences', () => {
       filters: { status: [], workspaces: [], archived: 'hide' },
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       railWidth: RAIL_DEFAULT_WIDTH,
+      pinnedNavItems: ['memory', 'personas', 'usage', 'discover'],
+      sidebarNavSectionCollapsed: true,
     });
   });
 
@@ -83,6 +85,19 @@ describe('readLayoutPreferences', () => {
     writeLayoutPreferences({ sidebarCollapsed: false });
     expect(readLayoutPreferences().sidebarCollapsed).toBe(false);
   });
+
+  it('reads and sanitizes pinnedNavItems and preserves sidebarNavSectionCollapsed', () => {
+    ls().setItem('kiki.layout', JSON.stringify({
+      pinnedNavItems: ['board', 'cron', 'unknown-key', 'board'],
+      sidebarNavSectionCollapsed: false,
+    }));
+    const prefs = readLayoutPreferences();
+    expect(prefs.pinnedNavItems).toEqual(['board', 'cron']);
+    expect(prefs.sidebarNavSectionCollapsed).toBe(false);
+
+    ls().setItem('kiki.layout', JSON.stringify({ pinnedNavItems: 'not-an-array' }));
+    expect(readLayoutPreferences().pinnedNavItems).toEqual(['memory', 'personas', 'usage', 'discover']);
+  });
 });
 
 describe('subscribeLayoutPreferences', () => {
@@ -117,5 +132,16 @@ describe('writeLayoutPreferences', () => {
   it('clamps widths on write', () => {
     const next = writeLayoutPreferences({ railWidth: RAIL_MIN_WIDTH - 10 });
     expect(next.railWidth).toBe(RAIL_MIN_WIDTH);
+  });
+
+  it('writes and updates pinnedNavItems and sidebarNavSectionCollapsed', () => {
+    const next = writeLayoutPreferences({
+      pinnedNavItems: ['usage', 'capabilities'],
+      sidebarNavSectionCollapsed: false,
+    });
+    expect(next.pinnedNavItems).toEqual(['usage', 'capabilities']);
+    expect(next.sidebarNavSectionCollapsed).toBe(false);
+    expect(readLayoutPreferences().pinnedNavItems).toEqual(['usage', 'capabilities']);
+    expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(false);
   });
 });

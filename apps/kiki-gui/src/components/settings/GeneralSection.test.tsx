@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
+import { readLayoutPreferences, writeLayoutPreferences } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '../../lib/client';
 import { GeneralSection } from './GeneralSection';
 import { PermissionsSection } from './PermissionsSection';
@@ -229,6 +230,21 @@ describe('PlanSettings plan gate defaults', () => {
     const permissions = await renderSection('permissions');
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
     expect(permissions.querySelector('#st-card-permission-defaults [data-settings-effect="newSessions"]')).not.toBeNull();
+  });
+
+  it('renders the sidebar tools card and pins an item from it', async () => {
+    writeLayoutPreferences({ pinnedNavItems: ['usage', 'memory', 'personas', 'discover'] });
+    const app = await renderSection('general');
+    const navCard = app.querySelector('#st-card-sidebar-nav');
+    expect(navCard).not.toBeNull();
+
+    const boardWrapper = navCard?.querySelector('[data-nav-item-toggle="board"]');
+    expect(boardWrapper).not.toBeNull();
+    const boardSwitch = boardWrapper?.querySelector<HTMLElement>('[role="switch"]');
+    expect(boardSwitch?.getAttribute('aria-checked')).toBe('false');
+
+    await click(boardWrapper?.querySelector('label') ?? boardSwitch!);
+    expect(readLayoutPreferences().pinnedNavItems).toContain('board');
   });
 
   it('offers four permission defaults, saving review immediately', async () => {

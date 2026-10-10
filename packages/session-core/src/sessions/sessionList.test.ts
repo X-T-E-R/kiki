@@ -12,6 +12,7 @@ import {
   sessionStatusOf,
   groupSessionsByWorkspace,
   isPinnedSession,
+  mergeSessionActivity,
   mergeSessionFirstPage,
   pinMetadataPatch,
   SESSION_PIN_META_KEY,
@@ -67,6 +68,18 @@ describe('mergeSessionFirstPage', () => {
 
   it('is a no-op before the first load', () => {
     expect(mergeSessionFirstPage(undefined, page(['s1'], false))).toBeUndefined();
+  });
+});
+
+describe('activity recency', () => {
+  it('moves a loaded old-page parent on a point update without losing cursors or other rows', () => {
+    const old = data(page(['newer'], true), page(['parent'], false));
+    const fresh = session('parent', '2026-10-05T12:00:00Z');
+    const merged = mergeSessionActivity(old, fresh);
+    expect(merged?.pageParams).toBe(old.pageParams);
+    expect(merged?.pages.map((entry) => entry.has_more)).toEqual([true, false]);
+    expect(sortSessionItems(dedupeSessions(merged), 'updated-desc').map((entry) => entry.id)).toEqual(['parent', 'newer']);
+    expect(mergeSessionActivity(merged, session('parent', '2025-01-01T00:00:00Z'))?.pages[1]?.items[0]).toBe(fresh);
   });
 });
 

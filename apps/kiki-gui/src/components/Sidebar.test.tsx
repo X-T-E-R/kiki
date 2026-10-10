@@ -10,14 +10,17 @@ import type { RoomDocument, RoomListItem, Session, Workspace } from '@kiki/proto
 
 import {
   CONTENT_SEARCH_DEBOUNCE_MS,
+  groupConversationItems,
   isPinnedSession,
   mergeConversationItems,
   SESSION_PIN_META_KEY,
   type ConversationListItem,
   type SessionGroup,
+  type SessionSortOrder,
 } from '@kiki/session-core/sessions';
 import { subscribeComposerInserts } from '@kiki/session-core/composer';
 import {
+  DEFAULT_PINNED_NAV_ITEMS,
   DEFAULT_SESSION_LIST_FILTERS,
   markSessionSeen,
   readLayoutPreferences,
@@ -220,6 +223,7 @@ type SidebarProps = ComponentProps<typeof Sidebar>;
  * conversation items happens here so every body keeps its old shape. */
 type SidebarOverrides = Omit<Partial<SidebarProps>, 'sessionGroups'> & {
   sessionGroups?: readonly SessionGroup<Session | ConversationListItem>[];
+  initialEntries?: readonly string[];
 };
 
 async function mount(
@@ -233,7 +237,7 @@ async function mount(
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cachedSessions.length > 0) client.setQueryData(['sessions', 'cached'], { pages: [{ items: cachedSessions }] });
-  const { sessionGroups: rawGroups, ...rest } = overrides;
+  const { sessionGroups: rawGroups, initialEntries, ...rest } = overrides;
   const sessionGroups = (rawGroups ?? []).map((group) => ({
     ...group,
     items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
@@ -243,7 +247,7 @@ async function mount(
       <QueryClientProvider client={client}>
         <I18nProvider>
           <HostProvider host={host}>
-            <MemoryRouter>
+            <MemoryRouter initialEntries={initialEntries as string[] | undefined}>
               <Sidebar
                 activeSessionId={undefined}
                 sessions={[]}
@@ -409,27 +413,17 @@ describe('Sidebar thread-link titles', () => {
 });
 
 describe('Sidebar global search pagination', () => {
-  it('separates tool output scope caches and page tokens when toggled on and back off', async () => {
+  it('keeps the tool-output toggle out of the sidebar search and uses the default text search', async () => {
     searchMessages.mockImplementation(async (body: { include_tool_output?: boolean; page_token?: string }) =>
-      body.include_tool_output ? page([hit({ session_id: 's1', role: 'tool', snippet: 'output-token' })], false)
-        : body.page_token === 'body-next' ? page([A2], false) : page([A1], true, 'body-next'));
+      body.page_token === 'body-next' ? page([A2], false) : page([A1], true, 'body-next'));
     const { container } = await mount();
     await typeQuery(container, 'alpha');
     await waitForText(container, 'alpha one');
+    expect(container.querySelector('[data-search-tools]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-search-load-more]')!.click(); });
     await waitForText(container, 'alpha two');
-    const tools = container.querySelector<HTMLInputElement>('[data-search-tools]')!;
-    expect(tools.checked).toBe(false);
-    await act(async () => { tools.click(); });
-    expect(container.textContent).not.toContain('alpha two');
-    await waitForText(container, 'output-token');
-    expect(container.querySelector('[data-search-load-more]')).toBeNull();
-    expect(searchMessages.mock.calls.at(-1)?.[0]).toMatchObject({ include_tool_output: true });
-    expect(searchMessages.mock.calls.at(-1)?.[0].page_token).toBeUndefined();
-    await act(async () => { tools.click(); });
-    await waitForText(container, 'alpha two');
-    expect(container.textContent).not.toContain('output-token');
-    expect(searchMessages.mock.calls.filter(([body]) => body.include_tool_output === true)).toHaveLength(1);
+    expect(searchMessages.mock.calls.at(-1)?.[0]).toMatchObject({ page_token: 'body-next' });
+    expect(searchMessages.mock.calls.some(([body]) => body.include_tool_output === true)).toBe(false);
   });
 
   it('appends the second page instead of replacing the first', async () => {
@@ -806,21 +800,34 @@ describe('Sidebar temporary conversations', () => {
 });
 
 describe('Sidebar entry distribution', () => {
-  it('lists the six tool pages in the primary nav, in order', async () => {
+  it('leads with the chosen destinations and folds the rest into More tools, in order', async () => {
     const { container } = await mount();
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
     const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.children[1]?.textContent);
-    expect(labels).toEqual(['Task board', 'Scheduled tasks', 'Memory', 'Personas', 'Usage', 'Capabilities']);
+    expect(labels).toEqual(['Memory', 'Personas', 'Usage', 'Discover Kiki', 'More tools']);
+    expect(nav?.querySelector('[data-nav-discover]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
-    await settle();
-    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
-    expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
-    expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
     // Memory is permanent, on or off: switched off the page is the turn-on guide.
     expect(nav?.querySelector('[data-nav-memory]')).not.toBeNull();
+    // The other destinations start tucked under the folded More tools section.
+    expect(nav?.querySelector('[data-nav-board]')).toBeNull();
+    expect(nav?.querySelector('[data-nav-cron]')).toBeNull();
+    expect(nav?.querySelector('[data-nav-capabilities]')).toBeNull();
+
+    const expandButton = nav?.querySelector<HTMLButtonElement>('[data-sidebar-secondary-toggle="expand"]');
+    expect(expandButton).not.toBeNull();
+    await act(async () => { expandButton?.click(); });
+
+    const secondaryLabels = [...(nav?.querySelectorAll('[data-sidebar-secondary-nav] ul button') ?? [])].map((button) => button.children[1]?.textContent);
+    expect(secondaryLabels).toEqual(['Task board', 'Scheduled tasks', 'Capabilities']);
+    expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
+    expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-capabilities]')).not.toBeNull();
+
+    await settle();
+    expect(nav?.querySelector('[data-request-governance-badge]')?.textContent).toBe('3 · +2');
   });
 
   it('keeps only settings and the connection status dot in the footer', async () => {
@@ -1401,6 +1408,186 @@ describe('session thread relations', () => {
     expect(ids.toSorted()).toEqual(['a', 'b']);
   });
 
+  it('keeps promoted rows independent when thread activity also refreshes the parent aggregate', async () => {
+    const stamp = (day: number, hour = 10) => new Date(2026, 9, day, hour).toISOString();
+    const parent = { ...session('root'), updated_at: stamp(2), own_updated_at: stamp(2) };
+    const child = { ...thread('t1', 'root'), updated_at: stamp(3), own_updated_at: stamp(3) };
+    const other = { ...session('other'), updated_at: stamp(4), own_updated_at: stamp(4) };
+    const metadata = structuredClone(child.metadata);
+    const testNowMs = new Date(2026, 9, 6, 12).getTime();
+    const propsFor = (items: Session[], groupBy: 'none' | 'time' = 'none') => ({
+      sessions: items, groupBy, nowMs: testNowMs,
+      sessionGroups: groupConversationItems(mergeConversationItems(items, [], {}), {
+        groupBy, workspaces: [], filters: DEFAULT_SESSION_LIST_FILTERS, nowMs: testNowMs,
+      }),
+    });
+    const first = await mount(propsFor([parent, child, other]));
+    const toggle = async (container: HTMLDivElement) => {
+      await act(async () => { container.querySelector('[data-session-row="t1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!.click(); });
+    };
+    const rows = (container: HTMLDivElement) => [...container.querySelectorAll('[data-session-row]')].map((row) => row.getAttribute('data-session-row'));
+    expect(rows(first.container)).toEqual(['other', 'root', 't1']);
+    await toggle(first.container);
+    expect(rows(first.container)).toEqual(['other', 't1', 'root']);
+    await act(async () => { first.root.unmount(); });
+
+    const freshChild = { ...child, updated_at: stamp(6, 11), own_updated_at: stamp(6, 11) };
+    const aggregateParent = { ...parent, updated_at: freshChild.updated_at };
+    const second = await mount(propsFor([aggregateParent, freshChild, other]));
+    expect(rows(second.container)).toEqual(['t1', 'other', 'root']);
+    expect(second.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).toBeNull();
+    expect(second.container.querySelector('[data-session-row="t1"] [data-session-relation-note]')?.textContent).toContain('root');
+    await act(async () => { second.root.unmount(); });
+    const acrossTime = await mount(propsFor([aggregateParent, freshChild, other], 'time'));
+    expect(acrossTime.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(acrossTime.container.querySelector('[data-session-group-block="week"] [data-session-row="root"]')).not.toBeNull();
+    await act(async () => { acrossTime.root.unmount(); });
+
+    const freshParent = { ...aggregateParent, updated_at: stamp(6, 12), own_updated_at: stamp(6, 12) };
+    const third = await mount(propsFor([freshParent, freshChild, other], 'time'));
+    expect(rows(third.container)).toEqual(['root', 't1', 'other']);
+    expect(third.container.querySelector('[data-session-group-block="today"] [data-session-row="t1"]')).not.toBeNull();
+    expect(third.container.querySelector('[data-session-group-block="week"] [data-session-row="other"]')).not.toBeNull();
+    await toggle(third.container);
+    expect(third.container.querySelector('[data-session-threads="root"] [data-session-row="t1"]')).not.toBeNull();
+    expect(child.metadata).toEqual(metadata);
+    expect(freshChild.metadata).toEqual(metadata);
+    await act(async () => { third.root.unmount(); });
+  });
+
+  it('promotes parent family when nested child recency updates, keeping top-level thread independent and respecting non-updated sort', async () => {
+    const baseNow = new Date(2026, 9, 10, 12).getTime();
+    const stamp = (day: number, hour = 10) => new Date(2026, 9, day, hour).toISOString();
+
+    // Family 1: p1 and c1 (day 6 = earlier in week)
+    const p1 = { ...session('p1'), created_at: stamp(1), updated_at: stamp(6, 10), own_updated_at: stamp(6, 10) };
+    const c1 = { ...thread('c1', 'p1'), created_at: stamp(2), updated_at: stamp(6, 11), own_updated_at: stamp(6, 11) };
+
+    // Family 2: p2 and c2 (day 9 = yesterday)
+    const p2 = { ...session('p2'), created_at: stamp(3), updated_at: stamp(9, 10), own_updated_at: stamp(9, 10) };
+    const c2 = { ...thread('c2', 'p2'), created_at: stamp(4), updated_at: stamp(9, 11), own_updated_at: stamp(9, 11) };
+
+    const rows = (container: HTMLDivElement) =>
+      [...container.querySelectorAll('[data-session-row]')].map((row) => row.getAttribute('data-session-row'));
+
+    const propsFor = (
+      items: Session[],
+      groupBy: 'none' | 'time' = 'time',
+      sortBy: SessionSortOrder = 'updated-desc',
+    ) => ({
+      sessions: items,
+      groupBy,
+      sortBy,
+      nowMs: baseNow,
+      sessionGroups: groupConversationItems(
+        mergeConversationItems(items, [], {}, sortBy),
+        {
+          groupBy,
+          workspaces: [],
+          filters: DEFAULT_SESSION_LIST_FILTERS,
+          nowMs: baseNow,
+          order: sortBy,
+        },
+      ),
+    });
+
+    // 1. Initial state: Family 2 (yesterday) precedes Family 1 (week)
+    const view = await mount(propsFor([p1, c1, p2, c2]));
+    expect(rows(view.container)).toEqual(['p2', 'c2', 'p1', 'c1']);
+    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-block="week"] [data-session-row="p1"]')).not.toBeNull();
+
+    // 2. Child c1 updates to today (day 10, 14:00) without refreshing parent p1
+    const freshC1 = { ...c1, updated_at: stamp(10, 14), own_updated_at: stamp(10, 14) };
+
+    const rerender = async (newProps: SidebarOverrides) => {
+      const { sessionGroups: rawGroups, initialEntries, ...rest } = newProps;
+      const sessionGroups = (rawGroups ?? []).map((group) => ({
+        ...group,
+        items: group.items.map((item) => ('kind' in item ? item : threadItem(item))),
+      }));
+      await act(async () => {
+        view.root.render(
+          <QueryClientProvider client={view.queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <MemoryRouter initialEntries={initialEntries as string[] | undefined}>
+                  <Sidebar
+                    activeSessionId={undefined}
+                    sessions={[]}
+                    sessionGroups={sessionGroups}
+                    sessionsQuery={{
+                      isLoading: false,
+                      isError: false,
+                      error: null,
+                      hasNextPage: false,
+                      isFetchingNextPage: false,
+                      fetchNextPage: async () => {},
+                    }}
+                    workspaceOptions={[]}
+                    filters={DEFAULT_SESSION_LIST_FILTERS}
+                    onFiltersChange={() => {}}
+                    onNewSession={() => {}}
+                    groupBy="time"
+                    onGroupBy={() => {}}
+                    sortBy="updated-desc"
+                    onSortBy={() => {}}
+                    {...rest}
+                  />
+                </MemoryRouter>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+    };
+
+    await rerender(propsFor([p1, freshC1, p2, c2]));
+
+    // Parent p1 moves into 'today' bucket and precedes Family 2, with freshC1 nested inside it
+    expect(rows(view.container)).toEqual(['p1', 'c1', 'p2', 'c2']);
+    expect(view.container.querySelector('[data-session-group-block="today"] [data-session-row="p1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-threads="p1"] [data-session-row="c1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+
+    // Own timestamp is preserved on each session row: p1 keeps day 6, freshC1 has day 10
+    const p1Time = view.container.querySelector('[data-session-row="p1"] [data-session-time]');
+    const c1Time = view.container.querySelector('[data-session-row="c1"] [data-session-time]');
+    expect(p1Time?.textContent).not.toEqual(c1Time?.textContent);
+
+    // 3. Promote c1 to top level: explicit topLevel thread stays independent and does not pull p1
+    await act(async () => {
+      view.container.querySelector('[data-session-row="c1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    await act(async () => {
+      view.container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!.click();
+    });
+
+    // c1 is top-level in 'today', p1 drops back to 'week' behind Family 2 (yesterday)
+    expect(view.container.querySelector('[data-session-threads="p1"] [data-session-row="c1"]')).toBeNull();
+    expect(rows(view.container)).toEqual(['c1', 'p2', 'c2', 'p1']);
+    expect(view.container.querySelector('[data-session-group-block="today"] [data-session-row="c1"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-block="yesterday"] [data-session-row="p2"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-session-group-block="week"] [data-session-row="p1"]')).not.toBeNull();
+
+    // 4. Non updated-desc sort order: recency projection is not applied
+    // Toggle c1 back to nested first
+    await act(async () => {
+      view.container.querySelector('[data-session-row="c1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+    await act(async () => {
+      view.container.querySelector<HTMLButtonElement>('[data-menu-item="thread-display"]')!.click();
+    });
+    expect(view.container.querySelector('[data-session-threads="p1"] [data-session-row="c1"]')).not.toBeNull();
+
+    // In created-desc order, p2 (created day 3) stays ahead of p1 (created day 1) despite c1 recent activity
+    await rerender(propsFor([p1, freshC1, p2, c2], 'none', 'created-desc'));
+    expect(rows(view.container)).toEqual(['p2', 'c2', 'p1', 'c1']);
+
+    await act(async () => { view.root.unmount(); });
+  });
+
   it('toggles thread display through its menu, persists it, and preserves creator metadata', async () => {
     const child = thread('t1', 'root');
     const items = [session('root'), child];
@@ -1548,7 +1735,10 @@ describe('Sidebar grouping', () => {
   });
 
   it('counts a nav badge as plain accent-ink text, with no filled chip', async () => {
-    const { container } = await mount({ navBadges: { cron: { count: 2, label: '2 stale' } } });
+    const { container } = await mount({
+      initialEntries: ['/cron'],
+      navBadges: { cron: { count: 2, label: '2 stale' } },
+    });
     const badge = container.querySelector('[data-nav-badge="cron"]');
     expect(badge?.className).toContain('text-accent-ink');
     expect(badge?.className).not.toContain('bg-accent-soft');
@@ -2010,4 +2200,162 @@ it('keeps time-group headings in nonshrinking normal flow instead of overlaying 
     expect(heading.querySelector('span')?.classList.contains('truncate')).toBe(true);
   }
   expect(container.querySelectorAll('[data-session-group]')).toHaveLength(2);
+});
+
+describe('sidebar secondary navigation', () => {
+  it('keeps secondary navigation compact and folded by default while pinned items stay visible', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
+    });
+    const { container } = await mount();
+
+    for (const hook of ['memory', 'personas', 'usage', 'discover']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
+    }
+
+    for (const hook of ['board', 'cron', 'capabilities']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).toBeNull();
+    }
+
+    const toggle = container.querySelector<HTMLButtonElement>('[data-sidebar-secondary-toggle="expand"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle?.textContent).toMatch(/More tools|更多工具/);
+  });
+
+  it('expands and collapses secondary items and persists choice to layoutPrefs', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
+    });
+    const { container } = await mount();
+
+    const expandBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-secondary-toggle="expand"]');
+    expect(expandBtn).not.toBeNull();
+    await act(async () => {
+      expandBtn?.click();
+    });
+
+    expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(false);
+
+    for (const hook of ['board', 'cron', 'capabilities']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
+    }
+
+    const collapseBtn = container.querySelector<HTMLButtonElement>('[data-sidebar-secondary-toggle="collapse"]');
+    expect(collapseBtn).not.toBeNull();
+    expect(collapseBtn?.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => {
+      collapseBtn?.click();
+    });
+
+    expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(true);
+    for (const hook of ['board', 'cron', 'capabilities']) {
+      expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).toBeNull();
+    }
+  });
+
+  it('keeps the active secondary item visible even when the fold is collapsed', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
+    });
+    const { container } = await mount({ initialEntries: ['/board'] });
+
+    const boardBtn = container.querySelector<HTMLButtonElement>('[data-primary-nav] [data-nav-board]');
+    expect(boardBtn).not.toBeNull();
+    expect(boardBtn?.getAttribute('aria-current')).toBe('page');
+
+    expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).toBeNull();
+    expect(container.querySelector('[data-primary-nav] [data-nav-capabilities]')).toBeNull();
+
+    expect(container.querySelector('[data-sidebar-secondary-toggle="expand"]')).not.toBeNull();
+  });
+
+  it('aggregates secondary badges on the collapsed toggle button', async () => {
+    await act(async () => {
+      writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
+    });
+    const { container } = await mount({
+      navBadges: {
+        cron: { count: 3, label: '3 stale tasks' },
+      },
+    });
+
+    const badge = container.querySelector('[data-secondary-badges-count]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe('3');
+  });
+
+  it('toggles pinnedNavItems via view menu, persisting choice and updating primary nav', async () => {
+    await act(async () => {
+      writeLayoutPreferences({
+        sidebarCollapsed: false,
+        sidebarNavSectionCollapsed: true,
+        pinnedNavItems: DEFAULT_PINNED_NAV_ITEMS,
+      });
+    });
+    const { container } = await mount();
+
+    // Initially board is not pinned and the fold is collapsed, so it is not in the primary nav
+    expect(container.querySelector('[data-primary-nav] [data-nav-board]')).toBeNull();
+    expect(container.querySelector('[data-primary-nav] [data-nav-memory]')).not.toBeNull();
+
+    const viewMenuBtn = container.querySelector<HTMLButtonElement>('[data-view-menu-toggle]');
+    expect(viewMenuBtn).not.toBeNull();
+    await act(async () => {
+      viewMenuBtn?.click();
+    });
+
+    // Positive: pin 'board'
+    const boardToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="board"]');
+    expect(boardToggle).not.toBeNull();
+    expect(boardToggle?.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      boardToggle?.click();
+    });
+
+    expect(readLayoutPreferences().pinnedNavItems).toContain('board');
+    expect(boardToggle?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-primary-nav] [data-nav-board]')).not.toBeNull();
+
+    // Negative: unpin 'memory'
+    const memoryToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
+    expect(memoryToggle).not.toBeNull();
+    expect(memoryToggle?.getAttribute('aria-checked')).toBe('true');
+
+    await act(async () => {
+      memoryToggle?.click();
+    });
+
+    expect(readLayoutPreferences().pinnedNavItems).not.toContain('memory');
+    expect(memoryToggle?.getAttribute('aria-checked')).toBe('false');
+    // Memory is now secondary and the fold is collapsed, so it is hidden from the primary nav
+    expect(container.querySelector('[data-primary-nav] [data-nav-memory]')).toBeNull();
+  });
+
+  it('does not double count active secondary item badges in the secondary badges aggregate', async () => {
+    await act(async () => {
+      writeLayoutPreferences({
+        sidebarCollapsed: false,
+        sidebarNavSectionCollapsed: true,
+        pinnedNavItems: DEFAULT_PINNED_NAV_ITEMS,
+      });
+    });
+    const { container } = await mount({
+      initialEntries: ['/cron'],
+      navBadges: {
+        cron: { count: 3, label: '3 tasks' },
+        board: { count: 2, label: '2 tasks' },
+      },
+    });
+
+    const cronNav = container.querySelector('[data-primary-nav] [data-nav-cron]');
+    expect(cronNav).not.toBeNull();
+    expect(cronNav?.textContent).toContain('3');
+
+    const secondaryBadge = container.querySelector('[data-secondary-badges-count]');
+    expect(secondaryBadge).not.toBeNull();
+    expect(secondaryBadge?.textContent).toBe('2');
+  });
 });

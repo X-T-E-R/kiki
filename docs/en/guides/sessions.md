@@ -93,7 +93,7 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 ## GUI session recovery and activity
 
-A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. Sorting by recent activity uses each thread's own time, so activity in a child does not pull its parent forward.
+A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. Sorting by recent activity uses the most recent activity anywhere in a thread's family, so work in a nested thread moves its parent forward even before the next list refresh; each row still shows its own last-message time, and a thread shown at top level keeps its own position and time group.
 
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 

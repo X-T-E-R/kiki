@@ -3,8 +3,10 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { clearStoredDrafts } from '@kiki/session-core/composer';
 import type { Locale } from '@kiki/session-core/i18n';
 import {
+  ALL_SIDEBAR_NAV_KEYS,
   readDesktopPrefs,
   writeDesktopPrefs,
+  writeLayoutPreferences,
   writeSettings,
   settingsServerSnapshot,
   settingsSnapshot,
@@ -13,6 +15,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { useLayoutPreferences } from '../../lib/layoutHooks';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Hint, Toggle } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
@@ -32,6 +35,7 @@ export function GeneralSection() {
   const host = useHost();
   const { t, locale, setLocale } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
+  const layoutPrefs = useLayoutPreferences();
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
   const isDesktop = host.kind === 'tauri';
@@ -144,6 +148,37 @@ export function GeneralSection() {
             <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
           </div>
           <AppendTimingField />
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')}>
+        <div className="space-y-2">
+          <Hint>{t('st.sidebarNav.hint')}</Hint>
+          <div data-sidebar-nav-toggles className="grid gap-2 sm:grid-cols-2">
+            {ALL_SIDEBAR_NAV_KEYS.map((key) => {
+              const isPinned = layoutPrefs.pinnedNavItems.includes(key);
+              const label = key === 'personas'
+                ? t('persona.nav')
+                : key === 'discover'
+                  ? t('discovery.title')
+                  : t(`nav.${key}`);
+              return (
+                <div key={key} data-nav-item-toggle={key} className="py-1">
+                  <Toggle
+                    layout="row"
+                    label={label}
+                    checked={isPinned}
+                    onChange={(checked) => {
+                      const next = checked
+                        ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
+                        : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
+                      writeLayoutPreferences({ pinnedNavItems: next });
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
       </SectionCard>
 

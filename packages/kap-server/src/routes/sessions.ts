@@ -1510,6 +1510,8 @@ export interface SessionWireFields {
   readonly lastPrompt?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  readonly ownUpdatedAt?: number;
+  readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
@@ -1546,7 +1548,8 @@ export function toWireSession(
     delivery: facts.delivery ?? fields.delivery ?? 'reply',
     title: fields.title ?? '',
     created_at: new Date(fields.createdAt).toISOString(),
-    updated_at: new Date(fields.updatedAt).toISOString(),
+    updated_at: new Date(Math.max(fields.updatedAt, fields.activityUpdatedAt ?? 0)).toISOString(),
+    own_updated_at: new Date(fields.ownUpdatedAt ?? fields.updatedAt).toISOString(),
     archived_at:
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,

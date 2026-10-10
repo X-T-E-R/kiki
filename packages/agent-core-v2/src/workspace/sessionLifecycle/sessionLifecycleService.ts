@@ -674,7 +674,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
     handle.dispose();
     await drainLogCloses();
@@ -701,7 +701,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
     if (!canCommit()) return false;
     const finalActivity = handle.accessor.get(ISessionActivityView).state();
@@ -742,7 +742,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);
-    await drainSessionMetadataWrites();
+    await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
     handle.dispose();
     await drainLogCloses();
@@ -785,7 +785,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       title: meta.title,
       lastPrompt: meta.lastPrompt,
       createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
+      updatedAt: Math.max(meta.updatedAt, meta.activityUpdatedAt ?? 0),
       archived: meta.archived,
       archivedAt: meta.archivedAt,
       custom: meta.custom,
@@ -869,7 +869,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
     }
     try {
-      await drainSessionMetadataWrites();
+      await drainSessionMetadataWrites(false);
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -942,7 +942,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let target: ISessionScopeHandle | undefined;
     let targetSessionDir: string | undefined;
     try {
-      await drainSessionMetadataWrites();
+      await drainSessionMetadataWrites(false);
       const sourceMeta =
         sourceHandle !== undefined
           ? await sourceHandle.accessor.get(ISessionMetadata).read()

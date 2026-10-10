@@ -110,6 +110,7 @@ export function buildSessionSummary(fields: {
   delivery?: 'reply' | 'message';
   createdAt: number;
   updatedAt: number;
+  activityUpdatedAt?: number;
   archived: boolean;
   archivedAt?: number;
   custom?: Record<string, unknown>;
@@ -127,7 +128,8 @@ export function buildSessionSummary(fields: {
     lastPrompt: fields.lastPrompt,
     delivery: fields.delivery,
     createdAt: fields.createdAt,
-    updatedAt: fields.updatedAt,
+    updatedAt: Math.max(fields.updatedAt, parseTime(fields.activityUpdatedAt)),
+    ownUpdatedAt: fields.updatedAt,
     archived: fields.archived,
     archivedAt: fields.archivedAt,
     custom: fields.custom,
@@ -167,6 +169,7 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.delivery === b.delivery &&
     a.createdAt === b.createdAt &&
     a.updatedAt === b.updatedAt &&
+    a.ownUpdatedAt === b.ownUpdatedAt &&
     a.archived === b.archived &&
     a.archivedAt === b.archivedAt &&
     a.lastTurnReason === b.lastTurnReason &&
@@ -300,6 +303,7 @@ function summaryFromMetadata(
     delivery: meta['delivery'] === 'reply' || meta['delivery'] === 'message' ? meta['delivery'] : undefined,
     createdAt: parseTime(meta['createdAt']),
     updatedAt: parseTime(meta['updatedAt']),
+    activityUpdatedAt: parseTime(meta['activityUpdatedAt']),
     archived: meta['archived'] === true,
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     custom,

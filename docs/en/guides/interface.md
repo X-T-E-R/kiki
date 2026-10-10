@@ -42,6 +42,8 @@ On desktop-width screens the rail is open by default. **Standard / Cockpit** in 
 
 The session list groups sessions by workspace; pick one to resume, or start a new draft there. If a saved model, profile (the agent's configuration file) or effort is no longer available, the entry stays visible with a diagnostic instead of quietly switching you to a different model. [Workspace and session management](/en/guides/sessions) covers the rest.
 
+Above the list sits the sidebar's own navigation — task board, scheduled tasks, memory, personas, usage and capabilities. The destinations you use stay visible; the rest wait under **More tools**, which expands in place and remembers whether you left it open. **Settings → General → Sidebar tools** decides which destinations stay visible, and the same list is in the View options menu at the top of the list.
+
 ## Next steps
 
 - [Workspace and session management](/en/guides/sessions) — sessions, the task board, usage statistics
