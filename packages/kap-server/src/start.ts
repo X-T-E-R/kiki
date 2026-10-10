@@ -104,6 +104,7 @@ import { registerSpaceThreadBridge, isSpaceThreadBridgeDataRequest, authorizeSpa
 import { RemoteConnectionManager } from './services/connections/manager';
 import { SshRemoteConnector } from './services/sshRemote/connector';
 import { registerRemoteConnectionRoutes, CONNECTION_BROKER_WS } from './routes/remoteConnections';
+import { registerHtmlPreviewRoutes } from './routes/htmlPreview';
 import { SpaceSummaryProjection } from './services/connections/spaceSummary';
 import { resolveLocalSpaceTransport } from './services/connections/localSpace';
 import { createAuthHook } from './middleware/auth';
@@ -865,6 +866,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     sessionViewBroadcaster: broadcaster,
     sessionViewTranscriptService: transcriptService,
   });
+  if (opts.disableAuth !== true) registerHtmlPreviewRoutes(app, core, remoteConnections);
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
   if (usageExport !== undefined) { registerUsageExportRoutes(app, usageExport.service); app.addHook('preClose', () => usageExport.close()); }

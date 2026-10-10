@@ -29,7 +29,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
@@ -414,6 +414,7 @@ export function PreviewWorkspace({
           <PreviewTabView
             key={key}
             path={tab.path}
+            root={cwd}
             visible={isTabActive && !hidden}
             navigation={navigation?.path === tab.path && isTabActive ? navigation : undefined}
             onOpenImage={onOpenImage}
@@ -1214,6 +1215,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
 
 function PreviewTabView({
   path,
+  root,
   visible,
   navigation,
   onOpenImage,
@@ -1222,6 +1224,8 @@ function PreviewTabView({
   onScrollPosition,
 }: {
   readonly path: string;
+  /** Session workspace cwd — the resource root an HTML preview is opened against. */
+  readonly root?: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
   readonly onOpenImage: (src: string, name?: string) => void;
@@ -1247,7 +1251,7 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView path={path} root={root} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );
@@ -1490,11 +1494,64 @@ function VideoTabView({ path }: { readonly path: string }) {
   );
 }
 
-/**
- * Text/code/markdown tab: one HostFileEditorController per tab (created when
- * the connection's client is available), CodeMirror for source, the Markdown
- * renderer for the rendered markdown mode.
- */
+/** Whether the text tab can show an isolated document preview for this path. */
+export function isHtmlPreviewPath(path: string): boolean {
+  return /\.(?:html?|xhtml)$/iu.test(basenameOf(path));
+}
+
+interface HtmlPreviewActiveState {
+  readonly status: 'ready';
+  readonly previewId: string;
+  readonly url: string;
+  readonly sandbox: string;
+  readonly expiresAt: number;
+}
+
+type HtmlPreviewState =
+  | { readonly status: 'idle' }
+  | { readonly status: 'root_required' }
+  | { readonly status: 'loading' }
+  | HtmlPreviewActiveState
+  | { readonly status: 'error'; readonly error: unknown };
+
+function isInsideRoot(root: string, path: string): boolean {
+  const normRoot = root.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
+  const normPath = path.replaceAll('\\', '/').toLowerCase();
+  return normPath === normRoot || normPath.startsWith(`${normRoot}/`);
+}
+
+function classifyHtmlPreviewError(error: unknown): 'remote_grant_required' | 'local_connection_required' | 'path_outside_root' | 'expired' | 'generic' {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('html_preview_target_owner_grant_required')) return 'remote_grant_required';
+  if (message.includes('html_preview_document_origin_requires_local_connection')) return 'local_connection_required';
+  if (message.includes('preview_path_outside_root')) return 'path_outside_root';
+  if (message.includes('html_preview_expired')) return 'expired';
+  return 'generic';
+}
+
+const SandboxedHtmlPreview = memo(function SandboxedHtmlPreview({
+  url,
+  sandbox,
+  title,
+}: {
+  readonly url: string;
+  readonly sandbox: string;
+  readonly title: string;
+}) {
+  return (
+    <iframe
+      title={title}
+      data-preview-html
+      src={url}
+      sandbox={sandbox}
+      referrerPolicy="no-referrer"
+      allow="fullscreen"
+      allowFullScreen
+      className="min-h-0 min-w-0 flex-1 border-0 bg-paper"
+    />
+  );
+});
+
 const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
   status: 'loading',
   error: undefined,
@@ -1508,14 +1565,23 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
   lastSavedAt: undefined,
 };
 
+/**
+ * Text/code/markdown/HTML tab: one HostFileEditorController per tab (created
+ * when the connection's client is available), CodeMirror for source, the
+ * Markdown renderer for rendered markdown, and a server-issued isolated
+ * document origin for HTML.
+ */
 function TextTabView({
   path,
+  root,
   markdown,
   navigation,
   reportDirty,
   onReadingReady,
 }: {
   readonly path: string;
+  /** Session workspace cwd — the resource root an HTML preview is opened against. */
+  readonly root?: string;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
@@ -1525,8 +1591,19 @@ function TextTabView({
   const { t } = useI18n();
   const connection = useOptionalConnection();
   const client = connection?.client;
+  const html = isHtmlPreviewPath(path);
+  const hasRenderedMode = markdown || html;
   const [controller, setController] = useState<HostFileEditorController | null>(null);
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered');
+  const [userRoot, setUserRoot] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [htmlPreviewState, setHtmlPreviewState] = useState<HtmlPreviewState>({ status: 'idle' });
+  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const effectiveRoot = useMemo(() => {
+    if (userRoot !== null && isInsideRoot(userRoot, path)) return userRoot;
+    if (root !== undefined && isInsideRoot(root, path)) return root;
+    return null;
+  }, [path, root, userRoot]);
   const [fullMarkdown, setFullMarkdown] = useState<{
     controller: HostFileEditorController; client: KikiClient; path: string;
     generation: number; text: string;
@@ -1537,6 +1614,70 @@ function TextTabView({
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
   }, [navigation]);
+
+  useEffect(() => {
+    if (!html) {
+      setHtmlPreviewState({ status: 'idle' });
+      return undefined;
+    }
+    if (client === undefined) {
+      setHtmlPreviewState({ status: 'loading' });
+      return undefined;
+    }
+    if (effectiveRoot === null) {
+      setHtmlPreviewState({ status: 'root_required' });
+      return undefined;
+    }
+    let cancelled = false;
+    let activePreviewId: string | null = null;
+    setHtmlPreviewState({ status: 'loading' });
+    client.openHtmlPreview({ path, root: effectiveRoot }).then(
+      (response) => {
+        if (cancelled) {
+          void client.closeHtmlPreview(response.preview_id);
+          return;
+        }
+        activePreviewId = response.preview_id;
+        const resolvedUrl = new URL(response.url, client.baseUrl).toString();
+        setHtmlPreviewState({
+          status: 'ready',
+          previewId: response.preview_id,
+          url: resolvedUrl,
+          sandbox: response.sandbox,
+          expiresAt: response.expires_at,
+        });
+        const ttl = Math.max(0, response.expires_at - Date.now());
+        if (expiryTimerRef.current !== null) clearTimeout(expiryTimerRef.current);
+        expiryTimerRef.current = setTimeout(() => {
+          if (!cancelled) setHtmlPreviewState({ status: 'error', error: new Error('html_preview_expired') });
+        }, ttl);
+      },
+      (error: unknown) => {
+        if (!cancelled) setHtmlPreviewState({ status: 'error', error });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (expiryTimerRef.current !== null) {
+        clearTimeout(expiryTimerRef.current);
+        expiryTimerRef.current = null;
+      }
+      if (activePreviewId !== null) {
+        void client.closeHtmlPreview(activePreviewId);
+        activePreviewId = null;
+      }
+    };
+  }, [client, effectiveRoot, html, path, reloadKey]);
+
+  const handlePickRoot = useCallback(async () => {
+    if (host.pickDirectory === undefined) return;
+    try {
+      const dir = await host.pickDirectory();
+      if (dir !== null && isInsideRoot(dir, path)) setUserRoot(dir);
+    } catch {
+      // Pick canceled or failed.
+    }
+  }, [host, path]);
 
   useEffect(() => {
     if (client === undefined) {
@@ -1581,14 +1722,19 @@ function TextTabView({
 
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
-  const showEditor = !markdown || mode === 'source';
+  const showEditor = !hasRenderedMode || mode === 'source';
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
-  // The renderer, not a frame deadline, says when this tab's text is on screen.
+  // The renderer, not a frame deadline, says when this tab's text is on screen;
+  // an HTML tab is readable once its document origin is live.
   useEffect(() => {
-    if (snap.status === 'ready') onReadingReady();
-  }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady]);
+    if (html) {
+      if (htmlPreviewState.status === 'ready') onReadingReady();
+    } else if (snap.status === 'ready') {
+      onReadingReady();
+    }
+  }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady, html, htmlPreviewState.status]);
   const normalizedPath = path.replaceAll('\\', '/');
   const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
   const loadFullMarkdown = async () => {
@@ -1606,19 +1752,101 @@ function TextTabView({
     }
   };
 
+  const htmlLoadingNotice = (
+    <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
+      <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+      {t('preview.loading')}
+    </p>
+  );
+
+  const htmlRootRequiredNotice = (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center" data-html-preview-root-required>
+      <p className="max-w-md text-[13px] text-ink-soft">{t('preview.htmlRootRequired')}</p>
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        {host.pickDirectory !== undefined ? (
+          <button
+            type="button"
+            data-html-pick-root
+            onClick={() => { void handlePickRoot(); }}
+            className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+          >
+            {t('preview.htmlPickRoot')}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-html-view-source
+          onClick={() => { setMode('source'); }}
+          className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-soft hover:border-hairline-strong hover:text-ink"
+        >
+          {t('preview.source')}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderHtmlError = (error: unknown) => {
+    const kind = classifyHtmlPreviewError(error);
+    let message = t('preview.failed');
+    if (kind === 'remote_grant_required') message = t('preview.htmlRemoteGrantRequired');
+    else if (kind === 'local_connection_required') message = t('preview.htmlRequiresLocalConnection');
+    else if (kind === 'path_outside_root') message = t('preview.htmlRootRequired');
+    else if (kind === 'expired') message = t('preview.htmlExpired');
+    else if (error instanceof Error && error.message) message = error.message;
+
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center" data-html-preview-error={kind}>
+        <p className="max-w-md text-[13px] text-danger" role="alert">{message}</p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {kind === 'expired' || kind === 'generic' ? (
+            <button
+              type="button"
+              data-html-reload
+              onClick={() => { setReloadKey((k) => k + 1); }}
+              className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+            >
+              {t('preview.htmlReload')}
+            </button>
+          ) : null}
+          {kind === 'path_outside_root' && host.pickDirectory !== undefined ? (
+            <button
+              type="button"
+              data-html-pick-root
+              onClick={() => { void handlePickRoot(); }}
+              className="rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+            >
+              {t('preview.htmlPickRoot')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-html-view-source
+            onClick={() => { setMode('source'); }}
+            className="rounded-full border border-hairline px-3 py-1 text-[12px] text-ink-soft hover:border-hairline-strong hover:text-ink"
+          >
+            {t('preview.source')}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
           {path}
         </span>
-        {markdown ? (
+        {hasRenderedMode ? (
           <span className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
             {(['rendered', 'source'] as const).map((option) => (
               <button
                 key={option}
                 type="button"
+                data-preview-mode={option}
                 data-md-mode={option}
+                data-html-mode={html ? option : undefined}
+                aria-pressed={mode === option}
                 onClick={() => { setMode(option); }}
                 className={`rounded-[5px] px-2 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
                   mode === option
@@ -1701,11 +1929,11 @@ function TextTabView({
       ) : null}
       {!editable && snap.status === 'ready' ? (
         <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[11px] ${
-          snap.oversized && fullText === undefined
+          snap.oversized && fullText === undefined && !html
             ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
             : 'border-hairline bg-paper/60 text-ink-faint'
         }`} data-preview-size-notice>
-          <span>{snap.oversized && fullText === undefined
+          <span>{snap.oversized && fullText === undefined && !html
             ? t('preview.oversized') : t('preview.editUnsupported')}</span>
           {markdown && snap.oversized && fullText === undefined ? (
             <button
@@ -1722,29 +1950,54 @@ function TextTabView({
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col">
-        {snap.status === 'loading' ? (
+        {!html && snap.status === 'loading' ? (
           <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
             {t('preview.loading')}
           </p>
-        ) : snap.status === 'error' ? (
+        ) : !html && snap.status === 'error' ? (
           <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-        ) : showEditor ? (
-          <CodeEditor
-            key={fullText !== undefined ? `${path}:full` : path}
-            path={path}
-            value={fullText ?? snap.draft}
-            generation={snap.generation}
-            navigation={navigation}
-            readOnly={!editable}
-            onChange={(text) => { controller?.setDraft(text); }}
-            onSaveShortcut={() => { void controller?.saveNow(); }}
-            ariaLabel={t('preview.openFile', { name })}
-          />
         ) : (
-          <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-            <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
-          </div>
+          <>
+            {showEditor ? (
+              html && snap.status === 'loading' ? htmlLoadingNotice
+                : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
+                : (
+                  <CodeEditor
+                    key={fullText !== undefined ? `${path}:full` : path}
+                    path={path}
+                    value={fullText ?? snap.draft}
+                    generation={snap.generation}
+                    navigation={navigation}
+                    readOnly={!editable}
+                    onChange={(text) => { controller?.setDraft(text); }}
+                    onSaveShortcut={() => { void controller?.saveNow(); }}
+                    ariaLabel={t('preview.openFile', { name })}
+                  />
+                )
+            ) : null}
+            {markdown && !showEditor ? (
+              <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
+                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
+              </div>
+            ) : null}
+            {html ? (
+              <>
+                {htmlPreviewState.status === 'ready' ? (
+                  <div hidden={showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'hidden' : 'flex'}`}>
+                    <SandboxedHtmlPreview url={htmlPreviewState.url} sandbox={htmlPreviewState.sandbox} title={name} />
+                  </div>
+                ) : null}
+                {!showEditor && htmlPreviewState.status !== 'ready' ? (
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    {htmlPreviewState.status === 'loading' ? htmlLoadingNotice : null}
+                    {htmlPreviewState.status === 'root_required' ? htmlRootRequiredNotice : null}
+                    {htmlPreviewState.status === 'error' ? renderHtmlError(htmlPreviewState.error) : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </>
         )}
       </div>
     </>

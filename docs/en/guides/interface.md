@@ -44,6 +44,8 @@ The agent tree labels external executors beside each agent's name. An **off** th
 
 On desktop-width screens the rail is open by default. **Standard / Cockpit** in its header widens it over the preview space while the conversation and composer stay in the main column; **Standard** or **Exit cockpit** puts the previous preview content, tabs, draft and width back.
 
+Markdown and HTML files offer **Rendered / Source** views in the preview pane. HTML previews preserve scripts, styling, embedded fonts, relative resources and local storage in an isolated document sandbox without access to Kiki credentials, the parent interface or desktop bridges. HTML rendering needs a local connection to the server and a resource root containing the document; when access is unavailable, use **Source** or download the file.
+
 ## Sessions and workspaces
 
 The session list groups sessions by workspace; pick one to resume, or start a new draft there. If a saved model, profile (the agent's configuration file) or effort is no longer available, the entry stays visible with a diagnostic instead of quietly switching you to a different model. [Workspace and session management](/en/guides/sessions) covers the rest.

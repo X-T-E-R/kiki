@@ -48,6 +48,7 @@ export * from './rest/skill';
 export * from './rest/task';
 export * from './rest/agent-tasks';
 export * from './rest/fs';
+export * from './rest/html-preview';
 export * from './rest/file';
 export * from './rest/modelCatalog';
 export * from './rest/config';

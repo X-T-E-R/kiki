@@ -40,6 +40,8 @@ export const CONNECTION_OPERATIONS = {
   workspaces: ['GET', '/workspaces'], workspace: ['GET', '/workspaces/{workspaceId}'], workspaceSkills: ['GET', '/workspaces/{workspaceId}/skills'],
   worktrees: ['GET', '/worktrees'], worktree: ['GET', '/worktrees/{worktreeId}'], worktreeInspect: ['POST', '/worktrees/{worktreeId}:inspect'],
   fsSearch: ['POST', '/sessions/{sessionId}/fs:search'], draftFsSearch: ['POST', '/workspace/fs:search'],
+  htmlPreviewOpen: ['POST', '/fs:html-preview'], htmlPreviewClose: ['DELETE', '/fs:html-preview/{previewId}'],
+  htmlPreviewResource: ['GET', '/html-preview/{previewId}/resource'],
   commands: ['GET', '/sessions/{sessionId}/commands'],
   agentCapabilities: ['GET', '/agents/capabilities'], agentConfig: ['GET', '/sessions/{sessionId}/agent-config'],
   agentConfigUpdate: ['PATCH', '/sessions/{sessionId}/agent-config'],

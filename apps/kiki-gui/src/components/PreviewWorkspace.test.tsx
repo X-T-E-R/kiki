@@ -17,6 +17,7 @@ import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHi
 import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { HTML_PREVIEW_SANDBOX } from '@kiki/protocol';
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import {
   createViewState,
@@ -27,7 +28,7 @@ import { I18nProvider } from '../i18n';
 import { MediaPartList, MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
-import { PreviewWorkspace, relativeToCwd } from './PreviewWorkspace';
+import { PreviewWorkspace, isHtmlPreviewPath, relativeToCwd } from './PreviewWorkspace';
 import { ConversationShell, useRegisterSeat } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 
@@ -42,7 +43,8 @@ const writeMock = vi.fn(async (path: string, text: string) => {
 const connectionMock = vi.hoisted(() => ({
   activeClient: null as unknown, defaultClient: null as unknown, scopeId: 'local',
 }));
-const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn() }));
+const hostMock = vi.hoisted(() => ({ desktop: false, revealPath: vi.fn(), openPath: vi.fn(), pickDirectory: vi.fn() }));
+const htmlPreviewMock = vi.hoisted(() => ({ open: vi.fn(), close: vi.fn() }));
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
@@ -63,6 +65,9 @@ vi.mock('../state/connection', async (importOriginal) => {
       }[path];
       return file === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(file);
     },
+    baseUrl: 'http://127.0.0.1:5177',
+    openHtmlPreview: htmlPreviewMock.open,
+    closeHtmlPreview: htmlPreviewMock.close,
   };
   connectionMock.activeClient = fakeClient;
   connectionMock.defaultClient = fakeClient;
@@ -77,7 +82,7 @@ vi.mock('../host', () => {
     kind: 'browser',
     writeFileText: (path: string, text: string) => writeMock(path, text),
   };
-  const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath };
+  const desktopHost = { ...host, kind: 'tauri', revealPath: hostMock.revealPath, openPath: hostMock.openPath, pickDirectory: hostMock.pickDirectory };
   return { useHost: () => hostMock.desktop ? desktopHost : host };
 });
 
@@ -1523,5 +1528,160 @@ describe('relativeToCwd', () => {
   it('falls back to the absolute path outside the workspace or without a cwd', () => {
     expect(relativeToCwd('/elsewhere/a.ts', '/work')).toBe('/elsewhere/a.ts');
     expect(relativeToCwd('/work/a.ts', undefined)).toBe('/work/a.ts');
+  });
+});
+
+describe('PreviewWorkspace HTML document preview', () => {
+  const previewUrl = 'http://a1b2c3d4.kiki-document.localhost:54321/html-preview/cap123/page.html';
+
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterAll(() => {
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  });
+  beforeEach(() => {
+    hostMock.desktop = false;
+    hostMock.pickDirectory.mockReset();
+    htmlPreviewMock.open.mockReset();
+    htmlPreviewMock.close.mockReset();
+    htmlPreviewMock.open.mockImplementation(async () => ({
+      preview_id: 'cap123',
+      url: previewUrl,
+      expires_at: Date.now() + 30 * 60 * 1000,
+      sandbox: HTML_PREVIEW_SANDBOX,
+    }));
+    htmlPreviewMock.close.mockImplementation(async () => {});
+    FILES['/work/page.html'] = '<!doctype html><html><head><style>body { color: red }</style></head><body><script>window.ran = true</script><p>safe</p></body></html>';
+  });
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      act(() => { root.unmount(); });
+    }
+    for (const container of containers.splice(0)) container.remove();
+    document.body.innerHTML = '';
+  });
+
+  const settle = async (): Promise<void> => {
+    await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  };
+
+  async function mountHtmlTab(path = '/work/page.html', cwd = '/work'): Promise<{ root: Root; container: HTMLDivElement }> {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd={cwd}>
+        <OpenButton path={path} />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, path);
+    await settle();
+    return probe;
+  }
+
+  async function clickMode(mode: 'rendered' | 'source'): Promise<void> {
+    await act(async () => {
+      workspace().querySelector<HTMLButtonElement>(`[data-preview-mode="${mode}"]`)!.click();
+    });
+  }
+
+  it('recognizes HTML paths for the documented preview', () => {
+    expect(isHtmlPreviewPath('/work/page.html')).toBe(true);
+    expect(isHtmlPreviewPath('C:\\work\\page.htm')).toBe(true);
+    expect(isHtmlPreviewPath('/work/page.md')).toBe(false);
+  });
+
+  it('opens the server-issued isolated document origin in a sandboxed frame, never srcdoc', async () => {
+    const probe = await mountHtmlTab();
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
+    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path: '/work/page.html', root: '/work' });
+
+    const frame = probe.container.querySelector<HTMLIFrameElement>('[data-preview-html]');
+    expect(frame).not.toBeNull();
+    expect(frame!.getAttribute('src')).toBe(previewUrl);
+    expect(frame!.getAttribute('srcdoc')).toBeNull();
+    expect(frame!.getAttribute('sandbox')).toBe(HTML_PREVIEW_SANDBOX);
+    expect(frame!.getAttribute('allow')).toBe('fullscreen');
+    expect(frame!.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(frame!.src.includes('bearer')).toBe(false);
+
+    // The rendered/source toggle keeps the same resident frame and never closes the capability.
+    await clickMode('source');
+    expect(htmlPreviewMock.close).not.toHaveBeenCalled();
+    expect(probe.container.querySelector('[data-testid="editor"]')).not.toBeNull();
+    await clickMode('rendered');
+    expect(probe.container.querySelector('[data-preview-html]')).toBe(frame);
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the capability when the tab unmounts', async () => {
+    const probe = await mountHtmlTab();
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
+    await act(async () => { probe.root.unmount(); });
+    expect(htmlPreviewMock.close).toHaveBeenCalledWith('cap123');
+  });
+
+  it('cleans up a late open result the tab no longer owns', async () => {
+    let resolveOpen!: (value: { preview_id: string; url: string; expires_at: number; sandbox: string }) => void;
+    htmlPreviewMock.open.mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve; }));
+    const probe = await mountHtmlTab();
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
+    await act(async () => { probe.root.unmount(); });
+    await act(async () => {
+      resolveOpen({
+        preview_id: 'late-id',
+        url: 'http://late.kiki-document.localhost:1234/html-preview/late-id/page.html',
+        expires_at: Date.now() + 10_000,
+        sandbox: HTML_PREVIEW_SANDBOX,
+      });
+      await Promise.resolve();
+    });
+    expect(htmlPreviewMock.close).toHaveBeenCalledWith('late-id');
+  });
+
+  it('asks for a resource root outside the workspace and accepts a picked root', async () => {
+    hostMock.desktop = true;
+    hostMock.pickDirectory.mockResolvedValueOnce('/outside');
+    const probe = await mountHtmlTab('/outside/page.html');
+    expect(htmlPreviewMock.open).not.toHaveBeenCalled();
+    expect(probe.container.querySelector('[data-html-preview-root-required]')).not.toBeNull();
+
+    await act(async () => {
+      probe.container.querySelector<HTMLButtonElement>('[data-html-pick-root]')!.click();
+    });
+    await settle();
+    expect(htmlPreviewMock.open).toHaveBeenCalledWith({ path: '/outside/page.html', root: '/outside' });
+    expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
+  });
+
+  it('reports the remote target-owner refusal as unavailable authorization', async () => {
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('html_preview_target_owner_grant_required'));
+    const probe = await mountHtmlTab();
+    expect(probe.container.querySelector('[data-html-preview-error="remote_grant_required"]')).not.toBeNull();
+    expect(probe.container.querySelector('[data-preview-html]')).toBeNull();
+  });
+
+  it('reports the local-connection refusal and keeps the source available', async () => {
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('html_preview_document_origin_requires_local_connection'));
+    const probe = await mountHtmlTab();
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="local_connection_required"]');
+    expect(error).not.toBeNull();
+    await act(async () => { error!.querySelector<HTMLButtonElement>('[data-html-view-source]')!.click(); });
+    expect(probe.container.querySelector('[data-testid="editor"]')).not.toBeNull();
+  });
+
+  it('recovers from an expired capability by reopening it', async () => {
+    htmlPreviewMock.open.mockRejectedValueOnce(new Error('html_preview_expired'));
+    const probe = await mountHtmlTab();
+    const error = probe.container.querySelector<HTMLElement>('[data-html-preview-error="expired"]');
+    expect(error).not.toBeNull();
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      error!.querySelector<HTMLButtonElement>('[data-html-reload]')!.click();
+    });
+    await settle();
+    expect(htmlPreviewMock.open).toHaveBeenCalledTimes(2);
+    expect(probe.container.querySelector('[data-preview-html]')).not.toBeNull();
   });
 });

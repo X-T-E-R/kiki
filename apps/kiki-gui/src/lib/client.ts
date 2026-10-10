@@ -1788,6 +1788,14 @@ export class KikiClient {
     return this.run(this.rest.filesystem.previewHostFile(path, maxBytes));
   }
 
+  async openHtmlPreview(input: import('@kiki/protocol').HtmlPreviewRequest, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<import('@kiki/protocol').HtmlPreviewResponse> {
+    return this.run(this.rest.filesystem.openHtmlPreview(input, options));
+  }
+
+  async closeHtmlPreview(previewId: string, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<void> {
+    return this.run(this.rest.filesystem.closeHtmlPreview(previewId, options));
+  }
+
   private async cachedPreviewBytes(
     key: string,
     read: (etag?: string) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,

@@ -54,6 +54,7 @@ export function isOriginAllowed(
   host: string | undefined,
   allowed: readonly string[],
 ): boolean {
+  if (origin === 'null' || isHtmlDocumentOrigin(origin)) return false;
   const oh = originHost(origin);
   if (oh === undefined) {
     return true;
@@ -69,6 +70,11 @@ export function isOriginAllowed(
     }
   }
   return allowed.includes(origin as string);
+}
+
+function isHtmlDocumentOrigin(origin: string | undefined): boolean {
+  const host = originHost(origin);
+  return host !== undefined && stripPort(host).endsWith('.kiki-document.localhost');
 }
 
 function isLoopbackHost(h: string): boolean {
@@ -102,6 +108,8 @@ export function createOriginHook(
   const allowed = opts.allowedOrigins ?? [];
   return async (req, reply) => {
     const origin = req.headers.origin;
+    if (isHtmlDocumentOrigin(origin)) return reply.code(403).send({ code: 40301, msg: 'html_document_origin_not_allowed' });
+    if (origin === 'null' && req.url.startsWith('/api/')) return reply.code(403).send({ code: 40101, msg: 'opaque_origin_not_allowed' });
     if (origin === undefined) {
       return;
     }

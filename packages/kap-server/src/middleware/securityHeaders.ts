@@ -7,7 +7,7 @@ export interface SecurityHeadersOptions {
 
 const HSTS_VALUE = 'max-age=31536000';
 const CONTENT_SECURITY_POLICY =
-  "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'";
+  "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*";
 
 /**
  * Build the `onSend` hook. Returns the payload unchanged so Fastify continues
@@ -19,7 +19,9 @@ export function createSecurityHeadersHook(
   return async (_req, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', 'no-referrer');
-    reply.header('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    if ((_req.routeOptions.config as { htmlPreviewResource?: boolean }).htmlPreviewResource !== true) {
+      reply.header('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+    }
     if (opts.tls === true) {
       reply.header('Strict-Transport-Security', HSTS_VALUE);
     }

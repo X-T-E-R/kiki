@@ -107,7 +107,7 @@ describe('real password path (verifyPassword)', () => {
     expect((await fetch(`http://127.0.0.1:${server.port}/api/sessions`, { headers: { authorization: 'Bearer test-pw' } })).status).toBe(403);
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('content-security-policy')).toBe(
-      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'",
+      "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src 'self' http://*.kiki-document.localhost:*",
     );
   });
 
