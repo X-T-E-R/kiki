@@ -17,9 +17,10 @@ import { matchesShortcutAction } from './shortcuts';
 export interface FindOptions {
   readonly caseSensitive: boolean;
   readonly wholeWord: boolean;
+  readonly includeToolOutput?: boolean;
 }
 
-export const DEFAULT_FIND_OPTIONS: FindOptions = { caseSensitive: false, wholeWord: false };
+export const DEFAULT_FIND_OPTIONS: FindOptions = { caseSensitive: false, wholeWord: false, includeToolOutput: false };
 
 /** Queries longer than this are cut: a pasted paragraph is not a search. */
 export const FIND_QUERY_MAX = 200;
@@ -62,6 +63,8 @@ export interface FindItem {
   readonly reveal: readonly string[];
   /** Tool leaves have no `data-block-id` of their own; they scope by call id. */
   readonly toolCallId?: string;
+  readonly toolOutput?: boolean;
+  readonly textSelector?: string;
   /** `t12` style turn of the leaf, when it has one. */
   readonly turnId?: string;
   readonly text: string;

@@ -63,7 +63,8 @@ describe('SQLite derived search index', () => {
     const shortAscii = await index.search(q('ap', 'literal'));
     expect(shortAscii.rows[0]?.value.role).toBe('assistant');
     expect(shortAscii.incomplete).toBeUndefined();
-    expect((await hits('main-tool', 'literal'))[0]).toMatchObject({ role: 'tool' });
+    expect((await index.search({ ...q('main-tool', 'literal'), includeToolOutput: true })).rows[0]?.value)
+      .toMatchObject({ role: 'tool' });
     expect(await hits('hidden-sub-tool', 'literal')).toEqual([]);
     expect(await hits('sub dialogue')).toEqual([]);
     expect(await hits('child reply')).toEqual([]);
@@ -79,7 +80,8 @@ describe('SQLite derived search index', () => {
     expect((await hits('visible', 'literal'))[0]).toMatchObject({ role: 'assistant' });
     expect(await hits('hidden-child-tail', 'literal')).toEqual([]);
     expect((await hits('delegated unique prompt'))[0]).toMatchObject({ role: 'user' });
-    expect((await hits('hidden-sub-tool', 'literal'))[0]).toMatchObject({ role: 'tool' });
+    expect((await index.search({ ...q('hidden-sub-tool', 'literal'), includeToolOutput: true })).rows[0]?.value)
+      .toMatchObject({ role: 'tool' });
     index.close();
     index = await SqliteSearchIndex.open(join(home, 'index.sqlite'));
     index.resetReadCounters();
@@ -230,7 +232,7 @@ describe('SQLite derived search index', () => {
     await index.syncSession(session());
     expect(await hits('A'.repeat(300), 'literal')).toEqual([]);
     expect(await hits('needle', 'literal')).toEqual([]);
-    expect((await hits('main trace', 'literal'))[0]?.role).toBe('tool');
+    expect((await index.search({ ...q('main trace', 'literal'), includeToolOutput: true })).rows[0]?.value.role).toBe('tool');
     await writeFile(join(home, 's1', 'state.json'), JSON.stringify({ title: 'second title' }));
     await index.syncSession(session());
     expect(await hits('first title', 'literal')).toEqual([]);

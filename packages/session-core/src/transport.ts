@@ -88,7 +88,7 @@ export interface SearchMessageHit {
   workspace_id: string;
   session_title: string;
   agent_id: string;
-  role: 'user' | 'assistant' | 'title';
+  role: 'user' | 'assistant' | 'tool' | 'title';
   snippet: string;
   time: number;
   turn?: number;

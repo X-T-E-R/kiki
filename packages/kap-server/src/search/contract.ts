@@ -23,6 +23,8 @@ export interface GlobalSearchQuery {
   readonly workspaceId?: string;
   /** Restrict to one document role. */
   readonly role?: 'user' | 'assistant' | 'tool' | 'title';
+  /** Include tool-result text in an otherwise conversation-only search. */
+  readonly includeToolOutput?: boolean;
   /** Epoch ms, inclusive bounds. */
   readonly startTime?: number;
   readonly endTime?: number;

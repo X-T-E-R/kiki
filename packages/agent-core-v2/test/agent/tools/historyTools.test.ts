@@ -147,7 +147,9 @@ describe('history tools', () => {
     source.search = vi.fn(async () => ({ items: [], hasMore: true, pageToken: 'backend-page',
       source: 'index' as const, indexState: { state: 'ready' } }));
     const tool = new HistorySearchTool(source, session, workspaces, caller, sessions);
-    const first = await run(tool, { query: 'needle', scope: 'workspace', mode: 'literal', limit: 2 });
+    const first = await run(tool, {
+      query: 'needle', scope: 'workspace', mode: 'literal', include_tool_output: true, limit: 2,
+    });
     const next = await run(tool, { cursor: first.data.next_cursor });
     expect(next.result.isError).not.toBe(true);
     expect(source.search).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -155,6 +157,8 @@ describe('history tools', () => {
     }));
     const wrong = await run(tool, { cursor: first.data.next_cursor, mode: 'terms' });
     expect(wrong.result.isError).toBe(true);
+    const wrongScope = await run(tool, { cursor: first.data.next_cursor, include_tool_output: false });
+    expect(wrongScope.result.isError).toBe(true);
     expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
   });
 

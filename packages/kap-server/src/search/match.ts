@@ -35,6 +35,7 @@ export interface NormalizedQuery {
   /** Restrict to one workspace. */
   readonly workspaceId?: string;
   readonly role?: 'user' | 'assistant' | 'tool' | 'title';
+  readonly includeToolOutput?: boolean;
   readonly startTime?: number;
   readonly endTime?: number;
   readonly sort: 'score' | 'time_desc' | 'time_asc';
@@ -209,6 +210,7 @@ export function matchDocs(
     if (q.container?.sessionId !== undefined && doc.sessionId !== q.container.sessionId) continue;
     if (q.container?.agentId !== undefined && doc.agentId !== q.container.agentId) continue;
     if (q.workspaceId !== undefined && doc.workspaceId !== q.workspaceId) continue;
+    if (doc.role === 'tool' && q.includeToolOutput !== true && q.role !== 'tool') continue;
     if (q.role !== undefined && doc.role !== q.role) continue;
     if (q.startTime !== undefined && doc.time < q.startTime) continue;
     if (q.endTime !== undefined && doc.time > q.endTime) continue;
@@ -279,6 +281,7 @@ export function tokenFingerprint(q: NormalizedQuery, source: GlobalSearchSource)
     q.container?.agentId,
     q.workspaceId,
     q.role,
+    q.includeToolOutput,
     q.startTime,
     q.endTime,
     q.sort,

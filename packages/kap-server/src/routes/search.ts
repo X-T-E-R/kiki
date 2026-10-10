@@ -39,6 +39,7 @@ function toServiceQuery(body: SearchMessagesBody): GlobalSearchQuery {
         : { sessionId: body.container.session_id, agentId: body.container.agent_id },
     workspaceId: body.workspace_id,
     role: body.role,
+    includeToolOutput: body.include_tool_output,
     startTime: body.start_time,
     endTime: body.end_time,
     sort: body.sort,
@@ -88,7 +89,7 @@ export function registerSearchRoutes(app: SearchRouteHost, core: Scope): void {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
       },
       description:
-        'Global full-text search over user messages, assistant replies, tool results and session titles across all sessions',
+        'Global full-text search over conversation text and session titles across all sessions; tool results require include_tool_output',
       tags: ['search'],
     },
     async (req, reply) => {

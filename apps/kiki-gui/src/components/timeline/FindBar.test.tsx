@@ -178,14 +178,24 @@ describe('find matching', () => {
     expect(buildFindPattern('', { caseSensitive: false, wholeWord: false })).toBeNull();
   });
 
-  it('indexes folded work: thinking, tool input and output, message text without markdown', () => {
+  it('indexes conversation text by default and only tool output when selected', () => {
     const items = buildFindItems(foldedSession());
     const pattern = buildFindPattern('needle', { caseSensitive: false, wholeWord: false });
-    const matches = collectMatches(items, pattern);
-    const byBlock = new Map<string, number>();
-    for (const match of matches) byBlock.set(match.item.blockId, (byBlock.get(match.item.blockId) ?? 0) + 1);
-    expect(Object.fromEntries(byBlock)).toEqual({ u1: 1, th1: 1, tool1: 3, a1: 2 });
-    // Markdown markers are not part of what the reader sees.
+    const count = (items: ReturnType<typeof buildFindItems>) => {
+      const byBlock = new Map<string, number>();
+      for (const match of collectMatches(items, pattern)) byBlock.set(match.item.blockId, (byBlock.get(match.item.blockId) ?? 0) + 1);
+      return Object.fromEntries(byBlock);
+    };
+    expect(count(items)).toEqual({ u1: 1, a1: 2 });
+    expect(count(buildFindItems(foldedSession(), true))).toEqual({ u1: 1, tool1: 2, a1: 2 });
+    const sources = [user('body', 'body-token', 't1'), think('thought', 'thought-token', 't1'), tool('result', 'param-token', 'output-token', 't1')];
+    for (const include of [false, true]) {
+      const indexed = buildFindItems(sources, include).map((item) => item.text).join('\n');
+      expect(indexed).toContain('body-token');
+      expect(indexed.includes('output-token')).toBe(include);
+      expect(indexed).not.toContain('thought-token');
+      expect(indexed).not.toContain('param-token');
+    }
     expect(items.find((item) => item.blockId === 'a1')?.text).toBe('Found it: needle lives in src/needle.ts.');
   });
 
@@ -236,18 +246,25 @@ describe('find bar in the timeline', () => {
     expect(document.activeElement).toBe(input);
     await typeQuery(input, 'needle');
     const count = () => container.querySelector('[data-find-count]')?.textContent;
-    expect(count()).toBe('1 / 7');
+    expect(count()).toBe('1 / 3');
     await act(async () => { press(input, { key: 'Enter' }); });
     await settle();
-    expect(count()).toBe('2 / 7');
+    expect(count()).toBe('2 / 3');
     await act(async () => { press(input, { key: 'Enter', shiftKey: true }); });
     await act(async () => { press(input, { key: 'Enter', shiftKey: true }); });
     await settle();
-    expect(count()).toBe('7 / 7');
-    // F3 from anywhere steps too.
+    expect(count()).toBe('3 / 3');
     await act(async () => { press(document.body, { key: 'F3' }); });
     await settle();
-    expect(count()).toBe('1 / 7');
+    expect(count()).toBe('1 / 3');
+    const tools = container.querySelector<HTMLInputElement>('[data-find-tools]')!;
+    expect(tools.checked).toBe(false);
+    await act(async () => { tools.click(); });
+    await settle();
+    expect(count()).toBe('1 / 5');
+    await act(async () => { tools.click(); });
+    await settle();
+    expect(count()).toBe('1 / 3');
     await typeQuery(input, 'haystack');
     expect(count()).toBe('No results');
     expect(container.querySelector<HTMLButtonElement>('[data-find-next]')?.disabled).toBe(true);
@@ -268,11 +285,11 @@ describe('find bar in the timeline', () => {
     press(document.body, { key: 'f', ctrlKey: true });
     await settle();
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
-    await typeQuery(input, 'prob');
+    await typeQuery(input, 'Found');
     await settle(120);
-    await typeQuery(input, 'probably in');
+    await typeQuery(input, 'Found it');
     await settle(120);
-    expect(registry.get('kiki-find-current')?.items.map((range) => range.toString())).toEqual(['probably in']);
+    expect(registry.get('kiki-find-current')?.items.map((range) => range.toString())).toEqual(['Found it']);
     vi.unstubAllGlobals();
     vi.stubGlobal('ResizeObserver', NoopResizeObserver);
     off();
@@ -287,12 +304,11 @@ describe('find bar in the timeline', () => {
     const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
     await typeQuery(input, 'probably in config');
     await settle(120);
-    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
-    // The history fold opened, and inside it the thinking row's own body.
-    const thinking = container.querySelector('[data-history-fold-open] [data-block-id="th1"]');
-    expect(thinking).not.toBeNull();
-    expect(thinking?.textContent).toContain('the needle is probably in config');
-    // A tool's output inside the fold opens its card.
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
+    expect(container.querySelector('[data-history-fold-open]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLInputElement>('[data-find-tools]')!.click(); });
+    await settle();
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
     await typeQuery(input, 'export const');
     await settle(120);
     const card = container.querySelector('[data-tool-id="tool1"]');

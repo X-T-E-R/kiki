@@ -64,7 +64,7 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   const fingerprint = `${source.size}:${source.mtimeNs}:${source.ctimeNs}`;
   const order = search.sort ?? 'relevance';
   const requestHash = createHash('sha256').update(JSON.stringify([input.workspace, input.session, input.agent,
-    search.query, search.mode, order, search.role, search.after, search.before, search.pageSize])).digest('hex');
+    search.query, search.mode, search.includeToolOutput, order, search.role, search.after, search.before, search.pageSize])).digest('hex');
   const cursor = search.orderedCursor;
   if (cursor !== undefined && (cursor.asOf !== asOf || cursor.fingerprint !== fingerprint ||
       cursor.incarnation !== input.incarnation || cursor.requestHash !== requestHash)) throw new Error('stale_scan_cursor');
@@ -113,8 +113,8 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
       input.signal?.throwIfAborted();
       const limit = Math.min(64, input.maxRecords - recordsRead);
       const candidates = db.searchRows({ workspace: input.workspace, session: input.session, agent: input.agent,
-        direction: order === 'oldest' ? 'asc' : 'desc', after, role: search.role,
-        startTime: search.after, endTime: search.before, limit });
+        direction: order === 'oldest' ? 'asc' : 'desc', after, includeToolOutput: search.includeToolOutput,
+        role: search.role, startTime: search.after, endTime: search.before, limit });
       recordsRead += candidates.length;
       if (candidates.length === 0) { complete = true; break; }
       for (const [index, candidate] of candidates.entries()) {

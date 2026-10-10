@@ -20,7 +20,8 @@ export const HistorySearchInputSchema = z.object({
   workspace_id: z.string().min(1).max(512).optional().describe('Defaults to this workspace; another workspace requires access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent in the current session, or main in another session/workspace.'),
   include_subagents: z.boolean().optional().describe('Search all readable agents in the selected scope; mutually exclusive with agent_id.'),
-  role: z.enum(['user', 'assistant', 'tool']).optional().describe('Optional exact source role; by default search all three.'),
+  include_tool_output: z.boolean().optional().describe('Include tool-result text; omitted or false searches conversation user and assistant text only. Thinking, tool names, and tool parameters are never searched.'),
+  role: z.enum(['user', 'assistant', 'tool']).optional().describe('Optional exact source role. role=tool explicitly searches tool-result text. Omit to search conversation text only unless include_tool_output is true.'),
   after: z.iso.datetime({ offset: true }).optional().describe('Include matches at or after this RFC3339 timestamp with timezone.'),
   before: z.iso.datetime({ offset: true }).optional().describe('Exclude matches at or after this RFC3339 timestamp with timezone.'),
   sort: z.enum(['relevance', 'newest', 'oldest']).optional().describe('Defaults to relevance. Transcript fallback ranks lexical match scores only within each bounded page and scans newest-first across pages; later pages may have stronger matches. newest/oldest order matched text by time with stable ID ties. A cold navigation projection may need preparation pages before hits. Peer scope always uses newest-first.'),
@@ -108,6 +109,7 @@ export interface IHistoryArchive {
     sessionId?: string;
     agentId?: string;
     includeSubagents?: boolean;
+    includeToolOutput?: boolean;
     role?: 'user' | 'assistant' | 'tool';
     after?: number;
     before?: number;
@@ -238,7 +240,7 @@ function decodeSearchCursor(value: string): SearchCursor {
 export class HistorySearchTool extends HistoryToolBase implements AgentTool<SearchInput> {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistorySearch';
-  readonly description = 'Find earlier user, assistant, or tool text. Defaults to this session and this agent, with auto phrase matching. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
+  readonly description = 'Find earlier conversation text. Defaults to this session and this agent, with auto phrase matching over user and assistant text only; set include_tool_output=true or role=tool to include tool results. Thinking, tool names, and tool parameters are never searched. To search other sessions use scope=workspace or select a session_id; include_subagents explicitly expands to other readable agents. scope=peer searches only cross-thread messages in the selected workspace, newest-first, with optional session_id; peer hits carry communication message/endpoints rather than transcript turns or HistoryRead refs. This is lexical search. Transcript fallback prepares visibility before returning hits; relevance is page-local, not a global ranking, and continuation scans newest-first. Check coverage when results may be partial; use a hit ref when present or its turn/step with HistoryRead. Pass only cursor to continue available pages; use HistoryList without search words.';
   readonly parameters = toInputJsonSchema(HistorySearchInputSchema, (schema) => {
     schema['anyOf'] = [{ required: ['query'] }, { required: ['cursor'] }];
   });
@@ -300,6 +302,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
           page = await this.archive.search({
             query: request.query!, peer: scope === 'peer', mode: request.mode ?? 'auto', workspaceId: target.id,
             sessionId, agentId, includeSubagents: request.include_subagents,
+            includeToolOutput: request.include_tool_output,
             role: request.role, after: request.after === undefined ? undefined : Date.parse(request.after),
             before: request.before === undefined ? undefined : Date.parse(request.before),
             sort: request.sort, source: request.source, pageSize: request.limit ?? SEARCH_DEFAULT_LIMIT,

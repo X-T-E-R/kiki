@@ -33,6 +33,10 @@ beforeEach(async () => {
   await writeFile(join(home, 'sessions', WS, 's1', 'state.json'), JSON.stringify({ title: '苹果 title' }));
   await writeFile(join(home, 'sessions', WS, 's1', 'agents', 'main', 'wire.jsonl'), [
     user('苹果 first C++', T), step('u1', 2), assistant('苹果 reply C++', T + 20, 'u1'),
+    JSON.stringify({ type: 'context.append_loop_event', time: T + 25,
+      event: { type: 'tool.call', stepUuid: 'u1', toolCallId: 'tool-1', name: 'paramsneedle', args: { query: 'paramsneedle' } } }),
+    JSON.stringify({ type: 'context.append_loop_event', time: T + 26,
+      event: { type: 'tool.result', toolCallId: 'tool-1', result: { output: 'outputneedle' } } }),
     user('苹果 undone', T + 30), JSON.stringify({ type: 'context.undo', count: 1 }),
     user('苹果 redone', T + 40),
   ].map((line) => `${line}\n`).join(''));
@@ -78,7 +82,8 @@ it.each(['minidb', 'sqlite'] as const)('preserves searchService integration case
     const mode = input.mode ?? 'terms';
     const q: NormalizedQuery = { query: input.query, mode, op: input.op ?? 'AND',
       sort: input.sort ?? 'score', pageSize: input.pageSize ?? 20, container: input.container,
-      role: input.role, workspaceId: input.workspaceId, startTime: input.startTime, endTime: input.endTime,
+      role: input.role, includeToolOutput: input.includeToolOutput === true || input.role === 'tool',
+      workspaceId: input.workspaceId, startTime: input.startTime, endTime: input.endTime,
       termsQuery: mode === 'terms' ? [...new Set(tokenize(input.query))] : undefined,
       literalQuery: mode === 'literal' ? normalizeLiteral(input.query) : undefined };
     const page = await sqlite!.search(q, input.pageToken);
@@ -101,6 +106,12 @@ it.each(['minidb', 'sqlite'] as const)('preserves searchService integration case
     .toEqual([['user', 's2'], ['assistant', 's1'], ['user', 's1']]);
   expect((await search({ query: 'reply', role: 'assistant' })).items[0]?.stepId).toBe('t0.2');
   expect((await search({ query: 'title', role: 'title' })).items[0]?.role).toBe('title');
+  expect((await search({ query: 'outputneedle' })).items).toEqual([]);
+  expect((await search({ query: 'paramsneedle' })).items).toEqual([]);
+  expect((await search({ query: 'outputneedle', includeToolOutput: true })).items.map((r) => r.role))
+    .toEqual(['tool']);
+  expect((await search({ query: 'outputneedle', role: 'tool' })).items.map((r) => r.role))
+    .toEqual(['tool']);
   await expect(search({ ...query, query: '梨子', pageToken: first.pageToken }))
     .rejects.toMatchObject({ reason: 'invalid_page_token' });
   await rm(join(home, 'sessions', WS, 's2'), { recursive: true });

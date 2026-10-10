@@ -308,7 +308,11 @@ function externalOutput(output: unknown): { text?: string; rawInput?: unknown; r
   return { text: typeof value['text'] === 'string' ? value['text'] : undefined, rawInput: value['rawInput'], rawOutput: value['rawOutput'], media: Array.isArray(value['media']) ? value['media'] : undefined };
 }
 
-function OutputView({ output, agentId, island = false, external = false }: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
+function OutputView(props: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
+  return <div data-tool-record-field="output"><OutputContent {...props} /></div>;
+}
+
+function OutputContent({ output, agentId, island = false, external = false }: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
   const { t, locale } = useI18n();
   if (output === undefined || output === null) return null;
   if (external) {

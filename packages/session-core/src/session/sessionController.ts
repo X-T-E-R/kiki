@@ -1375,28 +1375,36 @@ export class SessionController {
     return turns;
   }
 
-  async completeTurnContent(agentId: string, ordinal: number, signal?: AbortSignal): Promise<void> {
+  async completeTurnContent(agentId: string, ordinal: number, signal?: AbortSignal, includeToolOutput = false): Promise<void> {
     let turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') throw new Error('Search target is not loaded');
     await this.completeContentRead(agentId, { kind: 'turn', id: turn.turnId }, ['steps', 'prompt'], signal);
     turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') return;
     for (const step of turn.steps) for (const frame of step.frames) {
-      const roots = [...new Set((frame.contentRefs ?? []).map((ref) => String(ref.path[0])))];
-      if (roots.length) await this.completeContentRead(agentId, { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId }, roots, signal);
+      if (frame.kind !== 'text' && !(frame.kind === 'tool' && includeToolOutput)) continue;
+      const root = frame.kind === 'tool' ? 'output' : 'text';
+      if ((frame.contentRefs ?? []).some((ref) => ref.path[0] === root)) await this.completeContentRead(agentId, { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId }, [root], signal);
     }
   }
 
-  async findTurnContentRange(agentId: string, ordinal: number, pattern: RegExp, signal?: AbortSignal): Promise<{ ref: ContentRef; offset: number; toolCallId?: string } | undefined> {
-    await this.completeTurnContent(agentId, ordinal, signal);
+  async findTurnContentRange(agentId: string, ordinal: number, pattern: RegExp, signal?: AbortSignal, includeToolOutput = false): Promise<{ ref: ContentRef; offset: number; toolCallId?: string } | undefined> {
+    await this.completeTurnContent(agentId, ordinal, signal, includeToolOutput);
     const turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
     if (turn?.kind !== 'turn') throw new Error('Search target changed');
     const fields = [
       ...(turn.contentRefs ?? []).map((ref) => ({ ref, toolCallId: undefined as string | undefined })),
-      ...turn.steps.flatMap((step) => step.frames.flatMap((frame) => (frame.contentRefs ?? []).map((ref) => ({ ref, toolCallId: frame.kind === 'tool' ? frame.toolCallId : undefined })))),
+      ...turn.steps.flatMap((step) => step.frames.flatMap((frame) => {
+        if (frame.kind === 'thinking' || frame.kind === 'notice') return [];
+        if (frame.kind === 'tool' && !includeToolOutput) return [];
+        if (frame.kind === 'text' && frame.role !== 'assistant' && frame.role !== 'user') return [];
+        return (frame.contentRefs ?? []).map((ref) => ({ ref, toolCallId: frame.kind === 'tool' ? frame.toolCallId : undefined }));
+      })),
     ];
     for (const { ref, toolCallId } of fields) {
       if (ref.kind !== 'text') continue;
+      const root = String(ref.path[0]);
+      if (toolCallId === undefined ? root !== 'prompt' && root !== 'text' : root !== 'output') continue;
       let tail = '';
       for (let offset = 0; offset < ref.total;) {
         signal?.throwIfAborted();

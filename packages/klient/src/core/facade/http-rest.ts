@@ -137,7 +137,8 @@ export interface HttpRestSearchMessagesBody {
   readonly op?: 'AND' | 'OR';
   readonly container?: { readonly session_id?: string; readonly agent_id?: string };
   readonly workspace_id?: string;
-  readonly role?: 'user' | 'assistant' | 'title';
+  readonly role?: 'user' | 'assistant' | 'tool' | 'title';
+  readonly include_tool_output?: boolean;
   readonly start_time?: number;
   readonly end_time?: number;
   readonly sort?: 'score' | 'time_desc' | 'time_asc';
@@ -150,7 +151,7 @@ export interface HttpRestSearchMessageHit {
   readonly workspace_id: string;
   readonly session_title: string;
   readonly agent_id: string;
-  readonly role: 'user' | 'assistant' | 'title';
+  readonly role: 'user' | 'assistant' | 'tool' | 'title';
   readonly snippet: string;
   readonly time: number;
   readonly turn?: number;

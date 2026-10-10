@@ -93,6 +93,7 @@ export function useSessionSearch(input: {
   readonly allowedSessionIds?: ReadonlySet<string>;
   readonly queryKeyPrefix?: string;
   readonly pageSize?: number;
+  readonly includeToolOutput?: boolean;
 }): SessionSearchState {
   const { client } = useConnection();
   const parsed = useMemo(() => parseSearchQuery(input.text), [input.text]);
@@ -144,8 +145,9 @@ export function useSessionSearch(input: {
   const contentActive = isSearchable(debounced.text);
   const debouncedScope = debounced.scopeKey === '' ? [] : debounced.scopeKey.split(',');
 
+  const includeToolOutput = input.includeToolOutput === true;
   const query = useInfiniteQuery({
-    queryKey: [input.queryKeyPrefix ?? 'global-search', debounced.text, debounced.role ?? '', debounced.scopeKey],
+    queryKey: [input.queryKeyPrefix ?? 'global-search', debounced.text, debounced.role ?? '', debounced.scopeKey, includeToolOutput],
     queryFn: ({ signal, pageParam }) =>
       client.searchMessages(
         buildContentSearchBody({
@@ -154,6 +156,7 @@ export function useSessionSearch(input: {
           workspaceIds: debouncedScope,
           pageSize: input.pageSize,
           pageToken: pageParam,
+          includeToolOutput,
         }),
         signal,
       ),

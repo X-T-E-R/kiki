@@ -223,7 +223,8 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   searchRows(input: { workspace: string; session: string; agent: string; direction: 'asc' | 'desc';
-    after?: { time: number; key: string }; role?: 'user' | 'assistant' | 'tool';
+    after?: { time: number; key: string }; includeToolOutput?: boolean;
+    role?: 'user' | 'assistant' | 'tool';
     startTime?: number; endTime?: number; limit: number }): Array<{ key: string; time: number; row: HistoryNavRow }> {
     if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 64) throw new Error('invalid history navigation page');
     const where = ["r.workspace=? AND r.session=? AND r.agent=? AND r.active=1",
@@ -233,6 +234,8 @@ export class HistoryNavigationDb implements NavigationStore {
     if (input.role !== undefined) {
       where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
       values.push(input.role);
+    } else if (input.includeToolOutput !== true) {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='tool'");
     }
     if (input.startTime !== undefined) { where.push('r.time>=?'); values.push(input.startTime); }
     if (input.endTime !== undefined) { where.push('r.time<?'); values.push(input.endTime); }

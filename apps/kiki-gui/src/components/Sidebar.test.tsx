@@ -409,6 +409,29 @@ describe('Sidebar thread-link titles', () => {
 });
 
 describe('Sidebar global search pagination', () => {
+  it('separates tool output scope caches and page tokens when toggled on and back off', async () => {
+    searchMessages.mockImplementation(async (body: { include_tool_output?: boolean; page_token?: string }) =>
+      body.include_tool_output ? page([hit({ session_id: 's1', role: 'tool', snippet: 'output-token' })], false)
+        : body.page_token === 'body-next' ? page([A2], false) : page([A1], true, 'body-next'));
+    const { container } = await mount();
+    await typeQuery(container, 'alpha');
+    await waitForText(container, 'alpha one');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-search-load-more]')!.click(); });
+    await waitForText(container, 'alpha two');
+    const tools = container.querySelector<HTMLInputElement>('[data-search-tools]')!;
+    expect(tools.checked).toBe(false);
+    await act(async () => { tools.click(); });
+    expect(container.textContent).not.toContain('alpha two');
+    await waitForText(container, 'output-token');
+    expect(container.querySelector('[data-search-load-more]')).toBeNull();
+    expect(searchMessages.mock.calls.at(-1)?.[0]).toMatchObject({ include_tool_output: true });
+    expect(searchMessages.mock.calls.at(-1)?.[0].page_token).toBeUndefined();
+    await act(async () => { tools.click(); });
+    await waitForText(container, 'alpha two');
+    expect(container.textContent).not.toContain('output-token');
+    expect(searchMessages.mock.calls.filter(([body]) => body.include_tool_output === true)).toHaveLength(1);
+  });
+
   it('appends the second page instead of replacing the first', async () => {
     searchMessages.mockImplementation(async (body: { query: string; page_token?: string }) => {
       if (body.query !== 'alpha') return page([], false);

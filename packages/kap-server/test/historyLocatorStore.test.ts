@@ -231,7 +231,7 @@ describe('history navigation source rows', () => {
       const nav = new HistoryLocatorStore(db, transcript);
       const [prompt, tool] = await Promise.all([
         nav.scan('s', 'main', undefined, { query: '原话', mode: 'auto', pageSize: 5 }),
-        nav.scan('s', 'main', undefined, { query: 'needle', mode: 'auto', pageSize: 5 }),
+        nav.scan('s', 'main', undefined, { query: 'needle', mode: 'auto', includeToolOutput: true, pageSize: 5 }),
       ]);
       const sourceRows = (await db.ready()).rowsAtSource('ws', 's', 'main', 0);
       expect(sourceRows).toEqual([expect.objectContaining({ part: 'prompt', role: 'user', active: true })]);
@@ -259,7 +259,7 @@ describe('history navigation source rows', () => {
       }
       const cancelled = new AbortController();
       cancelled.abort(new Error('one search caller cancelled'));
-      const independent = { query: 'needle', mode: 'literal' as const, pageSize: 5 };
+      const independent = { query: 'needle', mode: 'literal' as const, includeToolOutput: true, pageSize: 5 };
       const [rejected, allowed] = await Promise.allSettled([
         nav.scan('s', 'main', cancelled.signal, independent), nav.scan('s', 'main', undefined, independent),
       ]);
@@ -491,13 +491,16 @@ describe('history navigation source rows', () => {
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
       const nav = new HistoryLocatorStore(memoryStore(), transcript);
       const result = await nav.scan('s', 'main', undefined, {
-        query: 'needle𠮷', mode: 'auto', pageSize: 5,
+        query: 'needle𠮷', mode: 'auto', includeToolOutput: true, pageSize: 5,
       });
       expect(result?.hits).toEqual([expect.objectContaining({ role: 'tool', turn: 4, stepId: 't4.1', ref: expect.any(String) })]);
       const row = await nav.row('ws', 's', 'main', 'frame', 4, 't4.1', 'uuid-1.call-1:output', 'output');
       const archive = historyArchiveSeed(() => ({ accessor: { get: () => undefined } }) as unknown as Scope,
         () => transcript, () => nav)[0]![1] as IHistoryArchive;
-      const page = await archive.search({ query: 'needle𠮷', mode: 'auto', workspaceId: 'ws',
+      const hidden = await archive.search({ query: 'needle𠮷', mode: 'auto', workspaceId: 'ws',
+        sessionId: 's', agentId: 'main', pageSize: 5 });
+      expect(hidden.items).toEqual([]);
+      const page = await archive.search({ query: 'needle𠮷', mode: 'auto', includeToolOutput: true, workspaceId: 'ws',
         sessionId: 's', agentId: 'main', pageSize: 5 });
       expect(page.items).toEqual([expect.objectContaining({ ref: expect.any(String), turn: 4, stepId: 't4.1' })]);
       expect(page.coverage).toMatchObject({ complete: true, domain: 'full_text' });

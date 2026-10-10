@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
 import {
@@ -32,8 +33,10 @@ const HISTORY_FALLBACK_CHUNK_BYTES = 64 << 10;
 const SEARCH_INDEX_UNAVAILABLE = 'search index unavailable';
 
 interface FallbackInput {
+  readonly workspaceId?: string;
   readonly query: string;
   readonly mode?: 'auto' | 'all' | 'any' | 'terms' | 'literal';
+  readonly includeToolOutput?: boolean;
   readonly role?: 'user' | 'assistant' | 'tool';
   readonly after?: number;
   readonly before?: number;
@@ -70,6 +73,7 @@ function fallbackHits(
 ): HistoryHit[] {
   if (snapshot === undefined) return [];
   const plan = planHistoryQuery(input.query, input.mode ?? 'auto');
+  const includeToolOutput = input.includeToolOutput === true || input.role === 'tool';
   const hits: HistoryHit[] = [];
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
@@ -93,7 +97,8 @@ function fallbackHits(
       for (const frame of step.frames) {
         const role = frame.kind === 'text' && frame.role === 'assistant'
           ? 'assistant' : frame.kind === 'tool' ? 'tool' : undefined;
-        if (role === undefined || (input.role !== undefined && input.role !== role)) continue;
+        if (role === undefined || role === 'tool' && !includeToolOutput ||
+            input.role !== undefined && input.role !== role) continue;
         const text = frame.kind === 'text' ? frame.text.trim() :
           frame.kind === 'tool' ? outputText(frame.output).trim() : '';
         const match = text.length > 0 ? matchHistoryText(text, plan) : undefined;
@@ -176,10 +181,11 @@ async function fallbackSearch(
 }
 
 interface ScanCursor {
-  readonly v: 1;
+  readonly v: 1 | 3;
   readonly offset: number;
   readonly incarnation: string;
   readonly asOf: number;
+  readonly requestHash?: string;
 }
 
 function parseScanCursor(value: string | undefined): ScanCursor | undefined {
@@ -189,10 +195,17 @@ function parseScanCursor(value: string | undefined): ScanCursor | undefined {
   catch { throw new Error('invalid_scan_cursor'); }
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid_scan_cursor');
   const c = raw as Partial<ScanCursor>;
-  if (c.v !== 1 || !Number.isSafeInteger(c.offset) || c.offset! < 0 ||
+  if (c.v !== 1 && c.v !== 3 || !Number.isSafeInteger(c.offset) || c.offset! < 0 ||
       typeof c.incarnation !== 'string' || !c.incarnation ||
-      !Number.isSafeInteger(c.asOf) || c.asOf! < c.offset!) throw new Error('invalid_scan_cursor');
+      !Number.isSafeInteger(c.asOf) || c.asOf! < c.offset! ||
+      c.v === 3 && (typeof c.requestHash !== 'string' || !/^[a-f0-9]{64}$/u.test(c.requestHash))) throw new Error('invalid_scan_cursor');
   return c as ScanCursor;
+}
+
+function scanRequestHash(input: FallbackInput): string {
+  return createHash('sha256').update(JSON.stringify([input.workspaceId, input.sessionId, input.agentId,
+    input.query, input.mode, input.includeToolOutput, input.role, input.after, input.before,
+    input.sort, input.pageSize])).digest('hex');
 }
 
 async function navigationSearch(transcript: TranscriptService, nav: HistoryLocatorStore,
@@ -202,7 +215,7 @@ async function navigationSearch(transcript: TranscriptService, nav: HistoryLocat
     try { version = (JSON.parse(Buffer.from(pageToken, 'base64url').toString('utf8')) as { v?: unknown })?.v; }
     catch { throw new Error('invalid_scan_cursor'); }
   }
-  if (!nav.supportsSortedSearch || version === 1) {
+  if (!nav.supportsSortedSearch || version === 1 || version === 3) {
     const page = await legacyNavigationSearch(transcript, nav, input, pageToken, signal);
     return { ...page, warning: 'Legacy transcript scans use source order rather than sort; restart without cursor for sorted navigation.',
       coverage: page.coverage === undefined ? undefined : { ...page.coverage,
@@ -210,7 +223,8 @@ async function navigationSearch(transcript: TranscriptService, nav: HistoryLocat
   }
   const cursor = pageToken === undefined ? undefined : decodeHistorySortedCursor(pageToken);
   const scan = await nav.scan(input.sessionId!, input.agentId!, signal, {
-    query: input.query, mode: input.mode ?? 'auto', role: input.role, after: input.after, before: input.before,
+    query: input.query, mode: input.mode ?? 'auto', includeToolOutput: input.includeToolOutput,
+    role: input.role, after: input.after, before: input.before,
     sort: input.sort ?? 'relevance', pageSize: input.pageSize, orderedCursor: cursor,
   });
   if (scan === undefined) return { items: [], hasMore: false, source: 'fallback',
@@ -243,9 +257,11 @@ async function legacyNavigationSearch(transcript: TranscriptService, nav: Histor
   });
   if (size === undefined) return missing;
   const asOf = size;
+  const requestHash = scanRequestHash(input);
+  if (cursor?.v === 3 && cursor.requestHash !== requestHash) throw new Error('stale_scan_cursor');
   const scan = await nav.scan(input.sessionId!, input.agentId!, signal, {
-    query: input.query, mode: input.mode ?? 'auto', role: input.role,
-    after: input.after, before: input.before, pageSize: input.pageSize, asOf,
+    query: input.query, mode: input.mode ?? 'auto', includeToolOutput: input.includeToolOutput,
+    role: input.role, after: input.after, before: input.before, pageSize: input.pageSize, asOf,
     cursor: cursor === undefined ? undefined : { offset: cursor.offset, incarnation: cursor.incarnation },
   });
   if (scan === undefined) return { items: [], hasMore: false, source: 'fallback',
@@ -253,8 +269,8 @@ async function legacyNavigationSearch(transcript: TranscriptService, nav: Histor
     coverage: { complete: false, domain: 'full_text', gaps: ['source_missing'] } };
   const hits = scan.hits ?? [];
   const stuck = !scan.complete && scan.nextByteOffset <= (cursor?.offset ?? 0);
-  const next = scan.complete || stuck ? undefined : Buffer.from(JSON.stringify({ v: 1,
-    offset: scan.nextByteOffset, incarnation: scan.incarnation, asOf } satisfies ScanCursor)).toString('base64url');
+  const next = scan.complete || stuck ? undefined : Buffer.from(JSON.stringify({ v: 3,
+    offset: scan.nextByteOffset, incarnation: scan.incarnation, asOf, requestHash } satisfies ScanCursor)).toString('base64url');
   return { items: hits.slice(0, input.pageSize), hasMore: next !== undefined, pageToken: next,
     source: 'fallback', continuation: next === undefined ? undefined : 'scan',
     incomplete: stuck ? scan.incompleteReason ?? 'wire_scan_error' : !scan.complete ? 'wire_scan_limit' :
@@ -308,6 +324,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
       sessionId,
       agentId,
       includeSubagents,
+      includeToolOutput,
       role,
       after,
       before,
@@ -321,6 +338,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
     }) => {
       signal?.throwIfAborted();
       planHistoryQuery(query, mode ?? 'auto');
+      const toolOutputScope = includeToolOutput === true || role === 'tool';
       if (peer === true) return peerSearch(getCore().accessor.get(IThreadCommunicationService), {
         query, mode, workspaceId, sessionId, role, after, before, pageSize, pageToken, signal,
       });
@@ -334,7 +352,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
             historyMode: indexedPhrases ? mode : undefined,
             workspaceId, indexOnly: sessionId === undefined,
             container: sessionId === undefined && agentId === undefined
-              ? undefined : { sessionId, agentId }, role, pageSize, pageToken,
+              ? undefined : { sessionId, agentId }, role, includeToolOutput: toolOutputScope, pageSize, pageToken,
             startTime: after, endTime: before === undefined ? undefined : before - 1,
             sort: sort === 'oldest' ? 'time_asc' : sort === 'newest' ? 'time_desc' : 'score',
           });
@@ -365,7 +383,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           warning: "The requested range needs a searchable index or a specific session and agent for a transcript scan.",
         };
       }
-      const fallback = { query, mode, role, after, before, sort, pageSize, sessionId, agentId };
+      const fallback = { workspaceId, query, mode, includeToolOutput: toolOutputScope, role, after, before, sort, pageSize, sessionId, agentId };
       return getNavigation === undefined ? fallbackSearch(getTranscript(), fallback) :
         navigationSearch(getTranscript(), getNavigation(), fallback, pageToken, signal);
     },
