@@ -80,6 +80,12 @@ import {
   type SelectionAnnotation,
   type SelectionSourceAnchor,
   collectDraftAnnotationTargets,
+  boundExecutionChoice,
+  sendsLegacyControl,
+  namesLegacyControl,
+  executionSelectionOf,
+  sameExecutionChoice,
+  type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import {
   assertSessionWritable,
@@ -137,6 +143,7 @@ import { EphemeralBar, TemporaryMark } from './EphemeralBar';
 import { InteractionPlacementContext, type InteractionPlacement, type PlanReviewResponse } from './Interactions';
 import { HarnessMark } from './harness/HarnessMark';
 import { harnessDenies, useSessionHarness, type SessionHarness } from './harness/sessionHarness';
+import { useExecutorCatalog } from './settings/profileEditor/engines';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { pushToast } from '../lib/toasts';
@@ -975,18 +982,97 @@ export function sessionAgentProfileWorkspaceId(session: Session | undefined): st
 export function resolveProfileSwitchSubmission(input: {
   pendingProfile: string | undefined;
   boundProfile: string;
+  /**
+   * Whether the user moved the model, and whether they moved the effort. These
+   * are tracked per control because a pick in one says nothing about the other:
+   * only the control that was actually chosen may be promoted into an override.
+   * Required rather than defaulted, so a caller cannot inherit one control's
+   * touch by forgetting the other.
+   */
   modelTouched: boolean;
+  effortTouched: boolean;
   model: string | undefined;
   thinking: string | undefined;
-}): { profile?: string; model?: string; thinking?: string } {
+  /**
+   * Whether the user moved the approval mode for this message. A run the user
+   * asked to be *bare* must not be handed an approval mode they did not pick:
+   * on the execution path the legacy `permission_mode` is a session override,
+   * so sending Kiki's current mode would decide approvals for a harness whose
+   * own policy they meant to keep.
+   */
+  permissionTouched?: boolean;
+  /** Absent when this caller never deals in approvals; nothing is then sent. */
+  permissionMode?: PermissionMode;
+  /** A confirmed engine pick; sent only while it differs from the bound one. */
+  pendingExecution?: ExecutionChoice | undefined;
+  boundExecution?: ExecutionChoice | undefined;
+}): {
+  profile?: string;
+  execution?: ReturnType<typeof executionSelectionOf>;
+  model?: string;
+  thinking?: string;
+  permissionMode?: PermissionMode;
+} {
+  const executionSwitching = input.pendingExecution !== undefined
+    && !sameExecutionChoice(input.pendingExecution, input.boundExecution);
   const switching =
-    input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile;
-  if (!switching) return { model: input.model, thinking: input.thinking };
+    (input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile) || executionSwitching;
+  // The execution that governs THIS message: the confirmed pick when one is
+  // waiting, otherwise the session's own binding — a session already running a
+  // bare harness must keep withholding Kiki's controls on later messages too,
+  // not only on the message that switched.
+  const governing = executionSwitching ? input.pendingExecution : input.boundExecution;
+  // A switch opens a new generation that runs the incoming binding's own
+  // configuration, so model and effort are left to it unless the user re-picked
+  // them after confirming. The same holds for a profile change — that is the
+  // "old pins must not ride along" rule, and it belongs to the switch itself.
+  //
+  // The one thing a switch does NOT get to relax is ownership. If the incoming
+  // execution names a control in `overrides` — including the `null` fall-through
+  // form — that selection owns the value, and a stale touched flag from before
+  // the switch must not re-send the legacy field and overwrite it. So the
+  // ownership test runs on both paths; only the bare-external default is
+  // switch-specific.
+  //
+  // A plain continuation has no incoming generation to absorb the display
+  // values at all, so there both controls also need the full rule: a control
+  // the user moved is sent, and everything else on a bare external engine stays
+  // with the engine. Gating only the switching branch let the composer's display
+  // value through on every later message of a bare session.
+  const sendModel = namesLegacyControl(governing, 'model')
+    ? false
+    : switching
+      ? input.modelTouched
+      : sendsLegacyControl(governing, 'model', input.modelTouched);
+  const sendThinking = namesLegacyControl(governing, 'thinking')
+    ? false
+    : switching
+      ? input.effortTouched
+      : sendsLegacyControl(governing, 'thinking', input.effortTouched);
+  const sendPermission = sendsLegacyControl(governing, 'permission_mode', input.permissionTouched === true);
   return {
-    profile: input.pendingProfile,
-    model: input.modelTouched ? input.model : undefined,
-    thinking: input.modelTouched ? input.thinking : undefined,
+    ...(input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile
+      ? { profile: input.pendingProfile }
+      : {}),
+    ...(executionSwitching ? { execution: executionSelectionOf(input.pendingExecution!) } : {}),
+    model: sendModel ? input.model : undefined,
+    thinking: sendThinking ? input.thinking : undefined,
+    permissionMode: sendPermission ? input.permissionMode : undefined,
   };
+}
+
+/**
+ * How a pending engine switch names itself in the confirmation: the engine's
+ * catalog label where one is known, the raw id otherwise. A switch to the
+ * native engine is named "Kiki" like every other place that shows it.
+ */
+export function executionSwitchName(
+  choice: ExecutionChoice | undefined,
+  labels: Readonly<Record<string, string>>,
+): string {
+  if (choice === undefined) return '';
+  if (choice.executor === 'native') return labels['__native'] ?? 'Kiki';
+  return labels[choice.executor] ?? choice.executor;
 }
 
 export function withOptimisticUserBlock(
@@ -1426,6 +1512,10 @@ export function SessionView({
   // The right rail disappears when horizontal space is constrained (<1024px, lg breakpoint)
   // rather than showing as a floating overlay drawer. When the window widens (>=1024px),
   // it restores inline following the user's explicit preference (defaults to railOpenByDefault).
+  // Whether the user moved the approval mode for this session's messages, as
+  // opposed to the mode merely being the session's current value. A bare
+  // external engine is run as it is, so an untouched mode is not sent.
+  const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
   const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
   const railOpen = !isNarrowScreen && userRailOpen;
@@ -1467,12 +1557,23 @@ export function SessionView({
     restoredComposer.effortOverride ?? initialOptionsRef.current.thinking,
   );
   // Mid-session main-profile switch: the pick waits as `pendingProfile` until
-  // the next prompt carries it; `profileModelTouched` remembers whether the
-  // user re-picked model/effort AFTER confirming (those then ride along,
-  // overriding the new profile's pins — see resolveProfileSwitchSubmission).
+  // the next prompt carries it. Model and effort remember separately whether
+  // the user moved THAT control after confirming — one shared flag made an
+  // effort pick promote the untouched model id along with it, and a model pick
+  // promote the displayed effort (often `off`), which on the execution path is
+  // a session override the engine would inherit (see resolveProfileSwitchSubmission).
   const [pendingProfile, setPendingProfile] = useState<string | undefined>(undefined);
   const [profileSwitchConfirm, setProfileSwitchConfirm] = useState<string | undefined>(undefined);
-  const [profileModelTouched, setProfileModelTouched] = useState(false);
+  const [modelTouched, setModelTouched] = useState(false);
+  const [effortTouched, setEffortTouched] = useState(false);
+  // Mid-session engine switch, same two-step contract as the profile one: the
+  // confirmed pick waits as `pendingExecution` and the next prompt carries it,
+  // which starts a fresh remote generation instead of steering the running
+  // turn. Restored from composer chrome so a session switch keeps the pick.
+  const [pendingExecution, setPendingExecution] = useState<ExecutionChoice | undefined>(
+    restoredComposer.execution,
+  );
+  const [executionSwitchConfirm, setExecutionSwitchConfirm] = useState<ExecutionChoice | undefined>(undefined);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [batchConfirm, setBatchConfirm] = useState<
     { decision: 'approved' | 'rejected'; ids: readonly string[] } | undefined
@@ -1682,6 +1783,7 @@ export function SessionView({
           goalObjective: chrome.goalObjective,
           modelOverride: chrome.modelOverride,
           effortOverride: chrome.effortOverride,
+          execution: chrome.execution,
         });
       }
       flushDrafts();
@@ -1742,6 +1844,7 @@ export function SessionView({
       goalObjective: '',
       modelOverride,
       effortOverride,
+      execution: pendingExecution,
     });
   }, [
     sessionId,
@@ -1754,6 +1857,7 @@ export function SessionView({
     planGateOverride,
     modelOverride,
     effortOverride,
+    pendingExecution,
   ]);
 
   // A sidebar-initiated undo rewrites this session's history; resync the open
@@ -1921,6 +2025,22 @@ export function SessionView({
   });
 
   const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
+  // What this session is committed to: the engine it runs, and which of that
+  // engine's profiles when one is selected. The binding's `effective` block is
+  // read for display only — a resolved value never becomes an override.
+  const executionBinding = state.session?.agent_config.execution;
+  const boundExecution = useMemo(
+    () => boundExecutionChoice(executionBinding, state.session?.agent_config.profile),
+    [executionBinding, state.session],
+  );
+  const shownExecution = pendingExecution ?? boundExecution;
+  const executionPending = pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution);
+  // Engine names for the confirmation, from the same catalog the panel reads.
+  const executorCatalog = useExecutorCatalog();
+  const executorLabels = useMemo(() => ({
+    __native: t('composer.agentDefaultName'),
+    ...Object.fromEntries(executorCatalog.map((item) => [item.id, item.label])),
+  }), [executorCatalog, t]);
   const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
@@ -2040,13 +2160,16 @@ export function SessionView({
     void submitModelSwitch({ fromModel, toModel, mode: resolved.mode, remember: false });
   }, [currentBoundModel, modelSwitchPrefs, submitModelSwitch]);
   // A model/effort pick made while a profile switch is pending is explicit:
-  // it overrides the incoming profile's pins on the switch prompt.
+  // it overrides the incoming profile's pins on the switch prompt. The same
+  // pick with nothing pending is what says "send this one", so it counts as
+  // touched too — otherwise a bare engine would swallow the user's own pick
+  // along with the display value it is withholding.
   const handleModelChange = useCallback((model: string | undefined) => {
     // An empty conversation has nothing to hand over: the pick rides the next
     // prompt as before, exactly like a pick made while a profile is pending.
     if (pendingProfile !== undefined || !conversationStarted) {
       setModelOverride(model);
-      if (pendingProfile !== undefined) setProfileModelTouched(true);
+      setModelTouched(true);
       return;
     }
     // A live conversation switches the bound model instead: the pick is a
@@ -2121,25 +2244,41 @@ export function SessionView({
       );
     },
   }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
+  const handlePermissionChange = useCallback((mode: PermissionMode | undefined) => {
+    // Clicking the mode back to what the session already had is still a
+    // deliberate choice to approve in this mode, so it counts as touched.
+    permissionTouchedRef.current = true;
+    setPermissionOverride(mode);
+  }, []);
   const handleEffortChange = useCallback((effort: string | undefined) => {
     setEffortOverride(effort);
-    if (pendingProfile !== undefined) setProfileModelTouched(true);
-  }, [pendingProfile]);
+    // Only the effort was moved. Marking the model as touched here is what
+    // promoted the untouched model id into an override, so a pick in one
+    // control must never speak for the other.
+    setEffortTouched(true);
+  }, []);
+  // Applying an incoming binding's pins is that binding taking ownership, not
+  // the user moving a control, so both flags drop together. Kept as one helper
+  // because the two flags are only ever cleared as a pair.
+  const clearTouchedControls = useCallback(() => {
+    setModelTouched(false);
+    setEffortTouched(false);
+  }, []);
 
   const applyPendingProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
     setPendingProfile(name);
     setModelOverride(defaults.model);
     setEffortOverride(defaults.thinking);
-    setProfileModelTouched(false);
-  }, [agentProfilesQuery.data]);
+    clearTouchedControls();
+  }, [agentProfilesQuery.data, clearTouchedControls]);
   const handleAgentProfileChange = useCallback(
     (name: string) => {
       if (name === (pendingProfile ?? boundProfile)) return;
       if (name === boundProfile) {
         // Reverting to the live binding needs no confirm — drop the pending pick.
         setPendingProfile(undefined);
-        setProfileModelTouched(false);
+        clearTouchedControls();
         return;
       }
       if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
@@ -2155,6 +2294,48 @@ export function SessionView({
     applyPendingProfile(profileSwitchConfirm);
     setProfileSwitchConfirm(undefined);
   }, [applyPendingProfile, profileSwitchConfirm]);
+
+  // Engine pick. A live session that has already spoken asks once, because the
+  // next message starts a fresh remote generation; an untouched session applies
+  // immediately, as a profile pick does. Reverting to the live binding only
+  // drops the pending pick. A new profile brings that profile's own model and
+  // effort pins, but a user who re-picked them after confirming keeps theirs.
+  const applyPendingExecution = useCallback((next: ExecutionChoice, options?: { readonly modelTouched?: boolean }) => {
+    const profile = next.profile;
+    const defaults = profile === undefined
+      ? {}
+      : composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], profile);
+    setPendingExecution(next);
+    if (options?.modelTouched !== true) {
+      setModelOverride(defaults.model);
+      setEffortOverride(defaults.thinking);
+      clearTouchedControls();
+    }
+  }, [agentProfilesQuery.data, clearTouchedControls]);
+  // Drops a switch that is still waiting. Re-selecting the bound engine in the
+  // panel has always done this; the chip's cancel button is the same action,
+  // reachable without reopening the panel.
+  const cancelPendingExecution = useCallback(() => {
+    setPendingExecution(undefined);
+    clearTouchedControls();
+  }, [clearTouchedControls]);
+  const handleExecutionChange = useCallback((next: ExecutionChoice) => {
+    if (sameExecutionChoice(next, pendingExecution ?? boundExecution)) return;
+    if (sameExecutionChoice(next, boundExecution)) {
+      cancelPendingExecution();
+      return;
+    }
+    if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
+      applyPendingExecution(next);
+      return;
+    }
+    setExecutionSwitchConfirm(next);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, pendingExecution, state.blocks, state.loaded]);
+  const confirmExecutionSwitchRun = useCallback(() => {
+    if (executionSwitchConfirm === undefined) return;
+    applyPendingExecution(executionSwitchConfirm);
+    setExecutionSwitchConfirm(undefined);
+  }, [applyPendingExecution, executionSwitchConfirm]);
   const refetchAgentProfiles = agentProfilesQuery.refetch;
   const handleContextRebuild = useCallback(async () => {
     const result = await client.rebuildContext(sessionId);
@@ -2280,16 +2461,24 @@ export function SessionView({
         const profileSwitch = resolveProfileSwitchSubmission({
           pendingProfile,
           boundProfile,
-          modelTouched: profileModelTouched,
+          modelTouched,
+          effortTouched,
           model: effectiveModel,
           thinking: effectiveEffort,
+          permissionTouched: permissionTouchedRef.current,
+          permissionMode: permissionOverride ?? state.permissionMode,
+          pendingExecution,
+          boundExecution,
         });
         pendingSendRef.current = true;
         // "Send now" into the running turn: the controller's steer ledger
         // owns the echo from this frame until the delivered frame replaces
         // it (no local pending bubble, so nothing to clear early). A profile
-        // switch has to open its own turn, so it keeps the ordinary path.
-        if (options?.now === true && profileSwitch.profile === undefined) {
+        // or engine switch has to open its own turn, so it keeps the ordinary
+        // path: a steered message runs inside the ACTIVE turn, which cannot
+        // change the binding.
+        const rebindsAgent = profileSwitch.profile !== undefined || profileSwitch.execution !== undefined;
+        if (options?.now === true && !rebindsAgent) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
           updateDraft('');
@@ -2301,7 +2490,7 @@ export function SessionView({
               content,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
-              permissionMode: permissionOverride ?? state.permissionMode,
+              permissionMode: profileSwitch.permissionMode,
               planMode,
               planGate,
             })
@@ -2350,9 +2539,10 @@ export function SessionView({
           text: echoText,
           content,
           profile: profileSwitch.profile,
+          execution: profileSwitch.execution,
           model: profileSwitch.model,
           thinking: profileSwitch.thinking,
-          permissionMode: permissionOverride ?? state.permissionMode,
+          permissionMode: profileSwitch.permissionMode,
           planMode,
           planGate,
           goalObjective: promptGoalObjective(options),
@@ -2379,7 +2569,11 @@ export function SessionView({
             setGoalMode(false);
             // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
             // running turn joins it right away through the queue's steer route.
-            if (options?.now === true && result.status === 'queued') {
+            // A profile switch is the exception — a steered message runs inside
+            // the ACTIVE turn, so it cannot change the binding, and the engine
+            // refuses the steer outright. It stays queued and runs next, which
+            // is exactly the confirmed contract, so there is nothing to report.
+            if (options?.now === true && result.status === 'queued' && !rebindsAgent) {
               void controller.steerQueued(result.prompt_id).catch((error: unknown) => {
                 pushToast({
                   tone: 'error',
@@ -2389,11 +2583,12 @@ export function SessionView({
                 });
               });
             }
-            if (profileSwitch.profile !== undefined) {
+            if (rebindsAgent) {
               setPendingProfile(undefined);
-              setProfileModelTouched(false);
+              setPendingExecution(undefined);
+              clearTouchedControls();
               // No WS frame carries the binding — re-read the record so the
-              // pill shows the new profile immediately.
+              // chip shows the new engine and profile immediately.
               void controller.refreshSession();
             }
           })
@@ -2425,7 +2620,7 @@ export function SessionView({
               shouldClearPendingProfileOnSendError(error)
             ) {
               setPendingProfile(undefined);
-              setProfileModelTouched(false);
+              clearTouchedControls();
             }
           })
           .finally(() => {
@@ -2599,9 +2794,13 @@ export function SessionView({
     effectiveEffort,
     pendingProfile,
     boundProfile,
-    profileModelTouched,
+    modelTouched,
+    effortTouched,
+pendingExecution,
+boundExecution,
     permissionOverride,
     state.permissionMode,
+    clearTouchedControls,
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,
@@ -3595,6 +3794,13 @@ export function SessionView({
             }}
             agentProfile={pendingProfile ?? boundProfile}
             agentProfilePending={profilePending}
+            execution={shownExecution}
+            executionPending={executionPending}
+            onCancelExecution={cancelPendingExecution}
+            executionGrants={{
+              kikiContext: executionBinding?.effective.kiki_context,
+              allowKikiSubagents: executionBinding?.effective.allow_kiki_subagents,
+            }}
             permissionMode={permissionMode}
             planMode={planMode}
             planGate={planGate}
@@ -3625,8 +3831,9 @@ export function SessionView({
             onCompactContext={handleCompactContext}
             onChangeModel={handleModelChange}
             onChangeAgentProfile={handleAgentProfileChange}
+            onChangeExecution={handleExecutionChange}
             onRebuildContext={handleContextRebuild}
-            onChangePermissionMode={setPermissionOverride}
+            onChangePermissionMode={handlePermissionChange}
             onChangePlanMode={setPlanOverride}
             onChangePlanGate={setPlanGateOverride}
             onChangeGoalMode={setGoalMode}
@@ -3675,6 +3882,11 @@ export function SessionView({
     pendingProfile,
     boundProfile,
     profilePending,
+    shownExecution,
+    executionPending,
+    executionBinding,
+    handleExecutionChange,
+    cancelPendingExecution,
     permissionMode,
     planMode,
     planGate,
@@ -3985,6 +4197,28 @@ export function SessionView({
         tone="default"
         onConfirm={confirmProfileSwitchRun}
         onCancel={() => { setProfileSwitchConfirm(undefined); }}
+      />
+      <ConfirmDialog
+        open={executionSwitchConfirm !== undefined}
+        overlayId="confirm-execution-switch"
+        title={t('execution.switchTitle', { engine: executionSwitchName(executionSwitchConfirm, executorLabels) })}
+        body={executionSwitchConfirm?.profile === undefined
+          ? t('execution.switchBareBody')
+          : t('execution.switchBody')}
+        consequences={[
+          // The one thing a user switching engines mid-conversation is unsure
+          // about: what happens to the thread and to what is already here.
+          t('execution.switchFreshContextPlain'),
+          t('execution.switchHistoryKept'),
+          ...(executionSwitchConfirm?.profile === undefined
+            ? [t('execution.switchBareEffects')]
+            : [t('execution.switchProfileEffects', { profile: executionSwitchConfirm?.profile ?? '' })]),
+          ...(composerBusy ? [t('execution.switchRunningTurn')] : []),
+        ]}
+        confirmLabel={t('execution.switchConfirm')}
+        tone="default"
+        onConfirm={confirmExecutionSwitchRun}
+        onCancel={() => { setExecutionSwitchConfirm(undefined); }}
       />
     </MediaPreviewProvider>
   );

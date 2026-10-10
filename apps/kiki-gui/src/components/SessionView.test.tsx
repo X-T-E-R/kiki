@@ -74,6 +74,7 @@ import {
   resolveControlledValue,
   resolvePlanGate,
   resolveProfileSwitchSubmission,
+  executionSwitchName,
   sessionHasStartedConversation,
   withOptimisticUserBlock,
   recoverFailedSubmission,
@@ -611,6 +612,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingProfile: undefined,
         boundProfile: 'agent',
         modelTouched: false,
+        effortTouched: false,
         model: 'provider/model',
         thinking: 'high',
       }),
@@ -623,6 +625,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingProfile: 'agent',
         boundProfile: 'agent',
         modelTouched: false,
+        effortTouched: false,
         model: 'provider/model',
         thinking: undefined,
       }),
@@ -635,6 +638,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingProfile: 'reviewer',
         boundProfile: 'agent',
         modelTouched: false,
+        effortTouched: false,
         model: 'provider/model',
         thinking: 'high',
       }),
@@ -647,10 +651,416 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingProfile: 'reviewer',
         boundProfile: 'agent',
         modelTouched: true,
+        effortTouched: true,
         model: 'provider/other',
         thinking: 'low',
       }),
     ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: 'low' });
+  });
+
+  it('withholds the approval mode of a bare engine the user never chose', () => {
+    // The real defect: `permission_mode` is a session override on the
+    // execution path, so sending the session's current mode decided approvals
+    // for a harness that was explicitly chosen as-is.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: undefined,
+        thinking: undefined,
+        permissionMode: 'manual',
+        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined, permissionMode: undefined });
+  });
+
+  it('sends an approval mode the user picked on a bare engine', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: undefined,
+        thinking: undefined,
+        permissionTouched: true,
+        permissionMode: 'yolo',
+        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined, permissionMode: 'yolo' });
+  });
+
+  it('leaves the approval mode alone when the execution names it', () => {
+    // The execution already states the value; a second statement would either
+    // conflict or silently turn `null` ("fall through") back into a default.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'vendor-model',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { model: 'vendor-model', thinking: 'high' },
+        },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } },
+      model: undefined,
+      thinking: undefined,
+      permissionMode: undefined,
+    });
+  });
+
+  it('keeps the approval mode on an external engine that has a profile', () => {
+    // A profile is what supplies the mode, so the session's value still goes.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: undefined,
+        thinking: undefined,
+        permissionMode: 'auto',
+        pendingExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ execution: { executor: 'claude-acp', profile: 'reviewer' }, model: undefined, thinking: undefined, permissionMode: 'auto' });
+  });
+
+  it('carries a bare external engine with no profile, so the harness runs as it is', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'provider/model',
+        thinking: 'high',
+        pendingExecution: { executor: 'claude-acp', profile: undefined, overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ execution: { executor: 'claude-acp' }, model: undefined, thinking: undefined });
+  });
+
+  it('sends no execution selection when the pending pick matches the live binding', () => {
+    const bound = { executor: 'native', profile: 'agent', overrides: undefined };
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'provider/model',
+        thinking: undefined,
+        pendingExecution: { ...bound },
+        boundExecution: { ...bound },
+      }),
+    ).toEqual({ model: 'provider/model', thinking: undefined });
+  });
+
+  it('keeps the user model when they re-picked it after confirming an engine switch', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: true,
+        model: 'provider/other',
+        thinking: 'low',
+        pendingExecution: { executor: 'codex-app-server', profile: 'reviewer', overrides: undefined },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ execution: { executor: 'codex-app-server', profile: 'reviewer' }, model: 'provider/other', thinking: 'low' });
+  });
+
+  it('keeps session overrides the user set, and does not invent absent ones', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: undefined,
+        thinking: undefined,
+        pendingExecution: {
+          executor: 'claude-acp',
+          profile: undefined,
+          overrides: { kiki_context: [], allow_kiki_subagents: false },
+        },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({
+      execution: { executor: 'claude-acp', overrides: { kiki_context: [], allow_kiki_subagents: false } },
+      model: undefined,
+      thinking: undefined,
+    });
+  });
+
+  it('sends no model or effort on a plain message of a bare session the user never touched', () => {
+    // The display sentinel leak: nothing is being switched, so the composer's
+    // "off" effort has no incoming generation to absorb it. It is a displayed
+    // default, not a choice, and on the execution path it becomes a session
+    // override that the harness then inherits.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'fixture/kiki-pro',
+        thinking: 'off',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
+  });
+
+  it('keeps sending model and effort on a plain message of a native session', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'provider/model',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'manual' });
+  });
+
+  it('sends a model or effort the user picked on a plain message of a bare session', () => {
+    // The withheld half is not a blanket "send nothing": an explicit pick on a
+    // bare engine is exactly the customisation the bare binding still allows.
+    // Touching model/effort says nothing about approvals, so the approval mode
+    // stays behind until the user moves that control too.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: true,
+        model: 'provider/other',
+        thinking: 'low',
+        permissionTouched: true,
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/other', thinking: 'low', permissionMode: 'manual' });
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: true,
+        model: 'provider/other',
+        thinking: 'low',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/other', thinking: 'low', permissionMode: undefined });
+  });
+
+  it('withholds only the control the execution names, on a plain message of a bare session', () => {
+    // `model` is stated, `thinking` is not: the effort display value is still
+    // only a display value, so it stays behind.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'vendor-model',
+        thinking: 'off',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { model: 'vendor-model' },
+        },
+      }),
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
+  });
+
+  it('sends the effort alone when only the effort was moved, and not the displayed model', () => {
+    // One shared flag made an effort pick promote the model id the user never
+    // chose. On a bare engine that model is a session override the harness then
+    // inherits, so this is the single-control case, not the "both explicit" one.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'provider/model',
+        thinking: 'low',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: 'low', permissionMode: undefined });
+  });
+
+  it('sends the model alone when only the model was moved, and not the displayed effort', () => {
+    // The mirror image. `thinking: 'off'` is what the catalog reports when
+    // nothing was chosen, so carrying it alongside the model states an effort
+    // override the user never made.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: false,
+        model: 'provider/other',
+        thinking: 'off',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'example-acp', profile: undefined, overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: undefined });
+  });
+
+  it('keeps a native session sending both after only the model was moved', () => {
+    // Per-control tracking is about what may be withheld, not about dropping a
+    // control the session would have sent anyway. Native behaviour is unchanged.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: false,
+        model: 'provider/other',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/other', thinking: 'high', permissionMode: 'manual' });
+  });
+
+  it('does not let a stale touched flag re-send a control the incoming execution owns', () => {
+    // The switch branch used `modelTouched` directly, bypassing the ownership
+    // test. A user who moved the model earlier and then switched to an engine
+    // that states its own model would have both fields sent, and the legacy one
+    // would overwrite the selection's value. Ownership is per key, so the
+    // approval mode — which this selection does NOT name — still rides.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: true,
+        model: 'stale-picked-model',
+        thinking: 'stale-picked-effort',
+        permissionMode: 'manual',
+        permissionTouched: true,
+        pendingExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { model: 'vendor-model', thinking: null },
+        },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: null } },
+      model: undefined,
+      thinking: undefined,
+      permissionMode: 'manual',
+    });
+  });
+
+  it('withholds a stale approval mode when the incoming execution names it, per key', () => {
+    // The `null` here means "fall through to the next layer", so re-sending the
+    // session's mode would silently turn it back into a concrete value. Model
+    // and effort are a different key this selection does not name, so the
+    // user's own picks still ride — ownership is decided one control at a time.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: true,
+        model: 'stale-picked-model',
+        thinking: 'stale-picked-effort',
+        permissionMode: 'manual',
+        permissionTouched: true,
+        pendingExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { permission_mode: null },
+        },
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({
+      execution: { executor: 'example-acp', overrides: { permission_mode: null } },
+      model: 'stale-picked-model',
+      thinking: 'stale-picked-effort',
+      permissionMode: undefined,
+    });
+  });
+
+  it('still lets an explicit post-confirm pick ride a switch that names no override', () => {
+    // The existing contract: when the incoming binding stays silent, a pick
+    // made after confirming wins over the incoming profile's pins — and the
+    // control that was not picked does not ride along with it.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: 'reviewer',
+        boundProfile: 'agent',
+        modelTouched: true,
+        effortTouched: false,
+        model: 'provider/other',
+        thinking: 'off',
+        pendingExecution: undefined,
+        boundExecution: undefined,
+      }),
+    ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: undefined });
+  });
+
+  it('keeps model and effort on a plain message of an external engine that has a profile', () => {
+    // A profile is what supplies the configuration, so the session's values go.
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'provider/model',
+        thinking: 'high',
+        permissionMode: 'auto',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
+      }),
+    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'auto' });
+  });
+});
+
+describe('executionSwitchName', () => {
+  it('names the engine by its catalog label, and the native engine as Kiki', () => {
+    const labels = { __native: 'Kiki', 'claude-acp': 'Claude Code' };
+    expect(executionSwitchName({ executor: 'claude-acp', profile: undefined, overrides: undefined }, labels)).toBe('Claude Code');
+    expect(executionSwitchName({ executor: 'native', profile: 'agent', overrides: undefined }, labels)).toBe('Kiki');
+  });
+
+  it('falls back to the raw id for an engine the catalog does not list', () => {
+    expect(executionSwitchName({ executor: 'custom-xyz', profile: undefined, overrides: undefined }, { __native: 'Kiki' })).toBe('custom-xyz');
   });
 });
 

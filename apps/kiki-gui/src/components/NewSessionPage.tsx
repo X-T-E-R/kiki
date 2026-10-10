@@ -315,6 +315,8 @@ function NewSessionPageContent({
           modelSource={state.modelSource}
           agentProfile={state.agentProfile}
           onChangeAgentProfile={state.setAgentProfile}
+          execution={state.execution}
+          onChangeExecution={state.setExecution}
           personaPick={personaPick}
           permissionMode={state.permissionMode}
           planMode={state.planMode}

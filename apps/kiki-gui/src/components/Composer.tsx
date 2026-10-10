@@ -100,6 +100,9 @@ import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
 import { ThreadRefChip } from './ThreadRefChip';
 import { useThreadRefDirectory } from '../lib/threadRefs';
+import { ExecutionSelect } from './harness/ExecutionSelect';
+import { useExecutorCatalog } from './settings/profileEditor/engines';
+import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
@@ -181,6 +184,14 @@ const isPrivateProfile = (item: NamedAgentProfile): boolean =>
   (item as NamedAgentProfile & { readonly private?: boolean }).private === true;
 
 /**
+ * Whether one profile can answer as this session's main agent. Shared by the
+ * execution panel (which nests each engine's own profiles) and the profile
+ * list, so both offer exactly the same candidates.
+ */
+export const isConversationProfile = (item: NamedAgentProfile): boolean =>
+  item.main === true && !item.disabled && !isPrivateProfile(item);
+
+/**
  * Profile picker options: only enabled, non-private main profiles
  * (`main: true`) are conversation candidates. Sub-agent-only profiles are
  * never offered here — dispatch them with AgentRun instead. A previously
@@ -191,9 +202,7 @@ export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
   t: (key: I18nKey, params?: I18nParams) => string,
 ): SearchableSelectOption[] {
-  const pickable = items.filter(
-    (item) => item.main === true && !item.disabled && !isPrivateProfile(item),
-  );
+  const pickable = items.filter(isConversationProfile);
   const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
     value: item.name,
     label: item.name === DEFAULT_AGENT_PROFILE ? t('composer.agentDefaultOption') : item.name,
@@ -276,6 +285,11 @@ export function Composer({
   modelSwitchError,
   agentProfile,
   agentProfilePending = false,
+  execution,
+  onChangeExecution,
+  executionPending = false,
+  onCancelExecution,
+  executionGrants,
   permissionMode,
   planMode,
   planGate,
@@ -381,6 +395,30 @@ export function Composer({
   agentProfile?: string;
   /** A confirmed switch is waiting for the next prompt — accent tint. */
   agentProfilePending?: boolean;
+  /**
+   * Which engine runs this session, and which of that engine's profiles when
+   * one is selected. Provided together with `onChangeExecution`; the pair
+   * replaces the profile-only chip, because the engine and its profile are one
+   * choice. The pick shown is the pending one when a switch is waiting.
+   */
+  execution?: ExecutionChoice;
+  onChangeExecution?: (next: ExecutionChoice) => void;
+  /** A confirmed engine switch applies from the next message — accent tint. */
+  executionPending?: boolean;
+  /**
+   * Drops a switch that is still waiting for the next message. Supplied only
+   * while one is pending, which is the only time the chip offers it.
+   */
+  onCancelExecution?: () => void;
+  /**
+   * What the bound execution grants the engine (Kiki tool groups, delegation),
+   * read from the server's resolved binding. Stated as facts under the panel,
+   * never written back as an override.
+   */
+  executionGrants?: {
+    readonly kikiContext: readonly ExecutionContextGroup[] | undefined;
+    readonly allowKikiSubagents: boolean | undefined;
+  };
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
@@ -812,6 +850,9 @@ export function Composer({
     () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
     [agentProfilesQuery.data, t],
   );
+  // The engine catalog behind the execution panel. Empty while loading or on a
+  // server without the route; the native engine is always offered regardless.
+  const executorCatalog = useExecutorCatalog();
   const frozenMenuQuery = useQuery({
     queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
     queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
@@ -2107,83 +2148,40 @@ export function Composer({
     );
     if (runMode !== 'normal') statusSegments.push({ key: 'run-mode', node: chip });
   }
-  if (onChangeAgentProfile !== undefined && agentProfile !== undefined) {
+  if (onChangeExecution !== undefined && execution !== undefined) {
+    // The engine and its profile are ONE control: which program runs, and
+    // whether Kiki's profile layer shapes it. A persona still rides the same
+    // control on /new — the face names who answers, the panel behind it chooses
+    // what runs, and its ✕ removes the identity without touching the engine.
     statusSegments.push({
       key: 'agent',
       node: (
         <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
-        {pickedPersona !== undefined ? (
-          // The persona chip: a raised paper token with the face, so "who
-          // answers" reads as a person, not a setting. The ✕ is its own
-          // control; the chip itself reopens the picker.
-          <span data-composer-persona-chip={pickedPersona.id} className="flex min-w-[5.5rem] items-center rounded-full bg-paper py-0.5 pr-0.5 pl-0.5 shadow-[var(--kiki-sheet-shadow)]">
-            <SearchableSelect
-              id="composer-agent-profile-select"
-              options={agentOptions}
-              value={agentSelectValue}
-              onChange={changeAgent}
-              disabled={busy}
-              title={t('persona.chipAria')}
-              ariaLabel={t('persona.chipAria')}
-              searchPlaceholder={t('composer.profileSearchPlaceholder')}
-              placement="above"
-              hideChevron
-              triggerIcon={<PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />}
-              // The name is who answers: it truncates on a narrow toolbar but
-              // never collapses to a bare face.
-              triggerLabel={pickedPersona.name}
-              panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
-              panelFooter={<PersonaPickerFooter />}
-              buttonClassName="flex h-6 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 text-[13px] font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-9"
-            />
-            <button
-              type="button"
-              data-composer-persona-clear
-              disabled={busy}
-              aria-label={t('persona.chipRemove', { name: pickedPersona.name })}
-              title={t('persona.chipRemove', { name: pickedPersona.name })}
-              onClick={() => { personaPick?.onChange(undefined); }}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 pointer-coarse:w-9"
-            >
-              <Icon name="close" size={12} />
-            </button>
-          </span>
-        ) : (
-        <SearchableSelect
-          id="composer-agent-profile-select"
-          options={agentOptions}
-          value={agentSelectValue}
-          onChange={changeAgent}
-          panelFooter={personaPick !== undefined ? <PersonaPickerFooter /> : undefined}
-          disabled={busy}
-          title={
-            busy
-              ? t('profile.rebuildBusy')
-              : agentProfilePending
-                ? t('composer.agentProfilePendingTitle')
-                : t('composer.agentProfileTitle')
-          }
-          ariaLabel={t('composer.agentProfileAria')}
-          emptyText={t('composer.noAgentProfiles')}
-          searchPlaceholder={t('composer.profileSearchPlaceholder')}
-          placement="above"
-          hideChevron
-          // Narrow composers show the agent as its icon only (the name stays
-          // in the aria-label and tooltip) so the model name keeps its room.
-          triggerLabel={
-            agentChipLabel === undefined ? undefined : (
-              <span className="@max-[24rem]/toolbar:sr-only">{agentChipLabel}</span>
-            )
-          }
-          triggerIcon={<Icon name="agent" size={14} className={STATUS_SEGMENT_ICON_CLASS} />}
-          panelClassName={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-96 flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} [&>*]:shrink-0 [&>[role=listbox]]:min-h-0 [&>[role=listbox]]:shrink`}
-          buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-52 ${
-            agentProfilePending
-              ? 'font-medium text-accent-ink hover:text-accent-ink'
-              : agentProfile !== DEFAULT_AGENT_PROFILE ? STATUS_SEGMENT_SET : ''
-          }`}
+        <ExecutionSelect
+          choice={execution}
+          pending={executionPending}
+          busy={busy}
+          onChange={(next) => {
+            // An engine without a profile is the bare harness: no persona can
+            // ride it, so a carried persona steps aside rather than silently
+            // binding Kiki's layer to a harness that was picked as-is.
+            if (next.profile === undefined) personaPick?.onChange(undefined);
+            onChangeExecution(next);
+          }}
+          catalog={executorCatalog}
+          profiles={agentProfilesQuery.data?.items ?? []}
+          pickableProfile={isConversationProfile}
+          nativeLabel={t('composer.agentDefaultName')}
+          contextGroups={executionGrants?.kikiContext}
+          allowKikiSubagents={executionGrants?.allowKikiSubagents}
+          persona={pickedPersona === undefined ? undefined : {
+            id: pickedPersona.id,
+            name: pickedPersona.name,
+            avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
+          }}
+          onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
+          onCancelPending={executionPending ? onCancelExecution : undefined}
         />
-        )}
         </ComposerPanelOrigin>
       ),
     });

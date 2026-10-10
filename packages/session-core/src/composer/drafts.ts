@@ -2,6 +2,7 @@
 
 import type { ModelSwitchMode, PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
+import type { ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
@@ -149,6 +150,13 @@ export interface ComposerSessionState {
   modelChoice?: ComposerModelChoice;
   effortChoice?: ComposerModelChoice;
   modelSwitchMode?: ModelSwitchMode;
+  /**
+   * Engine (and optional profile of it) the user picked for this session.
+   * `undefined` = never picked: the session's own committed binding stands.
+   * It rides every prompt of the session until the pick is dropped, and is
+   * never mirrored to disk with the model scalars.
+   */
+  execution?: ExecutionChoice;
 }
 
 /** The committed binding visible when the user last chose this control, not the chosen override value. */
@@ -447,6 +455,7 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
     effortOverride: previous.effortOverride,
     modelChoice: previous.modelChoice,
     effortChoice: previous.effortChoice,
+    execution: previous.execution,
   });
   for (const listener of appendListeners) listener(sessionId, restored);
 }

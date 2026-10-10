@@ -33,6 +33,11 @@ import {
   type ComposerAttachment,
   type PersistedNewSessionDraft,
   type SshHostAttachment,
+  executionSelectionOf,
+  isBareExternalChoice,
+  sendsLegacyControl,
+  NATIVE_EXECUTOR,
+  type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import {
@@ -169,10 +174,31 @@ function withoutSsh(attachments: readonly ComposerAttachment[]): readonly Compos
 }
 
 /** Build the create-time execution configuration applied before the first handoff runs. */
+/**
+ * Whether this selection asks for the harness **as it is**: an external engine
+ * with no profile of Kiki's, and no session override of its own.
+ *
+ * Such a run is the user's statement that the engine's own configuration
+ * applies, so the create body and the first message after it must not carry
+ * Kiki's model, effort or approval mode as overrides. The test is per control
+ * though — see `withholdsLegacyControl`, which is what actually decides — so
+ * this only reports the case where *nothing* was named.
+ */
+export function isBareExternalExecution(execution: ExecutionChoice | undefined): boolean {
+  return isBareExternalChoice(execution);
+}
+
 export function buildNewSessionCreate(input: {
   readonly cwd: string;
   readonly workspaceId?: string;
   readonly profile: string;
+  /**
+   * Engine (and optional profile of it) the session runs. Sent only when it
+   * names something other than the native default, so an ordinary new session
+   * keeps the legacy top-level fields the server already understands. A bare
+   * external engine sends no profile, which is direct harness execution.
+   */
+  readonly execution?: ExecutionChoice;
   readonly model?: string;
   readonly thinking?: string;
   readonly permissionMode: PermissionMode;
@@ -188,13 +214,41 @@ export function buildNewSessionCreate(input: {
   readonly persona?: string;
   /** Whether this session creation claims the persona's fixed daily conversation entrance (D3) */
   readonly personaHome?: boolean;
+  /**
+   * Whether the user actually moved each control on this draft, as opposed to
+   * the page merely displaying a resolved or inherited value. A bare external
+   * engine is chosen *as it is*, so a value the user never set must not ride
+   * along as a session override: on the execution path the legacy top-level
+   * fields are exactly that, and a `permission_mode` the user never picked
+   * would decide approvals for a harness they did not configure.
+   */
+  readonly modelTouched?: boolean;
+  readonly effortTouched?: boolean;
+  readonly permissionTouched?: boolean;
 }): SessionCreate {
   const persona = input.persona === undefined ? {} : { persona: input.persona, ...(input.personaHome ? { persona_home: true } : {}) };
+  // Native with the picked profile is what the legacy fields already say; the
+  // selection is sent only when it names a different engine, so no existing
+  // session's shape changes.
+  const named = input.execution !== undefined && (input.execution.executor !== NATIVE_EXECUTOR || input.execution.profile === undefined);
+  // Only a bare external engine withholds the legacy controls, and it withholds
+  // them **per control**: naming `overrides.model` is a statement about the
+  // model alone and says nothing about approvals, so an engine configured with
+  // only a model and effort still keeps its own approval mode. Native keeps
+  // them all (it resolves them against Kiki's own defaults, as it always has),
+  // and an external engine *with* a profile keeps them because that profile is
+  // what supplies them.
+  const keep = (control: 'model' | 'thinking' | 'permission_mode', touched: boolean | undefined) =>
+    sendsLegacyControl(input.execution, control, touched === true);
+  // A withheld control is omitted from the key, not set to `undefined`: the
+  // request body then says the same thing the object does, with no reliance on
+  // how a given transport treats an explicit undefined.
   const agent_config = {
-    ...(input.persona === undefined ? { profile: input.profile } : {}),
-    model: input.model,
-    thinking: input.thinking,
-    permission_mode: input.permissionMode,
+    ...(input.persona === undefined && !named ? { profile: input.profile } : {}),
+    ...(named ? { execution: executionSelectionOf(input.execution!) } : {}),
+    ...(keep('model', input.modelTouched) && input.model !== undefined ? { model: input.model } : {}),
+    ...(keep('thinking', input.effortTouched) && input.thinking !== undefined ? { thinking: input.thinking } : {}),
+    ...(keep('permission_mode', input.permissionTouched) ? { permission_mode: input.permissionMode } : {}),
     plan_mode: input.planMode,
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
@@ -297,7 +351,11 @@ export function useNewSessionDraft({
   const [cwd, setCwd] = useState(
     applyPrefill && initialWorkspaceId !== undefined ? '' : (initialRestoredDraft.cwd ?? ''),
   );
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(settings.defaultPermissionMode);
+  const setPermissionMode = useCallback((mode: PermissionMode) => {
+    permissionTouched.current = true;
+    setPermissionModeState(mode);
+  }, []);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [goalObjective, setGoalObjective] = useState('');
   // Never persisted: every new draft starts in the current checkout.
@@ -315,6 +373,14 @@ export function useNewSessionDraft({
   const [agentProfile, setAgentProfileState] = useState(
     (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
   );
+  // Which engine the new session runs. Native with the picked profile until
+  // the user names an engine of their own; a bare engine sends no profile at
+  // all, so the harness runs with its own configuration.
+  const [execution, setExecutionState] = useState<ExecutionChoice>(() => ({
+    executor: NATIVE_EXECUTOR,
+    profile: (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
+    overrides: undefined,
+  }));
   // The visible effort follows the catalog for ordinary drafts. A persona's
   // inherited preview is not a user override, even when it has the same value.
   const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
@@ -332,6 +398,12 @@ export function useNewSessionDraft({
   const effortOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined));
   const modelOverrideFromPersona = useRef(false);
   const effortOverrideFromPersona = useRef(false);
+  // Which controls the *user* moved on this draft, as distinct from the values
+  // merely resolved onto the page. A bare external engine is run as it is, so
+  // only a touched control is sent — see `buildNewSessionCreate`.
+  const modelTouched = useRef(false);
+  const effortTouched = useRef(false);
+  const permissionTouched = useRef(false);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -429,12 +501,14 @@ export function useNewSessionDraft({
   const setModelOverride = useCallback((model: string | undefined) => {
     modelOverrideFromPersona.current = false;
     modelOverrideFromProfile.current = false;
+    modelTouched.current = true;
     setModelOverrideState(model);
     setSelectionRevision((value) => value + 1);
   }, []);
   const setEffortOverride = useCallback((thinking: string | undefined) => {
     effortOverrideFromPersona.current = false;
     effortOverrideFromProfile.current = false;
+    effortTouched.current = true;
     setEffortOverrideState(thinking);
     setSelectionRevision((value) => value + 1);
   }, []);
@@ -545,6 +619,7 @@ export function useNewSessionDraft({
     modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
     effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
+    execution,
     permissionMode,
     planMode,
     goalObjective,
@@ -560,6 +635,7 @@ export function useNewSessionDraft({
     modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
     effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
+    execution,
     permissionMode,
     planMode,
     goalObjective,
@@ -604,10 +680,14 @@ export function useNewSessionDraft({
       cwd: trimmedCwd,
       workspaceId: context.effectiveWorkspace?.id,
       profile: context.agentProfile,
+      execution: context.execution,
       model: context.modelOverride,
       thinking: context.effectiveEffort,
       permissionMode: context.permissionMode,
       planMode: context.planMode,
+      modelTouched: modelTouched.current,
+      effortTouched: effortTouched.current,
+      permissionTouched: permissionTouched.current,
       worktree: context.worktree,
       ephemeral: context.ephemeral || undefined,
       persona: context.persona?.definition.id,
@@ -656,9 +736,14 @@ export function useNewSessionDraft({
               initialPrompt: handoff.initialPrompt,
               initialAttachments: handoff.initialAttachments,
               initialSkill: handoff.initialSkill,
-              model: context.modelOverride,
-              thinking: context.effectiveEffort,
-              permissionMode: context.permissionMode,
+              // The first message of a bare external engine must reach the
+              // session with the same emptiness as the create did: these ride
+              // the handoff into SessionView's own send path, so a displayed
+              // default re-sent here would re-introduce the very override the
+              // create body just declined to send.
+              model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+              thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) ? context.effectiveEffort : undefined,
+              permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
               planMode: context.planMode,
               goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
               // The greeting was the last thing on screen and this is the first
@@ -746,6 +831,26 @@ export function useNewSessionDraft({
   }, [agentProfilesQuery.data, applyAgentProfile]);
 
   /**
+   * The draft's engine. A bare external engine keeps its own model, effort and
+   * approval mode, so the picks made under a previous profile are dropped
+   * rather than carried into a run the user chose as-is; a new engine's
+   * profile brings that profile's own pins.
+   */
+  const setExecution = useCallback((next: ExecutionChoice) => {
+    setExecutionState(next);
+    if (next.profile === undefined) {
+      setModelOverrideState(undefined);
+      setEffortOverrideState(undefined);
+      modelOverrideFromProfile.current = false;
+      effortOverrideFromProfile.current = false;
+    } else {
+      applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile);
+    }
+    setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
+    setSelectionRevision((value) => value + 1);
+  }, [agentProfilesQuery.data, applyAgentProfile]);
+
+  /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the
    * catalog check and capability panel describe what will run, and its model
    * and effort pins replace the composer's model and effort, exactly like
@@ -819,6 +924,8 @@ export function useNewSessionDraft({
     goalObjective,
     modelOverride,
     agentProfile,
+    execution,
+    setExecution,
     workspaces,
     workspacesLoading,
     effectiveWorkspace,

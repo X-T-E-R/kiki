@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { executorCapabilitiesSchema } from './rest/executor';
+import { executionBindingSchema, executionSelectionSchema } from './execution';
 
 import {
   promptPermissionModeSchema,
@@ -71,6 +72,7 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
  */
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
+  execution: executionBindingSchema.optional(),
   profile: z.string().min(1).optional(),
   persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
@@ -85,6 +87,7 @@ export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
  * `mcp_servers`) are validation errors.
  */
 export const sessionAgentConfigPartialSchema = z.strictObject({
+  execution: executionSelectionSchema.optional(),
   model: z.string().optional(),
   profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
