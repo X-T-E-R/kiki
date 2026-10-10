@@ -31,7 +31,7 @@
  * (promotion, steer, abort) — never by local removal.
  */
 
-import { useEffect, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -40,11 +40,11 @@ import type { QueuedPromptPreview } from '@kiki/session-core/session';
 import { mergeSessionQueueRows, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
+import { useCoarsePointer } from '../lib/layoutHooks';
 import { Icon } from './icons';
 
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
-const QUEUE_DRAG_MIME = 'application/x-kiki-queue-prompt';
 
 const QUEUE_TIMINGS: readonly DeferredAppendTiming[] = ['agent_idle', 'subagents_done', 'tasks_done'];
 
@@ -62,16 +62,33 @@ export const TIMING_HINT_KEY = {
 
 /**
  * The queue sheet's label behind the composer card: "N 条待发送" on the left,
- * the disclosure chevron on the right. The first prompt's preview and quick
- * actions live in the detail, not on the strip.
+ * then the next prompt's preview and its timing, the disclosure chevron on the
+ * right. Quick actions stay in the detail; the strip only reads.
  */
-export function QueueHeaderSummary({ count }: { readonly count: number }) {
-  const { tp } = useI18n();
+export function QueueHeaderSummary({
+  count,
+  first,
+}: {
+  readonly count: number;
+  /** Next prompt in drain order: what the collapsed bar previews, and when it sends. */
+  readonly first?: { readonly text: string; readonly timing: DeferredAppendTiming };
+}) {
+  const { t, tp } = useI18n();
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
       <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
         {tp('composer.queueStack.count', count)}
       </span>
+      {first !== undefined ? (
+        <>
+          <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
+            {first.text === '' ? t('sv.queueNoText') : stripThreadRefContext(first.text)}
+          </span>
+          <span data-queue-first-timing className="shrink-0 text-ink-faint">
+            {t(TIMING_SHORT_KEY[first.timing])}
+          </span>
+        </>
+      ) : null}
       <Icon name="chevron" size={12} className="ml-auto -rotate-90 text-ink-faint" />
     </span>
   );
@@ -146,9 +163,18 @@ export function QueueStrip({
   const [armedRemoveId, setArmedRemoveId] = useState<string | null>(null);
   // Touch has no hover: a row's ⋯ toggle opens its actions instead.
   const [touchOpenId, setTouchOpenId] = useState<string | null>(null);
+  // Reorder mode (coarse pointers): an explicit mode so a drag never races
+  // the sheet's scroll. Grips grow to a thumb target and drive the row order
+  // by pointer; everything else in the row rests until Done.
+  const coarsePointer = useCoarsePointer();
+  const [sortMode, setSortMode] = useState(false);
+  const listRef = useRef<HTMLOListElement>(null);
+  const pointerDragRef = useRef<{
+    promptId: string; pointerId: number; x: number; y: number; active: boolean;
+  } | null>(null);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Drag reorder: the dragged row's id plus the insertion slot (in pre-removal
-  // terms, 0..items.length) the pointer currently hovers.
+  // terms, 0..rows.length) the pointer currently hovers.
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropSlot, setDropSlot] = useState<number | null>(null);
   // One drain order over both kinds: messages keep their state order, a
@@ -173,8 +199,17 @@ export function QueueStrip({
     [rows],
   );
   useEffect(() => {
-    setPendingIds((current) => current.filter((id) => rowKeys.has(id)));
+    setPendingIds((current) => {
+      const next = current.filter((id) => rowKeys.has(id));
+      return next.length === current.length ? current : next;
+    });
   }, [rowKeys]);
+  // Sort mode ends with the conditions it exists for (a reorderable list, no
+  // parked edit holding rows) instead of outliving them.
+  const editHold = editingPromptId !== undefined;
+  useEffect(() => {
+    if (sortMode && (editHold || onMove === undefined || rows.length <= 1)) setSortMode(false);
+  }, [sortMode, editHold, onMove, rows.length]);
   // Disarm a remove whose row left the queue underneath it.
   useEffect(() => {
     if (armedRemoveId !== null && !items.some((item) => item.promptId === armedRemoveId)) {
@@ -194,6 +229,9 @@ export function QueueStrip({
   // the pre-move order would land on a stale slot.
   const interactionLocked = pendingIds.length > 0;
   const draggable = onMove !== undefined && rows.length > 1;
+  // HTML5 drag never fires on a touch screen: outside sort mode the grips
+  // stay hidden there, and the header's sort toggle is the way in.
+  const gripsVisible = draggable && (!coarsePointer || sortMode);
   // Edit hold: the edited row and every row behind it wait for the edit.
   const editIndex = editingPromptId === undefined
     ? -1
@@ -231,48 +269,73 @@ export function QueueStrip({
   };
 
   const clearDrag = () => {
+    pointerDragRef.current = null;
     setDragId(null);
     setDropSlot(null);
   };
 
-  const rowDragOver = (event: DragEvent, index: number) => {
-    if (dragId === null) return;
+  // Keep internal sorting out of native HTML5/OLE drag-and-drop: on Windows
+  // Tauri owns that drop target for OS files, so HTML5 drops never reach rows.
+  const handlePointerDown = (event: PointerEvent<HTMLButtonElement>, promptId: string) => {
+    if (event.button !== 0 || !event.isPrimary || onMove === undefined || interactionLocked || editingPromptId === promptId) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    const rect = event.currentTarget.getBoundingClientRect();
-    const before = rect.height === 0 ? true : (event.clientY - rect.top) / rect.height < 0.5;
-    setDropSlot(before ? index : index + 1);
+    event.currentTarget.focus();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerDragRef.current = { promptId, pointerId: event.pointerId, x: event.clientX, y: event.clientY, active: false };
   };
 
-  const rowDrop = (event: DragEvent) => {
-    if (dragId === null) return;
-    event.preventDefault();
-    const from = rows.findIndex((row) => row.kind === 'message' && row.promptId === dragId);
-    const slot = dropSlot;
+  const pointerSlot = (event: PointerEvent<HTMLButtonElement>): number | null => {
+    const list = listRef.current;
+    if (list === null) return null;
+    const rect = list.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return null;
+    const viewport = list.closest<HTMLElement>('.composer-header-scroll')?.getBoundingClientRect();
+    if (viewport !== undefined && (event.clientY < viewport.top || event.clientY > viewport.bottom)) return null;
+    const rowElements = Array.from(list.querySelectorAll<HTMLElement>('[data-queue-item], [data-queue-model-switch]'));
+    const index = rowElements.findIndex((element) => {
+      const box = element.getBoundingClientRect();
+      return event.clientY < box.top + box.height / 2;
+    });
+    return index < 0 ? rowElements.length : index;
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    const drag = pointerDragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    if (!drag.active && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return;
+    drag.active = true;
+    setDragId(drag.promptId);
+    const scroll = listRef.current?.closest<HTMLElement>('.composer-header-scroll');
+    if (scroll !== null && scroll !== undefined) {
+      const rect = scroll.getBoundingClientRect();
+      if (event.clientY < rect.top + 24) scroll.scrollTop -= 12;
+      else if (event.clientY > rect.bottom - 24) scroll.scrollTop += 12;
+    }
+    setDropSlot(pointerSlot(event));
+  };
+
+  const handlePointerUp = (event: PointerEvent<HTMLButtonElement>) => {
+    const drag = pointerDragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    const from = rows.findIndex((row) => row.kind === 'message' && row.promptId === drag.promptId);
+    const slot = drag.active ? pointerSlot(event) : null;
     clearDrag();
-    if (onMove === undefined || interactionLocked || from < 0 || slot === null) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (onMove === undefined || interactionLocked || editingPromptId === drag.promptId || from < 0 || slot === null) return;
     // The engine's target index counts the list AFTER the row is lifted out.
     const targetIndex = slot > from ? slot - 1 : slot;
     if (targetIndex === from) return;
-    run(dragId, (id) => onMove(id, targetIndex));
-  };
-
-  const handleDragStart = (event: DragEvent, promptId: string) => {
-    if (onMove === undefined || interactionLocked) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer.setData(QUEUE_DRAG_MIME, promptId);
-    // Firefox only starts a drag when text data rides along.
-    event.dataTransfer.setData('text/plain', promptId);
-    event.dataTransfer.effectAllowed = 'move';
-    const row = event.currentTarget.closest('li');
-    if (row !== null) event.dataTransfer.setDragImage(row, 12, 12);
-    setDragId(promptId);
+    run(drag.promptId, (id) => onMove(id, targetIndex));
   };
 
   const handleKeyDown = (event: KeyboardEvent, promptId: string, index: number) => {
-    if (event.key === 'ArrowUp') {
+    if (event.key === 'Escape' && pointerDragRef.current !== null) {
+      event.preventDefault();
+      event.stopPropagation();
+      clearDrag();
+    } else if (pointerDragRef.current !== null) {
+      return;
+    } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       moveBy(promptId, index, -1);
     } else if (event.key === 'ArrowDown') {
@@ -301,7 +364,7 @@ export function QueueStrip({
         >
           {/* Same widths as a message row's grip + index so the drain-order
               numbers line up; a control item does not reorder. */}
-          {draggable ? <span aria-hidden className="h-5 w-4 shrink-0" /> : null}
+          {gripsVisible ? <span aria-hidden className={sortMode ? 'h-11 w-11 shrink-0' : 'h-5 w-4 shrink-0'} /> : null}
           <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
             {index + 1}
           </span>
@@ -361,27 +424,30 @@ export function QueueStrip({
     rowNodes.push(
       <li
         key={item.promptId}
-        onDragOver={(event) => { rowDragOver(event, index); }}
-        onDrop={rowDrop}
         data-queue-item={item.promptId}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
           isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
-        {draggable ? (
+        {gripsVisible ? (
           <button
             type="button"
-            draggable={!pending && !interactionLocked && !isEditing}
-            onDragStart={(event) => { handleDragStart(event, item.promptId); }}
-            onDragEnd={clearDrag}
+            onPointerDown={(event) => { handlePointerDown(event, item.promptId); }}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={clearDrag}
+            onLostPointerCapture={clearDrag}
+            style={{ touchAction: 'none' }}
             onKeyDown={(event) => { handleKeyDown(event, item.promptId, index); }}
             disabled={pending || interactionLocked || isEditing}
             title={t('queue.dragHandleTitle')}
             aria-label={t('queue.dragHandleAria')}
-            className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-[11px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none active:cursor-grabbing"
+            className={`flex shrink-0 cursor-grab items-center justify-center text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none active:cursor-grabbing ${
+              sortMode ? 'h-11 w-11 rounded-md text-ink-soft' : 'h-5 w-4 rounded text-[11px] leading-none'
+            }`}
           >
-            <Icon name="grip" size={12} />
+            <Icon name="grip" size={sortMode ? 16 : 12} />
           </button>
         ) : null}
         <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
@@ -421,6 +487,14 @@ export function QueueStrip({
               ? t('queue.editReady')
               : t('queue.editWaiting', { timing: t(TIMING_SHORT_KEY[timing]) })}
           </span>
+        ) : sortMode ? (
+          // Reorder-only mode: the row's actions rest until Done, so a drag
+          // never starts on a button.
+          waitsForEdit ? (
+            <span data-queue-waits-hint className="shrink-0 text-[12px] text-ink-faint">
+              {t('queue.waitsForEdit')}
+            </span>
+          ) : null
         ) : (
           <>
           <button
@@ -519,21 +593,39 @@ export function QueueStrip({
   return (
     <section
       data-queue-strip
+      data-queue-sort-mode={sortMode ? '' : undefined}
       data-queue-edit-hold={editIndex >= 0 ? '' : undefined}
       aria-label={t('sv.queueAria')}
       aria-describedby={editIndex >= 0 ? noticeId : undefined}
     >
       <header className="flex min-h-7 items-center gap-2 pl-1.5">
         {/* The row already names the count; the header reads as drain order. */}
-        <span className="min-w-0 flex-1 text-[12px] text-ink-faint">{t('queue.drainOrder')}</span>
-        <button
-          type="button"
-          onClick={onClearAll}
-          title={t('sv.queueClearAllTitle')}
-          className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-        >
-          {t('sv.queueClearAll')}
-        </button>
+        <span className="min-w-0 flex-1 text-[12px] text-ink-faint">
+          {sortMode ? t('queue.sortHint') : t('queue.drainOrder')}
+        </span>
+        {draggable && coarsePointer && editingPromptId === undefined ? (
+          <button
+            type="button"
+            data-queue-sort-toggle
+            aria-pressed={sortMode}
+            onClick={() => { setSortMode((value) => !value); setTouchOpenId(null); }}
+            className={`h-9 shrink-0 rounded-md px-3 text-[12px] font-medium transition-colors duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none ${
+              sortMode ? 'bg-ink/[0.07] text-ink hover:bg-ink/[0.09]' : 'text-ink-soft hover:bg-ink/[0.05] hover:text-ink'
+            }`}
+          >
+            {sortMode ? t('queue.sortDone') : t('queue.sortMode')}
+          </button>
+        ) : null}
+        {sortMode ? null : (
+          <button
+            type="button"
+            onClick={onClearAll}
+            title={t('sv.queueClearAllTitle')}
+            className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9 pointer-coarse:px-3"
+          >
+            {t('sv.queueClearAll')}
+          </button>
+        )}
       </header>
       {editIndex >= 0 ? (
         <p id={noticeId} role="status" data-queue-hold-notice className="flex items-center gap-1.5 px-1.5 pb-1 text-[12px] text-ink-soft">
@@ -543,7 +635,7 @@ export function QueueStrip({
           </span>
         </p>
       ) : null}
-      <ol className="flex flex-col gap-0.5 pb-1">
+      <ol ref={listRef} className="flex flex-col gap-0.5 pb-1">
         {rowNodes}
       </ol>
     </section>

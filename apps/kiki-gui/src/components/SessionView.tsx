@@ -3791,7 +3791,13 @@ boundExecution,
     const total = queuedItemCount;
     return {
       summary: (
-        <QueueHeaderSummary count={total} />
+        <QueueHeaderSummary
+          count={total}
+          first={queuedItems[0] === undefined ? undefined : {
+            text: queuedItems[0].text,
+            timing: queuedItems[0].appendTiming ?? 'agent_idle',
+          }}
+        />
       ),
       ariaLabel: t('composer.queueStack.openAria'),
       count: total,
