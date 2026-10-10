@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { join } from 'pathe';
 import type { SSHKaos } from '@kiki/kaos/ssh';
-import { SshConnectionManager, SshKnownHosts, type SshKnownHostsInspection, type SshConnectionHost, type SshConnectionStatus, type TrustUnknownKey } from '@kiki/kaos/ssh-connection';
+import {
+  SshConnectionManager,
+  SshKnownHosts,
+  type SshKnownHostsInspection,
+  type SshConnectionHost,
+  type SshConnectionReceipt,
+  type SshConnectionStatus,
+  type TrustUnknownKey,
+} from '@kiki/kaos/ssh-connection';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
@@ -20,6 +28,10 @@ import { parseTransientSshTarget, resolveSshConfig, type ResolvedSshConfig } fro
 import type { SshCredentialSubmission } from '#/session/approval/approval';
 
 export interface SshHostStatus extends SshConnectionStatus {
+  readonly workspaceId?: string;
+}
+
+export interface SshHostReceipt extends SshConnectionReceipt {
   readonly workspaceId?: string;
 }
 
@@ -51,6 +63,7 @@ export interface ISshHostService {
   disconnect(id: string, workspaceId?: string): Promise<void>;
   status(id: string, workspaceId?: string): SshHostStatus;
   onStatus(listener: (status: SshHostStatus) => void): () => void;
+  onReceipt(listener: (receipt: SshHostReceipt) => void): () => void;
   onHostsChanged(listener: (workspaceId?: string) => void | Promise<void>): () => void;
 }
 
@@ -150,20 +163,14 @@ export class SshHostService extends Disposable implements ISshHostService {
   }
 
   private knownHostsFiles(resolved: ResolvedSshConfig): readonly string[] {
-    const files = resolved.userKnownHostsFiles
+    return resolved.userKnownHostsFiles
       .filter((file) => file !== 'none' && file !== '/dev/null')
       .map((file) => file.startsWith('~/') ? join(this.bootstrap.osHomeDir, file.slice(2)) : file);
-    return files.length > 0 ? files : [join(this.bootstrap.osHomeDir, '.ssh', 'known_hosts')];
   }
 
   async hostKeys(id: string, workspaceId?: string): Promise<SshHostKeys> {
     const resolved = await this.hosts.resolve(id, workspaceId);
     const files = this.knownHostsFiles(resolved);
-    if (resolved.userKnownHostsFiles.some((file) => /\s/.test(file))) {
-      return { hostId: id, workspaceId, hostname: resolved.hostname, port: resolved.port,
-        label: resolved.port === 22 ? resolved.hostname : `[${resolved.hostname}]:${resolved.port}`,
-        state: 'unavailable', records: [], files: files.map((path) => ({ path, state: 'unavailable', reason: 'ambiguous-known-hosts-paths' })) };
-    }
     return { hostId: id, workspaceId, ...await new SshKnownHosts(files).inspect(resolved.hostname, resolved.port) };
   }
 
@@ -296,6 +303,13 @@ export class SshHostService extends Disposable implements ISshHostService {
     return this.connections.onStatus(({ hostId: key, ...status }) => {
       const [workspace, hostId] = JSON.parse(key) as [string, string];
       listener({ hostId, workspaceId: workspace || undefined, ...status });
+    });
+  }
+
+  onReceipt(listener: (receipt: SshHostReceipt) => void): () => void {
+    return this.connections.onReceipt(({ hostId: key, ...receipt }) => {
+      const [workspace, hostId] = JSON.parse(key) as [string, string];
+      listener({ hostId, workspaceId: workspace || undefined, ...receipt });
     });
   }
 

@@ -75,6 +75,26 @@ describe('SSH host store', () => {
     await expect(resolveSshConfig('-oProxyCommand=bad', config)).rejects.toThrow('Invalid SSH host alias');
   });
 
+  it('recovers native path boundaries for Windows lists, spaces, Includes and expanded tokens', async () => {
+    const { home, config } = await fixture();
+    const defaults = await resolveSshConfig('dev', config);
+    expect(defaults.userKnownHostsFiles).toHaveLength(2);
+    expect(defaults.userKnownHostsFiles[0]).toMatch(/[/\\]known_hosts$/);
+    expect(defaults.userKnownHostsFiles[1]).toMatch(/[/\\]known_hosts2$/);
+    const first = 'C:\\Users\\tester\\.ssh\\known_hosts';
+    const second = 'C:\\Users\\tester\\.ssh\\known_hosts2';
+    await writeFile(config, `Host dev\n  HostName example.test\n  User tester\n  UserKnownHostsFile ${first} ${second}\n`);
+    expect((await resolveSshConfig('dev', config)).userKnownHostsFiles).toEqual([first, second]);
+    const spaced = join(home, '.ssh', 'known hosts');
+    await writeFile(join(home, '.ssh', 'fragments', 'paths'), `Host dev\n  UserKnownHostsFile "${spaced}" "~/.ssh/%h-%p-%r-%%"\n`);
+    await writeFile(config, `Include "${join(home, '.ssh', 'fragments', 'paths')}"\nHost dev\n  HostName example.test\n  User tester\n  Port 2200\n`);
+    const paths = (await resolveSshConfig('dev', config)).userKnownHostsFiles;
+    expect(paths[0]).toBe(spaced);
+    expect(paths[1]).toMatch(/[/\\]example\.test-2200-tester-%$/);
+    await writeFile(config, `Host other\n  UserKnownHostsFile "${spaced} second"\nHost dev\n  UserKnownHostsFile "${spaced}" second\n  HostName example.test\n  User tester\n`);
+    await expect(resolveSshConfig('dev', config)).rejects.toThrow('path boundaries');
+  });
+
   it('parses temporary SSH targets without shell options or invalid ports', () => {
     expect(parseTransientSshTarget('tester@example.test:2222')).toEqual({
       user: 'tester', hostname: 'example.test', port: 2222,
@@ -159,7 +179,7 @@ describe('SSH host store', () => {
       expect((await service.list('C:/work/two', 'session-2')).some((entry) => entry.source === 'session')).toBe(true);
       await service.removeTransient('third@example.test:2204', 'C:/work/two', 'session-2');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -184,7 +204,7 @@ describe('SSH host store', () => {
       await expect(service.connect('dev', undefined, undefined, true, fingerprint)).rejects.toThrow('changed after connection approval');
       expect(service.status('dev').state).toBe('idle');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -207,7 +227,7 @@ describe('SSH host store', () => {
       expect((await service.list()).map((host) => host.id)).toEqual(['bastion', 'dev']);
       await expect(service.connect('dev')).rejects.toThrow('Native SSH is disabled');
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -252,7 +272,7 @@ describe('SSH host store', () => {
       expect(await store.read(account, 'password')).toBeUndefined();
       expect(values.size).toBe(0);
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });
@@ -260,7 +280,7 @@ describe('SSH host store', () => {
 
 describe('S5 authoritative SSH settings reads', () => {
   const documents = new DisposableStore();
-  afterEach(() => { documents.clear(); });
+  afterEach(async () => { await documents.clear(); });
   function persistedDocuments(home: string) {
     const ix = createServices(documents, { additionalServices: (registry) => {
       registry.defineInstance(IFileSystemStorageService, new FileStorageService(home, 0o700, 0o600));
@@ -337,18 +357,21 @@ describe('S5 authoritative SSH settings reads', () => {
       expect(await service.hostKeys('dev')).toMatchObject({ hostname: 'alias.example.test', port: 2222, state: 'unrecorded' });
       await expect(service.hostKeys('absent')).rejects.toThrow('Unknown SSH host');
       await writeFile(config, `Host dev\n  HostName alias.example.test\n  User tester\n  UserKnownHostsFile "${path} second"\n`);
-      const one = await service.resolveTarget('dev');
-      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unavailable', files: [{ reason: 'ambiguous-known-hosts-paths' }] });
+      expect((await service.resolveTarget('dev')).userKnownHostsFiles).toEqual([`${path} second`]);
+      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unrecorded', files: [{ path: `${path} second`, state: 'missing' }] });
       await writeFile(config, `Host dev\n  HostName alias.example.test\n  User tester\n  UserKnownHostsFile ${path} second\n`);
-      expect((await service.resolveTarget('dev')).userKnownHostsFiles).toEqual(one.userKnownHostsFiles);
-      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unavailable', files: [{ reason: 'ambiguous-known-hosts-paths' }] });
+      expect((await service.resolveTarget('dev')).userKnownHostsFiles).toEqual([path, 'second']);
+      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unrecorded', files: [{ path, state: 'read' }, { path: 'second', state: 'missing' }] });
+      await writeFile(config, 'Host dev\n  HostName alias.example.test\n  User tester\n  UserKnownHostsFile none\n');
+      expect((await service.resolveTarget('dev')).userKnownHostsFiles).toEqual([]);
+      expect(await service.hostKeys('dev')).toMatchObject({ state: 'unrecorded', files: [] });
       expect(create).not.toHaveBeenCalled();
       expect(credentials).not.toHaveBeenCalled();
       expect(service.status('dev', 'workspace').state).toBe('idle');
       expect(await readFile(path, 'utf8')).toBe(text);
     } finally {
       create.mockRestore();
-      disposables.dispose();
+      await disposables.dispose();
     }
   });
 });

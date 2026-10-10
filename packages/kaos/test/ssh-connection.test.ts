@@ -1,12 +1,31 @@
+import * as childProcess from 'node:child_process';
 import { createHash, createHmac, generateKeyPairSync } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import * as net from 'node:net';
+import { PassThrough } from 'node:stream';
 import { join } from 'pathe';
 import { Server, utils } from 'ssh2';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SshConnectionManager, type SshConnectionHost } from '#/ssh-connection';
+import { SSHKaos } from '#/ssh';
+import {
+  SshConnectionManager,
+  SshKnownHostVerificationError,
+  type SshConnectionHost,
+} from '#/ssh-connection';
 import { SshKnownHosts } from '#/ssh-known-hosts';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
+vi.mock('node:net', async (importOriginal) => {
+  const actual = await importOriginal<typeof net>();
+  return { ...actual, Socket: vi.fn(actual.Socket) };
+});
 
 const directories: string[] = [];
 const managers: SshConnectionManager[] = [];
@@ -28,7 +47,7 @@ function key(): string {
   return generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
 }
 
-async function startServer(hostKey: string, port = 0, holdExec = false, keyboard = false): Promise<{ server: Server; port: number; connections: () => number; drop: () => void; finishExec: () => void }> {
+async function startServer(hostKey: string, port = 0, holdExec = false, keyboard = false, publicKey?: Buffer): Promise<{ server: Server; port: number; connections: () => number; drop: () => void; finishExec: () => void }> {
   let count = 0;
   const clients: Array<{ end(): void }> = [];
   const pendingExec: Array<{ exit(code: number): void; end(): void }> = [];
@@ -49,6 +68,7 @@ async function startServer(hostKey: string, port = 0, holdExec = false, keyboard
         };
         ask();
       } else if (!keyboard && ctx.method === 'password' && ctx.username === 'tester' && ctx.password === 'temporary-password') ctx.accept();
+      else if (!keyboard && ctx.method === 'publickey' && ctx.username === 'tester' && publicKey?.equals(ctx.key.data)) ctx.accept();
       else ctx.reject();
     });
     client.on('ready', () => {
@@ -137,7 +157,238 @@ function host(port: number, knownHostsFile: string, trustUnknown?: SshConnection
   return { hostname: '127.0.0.1', port, username: 'tester', password: 'temporary-password', agent: 'none', knownHostsFiles: [knownHostsFile], trustUnknown };
 }
 
+function proxyFixture() {
+  const proxy = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    killed: false,
+    kill: vi.fn(() => true),
+  });
+  proxy.kill = vi.fn(() => {
+    proxy.killed = true;
+    return true;
+  });
+  return proxy;
+}
+
+describe('SSH proxy teardown with an isolated child', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it.each(['exit', 'error'] as const)('keeps a proxy %s after failed setup local to its transport', async (event) => {
+    const proxy = proxyFixture();
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({
+      ...host(22, path), keyContents: ['invalid-private-key'], passphrase: 'invalid-passphrase',
+      proxyCommand: 'isolated-proxy',
+    }));
+    managers.push(manager);
+    await expect(manager.get('proxy')).rejects.toThrow('SSH private key or passphrase is invalid');
+    if (event === 'exit') { proxy.exitCode = 7; proxy.emit('exit', 7, null); }
+    else proxy.emit('error', Object.assign(new Error('proxy launch failed'), { code: 'ENOENT' }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.status('proxy').state).toBe('failed');
+    expect(proxy.kill).toHaveBeenCalledOnce();
+    expect(proxy.stdin.destroyed).toBe(true);
+    expect(proxy.stdout.destroyed).toBe(true);
+    expect(proxy.stderr.destroyed).toBe(true);
+  });
+
+  it.each(['exit', 'error', 'stdin', 'stdout', 'stderr', 'disconnect'] as const)('reports proxy %s during handshake and reclaims its streams', async (event) => {
+    const proxy = proxyFixture();
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({ ...host(22, path), proxyCommand: 'isolated-proxy' }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+    const opening = manager.get('proxy');
+    const rejected = expect(opening).rejects.toThrow();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (event === 'exit') { proxy.exitCode = 7; proxy.emit('exit', 7, null); }
+    else if (event === 'error') proxy.emit('error', new Error('proxy launch failed'));
+    else if (event === 'disconnect') await manager.disconnect('proxy');
+    else proxy[event].destroy(new Error(`${event} failed`));
+    await rejected;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(manager.status('proxy').state).toBe(event === 'disconnect' ? 'idle' : 'failed');
+    expect(proxy.kill).toHaveBeenCalledOnce();
+    expect([proxy.stdin, proxy.stdout, proxy.stderr].every((stream) => stream.destroyed)).toBe(true);
+    if (event === 'disconnect') expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect', callerOutcome: 'resolved', cleanupOutcome: 'killed',
+      resourcesAfter: 1, killRequested: true, exitObserved: false,
+    }));
+  });
+});
+
+describe('SSH connection receipts', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('keeps the caller failure and notifies other observers when a receipt observer throws', async () => {
+    const failure = new Error('Example host resolution failed');
+    const manager = new SshConnectionManager(async () => { throw failure; });
+    managers.push(manager);
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
+    const unsubscribe = manager.onReceipt(() => { throw new Error('Example observer failed'); });
+    const receipts: unknown[] = [];
+    manager.onReceipt(receipt => receipts.push(receipt));
+    try {
+      await expect(manager.get('example-host')).rejects.toBe(failure);
+      expect(receipts).toContainEqual(expect.objectContaining({ callerOutcome: 'rejected', errorMessage: failure.message }));
+      expect(warning).toHaveBeenCalledWith('SSH receipt observer threw an exception', { code: 'SSH_RECEIPT_OBSERVER_FAILED' });
+    } finally { unsubscribe(); }
+  });
+
+  it('preserves verification reason in the connection receipt and stops retrying fatal verification errors', async () => {
+    const verification = new SshKnownHostVerificationError('revoked', 'SSH host key is revoked for examplehost');
+    const create = vi.spyOn(SSHKaos, 'create').mockRejectedValue(verification);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({
+      hostname: 'examplehost', port: 22, username: 'tester', agent: 'none', knownHostsFiles: [path],
+    }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    await expect(manager.get('verification')).rejects.toBe(verification);
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect', callerOutcome: 'rejected', errorCode: 'revoked', cleanupOutcome: 'closed',
+    }));
+    await expect(manager.get('verification')).rejects.toThrow(/manual intervention/);
+    create.mockRestore();
+  });
+
+  it('reports the caller, proxy owner, and settled proxy resources after setup failure', async () => {
+    const proxy = proxyFixture();
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({
+      ...host(22, path), keyContents: ['invalid-private-key'], passphrase: 'invalid-passphrase',
+      proxyCommand: 'isolated-proxy',
+    }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    await expect(manager.get('proxy')).rejects.toThrow('SSH private key or passphrase is invalid');
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect',
+      callerOutcome: 'rejected',
+      terminalOwner: 'ssh_proxy',
+      cleanupOutcome: 'killed',
+      resourcesBefore: 5,
+      resourcesAfter: 1,
+      killRequested: true,
+      exitObserved: false,
+    }));
+
+    proxy.exitCode = 7;
+    proxy.emit('exit', 7, null);
+    await manager.disconnect('proxy');
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect',
+      callerOutcome: 'resolved',
+      terminalOwner: 'ssh_proxy',
+      cleanupOutcome: 'closed',
+      resourcesAfter: 0,
+      killRequested: true,
+      exitObserved: true,
+    }));
+  });
+
+  it('reports closed resources only after the proxy exit event is observed', async () => {
+    const proxy = proxyFixture();
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(proxy as unknown as childProcess.ChildProcessWithoutNullStreams);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => ({ ...host(22, path), proxyCommand: 'isolated-proxy' }));
+    const receipts: unknown[] = [];
+    manager.onReceipt((receipt) => receipts.push(receipt));
+    managers.push(manager);
+
+    const opening = manager.get('proxy');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    proxy.stderr.destroy(new Error('proxy launch failed'));
+    await expect(opening).rejects.toThrow();
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'connect',
+      callerOutcome: 'rejected',
+      cleanupOutcome: 'killed',
+      resourcesBefore: 5,
+      resourcesAfter: 1,
+      killRequested: true,
+      exitObserved: false,
+    }));
+
+    proxy.exitCode = 7;
+    proxy.emit('exit', 7, null);
+    await manager.disconnect('proxy');
+    expect(receipts).toContainEqual(expect.objectContaining({
+      stage: 'disconnect',
+      callerOutcome: 'resolved',
+      cleanupOutcome: 'closed',
+      resourcesAfter: 0,
+      killRequested: true,
+      exitObserved: true,
+    }));
+  });
+});
+
 describe('SSH connection manager with an actual ssh2 server', () => {
+  it.skipIf(process.platform !== 'win32').each(['ENOENT', 'EACCES'] as const)('distinguishes absent automatic Windows agents from real permission denial: %s', async (code) => {
+    const { path, home } = await fixture();
+    const privateKey = key();
+    const parsed = utils.parseKey(privateKey);
+    if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('Invalid test key');
+    const { port } = await startServer(privateKey, 0, false, false, parsed.getPublicSSH());
+    const identity = join(home, 'identity');
+    await writeFile(identity, privateKey);
+    const record = `[127.0.0.1]:${port} ssh-rsa ${parsed.getPublicSSH().toString('base64')}\n`;
+    await writeFile(path, record);
+    const socket = Object.assign(new EventEmitter(), { destroy: vi.fn(), connect: vi.fn(() => {
+      queueMicrotask(() => socket.emit('error', Object.assign(new Error('Auto agent probe failed'), { code })));
+      return socket;
+    }) });
+    const constructor = vi.mocked(net.Socket);
+    const original = constructor.getMockImplementation()!;
+    constructor.mockImplementation(function () { return socket as unknown as net.Socket; });
+    vi.stubEnv('SSH_AUTH_SOCK', undefined);
+    try {
+      const manager = new SshConnectionManager(async () => ({ hostname: '127.0.0.1', port, username: 'tester', keyPaths: [identity], knownHostsFiles: [path] }));
+      managers.push(manager);
+      if (code === 'ENOENT') expect(await manager.get('dev')).toBeInstanceOf(SSHKaos);
+      else await expect(manager.get('dev')).rejects.toMatchObject({ code });
+      expect(socket.connect).toHaveBeenCalledWith('\\\\.\\pipe\\openssh-ssh-agent');
+      expect(socket.destroy).toHaveBeenCalledOnce();
+      expect(await readFile(path, 'utf8')).toBe(record);
+    } finally {
+      constructor.mockImplementation(original);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(['host', 'environment'] as const)('preserves an explicit missing %s agent error instead of trying an available key', async (source) => {
+    const { path, home } = await fixture();
+    const privateKey = key();
+    const parsed = utils.parseKey(privateKey);
+    if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('Invalid test key');
+    const { port } = await startServer(privateKey, 0, false, false, parsed.getPublicSSH());
+    const identity = join(home, 'identity');
+    await writeFile(identity, privateKey);
+    const record = `[127.0.0.1]:${port} ssh-rsa ${parsed.getPublicSSH().toString('base64')}\n`;
+    await writeFile(path, record);
+    const missing = process.platform === 'win32' ? `\\\\.\\pipe\\kiki-missing-agent-${home.split(/[/\\]/).at(-1)}` : join(home, 'missing-agent');
+    vi.stubEnv('SSH_AUTH_SOCK', source === 'environment' ? missing : undefined);
+    try {
+      const manager = new SshConnectionManager(async () => ({ hostname: '127.0.0.1', port, username: 'tester', keyPaths: [identity], knownHostsFiles: [path], agent: source === 'host' ? missing : undefined }));
+      managers.push(manager);
+      await expect(manager.get('dev')).rejects.toThrow('Failed to connect to agent');
+      expect(await readFile(path, 'utf8')).toBe(record);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('answers multiple keyboard-interactive challenges without writing responses to known_hosts', async () => {
     const { path } = await fixture();
     const { port } = await startServer(key(), 0, false, true);
@@ -338,6 +589,99 @@ describe('S5 read-only known_hosts inspection', () => {
     expect(await new SshKnownHosts([home]).inspect('unknown.test', 22)).toMatchObject({ state: 'unavailable', files: [{ state: 'unavailable' }] });
   });
 
+  it('keeps none storage ephemeral and requires explicit trust for every unknown key', async () => {
+    const raw = publicKey();
+    const known = new SshKnownHosts([]);
+    expect(await known.inspect('example.test', 22)).toMatchObject({ state: 'unrecorded', files: [], records: [] });
+    const denied = vi.fn(async () => false);
+    expect(await known.verify('example.test', 22, raw, denied)).toBe(false);
+    expect(denied).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+    const approved = vi.fn(async () => true);
+    expect(await known.verify('example.test', 22, raw, approved)).toBe(true);
+    expect(await known.verify('example.test', 22, raw, approved)).toBe(true);
+    expect(approved).toHaveBeenCalledTimes(2);
+    expect(await known.inspect('example.test', 22)).toMatchObject({ state: 'unrecorded', files: [] });
+  });
+
+  it('does not infer a changed host key from a different revoked key alone', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const revoked = publicKey();
+    await writeFile(path, `@revoked examplehost ssh-rsa ${revoked.toString('base64')}\n`);
+    const trust = vi.fn(async () => false);
+    const known = new SshKnownHosts([path]);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+    expect(await readFile(path, 'utf8')).toBe(`@revoked examplehost ssh-rsa ${revoked.toString('base64')}\n`);
+  });
+
+  it('classifies exact revoked keys, unrelated revoked markers, and unrecorded algorithms without network writes', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const other = publicKey();
+    const trust = vi.fn(async () => false);
+    const known = new SshKnownHosts([path]);
+
+    await writeFile(path, `@revoked examplehost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({
+      reason: 'revoked', status: 'revoked', code: 'revoked',
+    });
+    expect(trust).not.toHaveBeenCalled();
+
+    await writeFile(path, `@revoked otherhost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+
+    trust.mockClear();
+    await writeFile(path, `@revoked examplehost ssh-rsa ${other.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown' }));
+
+    trust.mockClear();
+    await writeFile(path, `examplehost ssh-rsa ${other.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({ reason: 'key_changed' });
+    expect(trust).not.toHaveBeenCalled();
+
+    trust.mockClear();
+    await writeFile(path, `examplehost ssh-ed25519 ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'key_algorithm_unrecorded', status: 'key_algorithm_unrecorded',
+    }));
+    expect(await readFile(path, 'utf8')).toContain('ssh-ed25519');
+  });
+
+  it('rejects matching certificate-authority records as unsupported and ignores other hosts', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const known = new SshKnownHosts([path]);
+    const trust = vi.fn(async () => false);
+
+    await writeFile(path, `@cert-authority examplehost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).rejects.toMatchObject({
+      reason: 'certificate_authority_unsupported', status: 'certificate_authority_unsupported',
+    });
+    expect(trust).not.toHaveBeenCalled();
+
+    await writeFile(path, `@cert-authority otherhost ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(false);
+    expect(trust).toHaveBeenCalledOnce();
+  });
+
+  it('accepts an exact host key even when an unrelated revoked marker shares the label', async () => {
+    const { path } = await fixture();
+    const raw = publicKey();
+    const other = publicKey();
+    const known = new SshKnownHosts([path]);
+    const trust = vi.fn(async () => { throw new Error('unexpected trust prompt'); });
+
+    await writeFile(path,
+      `@revoked examplehost ssh-rsa ${other.toString('base64')}\n` +
+      `examplehost ssh-rsa ${raw.toString('base64')}\n`);
+
+    await expect(known.verify('examplehost', 22, raw, trust)).resolves.toBe(true);
+  });
+
   it('keeps matching, changed, revoked and unknown verification across two files without network or writes', async () => {
     const { path, home } = await fixture();
     const second = join(home, 'known_hosts2');
@@ -356,7 +700,9 @@ describe('S5 read-only known_hosts inspection', () => {
     expect(await readFile(path, 'utf8')).toBe(firstText);
     expect(await readFile(second, 'utf8')).toBe(secondText);
     await writeFile(path, `@revoked example.test ssh-rsa ${replacement.toString('base64')}\n`);
-    await expect(known.verify('example.test', 22, raw, trust)).rejects.toThrow(/changed/);
+    expect(await known.verify('example.test', 22, raw, trust)).toBe(true);
+    await writeFile(path, `@revoked example.test ssh-rsa ${raw.toString('base64')}\n`);
+    await expect(known.verify('example.test', 22, raw, trust)).rejects.toThrow(/revoked/);
     expect((await known.inspect('example.test', 22)).records.map((entry) => entry.status)).toEqual(['revoked', 'recorded']);
   });
 });

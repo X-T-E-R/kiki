@@ -54,6 +54,7 @@ export type SSHKaosExtraOptions = Omit<
 >;
 
 export interface SSHKaosOptions {
+  signal?: AbortSignal;
   host: string;
   port?: number;
   username: string;
@@ -285,16 +286,39 @@ export class SSHProcess implements KaosProcess {
 
 // ── Promisified SSH helpers ────────────────────────────────────────────
 
-function connectClient(config: ConnectConfig): Promise<Client> {
+function connectClient(config: ConnectConfig, signal?: AbortSignal): Promise<Client> {
+  signal?.throwIfAborted();
+  if (config.sock?.destroyed) throw config.sock.errored ?? new KaosConnectionError('SSH transport closed before connecting');
   const client = new ssh2.Client();
   return new Promise<Client>((resolve, reject) => {
-    client.on('ready', () => {
+    let ready = false;
+    const onAbort = (): void => {
+      reject(signal!.reason);
+      client.destroy();
+    };
+    const cleanup = (): void => { signal?.removeEventListener('abort', onAbort); };
+    client.once('ready', () => {
+      ready = true;
+      cleanup();
       resolve(client);
     });
     client.on('error', (err: Error) => {
+      cleanup();
       reject(err);
+      client.destroy();
     });
-    client.connect(config);
+    client.once('close', () => {
+      cleanup();
+      if (!ready) reject(new KaosConnectionError('SSH connection closed before becoming ready'));
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      client.connect(config);
+    } catch (error) {
+      cleanup();
+      client.destroy();
+      reject(error);
+    }
   });
 }
 
@@ -546,8 +570,9 @@ export class SSHKaos implements Kaos {
     }
     if (options.keyPaths) {
       const keyPromises = options.keyPaths.map(async (keyPath) => {
+        if (typeof keyPath !== 'string' || keyPath.length === 0) throw new KaosValueError('SSH private key path must be a non-empty string');
         try {
-          return await readFile(keyPath, 'utf-8');
+          return await readFile(keyPath, { encoding: 'utf-8', signal: options.signal });
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
           throw error;
@@ -574,8 +599,11 @@ export class SSHKaos implements Kaos {
     // A missing trust source must not silently accept an unknown or changed server key.
     config.hostVerifier = options.hostVerifier ?? (() => false);
 
-    const client = await connectClient(config);
+    const client = await connectClient(config, options.signal);
+    const onAbort = (): void => { client.destroy(); };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      options.signal?.throwIfAborted();
       const sftp = await getSftp(client);
 
       // Determine home and cwd
@@ -591,10 +619,13 @@ export class SSHKaos implements Kaos {
         }
       }
 
+      options.signal?.throwIfAborted();
       return new SSHKaos(client, sftp, home, cwd);
     } catch (error) {
-      client.end();
+      client.destroy();
       throw error;
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
     }
   }
 
