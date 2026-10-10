@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 118 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 119 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -122,6 +122,7 @@
 //     modelSwitch.continuity                          src/agent/modelSwitch/modelSwitchOps.ts
 //     permissionMode                                  src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.configured                       src/agent/permissionMode/permissionModeOps.ts
+//     permissionMode.externalOverride                 src/agent/permissionMode/permissionModeOps.ts
 //     permissionMode.lastMode                         src/agent/permissionMode/injection/permissionModeInjection.ts
 //     permissionRules                                 src/agent/permissionRules/permissionRulesOps.ts
 //     plan                                            src/features/plan/planOps.ts
@@ -550,6 +551,7 @@ export interface SessionStateSnapshot {
     readonly lastPrompt?: string;
     readonly createdAt: number;
     readonly updatedAt: number;
+    readonly activityUpdatedAt?: number;
     readonly archived: boolean;
     readonly archivedAt?: number;
     readonly cwd?: string;
@@ -579,6 +581,7 @@ export interface SessionStateSnapshot {
       readonly userLabel?: string;
       readonly model?: string;
       readonly thinkingEffort?: string;
+      readonly thinkingEffortExplicit?: boolean;
       readonly executor?: string;
       readonly executorProtocol?: string;
       readonly negotiated?: /* NegotiatedExecutorCapabilities — packages/agent-core-v2/src/app/agentExecutor/capabilities.ts */ {
@@ -924,7 +927,16 @@ export interface AgentStateSnapshot {
     readonly lifecycle: /* ActivityViewLifecycle — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'ready' | 'disposed';
     readonly turn?: /* ActivityTurnState — packages/agent-core-v2/src/agent/activityView/activityView.ts */ {
       readonly turnId: number;
-      readonly origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'merged';
+        readonly origins: readonly (/* PromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown)[];
+      } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'unknown';
+      } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_thread';
+        readonly messageId: string;
+        readonly acceptedAt: number;
+      } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'user';
         readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly activationId: string;
@@ -937,6 +949,21 @@ export interface AgentStateSnapshot {
         readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'text';
           text: string;
+          presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -947,12 +974,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -960,6 +1004,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -993,6 +1045,21 @@ export interface AgentStateSnapshot {
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
+      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_client';
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_record';
+        readonly recordId: string;
+        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string;
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
       } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'task';
         readonly taskId: string;
@@ -1136,7 +1203,16 @@ export interface AgentStateSnapshot {
     }>;
     since: number;
     turnId: number;
-    origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+    origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'merged';
+      readonly origins: readonly (/* PromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown)[];
+    } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'unknown';
+    } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_thread';
+      readonly messageId: string;
+      readonly acceptedAt: number;
+    } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'user';
       readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly activationId: string;
@@ -1149,6 +1225,21 @@ export interface AgentStateSnapshot {
       readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'text';
         text: string;
+        presentation?: unknown;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
+        resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly uri: string;
+          readonly name?: string;
+          readonly mimeType?: string;
+          readonly size?: number;
+          readonly title?: string;
+          readonly description?: string;
+        };
       } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'think';
         think: string;
@@ -1159,12 +1250,29 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'audio_url';
         audioUrl: {
           url: string;
           id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'video_url';
@@ -1172,6 +1280,14 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1205,6 +1321,21 @@ export interface AgentStateSnapshot {
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
+    } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_client';
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
+    } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_record';
+      readonly recordId: string;
+      readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+      readonly title?: string;
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
     } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'task';
       readonly taskId: string;
@@ -1280,7 +1411,16 @@ export interface AgentStateSnapshot {
     };
     snapshot: () => /* ActivityTurnState — packages/agent-core-v2/src/agent/activityView/activityView.ts */ {
       readonly turnId: number;
-      readonly origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly origin: /* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'merged';
+        readonly origins: readonly (/* PromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown)[];
+      } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'unknown';
+      } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_thread';
+        readonly messageId: string;
+        readonly acceptedAt: number;
+      } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'user';
         readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly activationId: string;
@@ -1293,6 +1433,21 @@ export interface AgentStateSnapshot {
         readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'text';
           text: string;
+          presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
         } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'think';
           think: string;
@@ -1303,12 +1458,29 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'audio_url';
           audioUrl: {
             url: string;
             id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'video_url';
@@ -1316,6 +1488,14 @@ export interface AgentStateSnapshot {
             url: string;
             id?: string;
             name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
           };
         })[];
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1349,6 +1529,21 @@ export interface AgentStateSnapshot {
       } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'system_trigger';
         readonly name: string;
+      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_client';
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_record';
+        readonly recordId: string;
+        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string;
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
       } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'task';
         readonly taskId: string;
@@ -1453,13 +1648,28 @@ export interface AgentStateSnapshot {
   'agentsMdReminder.known': Set<string>;
   'agentsMdReminder.seeded': boolean;
   // src/agent/contextMemory/contextOps.ts
-  // replayable · durable · undoable — folds: ContextAppendMessage, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch
+  // replayable · durable · undoable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, AgentModelSwitch
   'contextMemory': (/* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     readonly role: /* Role — packages/agent-core-v2/src/kosong/contract/message.ts */ 'user' | 'assistant' | 'system' | 'tool';
     readonly name?: string;
     readonly content: (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'text';
       text: string;
+      presentation?: unknown;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
+      resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly uri: string;
+        readonly name?: string;
+        readonly mimeType?: string;
+        readonly size?: number;
+        readonly title?: string;
+        readonly description?: string;
+      };
     } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'think';
       think: string;
@@ -1470,12 +1680,29 @@ export interface AgentStateSnapshot {
         url: string;
         id?: string;
         name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'audio_url';
       audioUrl: {
         url: string;
         id?: string;
+        name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'video_url';
@@ -1483,6 +1710,14 @@ export interface AgentStateSnapshot {
         url: string;
         id?: string;
         name?: string;
+        mimeType?: string;
+        size?: number;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
       };
     })[];
     readonly toolCalls: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
@@ -1504,7 +1739,218 @@ export interface AgentStateSnapshot {
   } & {
     readonly id?: string;
     readonly providerMessageId?: string;
-    readonly origin?: /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+    readonly origin?: /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'merged';
+      readonly origins: readonly (/* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'unknown';
+      } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_thread';
+        readonly messageId: string;
+        readonly acceptedAt: number;
+      } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'user';
+        readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly activationId: string;
+          readonly skillName: string;
+          readonly skillArgs?: string;
+          readonly skillType?: string;
+          readonly skillPath?: string;
+          readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+        }[];
+        readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'text';
+          text: string;
+          presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
+        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'think';
+          think: string;
+          encrypted?: string;
+        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'image_url';
+          imageUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'audio_url';
+          audioUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'video_url';
+          videoUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        })[];
+      } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'skill_activation';
+        readonly activationId: string;
+        readonly skillName: string;
+        readonly skillArgs?: string;
+        readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+        readonly userInput?: string;
+        readonly skillType?: string;
+        readonly skillPath?: string;
+        readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+      } | /* PluginCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'plugin_command';
+        readonly activationId: string;
+        readonly pluginId: string;
+        readonly commandName: string;
+        readonly commandArgs?: string;
+        readonly trigger: 'user-slash';
+      } | /* InjectionOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'injection';
+        readonly variant: string;
+        readonly ownerPromptId?: string;
+        readonly disclosure?: unknown;
+      } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'shell_command';
+        readonly phase: 'input' | 'output';
+        readonly isError?: boolean;
+      } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'compaction_summary';
+      } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'system_trigger';
+        readonly name: string;
+      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_client';
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'external_record';
+        readonly recordId: string;
+        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+        readonly title?: string;
+        readonly connectionId: string;
+        readonly clientName: string;
+        readonly sessionRef: string;
+        readonly driver: 'external';
+      } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'task';
+        readonly taskId: string;
+        readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
+        readonly notificationId: string;
+      } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'cron_job';
+        readonly jobId: string;
+        readonly cron: string;
+        readonly recurring: boolean;
+        readonly coalescedCount: number;
+        readonly stale: boolean;
+      } | /* CronMissedOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'cron_missed';
+        readonly count: number;
+      } | /* HookResultOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'hook_result';
+        readonly event: string;
+        readonly blocked?: boolean;
+      } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'retry';
+        readonly trigger?: string;
+      } | /* PeerThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'peer_thread';
+        readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+          readonly hostId: string;
+          readonly workspaceId: string;
+          readonly sessionId: string;
+          readonly personaId?: string;
+          readonly name?: string;
+          readonly bridgeId?: string;
+          readonly connectionId?: string;
+        };
+        readonly messageId: string;
+        readonly acceptedAt: number;
+      } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'bridged_peer';
+        readonly messageId: string;
+        readonly acceptedAt: number;
+        readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+          readonly hostId: string;
+          readonly workspaceId: string;
+          readonly sessionId: string;
+          readonly personaId?: string;
+          readonly name?: string;
+          readonly bridgeId?: string;
+          readonly connectionId?: string;
+        };
+        readonly sourceHomeId: string;
+        readonly targetHomeId: string;
+        readonly bridgeId: string;
+        readonly revision: number;
+        readonly location: 'local' | 'network';
+        readonly createdAt: number;
+        readonly expiresAt: number;
+        readonly sourceSeq: number;
+        readonly causeId: string;
+        readonly hop: number;
+      } | /* AgentMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'agent_message';
+        readonly messageId: string;
+        readonly senderAgentId: string;
+        readonly senderTaskName: string;
+      } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'persona_greeting';
+        readonly personaId: string;
+      } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'room_message';
+        readonly roomId: string;
+        readonly messageId: string;
+        readonly targeted: boolean;
+        readonly generation?: number;
+      })[];
+    } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'unknown';
+    } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_thread';
+      readonly messageId: string;
+      readonly acceptedAt: number;
+    } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'user';
       readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly activationId: string;
@@ -1517,6 +1963,21 @@ export interface AgentStateSnapshot {
       readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'text';
         text: string;
+        presentation?: unknown;
+        attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly fileId: string;
+          readonly mimeType: string;
+          readonly size: number;
+          readonly name?: string;
+        };
+        resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          readonly uri: string;
+          readonly name?: string;
+          readonly mimeType?: string;
+          readonly size?: number;
+          readonly title?: string;
+          readonly description?: string;
+        };
       } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'think';
         think: string;
@@ -1527,12 +1988,29 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'audio_url';
         audioUrl: {
           url: string;
           id?: string;
+          name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'video_url';
@@ -1540,6 +2018,14 @@ export interface AgentStateSnapshot {
           url: string;
           id?: string;
           name?: string;
+          mimeType?: string;
+          size?: number;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
         };
       })[];
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1573,6 +2059,21 @@ export interface AgentStateSnapshot {
     } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'system_trigger';
       readonly name: string;
+    } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_client';
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
+    } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'external_record';
+      readonly recordId: string;
+      readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+      readonly title?: string;
+      readonly connectionId: string;
+      readonly clientName: string;
+      readonly sessionRef: string;
+      readonly driver: 'external';
     } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'task';
       readonly taskId: string;
@@ -1665,7 +2166,31 @@ export interface AgentStateSnapshot {
       readonly id: string;
       readonly revision: string;
       readonly status: string;
-      readonly operationId: string;
+      readonly operationId?: string;
+      readonly outcome?: 'applied' | 'pending' | 'unchanged';
+      readonly ownerScope?: {
+        readonly kind: 'global';
+      } | {
+        readonly kind: 'workspace';
+        readonly workspaceId: string;
+      } | {
+        readonly kind: 'persona';
+        readonly personaId: string;
+      } | {
+        readonly kind: 'persona_workspace';
+        readonly workspaceId: string;
+        readonly personaId: string;
+      };
+      readonly target?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+        readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+        readonly id: string;
+        readonly expected_revision: string;
+      };
+      readonly proposedTarget?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+        readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+        readonly id: string;
+        readonly expected_revision: string;
+      };
     };
     readonly source?: /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly ref?: string;
@@ -1684,12 +2209,12 @@ export interface AgentStateSnapshot {
       readonly toolCallId?: string;
     }>>;
   })[];
-  // replayable · durable — folds: ContextAppendMessage, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch
+  // replayable · durable — folds: ContextAppendMessage, ExternalText, ContextAppendLoopEvent, ContextClear, ContextApplyCompaction, ContextUndo, AgentModelSwitch
   'contextMemory.revision': number;
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
   // src/agent/execution/externalExecutorOps.ts
-  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate
+  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
     readonly executorId?: string;
     readonly descriptorRevision?: string;
@@ -1717,7 +2242,8 @@ export interface AgentStateSnapshot {
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
-    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'completed' | 'cancelled' | 'running' | 'idle';
+    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'completed' | 'cancelled' | 'running' | 'queued' | 'idle';
+    readonly pendingManual?: boolean;
   };
   // src/agent/fullCompaction/contextStrategyOps.ts
   // replayable · durable — folds: ContextStrategyOverrideChanged
@@ -1886,7 +2412,7 @@ export interface AgentStateSnapshot {
         readonly value: string;
         readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'deferred' | 'effective' | 'shadowed' | 'inactive' | 'unsupported';
         readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'model' | 'profile' | 'global' | 'profile-model' | 'caller-lease-model';
+          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'global' | 'model' | 'profile' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
           readonly path?: string;
           readonly fileIndex?: number;
@@ -1909,14 +2435,730 @@ export interface AgentStateSnapshot {
       readonly contentRevision: string;
       readonly bindingRevision?: string;
       readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
-        overlay?: string | string[];
-        steering?: string | string[];
-        anchor?: string | string[];
-        overlayMode?: 'replace' | 'append' | 'prepend' | 'wrap' | 'persona';
+        overlay?: string | readonly string[] | {
+          text: string;
+        };
+        steering?: string | readonly string[] | {
+          text: string;
+        };
+        anchor?: string | readonly string[] | {
+          text: string;
+        };
+        overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
         anchorSteps?: number;
         anchorScope?: 'session' | 'turn';
+        steeringOnTurn?: boolean;
+        steeringOnInput?: boolean;
+        steeringIntervalSteps?: number;
+        steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+          mode: 'off' | 'custom' | 'inherit';
+          custom?: {
+            steering?: string | readonly string[] | {
+              text: string;
+            };
+            steering_on_turn?: boolean;
+            steering_on_input?: boolean;
+            steering_interval_steps?: number;
+          };
+        }>>;
+      };
+      readonly modelSettings?: Readonly<Record<string, unknown>>;
+      readonly recipe?: {
+        readonly installation_id: string;
+        readonly resolved: {
+          revision: string;
+          branches: {
+            main: {
+              fields: {
+                [key: string]: string;
+              };
+              steering_sources?: {
+                agent?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                external?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                task?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                skill?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                thread?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                room?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                hook?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                automation?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+            sub: {
+              fields: {
+                [key: string]: string;
+              };
+              steering_sources?: {
+                agent?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                external?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                task?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                skill?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                thread?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                room?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                hook?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                automation?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+            independent: {
+              fields: {
+                [key: string]: string;
+              };
+              steering_sources?: {
+                agent?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                external?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                task?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                skill?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                thread?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                room?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                hook?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+                automation?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
+              };
+              anchor?: {
+                content: string;
+                steps: number;
+                scope: 'session' | 'turn';
+              };
+              steering_on_turn?: boolean;
+              steering_on_input?: boolean;
+              steering_interval_steps?: number;
+              system?: string;
+              steering?: string;
+            };
+          };
+          dependencies: readonly {
+            source: {
+              locator: string;
+              sha256?: string;
+            };
+            manifest_id: string;
+            version: string;
+            revision: string;
+          }[];
+          origins: readonly {
+            position: 'main' | 'sub' | 'independent';
+            slot: string;
+            source: string;
+            manifest_id: string;
+            version: string;
+            file?: string;
+          }[];
+          model: {
+            [key: string]: unknown;
+          };
+          model_origins: {
+            [key: string]: {
+            source: string;
+            version: string;
+            manifest_id: string;
+            file?: string;
+          };
+          };
+          hooks?: readonly {
+            event: string;
+            command: string;
+            source: string;
+            manifest_id: string;
+            files: {
+              [key: string]: string;
+            };
+            matcher?: string;
+            timeout?: number;
+          }[];
+          hooks_fingerprint?: string;
+          layers?: readonly {
+            surface: 'model' | 'profile';
+            installation_id: string;
+            resolved: {
+              revision: string;
+              branches: {
+                main: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  steering_sources?: {
+                    agent?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    external?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    task?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    skill?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    thread?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    room?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    hook?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    automation?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+                sub: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  steering_sources?: {
+                    agent?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    external?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    task?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    skill?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    thread?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    room?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    hook?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    automation?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+                independent: {
+                  fields: {
+                    [key: string]: string;
+                  };
+                  steering_sources?: {
+                    agent?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    external?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    task?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    skill?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    thread?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    room?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    hook?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                    automation?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
+                  };
+                  anchor?: {
+                    content: string;
+                    steps: number;
+                    scope: 'session' | 'turn';
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                  system?: string;
+                  steering?: string;
+                };
+              };
+              dependencies: readonly {
+                source: {
+                  locator: string;
+                  sha256?: string;
+                };
+                manifest_id: string;
+                version: string;
+                revision: string;
+              }[];
+              origins: readonly {
+                position: 'main' | 'sub' | 'independent';
+                slot: string;
+                source: string;
+                manifest_id: string;
+                version: string;
+                file?: string;
+              }[];
+              model: {
+                [key: string]: unknown;
+              };
+              model_origins: {
+                [key: string]: {
+                source: string;
+                version: string;
+                manifest_id: string;
+                file?: string;
+              };
+              };
+              hooks?: readonly {
+                event: string;
+                command: string;
+                source: string;
+                manifest_id: string;
+                files: {
+                  [key: string]: string;
+                };
+                matcher?: string;
+                timeout?: number;
+              }[];
+              hooks_fingerprint?: string;
+            };
+          }[];
+        };
+        readonly anchorSystem?: string;
       };
       readonly anchor?: string;
+      readonly steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+        mode: 'off' | 'custom' | 'inherit';
+        custom?: {
+          steering?: string;
+          steering_on_turn?: boolean;
+          steering_on_input?: boolean;
+          steering_interval_steps?: number;
+        };
+      }>>;
     };
     readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
       modelSource?: 'static' | 'discover' | 'oauth-catalog';
@@ -2036,7 +3278,7 @@ export interface AgentStateSnapshot {
   'loop.lastRequestTraceId': string | undefined;
   'loop.nextReservedTurnId': number | undefined;
   // src/agent/loop/turnOps.ts
-  // replayable · durable — folds: ContextAppendLoopEvent, TurnPrompt, TurnSteer, ContextUndo, ContextApplyCompaction, ContextClear, TurnCancel, TurnEnded
+  // replayable · durable — folds: ContextAppendLoopEvent, TurnPrompt, ExternalActivity, ExternalText, TurnSteer, ContextUndo, ContextApplyCompaction, ContextClear, TurnCancel, TurnEnded
   'turn': /* TurnModelState — packages/agent-core-v2/src/agent/loop/turnOps.ts */ {
     readonly nextTurnId: number;
     readonly cancelledTurnIds: readonly number[];
@@ -2059,6 +3301,21 @@ export interface AgentStateSnapshot {
   'media.resolved': Map<string, /* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'text';
     text: string;
+    presentation?: unknown;
+    attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+      readonly fileId: string;
+      readonly mimeType: string;
+      readonly size: number;
+      readonly name?: string;
+    };
+    resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+      readonly uri: string;
+      readonly name?: string;
+      readonly mimeType?: string;
+      readonly size?: number;
+      readonly title?: string;
+      readonly description?: string;
+    };
   } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'think';
     think: string;
@@ -2069,12 +3326,29 @@ export interface AgentStateSnapshot {
       url: string;
       id?: string;
       name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'audio_url';
     audioUrl: {
       url: string;
       id?: string;
+      name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'video_url';
@@ -2082,6 +3356,14 @@ export interface AgentStateSnapshot {
       url: string;
       id?: string;
       name?: string;
+      mimeType?: string;
+      size?: number;
+      attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly fileId: string;
+        readonly mimeType: string;
+        readonly size: number;
+        readonly name?: string;
+      };
     };
   }>;
   // src/agent/media/mediaToolsRegistrar.ts
@@ -2145,12 +3427,14 @@ export interface AgentStateSnapshot {
     };
   };
   // src/agent/permissionMode/injection/permissionModeInjection.ts
-  'permissionMode.lastMode': 'auto' | 'manual' | 'review' | 'yolo' | undefined;
+  'permissionMode.lastMode': 'manual' | 'auto' | 'review' | 'yolo' | undefined;
   // src/agent/permissionMode/permissionModeOps.ts
   // replayable · durable — folds: PermissionSetMode
-  'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'auto' | 'manual' | 'review' | 'yolo';
+  'permissionMode': /* PermissionMode — packages/agent-core-v2/src/agent/permissionPolicy/types.ts */ 'manual' | 'auto' | 'review' | 'yolo';
   // replayable · durable — folds: PermissionSetMode
   'permissionMode.configured': boolean;
+  // replayable · durable — folds: PermissionSetMode
+  'permissionMode.externalOverride': 'manual' | 'auto' | 'review' | 'yolo' | null;
   // src/agent/permissionRules/permissionRulesOps.ts
   // replayable · durable — folds: PermissionRulesAdd, PermissionRecordApprovalResult
   'permissionRules': /* PermissionRulesModelState — packages/agent-core-v2/src/agent/permissionRules/permissionRulesOps.ts */ {
@@ -2210,6 +3494,7 @@ export interface AgentStateSnapshot {
   // src/agent/profile/profileOps.ts
   // replayable · durable — folds: ProfileBind, ConfigUpdate, AgentModelSwitch
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
+    readonly driver?: 'external';
     readonly toolOverride?: /* ToolBindingOverride — packages/agent-core-v2/src/agent/profile/profile.ts */ {
       readonly tools?: readonly string[];
       readonly disallowedTools?: readonly string[];
@@ -2257,14 +3542,39 @@ export interface AgentStateSnapshot {
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
     readonly executionRestriction?: 'research-readonly';
     readonly allowParentNotify?: boolean;
+    readonly execution?: {
+      version: 1;
+      selection: {
+        executor: string;
+        profile?: string;
+        profile_file?: string;
+        overrides?: {
+          model?: string | null;
+          thinking?: string | null;
+          permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+          kiki_context?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[] | null;
+          allow_kiki_subagents?: boolean | null;
+        };
+      };
+      effective: {
+        kiki_context: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+        allow_kiki_subagents: boolean;
+        model?: string;
+        thinking?: string;
+        permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+      };
+      sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
+      generation: number;
+    };
     readonly executorId?: string;
     readonly executorProtocol?: string;
     readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
     readonly executorPrompt?: {
-      include: readonly string[];
       delivery?: 'replace' | 'append' | 'preamble';
+      include?: readonly string[];
       body?: string;
       append?: string;
       per_engine?: Record<string, {
@@ -2275,7 +3585,7 @@ export interface AgentStateSnapshot {
       }>;
     };
     readonly allowKikiSubagents?: boolean;
-    readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+    readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
@@ -2310,7 +3620,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
-    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
     readonly subagentPolicy?: 'strict' | 'advisory';
     readonly subagentDeclaration?: {
       readonly kind: 'inherit';
@@ -2468,7 +3778,7 @@ export interface AgentStateSnapshot {
         readonly kind: 'set';
         readonly names: readonly string[];
       };
-      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+      readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
       readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
       readonly requestedProfile: string;
       readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
@@ -2656,6 +3966,7 @@ export interface AgentStateSnapshot {
           }) => /* ILogger — recursive (packages/agent-core-v2/src/_base/log/log.ts) */ unknown;
         };
       }) => Promise<string>;
+      readonly recipe?: string;
       readonly restrictModelsToMenu?: boolean;
       readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
@@ -2707,6 +4018,7 @@ export interface AgentStateSnapshot {
       }[];
       readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+        readonly recipe?: string;
         readonly autoCompact?: number;
         readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
         readonly contextBudget?: number;
@@ -2716,14 +4028,14 @@ export interface AgentStateSnapshot {
         readonly contributionRoot: string;
         readonly private: boolean;
         readonly allowParentNotify?: boolean;
-        readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+        readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
         readonly description: string;
         readonly whenToUse?: string;
         readonly override: boolean;
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
-        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
         readonly subagentPolicy?: 'strict' | 'advisory';
         readonly subagentDeclaration?: {
           readonly kind: 'inherit';
@@ -2881,8 +4193,8 @@ export interface AgentStateSnapshot {
         readonly executor?: string;
         readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
         readonly executorPrompt?: {
-          include: readonly string[];
           delivery?: 'replace' | 'append' | 'preamble';
+          include?: readonly string[];
           body?: string;
           append?: string;
           per_engine?: Record<string, {
@@ -2893,7 +4205,7 @@ export interface AgentStateSnapshot {
           }>;
         };
         readonly allowKikiSubagents?: boolean;
-        readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+        readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
         readonly modelAlias?: string;
         readonly restrictModelsToMenu?: boolean;
         readonly thinkingEffort?: string;
@@ -2993,12 +4305,12 @@ export interface AgentStateSnapshot {
       readonly override?: boolean;
       readonly private?: boolean;
       readonly allowParentNotify?: boolean;
-      readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+      readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
       readonly main?: boolean;
       readonly tools?: readonly string[];
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
-      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
       readonly subagentDeclaration?: {
         readonly kind: 'inherit';
@@ -3156,8 +4468,8 @@ export interface AgentStateSnapshot {
       readonly executor?: string;
       readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
       readonly executorPrompt?: {
-        include: readonly string[];
         delivery?: 'replace' | 'append' | 'preamble';
+        include?: readonly string[];
         body?: string;
         append?: string;
         per_engine?: Record<string, {
@@ -3168,7 +4480,7 @@ export interface AgentStateSnapshot {
         }>;
       };
       readonly allowKikiSubagents?: boolean;
-      readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+      readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -3397,6 +4709,7 @@ export interface AgentStateSnapshot {
     }, 'systemPrompt' | 'renderSystemPrompt' | 'promptPrefix'> & {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly recipe?: string;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
           readonly contextBudget?: number;
@@ -3406,14 +4719,14 @@ export interface AgentStateSnapshot {
           readonly contributionRoot: string;
           readonly private: boolean;
           readonly allowParentNotify?: boolean;
-          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+          readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -3571,8 +4884,8 @@ export interface AgentStateSnapshot {
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
           readonly executorPrompt?: {
-            include: readonly string[];
             delivery?: 'replace' | 'append' | 'preamble';
+            include?: readonly string[];
             body?: string;
             append?: string;
             per_engine?: Record<string, {
@@ -3583,7 +4896,7 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -3701,9 +5014,10 @@ export interface AgentStateSnapshot {
           readonly roomPrompt?: string;
           readonly effectiveThinkingLevel?: 'off' | 'on' | (string & {});
           readonly thinkingEffortSource?: 'forced' | 'adjusted';
+          readonly thinkingEffortExplicit?: boolean;
           readonly routeDetached?: boolean;
           readonly profileSource?: 'registered' | 'profile-file';
-          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+          readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
           readonly bindingAdvisories?: readonly /* BindingAdvisory — packages/agent-profiles/src/bindingAdvisory.ts */ {
             readonly version: 1;
             readonly code: /* BindingAdvisoryCode — packages/agent-profiles/src/bindingAdvisory.ts */ 'model_not_preferred' | 'model_discouraged' | 'effort_not_preferred' | 'model_not_allowed' | 'model_denied' | 'effort_not_allowed' | 'model_pin_overridden' | 'effort_pin_overridden';
@@ -3719,12 +5033,36 @@ export interface AgentStateSnapshot {
           }[];
           readonly executionRestriction?: 'research-readonly';
           readonly allowParentNotify?: boolean;
+          readonly execution?: {
+            version: 1;
+            selection: {
+              executor: string;
+              profile?: string;
+              profile_file?: string;
+              overrides?: {
+                model?: string | null;
+                thinking?: string | null;
+                permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+                kiki_context?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[] | null;
+                allow_kiki_subagents?: boolean | null;
+              };
+            };
+            effective: {
+              kiki_context: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+              allow_kiki_subagents: boolean;
+              model?: string;
+              thinking?: string;
+              permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+            };
+            sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
+            generation: number;
+          };
           readonly executorId?: string;
           readonly executorProtocol?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
           readonly executorPrompt?: {
-            include: readonly string[];
             delivery?: 'replace' | 'append' | 'preamble';
+            include?: readonly string[];
             body?: string;
             append?: string;
             per_engine?: Record<string, {
@@ -3735,13 +5073,13 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -3899,7 +5237,7 @@ export interface AgentStateSnapshot {
               readonly kind: 'set';
               readonly names: readonly string[];
             };
-            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'route' | 'scoped' | 'profile_file';
+            readonly selectionKind: /* SubagentSelectionKind — packages/agent-profiles/src/subagentDispatch.ts */ 'profile' | 'profile_file' | 'route' | 'scoped';
             readonly selectionOrigin: /* SubagentSelectionOrigin — packages/agent-profiles/src/subagentDispatch.ts */ 'explicit' | 'recommended-default' | 'configured-fallback';
             readonly requestedProfile: string;
             readonly recommendationStatus: /* SubagentRecommendationStatus — packages/agent-profiles/src/subagentDispatch.ts */ 'blocked' | 'preferred' | 'allowed_nonpreferred' | 'unconfigured';
@@ -4067,6 +5405,7 @@ export interface AgentStateSnapshot {
             };
           };
           readonly renderGeneration?: number;
+          driver?: 'external';
           modelAlias?: string;
           modelCapabilities: /* ModelCapability — packages/agent-core-v2/src/kosong/contract/capability.ts */ {
             readonly image_in: boolean;
@@ -4085,7 +5424,9 @@ export interface AgentStateSnapshot {
           readonly lockedThinkingEffort?: string;
           thinkingLevel: string;
           systemPrompt: string;
-        }, 'disallowedTools' | 'activeToolNames' | 'toolAllowPolicies'>;
+        }, 'disallowedTools' | 'activeToolNames' | 'toolAllowPolicies'> & {
+          readonly externalToolAllowPolicies?: readonly (readonly string[])[];
+        };
         readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, /* AgentFileScopedBinding — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly parentDefinitionId: string;
           readonly alias: string;
@@ -4159,6 +5500,7 @@ export interface AgentStateSnapshot {
           readonly status: 'ready' | 'unavailable';
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+            readonly recipe?: string;
             readonly autoCompact?: number;
             readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
             readonly contextBudget?: number;
@@ -4168,14 +5510,14 @@ export interface AgentStateSnapshot {
             readonly contributionRoot: string;
             readonly private: boolean;
             readonly allowParentNotify?: boolean;
-            readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+            readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
             readonly description: string;
             readonly whenToUse?: string;
             readonly override: boolean;
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
-            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
             readonly subagentPolicy?: 'strict' | 'advisory';
             readonly subagentDeclaration?: {
               readonly kind: 'inherit';
@@ -4333,8 +5675,8 @@ export interface AgentStateSnapshot {
             readonly executor?: string;
             readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
             readonly executorPrompt?: {
-              include: readonly string[];
               delivery?: 'replace' | 'append' | 'preamble';
+              include?: readonly string[];
               body?: string;
               append?: string;
               per_engine?: Record<string, {
@@ -4345,7 +5687,7 @@ export interface AgentStateSnapshot {
               }>;
             };
             readonly allowKikiSubagents?: boolean;
-            readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+            readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
             readonly modelAlias?: string;
             readonly restrictModelsToMenu?: boolean;
             readonly thinkingEffort?: string;
@@ -4425,6 +5767,7 @@ export interface AgentStateSnapshot {
           };
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
+          readonly recipe?: string;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
           readonly contextBudget?: number;
@@ -4434,14 +5777,14 @@ export interface AgentStateSnapshot {
           readonly contributionRoot: string;
           readonly private: boolean;
           readonly allowParentNotify?: boolean;
-          readonly permissionMode?: 'auto' | 'manual' | 'review' | 'yolo';
+          readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
           readonly description: string;
           readonly whenToUse?: string;
           readonly override: boolean;
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'board' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -4599,8 +5942,8 @@ export interface AgentStateSnapshot {
           readonly executor?: string;
           readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
           readonly executorPrompt?: {
-            include: readonly string[];
             delivery?: 'replace' | 'append' | 'preamble';
+            include?: readonly string[];
             body?: string;
             append?: string;
             per_engine?: Record<string, {
@@ -4611,7 +5954,7 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'board' | 'history' | 'memory' | 'threads' | 'hooks')[];
+          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -4728,6 +6071,18 @@ export interface AgentStateSnapshot {
             }[];
             selection?: 'off' | 'main' | 'independent' | 'common';
             reason?: string;
+            reason_code?: string;
+            recipe?: {
+              installation_id: string;
+              revision: string;
+              slot: string;
+              origins: readonly {
+                source: string;
+                manifest_id: string;
+                version: string;
+                file?: string;
+              }[];
+            };
             anchor_steps?: number;
             anchor_scope?: 'session' | 'turn';
           }[];
@@ -4736,6 +6091,22 @@ export interface AgentStateSnapshot {
           disk_changed?: boolean;
           disk_error?: string;
           lease_model_prompts?: 'replace' | 'preserve';
+          recipe_model_binding?: {
+            revision: string;
+            model: Record<string, unknown>;
+            model_origins: Record<string, {
+              source: string;
+              version: string;
+              manifest_id: string;
+              file?: string;
+            }>;
+            installation_id: string;
+            references?: readonly {
+              surface: 'model' | 'profile';
+              installation_id: string;
+              revision: string;
+            }[];
+          };
           request?: {
             system_prompt_hash: string;
             tools_hash: string;
@@ -4758,6 +6129,765 @@ export interface AgentStateSnapshot {
             reason?: string;
             model_alias?: string;
           }[];
+        };
+        readonly inputs?: /* BoundPromptInputs — packages/agent-core-v2/src/agent/profile/boundProfile.ts */ {
+          readonly version: 1;
+          readonly fields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
+            readonly values: Readonly<Record<string, string>>;
+            readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
+              readonly id: string;
+              readonly value: string;
+              readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'deferred' | 'effective' | 'shadowed' | 'inactive' | 'unsupported';
+              readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
+                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'global' | 'model' | 'profile' | 'profile-model' | 'caller-lease-model' | 'recipe';
+                readonly kind: 'file' | 'inline';
+                readonly path?: string;
+                readonly fileIndex?: number;
+                readonly line?: number;
+                readonly selection?: 'main' | 'independent' | 'common';
+                readonly declarationIndex?: number;
+              }[];
+              readonly diagnostic?: {
+                readonly code: 'deprecated';
+                readonly replacement: string;
+                readonly message: string;
+              };
+            }[];
+          };
+          readonly cognition: /* CognitionBinding — packages/agent-core-v2/src/agent/cognition/cognitionConfig.ts */ {
+            readonly position: /* DelegationPosition — packages/agent-core-v2/src/agent/profile/delegationContext.ts */ 'main' | 'sub' | 'independent';
+            readonly modelAlias: string;
+            readonly revision: number;
+            readonly contentRevision: string;
+            readonly bindingRevision?: string;
+            readonly config?: /* CognitionContent — packages/agent-core-v2/src/kosong/model/model.ts */ {
+              overlay?: string | readonly string[] | {
+                text: string;
+              };
+              steering?: string | readonly string[] | {
+                text: string;
+              };
+              anchor?: string | readonly string[] | {
+                text: string;
+              };
+              overlayMode?: 'replace' | 'persona' | 'append' | 'prepend' | 'wrap';
+              anchorSteps?: number;
+              anchorScope?: 'session' | 'turn';
+              steeringOnTurn?: boolean;
+              steeringOnInput?: boolean;
+              steeringIntervalSteps?: number;
+              steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+                mode: 'off' | 'custom' | 'inherit';
+                custom?: {
+                  steering?: string | readonly string[] | {
+                    text: string;
+                  };
+                  steering_on_turn?: boolean;
+                  steering_on_input?: boolean;
+                  steering_interval_steps?: number;
+                };
+              }>>;
+            };
+            readonly modelSettings?: Readonly<Record<string, unknown>>;
+            readonly recipe?: {
+              readonly installation_id: string;
+              readonly resolved: {
+                revision: string;
+                branches: {
+                  main: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    steering_sources?: {
+                      agent?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      external?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      task?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      skill?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      thread?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      room?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      hook?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      automation?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                  sub: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    steering_sources?: {
+                      agent?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      external?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      task?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      skill?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      thread?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      room?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      hook?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      automation?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                  independent: {
+                    fields: {
+                      [key: string]: string;
+                    };
+                    steering_sources?: {
+                      agent?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      external?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      task?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      skill?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      thread?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      room?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      hook?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                      automation?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
+                    };
+                    anchor?: {
+                      content: string;
+                      steps: number;
+                      scope: 'session' | 'turn';
+                    };
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    system?: string;
+                    steering?: string;
+                  };
+                };
+                dependencies: readonly {
+                  source: {
+                    locator: string;
+                    sha256?: string;
+                  };
+                  manifest_id: string;
+                  version: string;
+                  revision: string;
+                }[];
+                origins: readonly {
+                  position: 'main' | 'sub' | 'independent';
+                  slot: string;
+                  source: string;
+                  manifest_id: string;
+                  version: string;
+                  file?: string;
+                }[];
+                model: {
+                  [key: string]: unknown;
+                };
+                model_origins: {
+                  [key: string]: {
+                  source: string;
+                  version: string;
+                  manifest_id: string;
+                  file?: string;
+                };
+                };
+                hooks?: readonly {
+                  event: string;
+                  command: string;
+                  source: string;
+                  manifest_id: string;
+                  files: {
+                    [key: string]: string;
+                  };
+                  matcher?: string;
+                  timeout?: number;
+                }[];
+                hooks_fingerprint?: string;
+                layers?: readonly {
+                  surface: 'model' | 'profile';
+                  installation_id: string;
+                  resolved: {
+                    revision: string;
+                    branches: {
+                      main: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        steering_sources?: {
+                          agent?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          external?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          task?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          skill?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          thread?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          room?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          hook?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          automation?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                      sub: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        steering_sources?: {
+                          agent?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          external?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          task?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          skill?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          thread?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          room?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          hook?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          automation?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                      independent: {
+                        fields: {
+                          [key: string]: string;
+                        };
+                        steering_sources?: {
+                          agent?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          external?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          task?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          skill?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          thread?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          room?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          hook?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                          automation?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
+                        };
+                        anchor?: {
+                          content: string;
+                          steps: number;
+                          scope: 'session' | 'turn';
+                        };
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        system?: string;
+                        steering?: string;
+                      };
+                    };
+                    dependencies: readonly {
+                      source: {
+                        locator: string;
+                        sha256?: string;
+                      };
+                      manifest_id: string;
+                      version: string;
+                      revision: string;
+                    }[];
+                    origins: readonly {
+                      position: 'main' | 'sub' | 'independent';
+                      slot: string;
+                      source: string;
+                      manifest_id: string;
+                      version: string;
+                      file?: string;
+                    }[];
+                    model: {
+                      [key: string]: unknown;
+                    };
+                    model_origins: {
+                      [key: string]: {
+                      source: string;
+                      version: string;
+                      manifest_id: string;
+                      file?: string;
+                    };
+                    };
+                    hooks?: readonly {
+                      event: string;
+                      command: string;
+                      source: string;
+                      manifest_id: string;
+                      files: {
+                        [key: string]: string;
+                      };
+                      matcher?: string;
+                      timeout?: number;
+                    }[];
+                    hooks_fingerprint?: string;
+                  };
+                }[];
+              };
+              readonly anchorSystem?: string;
+            };
+            readonly anchor?: string;
+            readonly steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+              mode: 'off' | 'custom' | 'inherit';
+              custom?: {
+                steering?: string;
+                steering_on_turn?: boolean;
+                steering_on_input?: boolean;
+                steering_interval_steps?: number;
+              };
+            }>>;
+          };
+          readonly variables: Readonly<Record<string, string>>;
+          readonly revision: string;
         };
       };
     };
@@ -4819,7 +6949,7 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/prompt/promptService.ts
-  // replayable · durable — folds: PromptEnqueued, PromptLaunchCommitted, TurnPrompt, PromptOutcomeCommitted
+  // replayable · durable — folds: PromptEnqueued, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptOutcomeCommitted
   'prompt.identity': Map<string, /* PromptLookup — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
     readonly promptId: string;
     readonly phase: 'pending' | 'terminal' | 'launched';
@@ -4836,7 +6966,7 @@ export interface AgentStateSnapshot {
         readonly type: 'failed';
         readonly steps: number;
         readonly error: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
@@ -4847,7 +6977,7 @@ export interface AgentStateSnapshot {
         readonly type: 'cancelled';
         readonly steps: number;
         readonly reason: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
@@ -4895,6 +7025,9 @@ export interface AgentStateSnapshot {
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;
     readonly collaborationAgentType?: string;
     readonly taskId: string;
@@ -5016,6 +7149,9 @@ export interface AgentStateSnapshot {
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
+    readonly thinkingEffortExplicit?: boolean;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
     readonly collaborationTaskName?: string;
     readonly collaborationAgentType?: string;
     readonly taskId: string;
@@ -5127,7 +7263,7 @@ export interface AgentStateSnapshot {
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
   }>;
-  // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered
+  // replayable · durable · undoable — folds: ContextAppendMessage, TaskWaitDelivered, TaskNotified
   'task.notificationDelivery': readonly string[];
   'task.scheduledNotificationKeys': Set<string>;
   // src/agent/tokenCounting/tokenCountingOps.ts
@@ -5351,9 +7487,9 @@ export interface AgentStateSnapshot {
   'todo': /* TodoState — packages/agent-core-v2/src/session/todo/todoOps.ts */ {
     readonly items: readonly /* TodoItem — packages/agent-core-v2/src/session/todo/todoItem.ts */ {
       readonly title: string;
-      readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'in_progress' | 'done';
+      readonly status: /* TodoStatus — packages/agent-core-v2/src/session/todo/todoItem.ts */ 'pending' | 'done' | 'in_progress';
     }[];
-    readonly notes?: Partial<Record<'goal' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'files' | 'next' | 'open', string>>;
+    readonly notes?: Partial<Record<'goal' | 'files' | 'directives' | 'decided' | 'rejected' | 'evidence' | 'next' | 'open', string>>;
     readonly notesMeta?: /* NotesMeta — packages/agent-core-v2/src/session/todo/todoNotes.ts */ {
       readonly rev: number;
       readonly hash: string;

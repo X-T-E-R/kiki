@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (85 record types)
+// Index (88 record types)
 //   agent_message.delivered            agentCollaboration.messageReceipts                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                 contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -40,7 +40,10 @@
 //   executor.prompt.delivery           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.runtime.update            externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.session.updated           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
+//   executor.tool.display              externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.turn.metadata             externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
+//   external.activity                  turn                                                                                                                                                                                 src/agent/execution/externalClientEvents.ts
+//   external.text                      contextMemory, contextMemory.revision, turn                                                                                                                                          src/agent/execution/externalClientEvents.ts
 //   forked                             goal, goalForkNotice                                                                                                                                                                 src/agent/goal/goalOps.ts
 //   full_compaction.begin              fullCompaction                                                                                                                                                                       src/agent/fullCompaction/compactionOps.ts
 //   full_compaction.cancel             fullCompaction                                                                                                                                                                       src/agent/fullCompaction/compactionOps.ts
@@ -58,7 +61,7 @@
 //   llm.tools_snapshot                 llm.requestTrace                                                                                                                                                                     src/agent/llmRequester/llmRequestOps.ts
 //   mcp.tools_discovered               mcp.discovery                                                                                                                                                                        src/agent/mcp/mcpDiscoveryOps.ts
 //   permission.record_approval_result  permissionRules                                                                                                                                                                      src/agent/permissionRules/permissionRulesOps.ts
-//   permission.set_mode                permissionMode, permissionMode.configured                                                                                                                                            src/agent/permissionMode/permissionModeOps.ts
+//   permission.set_mode                permissionMode, permissionMode.configured, permissionMode.externalOverride                                                                                                           src/agent/permissionMode/permissionModeOps.ts
 //   plan_mode.cancel                   plan                                                                                                                                                                                 src/features/plan/planOps.ts
 //   plan_mode.enter                    plan                                                                                                                                                                                 src/features/plan/planOps.ts
 //   plan_mode.exit                     plan                                                                                                                                                                                 src/features/plan/planOps.ts
@@ -88,7 +91,7 @@
 //   subagent.spawned                   (none)                                                                                                                                                                               src/session/subagent/mirrorAgentRun.ts
 //   subagent.started                   (none)                                                                                                                                                                               src/session/subagent/mirrorAgentRun.ts
 //   subagent.suspended                 (none)                                                                                                                                                                               src/session/subagent/subagentSuspended.ts
-//   task.notified                      (none)                                                                                                                                                                               src/agent/task/taskOps.ts
+//   task.notified                      task.notificationDelivery                                                                                                                                                            src/agent/task/taskOps.ts
 //   task.started                       task                                                                                                                                                                                 src/agent/task/taskOps.ts
 //   task.terminated                    task                                                                                                                                                                                 src/agent/task/taskOps.ts
 //   task.waitDelivered                 task.notificationDelivery                                                                                                                                                            src/agent/task/taskOps.ts
@@ -106,7 +109,7 @@
 //   turn.cancel                        turn                                                                                                                                                                                 src/agent/loop/turnOps.ts
 //   turn.ended                         turn                                                                                                                                                                                 src/agent/loop/turnOps.ts
 //   turn.prompt                        prompt.identity, todo.continuityClock, turn                                                                                                                                          src/agent/loop/turnOps.ts
-//   turn.steer                         todo.continuityClock, turn                                                                                                                                                           src/agent/loop/turnOps.ts
+//   turn.steer                         prompt.identity, todo.continuityClock, turn                                                                                                                                          src/agent/loop/turnOps.ts
 //   turn.step.interrupted              (none)                                                                                                                                                                               src/agent/loop/turnEvents.ts
 //   turn.step.retrying                 (none)                                                                                                                                                                               src/agent/stepRetry/stepRetryService.ts
 //   usage.record                       usage, usage.panelAccounting                                                                                                                                                         src/agent/usage/usageOps.ts
@@ -169,6 +172,7 @@ interface AutoCompactOverrideChangedPayload {
  */
 interface ConfigUpdatePayload {
   _name: 'config.update';
+  execution?: import('@kiki/protocol').executionBindingSchema;
   toolOverride?: {
     tools?: string[];
     disallowedTools?: string[];
@@ -185,6 +189,7 @@ interface ConfigUpdatePayload {
   thinkingEffort?: 'off' | 'on' | (string & {});
   /** ThinkingEffort */
   thinkingLevel?: 'off' | 'on' | (string & {});
+  thinkingEffortExplicit?: boolean;
   thinkingEffortAdjusted?: boolean;
   bindingAdvisories?: BindingAdvisory[];
   allowParentNotify?: boolean;
@@ -244,7 +249,7 @@ interface ContextAppendMessagePayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
+    origin?: { kind: 'merged', origins: import('../src/agent/contextMemory/types').PromptOrigin[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
@@ -341,6 +346,7 @@ interface ExecutorRuntimeUpdatePayload {
  */
 interface ExecutorSessionUpdatedPayload {
   _name: 'executor.session.updated';
+  executionGeneration?: number;
   executorId: string;
   descriptorRevision: string;
   bindingFingerprint?: string;
@@ -366,6 +372,23 @@ interface ExecutorSessionUpdatedPayload {
  * states: externalExecutor
  * owner: src/agent/execution/externalExecutorOps.ts
  */
+interface ExecutorToolDisplayPayload {
+  _name: 'executor.tool.display';
+  turnId: number;
+  stepId: string;
+  toolCallId: string;
+  name: string;
+  input?: any;
+  display: any;
+  output: any;
+  state: 'running' | 'done' | 'error' | 'interrupted';
+  synthetic?: boolean;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
 interface ExecutorTurnMetadataPayload {
   _name: 'executor.turn.metadata';
   turnId: number;
@@ -375,6 +398,50 @@ interface ExecutorTurnMetadataPayload {
   profileDelivery: 'native' | 'first_prompt_preamble' | 'system_prompt_override' | 'developer_instructions' | 'base_instructions';
   fidelity: 'full' | 'degraded';
   losses: 'acp_no_step_boundaries' | 'codex_no_step_boundaries' | 'profile_as_user_preamble' | 'prompt_delivery_downgraded' | 'tool_input_partial' | 'tool_output_summary_only' | 'message_id_missing' | 'user_message_attribution_missing' | 'usage_context_only' | 'unknown_update_dropped' | 'resume_new_session_handoff' | 'handoff_truncated' | 'unstable_acp_plan' | 'permission_mode_unverified' | 'additional_directories_dropped' | 'thought_level_unconfigured'[];
+}
+
+/**
+ * states: turn
+ * owner: src/agent/execution/externalClientEvents.ts
+ */
+interface ExternalActivityPayload {
+  _name: 'external.activity';
+  activityId: string;
+  phase: 'started' | 'completed' | 'failed' | 'cancelled';
+  operationId: string;
+  toolCallId: string;
+  toolName: string;
+  turnId: number;
+  source: {
+    connectionId: string;
+    clientName: string;
+    sessionRef: string;
+    driver: 'external';
+  };
+  input?: any;
+  error?: string;
+}
+
+/**
+ * states: contextMemory, contextMemory.revision, turn · blobs: contextMemory
+ * owner: src/agent/execution/externalClientEvents.ts
+ */
+interface ExternalTextPayload {
+  _name: 'external.text';
+  recordId: string;
+  turnId: number;
+  text: string;
+  kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+  title?: string;
+  relatedOperationIds?: string[];
+  sourceUrl?: string;
+  clientTime?: string;
+  source: {
+    connectionId: string;
+    clientName: string;
+    sessionRef: string;
+    driver: 'external';
+  };
 }
 
 /**
@@ -392,6 +459,7 @@ interface ForkedPayload {
  */
 interface FullCompactionBeginPayload {
   _name: 'full_compaction.begin';
+  queued?: boolean;
   instruction?: string;
   strategy?: 'summarize' | 'relay';
   source: 'manual' | 'auto';
@@ -403,6 +471,8 @@ interface FullCompactionBeginPayload {
  */
 interface FullCompactionCancelPayload {
   _name: 'full_compaction.cancel';
+  queued?: boolean;
+  reason?: string;
 }
 
 /**
@@ -632,13 +702,14 @@ interface PermissionRecordApprovalResultPayload {
 }
 
 /**
- * states: permissionMode, permissionMode.configured
+ * states: permissionMode, permissionMode.configured, permissionMode.externalOverride
  * owner: src/agent/permissionMode/permissionModeOps.ts
  */
 interface PermissionSetModePayload {
   _name: 'permission.set_mode';
   /** PermissionMode */
   mode: 'manual' | 'auto' | 'review' | 'yolo';
+  source?: 'runtime' | 'ambient' | 'binding';
 }
 
 /**
@@ -696,6 +767,8 @@ interface PluginSessionStartPayload {
  */
 interface ProfileBindPayload {
   _name: 'profile.bind';
+  driver?: 'external';
+  execution?: import('@kiki/protocol').executionBindingSchema;
   toolOverride?: {
     tools?: string[];
     disallowedTools?: string[];
@@ -719,6 +792,7 @@ interface ProfileBindPayload {
   routeId?: string;
   lockedModelAlias?: string;
   lockedThinkingEffort?: string;
+  thinkingEffortExplicit?: boolean;
   executionRestriction?: 'research-readonly';
   allowParentNotify?: boolean;
   executorId?: string;
@@ -878,7 +952,7 @@ interface PromptEnqueuedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
+    origin?: { kind: 'merged', origins: import('../src/agent/contextMemory/types').PromptOrigin[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
@@ -888,7 +962,9 @@ interface PromptEnqueuedPayload {
   };
   /** PromptExecutionBinding */
   execution?: {
+    execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
+    modelSwitchMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
@@ -1047,7 +1123,7 @@ interface PromptReplacedPayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: { kind: 'user', skillActivations?: import('../src/agent/contextMemory/types').BundledSkillActivation[], originalInput?: import('../src/kosong/contract/message').ContentPart[] } | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
+    origin?: { kind: 'merged', origins: import('../src/agent/contextMemory/types').PromptOrigin[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin | undefined;
     isError?: boolean;
     note?: string;
     fileRead?: import('#/agent/agentsMdReminder/instructionCoverage').FileReadDisclosure;
@@ -1057,7 +1133,9 @@ interface PromptReplacedPayload {
   };
   /** PromptExecutionBinding */
   execution?: {
+    execution?: import('@kiki/protocol').ExecutionSelection;
     afterModelSwitch?: string;
+    modelSwitchMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
@@ -1197,6 +1275,9 @@ interface SubagentSpawnedPayload {
   runInBackground: boolean;
   model?: string;
   thinkingEffort?: string;
+  thinkingEffortExplicit?: boolean;
+  executorId?: string;
+  executorProtocol?: string;
   taskId?: string;
 }
 
@@ -1221,7 +1302,7 @@ interface SubagentSuspendedPayload {
 }
 
 /**
- * states: (none)
+ * states: task.notificationDelivery
  * owner: src/agent/task/taskOps.ts
  */
 interface TaskNotifiedPayload {
@@ -1241,7 +1322,7 @@ interface TaskNotifiedPayload {
 interface TaskStartedPayload {
   _name: 'task.started';
   /** AgentTaskInfo */
-  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'question', questionCount: number, toolCallId?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'media', jobId: string };
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, thinkingEffortExplicit?: boolean, executorId?: string, executorProtocol?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'question', questionCount: number, toolCallId?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'media', jobId: string };
 }
 
 /**
@@ -1251,7 +1332,7 @@ interface TaskStartedPayload {
 interface TaskTerminatedPayload {
   _name: 'task.terminated';
   /** AgentTaskInfo */
-  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'question', questionCount: number, toolCallId?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'media', jobId: string };
+  info: { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'process', command: string, pid: number, exitCode: number | null } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'agent', agentId?: string, profile?: string, parentToolCallId?: string, model?: string, thinkingEffort?: string, thinkingEffortExplicit?: boolean, executorId?: string, executorProtocol?: string, collaborationTaskName?: string, collaborationAgentType?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'question', questionCount: number, toolCallId?: string } | { taskId: string, description: string, status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost', detached?: boolean, startedAt: number, endedAt: number | null, stopReason?: string, terminalNotificationSuppressed?: boolean, timeoutMs?: number, lifetime?: 'finite' | 'service', ownerAgentId?: string, ownerTurnId?: number, goalId?: string, receipt?: { schemaVersion: 1, path: string, mediaType: 'text/plain; charset=utf-8', bytes: number, sha256: string, contentState: 'final' | 'unavailable', committedAt: string, sourceTurnId?: number }, receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid', kind: 'media', jobId: string };
   outputTail?: string;
 }
 
@@ -1458,12 +1539,12 @@ interface TurnPromptPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
+  origin: { kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: (object | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
   managed?: boolean;
 }
 
 /**
- * states: todo.continuityClock, turn
+ * states: prompt.identity, todo.continuityClock, turn
  * owner: src/agent/loop/turnOps.ts
  */
 interface TurnSteerPayload {
@@ -1478,7 +1559,7 @@ interface TurnSteerPayload {
   };
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: { kind: 'user', skillActivations?: ({ activationId: string, skillName: string, skillArgs?: string, skillType?: string, skillPath?: string, skillSource?: 'project' | 'user' | 'extra' | 'builtin' })[], originalInput?: ('text' | 'think' | 'image_url' | 'audio_url' | 'video_url')[] } | { kind: 'skill_activation', activationId: string, skillName: string, skillArgs?: string | undefined, trigger: 'user-slash' | 'model-tool' | 'nested-skill', userInput?: string, skillType?: string | undefined, skillPath?: string | undefined, skillSource?: 'project' | 'user' | 'extra' | 'builtin' | undefined } | { kind: 'plugin_command', activationId: string, pluginId: string, commandName: string, commandArgs?: string | undefined, trigger: 'user-slash' } | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
+  origin: { kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: ({ kind: 'merged', origins: (object | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin)[] } | import('../src/agent/contextMemory/types').UnknownPromptOrigin | import('../src/agent/contextMemory/types').ExternalThreadOrigin | import('../src/agent/contextMemory/types').UserPromptOrigin | import('../src/agent/contextMemory/types').SkillActivationOrigin | import('../src/agent/contextMemory/types').PluginCommandOrigin | import('../src/agent/contextMemory/types').InjectionOrigin | import('../src/agent/contextMemory/types').ShellCommandOrigin | import('../src/agent/contextMemory/types').CompactionSummaryOrigin | import('../src/agent/contextMemory/types').SystemTriggerOrigin | import('../src/agent/contextMemory/types').ExternalClientOrigin | import('../src/agent/contextMemory/types').ExternalRecordOrigin | import('../src/agent/contextMemory/types').TaskOrigin | import('../src/agent/contextMemory/types').CronJobOrigin | import('../src/agent/contextMemory/types').CronMissedOrigin | import('../src/agent/contextMemory/types').HookResultOrigin | import('../src/agent/contextMemory/types').RetryOrigin | import('../src/agent/contextMemory/types').PeerThreadOrigin | import('../src/agent/contextMemory/types').BridgedPeerOrigin | import('../src/agent/contextMemory/types').AgentMessageOrigin | import('../src/agent/contextMemory/types').PersonaGreetingOrigin | import('../src/agent/contextMemory/types').RoomMessageOrigin;
   managed?: boolean;
 }
 
@@ -1556,7 +1637,10 @@ interface WirePayloadMap {
   "executor.prompt.delivery": ExecutorPromptDeliveryPayload;
   "executor.runtime.update": ExecutorRuntimeUpdatePayload;
   "executor.session.updated": ExecutorSessionUpdatedPayload;
+  "executor.tool.display": ExecutorToolDisplayPayload;
   "executor.turn.metadata": ExecutorTurnMetadataPayload;
+  "external.activity": ExternalActivityPayload;
+  "external.text": ExternalTextPayload;
   "forked": ForkedPayload;
   "full_compaction.begin": FullCompactionBeginPayload;
   "full_compaction.cancel": FullCompactionCancelPayload;

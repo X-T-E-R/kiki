@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (48 sections · 1 overlay(s))
+# Index (51 sections · 1 overlay(s))
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -16,6 +16,7 @@
 #   bot                             src/app/bot/configSection.ts
 #   browserControl                  src/app/browser/browserConfig.ts
 #   builtinProductSkills            src/app/skillCatalog/configSection.ts
+#   computerControl                 src/app/computer/configSection.ts
 #   cron                            src/app/cron/configSection.ts
 #   defaultPermissionMode           src/agent/permissionMode/configSection.ts
 #   defaultPlanMode                 src/features/plan/configSection.ts
@@ -33,6 +34,7 @@
 #   memory                          src/app/memory/configSection.ts
 #   mergeAllAvailableSkills         src/app/skillCatalog/configSection.ts
 #   models                          src/app/kosongConfig/configSection.ts
+#   modelSwitch                     src/app/modelSwitchPreferences/configSection.ts
 #   nbSearch                        src/app/nbSearch/configSection.ts
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
 #   notifications                   src/app/notifications/configSection.ts
@@ -42,6 +44,7 @@
 #   pluginSettings                  src/app/plugin/settingsConfigSection.ts
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
+#   recipes                         src/app/recipes/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
@@ -70,6 +73,18 @@
 
 # one [agent_executor_overrides."<name>"] table per entry:
 # [agent_executor_overrides."<name>"]
+  # defaults: object
+    # model_alias: string
+    # thinking_effort: string
+    # permission_mode: "manual" | "auto" | "review" | "yolo"
+    # kiki_context: "memory" | "board" | "cron" | "threads" | "history" | "hooks"[]
+    # allow_kiki_subagents: boolean
+    # executor_prompt: object
+      # delivery: "append" | "replace" | "preamble"
+      # include: "agents_md" | "memory_snapshot" | "skill_catalog" | "workspace_info" | "system.*" | "delegation.*" | string[]
+      # body: string
+      # append: string
+      # per_engine: record<string, object>
   # bin_path: string
   # home_dir: string
   # env: record<string, string>
@@ -200,6 +215,15 @@ connections = {  }
 # ##########################################################################
 
 builtin_product_skills = true
+
+# ##########################################################################
+# computerControl (config.toml: computer_control)
+#   owner: src/app/computer/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[computer_control]
+usage_preference = "avoid"
 
 # ##########################################################################
 # cron
@@ -497,13 +521,18 @@ merge_all_available_skills = true
       # max_per_user_round: integer
       # max_per_window: integer
       # window_ms: integer
+  # recipe: string
   # cognition: object
-    # overlay: string | string[]
-    # steering: string | string[]
-    # anchor: string | string[]
+    # overlay: object | string | string[]
+    # steering: object | string | string[]
+    # anchor: object | string | string[]
     # overlay_mode: "append" | "prepend" | "wrap" | "persona" | "replace"
     # anchor_steps: integer
     # anchor_scope: "session" | "turn"
+    # steering_on_turn: boolean
+    # steering_on_input: boolean
+    # steering_interval_steps: integer
+    # steering_sources: record<string, object>
     # main: "same" | "off" | object
     # independent: "same" | "off" | object
   # prompt_overrides: object
@@ -534,6 +563,18 @@ merge_all_available_skills = true
         # responses: "prompt_cache_key" | "none"
         # messages: "metadata_user_id" | "none"
       # responses_metadata: "codex" | "none"
+
+# ##########################################################################
+# modelSwitch (config.toml: model_switch)
+#   owner: src/app/modelSwitchPreferences/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[model_switch]
+default_mode = "direct"
+confirm = true
+rules = []
 
 # ##########################################################################
 # nbSearch (config.toml: nb_search)
@@ -713,6 +754,15 @@ enter_approval_timeout_ms = 60000
       # scope: string
   # env: record<string, string>
   # source: record<string, any>
+
+# ##########################################################################
+# recipes
+#   owner: src/app/recipes/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[recipes]
+markets = []
 
 # ##########################################################################
 # requestGovernance (config.toml: request_governance)
