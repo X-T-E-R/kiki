@@ -48,6 +48,7 @@ import { modelCatalogMutationContract } from './global/modelCatalogMutation.js';
 import { mcpManagementContract } from './global/mcpManagement.js';
 import { pluginsContract } from './global/plugins.js';
 import { importsContract } from './global/imports.js';
+import { recipesContract } from './global/recipes.js';
 import { mediaContract, agentMediaContract } from './global/media.js';
 import { personaStoreContract } from './global/personas.js';
 import { botContract, roomContract } from './global/botRooms.js';
@@ -90,6 +91,7 @@ export const globalContract: KlientContract = {
   authSummaryService: authSummaryContract,
   flagService: flagsContract,
   pluginService: pluginsContract,
+  recipeService: recipesContract,
   pluginImportService: importsContract,
   pluginMediaService: mediaContract,
   agentPluginMediaService: agentMediaContract,

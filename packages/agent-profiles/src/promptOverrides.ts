@@ -72,7 +72,8 @@ export type PromptOverrideSurface =
   | 'profile'
   | 'profile-model'
   | 'caller-lease-model'
-  | 'system';
+  | 'system'
+  | 'recipe';
 
 export interface PromptOverrideSource {
   readonly surface: PromptOverrideSurface;

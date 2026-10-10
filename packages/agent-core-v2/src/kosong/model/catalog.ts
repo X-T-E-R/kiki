@@ -297,8 +297,8 @@ export function globalDefaultForProvider(
 export interface IModelCatalog {
   readonly _serviceBrand: undefined;
 
-  get(id: string): Model;
-  getRequester(id: string): ModelRequester;
+  get(id: string, recipeSettings?: Record<string, unknown>): Model;
+  getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester;
   inspect(id: string): ModelInspection;
   ping(id: string): Promise<ModelPingResult>;
   findByName(name: string): readonly string[];

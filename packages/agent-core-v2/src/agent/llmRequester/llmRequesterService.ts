@@ -841,7 +841,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           ? this.tokenCounting.get().measured
           : undefined,
     });
-    const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+    const requester = this.modelCatalog.getRequester(resolved.modelAlias,
+      turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     await this.identityCatalog.ready;
     const providerConfig =
       turnConfig?.providerConfig ??
@@ -968,7 +969,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     }
     if (snapshot === undefined) {
       const resolved = this.profile.resolveModelContext();
-      const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+      const requester = this.modelCatalog.getRequester(resolved.modelAlias, this.profile.getRecipeModelSettings(resolved.modelAlias));
       const providerConfig =
         this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
       snapshot = {

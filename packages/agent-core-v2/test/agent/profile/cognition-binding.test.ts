@@ -5,6 +5,11 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Event } from '#/_base/event';
+import { resolvedRecipeSchema } from '@kiki/protocol';
+import { IRecipeService } from '#/app/recipes/recipes';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
+import type { GenerateOptions } from '#/kosong/contract/provider';
+import { emptyUsage } from '#/kosong/contract/usage';
 import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { CognitionConfig, ModelRecord } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -23,6 +28,8 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import {
   createTestAgent,
   homeDirServices,
+  appServices,
+  llmGenerateServices,
   sessionService,
   type TestAgentContext,
 } from '../../harness';
@@ -64,6 +71,67 @@ describe('per-model cognition overlay', () => {
     };
     return ctx;
   }
+
+  function recipe(revision = 'old', temperature = 0.35) {
+    return resolvedRecipeSchema.parse({ revision, branches: {
+      main: { system: 'RECIPE MAIN', steering: 'RECIPE MAIN CUE', anchor: { content: 'RECIPE ANCHOR', steps: 1, scope: 'session' }, steering_on_turn: false, steering_on_input: true, steering_interval_steps: 4, fields: { 'tool.read.description': 'RECIPE READ DESCRIPTION' } },
+      sub: { system: 'RECIPE SUB', fields: {} }, independent: { fields: {} },
+    }, dependencies: [], origins: [], model: { autoCompact: 4096, contextBudget: 8192, parameters: { temperature, topP: 0.8, serviceTier: 'priority', maxCompletionTokens: 1024 }, usage: { independent: { contextBudget: 2048 } } }, model_origins: {} });
+  }
+
+  it.each(['main', 'sub', 'independent'] as const)('Recipe freezes legal model templates and cadence for %s while retaining the role, persona and room', async (position) => {
+    const selected = recipe();
+    ctx = createTestAgent(homeDirServices(homeDir), appServices((reg) => reg.definePartialInstance(IRecipeService, { resolve: async () => selected, onDidChange: Event.None as Event<void> })));
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, recipe: 'recipe-install', cognition: { overlay: 'missing.md', steering: 'missing.md' }, promptOverrides: { files: ['missing.toml'] } } } };
+    const profile = ctx.get(IAgentProfileService);
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, systemPrompt: () => 'ROLE HOST BODY', modelProfiles: [{ alias: MOCK_MODEL, promptMode: 'prepend', prompt: 'IGNORED MODEL ROLE' }] });
+    await profile.bind({ resolvedProfile: role, model: MOCK_MODEL, delegationPosition: position, personaSnapshot: { revision: 'persona-r1', definition: { id: 'sample', name: 'Sample', description: 'PERSONA BODY' } }, roomPrompt: 'ROOM BODY' });
+    const system = profile.getSystemPrompt();
+    expect(system).toContain('ROLE HOST BODY'); expect(system).toContain('PERSONA BODY'); expect(system).toContain('ROOM BODY'); expect(system).not.toContain('IGNORED MODEL ROLE');
+    const cognition = await profile.getCognitionBinding();
+    expect(cognition.slots?.overlay).toBe(selected.branches[position].system);
+    expect(profile.getRecipeModelSettings()).toEqual(selected.model);
+    expect(profile.getModelCapabilities().max_context_tokens).toBe(position === 'independent' ? 2048 : 8192);
+    if (position === 'main') {
+      expect(profile.getPromptFieldSnapshot()?.values['tool.read.description']).toBe('RECIPE READ DESCRIPTION');
+      expect(cognition.config).toMatchObject({ steeringOnTurn: false, steeringOnInput: true, steeringIntervalSteps: 4 });
+      const anchor = await ctx.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false });
+      expect(anchor).toContain('RECIPE ANCHOR'); expect(anchor).toContain('ROLE HOST BODY'); expect(anchor).toContain('PERSONA BODY'); expect(anchor).toContain('ROOM BODY'); expect(anchor).not.toContain('RECIPE MAIN');
+    }
+  });
+
+  it('freezes the effective request and cold recovery, adopts explicit rebuilds, and restores original model settings when switching away', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let selected = recipe();
+    let observed: { system: string; options?: GenerateOptions } | undefined;
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => reg.definePartialInstance(IRecipeService, { resolve: async () => structuredClone(selected), onDidChange: Event.None as Event<void> })), llmGenerateServices(async (_provider, system, _tools, _messages, _callbacks, options) => {
+        observed = { system, options };
+        return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }));
+      const base = ctx.kimiConfig.models![MOCK_MODEL]!;
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...base, recipe: 'recipe-install', cognition: { overlay: 'missing.md' }, parameters: { temperature: 0.1 } }, [OTHER_MODEL]: { ...base, model: OTHER_MODEL, parameters: { temperature: 0.1 } } } };
+      return ctx;
+    };
+    let agent = create(); let profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const oldPrompt = profile.getSystemPrompt();
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observed?.system).toContain('RECIPE MAIN');
+    expect(observed?.options).toMatchObject({ sampling: { temperature: 0.35, topP: 0.8 }, serviceTier: 'priority', maxCompletionTokens: 1024 });
+    selected = recipe('new', 0.75); selected.branches.main.system = 'UPDATED RECIPE MAIN';
+    await agent.get(IWireService).flush(); await agent.dispose();
+    agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService);
+    await profile.syncBindingMetadata(); expect(profile.getSystemPrompt()).toBe(oldPrompt);
+    expect(profile.getRecipeModelSettings()?.['parameters']).toMatchObject({ temperature: 0.35 });
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observed?.options?.sampling?.temperature).toBe(0.35);
+    await profile.rebuildPromptContext();
+    expect(profile.getSystemPrompt()).toContain('UPDATED RECIPE MAIN'); expect(profile.getRecipeModelSettings()?.['parameters']).toMatchObject({ temperature: 0.75 });
+    await profile.setModel(OTHER_MODEL);
+    expect(profile.getRecipeModelSettings()).toBeUndefined(); expect(profile.getSystemPrompt()).not.toContain('RECIPE MAIN');
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] }); expect(observed?.options?.sampling?.temperature).toBe(0.1);
+  });
 
   it.each(['main', 'sub', 'independent'] as const)('keeps common overlays for two models but delivers main-only cues only to %s', async (position) => {
     await writeFile(join(homeDir, 'cognition/second-steering.md'), 'SECOND MAIN CUE');

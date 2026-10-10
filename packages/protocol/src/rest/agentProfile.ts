@@ -2,6 +2,7 @@ import { AGENT_NAME_PATTERN } from '../agentName';
 import { z } from 'zod';
 import { executorPromptSchema } from '../executorPrompt';
 import { modelPromptOverridesSchema } from '../modelCatalog';
+import { recipeModelBindingSchema } from '../recipe';
 
 const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
@@ -449,6 +450,8 @@ export const agentPromptChannelSchema = z.object({
   state: z.enum(['effective', 'inactive', 'shadowed', 'unsupported']),
   selection: z.enum(['common', 'main', 'independent', 'off']).optional(),
   reason: z.string().optional(),
+  reason_code: z.string().optional(),
+  recipe: z.object({ installation_id: z.string(), revision: z.string(), slot: z.string(), origins: z.array(z.object({ source: z.string(), manifest_id: z.string(), version: z.string(), file: z.string().optional() })).readonly() }).optional(),
   sources: z.array(agentPromptSourceSchema).readonly(),
   anchor_steps: z.number().int().positive().optional(),
   anchor_scope: z.enum(['session', 'turn']).optional(),
@@ -479,6 +482,7 @@ export const agentPromptDiagnosticsSchema = z.object({
   disk_error: z.string().optional(),
   apply_on: z.literal('next-binding-or-context-rebuild'),
   lease_model_prompts: z.enum(['preserve', 'replace']).optional(),
+  recipe_model_binding: recipeModelBindingSchema.optional(),
   channels: z.array(agentPromptChannelSchema).readonly(),
   request: agentPromptRequestSchema.optional(),
   file_checks: z.array(z.object({

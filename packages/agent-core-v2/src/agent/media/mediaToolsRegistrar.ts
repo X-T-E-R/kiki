@@ -120,7 +120,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
       try {
-        requester = this.modelCatalog.getRequester(modelAlias);
+        requester = this.modelCatalog.getRequester(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
       } catch {
         requester = undefined;
       }

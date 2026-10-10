@@ -2,6 +2,7 @@ import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHea
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
+import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import { resolveModelProtocol } from './modelProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -112,12 +113,12 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     this.cache.clear();
   }
 
-  get(id: string): Model {
-    return this.entry(id).model;
+  get(id: string, recipeSettings?: Record<string, unknown>): Model {
+    return this.entry(id, recipeSettings).model;
   }
 
-  getRequester(id: string): ModelRequester {
-    return this.entry(id).requester;
+  getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester {
+    return this.entry(id, recipeSettings).requester;
   }
 
   findByName(name: string): readonly string[] {
@@ -129,19 +130,21 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     return out;
   }
 
-  private entry(id: string): CatalogEntry {
+  private entry(id: string, recipeSettings?: Record<string, unknown>): CatalogEntry {
     const canonicalId = this.models.resolveId(id) ?? id;
-    const cached = this.cache.get(canonicalId);
+    const key = recipeSettings === undefined ? canonicalId : `${canonicalId}\0${JSON.stringify(recipeSettings)}`;
+    const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
     const trace = new ResolutionTraceCollector();
-    const built = this.buildModel(canonicalId, trace);
+    const built = this.buildModel(canonicalId, trace, recipeSettings);
     const entry: CatalogEntry = {
       model: built.model,
       credentials: built.credentials,
       requester: new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission),
       trace,
     };
-    this.cache.set(canonicalId, entry);
+    if (this.cache.size >= 256) this.cache.delete(this.cache.keys().next().value!);
+    this.cache.set(key, entry);
     return entry;
   }
 
@@ -326,15 +329,17 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   private buildModel(
     id: string,
     trace: ResolutionTraceCollector,
+    recipeSettings?: Record<string, unknown>,
   ): { model: Model; credentials: readonly string[] } {
-    const configuredModel = this.models.get(id);
-    if (configuredModel === undefined) {
+    const savedModel = this.models.get(id);
+    if (savedModel === undefined) {
       throw new Error2(
         CONFIG_INVALID_ERROR_CODE,
         `Model "${id}" is not configured in config.toml.`,
         { details: { model: id } },
       );
     }
+    const configuredModel = applyRecipeModelSettings(savedModel, recipeSettings);
     trace.capture(TRACE.configuredModel, configuredModel);
     trace.record('model.record', { kind: 'config', detail: '[models.*] section' });
 

@@ -25,6 +25,7 @@ export * from './task';
 export * from './fs';
 export * from './file';
 export * from './modelCatalog';
+export * from './recipe';
 export * from './thread';
 
 export * from './rest/bot';
@@ -86,4 +87,5 @@ export * from './rest/connections';
 export * from './rest/connection-operations';
 export * from './rest/ssh-remote';
 export * from './rest/web-access';
+export * from './modelSteering';
 export * from './rest/cloudflare';

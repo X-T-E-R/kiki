@@ -90,7 +90,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   enabled(): boolean {
     if (!this.flags.enabled(TOOL_SELECT_FLAG_ID) || !this.profile.getModelCapabilities().tool_use) return false;
     try {
-      const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
+      const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
       return model.protocol === 'openai' || model.protocol === 'openai_responses' || model.protocol === 'anthropic';
     } catch {
       return false;
@@ -103,7 +103,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
     if (!disclosure) return activeEntries;
     const hasLoadableTools = activeEntries.some((entry) => this.isDynamicallyLoadable(entry));
     const loaded = this.loadedToolNames();
-    const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias).model;
+    const model = this.modelCatalog.getRequester(this.profile.resolveModelContext().modelAlias, this.profile.getRecipeModelSettings()).model;
     const kimiProvider = usesKimiToolSchema(model.providerType);
     const shaped: ShapedToolEntry[] = [];
     for (const entry of activeEntries) {

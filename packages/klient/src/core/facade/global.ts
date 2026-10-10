@@ -9,6 +9,8 @@
 export type { PersonaAvatarData } from '@kiki/protocol';
 import { createGlobalBots, createGlobalRooms, type GlobalBotsFacade, type GlobalRoomsFacade } from './botRooms.js';
 export type { GlobalBotsFacade, GlobalRoomsFacade } from './botRooms.js';
+import { createGlobalRecipes } from './recipes.js';
+export type { GlobalRecipesFacade } from './recipes.js';
 import { createGlobalImports, type GlobalImportsFacade } from './imports.js';
 export type { GlobalImportsFacade } from './imports.js';
 import { createGlobalMedia, type GlobalMediaFacade } from './media.js';
@@ -482,6 +484,7 @@ export interface GlobalFacade {
   readonly auth: GlobalAuthFacade;
   readonly flags: GlobalFlagsFacade;
   readonly plugins: GlobalPluginsFacade;
+  readonly recipes: import('./recipes.js').GlobalRecipesFacade;
   readonly imports: GlobalImportsFacade;
   readonly media: GlobalMediaFacade;
   readonly capabilities: GlobalCapabilitiesFacade;
@@ -749,6 +752,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       snapshot: () => call('flagService', 'snapshot', []) as Promise<Record<string, boolean>>,
     },
 
+    recipes: createGlobalRecipes(call),
     imports: createGlobalImports(call),
     media: createGlobalMedia(call),
     plugins: {

@@ -20,7 +20,8 @@ import {
 } from '@kiki/protocol';
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { Error2 } from '#/_base/errors/errors';
+import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
+import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
@@ -57,6 +58,8 @@ import {
   ModelIssueCodes,
   type ProviderEntity,
 } from './modelCatalogMutation';
+
+import { IRecipeService } from '#/app/recipes/recipes';
 
 interface ParsedLike<T> {
   parse(value: unknown): T;
@@ -266,12 +269,13 @@ function modelEntity(
     request_params: record.requestParams,
     cognition: record.cognition === undefined ? undefined : cognitionToToml(record.cognition as Record<string, unknown>) as ModelEntity['cognition'],
     prompt_overrides: record.promptOverrides as ModelEntity['prompt_overrides'],
+    recipe: record.recipe,
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
     effective_protocol: resolveModelProtocol(record, providers[ref.providerId]),
     base_url: record.baseUrl,
     revision: revisionOf(record),
-    issues: modelIssues(record, providers, ref),
+    issues: [...modelIssues(record, providers, ref), ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : [])],
   };
 }
 
@@ -383,6 +387,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('requestParams', patch.request_params);
   setOrClear('protocol', patch.protocol);
   setOrClear('promptOverrides', patch.prompt_overrides);
+  setOrClear('recipe', patch.recipe);
   setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : cognitionFromToml(patch.cognition));
   setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
   if (patch.parameters !== undefined) {
@@ -531,6 +536,7 @@ export class ModelCatalogMutationService
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IModelOAuthTokens private readonly oauth: IModelOAuthTokens,
+    @IRecipeService private readonly recipes?: IRecipeService,
   ) {
     super();
   }
@@ -554,7 +560,27 @@ export class ModelCatalogMutationService
 
   async readModel(id: string): Promise<ModelEntity> {
     await this.config.ready;
-    return this.currentModelEntity(id);
+    const saved = this.currentModelEntity(id);
+    if (saved.recipe === undefined) return saved;
+    try {
+      if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
+      const recipe = await this.recipes.resolve(saved.recipe);
+      const record = effectiveModelsOf(this.config)[id]!;
+      const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+      const sources = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, source]) => {
+        const field = key.replaceAll(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase());
+        const legacyField = field === 'thinkingEffort' ? 'defaultEffort' : field === 'temperature' ? 'requestParams.temperature' : field === 'topP' ? 'requestParams.top_p' : field;
+        const path = source === '[models.*.parameters]' ? `parameters.${field}` : source === '[models.*] legacy generation fields' ? legacyField
+          : source.startsWith('[models.*.') && source.endsWith(']') ? source.slice('[models.*.'.length, -1) : undefined;
+        const origin = path === undefined ? undefined : recipe.model_origins[path];
+        return [key, origin === undefined ? source : `Recipe ${origin.manifest_id}@${origin.version} (${origin.source})`];
+      }));
+      return { ...saved, issues: effective.issues, effective_parameters: effective.effective_parameters, parameter_sources: sources(effective.parameter_sources), usage_effective: effective.usage_effective,
+        usage_sources: effective.usage_sources === undefined ? undefined : { main: sources(effective.usage_sources.main), sub: sources(effective.usage_sources.sub), independent: sources(effective.usage_sources.independent) },
+        recipe_model_binding: { installation_id: saved.recipe, revision: recipe.revision, model: recipe.model, model_origins: recipe.model_origins } };
+    } catch (error) {
+      return { ...saved, issues: [...saved.issues, { code: 'recipe-unavailable', severity: 'error', path: 'recipe', message: error instanceof Error ? error.message : String(error) }] };
+    }
   }
 
   async readProvider(id: string): Promise<ProviderEntity> {
@@ -639,11 +665,15 @@ export class ModelCatalogMutationService
       const currentRevision = revisionOf(record);
       const local = models[id] ?? {};
       const next = applyModelPatch(local, request);
-      if (deepEqual(next, local)) return this.currentModelEntity(id);
+      if (deepEqual(next, local)) return this.readModel(id);
       if (request.base_revision !== undefined && request.base_revision !== currentRevision) {
         throw conflictError('model', id, request.base_revision, currentRevision, {
           ...this.currentModelEntity(id),
         });
+      }
+      if (typeof request.recipe === 'string') {
+        if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
+        await this.recipes.resolve(request.recipe);
       }
       await this.writeSections(
         { [MODELS_SECTION]: { ...models, [id]: next } },
@@ -653,7 +683,7 @@ export class ModelCatalogMutationService
             ...this.currentModelEntity(id),
           }),
       );
-      return this.currentModelEntity(id);
+      return this.readModel(id);
     });
   }
 
