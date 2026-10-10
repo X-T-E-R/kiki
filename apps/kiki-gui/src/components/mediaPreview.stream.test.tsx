@@ -239,4 +239,33 @@ describe('media preview budget and ownership', () => {
     expect(container.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
     expect(originalRequests).toBe(0);
   });
+
+  it('renders image attachment preview with readable floating header card and accessible controls', async () => {
+    const client = fixture.client as KikiClient;
+    vi.spyOn(client, 'readSessionMediaPreviewBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
+    vi.spyOn(client, 'readSessionMediaBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
+    await act(async () => {
+      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ ...item, kind: 'image', mime: 'image/png', name: 'step-after.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+    });
+    const trigger = container.querySelector<HTMLButtonElement>('button');
+    expect(trigger).not.toBeNull();
+    await act(async () => { trigger!.click(); });
+
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const header = dialog!.querySelector('header');
+    expect(header).not.toBeNull();
+    expect(header!.className).toContain('bg-panel/90');
+    expect(header!.className).toContain('border-hairline');
+    expect(header!.className).toContain('backdrop-blur-md');
+    expect(header!.textContent).toContain('step-after.png');
+    expect(header!.textContent).toContain('image/png');
+
+    const downloadBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Download');
+    expect(downloadBtn).toBeDefined();
+    expect(downloadBtn!.className).toContain('focus-visible:outline-selected-ink');
+    const closeBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.getAttribute('aria-label') === 'Close');
+    expect(closeBtn).toBeDefined();
+    expect(closeBtn!.className).toContain('focus-visible:outline-selected-ink');
+  });
 });

@@ -434,6 +434,7 @@ function AttachmentPreviewDialog({
   const load = useSessionMedia(item, sessionId, true, !original);
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
   const title = t('preview.openFile', { name });
+  const imageSurface = item.kind === 'image' || item.mime?.startsWith('image/') === true;
   useEffect(() => () => { downloadController.current?.abort(); }, [client, sessionId, item.fileId, item.path]);
   const download = async () => {
     if (client === undefined || (item.path === undefined && (sessionId === undefined || item.fileId === undefined))) return;
@@ -506,9 +507,15 @@ function AttachmentPreviewDialog({
       ariaLabel={title}
       overlayId="session-attachment-preview"
       overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
-      panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]"
+      panelClassName={imageSurface
+        ? 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden outline-none'
+        : 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]'}
     >
-      <header className="mb-3 flex shrink-0 items-center gap-3">
+      <header
+        className={imageSurface
+          ? 'mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-hairline bg-panel/90 px-3.5 py-2 shadow-sm backdrop-blur-md'
+          : 'mb-3 flex shrink-0 items-center gap-3'}
+      >
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold text-ink">{name}</h2>
           {load.status === 'ready' ? (
@@ -524,7 +531,7 @@ function AttachmentPreviewDialog({
           type="button"
           disabled={transfer.status === 'downloading' || transfer.status === 'saving'}
           onClick={() => { void download(); }}
-          className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-ink disabled:opacity-50"
+          className="shrink-0 rounded-lg border border-hairline bg-paper/80 px-3 py-1 text-[11.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
         >
           {t('media.download')}
         </button>
@@ -534,13 +541,13 @@ function AttachmentPreviewDialog({
           disabled={transfer.status === 'saving'}
           onClick={onClose}
           aria-label={t('common.close')}
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink disabled:opacity-50"
         >
           <Icon name="close" />
         </button>
       </header>
       {transfer.status !== 'idle' ? (
-        <div role={transfer.status === 'failed' ? 'alert' : 'status'} className="mb-3 flex shrink-0 items-center gap-3 text-[11px] text-ink-soft">
+        <div role={transfer.status === 'failed' ? 'alert' : 'status'} className={`mb-3 flex shrink-0 items-center gap-3 text-[11px] text-ink-soft${imageSurface ? ' rounded-lg border border-hairline bg-panel/90 px-3 py-2 shadow-sm backdrop-blur-md' : ''}`}>
           {transfer.status === 'downloading' ? <>
             <span className="font-mono">{formatBytes(transfer.bytes ?? 0)}{transfer.total === undefined ? '' : ` / ${formatBytes(transfer.total)}`}</span>
             <button type="button" onClick={() => { downloadController.current?.abort(); setTransfer({ status: 'idle' }); }} className="text-accent">{t('common.cancel')}</button>
