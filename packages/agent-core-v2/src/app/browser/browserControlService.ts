@@ -4,13 +4,14 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 
-import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationResult, type BrowserStatus, type BrowserTab } from './browser';
+import { IBrowserControlService, type BrowserCaller, type BrowserInvocation, type BrowserInvocationResult, type BrowserStatus, type BrowserTab } from './browser';
 import { IBrowserBackendFactory, type BrowserBackend } from './browserBackend';
 import { IBrowserConnectionStore } from './browserConnectionStore';
 import type { BrowserConnectionInput, BrowserResolvedConnection } from './browserConfig';
 import { BrowserError } from './errors';
 import { IFlagService } from '#/app/flag/flag';
 import { NATIVE_BROWSER_FLAG_ID } from './flag';
+import type { BrowserRequestContext } from './codexBrowser';
 
 interface LiveBrowser {
   connection: BrowserResolvedConnection;
@@ -43,6 +44,7 @@ export function browserResponse(result: MCPToolResult): { success?: boolean; dat
 export const BROWSER_OWNED_FIELDS = new Set(['session', 'namespace', 'extraArgs', 'restore', 'restoreSave', 'restoreCheckUrl',
   'restoreCheckText', 'restoreCheckFn', 'profile', 'cdp', 'pinTab', 'allowedDomains', 'caCert', 'clearCaCert', 'idleTimeout', 'timeoutMs', 'screenshotDir']);
 export function isBrowserOperation(name: string): boolean {
+  if (name === 'codex_browser_js' || name === 'codex_browser_js_reset') return true;
   return name.startsWith('agent_browser_') && !/^agent_browser_(?:tools_profiles|connect|close|tab_|frame_|window_|session(?:_|$)|profiles(?:_|$)|skills(?:_|$)|install$|upgrade$|doctor$|dashboard_|plugin(?:_|$)|plugins(?:_|$)|chat$|batch$|confirm$|deny$|auth(?:_|$)|state_(?:list|show|rename|clear|clean))/.test(name);
 }
 export function browserToolGroup(name: string): string {
@@ -94,13 +96,18 @@ export class BrowserControlService implements IBrowserControlService {
       ownership: connection.type === 'agent-browser-profile' ? 'managed-profile' : 'external-browser' } : { ...live.status };
   }
 
-  async check(id: string, signal?: AbortSignal): Promise<BrowserStatus> {
+  async check(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus> {
     const live = await this.live(id);
     return this.enqueue(live, async () => {
       if (live.status.state === 'unconfirmed') return this.confirmStopped(live);
       try {
         const backend = await this.backend(live);
         signal?.throwIfAborted();
+        if (backend.official !== undefined) {
+          await backend.official.connect(context, signal);
+          live.status = { ...live.status, state: live.admitting ? 'ready' : 'idle', checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
+          return { ...live.status };
+        }
         const result = await this.call(live, 'agent_browser_session_info', {});
         this.assertSuccess(result);
         const info = browserResponse(result);
@@ -131,7 +138,7 @@ export class BrowserControlService implements IBrowserControlService {
     }, signal);
   }
 
-  async connect(id: string, signal?: AbortSignal): Promise<BrowserStatus> {
+  async connect(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus> {
     if (!this.flags.enabled(NATIVE_BROWSER_FLAG_ID)) throw new BrowserError('browser.disabled', 'Native browser execution is experimental; enable native_browser in the existing experimental settings', { details: { reason: 'feature_disabled' } });
     const live = await this.live(id);
     if (!live.connection.enabled) throw new BrowserError('browser.disabled', `Browser connection "${id}" is disabled`, { details: { reason: 'connection_disabled' } });
@@ -150,19 +157,28 @@ export class BrowserControlService implements IBrowserControlService {
             throw new BrowserError('browser.busy', `Profile is already held by browser connection "${other.connection.id}"`);
           }
         }
-        await this.backend(live);
-        const result = live.connection.type === 'agent-browser-cdp'
-          ? await this.call(live, 'agent_browser_connect', { target: live.connection.endpointSecret, pinTab: true }, signal)
-          : await this.call(live, 'agent_browser_open', {}, signal);
-        this.assertSuccess(result);
-        await this.readTabs(live);
-        const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
-        live.oldPid = typeof info.data?.['pid'] === 'number' ? info.data['pid'] : undefined;
+        const backend = await this.backend(live);
+        if (backend.official !== undefined) {
+          await backend.official.connect(context, signal);
+          await backend.official.tabs(context, signal);
+        } else {
+          const result = live.connection.type === 'agent-browser-cdp'
+            ? await this.call(live, 'agent_browser_connect', { target: live.connection.endpointSecret, pinTab: true }, signal)
+            : await this.call(live, 'agent_browser_open', {}, signal);
+          this.assertSuccess(result);
+          await this.readTabs(live);
+          const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
+          live.oldPid = typeof info.data?.['pid'] === 'number' ? info.data['pid'] : undefined;
+        }
         live.admitting = true;
         live.status = { ...live.status, state: 'ready', generation: live.status.generation + 1,
           checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
       } catch (error) {
-        if (signal?.aborted && error === signal.reason) { live.status = { ...live.status, state: previous.state }; throw error; }
+        if (signal?.aborted && error === signal.reason) {
+          if (live.backend?.official !== undefined) this.fail(live, error, true);
+          else live.status = { ...live.status, state: previous.state };
+          throw error;
+        }
         this.fail(live, error, true);
       }
       return { ...live.status };
@@ -187,6 +203,7 @@ export class BrowserControlService implements IBrowserControlService {
         return { ...live.status };
       }
       try {
+        if (live.backend.official !== undefined) return await this.closeOfficial(live);
         const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
         live.oldPid = typeof info.data?.['pid'] === 'number' ? info.data['pid'] : live.oldPid;
         if (info.success === true && info.data?.['active'] === false && (await this.confirmStopped(live)).state === 'disconnected') return { ...live.status };
@@ -205,9 +222,12 @@ export class BrowserControlService implements IBrowserControlService {
     }, signal);
   }
 
-  async tabs(id: string, signal?: AbortSignal): Promise<readonly BrowserTab[]> {
+  async tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]> {
     const live = await this.live(id);
-    return this.enqueue(live, () => { this.assertReady(live); return this.readTabs(live, signal); }, signal);
+    return this.enqueue(live, () => {
+      this.assertReady(live);
+      return live.backend?.official?.tabs(context, signal) ?? this.readTabs(live, signal);
+    }, signal);
   }
 
   async invoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult> {
@@ -217,6 +237,19 @@ export class BrowserControlService implements IBrowserControlService {
       this.assertReady(live);
       if (input.generation !== undefined && input.generation !== live.status.generation) {
         throw new BrowserError('browser.target', 'Browser connection was reconnected; select a tab and observe it again');
+      }
+      if (live.backend?.official !== undefined) {
+        if (input.frame !== undefined && input.frame !== 'main') throw new BrowserError('browser.unsupported', 'Use the official runtime documentation for frame operations');
+        if (input.tool !== 'codex_browser_js_reset' && input.tab !== undefined && !(await live.backend.official.tabs(input.requestContext, signal)).some((tab) => tab.targetId === input.tab)) throw new BrowserError('browser.target', 'The selected official tab is no longer available');
+        signal?.throwIfAborted();
+        live.status = { ...live.status, state: 'running', currentCall: { ...input.caller, tool: input.tool, tab: input.tab } };
+        try {
+          const result = await live.backend.official.invoke(input.tool, input.args, input.tab, input.requestContext, signal);
+          live.status = { ...live.status, state: live.admitting ? 'ready' : 'stopping', currentCall: undefined, checkedAt: new Date().toISOString() };
+          const target = browserResponse(result).data?.['targetId'];
+          return { browser: input.browser, generation: live.status.generation, executionHost: live.status.executionHost,
+            runtimeSession: live.backend.session, tab: typeof target === 'string' ? target : input.tab, frame: input.frame, result };
+        } catch (error) { this.fail(live, error, true); throw error; }
       }
       const binding = JSON.stringify([input.caller.sessionId, input.caller.agentId, input.tab, input.frame ?? 'main', live.status.generation]);
       const capture = /^agent_browser_(network_har|trace|profiler|record)_(start|stop|restart)$/.exec(input.tool);
@@ -317,7 +350,8 @@ export class BrowserControlService implements IBrowserControlService {
     if (live.connection.type === 'agent-browser-profile') {
       extraArgs.push('--profile', backend.profilePath!);
       if (live.connection.executablePath !== undefined) extraArgs.push('--executable-path', live.connection.executablePath);
-    } else extraArgs.push('--cdp', live.connection.endpointSecret);
+    } else if (live.connection.type === 'agent-browser-cdp') extraArgs.push('--cdp', live.connection.endpointSecret);
+    else throw new BrowserError('browser.unsupported', 'The official extension does not use agent-browser commands');
     signal?.throwIfAborted();
     return backend.client.callTool(tool, { ...args, session: backend.session, namespace: backend.namespace, extraArgs, timeoutMs: 120_000 });
   }
@@ -350,13 +384,26 @@ export class BrowserControlService implements IBrowserControlService {
     const endpoint = live.connection.type === 'agent-browser-cdp' ? live.connection.endpointSecret : undefined;
     live.observation = undefined;
     live.target = undefined;
-    live.status = { ...live.status, state: unconfirmed && live.backend !== undefined ? 'unconfirmed' : 'failed', currentCall: undefined,
-      failure: { code: error instanceof BrowserError ? error.code : 'browser.execution_failed', reason: unconfirmed && live.backend !== undefined ? 'outcome_unknown' : undefined },
+    const recovery = error instanceof BrowserError && error.code === 'browser.requires_action' ? 'requires_action'
+      : error instanceof BrowserError && error.code === 'browser.unsupported' ? 'unsupported' : undefined;
+    live.status = { ...live.status, state: recovery ?? (unconfirmed && live.backend !== undefined ? 'unconfirmed' : 'failed'), currentCall: undefined,
+      failure: { code: error instanceof BrowserError ? error.code : 'browser.execution_failed', reason: recovery === undefined && unconfirmed && live.backend !== undefined ? 'outcome_unknown' : undefined },
       error: endpoint === undefined || (error instanceof BrowserError && error.code === 'browser.version') ? message : 'The CDP operation failed; endpoint details are withheld. Check the driver and explicitly reveal/edit the endpoint in settings.', checkedAt: new Date().toISOString() };
+  }
+
+  private async closeOfficial(live: LiveBrowser): Promise<BrowserStatus> {
+    await live.backend!.close();
+    live.backend = undefined;
+    live.tools = undefined;
+    live.observation = undefined;
+    live.target = undefined;
+    live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
+    return { ...live.status };
   }
 
   private async confirmStopped(live: LiveBrowser): Promise<BrowserStatus> {
     if (live.backend === undefined) return { ...live.status };
+    if (live.backend.official !== undefined) return this.closeOfficial(live);
     const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}));
     const data = info.data;
     let oldPidAlive = live.oldPid !== undefined;
@@ -374,6 +421,16 @@ export class BrowserControlService implements IBrowserControlService {
       live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, error: undefined, failure: undefined, checkedAt: new Date().toISOString() };
     }
     return { ...live.status };
+  }
+
+  async endTurn(caller: BrowserCaller, turnId?: number): Promise<void> {
+    for (const live of this.connections.values()) {
+      await this.enqueue(live, async () => {
+        if (live.backend?.official === undefined) return;
+        try { await live.backend.official.endTurn(caller, turnId); }
+        catch (error) { this.fail(live, error, true); }
+      });
+    }
   }
 
   async dispose(): Promise<void> {

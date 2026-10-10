@@ -2,6 +2,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import type { MCPToolDefinition, MCPToolResult } from '#/mcpCore/types';
 import type { BrowserConnectionInput, BrowserConnectionRecord } from './browserConfig';
 import type { BrowserErrorCode } from './errors';
+import type { BrowserRequestContext } from './codexBrowser';
 
 export interface BrowserFailure {
   readonly code: BrowserErrorCode;
@@ -10,7 +11,7 @@ export interface BrowserFailure {
 
 export interface BrowserStatus {
   readonly browser: string;
-  readonly state: 'idle' | 'connecting' | 'ready' | 'running' | 'stopping' | 'disconnected' | 'failed' | 'unconfirmed';
+  readonly state: 'idle' | 'connecting' | 'ready' | 'running' | 'stopping' | 'disconnected' | 'failed' | 'unconfirmed' | 'requires_action' | 'unsupported';
   readonly executionHost: string;
   readonly runtimeSession?: string;
   readonly generation: number;
@@ -38,6 +39,7 @@ export interface BrowserInvocation {
   readonly tab?: string;
   readonly frame?: string;
   readonly caller: BrowserCaller;
+  readonly requestContext?: BrowserRequestContext;
   readonly generation?: number;
 }
 export interface BrowserInvocationResult {
@@ -55,11 +57,12 @@ export interface IBrowserControlService {
   upsert(id: string, input: BrowserConnectionInput): Promise<BrowserConnectionRecord>;
   remove(id: string): Promise<void>;
   status(id: string): Promise<BrowserStatus>;
-  check(id: string, signal?: AbortSignal): Promise<BrowserStatus>;
-  connect(id: string, signal?: AbortSignal): Promise<BrowserStatus>;
+  check(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus>;
+  connect(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<BrowserStatus>;
   disconnect(id: string, signal?: AbortSignal): Promise<BrowserStatus>;
   catalog(id: string, signal?: AbortSignal): Promise<readonly MCPToolDefinition[]>;
-  tabs(id: string, signal?: AbortSignal): Promise<readonly BrowserTab[]>;
+  tabs(id: string, signal?: AbortSignal, context?: BrowserRequestContext): Promise<readonly BrowserTab[]>;
   invoke(input: BrowserInvocation, signal?: AbortSignal): Promise<BrowserInvocationResult>;
+  endTurn(caller: BrowserCaller, turnId?: number): Promise<void>;
 }
 export const IBrowserControlService = createDecorator<IBrowserControlService>('browserControlService');

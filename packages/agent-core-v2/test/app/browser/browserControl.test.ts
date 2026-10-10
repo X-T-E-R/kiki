@@ -8,6 +8,10 @@ import { BrowserControlService } from '#/app/browser/browserControlService';
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
 import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import type { MCPToolResult } from '#/mcpCore/types';
+import { OfficialCodexBrowser, codexTurnMetadata, type BrowserRequestContext } from '#/app/browser/codexBrowser';
+import { BrowserError } from '#/app/browser/errors';
+import { browserElicitation } from '#/agent/tools/browser/browserElicitation';
+import type { ISessionInteractionService } from '#/session/interaction/interaction';
 import { projectBrowserToolSchema, validateBrowserValues } from '#/agent/tools/browser/browserTools';
 
 function response(data: Record<string, unknown>, success = true): MCPToolResult {
@@ -24,7 +28,7 @@ function fixture() {
     ['a', [{ tabId: 't1', targetId: 'a-tab' }]], ['b', [{ tabId: 't1', targetId: 'b-tab' }]],
   ]);
   const handlers = new Map<string, () => Promise<MCPToolResult>>();
-  const factory = { _serviceBrand: undefined, open: vi.fn(async (config: BrowserResolvedConnection) => ({
+  const factory = { _serviceBrand: undefined, open: vi.fn(async (config: BrowserResolvedConnection): Promise<BrowserBackend> => ({
     session: `session-${config.id}`, namespace: 'fixture', version: '0.38.2', runtime: {} as BrowserBackend['runtime'],
     profilePath: config.type === 'agent-browser-profile' ? `/fixture/${config.id}` : undefined,
     close: vi.fn(async () => undefined), client: {
@@ -272,5 +276,110 @@ describe('donor schema projection', () => {
     expect(() => validateBrowserValues({ session: 'other' })).toThrow('managed by Kiki');
     expect(() => validateBrowserValues({ text: '--profile' })).toThrow('does not escape');
     expect(() => validateBrowserValues({ script: 'document.body.textContent = "--profile"' })).not.toThrow();
+  });
+});
+
+
+describe('official Codex browser adapter', () => {
+  const context: BrowserRequestContext = { caller, turnId: 7, toolCallId: 'fixture-call', elicit: async () => ({ action: 'cancel' }) };
+  const catalog = [{ name: 'js', description: 'Official browser JavaScript', inputSchema: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } },
+    { name: 'js_reset', description: '', inputSchema: {} }, { name: 'turn_ended', description: '', inputSchema: {} }];
+
+  it('does not call browser discovery without caller approval and rejects a CDP substitute', async () => {
+    const callTool = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      const marker = /KIKI_BROWSER_RESULT_\d+:/.exec(String(args['code']))![0];
+      return { isError: false, content: [{ type: 'text', text: `${marker}${JSON.stringify([{ id: 'official-fixture', type: 'cdp' }])}` }] };
+    });
+    const adapter = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'official-fixture', catalog);
+    await expect(adapter.connect()).rejects.toMatchObject({ code: 'browser.requires_action' });
+    expect(callTool).not.toHaveBeenCalled();
+    await expect(adapter.connect(context)).rejects.toMatchObject({ code: 'browser.unsupported' });
+    expect(callTool).toHaveBeenCalledOnce();
+  });
+
+  it('preserves official js schema, Kiki metadata, tab identity and image/raw result without replay', async () => {
+    const result: MCPToolResult = { isError: false, content: [{ type: 'image', data: 'fixture-image', mimeType: 'image/png' }], _meta: { donor: true }, structuredContent: { raw: true } };
+    const callTool = vi.fn(async () => result);
+    const adapter = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'official-fixture', catalog);
+    expect(await adapter.client.listTools()).toEqual([{ ...catalog[0], name: 'codex_browser_js' }, { ...catalog[1], name: 'codex_browser_js_reset' }]);
+    expect(await adapter.invoke('codex_browser_js', { code: 'await kikiTab.getScreenshot()' }, 'tab-fixture', context)).toBe(result);
+    expect(callTool).toHaveBeenCalledWith('js', { code: expect.stringContaining('cua.getTab("tab-fixture", { browser: "official-fixture" })') }, undefined,
+      { meta: codexTurnMetadata(context), elicit: expect.any(Function) });
+    expect(JSON.parse(String(codexTurnMetadata(context)['x-codex-turn-metadata']))).toEqual({ session_id: 'kiki:fixture-session:main', turn_id: 'kiki:7' });
+    callTool.mockRejectedValueOnce(new Error('response lost'));
+    await expect(adapter.invoke('codex_browser_js', { code: 'await kikiTab.getAXState()' }, 'tab-fixture', context)).rejects.toThrow('response lost');
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains a cancelled sent call, notifies the matching turn once, and resets bindings only on explicit reset or disconnect', async () => {
+    let release!: () => void;
+    const pending = new Promise<MCPToolResult>((resolve) => { release = () => resolve({ content: [], isError: false }); });
+    const callTool = vi.fn(async (name: string) => name === 'js' ? pending : { content: [], isError: false });
+    const adapter = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'official-fixture', catalog);
+    const abort = new AbortController();
+    const call = adapter.invoke('codex_browser_js', { code: 'fixture action' }, undefined, context, abort.signal);
+    abort.abort(new Error('fixture cancelled'));
+    await expect(call).rejects.toThrow('fixture cancelled');
+    await adapter.endTurn({ ...caller, agentId: 'other' }, 7);
+    await adapter.endTurn(caller, 8);
+    const ended = adapter.endTurn(caller, 7);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    release();
+    await ended;
+    await adapter.endTurn(caller, 7);
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(['js', 'turn_ended']);
+    expect(callTool).toHaveBeenLastCalledWith('turn_ended', { hook_event_name: 'turn.ended', session_id: 'kiki:fixture-session:main', turn_id: 'kiki:7' }, undefined, expect.objectContaining({ meta: codexTurnMetadata(context) }));
+    await adapter.invoke('codex_browser_js_reset', {}, undefined, { ...context, turnId: 8 });
+    await adapter.prepareClose();
+    await adapter.prepareClose();
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(['js', 'turn_ended', 'js_reset', 'turn_ended', 'js_reset']);
+  });
+
+  it('does not replay a lost turn cleanup or reset an indeterminate runtime', async () => {
+    const callTool = vi.fn(async (name: string): Promise<MCPToolResult> => {
+      if (name === 'turn_ended') throw new Error('cleanup response lost');
+      return { content: [], isError: false };
+    });
+    const adapter = new OfficialCodexBrowser({ callTool, listTools: async () => catalog, ping: async () => undefined }, 'official-fixture', catalog);
+    await adapter.invoke('codex_browser_js', { code: 'fixture action' }, undefined, context);
+    await expect(adapter.endTurn(caller, 7)).rejects.toThrow('cleanup response lost');
+    await adapter.endTurn(caller, 7);
+    await adapter.prepareClose();
+    expect(callTool.mock.calls.map(([name]) => name)).toEqual(['js', 'turn_ended']);
+  });
+
+  it('keeps unavailable/unsupported separate from unknown outcome and closes only the official runtime', async () => {
+    const f = fixture();
+    f.configs.set('official', { id: 'official', type: 'codex-extension', name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'official-fixture' });
+    const close = vi.fn(async () => undefined);
+    const connect = vi.fn(async (ctx?: BrowserRequestContext) => { if (ctx === undefined) throw new BrowserError('browser.requires_action', 'Approval requires a conversation'); });
+    const invoke = vi.fn(async () => { throw new Error('response lost'); });
+    f.factory.open.mockImplementationOnce(async () => ({ session: 'official-runtime', namespace: 'official-cua-repl', version: '0.1.0', runtime: {} as BrowserBackend['runtime'], close,
+      client: { listTools: async () => [{ ...catalog[0]!, name: 'codex_browser_js' }], callTool: async () => { throw new Error('wrong backend'); }, ping: async () => undefined },
+      official: { connect, tabs: async () => [{ tabId: 'official-tab', targetId: 'official-tab' }], invoke, endTurn: async () => undefined } }));
+    try {
+      expect((await f.control.connect('official')).state).toBe('requires_action');
+      expect((await f.control.connect('official', undefined, context)).state).toBe('ready');
+      await expect(f.control.invoke({ browser: 'official', caller, requestContext: context, tool: 'codex_browser_js', args: { code: '1' }, tab: 'official-tab' })).rejects.toThrow('response lost');
+      expect((await f.control.status('official')).state).toBe('unconfirmed');
+      expect(invoke).toHaveBeenCalledOnce();
+      expect((await f.control.disconnect('official')).state).toBe('disconnected');
+      expect(close).toHaveBeenCalledOnce();
+      expect(f.calls).toEqual([]);
+    } finally { f.ix.dispose(); }
+  });
+
+  it('maps user allow/decline/cancel to MCP without Guardian or credential autoaccept', async () => {
+    const request = vi.fn(async () => ({ decision: 'approved' as 'approved' | 'rejected' | 'cancelled', selectedOptionId: 'accept' }));
+    const approvals = { request, respond: vi.fn(), hasConsumer: () => true } as unknown as ISessionInteractionService;
+    const signal = new AbortController().signal;
+    const form = { message: 'Allow the official browser action?', requestedSchema: { type: 'object' as const, properties: {} } };
+    for (const [decision, action] of [['approved', 'accept'], ['rejected', 'decline'], ['cancelled', 'cancel']] as const) {
+      request.mockResolvedValueOnce({ decision, selectedOptionId: action });
+      expect((await browserElicitation(approvals, caller, 7, 'fixture', form, signal)).action).toBe(action);
+    }
+    expect(await browserElicitation(approvals, caller, 7, 'fixture', { ...form, _meta: { codex_strict_auto_review: true } }, signal)).toEqual({ action: 'cancel' });
+    expect(await browserElicitation(approvals, caller, 7, 'fixture', { ...form, requestedSchema: { type: 'object', properties: { password: { type: 'string' } } } }, signal)).toEqual({ action: 'cancel' });
+    expect(request).toHaveBeenCalledTimes(3);
   });
 });

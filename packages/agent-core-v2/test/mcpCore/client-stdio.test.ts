@@ -50,6 +50,58 @@ function createClient(
 }
 
 describe('StdioMcpClient', () => {
+  it('round-trips per-call metadata and all elicitation outcomes without retaining the previous caller', async () => {
+    const script = fileURLToPath(new URL('./fixtures/elicitation-stdio-server.mjs', import.meta.url));
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [script] }, { elicitation: true });
+    try {
+      await client.connect();
+      expect((await client.listTools()).map((tool) => tool.name)).toEqual(['elicit']);
+      for (const action of ['accept', 'decline', 'cancel'] as const) {
+        const meta = { 'x-codex-turn-metadata': JSON.stringify({ session_id: 'kiki:fixture:main', turn_id: `kiki:${action}` }) };
+        const result = await client.callTool('elicit', { message: action }, undefined, {
+          meta, elicit: async (request) => { expect(request.message).toBe(action); return action === 'accept' ? { action, content: {} } : { action }; },
+        });
+        expect(result.structuredContent).toMatchObject({ caller: meta, result: { action }, capabilities: { elicitation: { form: {} } } });
+      }
+      const missing = await client.callTool('elicit', { message: 'no caller' });
+      expect(missing.structuredContent).toMatchObject({ result: { action: 'cancel' } });
+    } finally { await client.close(); }
+  });
+
+  it('keeps the current elicitation caller isolated from a concurrent call', async () => {
+    const script = fileURLToPath(new URL('./fixtures/elicitation-stdio-server.mjs', import.meta.url));
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [script] }, { elicitation: true });
+    let release!: () => void;
+    const decision = new Promise<void>((resolve) => { release = resolve; });
+    const elicit = vi.fn(async () => { await decision; return { action: 'decline' as const }; });
+    try {
+      await client.connect();
+      const first = client.callTool('elicit', { message: 'owner' }, undefined, { elicit });
+      await vi.waitFor(() => expect(elicit).toHaveBeenCalledOnce());
+      await expect(client.callTool('elicit', { message: 'other' })).rejects.toMatchObject({ code: 'mcp.computer_busy' });
+      release();
+      expect((await first).structuredContent).toMatchObject({ result: { action: 'decline' } });
+    } finally { release(); await client.close(); }
+  });
+
+  it('cancels a pending elicitation when its client closes', async () => {
+    const script = fileURLToPath(new URL('./fixtures/elicitation-stdio-server.mjs', import.meta.url));
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [script] }, { elicitation: true });
+    let elicitationSignal: AbortSignal | undefined;
+    const elicit = vi.fn(async (_request: unknown, signal: AbortSignal) => {
+      elicitationSignal = signal;
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      return { action: 'cancel' as const };
+    });
+    try {
+      await client.connect();
+      const work = client.callTool('elicit', { message: 'pending' }, undefined, { elicit }).catch(() => undefined);
+      await vi.waitFor(() => expect(elicit).toHaveBeenCalledOnce());
+      await client.close();
+      await work;
+      expect(elicitationSignal?.aborted).toBe(true);
+    } finally { await client.close(); }
+  });
   const computerFixture = fileURLToPath(new URL('./fixtures/computer-stdio-server.mjs', import.meta.url));
   const computerClient = (options: Partial<StdioMcpClientOptions> = {}, env?: Record<string, string>) =>
     createClient({ transport: 'stdio', command: process.execPath, args: [computerFixture], env },

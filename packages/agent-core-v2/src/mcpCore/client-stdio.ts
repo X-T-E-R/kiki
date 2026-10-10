@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { JSONRPCMessage, ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
+import { ElicitRequestSchema, type JSONRPCMessage, type ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 
 import { ErrorCodes, Error2 } from '#/errors';
 import type { IHostProcess } from '#/os/interface/hostProcess';
@@ -23,7 +23,7 @@ import {
   type UnexpectedCloseReason,
 } from './client-shared';
 import type { McpServerStdioConfig } from './config-schema';
-import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
+import type { MCPClient, MCPToolCallContext, MCPToolDefinition, MCPToolResult } from './types';
 
 export interface StdioMcpClientOptions {
   readonly clientName?: string;
@@ -38,6 +38,7 @@ export interface StdioMcpClientOptions {
   readonly computerDirect?: boolean;
   readonly serverName?: string;
   readonly drainTimeoutMs?: number;
+  readonly elicitation?: boolean;
 }
 
 const STDERR_BUFFER_CAPACITY = 4 * 1024;
@@ -92,6 +93,11 @@ export class StdioMcpClient implements MCPClient {
   private unexpectedCloseListener: UnexpectedCloseListener | undefined;
   private lastTransportError: Error | undefined;
   private pendingUnexpectedClose: UnexpectedCloseReason | undefined;
+  private readonly elicitationEnabled: boolean;
+  private activeElicitation: MCPToolCallContext | undefined;
+  private activeElicitationSignal: AbortSignal | undefined;
+  private readonly elicitationLifetime = new AbortController();
+  private elicitationCallActive = false;
 
   static readonly stderrBufferCapacity = STDERR_BUFFER_CAPACITY;
 
@@ -117,9 +123,17 @@ export class StdioMcpClient implements MCPClient {
           computerClients.delete(this);
         }
       });
+    this.elicitationEnabled = options.elicitation === true;
     this.client = new Client({
       name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
       version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
+    }, { capabilities: this.elicitationEnabled ? { elicitation: { form: {} } } : {} });
+    if (this.elicitationEnabled) this.client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+      const elicit = this.activeElicitation?.elicit;
+      const signal = AbortSignal.any([extra.signal, this.activeElicitationSignal ?? this.elicitationLifetime.signal]);
+      if (this.closed || signal.aborted || elicit === undefined) return { action: 'cancel' };
+      try { return await abortable(elicit(request.params, signal), signal); }
+      catch { return { action: 'cancel' }; }
     });
     this.toolsListChanged = new McpToolsListChanged(this.client);
     this.startupTimeoutMs = options.startupTimeoutMs;
@@ -151,6 +165,7 @@ export class StdioMcpClient implements MCPClient {
 
   blockCalls(): void {
     this.closed = true;
+    this.elicitationLifetime.abort();
     this.toolsListChanged.close();
     if (this.computerControl && this.started && (this.directlyOwned || computerOwner?.client === this)) {
       unconfirmedComputerClients.add(this);
@@ -193,29 +208,31 @@ export class StdioMcpClient implements MCPClient {
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    context?: MCPToolCallContext,
   ): Promise<MCPToolResult> {
     signal?.throwIfAborted();
     if (this.closed) throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'MCP client is closed');
     if (this.computerControl && stoppedComputerConfigs.has(this.computerConfigKey)) {
       throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'Computer MCP admission is stopped; explicitly enable the configuration before resuming');
     }
-    if (!this.computerControl) {
-      const result = await this.client.callTool({ name, arguments: args }, undefined,
-        buildRequestOptions(this.toolCallTimeoutMs, signal));
-      return toMcpToolResult(result);
-    }
-    if (computerOwner !== undefined || unconfirmedComputerClients.size > 0) {
+    if (this.elicitationEnabled && this.elicitationCallActive) throw new Error2(ErrorCodes.MCP_COMPUTER_BUSY, 'An MCP call owns the elicitation channel; wait for its outcome');
+    if (this.computerControl && (computerOwner !== undefined || unconfirmedComputerClients.size > 0)) {
       throw new Error2(ErrorCodes.MCP_COMPUTER_BUSY,
         `Computer is occupied by MCP tool "${computerOwner?.tool ?? 'unconfirmed proxy action'}"; wait for completion or confirmed driver exit`);
     }
     const owner = { client: this, tool: name };
-    computerOwner = owner;
-    const work = this.client.callTool({ name, arguments: args }, undefined,
-      buildRequestOptions(this.toolCallTimeoutMs, undefined)).then((result) => {
+    if (this.computerControl) computerOwner = owner;
+    if (this.elicitationEnabled) {
+      this.elicitationCallActive = true;
+      this.activeElicitation = context;
+      this.activeElicitationSignal = signal === undefined ? this.elicitationLifetime.signal : AbortSignal.any([signal, this.elicitationLifetime.signal]);
+    }
+    const work = this.client.callTool({ name, arguments: args, _meta: context?.meta }, undefined,
+      buildRequestOptions(this.toolCallTimeoutMs, this.computerControl ? undefined : signal)).then((result) => {
       if (computerOwner === owner && !this.closed) computerOwner = undefined;
       return toMcpToolResult(result);
-    });
-    return signal === undefined ? work : abortable(work, signal);
+    }).finally(() => { this.activeElicitation = undefined; this.activeElicitationSignal = undefined; this.elicitationCallActive = false; });
+    return signal === undefined || !this.computerControl ? work : abortable(work, signal);
   }
 
   async ping(signal?: AbortSignal): Promise<void> {

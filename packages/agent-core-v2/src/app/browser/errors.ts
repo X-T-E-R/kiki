@@ -6,6 +6,7 @@ export const BrowserErrors = {
     BROWSER_INVALID: 'browser.invalid', BROWSER_NOT_FOUND: 'browser.not_found', BROWSER_DISABLED: 'browser.disabled',
     BROWSER_DISCONNECTED: 'browser.disconnected', BROWSER_EXECUTION_FAILED: 'browser.execution_failed',
     BROWSER_BUSY: 'browser.busy', BROWSER_VERSION: 'browser.version', BROWSER_TARGET: 'browser.target',
+    BROWSER_REQUIRES_ACTION: 'browser.requires_action', BROWSER_UNSUPPORTED: 'browser.unsupported',
   },
   info: {
     'browser.invalid': { title: 'Invalid browser configuration or request', retryable: false, public: true },
@@ -16,6 +17,8 @@ export const BrowserErrors = {
     'browser.busy': { title: 'Browser connection is busy', retryable: false, public: true },
     'browser.version': { title: 'Unsupported browser driver version', retryable: false, public: true },
     'browser.target': { title: 'Browser target is no longer available', retryable: false, public: true },
+    'browser.requires_action': { title: 'Browser setup or approval required', retryable: false, public: true },
+    'browser.unsupported': { title: 'Unsupported browser provider or operation', retryable: false, public: true },
   },
 } as const satisfies ErrorDomain;
 registerErrorDomain(BrowserErrors);

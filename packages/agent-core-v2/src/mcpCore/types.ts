@@ -1,4 +1,10 @@
+import type { ElicitRequest, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
 import { ErrorCodes, Error2 } from '#/errors';
+
+export interface MCPToolCallContext {
+  readonly meta?: Record<string, unknown>;
+  readonly elicit?: (request: ElicitRequest['params'], signal: AbortSignal) => Promise<ElicitResult>;
+}
 
 export interface MCPEmbeddedResourceContents {
   uri: string;
@@ -38,6 +44,7 @@ export interface MCPClient {
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    context?: MCPToolCallContext,
   ): Promise<MCPToolResult>;
   ping(signal?: AbortSignal): Promise<void>;
 }

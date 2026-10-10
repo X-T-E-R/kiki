@@ -7,12 +7,14 @@ export const BROWSER_CONFIG_SECTION = 'browserControl';
 export const BrowserIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const absolutePath = z.string().min(1).refine((value) => isAbsolute(value) && !value.includes('\0'), 'Expected an absolute server path');
 const common = { name: z.string().trim().min(1).max(256), enabled: z.boolean().default(true), driverPath: absolutePath.optional() };
+const official = { name: common.name, enabled: common.enabled, type: z.literal('codex-extension'), runtimeRoot: absolutePath, browserId: z.string().min(1).max(512) };
 const endpoint = z.string().max(8192).refine((value) => {
   try { return ['http:', 'https:', 'ws:', 'wss:'].includes(new URL(value).protocol) && !/[\r\n\0]/.test(value); }
   catch { return false; }
 }, 'Expected a CDP HTTP or WebSocket endpoint');
 
 export const BrowserStoredConnectionSchema = z.discriminatedUnion('type', [
+  z.object(official).strict(),
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: absolutePath.optional(), executablePath: absolutePath.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpointSecret: endpoint }).strict(),
 ]);
@@ -24,6 +26,7 @@ export const BrowserEndpointEditSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('set'), value: endpoint }).strict(),
 ]);
 export const BrowserConnectionInputSchema = z.discriminatedUnion('type', [
+  z.object(official).strict(),
   z.object({ ...common, type: z.literal('agent-browser-profile'), profilePath: absolutePath.optional(), executablePath: absolutePath.optional(), headed: z.boolean().optional() }).strict(),
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpoint: BrowserEndpointEditSchema }).strict(),
 ]);
@@ -41,7 +44,9 @@ export interface BrowserConnectionRecord {
   readonly id: string;
   readonly name: string;
   readonly enabled: boolean;
-  readonly type: 'agent-browser-profile' | 'agent-browser-cdp';
+  readonly type: 'agent-browser-profile' | 'agent-browser-cdp' | 'codex-extension';
+  readonly runtimeRoot?: string;
+  readonly browserId?: string;
   readonly driverPath?: string;
   readonly profilePath?: string;
   readonly executablePath?: string;
@@ -51,7 +56,7 @@ export interface BrowserConnectionRecord {
 }
 
 export function browserConnectionRecord(connection: BrowserResolvedConnection): BrowserConnectionRecord {
-  if (connection.type === 'agent-browser-profile') return { ...connection };
+  if (connection.type !== 'agent-browser-cdp') return { ...connection };
   const endpoint = new URL(connection.endpointSecret);
   return { id: connection.id, name: connection.name, enabled: connection.enabled, type: connection.type,
     driverPath: connection.driverPath, endpointDisplay: `${endpoint.protocol}//${endpoint.host}`, endpointConfigured: true };

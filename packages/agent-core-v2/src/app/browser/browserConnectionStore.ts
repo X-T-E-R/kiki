@@ -48,7 +48,7 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
     await this.change((current) => {
       const value = parsed.data;
       let entry: BrowserStoredConnection;
-      if (value.type === 'agent-browser-profile') entry = value;
+      if (value.type !== 'agent-browser-cdp') entry = value;
       else {
         const previous = current.connections[id];
         const endpointSecret = value.endpoint.action === 'set' ? value.endpoint.value

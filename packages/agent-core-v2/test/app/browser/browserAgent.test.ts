@@ -11,6 +11,10 @@ import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryServi
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { IEventBus } from '#/app/event/eventBus';
+import { EventBusService } from '#/app/event/eventBusService';
+import { TurnEnded } from '#/agent/loop/turnOps';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IBrowserControlService, type BrowserInvocation, type BrowserInvocationResult } from '#/app/browser/browser';
@@ -46,8 +50,8 @@ describe('native browser agent selection, schema and local file channel', () => 
       if (!('execute' in connect) || !('execute' in window)) throw new Error('Expected lifecycle executions');
       await connect.execute(context);
       await window.execute(context);
-      expect(connections).toHaveBeenCalledWith({ action: 'connect', browser: 'a' }, signal);
-      expect(tabs).toHaveBeenCalledWith({ action: 'window', browser: 'a' }, signal);
+      expect(connections).toHaveBeenCalledWith({ action: 'connect', browser: 'a' }, signal, context);
+      expect(tabs).toHaveBeenCalledWith({ action: 'window', browser: 'a' }, signal, context);
     } finally { ix.dispose(); }
   });
   it('loads only requested schemas, rejects unobserved refs and transfers only the selected browser artifact through media', async () => {
@@ -64,8 +68,11 @@ describe('native browser agent selection, schema and local file channel', () => 
     ix.stub(ISessionWorkspaceContext, { workDir: directory, additionalDirs: [] });
     ix.stub(IAgentRuntimeService, { inspect: () => runtime, prepareFor: async (host) => { expect(host).toBe('local'); return runtime; } });
     ix.stub(ISessionMediaStore, { materialize });
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
     ix.stub(IBrowserControlService, {
+      endTurn: async () => undefined,
       catalog: async () => tools,
       status: async () => ({ browser: 'a', state: 'ready', executionHost: 'fixture-host', generation: 1 }),
       tabs: async () => [{ tabId: 't1', targetId: 'a-target' }],
@@ -109,5 +116,54 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect(registry.resolve('browser__agent_browser_fill')).toBeUndefined();
       expect(registry.resolve('browser__agent_browser_download')).toBeUndefined();
     } finally { ix.dispose(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('consumes the official js catalog with the real caller context and existing media output', async () => {
+    const ix = new TestInstantiationService();
+    const config = { id: 'official', type: 'codex-extension' as const, name: 'Official', enabled: true, runtimeRoot: '/fixture/cua_node', browserId: 'extension-fixture' };
+    const js = { name: 'codex_browser_js', description: 'Official runtime JavaScript', inputSchema: { type: 'object', properties: { code: { type: 'string' }, title: { type: 'string' } }, required: ['code'] } };
+    const invoke = vi.fn(async (input: BrowserInvocation): Promise<BrowserInvocationResult> => ({ browser: input.browser, executionHost: 'fixture-host', runtimeSession: 'official-runtime', generation: 1,
+      tab: input.tab, result: { isError: false, content: [{ type: 'resource_link', uri: 'https://example.test/screenshot.png', mimeType: 'image/png' }], structuredContent: { official: true }, _meta: { donor: 'fixture' } } }));
+    ix.stub(IBrowserConnectionStore, { list: async () => ({ connections: [config] }), resolve: async () => config });
+    ix.stub(defaults, { ready: Promise.resolve(undefined) });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(ISessionContext, { sessionId: 'fixture-session', sessionDir: '/fixture/session' });
+    ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+    ix.stub(IAgentRuntimeService, {});
+    ix.stub(ISessionMediaStore, {});
+    ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+    ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    const endTurn = vi.fn(async () => undefined);
+    const reset = { name: 'codex_browser_js_reset', description: 'Reset bindings, not browser tabs', inputSchema: { type: 'object', properties: {} } };
+    ix.set(IEventBus, new SyncDescriptor(EventBusService));
+    ix.stub(IBrowserControlService, { catalog: async () => [js, reset], status: async () => ({ browser: 'official', state: 'ready', executionHost: 'fixture-host', generation: 1 }), invoke, endTurn });
+    ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+    try {
+      const service = ix.get(IAgentBrowserService);
+      const loaded = await service.connections({ action: 'tools', browser: 'official', tools: ['codex_browser_js'] });
+      expect(JSON.stringify(loaded.output)).toContain('official-cua-repl');
+      const tool = ix.get(IAgentToolRegistryService).resolve('browser__codex_browser_js')!;
+      expect(tool.parameters?.['required']).toEqual(['code']);
+      expect(tool.description).toContain('not a JavaScript sandbox');
+      const output = await execute(tool.resolveExecution({ code: 'await cua.listBrowsers()', title: 'Browser inventory' }));
+      expect(invoke).toHaveBeenCalledOnce();
+      const call = invoke.mock.calls[0]![0];
+      expect(call).toMatchObject({ caller: { sessionId: 'fixture-session', agentId: 'main' }, requestContext: { turnId: 1, toolCallId: 'test-call' }, args: { code: 'await cua.listBrowsers()', title: 'Browser inventory' } });
+      expect(call.tab).toBeUndefined();
+      expect(await call.requestContext!.elicit({ message: 'Allow?', requestedSchema: { type: 'object', properties: {} } }, new AbortController().signal)).toEqual({ action: 'cancel' });
+      expect(output.output).toEqual(expect.arrayContaining([{ type: 'image_url', imageUrl: { url: 'https://example.test/screenshot.png' } }]));
+      expect(JSON.stringify(output.output)).toContain('official-runtime');
+      expect(JSON.stringify(output.output)).toContain('structuredContent');
+      expect(JSON.stringify(output.output)).toContain('donor');
+      await service.connections({ action: 'tools', tools: ['codex_browser_js_reset'] });
+      await execute(ix.get(IAgentToolRegistryService).resolve('browser__codex_browser_js_reset')!.resolveExecution({}));
+      expect(invoke.mock.calls[1]![0].tool).toBe('codex_browser_js_reset');
+      for (const [turnId, reason] of [[1, 'completed'], [2, 'cancelled'], [3, 'failed'], [4, 'blocked']] as const) {
+        ix.get(IEventBus).publish(new TurnEnded({ turnId, reason }));
+        expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }, turnId);
+      }
+      service.dispose();
+      await vi.waitFor(() => expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }));
+    } finally { ix.dispose(); }
   });
 });

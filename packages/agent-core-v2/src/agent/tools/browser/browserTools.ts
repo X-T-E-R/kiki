@@ -19,6 +19,12 @@ import { BROWSER_OWNED_FIELDS, browserResponse, browserToolGroup, isBrowserOpera
 import { BrowserError } from '#/app/browser/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { IEventBus } from '#/app/event/eventBus';
+import { TurnEnded } from '#/agent/loop/turnOps';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import type { BrowserRequestContext } from '#/app/browser/codexBrowser';
+import { browserElicitation } from './browserElicitation';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { buildDaemonFileUrl } from '#/agent/media/mediaRef';
 import { mcpResultToExecutableOutput } from '#/agent/mcp/output';
@@ -31,8 +37,8 @@ import { ToolAccesses, type AgentTool, type ExecutableToolContext, type Executab
 
 export const BrowserConnectionsInputSchema = z.object({ action: z.enum(['list', 'select', 'status', 'check', 'connect', 'disconnect', 'tools']).default('list'),
   browser: BrowserIdSchema.optional(), groups: z.array(z.enum(['page', 'network', 'state', 'debug', 'input', 'react'])).optional(),
-  tools: z.array(z.string().regex(/^agent_browser_[a-z0-9_]+$/)).optional(),
-  unload: z.array(z.string().regex(/^agent_browser_[a-z0-9_]+$/)).optional() }).strict();
+  tools: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_browser_js(?:_reset)?)$/)).optional(),
+  unload: z.array(z.string().regex(/^(?:agent_browser_[a-z0-9_]+|codex_browser_js(?:_reset)?)$/)).optional() }).strict();
 export type BrowserConnectionsInput = z.infer<typeof BrowserConnectionsInputSchema>;
 export const BrowserTabsInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'), browser: BrowserIdSchema.optional() }).strict(),
@@ -56,8 +62,8 @@ registerScopedService(LifecycleScope.Session, ISessionBrowserDefault, SessionBro
 
 export interface IAgentBrowserService {
   readonly _serviceBrand: undefined;
-  connections(input: BrowserConnectionsInput, signal?: AbortSignal): Promise<ExecutableToolResult>;
-  tabs(input: BrowserTabsInput, signal?: AbortSignal): Promise<ExecutableToolResult>;
+  connections(input: BrowserConnectionsInput, signal?: AbortSignal, context?: ExecutableToolContext): Promise<ExecutableToolResult>;
+  tabs(input: BrowserTabsInput, signal?: AbortSignal, context?: ExecutableToolContext): Promise<ExecutableToolResult>;
 }
 export const IAgentBrowserService = createDecorator<IAgentBrowserService>('agentBrowserService');
 
@@ -72,7 +78,7 @@ export function projectBrowserToolSchema(tool: MCPToolDefinition): Record<string
   const projected = Object.fromEntries(Object.entries(properties).filter(([field]) => !BROWSER_OWNED_FIELDS.has(field)));
   return { ...original, additionalProperties: false, properties: { ...projected,
     browser: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$', description: 'Saved browser connection id. Omit only to use this agent\'s selected connection; never guessed by display name.' },
-    browserTab: { type: 'string', minLength: 1, description: 'CDP targetId in this connection. Omit only for this agent\'s selected tab; it does not follow the user\'s foreground tab.' } } };
+    browserTab: { type: 'string', minLength: 1, description: 'Exact tab identity returned by BrowserTabs in this connection (CDP targetId or official extension tab id). Omit only for this agent\'s selected tab; it does not follow the user\'s foreground tab.' } } };
 }
 
 export function validateBrowserValues(args: Readonly<Record<string, unknown>>): void {
@@ -102,9 +108,25 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     @ISessionMediaStore private readonly media: ISessionMediaStore,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
-  ) { super(); }
+    @ISessionInteractionService private readonly approvals: ISessionInteractionService,
+    @IEventBus eventBus: IEventBus,
+  ) {
+    super();
+    const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
+    this._store.ledger.register(() => this.control.endTurn(caller), 'official-browser-turn-cleanup');
+    this._register(eventBus.subscribe(TurnEnded, (event) => {
+      void this.control.endTurn(caller, event.turnId).catch(onUnexpectedError);
+    }));
+  }
 
-  async connections(input: BrowserConnectionsInput, signal?: AbortSignal): Promise<ExecutableToolResult> {
+  private requestContext(ctx?: ExecutableToolContext): BrowserRequestContext | undefined {
+    if (ctx === undefined) return undefined;
+    const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
+    return { caller, turnId: ctx.turnId, toolCallId: ctx.toolCallId,
+      elicit: (request, signal) => browserElicitation(this.approvals, caller, ctx.turnId, ctx.toolCallId, request, AbortSignal.any([ctx.signal, signal])) };
+  }
+
+  async connections(input: BrowserConnectionsInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
     try {
       signal?.throwIfAborted();
       if (input.action === 'list') return this.json({ ...(await this.control.list()), selectedBrowser: this.selected });
@@ -119,31 +141,33 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         const operations = tools.filter((tool) => isBrowserOperation(tool.name));
         const requested = operations.filter((tool) => input.groups?.includes(browserToolGroup(tool.name) as 'page') || input.tools?.includes(tool.name));
         for (const tool of requested) this.register(tool);
-        return this.json({ browser, backend: 'agent-browser', backendToolCount: tools.length,
-          contextIsolation: 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
+        const official = (await this.store.resolve(browser)).type === 'codex-extension';
+        return this.json({ browser, backend: official ? 'official-cua-repl' : 'agent-browser', backendToolCount: tools.length,
+          contextIsolation: official ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.' : 'BrowserTabs window creates an opaque donor browser context and a targetId-bound tab. Named context list/switch/dispose APIs are unavailable; no synthetic context ids are exposed.',
           operations: operations.map((tool) => ({ name: tool.name, modelTool: this.modelName(tool.name), group: browserToolGroup(tool.name) })),
           managedLifecycle: tools.filter((tool) => /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name)).map((tool) => ({ name: tool.name, surface: /connect|close$/.test(tool.name) && !/tab_close/.test(tool.name) ? 'BrowserConnections' : 'BrowserTabs' })),
           administrativeCapabilities: tools.filter((tool) => !isBrowserOperation(tool.name) && !/^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name)).map((tool) => ({ name: tool.name, availableAsPageTool: false,
             reason: 'Donor-wide installation, plugins, credential or cross-session administration is outside a selected page execution lease.' })),
           loaded: [...this.registrations.keys()], note: 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
       }
-      if (input.action === 'connect') return this.json(await this.control.connect(browser, signal));
+      if (input.action === 'connect') return this.json(await this.control.connect(browser, signal, this.requestContext(ctx)));
       if (input.action === 'disconnect') { const status = await this.control.disconnect(browser, signal); this.selections.delete(browser); return this.json(status); }
-      return this.json(await (input.action === 'check' ? this.control.check(browser, signal) : this.control.status(browser)));
+      return this.json(await (input.action === 'check' ? this.control.check(browser, signal, this.requestContext(ctx)) : this.control.status(browser)));
     } catch (error) { return this.error(error); }
   }
 
-  async tabs(input: BrowserTabsInput, signal?: AbortSignal): Promise<ExecutableToolResult> {
+  async tabs(input: BrowserTabsInput, signal?: AbortSignal, ctx?: ExecutableToolContext): Promise<ExecutableToolResult> {
     try {
       signal?.throwIfAborted();
       const browser = await this.choose(input.browser);
-      if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal) });
+      const requestContext = this.requestContext(ctx);
+      if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal, requestContext) });
       const current = this.selections.get(browser);
       const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
       if (input.action === 'select' || input.action === 'close') {
-        const tabs = await this.control.tabs(browser, signal);
+        const tabs = await this.control.tabs(browser, signal, requestContext);
         if (!tabs.some((tab) => tab.targetId === input.target)) throw new BrowserError('browser.target', 'Use a current targetId from BrowserTabs list, not a positional tab number or label');
-        const result = await this.control.invoke({ browser, caller, tool: input.action === 'select' ? 'agent_browser_tab_switch' : 'agent_browser_tab_close', args: { tab: input.target } }, signal);
+        const result = await this.control.invoke({ browser, caller, requestContext, tool: input.action === 'select' ? 'agent_browser_tab_switch' : 'agent_browser_tab_close', args: { tab: input.target } }, signal);
         const data = browserResponse(result.result);
         if (data.success === true) {
           if (input.action === 'select') this.selections.set(browser, { tab: input.target, generation: result.generation });
@@ -154,7 +178,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       if (input.action === 'open' || input.action === 'window') {
         const args = input.action === 'open' ? { url: input.url, label: input.label } : {};
         validateBrowserValues(args);
-        const result = await this.control.invoke({ browser, caller, tool: input.action === 'open' ? 'agent_browser_tab_new' : 'agent_browser_window_new', args }, signal);
+        const result = await this.control.invoke({ browser, caller, requestContext, tool: input.action === 'open' ? 'agent_browser_tab_new' : 'agent_browser_window_new', args }, signal);
         const response = browserResponse(result.result);
         if (response.success === true && result.tab !== undefined) {
           this.selections.set(browser, { tab: result.tab, generation: result.generation, owned: true });
@@ -163,7 +187,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       }
       if (current === undefined) throw new BrowserError('browser.target', 'Select or open a tab before choosing a frame');
       validateBrowserValues({ frame: input.frame });
-      const result = await this.control.invoke({ browser, caller, tab: current.tab, generation: current.generation,
+      const result = await this.control.invoke({ browser, caller, requestContext, tab: current.tab, generation: current.generation,
         tool: input.frame === 'main' ? 'agent_browser_frame_main' : 'agent_browser_frame_switch', args: input.frame === 'main' ? {} : { frame: input.frame } }, signal);
       if (browserResponse(result.result).success === true) this.selections.set(browser, { ...current, frame: input.frame, observed: false });
       return await this.output(result);
@@ -187,17 +211,29 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     if (this.registrations.has(name)) return;
     if (this.registry.resolve(name) !== undefined) throw new BrowserError('browser.invalid', `Browser tool name collision: ${name}`);
     const registration = this.registry.register({ name,
-      description: `${tool.description}\nIn Kiki, browser and browserTab use this agent's explicit connection and tab selection. A timeout does not confirm the action; check the execution state before continuing.`,
+      description: `${tool.description}\nIn Kiki, browser and browserTab use this agent's explicit connection and tab selection.${tool.name === 'codex_browser_js' ? ' With a selected tab, kikiTab is bound through the official cua.getTab API. Use that binding and the official documentation; this is not a JavaScript sandbox or an agent-browser command.' : ''} A timeout does not confirm the action; check the execution state before continuing.`,
       parameters: projectBrowserToolSchema(tool),
       resolveExecution: async (raw: unknown): Promise<ToolExecution> => {
         try {
           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new BrowserError('browser.invalid', 'Expected typed browser tool arguments');
           const input = raw as Record<string, unknown>;
           const { browser: requested, browserTab: requestedTab, ...args } = input;
-          validateBrowserValues(args);
+          if (tool.name !== 'codex_browser_js') validateBrowserValues(args);
           const browser = await this.choose(typeof requested === 'string' ? requested : undefined);
+          const official = (await this.store.resolve(browser)).type === 'codex-extension';
+          if (official !== /^codex_browser_js(?:_reset)?$/.test(tool.name)) throw new BrowserError('browser.unsupported', 'Load the typed tools for the selected browser provider; agent-browser and the official extension are not interchangeable');
           const selection = this.selections.get(browser);
-          const tab = typeof requestedTab === 'string' ? requestedTab : selection?.tab;
+          const tab = tool.name === 'codex_browser_js_reset' ? undefined : typeof requestedTab === 'string' ? requestedTab : selection?.tab;
+          if (official) {
+            const status = await this.control.status(browser);
+            return { approvalRule: name, accesses: ToolAccesses.all(), execute: async (ctx) => {
+              try {
+                const result = await this.control.invoke({ browser, caller: { sessionId: this.session.sessionId, agentId: this.agent.agentId },
+                  requestContext: this.requestContext(ctx), tool: tool.name, args, tab, generation: selection?.generation ?? status.generation }, ctx.signal);
+                return await this.output(result, ctx);
+              } catch (error) { return this.error(error); }
+            } };
+          }
           if (tab === undefined) throw new BrowserError('browser.target', 'Select or open a tab with BrowserTabs before reading or operating');
           const status = await this.control.status(browser);
           const bound = selection?.tab === tab ? selection : { tab, generation: status.generation };
@@ -208,7 +244,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
               ctx.signal.throwIfAborted();
               await prepared.verify();
               const result = await this.control.invoke({ browser, caller: { sessionId: this.session.sessionId, agentId: this.agent.agentId },
-                tool: tool.name, args: prepared.args, tab, frame: bound.frame, generation: bound.generation }, ctx.signal);
+                requestContext: this.requestContext(ctx), tool: tool.name, args: prepared.args, tab, frame: bound.frame, generation: bound.generation }, ctx.signal);
               const ok = browserResponse(result.result).success === true;
               this.selections.set(browser, { ...bound, observed: ok && tool.name === 'agent_browser_snapshot' ? true : bound.observed });
               const captureKey = JSON.stringify([browser, tab, bound.frame, bound.generation]);
@@ -306,7 +342,7 @@ export class BrowserConnectionsTool implements IBrowserConnectionsTool {
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserConnectionsInput): ToolExecution {
     const args = BrowserConnectionsInputSchema.parse(input);
-    return { approvalRule: this.name, accesses: ['list', 'status', 'tools', 'select'].includes(args.action) ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.connections(args, ctx.signal) };
+    return { approvalRule: this.name, accesses: ['list', 'status', 'tools', 'select'].includes(args.action) ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.connections(args, ctx.signal, ctx) };
   }
 }
 export interface IBrowserTabsTool extends AgentTool<BrowserTabsInput> { readonly _serviceBrand: undefined }
@@ -314,12 +350,12 @@ export const IBrowserTabsTool = createDecorator<IBrowserTabsTool>('browserTabsTo
 export class BrowserTabsTool implements IBrowserTabsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserTabs';
-  readonly description = 'List, open, explicitly select or close tabs in a selected browser connection, or select a frame inside this agent\'s tab. Targets are donor CDP targetIds, not tab indexes. It never follows the user\'s foreground tab. Read a fresh snapshot after changing tab/frame or reconnecting.';
+  readonly description = 'List, open, explicitly select or close tabs in a selected browser connection. Targets are exact identities returned by this provider (CDP targetIds or official extension tab ids), not tab indexes. Window and frame operations require provider support. It never follows the user\'s foreground tab. Read a fresh snapshot after changing tab/frame or reconnecting.';
   readonly parameters = toInputJsonSchema(BrowserTabsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserTabsInput): ToolExecution {
     const args = BrowserTabsInputSchema.parse(input);
-    return { approvalRule: this.name, accesses: args.action === 'list' ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.tabs(args, ctx.signal) };
+    return { approvalRule: this.name, accesses: args.action === 'list' ? ToolAccesses.none() : ToolAccesses.all(), execute: (ctx) => this.browser.tabs(args, ctx.signal, ctx) };
   }
 }
 registerAgentToolService(IBrowserConnectionsTool, BrowserConnectionsTool, { name: 'BrowserConnections', source: 'builtin', domain: 'browser', when: (accessor) => accessor.get(IFlagService).enabled(NATIVE_BROWSER_FLAG_ID) });

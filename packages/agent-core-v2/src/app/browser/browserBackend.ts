@@ -15,6 +15,7 @@ import { IRuntimeResolver, IWorkspaceInstanceManager } from '#/workspace/workspa
 
 import type { BrowserResolvedConnection } from './browserConfig';
 import { BrowserError } from './errors';
+import { openCodexBrowser, type CodexBrowserBackend } from './codexBrowser';
 
 export const AGENT_BROWSER_VERSION = '0.38.2';
 export interface BrowserBackend {
@@ -24,6 +25,7 @@ export interface BrowserBackend {
   readonly namespace: string;
   readonly version: string;
   readonly profilePath?: string;
+  readonly official?: CodexBrowserBackend;
   close(): Promise<void>;
 }
 export interface IBrowserBackendFactory {
@@ -63,6 +65,11 @@ export class BrowserBackendFactory implements IBrowserBackendFactory {
     try {
       const runtime = workspace.instance.runtimes.current('local');
       if (runtime === undefined || runtime.process === undefined) throw new BrowserError('browser.execution_failed', 'The Kiki service host has no local process runtime');
+      if (connection.type === 'codex-extension') {
+        const backend = await openCodexBrowser({ runtimeRoot: connection.runtimeRoot, browserId: connection.browserId,
+          cwd: this.bootstrap.cwd, runtime, resolver: this.runtimes });
+        return { ...backend, close: async () => { try { await backend.close(); } finally { workspace.dispose(); } } };
+      }
       const command = connection.driverPath ?? this.bootstrap.args.browserDriverPath ?? await installedBrowserDriver(this.bootstrap.homeDir);
       if (command === undefined) throw new BrowserError('browser.version', 'Browser components are not prepared on this Kiki service host. Open Settings > Browser control and choose Install components, then check this connection again.');
       const check = await runtime.process.spawn(command, ['--version'], { shell: false, windowsHide: true, timeout: 10_000 });
