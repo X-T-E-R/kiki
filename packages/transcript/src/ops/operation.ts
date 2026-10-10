@@ -38,6 +38,7 @@ export interface ResetOp {
   readonly snapshot: AgentTranscriptSnapshot;
   readonly grade?: 'turn' | 'block' | 'delta';
   readonly coverage?: TranscriptCoverage;
+  readonly read?: import('../contract/read').TranscriptRead;
 }
 
 export interface TurnUpsertOp {

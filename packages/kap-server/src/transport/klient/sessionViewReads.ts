@@ -12,6 +12,8 @@ import {
   type TranscriptPrompt,
   type TranscriptResponse,
   type TranscriptTask,
+  transcriptReadForCoverage,
+  type TranscriptRead,
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
@@ -93,10 +95,12 @@ export async function readColdSessionViewBaseline(
   const transcript = new AgentTranscript(agentId);
   transcript.apply([{ op: 'reset', agentId, snapshot: service.reconcileQuestionSnapshot(sessionId, source) }]);
   const snapshot = boundedTranscriptSnapshot(redactSnapshotForGrade(grade, transcript.snapshot({ tailTurns: 20 })), agentId);
+  const coverage = coverageForItems(snapshot.items, snapshot.hasMoreOlder ?? false, source.toolCallCountKnown === true);
+  const cursor = { seq: 0, epoch: `cold:${sessionId}:${agentId}` };
   return {
     type: 'transcript.reset', session_id: sessionId, agent_id: agentId,
-    snapshot, grade, cursor: { seq: 0, epoch: `cold:${sessionId}:${agentId}` },
-    coverage: coverageForItems(snapshot.items, snapshot.hasMoreOlder ?? false, source.toolCallCountKnown === true),
+    snapshot, grade, cursor, coverage,
+    read: readFor('cold', coverage, cursor),
   };
 }
 
@@ -108,10 +112,11 @@ export class TranscriptDetailCursorError extends Error {
 }
 
 interface TranscriptDetailCursor {
-  readonly v: 1;
+  readonly v: 1 | 2;
   readonly agentId: string;
   readonly kind: TranscriptDetailListResponse['kind'];
   readonly after: string;
+  readonly source?: TranscriptRead['source'];
 }
 
 function encodeTranscriptDetailCursor(cursor: TranscriptDetailCursor): string {
@@ -122,16 +127,18 @@ function decodeTranscriptDetailCursor(
   encoded: string,
   agentId: string,
   kind: TranscriptDetailCursor['kind'],
+  source?: TranscriptRead['source'],
 ): TranscriptDetailCursor {
   try {
     const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<TranscriptDetailCursor>;
     if (
-      parsed.v !== 1 ||
+      (parsed.v !== 1 && parsed.v !== 2) ||
       parsed.agentId !== agentId ||
       parsed.kind !== kind ||
       typeof parsed.after !== 'string' ||
       parsed.after.length === 0
     ) throw new Error('invalid cursor');
+    if (parsed.v === 2 && parsed.source !== source) throw new Error('stale cursor');
     return parsed as TranscriptDetailCursor;
   } catch {
     throw new TranscriptDetailCursorError();
@@ -151,7 +158,7 @@ async function readSessionViewTranscriptPageRaw(
     readonly signal?: AbortSignal;
   },
 ): Promise<TranscriptResponse | undefined> {
-  const pageQuery = { beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
+  const pageQueryInput = { beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
   const store = transcriptService.forSessionLive(sessionId);
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId);
@@ -160,51 +167,60 @@ async function readSessionViewTranscriptPageRaw(
     if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
       const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
       if (cold === undefined) return undefined;
-      const page = paginateTurns(cold.items, pageQuery);
+      const page = paginateTurns(cold.items, pageQueryFor(pageQueryInput, 'derived'));
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
         cold.toolCallCountKnown === true;
+      const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);
+      const coverage = coverageForItems(page.items, page.hasMore, verified);
       return {
         session_id: sessionId, agent_id: input.agentId,
         items: page.items, has_more: page.hasMore, tool_call_count: verified ? cold.toolCallCount : undefined,
         tasks: cold.tasks, interactions: [...transcript.getInteractions().values()], attachments: cold.attachments,
         todos: cold.todos, prompts: cold.prompts, meta: cold.meta, agents: store.agents(),
-        pending_interactions: transcript.listPendingInteractions(),
-        cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
-        coverage: coverageForItems(page.items, page.hasMore, verified),
+        pending_interactions: transcript.listPendingInteractions(), cursor, coverage,
+        read: readFor('derived', coverage, cursor),
+        next_cursor: page.hasMore ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'derived', cursor?.epoch) : undefined,
       } as unknown as TranscriptResponse;
     }
     const snapshot = transcript.snapshot();
-    const page = paginateTurns(transcript.getItems(), pageQuery);
+    const page = paginateTurns(transcript.getItems(), pageQueryFor(pageQueryInput, 'live'));
     const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
       snapshot.toolCallCountKnown === true;
+    const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);
+    const hasMore = page.hasMore || transcript.hasMoreOlder;
+    const coverage = coverageForItems(page.items, hasMore, verified);
     return {
       session_id: sessionId, agent_id: input.agentId,
-      items: page.items, has_more: page.hasMore || transcript.hasMoreOlder, tool_call_count: verified ? snapshot.toolCallCount : undefined,
+      items: page.items, has_more: hasMore, tool_call_count: verified ? snapshot.toolCallCount : undefined,
       tasks: [...transcript.getTasks().values()],
       interactions: [...transcript.getInteractions().values()],
       attachments: [...transcript.getAttachments().values()],
       todos: [...transcript.getTodos().values()],
       prompts: [...transcript.getPrompts().values()],
       meta: transcript.getMeta(), agents: store.agents(),
-      pending_interactions: transcript.listPendingInteractions(),
-      cursor: transcriptService.getTranscriptCursor(sessionId, input.agentId),
-      coverage: coverageForItems(page.items, page.hasMore || transcript.hasMoreOlder, verified),
+      pending_interactions: transcript.listPendingInteractions(), cursor, coverage,
+      read: readFor('live', coverage, cursor),
+      next_cursor: hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'live', cursor?.epoch) : undefined,
     } as unknown as TranscriptResponse;
   }
   const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
   if (snapshot === undefined) return undefined;
-  const page = paginateTurns(snapshot.items, pageQuery);
+  const page = paginateTurns(snapshot.items, pageQueryFor(pageQueryInput, 'cold'));
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];
   if (!roster.some((descriptor) => descriptor.agentId === input.agentId) &&
       (snapshot.items.length > 0 || snapshot.tasks.length > 0 || input.agentId === MAIN_AGENT_ID)) {
     roster.push({ agentId: input.agentId, type: input.agentId === MAIN_AGENT_ID ? 'main' : 'sub' });
   }
+  const coverage = coverageForItems(page.items, page.hasMore, snapshot.toolCallCountKnown === true);
+  const cursor = { seq: 0, epoch: `cold:${sessionId}:${input.agentId}` };
   return {
     session_id: sessionId, agent_id: input.agentId,
     items: page.items, has_more: page.hasMore, tool_call_count: snapshot.toolCallCount,
     tasks: snapshot.tasks, interactions: transcriptService.reconcileQuestionSnapshot(sessionId, snapshot).interactions, attachments: snapshot.attachments,
     todos: snapshot.todos, prompts: snapshot.prompts, meta: snapshot.meta, agents: roster,
-    pending_interactions: [], cursor: undefined, coverage: coverageForItems(page.items, page.hasMore, snapshot.toolCallCountKnown === true),
+    pending_interactions: [], cursor, coverage,
+    read: readFor('cold', coverage, cursor),
+    next_cursor: page.hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'cold', cursor.epoch) : undefined,
   } as unknown as TranscriptResponse;
 }
 
@@ -223,18 +239,21 @@ async function readSessionViewTranscriptDetailRaw(
       readonly agent_id: string;
       readonly kind: 'task';
       readonly task: TranscriptTask;
+      readonly read?: TranscriptRead;
     }
   | {
       readonly session_id: string;
       readonly agent_id: string;
       readonly kind: 'attachment';
       readonly attachment: TranscriptAttachment;
+      readonly read?: TranscriptRead;
     }
   | {
       readonly session_id: string;
       readonly agent_id: string;
       readonly kind: 'prompt';
       readonly prompt: TranscriptPrompt;
+      readonly read?: TranscriptRead;
     }
   | undefined
 > {
@@ -264,16 +283,16 @@ async function readSessionViewTranscriptDetailRaw(
   if (input.kind === 'task') {
     return task === undefined
       ? undefined
-      : { session_id: sessionId, agent_id: input.agentId, kind: 'task', task };
+      : { session_id: sessionId, agent_id: input.agentId, kind: 'task', task, read: { source: store === undefined ? 'cold' : 'live', readiness: 'ready' as const } };
   }
   if (input.kind === 'attachment') {
     return attachment === undefined
       ? undefined
-      : { session_id: sessionId, agent_id: input.agentId, kind: 'attachment', attachment };
+      : { session_id: sessionId, agent_id: input.agentId, kind: 'attachment', attachment, read: { source: store === undefined ? 'cold' : 'live', readiness: 'ready' as const } };
   }
   return prompt === undefined
     ? undefined
-    : { session_id: sessionId, agent_id: input.agentId, kind: 'prompt', prompt };
+    : { session_id: sessionId, agent_id: input.agentId, kind: 'prompt', prompt, read: { source: store === undefined ? 'cold' : 'live', readiness: 'ready' as const } };
 }
 
 type TranscriptCollectionKind = TranscriptDetailListResponse['kind'];
@@ -302,7 +321,8 @@ export async function readSessionViewTranscriptDetails(
     const b = detailEntityId(input.kind, right);
     return a < b ? -1 : a > b ? 1 : 0;
   });
-  const after = input.cursor === undefined ? undefined : decodeTranscriptDetailCursor(input.cursor, input.agentId, input.kind).after;
+  const source: TranscriptRead['source'] = transcript === undefined ? 'cold' : transcript.hasMoreOlder ? 'derived' : 'live';
+  const after = input.cursor === undefined ? undefined : decodeTranscriptDetailCursor(input.cursor, input.agentId, input.kind, source).after;
   const limit = Math.max(1, Math.min(100, Math.floor(input.limit ?? 20)));
   const start = after === undefined ? 0 : ordered.findIndex((entry) => detailEntityId(input.kind, entry) > after);
   const offset = start < 0 ? ordered.length : start;
@@ -318,8 +338,9 @@ export async function readSessionViewTranscriptDetails(
     bytes += size;
   }
   const hasMore = offset + items.length < ordered.length;
-  const nextCursor = hasMore && items.length > 0 ? encodeTranscriptDetailCursor({ v: 1, agentId: input.agentId, kind: input.kind, after: detailEntityId(input.kind, items.at(-1)!) }) : undefined;
-  const result = { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, ...(nextCursor === undefined ? {} : { next_cursor: nextCursor }) };
+  const nextCursor = hasMore && items.length > 0 ? encodeTranscriptDetailCursor({ v: 2, agentId: input.agentId, kind: input.kind, source, after: detailEntityId(input.kind, items.at(-1)!) }) : undefined;
+  const read = readFor(source, snapshot.toolCallCountKnown === true ? { kind: 'full', hasMoreOlder: false } : { kind: 'unknown', hasMoreOlder: true });
+  const result = { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, read, ...(nextCursor === undefined ? {} : { next_cursor: nextCursor }) };
   if (jsonBytes(result) > TRANSCRIPT_WINDOW_BYTES) throw new Error('Transcript collection exceeds its window budget');
   return result as TranscriptDetailListResponse;
 }
@@ -379,6 +400,40 @@ function coverageForItems(items: readonly { readonly kind: string; readonly turn
   if (!hasMoreOlder) return { kind: 'full' as const, hasMoreOlder: false as const };
   const turns = items.filter((item) => item.kind === 'turn');
   return { kind: 'tail' as const, fromTurnId: turns[0]?.turnId, throughTurnId: turns.at(-1)?.turnId, hasMoreOlder };
+}
+
+function readFor(source: TranscriptRead['source'], coverage: ReturnType<typeof coverageForItems>, cursor?: { readonly epoch?: string; readonly seq: number }): TranscriptRead {
+  return transcriptReadForCoverage(source, coverage, cursor === undefined ? undefined : { transcript: cursor });
+}
+
+interface PageCursor {
+  readonly v: 2;
+  readonly agentId: string;
+  readonly source: TranscriptRead['source'];
+  readonly anchor: string;
+  readonly epoch?: string;
+}
+
+function encodePageCursor(anchor: string, agentId: string, source: TranscriptRead['source'], epoch?: string): string {
+  return Buffer.from(JSON.stringify({ v: 2, agentId, source, anchor, epoch } satisfies PageCursor), 'utf8').toString('base64url');
+}
+
+function pageQueryFor(input: { readonly beforeTurn?: string; readonly beforeItem?: string; readonly afterTurn?: string; readonly afterItem?: string; readonly pageSize: number }, source: TranscriptRead['source']) {
+  const decode = (value: string | undefined): string | undefined => {
+    if (value === undefined) return undefined;
+    try {
+      const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PageCursor>;
+      if (parsed.v === 2 && typeof parsed.anchor === 'string') {
+        if (parsed.source !== source) throw new TranscriptDetailCursorError();
+        return parsed.anchor;
+      }
+    } catch (error) {
+      if (error instanceof TranscriptDetailCursorError) throw error;
+      return value;
+    }
+    return value;
+  };
+  return { beforeTurn: input.beforeTurn, beforeItem: decode(input.beforeItem), afterTurn: input.afterTurn, afterItem: decode(input.afterItem), pageSize: input.pageSize };
 }
 
 function paginateTurns(items: readonly TranscriptItem[], query: { beforeTurn?: string; beforeItem?: string; afterTurn?: string; afterItem?: string; pageSize: number }) {
