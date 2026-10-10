@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 export const requestConcurrencyRuleSchema = z.object({
-  id: z.string(), resource: z.literal('model_request'), scope: z.enum(['global', 'each_session']),
+  id: z.string(), resource: z.enum(['model_request', 'agent_execution']), scope: z.enum(['global', 'each_session']),
+  executors: z.array(z.string()).optional(), profiles: z.array(z.string()).optional(),
+  roles: z.array(z.enum(['main', 'subagent', 'independent'])).optional(),
   models: z.array(z.string()).optional(), providers: z.array(z.string()).optional(),
   subagentsOnly: z.boolean(), maxConcurrent: z.number().int().positive().optional(),
   overflow: z.enum(['queue', 'reject']), maxWaitMs: z.number().positive().optional(),
@@ -26,6 +28,10 @@ export type RequestGovernanceSnapshot = z.infer<typeof requestGovernanceSnapshot
  */
 export const requestConcurrencyRulePatchSchema = z.object({
   id: z.string().min(1),
+  resource: z.enum(['model_request', 'agent_execution']).optional(),
+  executors: z.array(z.string().min(1)).min(1).optional(),
+  profiles: z.array(z.string().min(1)).min(1).optional(),
+  roles: z.array(z.enum(['main', 'subagent', 'independent'])).min(1).optional(),
   scope: z.enum(['global', 'each_session']).optional(),
   models: z.array(z.string().min(1)).min(1).optional(),
   providers: z.array(z.string().min(1)).min(1).optional(),

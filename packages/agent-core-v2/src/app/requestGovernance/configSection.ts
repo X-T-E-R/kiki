@@ -5,7 +5,10 @@ import { isPlainObject, plainObjectToToml, transformPlainObject } from '#/app/co
 export const REQUEST_GOVERNANCE_SECTION = 'requestGovernance';
 export const RequestConcurrencyRuleSchema = z.object({
   id: z.string().min(1),
-  resource: z.literal('model_request').default('model_request'),
+  resource: z.enum(['model_request', 'agent_execution']).default('model_request'),
+  executors: z.array(z.string().min(1)).min(1).optional(),
+  profiles: z.array(z.string().min(1)).min(1).optional(),
+  roles: z.array(z.enum(['main', 'subagent', 'independent'])).min(1).optional(),
   scope: z.enum(['global', 'each_session']).default('global'),
   models: z.array(z.string().min(1)).min(1).optional(),
   providers: z.array(z.string().min(1)).min(1).optional(),

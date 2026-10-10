@@ -177,3 +177,117 @@ max_wait_ms = 100
   expect(RequestGovernanceConfigSchema.safeParse({ rules: [cap(0)] }).success).toBe(false);
   expect(RequestGovernanceConfigSchema.safeParse({ rules: [cap(1), cap(2)] }).success).toBe(false);
 });
+
+function agentAttempt(agentId: string, extras: Partial<import('#/app/requestGovernance/agentActivity').AgentExecutionAttempt> = {}): import('#/app/requestGovernance/agentActivity').AgentExecutionAttempt {
+  return { sessionId: 'session-a', agentId, ancestorAgentIds: [], executorId: 'native', modelId: 'model-a', profileId: 'worker', role: agentId === 'main' ? 'main' : 'subagent', readPhase: () => 'running', ...extras };
+}
+const agentCap = (maxConcurrent: number, extras = {}) => cap(maxConcurrent, { resource: 'agent_execution', ...extras });
+
+describe('Agent execution governance', () => {
+  it('counts tool stages, native main and external children once, independently of requests and idle rosters', async () => {
+    const { service } = governor();
+    let phase: import('#/app/requestGovernance/agentActivity').AgentActivityPhase = 'running';
+    const first = await service.acquireAgent(agentAttempt('main', { readPhase: () => phase }));
+    const nested = await service.acquireAgent(agentAttempt('main'));
+    const external = await service.acquireAgent(agentAttempt('child', { executorId: 'external-test', modelId: undefined }));
+    const independent = await service.acquireAgent(agentAttempt('seat', { role: 'independent', executorId: 'external-test', profileId: undefined, modelId: undefined }));
+    const request = await service.acquire(attempt());
+    expect(service.agentSnapshot()).toMatchObject({ active: 3, queued: 0, main: 1, subagent: 1, independent: 1 });
+    expect(service.snapshot().active).toBe(1);
+    expect(service.agentSnapshot().dimensions).toContainEqual(expect.objectContaining({ dimension: 'model', id: null, active: 2 }));
+    phase = 'tool_waiting';
+    expect(service.agentSnapshot().agents.find((row) => row.agentId === 'main')?.phase).toBe('tool_waiting');
+    phase = 'suspended';
+    expect(service.agentSnapshot().active).toBe(3);
+    phase = 'cancelling';
+    first.release(); first.release();
+    expect(service.agentSnapshot().active).toBe(3);
+    nested.release(); external.release(); independent.release(); request.release();
+    expect(service.agentSnapshot().active).toBe(0);
+  });
+
+  it('atomically enforces executor/profile/model/role and per-session selectors without blocking model requests', async () => {
+    const { service } = governor({ rules: [agentCap(1, { scope: 'each_session', executors: ['external-test'], profiles: ['worker'], models: ['external-model'], roles: ['subagent'] })] });
+    const matching = agentAttempt('a', { executorId: 'external-test', modelId: 'external-model' });
+    const occupied = await service.acquireAgent(matching);
+    const queued = service.acquireAgent({ ...matching, agentId: 'b' });
+    expect(service.agentSnapshot()).toMatchObject({ active: 1, queued: 1, queuedSubagent: 1 });
+    const permits = await Promise.all([
+      service.acquireAgent({ ...matching, agentId: 'main', role: 'main' }),
+      service.acquireAgent({ ...matching, agentId: 'c', sessionId: 'session-b' }),
+      service.acquireAgent({ ...matching, agentId: 'd', modelId: undefined }),
+      service.acquireAgent({ ...matching, agentId: 'e', profileId: 'other' }),
+      service.acquireAgent({ ...matching, agentId: 'f', executorId: 'native' }),
+      service.acquire(attempt()),
+    ]);
+    occupied.release(); (await queued).release(); permits.forEach((permit) => permit.release());
+    expect(service.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+  });
+
+  it('rejects cap-one ancestor contention with actionable rule and parent facts, but queues independent competition FIFO', async () => {
+    const { service } = governor({ rules: [agentCap(1)] });
+    const occupied = await service.acquireAgent(agentAttempt('main'));
+    const retained = await service.acquireAgent(agentAttempt('main'));
+    await expect(service.acquireAgent(agentAttempt('child', { ancestorAgentIds: ['main'], parentAgentId: 'main' }))).rejects.toMatchObject({
+      code: 'request.agent_ancestor_limit', details: { rules: ['cap'], occupyingAncestors: [{ ruleId: 'cap', sessionId: 'session-a', agentId: 'main' }], action: 'separate_main_subagent_rules_or_raise_limit' },
+    });
+    const first = service.acquireAgent(agentAttempt('first', { sessionId: 'session-b' }));
+    const second = service.acquireAgent(agentAttempt('second', { sessionId: 'session-c' }));
+    occupied.release();
+    expect(service.agentSnapshot()).toMatchObject({ active: 1, queued: 2 });
+    retained.release();
+    const firstPermit = await first;
+    expect(service.agentSnapshot().agents[0]?.agentId).toBe('first');
+    firstPermit.release(); (await second).release();
+    expect(service.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+  });
+
+  it('cancels queued work, re-evaluates rules without terminating in-flight work and ignores stale releases', async () => {
+    const { service, update } = governor({ rules: [agentCap(1)] });
+    const occupied = await service.acquireAgent(agentAttempt('a'));
+    const controller = new AbortController();
+    const aborted = service.acquireAgent(agentAttempt('b'), controller.signal);
+    controller.abort(); await expect(aborted).rejects.toBeDefined();
+    const pending = service.acquireAgent(agentAttempt('b'));
+    update({ rules: [agentCap(2)] });
+    const admitted = await pending;
+    expect(service.agentSnapshot().active).toBe(2);
+    update({ rules: [agentCap(1)] });
+    expect(service.agentSnapshot().active).toBe(2);
+    occupied.release(); admitted.release();
+    const newEpisode = await service.acquireAgent(agentAttempt('a'));
+    occupied.release();
+    expect(service.agentSnapshot().active).toBe(1);
+    newEpisode.release();
+    expect(service.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+  });
+
+  it('deduplicates concurrently queued same-agent retain calls and releases the final reference', async () => {
+    const { service } = governor({ rules: [agentCap(1)] });
+    const occupied = await service.acquireAgent(agentAttempt('a'));
+    const first = service.acquireAgent(agentAttempt('b'));
+    const second = service.acquireAgent(agentAttempt('b'));
+    expect(service.agentSnapshot().queued).toBe(1);
+    occupied.release();
+    const permits = await Promise.all([first, second]);
+    expect(service.agentSnapshot().active).toBe(1);
+    permits[0]!.release(); expect(service.agentSnapshot().active).toBe(1);
+    permits[1]!.release(); expect(service.agentSnapshot().active).toBe(0);
+  });
+});
+
+it('atomically caps simultaneous external agent episodes without changing request occupancy', async () => {
+  const { service } = governor({ rules: [agentCap(2, { executors: ['external-example'] })] });
+  let peak = 0;
+  const work = Array.from({ length: 20 }, (_, index) => service.acquireAgent(agentAttempt(`agent-${index}`, { executorId: 'external-example', sessionId: `session-${index % 2}` })).then(async (permit) => {
+    peak = Math.max(peak, service.agentSnapshot().active);
+    expect(service.agentSnapshot().active).toBeLessThanOrEqual(2);
+    await Promise.resolve();
+    permit.release();
+  }));
+  expect(service.agentSnapshot()).toMatchObject({ active: 2, queued: 18 });
+  expect(service.snapshot()).toMatchObject({ active: 0, queued: 0 });
+  await Promise.all(work);
+  expect(peak).toBe(2);
+  expect(service.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+});

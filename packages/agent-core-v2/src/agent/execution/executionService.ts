@@ -45,6 +45,8 @@ import { IFlagService } from '#/app/flag/flag';
 import { LOCAL_SESSION_RESUME_FLAG } from '#/app/agentExecutor/flag';
 import { externalPromptHints, externalStateHints, type ExternalPromptHint } from './externalPromptHints';
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
+import { acquireAgentActivityPermit } from './agentActivityPermit';
+import type { RequestPermit } from '#/kosong/model/requestAdmission';
 
 interface ActiveRun {
   readonly controller: AbortController;
@@ -103,6 +105,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     }
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
+    let activityPermit: RequestPermit | undefined;
     const controller = new AbortController();
     let resolveSettled = (): void => {};
     const settled = new Promise<void>((resolve) => {
@@ -112,7 +115,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       controller,
       unlink: linkAbortSignal(options.signal, controller),
       settled,
-      resolveSettled: () => { release(); resolveSettled(); },
+      resolveSettled: () => { activityPermit?.release(); release(); resolveSettled(); },
     };
     this.runs.add(active);
     this.cancelling = false;
@@ -130,6 +133,15 @@ export class AgentExecutionService implements IAgentExecutionService {
     let hints: ExternalPromptHint[] = [];
     try {
       await this.hooks.onWillRun.run(runContext);
+      controller.signal.throwIfAborted();
+      await this.profile.preparePromptConfiguration();
+      const preparedBinding = this.profile.data();
+      assertResearchExecutor(preparedBinding.executionRestriction, preparedBinding.executorId ?? 'native');
+      activityPermit = await acquireAgentActivityPermit(this.agent.accessor, controller.signal, () => {
+        if (this.cancelling || controller.signal.aborted) return 'cancelling';
+        if (this.loop.status().finalizing) return 'finalizing';
+        return active.turnId === undefined ? 'starting' : 'running';
+      });
       controller.signal.throwIfAborted();
       const session = await this.resolveSession();
       controller.signal.throwIfAborted();

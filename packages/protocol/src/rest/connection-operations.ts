@@ -34,6 +34,7 @@ export const CONNECTION_OPERATIONS = {
   fileUpload: ['POST', '/files'], file: ['GET', '/files/{fileId}'],
   tools: ['GET', '/tools'], models: ['GET', '/models'], providers: ['GET', '/providers'], auth: ['GET', '/auth'],
   configRead: ['GET', '/config'], usage: ['GET', '/usage'], requestGovernance: ['GET', '/usage/realtime'],
+  agentActivity: ['GET', '/usage/realtime/agents'],
   usagePricing: ['GET', '/usage/pricing'], usageRescanStatus: ['GET', '/usage/rescan'],
   workspaces: ['GET', '/workspaces'], workspace: ['GET', '/workspaces/{workspaceId}'], workspaceSkills: ['GET', '/workspaces/{workspaceId}/skills'],
   worktrees: ['GET', '/worktrees'], worktree: ['GET', '/worktrees/{worktreeId}'], worktreeInspect: ['POST', '/worktrees/{worktreeId}:inspect'],

@@ -69,6 +69,7 @@ export * from './rest/thread-bridge';
 export * from './rest/usage';
 export * from './rest/usage-export';
 export * from './rest/requestGovernance';
+export * from './rest/agentActivity';
 export * from './rest/autoCompact';
 export * from './contextStrategy';
 export * from './rest/skin';

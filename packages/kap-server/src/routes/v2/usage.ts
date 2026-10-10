@@ -1,5 +1,5 @@
 import { IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
-import { requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
+import { agentActivitySnapshotSchema, requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { z } from 'zod';
@@ -49,6 +49,13 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     reply.send(okEnvelope(core.accessor.get(IRequestGovernance).snapshot(), req.id));
   });
   app.get(realtime.path, realtime.options, realtime.handler as Parameters<V2UsageRouteHost['get']>[2]);
+  const agents = defineRoute({
+    method: 'GET', path: '/usage/realtime/agents', success: { data: agentActivitySnapshotSchema },
+    operationId: 'getAgentActivity', tags: ['usage'],
+  }, (req, reply) => {
+    reply.send(okEnvelope(core.accessor.get(IRequestGovernance).agentSnapshot(), req.id));
+  });
+  app.get(agents.path, agents.options, agents.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const service = new UsageAggregationService(core);
   const rescanStatus = defineRoute({
     method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },

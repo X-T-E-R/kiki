@@ -32,7 +32,7 @@ Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保�
 
 | 设置 | 生效时机 |
 | --- | --- |
-| [`request_governance`](#request-governance) | 修改加载后立即重新判断排队请求；已在途的流正常结束 |
+| [`request_governance`](#request-governance) | 修改加载后立即重新判断等待中的请求和 Agent 启动；在飞工作正常结束 |
 | `default_model`、`default_permission_mode`、`default_plan_mode` 等会话默认值 | 新会话；已有会话保留自己的选择 |
 | [`identity`](#identity) | 下次启动进程 |
 | [`tui.toml`](#tui-toml) | 下次启动，或在 TUI 执行 `/reload-tui` |
@@ -161,7 +161,7 @@ api_key = "YOUR_API_KEY"
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
-| `request_governance` | `table` | 无规则 | 原生模型请求并发与等待预算 → [`request_governance`](#request-governance) |
+| `request_governance` | `table` | 无规则 | 模型请求与 Agent 执行并发和等待预算 → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
@@ -953,9 +953,11 @@ prompt_overrides:
 
 ## `[request_governance]`
 
-`request_governance` 限制同时进行的原生模型请求，把超出的请求留在本地排队，再发给供应商。默认开启观测，没有规则时不限制并发。GUI 的「用量 → 实时」显示运行与排队请求，同页「并发限制」可新增、编辑、暂停或删除规则。默认打开的「历史」标签显示 Token 用量与估算费用。诊断流程见[用量](../guides/settings.md#usage)。
+`request_governance` 可限制原生模型请求（`resource = "model_request"`）或正在执行的 Agent（`resource = "agent_execution"`）。没有规则时不限制并发；现有未写 `resource` 的规则仍按模型请求计数。GUI 的「用量 → 实时」显示运行与排队请求，同页「并发限制」可新增、编辑、暂停或删除规则。默认打开的「历史」标签显示 Token 用量与估算费用。诊断流程见[用量](../guides/settings.md#usage)。
 
-`global` 规则让连接同一个 Kiki 服务实例的所有会话共享容量；`each_session` 规则按会话分别计数，每份容量由该会话的主 Agent 与所有后代共享。独立 CLI 进程与外部 ACP/Codex 执行器不共享这些限额；外部请求是未纳管，而不是零请求。上限计数的是供应商生成尝试，包括压缩与 OAuth 重放，不是正在运行的 Agent 或工具数。它不设置每分钟请求数、Token 或金额预算。限制子 Agent 执行数用 [`subagent`](#subagent)，限制搜索与抓取调用用 [`nb_search.execution`](#nb-search)。
+`global` 规则让同一个 Kiki 服务进程内的会话共享容量；`each_session` 按会话分别计数。这些限制不跨独立 Kiki 进程，也不设置每分钟请求数、Token 或金额预算。搜索与抓取调用用 [`nb_search.execution`](#nb-search) 限制。
+
+模型请求规则计数供应商生成尝试，包括压缩与 OAuth 重放。外部 harness 的模型请求仍未纳管，不是零请求。Agent 执行规则覆盖通过 Kiki 启动的原生和外部执行器，包括 main、subagent 与外部委派的 independent Agent。每个 Agent 在执行期间只占一个名额，工具阶段、等待审批、取消清理和收尾均占用；idle Agent、后台 Shell 任务和子 Agent 的任务回执不额外计数。外部 harness 未提供模型绑定时，模型身份保持未知，不用 Kiki 的原生默认模型填充。
 
 例如，让某个供应商下的所有模型跨会话合计最多同时发出两条请求。把 `example-provider` 换成 `[providers]` 中的精确表键：
 
@@ -988,26 +990,41 @@ max_wait_ms = 60000
 overflow = "queue"
 ```
 
+若要限制某个执行器跨会话最多同时运行两个子 Agent，填写该执行器的注册 ID：
+
+```toml
+[[request_governance.rules]]
+id = "executor-children"
+resource = "agent_execution"
+executors = ["example-executor"]
+roles = ["subagent"]
+max_concurrent = 2
+overflow = "queue"
+```
+
 | 字段 | 类型 | 默认值 | 含义 |
 | --- | --- | --- | --- |
 | `schema_version` | `integer` | `1` | 配置版本，只接受 `1` |
-| `max_wait_ms` | `integer` | `300000` | 单个逻辑请求累计的本地排队预算，含重试，单位毫秒，须为正数 |
-| `max_queue_size` | `integer` | `1024` | 本服务所有等待请求的总数上限，须为正数 |
+| `max_wait_ms` | `integer` | `300000` | 本地等待预算，单位毫秒，须为正数；模型请求跨重试累计，Agent 按每次启动计 |
+| `max_queue_size` | `integer` | `1024` | 两种资源合计的等待准入数上限，须为正数 |
 | `rules` | `array<table>` | `[]` | 并发规则，用 `[[request_governance.rules]]` 编写 |
 | 规则 `id` | `string` | 必填 | 非空且唯一的规则标识 |
-| 规则 `resource` | `string` | `model_request` | 只接受 `model_request` |
+| 规则 `resource` | `string` | `model_request` | `model_request` 计请求，`agent_execution` 计 Agent |
 | 规则 `scope` | `string` | `global` | 全服务共享容量，或 `each_session` 按会话分别计数 |
-| 规则 `models` | `array<string>` | 全部 | 精确的规范模型 ID；多个 ID 合计共享一份上限 |
-| 规则 `providers` | `array<string>` | 全部 | 精确的供应商配置 ID；所选供应商下的所有模型合计共享一份上限 |
-| 规则 `subagents_only` | `boolean` | `false` | 只匹配子 Agent 发出的请求 |
+| 规则 `models` | `array<string>` | 全部 | 原生规范模型 ID 或外部已绑定模型字符串；所选 ID 共享一份上限 |
+| 规则 `providers` | `array<string>` | 全部 | 精确的原生供应商配置 ID；外部供应商身份未知 |
+| 规则 `executors` | `array<string>` | 全部 | Agent 规则：注册的执行器 ID，`native` 表示 Kiki |
+| 规则 `profiles` | `array<string>` | 全部 | Agent 规则：绑定的 profile 名称 |
+| 规则 `roles` | `array<string>` | 全部 | Agent 规则：`main`、`subagent`、`independent`；同时限制主与子 Agent 时显式选择前两者 |
+| 规则 `subagents_only` | `boolean` | `false` | 只匹配子 Agent 请求或执行；Agent 规则不包含 independent |
 | 规则 `max_concurrent` | `integer` | 不限 | 正整数上限；省略表示不限，零是无效值 |
 | 规则 `overflow` | `string` | `queue` | `queue` 等待容量；`reject` 在本规则容量已满时立即拒绝 |
 | 规则 `max_wait_ms` | `integer` | 本节上限 | 可选正整数预算；本节与所有匹配且启用的规则取最短等待时间 |
-| 规则 `enabled` | `boolean` | `true` | `false` 暂停规则，保留内容，但不限制请求或等待预算 |
+| 规则 `enabled` | `boolean` | `true` | `false` 暂停规则，保留内容，但不应用上限或等待预算 |
 
-所有匹配且启用的规则共同生效。同一规则的不同筛选字段取 AND，同字段的 ID 列表取 OR。省略 `models` 或 `providers` 表示匹配全部；空列表无效。若要给每个模型独立的上限，请每个模型写一条规则，不要合并到同一个列表。未知字段与重复规则 ID 会被拒绝。
+所有匹配且启用的规则共同生效。同一规则的不同筛选字段取 AND，同字段的 ID 列表取 OR。省略筛选字段表示匹配全部；空列表无效。未知身份不匹配具名筛选。若要给各模型或执行器独立的上限，每个身份写一条规则。未知字段与重复规则 ID 会被拒绝。
 
-在 GUI 保存规则或[修改文件](#配置修改如何生效)后，排队请求会重新判断。调高上限或暂停规则可以释放等待请求；调低上限不会终止已在途的流，因此运行数可能暂时高于新上限。槽位一直持有到流清理完毕，在工具执行或重试退避前释放；本地排队不占槽位。Stop 可取消排队中的轮次，不向供应商发送其请求。
+在 GUI 保存规则或[修改文件](#配置修改如何生效)后，等待准入会重新判断。调高上限或暂停规则可以释放等待项；调低上限不会终止在飞工作，因此运行数可能暂时高于新上限。模型请求槽在流清理后、工具执行或重试退避前释放；Agent 槽在整个执行期间持有。等待准入不占槽；Stop 取消等待中的执行，不启动供应商或 harness 工作。
 
 ### 排队错误与供应商 429
 
@@ -1017,10 +1034,11 @@ overflow = "queue"
 | --- | --- |
 | `request.limit_rejected` | 匹配的规则已满，且使用 `overflow = "reject"`。等待在途请求结束，或修改该规则 |
 | `request.queue_full` | 全服务队列达到 `max_queue_size`。等待队列减少后再试 |
-| `request.queue_timeout` | 逻辑请求耗尽累计本地等待预算。容量空出后重试，或调整并发上限、等待预算 |
+| `request.queue_timeout` | 请求或 Agent 启动耗尽本地等待预算。容量空出后重试，或调整并发上限、等待预算 |
+| `request.agent_ancestor_limit` | 父 Agent 正占用匹配规则的名额。选择仅限制子 Agent、将 main/subagent 分开配置，或提高报出的规则上限；等待父 Agent 释放可能形成死锁 |
 | `provider.rate_limit` / HTTP 429 | 已发出的请求被供应商限流。核对其消息与账户限额；并发上限可减少同时请求，但不能保证每分钟请求数或 Token 速率 |
 
-三种本地 `request.*` 错误不会自动重试。供应商瞬时 429 遵循 [`retry`](#retry)，包括 `Retry-After`；额度耗尽或余额不足则直接失败，不重试。修改上限前，在「用量 → 实时」展开「请求详情」，核对排队模型、阻塞规则 ID 与等待时间。过期的计数是最后收到的快照，不代表当前容量。
+本地 `request.*` 错误不会自动重试。供应商瞬时 429 遵循 [`retry`](#retry)，包括 `Retry-After`；额度耗尽或余额不足则直接失败，不重试。修改上限前，在「用量 → 实时」展开「请求详情」，核对排队模型、阻塞规则 ID 与等待时间。过期的计数是最后收到的快照，不代表当前容量。
 
 ## `tui.toml`
 

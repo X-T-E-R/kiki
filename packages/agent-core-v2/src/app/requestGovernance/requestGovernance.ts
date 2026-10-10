@@ -2,6 +2,8 @@ import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import { IRequestAdmission, type RequestAdmissionPort } from '#/kosong/model/requestAdmission';
 import type { RequestConcurrencyRule } from './configSection';
+import type { AgentActivityAdmission } from './agentActivity';
+export * from './agentActivity';
 
 export interface RequestGovernanceSnapshot {
   readonly domainId: string;
@@ -16,7 +18,7 @@ export interface RequestGovernanceSnapshot {
   readonly waiting: readonly { readonly attemptId: string; readonly sessionId?: string; readonly agentId?: string; readonly modelId: string; readonly providerId: string; readonly purpose: string; readonly waitedMs: number; readonly blockingRules: readonly string[] }[];
 }
 
-export interface IRequestGovernance extends RequestAdmissionPort {
+export interface IRequestGovernance extends RequestAdmissionPort, AgentActivityAdmission {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<void>;
   snapshot(): RequestGovernanceSnapshot;

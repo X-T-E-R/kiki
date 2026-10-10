@@ -32,7 +32,7 @@ Reloading a file and applying a setting have different timing:
 
 | Setting | When it takes effect |
 | --- | --- |
-| [`request_governance`](#request-governance) | Re-evaluates waiting requests as soon as the edit is loaded; active streams finish normally |
+| [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
 | Session defaults such as `default_model`, `default_permission_mode`, and `default_plan_mode` | New sessions; an existing session keeps its own choices |
 | [`identity`](#identity) | Next process start |
 | [`tui.toml`](#tui-toml) | Next start, or `/reload-tui` in the TUI |
@@ -161,7 +161,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
-| `request_governance` | `table` | No rules | Native model-request concurrency and waiting budgets → [`request_governance`](#request-governance) |
+| `request_governance` | `table` | No rules | Model-request and agent-execution concurrency and waiting budgets → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
@@ -967,9 +967,11 @@ In the desktop GUI, open **Settings → Agents → Prompt** to edit this section
 
 ## `[request_governance]`
 
-`request_governance` limits simultaneous native model requests and queues excess requests before they reach a provider. Observation is on by default; no rule means no concurrency cap. In the GUI, **Usage → Live** shows running and queued requests and includes **Concurrency limits** to add, edit, pause, or delete rules. **History**, the default tab, shows token usage and estimated cost. See [Usage](../guides/settings.md#usage) for the diagnostic workflow.
+`request_governance` limits either native model requests (`resource = "model_request"`) or running agents (`resource = "agent_execution"`). No rule means no concurrency cap; existing rules without `resource` remain model-request rules. In the GUI, **Usage → Live** shows running and queued requests and includes **Concurrency limits** to add, edit, pause, or delete rules. **History**, the default tab, shows token usage and estimated cost. See [Usage](../guides/settings.md#usage) for the diagnostic workflow.
 
-A `global` rule shares capacity across all sessions connected to the same Kiki service instance. An `each_session` rule gives each session a separate bucket shared by its main agent and descendants. Independent CLI processes and external ACP/Codex executors do not share these limits; external requests are unmanaged, not zero. The cap counts provider generation attempts, including compaction and OAuth replay, not running agents or tools. It does not set requests-per-minute, token, or spending limits. For child-run counts, use [`subagent`](#subagent); for search and fetch calls, use [`nb_search.execution`](#nb-search).
+A `global` rule shares capacity across sessions in the same Kiki service process. An `each_session` rule gives each session its own bucket. These limits do not span independent Kiki processes, set requests-per-minute, or impose token or spending budgets. For search and fetch calls, use [`nb_search.execution`](#nb-search).
+
+Model-request rules count provider generation attempts, including compaction and OAuth replay. External harness requests are unmanaged, not zero. Agent-execution rules cover both Kiki and external executors launched through Kiki, including main agents, subagents, and externally delegated independent agents. One agent holds one slot throughout its execution, including tool work, approval waits, cancellation cleanup, and finalization. Idle agents, background shell tasks, and child task receipts do not add agent slots. External model identities remain unknown when the harness has not supplied a binding; Kiki never substitutes its native default model.
 
 For example, cap all models using one provider at two simultaneous requests across sessions. Replace `example-provider` with the exact key from `[providers]`:
 
@@ -1002,26 +1004,41 @@ max_wait_ms = 60000
 overflow = "queue"
 ```
 
+To limit one executor to two running subagents across sessions, use its registered executor ID:
+
+```toml
+[[request_governance.rules]]
+id = "executor-children"
+resource = "agent_execution"
+executors = ["example-executor"]
+roles = ["subagent"]
+max_concurrent = 2
+overflow = "queue"
+```
+
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `schema_version` | `integer` | `1` | Configuration version; only `1` is accepted |
-| `max_wait_ms` | `integer` | `300000` | Positive cumulative local queue-time budget per logical request, including retries, in milliseconds |
-| `max_queue_size` | `integer` | `1024` | Positive maximum number of waiting requests across this service |
+| `max_wait_ms` | `integer` | `300000` | Positive local waiting budget in milliseconds; cumulative across model-request retries, or per agent admission |
+| `max_queue_size` | `integer` | `1024` | Positive maximum number of pending admissions across both resources |
 | `rules` | `array<table>` | `[]` | Concurrency rules, written as `[[request_governance.rules]]` |
 | Rule `id` | `string` | Required | Nonempty, unique rule identifier |
-| Rule `resource` | `string` | `model_request` | Only `model_request` is accepted |
+| Rule `resource` | `string` | `model_request` | `model_request` or `agent_execution`; counts requests or agents, respectively |
 | Rule `scope` | `string` | `global` | Shared service capacity, or `each_session` capacity per session |
-| Rule `models` | `array<string>` | All | Exact canonical model IDs; multiple IDs share one combined cap |
-| Rule `providers` | `array<string>` | All | Exact provider configuration IDs; all selected providers' models share one combined cap |
-| Rule `subagents_only` | `boolean` | `false` | Match only requests made by subagents |
+| Rule `models` | `array<string>` | All | Native canonical model IDs or external bound model strings; selected IDs share one cap |
+| Rule `providers` | `array<string>` | All | Exact native provider configuration IDs; external provider identity is unknown |
+| Rule `executors` | `array<string>` | All | Agent rules: registered executor IDs; `native` means Kiki |
+| Rule `profiles` | `array<string>` | All | Agent rules: bound profile names |
+| Rule `roles` | `array<string>` | All | Agent rules: `main`, `subagent`, or `independent`; select main and subagent explicitly to include both |
+| Rule `subagents_only` | `boolean` | `false` | Match only subagent requests or executions; agent rules exclude independent agents |
 | Rule `max_concurrent` | `integer` | Unlimited | Positive cap; omit for no cap. Zero is invalid |
 | Rule `overflow` | `string` | `queue` | `queue` waits for capacity; `reject` fails immediately when this rule is full |
-| Rule `max_wait_ms` | `integer` | Section limit | Optional positive queue-time budget; the shortest of the section and all matching enabled rules wins |
+| Rule `max_wait_ms` | `integer` | Section limit | Optional positive budget; the shortest of the section and all matching enabled rules wins |
 | Rule `enabled` | `boolean` | `true` | `false` pauses the rule without deleting it or applying its waiting budget |
 
-All matching enabled rules apply together. Different selectors in one rule are AND; IDs within one selector are OR. Omit `models` or `providers` to match all; an empty list is invalid. To give each model its own independent cap, write one rule per model rather than putting them in one list. Unknown fields and duplicate rule IDs are rejected.
+All matching enabled rules apply together. Different selectors in one rule are AND; IDs within one selector are OR. Omit a selector to match all; an empty list is invalid. Unknown identities do not match named selectors. To give each model or executor its own cap, write one rule per identity. Unknown fields and duplicate rule IDs are rejected.
 
-Saving a rule in the GUI or [editing the file](#applying-configuration-changes) re-evaluates queued requests. Raising a cap or pausing a rule can release waiters; lowering a cap does not kill active streams, so running requests may temporarily exceed the new limit. A slot is held through stream cleanup and released before tool work or retry backoff. Local queue waits hold no slot. Stop cancels a queued turn without sending its request to the provider.
+Saving a rule in the GUI or [editing the file](#applying-configuration-changes) re-evaluates pending admissions. Raising a cap or pausing a rule can release waiters; lowering a cap does not terminate active work, so it may temporarily exceed the new limit. Model-request slots release after stream cleanup, before tool work or retry backoff. Agent slots remain held throughout the execution. Waiting admissions hold no slot; Stop cancels the waiting execution without starting provider or harness work.
 
 ### Queue errors and provider 429
 
@@ -1031,10 +1048,11 @@ Use the error code to distinguish local waiting from provider throttling:
 | --- | --- |
 | `request.limit_rejected` | A matching full rule uses `overflow = "reject"`. Wait for active requests or change that rule |
 | `request.queue_full` | The service-wide queue reached `max_queue_size`. Let it drain before retrying |
-| `request.queue_timeout` | The logical request exhausted its cumulative local wait budget. Retry after capacity frees up, or adjust the cap or waiting budget |
+| `request.queue_timeout` | The request or agent admission exhausted its local wait budget. Retry after capacity frees up, or adjust the cap or waiting budget |
+| `request.agent_ancestor_limit` | A running parent occupies the matching agent limit. Select subagents only, separate main and subagent rules, or increase the reported rule limit; waiting for the parent would risk a deadlock |
 | `provider.rate_limit` / HTTP 429 | The provider throttled a request that was sent. Check its message and account limits; a concurrency cap can reduce overlap but cannot guarantee a requests-per-minute or token rate |
 
-The three local `request.*` errors do not automatically retry. Provider transient 429 retries follow [`retry`](#retry), including `Retry-After`; exhausted quota or insufficient balance fails without retry. In **Usage → Live**, expand **Request details** to inspect the queued model, blocking rule IDs, and wait time before changing a limit. Stale counts show the last received snapshot, not current capacity.
+Local `request.*` errors do not automatically retry. Provider transient 429 retries follow [`retry`](#retry), including `Retry-After`; exhausted quota or insufficient balance fails without retry. In **Usage → Live**, expand **Request details** to inspect the queued model, blocking rule IDs, and wait time before changing a limit. Stale counts show the last received snapshot, not current capacity.
 
 ## `tui.toml`
 

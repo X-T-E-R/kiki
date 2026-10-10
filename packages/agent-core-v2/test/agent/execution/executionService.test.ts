@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { deferred } from '../../deferred';
+import { appService, createTestAgent } from '../../harness';
 
 import { createDecorator } from '#/_base/di/instantiation';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
@@ -38,6 +39,14 @@ import type {
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { createHooks } from '#/hooks';
 import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
+import { RequestGovernanceService } from '#/app/requestGovernance/requestGovernanceService';
+import { IConfigService } from '#/app/config/config';
+import { Event } from '#/_base/event';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 const IMarker = createDecorator<string>('executionTestMarker');
 
@@ -70,6 +79,15 @@ function states(): IAgentStateService {
   } as unknown as IAgentStateService;
 }
 
+function activityDependencies(ix: TestInstantiationService): void {
+  ix.stub(IConfigService, { get: <T>() => ({ rules: [] }) as T, onDidSectionChange: Event.None });
+  ix.set(IRequestGovernance, new SyncDescriptor(RequestGovernanceService));
+  ix.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', background: [] }) });
+  ix.stub(IModelCatalog, {});
+  ix.stub(ISessionContext, { sessionId: 'session-test' });
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }) });
+}
+
 function executionService(
   ix: TestInstantiationService,
   scopeContext: IAgentScopeContext,
@@ -78,12 +96,13 @@ function executionService(
   stateService: IAgentStateService,
   reserveExecution: ISessionDispatchService['reserveExecution'] = () => () => {},
 ): AgentExecutionService {
+  activityDependencies(ix);
   ix.stub(ISessionDispatchService, { reserveExecution });
   ix.set(ScopeContextId, scopeContext);
   ix.set(ProfileServiceId, profileService);
   ix.set(ExecutorRegistryId, registry);
   ix.set(StateServiceId, stateService);
-  ix.stub(IAgentLoopService, {});
+  ix.stub(IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) });
   ix.stub(IAgentPromptService, {});
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(IAgentContextMemoryService, { get: () => [] });
@@ -96,6 +115,86 @@ function executionService(
 }
 
 describe('AgentExecutionService', () => {
+  it.each(['launch_failure', 'external_crash'] as const)('releases agent admission on %s', async (failure) => {
+    const ix = new TestInstantiationService();
+    const completion = deferred<{ summary: string }>();
+    const session: AgentExecutorSession = {
+      run: async () => {
+        if (failure === 'launch_failure') throw new Error('fixture launch failed');
+        return { agentId: 'main', completion: completion.promise, turn: {
+          id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+          result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+        } };
+      },
+      status: () => ({ state: 'idle' }), cancel: () => false, settled: async () => {}, shutdown: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const registry = { resolveExecutable: async () => ({ descriptor: { id: 'external-example', protocol: 'acp-v1', args: [], revision: 'r1' }, options: {}, provider: { create: () => session } }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope('main'), profile({ executorId: 'external-example', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' }), registry, states());
+    const governance = ix.get(IRequestGovernance);
+    try {
+      const running = service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      if (failure === 'launch_failure') {
+        await expect(running).rejects.toThrow('fixture launch failed');
+      } else {
+        const handle = await running;
+        expect(governance.agentSnapshot().active).toBe(1);
+        const failed = expect(handle.completion).rejects.toThrow('fixture crashed');
+        completion.reject(new Error('fixture crashed'));
+        await failed;
+        await service.settled();
+      }
+      expect(governance.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+    } finally { await service.dispose(); ix.dispose(); }
+  });
+  it('gates a real native main prompt before model work and releases at terminal', async () => {
+    const ix = new TestInstantiationService();
+    activityDependencies(ix);
+    ix.stub(IConfigService, 'get', <T>() => ({ rules: [{ id: 'agent-cap', resource: 'agent_execution', maxConcurrent: 1 }] }) as T);
+    const governance = ix.get(IRequestGovernance);
+    const occupied = await governance.acquireAgent({ sessionId: 'other-session', agentId: 'main', ancestorAgentIds: [], executorId: 'native', role: 'main', readPhase: () => 'running' });
+    const ctx = createTestAgent(appService(IRequestGovernance, governance));
+    const finalization = deferred<void>();
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    ctx.wire.flush = async () => {
+      if (ctx.get(IAgentLoopService).status().finalizing) await finalization.promise;
+      return originalFlush();
+    };
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'completed' });
+      const prompt = ctx.get(IAgentPromptService);
+      const handle = await prompt.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'work' }], toolCalls: [] } });
+      await vi.waitFor(() => expect(governance.agentSnapshot()).toMatchObject({ active: 1, queued: 1, queuedMain: 1 }));
+      expect(ctx.llmCalls.length).toBe(0);
+      occupied.release();
+      const turn = await handle.launched;
+      expect(turn).toBeDefined();
+      await vi.waitFor(() => expect(governance.agentSnapshot().agents[0]?.phase).toBe('finalizing'));
+      expect(governance.agentSnapshot().active).toBe(1);
+      finalization.resolve();
+      expect((await turn!.result).type).toBe('completed');
+      expect(governance.agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
+    } finally { occupied.release(); finalization.resolve(); await ctx.dispose(); ix.dispose(); }
+  });
+
+  it('releases a late agent permit when cancellation wins admission without creating an external process', async () => {
+    const ix = new TestInstantiationService();
+    const registry = { resolveExecutable: vi.fn() } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope('main'), profile({ executorId: 'external-example' }), registry, states());
+    const permit = deferred<import('#/kosong/model/requestAdmission').RequestPermit>();
+    const entered = deferred<void>();
+    const release = vi.fn();
+    ix.stub(IRequestGovernance, 'acquireAgent', async () => { entered.resolve(); return permit.promise; });
+    const controller = new AbortController();
+    const running = service.run({ kind: 'prompt', prompt: 'work' }, { signal: controller.signal });
+    const rejected = expect(running).rejects.toBeDefined();
+    await entered.promise;
+    controller.abort();
+    permit.resolve({ release });
+    await rejected;
+    expect(release).toHaveBeenCalledOnce();
+    expect(registry.resolveExecutable).not.toHaveBeenCalled();
+    await service.dispose(); ix.dispose();
+  });
   it.each(['fingerprint', 'source_home', 'executor'] as const)('rejects imported local session %s drift before launching an executor', async (drift) => {
     const ix = new TestInstantiationService();
     const bound = profile({ executorId: 'claude-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1' });
@@ -280,12 +379,24 @@ describe('AgentExecutionService', () => {
       reserved.bind('child');
       await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal, capacityReservation: reserved });
       expect(service.status().state).toBe('running');
+      expect(ix.get(IRequestGovernance).agentSnapshot()).toMatchObject({ active: 1, subagent: 1 });
+      const activityTurn = {
+        turnId: 1, origin: { kind: 'user' as const }, phase: 'tool_call' as const, step: 1, ending: false, since: 0,
+        pendingApprovals: [] as import('#/agent/activityView/activityView').ApprovalRef[],
+        activeToolCalls: [{ toolCallId: 'tool-example', name: 'Tool', since: 0 }],
+      };
+      ix.stub(IAgentActivityView, 'state', () => ({ lifecycle: 'ready', background: [], turn: activityTurn }));
+      expect(ix.get(IRequestGovernance).agentSnapshot().agents[0]?.phase).toBe('tool_waiting');
+      activityTurn.pendingApprovals.push({ approvalId: 'approval-example', since: 0 });
+      expect(ix.get(IRequestGovernance).agentSnapshot().agents[0]?.phase).toBe('suspended');
       expect(service.cancel('cancel work')).toBe(true);
       expect(service.status().state).toBe('cancelling');
+      expect(ix.get(IRequestGovernance).agentSnapshot().agents[0]?.phase).toBe('cancelling');
       expect(() => capacity.reserve('main', limits, 'other')).toThrow(expect.objectContaining({ code: 'dispatch.limit_exceeded' }));
       finish({ summary: 'cancelled' });
       await service.settled();
       expect(service.status().state).toBe('idle');
+      expect(ix.get(IRequestGovernance).agentSnapshot()).toMatchObject({ active: 0, queued: 0 });
       const next = capacity.reserve('main', limits, 'other');
       next();
     } finally {
@@ -381,6 +492,7 @@ describe('AgentExecutionService', () => {
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
     'cancels native child runs and releases abort listeners during %s', async (close) => {
       const parent = new TestInstantiationService();
+      activityDependencies(parent);
       let finish!: (value: Awaited<Turn['result']>) => void;
       const result = new Promise<Awaited<Turn['result']>>((resolve) => { finish = resolve; });
       const cancel = vi.fn((_id?: number, reason?: unknown) => {

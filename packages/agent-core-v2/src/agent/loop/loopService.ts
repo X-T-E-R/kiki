@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { IInstantiationService } from '#/_base/di/instantiation';
+import { acquireAgentActivityPermit } from '#/agent/execution/agentActivityPermit';
+import type { RequestPermit } from '#/kosong/model/requestAdmission';
 import { EventEmitter } from 'node:events';
 
 import { createControlledPromise } from '@antfu/utils';
@@ -140,6 +143,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this.states.contributeState(turnKey);
@@ -576,8 +580,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     let thinkingEffort: string | undefined;
     let result: TurnResult | undefined;
     let releaseCapacity: (() => void) | undefined;
+    let activityPermit: RequestPermit | undefined;
+    let executionStarted = false;
     try {
       turn.signal.throwIfAborted();
+      activityPermit = await this.instantiation.invokeFunction((accessor) => acquireAgentActivityPermit(accessor, turn.signal, () =>
+        this.finalization?.turn === turn ? 'finalizing' : turn.signal.aborted ? 'cancelling' : executionStarted ? 'running' : 'starting'));
+      turn.signal.throwIfAborted();
+      executionStarted = true;
       releaseCapacity = this.dispatch.reserveTurnExecution(this.scope.agentId, this.scope.parentAgentId);
       thinkingEffort = this.llmRequester.prepareTurnConfig(turn.id)?.thinkingEffort;
       const started: TurnStartedTelemetryEvent = {
@@ -598,45 +608,49 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       result = this.resultFromTurnError(turn, error);
       return result;
     } finally {
-      this.settleTurnReady(ready, result);
-      releaseCapacity?.();
-      const traceId =
-        result?.type === 'completed'
-          ? this.lastRequestTraceId
-          : this.activeRequestTrace?.traceId;
-      if (result !== undefined) {
-        const error = result.type === 'failed' ? toKimiErrorPayload(result.error) : undefined;
-        const interruptReason =
-          result.type === 'completed' ? undefined : interruptReasonFor(result);
-        const durationMs = Date.now() - startedAt;
-        this.finalization = { turn, result, event: new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }) };
-        if (error !== undefined) void this.dispatcher.dispatch(new AgentErrorEvent(error));
-        if (interruptReason !== undefined) {
-          const interrupted: TurnInterruptedEvent = {
-            turn_id: turn.id,
-            at_step: result.steps,
-            mode,
-            interrupt_reason: interruptReason,
-            provider_type,
-            protocol,
-            thinking_effort: thinkingEffort,
-            trace_id: traceId,
-          };
-          turnTelemetry.track2('turn_interrupted', interrupted);
+      try {
+        this.settleTurnReady(ready, result);
+        releaseCapacity?.();
+        const traceId =
+          result?.type === 'completed'
+            ? this.lastRequestTraceId
+            : this.activeRequestTrace?.traceId;
+        if (result !== undefined) {
+          const error = result.type === 'failed' ? toKimiErrorPayload(result.error) : undefined;
+          const interruptReason =
+            result.type === 'completed' ? undefined : interruptReasonFor(result);
+          const durationMs = Date.now() - startedAt;
+          this.finalization = { turn, result, event: new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }) };
+          if (error !== undefined) void this.dispatcher.dispatch(new AgentErrorEvent(error));
+          if (interruptReason !== undefined) {
+            const interrupted: TurnInterruptedEvent = {
+              turn_id: turn.id,
+              at_step: result.steps,
+              mode,
+              interrupt_reason: interruptReason,
+              provider_type,
+              protocol,
+              thinking_effort: thinkingEffort,
+              trace_id: traceId,
+            };
+            turnTelemetry.track2('turn_interrupted', interrupted);
+          }
         }
+        const ended: TurnEndedTelemetryEvent = {
+          turn_id: turn.id,
+          reason: result?.type ?? 'failed',
+          duration_ms: Date.now() - startedAt,
+          mode,
+          provider_type,
+          protocol,
+          thinking_effort: thinkingEffort,
+          trace_id: traceId,
+        };
+        turnTelemetry.track2('turn_ended', ended);
+        await this.persistTurnEnd(turn, result);
+      } finally {
+        activityPermit?.release();
       }
-      const ended: TurnEndedTelemetryEvent = {
-        turn_id: turn.id,
-        reason: result?.type ?? 'failed',
-        duration_ms: Date.now() - startedAt,
-        mode,
-        provider_type,
-        protocol,
-        thinking_effort: thinkingEffort,
-        trace_id: traceId,
-      };
-      turnTelemetry.track2('turn_ended', ended);
-      await this.persistTurnEnd(turn, result);
     }
   }
 
