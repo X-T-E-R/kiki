@@ -13,7 +13,9 @@ import {
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { Hint, Toggle } from '../controls';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
@@ -31,6 +33,7 @@ export function GeneralSection() {
   const { t, locale, setLocale } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
+  const [confirmClearDrafts, setConfirmClearDrafts] = useState(false);
   const isDesktop = host.kind === 'tauri';
 
   useEffect(() => {
@@ -93,10 +96,19 @@ export function GeneralSection() {
               checked={settings.draftPersistence}
               onChange={(checked) => {
                 writeSettings({ draftPersistence: checked });
-                if (!checked) clearStoredDrafts();
               }}
             />
             <Hint>{t('st.composer.persistDraftsHint')}</Hint>
+            <div className="pt-1">
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-composer-clear-drafts
+                onClick={() => setConfirmClearDrafts(true)}
+              >
+                {t('st.composer.clearDrafts')}
+              </button>
+            </div>
           </div>
           <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
@@ -172,6 +184,21 @@ export function GeneralSection() {
           </fieldset>
         ) : null}
       </SectionCard>
+      {confirmClearDrafts ? (
+        <ConfirmDialog
+          open
+          overlayId="confirm-clear-drafts"
+          title={t('st.composer.clearDraftsConfirmTitle')}
+          body={t('st.composer.clearDraftsConfirmBody')}
+          confirmLabel={t('st.composer.clearDrafts')}
+          tone="danger"
+          onCancel={() => { setConfirmClearDrafts(false); }}
+          onConfirm={() => {
+            clearStoredDrafts();
+            setConfirmClearDrafts(false);
+          }}
+        />
+      ) : null}
     </>
   );
 }

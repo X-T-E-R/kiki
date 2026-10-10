@@ -71,7 +71,7 @@ export function resolveCatalogModel<
 
 export function subagentGovernanceFromConfig(config: unknown): SubagentGovernanceDraft {
   const subagent = configObjectOrEmpty(configObjectOrEmpty(config)['subagent']);
-  return { denyModels: normalizeConfigStringList(subagent['denyModels']).join('\n') };
+  return { denyModels: normalizeConfigStringList(subagent['deny_models'] ?? subagent['denyModels']).join('\n') };
 }
 
 export function subagentGovernancePatch(draft: SubagentGovernanceDraft): KikiConfigPatch {

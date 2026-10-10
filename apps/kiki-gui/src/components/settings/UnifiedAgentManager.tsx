@@ -299,7 +299,7 @@ export function UnifiedAgentManager() {
       // z-40: the app-level discard confirmation (z-50) must stack above the sheet.
       overlayClassName="fixed inset-0 z-40 flex items-stretch justify-center bg-shell/25 p-0 sm:p-4"
       panelClassName="anim-enter flex w-full max-w-[1280px] flex-col overflow-y-auto overscroll-contain bg-canvas p-4 shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)] sm:rounded-2xl sm:border sm:border-hairline sm:p-6">
-      {sheet.kind === 'new' ? <NewProfile workspaceId={selectedWorkspaceId} profiles={profiles} shipped={shippedEntries}
+      {sheet.kind === 'new' ? <NewProfile workspaceId={selectedWorkspaceId} workspaceOptions={workspaceOptions} profiles={profiles} shipped={shippedEntries}
         initialSource={sheet.source} onCancel={closeSheet}
         onCreated={(created) => { refresh(); setSheet({ kind: 'edit', key: profileKey(created) }); setFeedback({ tone: 'success', text: t('st.agentManager.created') }); }} />
         : editing !== undefined ? <ProfileEditor key={editing.key} profile={editing.profile} writable={editing.writable} profiles={profiles}

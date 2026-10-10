@@ -42,6 +42,7 @@ import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { useSavedTick } from './useSavedTick';
+import { AliasChips } from './profileEditor/fields';
 import { dispatchFieldsOf } from './profileEditor/profileDraft';
 
 const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
@@ -60,6 +61,11 @@ function SubagentModelGovernanceCard() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const denyList = useMemo(
+    () => draft.denyModels.split(/\r?\n/).map((m) => m.trim()).filter(Boolean),
+    [draft.denyModels],
+  );
 
   useEffect(() => {
     if (configQuery.data !== undefined) {
@@ -94,14 +100,17 @@ function SubagentModelGovernanceCard() {
       <div className="space-y-4">
         <Hint>{t('st.subagents.hint')}</Hint>
         <fieldset disabled={configQuery.isLoading || saving} className="space-y-4 disabled:opacity-60">
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagents.denyModels')}
-            <textarea
-              className={`${INPUT} mt-1 min-h-24 font-mono`}
-              value={draft.denyModels}
-              placeholder={t('st.subagents.denyPlaceholder')}
-              onChange={(event) => { setDraft((current) => ({ ...current, denyModels: event.target.value })); }}
+          <div>
+            <span className="block text-[11px] font-medium text-ink-soft mb-1.5">{t('st.subagents.denyModels')}</span>
+            <AliasChips
+              id="subagent-deny-models"
+              values={denyList}
+              models={modelsQuery.data?.items ?? []}
+              disabled={configQuery.isLoading || saving}
+              addLabel={t('st.profiles.addModel')}
+              onChange={(next) => { setDraft((current) => ({ ...current, denyModels: next.join('\n') })); }}
             />
-          </label>
+          </div>
         </fieldset>
         <SettingsDraftFooter saved={justSaved} id="subagent-model-governance" dirty={dirty} saving={saving || configQuery.isLoading}
           saveLabel={t('st.subagents.save')} onSave={() => void save()}

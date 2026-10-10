@@ -305,7 +305,13 @@ function WorktreeRow({
               {title}
             </button>
           ) : ownerPending ? null : (
-            <span className="shrink-0">{t('st.worktrees.sessionMissing')}</span>
+            <span
+              data-worktree-session-missing
+              title={record.owner.sessionId}
+              className="shrink-0"
+            >
+              {t('st.worktrees.sessionMissing')}{record.owner.sessionId ? ` (${record.owner.sessionId.slice(0, 8)})` : ''}
+            </span>
           )}
           {title !== undefined || !ownerPending ? <span aria-hidden>·</span> : null}
           <span className="min-w-0 shrink truncate"><ChangesLine inspection={inspection} /></span>

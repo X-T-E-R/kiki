@@ -38,6 +38,10 @@ describe('subagent settings projection', () => {
       providers: {},
       subagent: { denyModels: ['provider/blocked'] },
     })).toEqual({ denyModels: 'provider/blocked' });
+    expect(subagentGovernanceFromConfig({
+      providers: {},
+      subagent: { deny_models: ['provider/blocked'] },
+    })).toEqual({ denyModels: 'provider/blocked' });
   });
 
   it('falls back safely for malformed roots and canonicalizes legacy deny lists', () => {

@@ -87,7 +87,6 @@ export function HooksSection() {
     setJson(raw);
     try {
       setDraft(draftFromHooks(parseHooksConfigJson(raw)));
-      setMode('form');
     } catch {
       // A hooks value outside both shapes stays editable as raw JSON.
       setDraft(null);
@@ -124,6 +123,30 @@ export function HooksSection() {
     if (draft === null) return;
     edit(ref.kind === 'declarative' ? removeDeclarativeRule(draft, ref.id) : removeLegacyRule(draft, ref.index));
     if (sameRef(selected, ref)) select(null);
+  };
+
+  const formatJson = () => {
+    try {
+      const parsed = JSON.parse(json);
+      setJson(JSON.stringify(parsed, null, 2));
+      setFeedback(null);
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    }
+  };
+
+  const resetToSavedJson = () => {
+    const raw = JSON.stringify(configQuery.data?.hooks ?? [], null, 2);
+    setJson(raw);
+    try {
+      setDraft(draftFromHooks(parseHooksConfigJson(raw)));
+    } catch {
+      setDraft(null);
+    }
+    select(null);
+    setDirty(false);
+    setFeedback(null);
+    setIssues([]);
   };
 
   const switchMode = () => {
@@ -398,7 +421,22 @@ export function HooksSection() {
                   onAsk={() => { void askKiki({ skill: 'kiki-hooks', promptKey: 'st.hooks.askKiki.prompt', location: kikiWorkspace.location }); }}
                 />
               </>
-            ) : null}
+            ) : (
+              <>
+                <button type="button" className={SECONDARY_BUTTON} data-hooks-format-json onClick={formatJson}>
+                  {t('st.hooks.formatJson')}
+                </button>
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  data-hooks-reset-json
+                  onClick={resetToSavedJson}
+                  disabled={!dirty && json === JSON.stringify(configQuery.data?.hooks ?? [], null, 2)}
+                >
+                  {t('st.hooks.resetJson')}
+                </button>
+              </>
+            )}
             <button type="button" data-hooks-json-toggle onClick={switchMode}
               className="ml-auto inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
               {t(mode === 'json' ? 'st.hooks.form' : 'st.hooks.advanced')}

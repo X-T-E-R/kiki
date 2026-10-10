@@ -408,7 +408,7 @@ function ShortcutRow({
           <span data-shortcut-disabled className="text-[12px] text-ink-faint">{t('st.shortcuts.disabled')}</span>
         ) : null}
         {chords.map((chord, index) => recordingIndex === index ? (
-          <ChordRecorder key={`rec-${index}`} platform={platform} describedBy={issue === null ? undefined : issueId}
+          <ChordRecorder key={`rec-${index}`} platform={platform} desktop={desktop} describedBy={issue === null ? undefined : issueId}
             onRecorded={onRecorded} onCancel={onCancel} onDisable={() => { onCancel(); onRemove(index); }} />
         ) : (
           <button key={`${chord.key}-${chord.modifier}-${index}`} type="button" data-shortcut-chord={index}
@@ -420,7 +420,7 @@ function ShortcutRow({
           </button>
         ))}
         {recordingIndex !== null && recordingIndex >= chords.length ? (
-          <ChordRecorder platform={platform} describedBy={issue === null ? undefined : issueId}
+          <ChordRecorder platform={platform} desktop={desktop} describedBy={issue === null ? undefined : issueId}
             onRecorded={onRecorded} onCancel={onCancel} />
         ) : null}
         {canAdd ? (
@@ -448,8 +448,9 @@ function ShortcutRow({
  * until a full chord arrives: app shortcuts are suspended, Esc cancels,
  * Backspace/Delete clears the slot, and leaving the field cancels.
  */
-function ChordRecorder({ platform, describedBy, onRecorded, onCancel, onDisable }: {
+function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, onDisable }: {
   platform: ShortcutPlatform;
+  desktop?: boolean;
   describedBy?: string;
   onRecorded: (chord: ShortcutChord) => void;
   onCancel: () => void;
@@ -494,6 +495,11 @@ function ChordRecorder({ platform, describedBy, onRecorded, onCancel, onDisable 
         {unsupported !== null ? t('st.shortcuts.unsupported', { key: unsupported })
           : onDisable !== undefined ? t('st.shortcuts.recordHintClear') : t('st.shortcuts.recordHint')}
       </span>
+      {!desktop ? (
+        <span data-shortcut-browser-warning className="max-w-[16rem] text-right text-[11px] leading-tight text-amber-ink/90">
+          {t('st.shortcuts.browserReservedWarning')}
+        </span>
+      ) : null}
     </span>
   );
 }

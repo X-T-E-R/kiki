@@ -238,6 +238,58 @@ describe('hooks settings (dual shape)', () => {
     expect(config.hooks).toEqual([LEGACY_RULE]);
   });
 
+  it('formats valid JSON and resets broken JSON in the connected JSON editor', async () => {
+    config.hooks = structuredClone(V2_MIXED);
+    await mount();
+    await act(async () => { ruleRow('declarative:focus').click(); });
+    await click('Advanced: edit JSON');
+    const jsonEditor = () => {
+      const element = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea');
+      expect(element).not.toBeNull();
+      expect(element!.isConnected).toBe(true);
+      expect(container.querySelector('[data-hooks-json-toggle]')!.textContent).toBe('Use rule form');
+      return element!;
+    };
+    const compact = JSON.stringify([LEGACY_RULE]);
+    await change(jsonEditor(), compact);
+    await click('Format JSON');
+    expect(jsonEditor().value).toBe(JSON.stringify([LEGACY_RULE], null, 2));
+    await change(jsonEditor(), '{invalid_json');
+    await click('Format JSON');
+    expect(jsonEditor().value).toBe('{invalid_json');
+    await saveActions();
+    expect(jsonEditor().value).toBe('{invalid_json');
+    expect(client.patchConfig).not.toHaveBeenCalled();
+    await click('Reset to saved');
+    expect(jsonEditor().value).toBe(JSON.stringify(V2_MIXED, null, 2));
+    expect(container.querySelector('[data-settings-draft="hooks"]')!.hasAttribute('data-dirty')).toBe(false);
+    expect(container.querySelector('[data-hooks-reset-json]')!.hasAttribute('disabled')).toBe(true);
+    expect(client.patchConfig).not.toHaveBeenCalled();
+    await click('Use rule form');
+    expect(container.querySelector('[data-hook-editor]')).toBeNull();
+    expect(container.querySelector('[data-hook-issue]')).toBeNull();
+  });
+
+  it('keeps valid JSON draft connected after a failed save, and saves it on retry', async () => {
+    await mount();
+    await click('Advanced: edit JSON');
+    const draft = JSON.stringify([LEGACY_RULE]);
+    await change(container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!, draft);
+    patchError = new Error('offline');
+    await saveActions();
+    const current = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
+    expect(current.isConnected).toBe(true);
+    expect(current.value).toBe(draft);
+    expect(container.textContent).toContain('offline');
+    expect(config.hooks).toEqual([]);
+    patchError = null;
+    await saveActions();
+    const saved = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
+    expect(saved.isConnected).toBe(true);
+    expect(saved.value).toBe(JSON.stringify([LEGACY_RULE], null, 2));
+    expect(config.hooks).toEqual([LEGACY_RULE]);
+  });
+
   it('flattens a rule-less v2 object back to a plain command array on request', async () => {
     config.hooks = { schemaVersion: 2, enabled: true, disabled: [], files: [], rules: [], legacy: [{ event: 'Stop', command: 'echo stop' }] };
     await mount();

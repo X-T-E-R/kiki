@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -7,7 +8,7 @@ import type { CreateNamedAgentProfileRequest, NamedAgentProfile, ShippedAgentPro
 import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
-import { SearchableSelect } from '../../SearchableSelect';
+import { SearchableSelect, type SearchableSelectOption } from '../../SearchableSelect';
 import { INPUT } from '../../ui';
 import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../SettingsPrimitives';
 
@@ -19,8 +20,9 @@ type Template = 'implementer' | 'reviewer';
  * built-in or a sibling with a different prompt and pin. The copy keeps every
  * field of the source file; only the name (and optionally the role) changes.
  */
-export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCreated, onCancel }: {
+export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOptions, profiles, shipped, initialSource, onCreated, onCancel }: {
   workspaceId?: string;
+  workspaceOptions?: readonly SearchableSelectOption[];
   profiles: readonly NamedAgentProfile[];
   shipped: readonly ShippedAgentProfile[];
   initialSource?: string;
@@ -43,13 +45,29 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
   const [prompt, setPrompt] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [selectedWsId, setSelectedWsId] = useState<string | undefined>(workspaceId);
+  const effectiveWorkspaceId = workspaceId ?? selectedWsId;
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => client.listWorkspaces(),
+    enabled: workspaceId === undefined && providedWorkspaceOptions === undefined,
+    staleTime: 60_000,
+  });
+  const availableWorkspaceOptions = useMemo<readonly SearchableSelectOption[]>(() => {
+    if (providedWorkspaceOptions !== undefined) return providedWorkspaceOptions;
+    return (workspacesQuery.data?.items ?? []).map((w) => ({
+      value: w.id,
+      label: w.name ?? w.id,
+      description: w.path,
+    }));
+  }, [providedWorkspaceOptions, workspacesQuery.data]);
   const committedName = name.trim();
   const taken = profiles.some((profile) => profile.name === committedName);
   const validName = AGENT_NAME_PATTERN.test(committedName) && !taken;
   const sourceProfile = profiles.find((profile) => profile.name === source);
   const effectiveMain = main ?? (start === 'copy' ? sourceProfile?.main === true : false);
   const blankOk = start !== 'blank' || (description.trim() !== '' && prompt.trim() !== '');
-  const ready = workspaceId !== undefined && validName && blankOk && (start !== 'copy' || sourceProfile !== undefined);
+  const ready = effectiveWorkspaceId !== undefined && validName && blankOk && (start !== 'copy' || sourceProfile !== undefined);
   const shippedIds = new Set(shipped.map((entry) => entry.template_id));
   const sources = [...new Map(profiles.map((profile) => [profile.name, profile])).values()]
     .toSorted((a, b) => Number(b.source === 'builtin') - Number(a.source === 'builtin') || a.name.localeCompare(b.name));
@@ -59,7 +77,7 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
     setSaving(true); setFeedback(null);
     try {
       const body: CreateNamedAgentProfileRequest = {
-        workspace_id: workspaceId!, name: committedName, scope,
+        workspace_id: effectiveWorkspaceId!, name: committedName, scope,
         template: start === 'copy' ? `duplicate:${source}` : start === 'template' ? template : 'blank',
         ...(main !== undefined || start !== 'copy' ? { main: effectiveMain } : {}),
         ...(description.trim() !== '' ? { description: description.trim() } : {}),
@@ -135,7 +153,26 @@ export function NewProfile({ workspaceId, profiles, shipped, initialSource, onCr
       <textarea id="new-profile-prompt" className={`${INPUT} min-h-40 font-mono text-[12.5px] leading-relaxed`} value={prompt}
         placeholder={t('st.profiles.promptPlaceholder')} onChange={(event) => setPrompt(event.target.value)} />
     </div> : null}
-    {workspaceId === undefined ? <Hint>{t('st.agentManager.noWorkspace')}</Hint> : null}
+    {workspaceId === undefined ? (
+      <div className="space-y-1.5" data-new-profile-workspace-picker>
+        <label htmlFor="new-profile-workspace" className="text-[12px] font-medium text-ink-soft">
+          {t('new.workspace')}
+        </label>
+        {availableWorkspaceOptions.length > 0 ? (
+          <SearchableSelect
+            id="new-profile-workspace"
+            value={effectiveWorkspaceId ?? ''}
+            ariaLabel={t('new.workspace')}
+            buttonClassName={FORM_SELECT_TRIGGER}
+            options={availableWorkspaceOptions}
+            searchPlaceholder={t('new.workspace')}
+            onChange={(next) => setSelectedWsId(next || undefined)}
+          />
+        ) : (
+          <Hint>{t('st.agentManager.noWorkspace')}</Hint>
+        )}
+      </div>
+    ) : null}
     {start === 'blank' && !blankOk && (description !== '' || prompt !== '') ? <Hint>{t('st.agentManager.promptRequired')}</Hint> : null}
     <SettingsDraftFooter id="agent-create" persistent saving={saving}
       dirty={(name !== '' && !name.endsWith('-copy')) || description !== '' || prompt !== '' || main !== undefined}
