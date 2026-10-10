@@ -158,6 +158,7 @@ api_key = "YOUR_API_KEY"
 | `builtin_product_skills` | `boolean` | `true` | 是否向模型提供 Kiki 产品 Skills：`kiki-ops` 负责产品使用与配置，`kiki-profile` 负责创建和修改 agent profile。关闭后两者的名称和描述都不再进入系统提示词，代价是失去这些任务的引导流程 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
+| `model_switch` | `table` | 先询问，再直接切换 | 切换模型时如何处理当前上下文 → [`model_switch`](#model-switch) |
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
@@ -180,7 +181,7 @@ api_key = "YOUR_API_KEY"
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`model_switch`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -337,7 +338,11 @@ await klient.global.kosong.updateModel(baseline.id, {
 });
 ```
 
-写入 `cognition` 或 `prompt_overrides`（包括用 `null` 清除）必须带 `base_revision`。两者均整对象写入：保留 baseline 中未改的槽、分支选择、模式和注入节奏。遇到 `model_catalog.revision_conflict` 时保留草稿，重新读取模型，合并编辑后再试。只编辑来源时，可带 `base_revision` 使用 `steering_sources_patch: { common: { thread: { mode: 'inherit' } } }`；它增量合并指定来源及 custom 字段，不替换无关 cognition 或模型设置。`main` 与 `independent` patch 各自对应所在分支；编辑继承中的分支时，先把 common 快照到该分支。
+写入 `cognition` 或 `prompt_overrides`（包括用 `null` 清除）必须带 `base_revision`。两者均整对象写入：保留 baseline 中未改的槽、分支选择、模式和注入节奏。遇到 `model_catalog.revision_conflict` 时保留草稿，重新读取模型，合并编辑后再试。只编辑来源时，可带 `base_revision` 使用 `steering_sources_patch: { common: { thread: { mode: 'inherit' } } }`；它增量合并指定来源及 custom 字段，不替换无关 cognition 或模型设置。
+
+`main` 与 `independent` 的 patch 各自对应所在分支。该分支被省略或为 `"same"` 时，第一次保存提示词编辑会把当时生效的整组——包括未改的文件引用和节奏——复制进该分支，再替换被编辑的槽。此后该分支是自己的对象：之后对共享组的编辑不再流入它，已有的自定义对象或 `"off"` 也不会再从共享组补齐。`steering_sources` 的 `inherit` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏。它用的是这份已保存的 steering，不是用户消息的原文。身份成为自己的对象之后，读的是该对象上的 steering。
+
+`main` 与 `independent` 上的用量差异不是这种整组复制。`thinking_effort`、`service_tier`、`max_completion_tokens`、`auto_compact` 和 `context_budget` 按字段继承模型的共享值。保存时只发送改过的字段，放在 `usage.main` 或 `usage.independent` 下。把某个字段写成 `null` 会恢复该字段的继承；省略该字段不会。共享的 `context_budget` 或 `max_completion_tokens` 已经设置时，身份上更高的值不会抬高它，更低的值会收紧。`thinking_effort`、`service_tier` 和 `auto_compact` 按该身份上的值覆盖。
 
 `cognition_bodies.branches.<scope>.steering_sources.<source>` 也返回已保存的 custom 草稿，即使当前模式为 off 或 inherit。`cognition_bodies` 返回共享、main、independent 已保存的手调正文与来源，不是 Recipe 或 profile 覆盖后的最终合成提示词。文件槽按声明顺序返回每个引用文件的完整原文，以及运行时裁去首尾空白、以空行拼接的正文。`source_read_only: true` 保护作者文件，不妨碍另存为模型正文；读取失败或该槽文件超过 2 MiB 编辑读取上限时，槽会返回错误及 `writable: false`，不会冒充空正文。
 
@@ -345,7 +350,7 @@ await klient.global.kosong.updateModel(baseline.id, {
 
 三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。其他来源默认关闭，需在 `steering_sources` 中启用；重试沿用原输入来源。
 
-选 `mode = "inherit"` 沿用最终用户正文与节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
+选 `mode = "inherit"` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
 
 ```toml
 [models."example-model".cognition.steering_sources.thread]
@@ -409,6 +414,34 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 调用方模型与主 Agent 的 `default_model` 都不是静默回退来源；这些来源都不存在时，派发会以 `model.not_configured` 失败，不会创建子 Agent。在 subagent profile、route 或 caller lease 中写 `model_alias: inherit`，才会绑定调用方当前已解析的模型。`AgentRun` 拒绝 `model_alias: "inherit"`：请写具体的已配置模型名，或省略参数以使用目标默认模型。main agent 没有调用方，其 profile 不可使用 `inherit`。
 
 thinking effort 可以留空。使用 `model_alias: inherit` 时，它会跟随调用方的有效思考强度；工具显式 `effort`，或 profile、route、caller lease、匹配的 `model_profiles` 条目上适用的 effort pin 优先。其他情况下按工具 `effort` → 匹配的 `model_profiles` 档位 → 所选模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型的 `overrides.default_effort` → 模型的 `default_effort` → 全局 [`[thinking].effort`](#thinking) → 模型能力兜底档位解析。
+
+## `model_switch`
+
+`[model_switch]` 决定切换模型时如何处理当前上下文。桌面入口是 **设置 → 模型与提供商 → 默认值** 上的 **切换模型**；这张表是保存下来的配置。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `default_mode` | `string` | `"direct"` | 没有启用的规则命中时使用：`direct` 保留当前上下文，`compact` 先生成摘要，`fresh` 开始新的上下文窗口 |
+| `confirm` | `boolean` | `true` | 切换前询问。`false` 时立即按命中规则或此默认方式执行 |
+| `rules` | `array<table>` | `[]` | 例外规则，第一条启用且命中的规则生效。发送 `rules` 会整表替换；部分保存时省略它则保留原列表 |
+
+每条规则有唯一且非空白的 `id`，`enabled`（省略时为 `true`），可选的 `from_models` 和 `to_models`，必填的 `mode`，以及可选的 `confirm`。某一侧省略表示匹配任意模型。规则自己的 `confirm` 在写明时覆盖全局的询问设置。匹配区分大小写，只有 `*` 和 `?` 是通配符；其他字符（包括方括号）按字面匹配。设置页拒绝包含空格或方括号的模式。随该条提示词发送的 `model_switch_mode` 只覆盖这一次消息的命中规则，见 [提示词](../server/rest-api.md#提示词)。
+
+```toml
+[model_switch]
+default_mode = "direct"
+confirm = true
+
+[[model_switch.rules]]
+id = "to-fresh"
+enabled = true
+from_models = ["example/Source-*"]
+to_models = ["example/target?"]
+mode = "fresh"
+confirm = false
+```
+
+部分更新只改你发送的字段。`POST /api/config` 发送 `{ "model_switch": { "confirm": false } }` 会保留已有规则。无效的 `model_switch` 对象返回信封错误码 `40001`，文件保持不变；同一次请求里的其他修改也不会写入。
 
 ## `thinking`
 

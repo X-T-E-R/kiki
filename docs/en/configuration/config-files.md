@@ -158,6 +158,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `builtin_product_skills` | `boolean` | `true` | Whether Kiki's product skills are offered to the model: `kiki-ops` for product usage and configuration, and `kiki-profile` for agent profile authoring. Turning them off removes both names and descriptions from the system prompt, at the cost of those guided workflows |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
+| `model_switch` | `table` | ask, then switch directly | What a model change does with the current context → [`model_switch`](#model-switch) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
@@ -180,7 +181,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `model_switch`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
 
 ## `providers`
 
@@ -339,7 +340,11 @@ await klient.global.kosong.updateModel(baseline.id, {
 });
 ```
 
-Writes to `cognition` or `prompt_overrides`, including clearing them with `null`, require `base_revision`. These are whole-object writes: keep the baseline's unchanged slots, branch choices, modes, and cadence. On `model_catalog.revision_conflict`, keep the draft, reread the model, and merge your edit before retrying. For a source-only edit, use `steering_sources_patch: { common: { thread: { mode: 'inherit' } } }` with `base_revision`; this merges the specified source/custom fields without replacing unrelated cognition or model settings. `main` and `independent` patches address their own branches; editing an inherited branch first snapshots common into that branch.
+Writes to `cognition` or `prompt_overrides`, including clearing them with `null`, require `base_revision`. These are whole-object writes: keep the baseline's unchanged slots, branch choices, modes, and cadence. On `model_catalog.revision_conflict`, keep the draft, reread the model, and merge your edit before retrying. For a source-only edit, use `steering_sources_patch: { common: { thread: { mode: 'inherit' } } }` with `base_revision`; this merges the specified source/custom fields without replacing unrelated cognition or model settings.
+
+`main` and `independent` patches address their own branches. While that branch is omitted or `"same"`, the first saved prompt edit copies the complete effective group — file references and timing included — into the branch, then replaces the edited slot. The branch is then its own object: later shared edits do not flow into it, and an existing custom object or `"off"` is not refilled from the shared group. A `steering_sources` mode of `inherit` follows the steering body and timing already in effect for user messages on the selected identity. It uses that saved steering, not the text of the user message. Once the identity is its own object, inherit reads the steering on that object.
+
+Usage differences on `main` and `independent` are not that copy. `thinking_effort`, `service_tier`, `max_completion_tokens`, `auto_compact`, and `context_budget` inherit field by field from the shared model values. A save sends only the fields you changed, under `usage.main` or `usage.independent`. Writing `null` for one field restores that field; omitting the field does not. When a shared `context_budget` or `max_completion_tokens` is already set, a higher value on the identity does not raise it, and a lower value tightens it. `thinking_effort`, `service_tier`, and `auto_compact` take the identity's value.
 
 `cognition_bodies.branches.<scope>.steering_sources.<source>` also returns saved custom drafts, even when their mode is off or inherit. `cognition_bodies` returns the saved manual bodies and their sources for common, main, and independent; it is not the final combined prompt after Recipe or profile overrides. File-backed slots include each referenced file's complete text in declaration order, plus the runtime's trimmed, blank-line-joined body. `source_read_only: true` protects the author files, not the ability to save a model-local body; if reading fails or a slot's files exceed the 2 MiB editor-read limit, the slot reports an error and `writable: false` rather than an empty body.
 
@@ -347,7 +352,7 @@ Paths are relative to the [data root directory](./data-locations.md#data-root-di
 
 The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your input as an ordinary user message — not a `<system-reminder>`. Its body and cadence apply to direct user messages, including queued input, **Send now**, user-slash skills and plugin commands. Other sources are off unless enabled in `steering_sources`; a retry keeps the original input's source.
 
-Choose `mode = "inherit"` to use the final user body and cadence, or `mode = "custom"` to use `custom.steering`, `custom.steering_on_turn`, `custom.steering_on_input` and `custom.steering_interval_steps`. Custom bodies accept the same inline, path and path-array forms; a missing custom body does not inherit user text. `off` and `inherit` retain a saved custom draft. Source keys are `thread` (peer messages and model-created threads), `room`, `agent` (child messages and parent notifications), `task`, `cron`, `hook`, `automation` (automatic goal continuation), `skill` (model-tool activation) and `external` (external-client thread input). Unknown sources remain off; delivery through Send now does not turn another source into user input.
+Choose `mode = "inherit"` to use the steering body and timing already in effect for user messages on the selected identity, or `mode = "custom"` to use `custom.steering`, `custom.steering_on_turn`, `custom.steering_on_input` and `custom.steering_interval_steps`. Custom bodies accept the same inline, path and path-array forms; a missing custom body does not inherit user text. `off` and `inherit` retain a saved custom draft. Source keys are `thread` (peer messages and model-created threads), `room`, `agent` (child messages and parent notifications), `task`, `cron`, `hook`, `automation` (automatic goal continuation), `skill` (model-tool activation) and `external` (external-client thread input). Unknown sources remain off; delivery through Send now does not turn another source into user input.
 
 ```toml
 [models."example-model".cognition.steering_sources.thread]
@@ -423,6 +428,34 @@ applicable profile, route, caller-lease, or matching `model_profiles` effort pin
 wins. Otherwise, effort resolves as tool `effort` → matching `model_profiles`
 effort → profile `thinking_effort` when the selected model matches its pin →
 the bound model's `overrides.default_effort` → its `default_effort` → global [`[thinking].effort`](#thinking) → the model's capability fallback.
+
+## `model_switch`
+
+`[model_switch]` decides what happens to the current context when you change models. The desktop control is **Model switching** under **Settings → Models & providers → Defaults**; this table is the saved configuration.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `default_mode` | `string` | `"direct"` | Used when no enabled rule matches: `direct` keeps the current context, `compact` summarizes it first, `fresh` starts a new context window |
+| `confirm` | `boolean` | `true` | Ask before switching. `false` runs the matched rule, or this default, immediately |
+| `rules` | `array<table>` | `[]` | Exception rules, first enabled match wins. Sending `rules` replaces the whole list; omitting it on a partial save leaves the list in place |
+
+Each rule has a unique non-blank `id`, `enabled` (`true` when omitted), optional `from_models` and `to_models`, a required `mode`, and an optional `confirm`. An omitted side matches any model. A rule's `confirm`, when set, overrides the global ask setting for that match. Patterns are case-sensitive and use only `*` and `?` as wildcards; other characters, including brackets, match themselves. The settings form rejects a pattern that contains a space or a bracket. A `model_switch_mode` sent with that prompt overrides the matched rule for the one message; see [Prompts](../server/rest-api.md#prompts).
+
+```toml
+[model_switch]
+default_mode = "direct"
+confirm = true
+
+[[model_switch.rules]]
+id = "to-fresh"
+enabled = true
+from_models = ["example/Source-*"]
+to_models = ["example/target?"]
+mode = "fresh"
+confirm = false
+```
+
+A partial update changes only the fields you send. `POST /api/config` with `{ "model_switch": { "confirm": false } }` keeps the existing rules. An invalid `model_switch` object returns envelope code `40001` and leaves the file unchanged; the rest of that request is not applied either.
 
 ## `thinking`
 

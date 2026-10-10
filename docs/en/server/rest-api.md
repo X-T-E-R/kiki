@@ -123,12 +123,15 @@ Desktop integrations can call the native `create_space_shortcut` command with `{
 | `POST /api/usage-export/destinations/{id}/auth/begin` | Start a VibeCafe sign-in for a destination |
 | `POST /api/usage-export/auth/{id}/poll` | Poll that sign-in |
 | `POST /api/usage-export/auth/{id}/cancel` | Cancel that sign-in |
+| `POST /api/usage-export/destinations/{id}/disable` | Pause that destination without signing out |
 
 For the official `vibecafe.ai` destination, send `{}` to `POST /api/usage-export/destinations/{id}/auth/begin`. Omitted `storage` defaults to `auto`: Kiki saves the approved credential in the system keyring, or in a permission-protected private file if the keyring write fails. The file is not encrypted at rest. There is no address, client id, or key to paste; the service is fixed to `https://vibecafe.ai`. Existing explicit `keyring` requests remain keyring-only; explicit `private-file` requests still require `acknowledge_file_storage: true`. Webhook and script credential storage choices are unchanged.
 
 The response carries `flow_id`, `state`, `user_code`, `verification_uri`, `expires_at`, and `poll_after_ms`. Poll with `POST /api/usage-export/auth/{id}/poll` at the returned interval, or cancel with `POST /api/usage-export/auth/{id}/cancel`. The flow moves from `pending` to `connected`, `cancelled`, `denied`, `expired`, or `error`. If automatic storage cannot save to either backend, it returns `error` with `error_category: "vibe-auth-storage-failed"`; restore access to the server's credential directory or keyring, then begin a new sign-in.
 
 `connected` means the credential was saved, not that sending is enabled. The destination returns to `draft` with `enabled: false` and no export consent; preview the payload before enabling it. `credential_storage` reports the actual `keyring` or `private-file` backend and is reused after restart. Custom-address destinations use manual credentials; beginning device sign-in there returns `vibe-auth-official-only`.
+
+`POST /api/usage-export/destinations/{id}/disable` pauses a destination that is already signed in. It sets `enabled` to `false`, `state` to `"disabled"`, and `next_at` to `null`, and it stops a send already in flight. The saved account and `credential_storage` stay, and so does the queue. The page keeps showing that account. **Pause**, and **Disable sync** on an official vibecafe.ai destination, both call it. Deleting the stored credential is a separate remove.
 
 #### Provider and external-service quotas
 
@@ -242,8 +245,18 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (requires `agent_id`, `since_seq`, and `transcript_coverage_version=2`); `complete: false` means a full refresh is needed |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | Turn-opening user inputs, unpaginated |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode plan content, path, and review outcome |
+| `GET /api/sessions/{session_id}/transcript/detail` | One canonical entity (`agent_id`, `kind`, `id`) |
+| `POST /api/klient/session-view/{session_id}/transcript/content` | Continue one bounded field from a `contentRefs` entry |
 
 Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
+
+`GET /api/sessions/{session_id}/transcript/detail` reads one entity. Query `agent_id` is a plain agent id, `kind` is `task`, `attachment`, `prompt`, or `tool`, and `id` is that entity's id. For `kind=tool`, `lookup.status` is `found`, `preparing`, or `not_found`. `found` includes `turnId`, `stepId`, and `frame`. That `frame`, and a returned task, attachment, or prompt body, can carry `contentRefs`; continue those with the POST below. `preparing` means the call is not yet located in the session's source history: retry the same request. `read.source` is then `derived` and `read.readiness` is `preparing`. `not_found` means the located history has no such call.
+
+A session already covered in memory returns the live tool call directly, with `read.source` `live` and `readiness` `ready`. A located cold session reports `cold` and `ready`, and replays the body from that source history.
+
+A transcript page keeps large fields as `contentRefs`. Each reference carries `source`, `revision`, `path`, `kind` (`text`, `array`, or `object`), `offset`, and `total`. Continue it with `POST /api/klient/session-view/{session_id}/transcript/content` and JSON `{ "agentId", "ref" }`. Send the reference unchanged. The HTTP status stays 200 and the envelope carries the result. `code: 0` returns `value` and, when more of the field remains, `next`. Submit that `next` unchanged as the next `ref`, until `next` is absent. The same `ref` again returns the same part; `"range": true` does not advance `offset`. On a text ref it only limits the slice that already starts at `offset` (about 4096 characters, inside the field budget), and a snapshot ref ignores `range`. A page is budgeted at 64 KiB, and each field slice aims at half of that, 32 KiB.
+
+While the source history is still being located, the same call returns `code: 40923` and `msg: "history_canonical_preparing"`; retry that body. When the field no longer matches the reference, it returns `code: 40922` and `msg: "Content changed; reload its preview before continuing."` Reload the transcript preview and continue from the new reference. An unknown reference returns `code: 40401` and `msg: "content unavailable"`. Other routes also use `40922` and `40923`; match this `msg`, not the number alone. An invalid body returns `code: 40001` and `msg: "invalid content reference"`.
 
 ### Prompts
 

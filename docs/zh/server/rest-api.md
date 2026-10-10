@@ -123,12 +123,15 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `POST /api/usage-export/destinations/{id}/auth/begin` | 为某个目的地发起 VibeCafe 登录 |
 | `POST /api/usage-export/auth/{id}/poll` | 轮询该次登录 |
 | `POST /api/usage-export/auth/{id}/cancel` | 取消该次登录 |
+| `POST /api/usage-export/destinations/{id}/disable` | 暂停该目的地，不退出登录 |
 
 官方 `vibecafe.ai` 目的地登录时，向 `POST /api/usage-export/destinations/{id}/auth/begin` 发送 `{}` 即可。省略 `storage` 默认为 `auto`：Kiki 将批准后的凭据保存到系统密钥链，密钥链写入失败时自动改存受文件权限保护的私有文件；文件并未静态加密。无需填写地址、client id 或密钥，服务地址固定为 `https://vibecafe.ai`。已有显式 `keyring` 请求仍只使用密钥链；显式 `private-file` 请求仍须提供 `acknowledge_file_storage: true`。Webhook 和脚本的凭据存储选择不变。
 
 返回包含 `flow_id`、`state`、`user_code`、`verification_uri`、`expires_at` 和 `poll_after_ms`。按返回间隔用 `POST /api/usage-export/auth/{id}/poll` 轮询，或用 `POST /api/usage-export/auth/{id}/cancel` 取消。流程从 `pending` 变成 `connected`、`cancelled`、`denied`、`expired` 或 `error`。自动保存的两种后端都失败时，返回 `error` 和 `error_category: "vibe-auth-storage-failed"`；恢复服务器凭据目录或密钥链的访问权限后，重新发起登录。
 
 `connected` 表示凭据已保存，不代表已启用外送。目的地回到 `draft`，保持 `enabled: false`，清除外送授权；预览内容后再启用。`credential_storage` 返回实际使用的 `keyring` 或 `private-file`，重启后仍按该落点读取。自定义地址目的地使用手动凭据，在那里发起设备登录会返回 `vibe-auth-official-only`。
+
+`POST /api/usage-export/destinations/{id}/disable` 暂停已经登录的目的地。它把 `enabled` 设为 `false`，`state` 设为 `"disabled"`，`next_at` 设为 `null`，并停掉正在进行的一次外送。已保存的账号和 `credential_storage` 保留，队列也保留。页面继续显示该账号。**暂停**，以及官方 vibecafe.ai 目的地上的**停用同步**，都调用它。删除已存凭据是另一次移除操作。
 
 #### 供应商与外部服务剩余额度
 
@@ -242,8 +245,18 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（需 `agent_id`、`since_seq` 和 `transcript_coverage_version=2`），`complete: false` 时需全量刷新 |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，不分页 |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
+| `GET /api/sessions/{session_id}/transcript/detail` | 读取一条 canonical 实体（`agent_id`、`kind`、`id`） |
+| `POST /api/klient/session-view/{session_id}/transcript/content` | 从一条 `contentRefs` 继续读取被截断的字段 |
 
 转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
+
+`GET /api/sessions/{session_id}/transcript/detail` 读取一条实体。查询参数 `agent_id` 是普通 Agent id，`kind` 取 `task`、`attachment`、`prompt` 或 `tool`，`id` 是该实体的 id。`kind=tool` 时，`lookup.status` 为 `found`、`preparing` 或 `not_found`。`found` 带有 `turnId`、`stepId` 和 `frame`。返回的 `frame`，以及 task、attachment、prompt 正文，可能带 `contentRefs`；用下面的 POST 续读。`preparing` 表示这次调用尚未在会话的源历史中定位到，用同一请求重试。此时 `read.source` 为 `derived`，`read.readiness` 为 `preparing`。`not_found` 表示已经定位的历史里没有这次调用。
+
+已在内存中覆盖完整的会话直接返回实时工具调用，`read.source` 为 `live`，`readiness` 为 `ready`。已定位的冷会话返回 `cold` 和 `ready`，正文从这份源历史回放。
+
+转录页把大字段留在 `contentRefs` 里。每条引用包含 `source`、`revision`、`path`、`kind`（`text`、`array` 或 `object`）、`offset` 和 `total`。用 `POST /api/klient/session-view/{session_id}/transcript/content` 继续读取，JSON 为 `{ "agentId", "ref" }`，`ref` 原样送回。HTTP 状态保持 200，结果在信封里。`code: 0` 返回 `value`；字段还有剩余时带 `next`。把这份 `next` 原样作为下一次的 `ref` 提交，直到响应不再带 `next`。再次提交同一条 `ref` 读到的仍是这一段；`"range": true` 不会推进 `offset`。对文本引用，它只限制已经放在 `offset` 上的那段切片（大约 4096 个字符，且仍在字段预算内），快照引用会忽略 `range`。单页预算为 64 KiB，每个字段切片瞄准其中一半，即 32 KiB。
+
+源历史仍在定位时，同一次调用返回 `code: 40923` 和 `msg: "history_canonical_preparing"`，用同一请求体重试。字段已与引用不一致时，返回 `code: 40922` 和 `msg: "Content changed; reload its preview before continuing."`。重新加载转录预览，再从新的引用继续。未知引用返回 `code: 40401` 和 `msg: "content unavailable"`。其他路由也会使用 `40922` 和 `40923`；以这条 `msg` 为准。请求体无效时返回 `code: 40001` 和 `msg: "invalid content reference"`。
 
 ### 提示词
 
