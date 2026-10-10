@@ -72,7 +72,7 @@ export function ProviderQuotaPanel() {
           ) : null}
           <button type="button" data-quota-refresh-button onClick={() => void handleHeaderRefresh()} disabled={loading || isRefetching || refreshingAll}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-hairline bg-paper px-3 text-[12.5px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50">
-            <Icon name="refresh" size={13} className={isRefetching || refreshingAll ? 'animate-spin' : undefined} />
+            <Icon name="refresh" size={14} className={isRefetching || refreshingAll ? 'animate-spin' : undefined} />
             {t(isRefetching || refreshingAll ? 'usage.quota.refreshing' : 'usage.quota.refresh')}
           </button>
         </div>
@@ -194,7 +194,7 @@ function ProviderQuotaCard({ source, isRefreshing, feedback: externalFeedback, o
               <button type="button" data-quota-source-refresh={source.id} onClick={() => { void runAction(onRefresh); }}
                 disabled={isRefreshing || isLocked} title={isLocked ? t('usage.quota.refreshAfter', { seconds: secondsLeft }) : undefined}
                 className="inline-flex h-7 items-center gap-1 rounded border border-hairline bg-paper px-2 text-[11px] font-medium text-ink transition-colors hover:bg-ink/[0.05] disabled:opacity-50">
-                <Icon name="refresh" size={11} className={isRefreshing ? 'animate-spin' : undefined} />
+                <Icon name="refresh" size={12} className={isRefreshing ? 'animate-spin' : undefined} />
                 {isLocked ? `${secondsLeft}s` : t('usage.quota.refresh')}
               </button>
             ) : null}

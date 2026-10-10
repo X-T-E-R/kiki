@@ -176,8 +176,16 @@ describe('sessionCreateSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects metadata without cwd', () => {
+  it('rejects metadata without cwd or a valid external client binding', () => {
     expect(sessionCreateSchema.safeParse({ metadata: {} }).success).toBe(false);
+    expect(sessionCreateSchema.safeParse({ metadata: { externalClient: { driver: 'external', connectionId: '' } } }).success).toBe(false);
+    expect(sessionCreateSchema.safeParse({ metadata: { externalClient: { driver: 'unknown', connectionId: 'connection-example' } } }).success).toBe(false);
+  });
+
+  it('accepts an external client binding while the server resolves an automatic workspace', () => {
+    const metadata = { externalClient: { driver: 'external', connectionId: 'connection-example' } };
+    expect(sessionCreateSchema.parse({ metadata }).metadata).toEqual(metadata);
+    expect(sessionSchema.shape.metadata.safeParse(metadata).success).toBe(false);
   });
 });
 

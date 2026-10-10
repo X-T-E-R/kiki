@@ -11,6 +11,8 @@ export const MAIN_AGENT_ID = 'main';
  */
 export type AgentStatus =
   | 'unknown'
+  | 'idle'
+  | 'lost'
   | 'running'
   | 'suspended'
   | 'completed'
@@ -1048,7 +1050,9 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
   }
   switch (raw) {
     case 'unknown':
-      return 'unknown';
+    case 'idle':
+    case 'lost':
+      return raw;
     case 'running':
     case 'queued':
     case 'working':
@@ -1060,7 +1064,6 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
       return 'completed';
     case 'failed':
     case 'timed_out':
-    case 'lost':
       return 'failed';
     case 'cancelled':
     case 'killed':
@@ -1074,7 +1077,7 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
 
 function statusRank(status: AgentStatus): number {
   if (status === 'unknown') return 0;
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 2;
+  if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost') return 2;
   return 1;
 }
 
@@ -1181,7 +1184,7 @@ function isActiveStatus(status: AgentStatus): boolean {
 
 /** Terminal statuses are never busy; running/suspended/background stay active. */
 function busyFromStatus(status: AgentStatus, hinted?: boolean): boolean {
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return false;
+  if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost' || status === 'idle') return false;
   return hinted ?? isActiveStatus(status);
 }
 

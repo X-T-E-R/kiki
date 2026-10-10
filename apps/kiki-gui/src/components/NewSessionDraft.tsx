@@ -262,18 +262,18 @@ export function buildNewSessionCreate(input: {
     plan_mode: input.planMode,
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
-  const externalClient = external ? {
+  const externalClient = externalConnectionId !== undefined ? {
     driver: 'external' as const,
     connectionId: externalConnectionId,
   } : undefined;
-  const metadata = {
-    ...(input.cwd !== '' ? { cwd: input.cwd } : {}),
-    ...(externalClient !== undefined ? { externalClient } : {}),
+  const metadata = input.cwd !== ''
+    ? { cwd: input.cwd, externalClient }
+    : externalClient === undefined ? undefined : { externalClient };
+  return {
+    metadata,
+    workspace_id: input.cwd === '' ? input.workspaceId : undefined,
+    ...persona, agent_config, ...isolation, ephemeral: input.ephemeral,
   };
-  const hasMetadata = Object.keys(metadata).length > 0;
-  return input.cwd !== ''
-    ? { metadata, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral }
-    : { ...(hasMetadata ? { metadata } : {}), ...(input.workspaceId !== undefined ? { workspace_id: input.workspaceId } : {}), ...persona, agent_config, ...isolation, ephemeral: input.ephemeral };
 }
 
 export const createSessionInputOf = buildNewSessionCreate;

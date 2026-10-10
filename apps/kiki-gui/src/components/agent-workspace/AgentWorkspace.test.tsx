@@ -574,7 +574,7 @@ it('activates a child skill with its target, payload, switch dependency, and sta
     after_model_switch: 'skill-operation',
     prompt_id: expect.any(String),
   });
-  expect(firstBody.attachments).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
+  expect(firstBody['attachments']).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
   expect(textarea.value).toBe('/review --fix');
 
   await clickComposerSend();

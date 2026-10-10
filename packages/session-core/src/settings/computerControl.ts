@@ -6,6 +6,6 @@ export function computerControlPreference(config: Pick<ConfigResponse, 'computer
   return config.computer_control?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE;
 }
 
-export function computerControlPreferencePatch(preference: ComputerUsagePreference | null): PatchConfigRequest {
+export function computerControlPreferencePatch(preference: ComputerUsagePreference | null): Pick<PatchConfigRequest, 'computer_control'> {
   return { computer_control: { usage_preference: preference } };
 }

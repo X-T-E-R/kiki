@@ -76,6 +76,7 @@ export type IconName =
   | 'eye'
   | 'eyeOff'
   | 'copy'
+  | 'refresh'
   // Places and relations
   | 'board'
   | 'usage'
@@ -83,6 +84,7 @@ export type IconName =
   | 'notes'
   | 'persona'
   | 'branch'
+  | 'room'
   | 'thread'
   | 'compass';
 
@@ -308,8 +310,11 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M10.5 5.5V4.1a1.6 1.6 0 0 0-1.6-1.6H4.1a1.6 1.6 0 0 0-1.6 1.6v4.8a1.6 1.6 0 0 0 1.6 1.6h1.4" />
     </>
   ),
+  refresh: <path d="M13 5V2.5m0 2.5h-2.5M13 5a5.2 5.2 0 1 0 .1 5.8" />,
   // An arrow leaving a line: a session another session started.
   thread: <path d="M4 2.8v5.4c0 1.4 1.1 2.5 2.5 2.5H12m-2.6-2.6 2.6 2.6-2.6 2.6" />,
+  // A hash: a room is a named group (# is how the sidebar and chips write it).
+  room: <path d="M6.3 2.6 5.2 13.4M10.9 2.6 9.8 13.4M3 5.6h10.4M2.6 10.4H13" />,
   // A face on a kept card: the Personas page (who, not what it can do).
   persona: (
     <>

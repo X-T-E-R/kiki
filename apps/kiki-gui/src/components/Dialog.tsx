@@ -69,7 +69,7 @@ const DEFAULT_PANEL_CLASS = `${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`;
 
 export function Dialog({
   onClose, ariaLabel, overlayId, panelClassName, overlayClassName, children,
-  stacked, role = 'dialog', overlayData,
+  stacked, role = 'dialog', overlayData, dismissible = true,
 }: {
   onClose: () => void;
   /** Accessible name for the dialog (mirrors the visible title). */
@@ -82,6 +82,7 @@ export function Dialog({
   overlayClassName?: string;
   /** Opt into top-modal keyboard/focus ownership; inherited by nested dialogs. */
   stacked?: boolean;
+  dismissible?: boolean;
   role?: 'dialog' | 'alertdialog';
   overlayData?: Record<`data-${string}`, string>;
   children: ReactNode;
@@ -108,7 +109,7 @@ export function Dialog({
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      closeRef.current();
+      if (dismissible) closeRef.current();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => {
@@ -117,7 +118,7 @@ export function Dialog({
       unregister();
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [overlayId, depth, depth === undefined ? onClose : undefined]);
+  }, [overlayId, depth, dismissible, depth === undefined ? onClose : undefined]);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -190,7 +191,7 @@ export function Dialog({
         className={overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'}
         style={depth === undefined ? undefined : { zIndex: 50 + depth }}
         onPointerDown={(event) => {
-          if (event.target === event.currentTarget && (depth === undefined
+          if (dismissible && event.target === event.currentTarget && (depth === undefined
             ? panelRef.current && canRestoreModalFocus(panelRef.current)
             : ownership.current?.isTop())) onClose();
         }}

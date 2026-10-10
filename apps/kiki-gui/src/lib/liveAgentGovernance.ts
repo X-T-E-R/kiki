@@ -180,28 +180,22 @@ export function replaceConcurrencyResourceRules(
 export function concurrencyRulesPatch(rules: readonly ConcurrencyRule[]): { rules: Record<string, unknown>[] } {
   return {
     rules: rules.map((rule) => {
-      const anyRule = rule as Record<string, unknown>;
-      const rawResource = anyRule.resource;
+      const raw: Record<string, unknown> = { ...rule };
+      const rawResource = raw['resource'];
       const resource = rawResource === 'live_agent' ? 'agent_execution' : (rawResource ?? 'model_request');
       return {
         id: rule.id,
         resource,
         scope: rule.scope,
-        ...(rule.models !== undefined ? { models: [...rule.models] } : {}),
-        ...(rule.providers !== undefined ? { providers: [...rule.providers] } : {}),
-        ...(rule.executors !== undefined ? { executors: [...rule.executors] } : {}),
-        ...(rule.profiles !== undefined ? { profiles: [...rule.profiles] } : {}),
-        ...(rule.roles !== undefined ? { roles: [...rule.roles] } : {}),
-        ...(rule.subagentsOnly !== undefined || anyRule.subagents_only !== undefined
-          ? { subagents_only: Boolean(rule.subagentsOnly ?? anyRule.subagents_only) }
-          : {}),
-        ...(rule.maxConcurrent !== undefined || anyRule.max_concurrent !== undefined
-          ? { max_concurrent: rule.maxConcurrent ?? anyRule.max_concurrent }
-          : {}),
+        models: rule.models === undefined ? undefined : [...rule.models],
+        providers: rule.providers === undefined ? undefined : [...rule.providers],
+        executors: rule.executors === undefined ? undefined : [...rule.executors],
+        profiles: rule.profiles === undefined ? undefined : [...rule.profiles],
+        roles: rule.roles === undefined ? undefined : [...rule.roles],
+        subagents_only: rule.subagentsOnly ?? (typeof raw['subagents_only'] === 'boolean' ? raw['subagents_only'] : undefined),
+        max_concurrent: rule.maxConcurrent ?? (typeof raw['max_concurrent'] === 'number' ? raw['max_concurrent'] : undefined),
         overflow: rule.overflow,
-        ...(rule.maxWaitMs !== undefined || anyRule.max_wait_ms !== undefined
-          ? { max_wait_ms: rule.maxWaitMs ?? anyRule.max_wait_ms }
-          : {}),
+        max_wait_ms: rule.maxWaitMs ?? (typeof raw['max_wait_ms'] === 'number' ? raw['max_wait_ms'] : undefined),
         enabled: rule.enabled,
       };
     }),

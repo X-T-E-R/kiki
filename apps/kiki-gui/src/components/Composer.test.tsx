@@ -3398,7 +3398,7 @@ describe('Composer explicit profile file recovery', () => {
   });
 
   it('blocks a failed file preview with the original error and explicit retry', async () => {
-    previewFile.mockRejectedValue(new ApiError('Profile file is unavailable', 40001));
+    previewFile.mockRejectedValue(new ApiError({ msg: 'Profile file is unavailable', code: 40001, data: null }));
     const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper' });
     const diagnostic = container.querySelector('[data-selection-diagnostic]')!;
     expect(diagnostic.textContent).toContain('Profile file is unavailable');

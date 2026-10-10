@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MessageContent, Session, SessionSnapshotResponse } from '@kiki/protocol';
+import type { MessageContent, PromptSubmitResult, Session, SessionSnapshotResponse } from '@kiki/protocol';
 import { sessionViewSignalSchema } from '@kiki/klient/contract/session/view';
 
 import type {
@@ -1202,7 +1202,7 @@ describe('SessionController message closure', () => {
 });
 
 describe('SessionController transcript authority', () => {
-  async function openTranscriptController(options: { rewriteResetTimeoutMs?: number } = {}) {
+  async function openTranscriptController(options: { rewriteResetTimeoutMs?: number; historyPreviewBytes?: number } = {}) {
     const client = {
       snapshot: vi.fn(async () => snapshot()),
       listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
@@ -1251,11 +1251,66 @@ describe('SessionController transcript authority', () => {
       client as unknown as KikiClient,
       fakeView(client, socket),
       'session_test',
-      { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs },
+      { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs, historyPreviewBytes: options.historyPreviewBytes },
     );
     await controller.open();
     return { controller, client, socket, flushAll };
   }
+
+  it('restores an evicted history preview and its ContentRefs from the original bounded page cursor', async () => {
+    const { controller, client, flushAll } = await openTranscriptController({ historyPreviewBytes: 1024 });
+    const ref = { source: { kind: 'turn' as const, id: 'older' }, path: ['prompt'], revision: 'preview-revision', kind: 'text' as const, offset: 4000, total: 8000 };
+    const older = { kind: 'turn' as const, turnId: 'older', ordinal: 0, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'x'.repeat(4000), steps: [], contentRefs: [ref] };
+    const newest = { kind: 'turn' as const, turnId: 'newest', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'Newest', steps: [] };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newest], olderCursor: 'page-newest' }), 1, true));
+    client.getAgentTranscript.mockResolvedValue({ agent_id: 'main', items: [older], has_more: false });
+    await controller.loadOlderMessages();
+    expect(controller.historyPreviewPending('main', 'older')).toBe(true);
+    const release = controller.retainHistoryPreview('main', 'older');
+    try {
+      await waitFor(() => !controller.historyPreviewPending('main', 'older'));
+      flushAll();
+      expect(controller.contentRefsFor('main', ref.source)).toEqual([ref]);
+      expect(controller.getState().blocks.find((block) => block.kind === 'user' && block.turnId === 'older')).toMatchObject({ text: older.prompt });
+      expect(client.getAgentTranscript).toHaveBeenNthCalledWith(2, 'session_test', 'main',
+        { beforeItem: 'page-newest', beforeTurn: undefined, pageSize: 20 });
+    } finally { release(); }
+    expect(controller.historyPreviewPending('main', 'older')).toBe(true);
+    expect(controller.getState().hasMoreHistory).toBe(false);
+    controller.close();
+  });
+
+  it('settles failed and cancelled history preview reads and permits a later explicit retry', async () => {
+    const { controller, client, flushAll } = await openTranscriptController({ historyPreviewBytes: 1024 });
+    const older = { kind: 'turn' as const, turnId: 'older', ordinal: 0, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'x'.repeat(4000), steps: [] };
+    const newest = { ...older, turnId: 'newest', ordinal: 1, prompt: 'Newest' };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newest], olderCursor: 'page-newest' }), 1, true));
+    const page = { agent_id: 'main', items: [older], has_more: false };
+    client.getAgentTranscript.mockResolvedValueOnce(page);
+    await controller.loadOlderMessages();
+    client.getAgentTranscript.mockRejectedValueOnce(new Error('Read unavailable'));
+    expect(await controller.loadHistoryPreview('main', 'older')).toBe(false);
+    flushAll();
+    expect(controller.getState().detailLoads['history:older']).toMatchObject({ status: 'error' });
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockReturnValueOnce(held.promise);
+    const release = controller.retainHistoryPreview('main', 'older');
+    const flight = [...controller['historyPreviewReads'].values()][0]!;
+    release();
+    expect(flight.controller.signal.aborted).toBe(true);
+    held.reject(new DOMException('Read cancelled', 'AbortError'));
+    await waitFor(() => controller['historyPreviewReads'].size === 0);
+    flushAll();
+    expect(controller.getState().detailLoads['history:older']).toBeUndefined();
+    client.getAgentTranscript.mockResolvedValueOnce(page);
+    const retryRelease = controller.retainHistoryPreview('main', 'older');
+    await waitFor(() => !controller.historyPreviewPending('main', 'older'));
+    retryRelease();
+    controller.close();
+  });
 
   it.each([
     { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
@@ -2464,26 +2519,30 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('changes only queue positions on reorder, preserving explicit controls and scheduled origins', async () => {
+  it('changes only user queue positions and preserves explicit controls in the canonical prompt store', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(resetEvent('main', emptySnapshot({ prompts: [
       { promptId: 'plain', userMessageId: 'plain', status: 'queued', createdAt: '2026-01-01T00:00:00.000Z', queuePosition: 0,
         content: [{ type: 'text', text: 'Plain message' }] },
       { promptId: 'bound', userMessageId: 'bound', status: 'queued', createdAt: '2026-01-01T00:00:01.000Z', queuePosition: 1,
         content: [{ type: 'text', text: 'Selected model' }], runtimeControls: { model: 'example/model', thinking: 'high', modelSwitchMode: 'fresh' } },
-      { promptId: 'scheduled', userMessageId: 'scheduled', status: 'queued', createdAt: '2026-01-01T00:00:02.000Z', queuePosition: 2,
-        originKind: 'cron_job', originDeliveryMode: 'queue', revision: 3,
-        content: [{ type: 'text', text: 'Scheduled message' }] },
+      { promptId: 'last', userMessageId: 'last', status: 'queued', createdAt: '2026-01-01T00:00:02.000Z', queuePosition: 2,
+        revision: 3, content: [{ type: 'text', text: 'Another user message' }] },
     ] }), 1));
     flushAll();
+    const store = controller['agentTranscripts'].get('main')!;
+    const promptFields = () => store.snapshot().prompts.map(({ promptId, runtimeControls, content, revision }) => ({ promptId, runtimeControls, content, revision }));
+    const beforeFields = promptFields();
+    expect(beforeFields.find((prompt) => prompt.promptId === 'plain')?.runtimeControls).toBeUndefined();
+    expect(beforeFields.find((prompt) => prompt.promptId === 'bound')?.runtimeControls).toEqual({ model: 'example/model', thinking: 'high', modelSwitchMode: 'fresh' });
     const before = new Map(queuedPromptPreviews(controller.getState()).map((row) => [row.promptId, row]));
-    client.movePrompt.mockResolvedValueOnce({ moved: true, prompt_id: 'scheduled', target_index: 0, queued_prompt_ids: ['scheduled', 'plain', 'bound'] });
-    await controller.moveQueued('scheduled', 0);
+    client.movePrompt.mockResolvedValueOnce({ moved: true, prompt_id: 'last', target_index: 0, queued_prompt_ids: ['last', 'plain', 'bound'] });
+    await controller.moveQueued('last', 0);
     const rows = queuedPromptPreviews(controller.getState());
-    expect(rows.map((row) => row.promptId)).toEqual(['scheduled', 'plain', 'bound']);
+    expect(rows.map((row) => row.promptId)).toEqual(['last', 'plain', 'bound']);
     for (const [index, row] of rows.entries()) expect(row).toEqual({ ...before.get(row.promptId), queuePosition: index });
-    expect(rows.find((row) => row.promptId === 'plain')?.runtimeControls).toBeUndefined();
-    expect(client.movePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'scheduled', { target_index: 0 });
+    expect(promptFields()).toEqual(beforeFields);
+    expect(client.movePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'last', { target_index: 0 });
     expect(client.submitPrompt).not.toHaveBeenCalled();
     expect(client.replacePrompt).not.toHaveBeenCalled();
     controller.close();

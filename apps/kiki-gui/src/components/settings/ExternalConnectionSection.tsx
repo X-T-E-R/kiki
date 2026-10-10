@@ -94,7 +94,7 @@ export function ExternalConnectionSection() {
     setBusy('preview');
     setFeedback(null);
     try {
-      const source = snapshot.catalog?.downloadUrl ?? CLOUDFLARE_PLUGIN_ID;
+      const source = snapshot.catalog?.source ?? CLOUDFLARE_PLUGIN_ID;
       const plan = await connection.previewInstall(source);
       setInstallPlan(plan);
       setInstallSource(source);
@@ -334,11 +334,11 @@ export function ExternalConnectionSection() {
         title={t('st.conn.ext.installConfirmTitle')}
         body={
           installPlan
-            ? `${installPlan.name} (${installPlan.version})\n${t('st.conn.ext.installConfirmBody', { id: installPlan.id, fingerprint: installPlan.fingerprint.slice(0, 16) })}`
+            ? `${installPlan.id}${installPlan.version === undefined ? '' : ` (${installPlan.version})`}\n${t('st.conn.ext.installConfirmBody', { id: installPlan.id, fingerprint: installPlan.fingerprint.slice(0, 16) })}`
             : t('st.conn.ext.installPlugin')
         }
         confirmLabel={t('st.conn.ext.installPlugin')}
-        tone="primary"
+        tone="default"
         onConfirm={() => { void handleConfirmInstall(); }}
         onCancel={() => { setConfirmInstall(false); setInstallPlan(null); }}
       />
@@ -449,7 +449,7 @@ function AvailableTunnelContent({
             className={SECONDARY_BUTTON}
             title={t('st.conn.ext.refresh')}
           >
-            <Icon name="refresh" size={13} />
+            <Icon name="refresh" size={14} />
           </button>
         </div>
       </div>

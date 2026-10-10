@@ -961,6 +961,34 @@ describe('AgentPromptService', () => {
     });
   });
 
+  it('reorders scheduled prompts without changing durable origin, revision, content or delivery timing', async () => {
+    const { prompt, states, eventBus } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active', message: message('active') });
+    await prompt.enqueue({ id: 'ordinary', message: message('ordinary') });
+    const origin = { kind: 'cron_job' as const, jobId: 'job-example', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false };
+    await prompt.enqueue({ id: 'scheduled', message: { ...message('Scheduled message'), origin }, appendTiming: 'tasks_done' });
+    prompt.replace('scheduled', [{ type: 'text', text: 'Scheduled message edited' }]);
+    prompt.changeTiming('scheduled', 'subagents_done', 1);
+    prompt.replace('scheduled', [{ type: 'text', text: 'Scheduled message final' }]);
+    const before = structuredClone(states.get(promptQueueKey).entries.get('scheduled'));
+    expect(before).toMatchObject({ revision: 3, appendTiming: 'subagents_done', message: { origin, content: [{ type: 'text', text: 'Scheduled message final' }] } });
+    const submitted = vi.fn();
+    const replaced = vi.fn();
+    const moved = vi.fn();
+    eventBus.subscribe(PromptSubmitted, submitted);
+    eventBus.subscribe(PromptReplaced, replaced);
+    eventBus.subscribe(PromptMoved, moved);
+
+    prompt.move('scheduled', 0);
+
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['scheduled', 'ordinary']);
+    expect(states.get(promptQueueKey).order).toEqual(['scheduled', 'ordinary']);
+    expect(states.get(promptQueueKey).entries.get('scheduled')).toEqual(before);
+    expect(moved).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ promptId: 'scheduled', targetIndex: 0, queuedPromptIds: ['scheduled', 'ordinary'] }));
+    expect(submitted).not.toHaveBeenCalled();
+    expect(replaced).not.toHaveBeenCalled();
+  });
+
   it('rejects moving a running, missing, or out-of-range prompt without mutating the queue', async () => {
     const { prompt } = harness();
     await prompt.enqueue({ id: 'active', message: message('active') });

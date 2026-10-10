@@ -5,7 +5,7 @@
  * kap-server `routes/sessionExport.ts`.
  */
 
-import type { Session } from '@kiki/protocol';
+import { compactSessionResponseSchema, type CompactSessionResponse, type Session } from '@kiki/protocol';
 
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError } from '../transport';
@@ -59,9 +59,10 @@ export async function undoLastTurn(ctx: SessionActionContext, session: Session):
 export async function compactSessionContext(
   ctx: SessionActionContext,
   session: Session,
-): Promise<void> {
-  await ctx.client.compactSession(session.id, {});
+): Promise<CompactSessionResponse> {
+  const response = compactSessionResponseSchema.parse(await ctx.client.compactSession(session.id, {}));
   ctx.refreshSessions();
+  return response;
 }
 
 /**
@@ -121,7 +122,7 @@ export function sessionActionErrorMessage(error: unknown): string {
       case API_CODES.SESSION_UNDO_UNAVAILABLE:
         return 'Nothing to undo — there is no earlier turn to roll back to.';
       case API_CODES.COMPACTION_UNABLE:
-        return 'Nothing to compact yet — the history is too short.';
+        return 'There is no safe earlier context to compact.';
       case API_CODES.SESSION_BUSY:
         return 'The session is busy — try again when the current turn finishes.';
       case API_CODES.MESSAGE_ACTION_UNAVAILABLE:

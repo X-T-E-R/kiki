@@ -2739,10 +2739,11 @@ export function SessionView({
             : composerAttachments.some((item) => item.kind === 'upload')
               ? t('sv.fileEcho')
               : t('sv.imageEcho');
+        const modelControlTouched = modelTouched && composerSelection.modelChoice === modelChoice;
         const profileSwitch = resolveProfileSwitchSubmission({
           pendingProfile,
           boundProfile,
-          modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
+          modelTouched: modelControlTouched,
           effortTouched: effortTouched && composerSelection.effortChoice === effortChoice,
           model: effectiveModel,
           thinking: effectiveEffort,

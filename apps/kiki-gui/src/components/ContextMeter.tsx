@@ -98,15 +98,18 @@ const LEVEL_STROKE: Record<ContextUsageLevel, string> = {
 };
 
 const ContextBreakdownContext = createContext<ContextBreakdown | undefined>(undefined);
+const CompactionProgressContext = createContext<import('./useCompactionProgress').CompactionProgress | undefined>(undefined);
 
 export function ContextBreakdownProvider({
   value,
+  compaction,
   children,
 }: {
   value: ContextBreakdown | undefined;
+  compaction?: import('./useCompactionProgress').CompactionProgress;
   children: ReactNode;
 }) {
-  return <ContextBreakdownContext.Provider value={value}>{children}</ContextBreakdownContext.Provider>;
+  return <ContextBreakdownContext.Provider value={value}><CompactionProgressContext.Provider value={compaction}>{children}</CompactionProgressContext.Provider></ContextBreakdownContext.Provider>;
 }
 
 /** One labeled token row inside the detail card. */
@@ -164,6 +167,8 @@ export function ContextMeter({
 }) {
   const { t, time, locale } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
+  const compaction = useContext(CompactionProgressContext);
+  const manualPending = compaction?.source === 'manual' && (compaction.phase === 'queued' || compaction.phase === 'running');
   const detailsId = useId();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -266,6 +271,11 @@ export function ContextMeter({
         <span className={`text-[12px] tabular-nums ${warn ? 'font-medium' : '@max-[22rem]/toolbar:sr-only'}`}>{label}</span>
         {warn ? <span className="sr-only">{t('context.detailsHint')}</span> : null}
       </button>
+      {compaction !== undefined ? (
+        <span role="status" data-compaction-progress={compaction.phase} title={compaction.reason} className={`absolute right-0 bottom-full mb-1 whitespace-nowrap text-[11px] ${compaction.phase === 'failed' ? 'text-danger' : 'text-ink-soft'}`}>
+          {t(`context.compaction.${compaction.source}.${compaction.phase}`)}
+        </span>
+      ) : null}
       {open ? (
         <div
           id={detailsId}
@@ -415,6 +425,7 @@ export function ContextMeter({
           {onCompact !== undefined ? (
             <CompactActions
               strategy={autoCompact?.strategy}
+              pending={manualPending}
               onCompact={() => {
                 setOpen(false);
                 onCompact();
@@ -422,7 +433,7 @@ export function ContextMeter({
               onCompactWith={(strategy) => {
                 setOpen(false);
                 void autoCompact?.strategy?.compact(strategy)
-                  .then(() => { pushToast({ tone: 'success', text: t(`context.strategy.compactRequested.${strategy}`) }); })
+                  .then((receipt) => { pushToast({ tone: 'success', text: t(receipt?.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) }); })
                   .catch((error: unknown) => {
                     pushToast({ tone: 'error', text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }) });
                   });
@@ -443,10 +454,12 @@ const COMPACT_OPTIONS: readonly ManualCompactStrategy[] = ['summarize', 'fresh']
  */
 function CompactActions({
   strategy,
+  pending,
   onCompact,
   onCompactWith,
 }: {
   strategy: ContextStrategyHandle | undefined;
+  pending: boolean;
   onCompact: () => void;
   onCompactWith: (strategy: ManualCompactStrategy) => void;
 }) {
@@ -466,7 +479,7 @@ function CompactActions({
   const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
-      <button type="button" data-context-compact onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
     );
@@ -478,12 +491,13 @@ function CompactActions({
   };
   return (
     <div ref={rootRef} className="relative mt-3 flex gap-px">
-      <button type="button" data-context-compact onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
       <button
         type="button"
         data-context-compact-with
+        disabled={pending}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-label={t('context.strategy.compactOptionsLabel')}

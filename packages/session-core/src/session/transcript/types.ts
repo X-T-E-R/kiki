@@ -311,7 +311,7 @@ export interface SubagentBlock {
   readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
-  readonly status: 'unknown' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
+  readonly status: 'unknown' | 'idle' | 'lost' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
   readonly summary: string | undefined;
   readonly error: string | undefined;
   readonly usage?: TokenUsage;

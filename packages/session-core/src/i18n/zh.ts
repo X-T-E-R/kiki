@@ -3282,6 +3282,7 @@ export const zh = {
   'st.requestIdentity.overridesPlaceholder': '{\n  "client": { "user_agent": "host" }\n}',
   'st.requestIdentity.overridesRequiredHint': '至少写一个字段，例如 client.user_agent。未知字段会被拒绝。',
   'st.requestIdentity.overridesOptionalHint': '可选的稀疏覆盖会叠加在所选 preset 上；切换 preset 不会清空此 JSON。',
+  'st.requestIdentity.overridesStartHint': '留空则沿用继承的身份。在此填写即把本层切为仅自定义覆盖。',
   'st.requestIdentity.clearLayer': '清除此层',
   'st.providers.requestIdentity': '提供商请求身份',
   'st.providers.requestIdentityHint':
@@ -8455,7 +8456,6 @@ export const zh = {
   'usage.governance.unknownExecutor': '未知执行器',
   'usage.governance.unknownModelByExecutor': '未知／由执行器决定',
   'usage.governance.allRules': '全部规则',
-  'usage.governance.session': '会话',
   'usage.quota.status.partial': '部分可用',
   'usage.quota.status.unknown': '未知',
   'usage.quota.action.login': '前往登录',
@@ -9544,6 +9544,7 @@ export const zh = {
   'st.recipe.slot.anchor': '锚定提示',
   'st.recipe.slotFields': '提示字段',
   'st.recipe.scope.session': '会话',
+  'st.recipe.scope.turn': '本轮',
   'st.recipe.anchorWindow': '在前 {steps} 次{scope}请求中替换 Recipe 提示段。',
   'st.recipe.usedBy': '被这些模型使用：{models}',
   'st.recipe.forkCopy': '复制并编辑',

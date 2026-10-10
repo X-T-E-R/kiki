@@ -442,7 +442,12 @@ export function recoverSubmittedDraft(key: string, text: string, attachments: re
   const current = readComposerState(key);
   if (readDraft(key) !== '' || (current.attachments?.length ?? 0) !== 0) return false;
   writeDraft(key, text);
-  writeComposerState(key, { ...current, attachments });
+  writeComposerState(key, {
+    ...current, attachments, annotations: current.annotations ?? [],
+    permissionMode: current.permissionMode, planMode: current.planMode,
+    planGate: current.planGate, goalObjective: current.goalObjective,
+    modelOverride: current.modelOverride, effortOverride: current.effortOverride,
+  });
   for (const listener of appendListeners) listener(key, attachments);
   return true;
 }

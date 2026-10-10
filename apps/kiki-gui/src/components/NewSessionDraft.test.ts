@@ -4,7 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionCreate } from '@kiki/protocol';
+import { sessionCreateSchema, type SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
@@ -191,6 +191,13 @@ describe('buildNewSessionCreate', () => {
     });
     expect(registered.workspace_id).toBe('wd_example');
     expect(registered.metadata).not.toHaveProperty('cwd');
+    expect(sessionCreateSchema.safeParse(registered).success).toBe(true);
+    const automatic = buildNewSessionCreate({
+      cwd: '', profile: 'agent', permissionMode: 'manual', planMode: false,
+      execution: { executor: 'external-client', profile: undefined, overrides: undefined, external_connection_id: 'conn_example' },
+    });
+    expect(automatic.metadata).toEqual({ externalClient: { driver: 'external', connectionId: 'conn_example' } });
+    expect(sessionCreateSchema.safeParse(automatic).success).toBe(true);
   });
 
   it('applies every create-supported execution control before a skill handoff can run', () => {
@@ -1604,7 +1611,7 @@ describe('explicit profile file drafts', () => {
   });
 
   it('preserves failed file previews and manual choices without sending or falling back to the catalog', async () => {
-    client.klient.rest.agents.previewFile.mockRejectedValue(new ApiError('Profile could not be loaded', 40001));
+    client.klient.rest.agents.previewFile.mockRejectedValue(new ApiError({ msg: 'Profile could not be loaded', code: 40001, data: null }));
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
       workspaceId: AUTO_WORKSPACE_ID,
       execution: { executor: 'native', profile_file: '/workspace/profiles/helper.md' },

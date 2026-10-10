@@ -2534,7 +2534,6 @@ describe('message row actions', () => {
       rowActions,
       undefined,
       undefined,
-      true,
     );
     const row = container.querySelector('[data-block-id="user-annotation-edit"]')!;
     await act(async () => { click(row.querySelector('[data-row-action="copy"]')!); });

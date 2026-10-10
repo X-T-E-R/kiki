@@ -376,6 +376,10 @@ export interface AgentTranscriptStepUsage {
 }
 
 export interface AgentTranscriptTask {
+  readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly taskId: string;
   readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
   readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';

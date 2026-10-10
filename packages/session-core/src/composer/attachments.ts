@@ -59,6 +59,14 @@ export interface SshHostAttachment {
 
 export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment | RetainedAttachment | SshHostAttachment;
 
+/** Preserve existing media parts verbatim when opening a message for editing. */
+export function retainedAttachmentsFromContent(content: readonly MessageContent[]): RetainedAttachment[] {
+  return content.flatMap((part): RetainedAttachment[] => {
+    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];
+    return [{ kind: 'retained', name: part.name ?? (part.type === 'file' ? part.file_id : part.type), content: part }];
+  });
+}
+
 /**
  * Preserve historical SSH-shaped text without guessing whether the user wrote it.
  * Resident SSH hosts come from the session host list, not message syntax.

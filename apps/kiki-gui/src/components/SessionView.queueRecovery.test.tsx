@@ -10,6 +10,7 @@ import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, resetDraftMemoryForTests, readComposerState } from '@kiki/session-core/composer';
 import { createViewState } from '@kiki/session-core/session';
+import { emptySessionUsage } from '@kiki/protocol';
 
 const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, queued: true, partialPrompts: false, structureUnread: false, loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true) }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
@@ -193,9 +194,10 @@ it('renders the canonical queue again after a fresh controller mount without res
         as_of_seq: 10, epoch: 'session-epoch',
         session: { id: 'session-example', title: 'Queue recovery example', workspace_id: 'workspace-example',
           metadata: { cwd: '/example' }, agent_config: { model: 'example/model', profile: 'agent' },
-          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
+          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+          busy: false, usage: emptySessionUsage(), permission_rules: [], message_count: 0, last_seq: 10 },
         messages: { items: [], has_more: false }, in_flight_turn: null, pending_approvals: [], pending_questions: [],
-      } as import('@kiki/protocol').SessionSnapshotResponse)),
+      } satisfies import('@kiki/protocol').SessionSnapshotResponse)),
       transcript: { page: vi.fn(), catchUp: vi.fn() },
       subscribe: (_input, listener) => {
         receive = listener;

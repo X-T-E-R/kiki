@@ -8,6 +8,7 @@ import type {
   ApprovalDecision,
   ApprovalScope,
   DeferredAppendTiming,
+  ExecutionSelection,
   MessageContent,
   PermissionMode,
   PromptPlanGate,
@@ -76,6 +77,8 @@ import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer 
 import type { QueuedPromptMeta } from './transcript/types';
 import { stabilizeAgentForest, type AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
+import { releaseFramePayload } from '@kiki/transcript';
+import { preserveSubmission } from '../composer/submissionRecovery';
 
 export type Listener = () => void;
 
@@ -276,6 +279,10 @@ export class SessionController {
   private readonly globalCoverage = new Map<string, AgentTranscriptSnapshot['globalCoverage']>();
   private readonly detailReads = new Map<string, Promise<boolean>>();
   private readonly olderPageCursors = new Map<string, string>();
+  private readonly historyPreviewPages = new Map<string, { agentId: string; beforeItem?: string; beforeTurn?: string; unloaded: boolean }>();
+  private readonly historyPreviewReaders = new Map<string, number>();
+  private readonly historyPreviewReads = new Map<string, { agentId: string; controller: AbortController; promise: Promise<boolean> }>();
+  private readonly historyPreviewBytes: number;
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
@@ -299,7 +306,7 @@ export class SessionController {
     client: SessionTransport,
     private readonly view: SessionViewFacade,
     sessionId: string,
-    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number } = {},
+    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number; historyPreviewBytes?: number } = {},
   ) {
     this.client = client;
     this.sessionId = sessionId;
@@ -307,6 +314,7 @@ export class SessionController {
     this.usesBrowserScheduler = options.scheduler === undefined;
     this.visibilityDocument = this.usesBrowserScheduler ? browserVisibilityDocument() : undefined;
     this.rewriteResetTimeoutMs = options.rewriteResetTimeoutMs ?? REWRITE_RESET_TIMEOUT_MS;
+    this.historyPreviewBytes = options.historyPreviewBytes ?? 64 * 1024 * 1024;
     this.state = createViewState(sessionId);
     this.publishedState = this.state;
     this.emptyAgentState = createViewState(sessionId);
@@ -632,6 +640,9 @@ export class SessionController {
     this.pendingTranscriptAgents.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
+    this.historyPreviewReads.clear();
+    this.historyPreviewReaders.clear();
+    this.historyPreviewPages.clear();
     this.contentReaders.clear();
     this.contentBodies.clear();
     this.toolDetails.clear();
@@ -1137,6 +1148,113 @@ export class SessionController {
     }
   }
 
+  historyPreviewPending(agentId: string, turnId: string): boolean {
+    return this.historyPreviewPages.get(`${agentId}/${turnId}`)?.unloaded === true;
+  }
+
+  retainHistoryPreview(agentId: string, turnId: string): () => void {
+    const key = `${agentId}/${turnId}`;
+    this.historyPreviewReaders.set(key, (this.historyPreviewReaders.get(key) ?? 0) + 1);
+    void this.loadHistoryPreview(agentId, turnId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.historyPreviewReaders.get(key) ?? 1) - 1;
+      if (remaining > 0) this.historyPreviewReaders.set(key, remaining);
+      else this.historyPreviewReaders.delete(key);
+      const page = this.historyPreviewPages.get(key);
+      if (page !== undefined) {
+        const requestKey = JSON.stringify([agentId, page.beforeItem, page.beforeTurn]);
+        const retained = [...this.historyPreviewPages].some(([candidateKey, candidate]) => candidate.agentId === agentId &&
+          candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn && this.historyPreviewReaders.has(candidateKey));
+        if (!retained) this.historyPreviewReads.get(requestKey)?.controller.abort();
+      }
+      if (this.trimHistoryPreviews(agentId)) this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId));
+    };
+  }
+
+  private trimHistoryPreviews(agentId: string): boolean {
+    const older = this.olderPages.get(agentId);
+    if (older === undefined) return false;
+    let bytes = estimateJsonBytes(older);
+    if (bytes <= this.historyPreviewBytes) return false;
+    let changed = false;
+    const liveIds = new Set(this.ensureAgentTranscript(agentId).snapshot().items.flatMap((item) => item.kind === 'turn' ? [item.turnId] : []));
+    const items = older.items.map((item) => {
+      if (bytes <= this.historyPreviewBytes || item.kind !== 'turn' || liveIds.has(item.turnId)) return item;
+      const key = `${agentId}/${item.turnId}`;
+      const page = this.historyPreviewPages.get(key);
+      const reading = [...this.contentReaders.values()].some((reader) => reader.agentId === agentId &&
+        (reader.source.kind === 'turn' && reader.source.id === item.turnId || reader.source.kind === 'frame' && reader.source.turnId === item.turnId));
+      if (page === undefined || page.unloaded || this.historyPreviewReaders.has(key) || reading ||
+          item.contentRefs?.some((ref) => ref.path[0] === 'steps' && (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames'))) return item;
+      const header = { ...item, prompt: item.prompt?.slice(0, 256), contentRefs: undefined,
+        steps: item.steps.map((step) => ({ ...step, frames: step.frames.map((frame) => {
+          const identity = releaseFramePayload(frame);
+          if (frame.kind === 'text' || frame.kind === 'thinking') return { ...identity, text: frame.text.slice(0, 256) };
+          if (frame.kind === 'notice') return { ...identity, message: frame.message.slice(0, 256) };
+          return identity;
+        }) })) };
+      bytes -= Math.max(0, estimateJsonBytes(item) - estimateJsonBytes(header));
+      page.unloaded = true;
+      for (const [bodyKey, entry] of this.contentBodies) if (entry.agentId === agentId &&
+        (entry.source.kind === 'turn' && entry.source.id === item.turnId || entry.source.kind === 'frame' && entry.source.turnId === item.turnId)) this.contentBodies.delete(bodyKey);
+      changed = true;
+      return header;
+    });
+    if (changed) this.olderPages.set(agentId, { ...older, items });
+    return changed;
+  }
+
+  async loadHistoryPreview(agentId: string, turnId: string): Promise<boolean> {
+    const key = `${agentId}/${turnId}`;
+    const page = this.historyPreviewPages.get(key);
+    if (this.closed || this.isSuspended || page === undefined || !page.unloaded) return false;
+    const requestKey = JSON.stringify([agentId, page.beforeItem, page.beforeTurn]);
+    const existing = this.historyPreviewReads.get(requestKey);
+    if (existing !== undefined) return existing.promise;
+    const controller = new AbortController();
+    const generation = this.historyGeneration.get(agentId) ?? 0;
+    this.snapshotControllers.add(controller);
+    this.setDetailLoad(agentId, `history:${turnId}`, { status: 'loading' });
+    const promise = (async () => {
+      try {
+        const result = await this.readPreparedContent(() => this.view.transcript.page({ agentId,
+          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal }), controller.signal);
+        if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        const older = this.olderPages.get(agentId);
+        if (older === undefined) return false;
+        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        const restored = new Map(result.items.flatMap((item) => item.kind === 'turn' ? [[item.turnId, item] as const] : []));
+        if (!restored.has(turnId)) throw new Error('History preview is no longer available at its cursor');
+        this.olderPages.set(agentId, { ...older, items: older.items.map((item) => {
+          if (item.kind !== 'turn') return item;
+          const target = this.historyPreviewPages.get(`${agentId}/${item.turnId}`);
+          const replacement = restored.get(item.turnId);
+          if (target?.unloaded !== true || replacement === undefined) return item;
+          target.unloaded = false;
+          this.setDetailLoad(agentId, `history:${item.turnId}`, undefined);
+          return replacement;
+        }) });
+        this.trimHistoryPreviews(agentId);
+        this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId));
+        return true;
+      } catch (error) {
+        if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation) for (const [candidateKey, candidate] of this.historyPreviewPages) {
+          if (candidate.agentId === agentId && candidate.unloaded && candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn)
+            this.setDetailLoad(agentId, `history:${candidateKey.slice(agentId.length + 1)}`, controller.signal.aborted ? undefined : { status: 'error', message: errorMessage(error, 'Could not load history preview') });
+        }
+        return false;
+      } finally {
+        this.snapshotControllers.delete(controller);
+        if (this.historyPreviewReads.get(requestKey)?.controller === controller) this.historyPreviewReads.delete(requestKey);
+      }
+    })();
+    this.historyPreviewReads.set(requestKey, { agentId, controller, promise });
+    return promise;
+  }
+
   async loadOlderMessages(agentId: string = MAIN_AGENT_ID): Promise<boolean> {
     return this.loadOlderTranscript(agentId);
   }
@@ -1183,6 +1301,9 @@ export class SessionController {
       };
       const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
       this.olderPages.set(agentId, merged);
+      for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))
+        this.historyPreviewPages.set(`${agentId}/${item.turnId}`, { agentId, beforeItem, beforeTurn, unloaded: false });
+      this.trimHistoryPreviews(agentId);
       if (page.next_cursor !== undefined) this.olderPageCursors.set(agentId, page.next_cursor);
       else this.olderPageCursors.delete(agentId);
       this.forestDirtyAgents.add(agentId);
@@ -1226,6 +1347,7 @@ export class SessionController {
     if (coverage.kind === 'full') {
       this.olderPages.delete(agentId);
       this.olderPageCursors.delete(agentId);
+      for (const [key, page] of this.historyPreviewPages) if (page.agentId === agentId) this.historyPreviewPages.delete(key);
     }
     if (!this.olderPages.has(agentId)) {
       if (snapshot.olderCursor !== undefined) this.olderPageCursors.set(agentId, snapshot.olderCursor);
@@ -1423,8 +1545,7 @@ export class SessionController {
     const turn = this.composeAgentSnapshot(agentId).items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
     const index = turn?.steps.findIndex((step) => step.stepId === stepId) ?? -1;
     if (index < 0) return undefined;
-    const start = turn?.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps')?.offset ?? 0;
-    return start + index;
+    return index;
   }
 
   async readContentRange(agentId: string, ref: ContentRef, offset: number, signal?: AbortSignal): Promise<string> {
@@ -2165,6 +2286,10 @@ export class SessionController {
 
   private bumpHistoryGeneration(agentId: string): void {
     this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
+    for (const [key, flight] of this.historyPreviewReads) if (flight.agentId === agentId) {
+      this.historyPreviewReads.delete(key);
+      flight.controller.abort();
+    }
     for (const [key, flight] of this.toolDetailReads) if (key.startsWith(`${agentId}/`)) { this.toolDetailReads.delete(key); flight.controller.abort(); }
     for (const key of this.toolDetails.keys()) if (key.startsWith(`${agentId}/`)) this.toolDetails.delete(key);
     for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
@@ -2327,6 +2452,7 @@ export class SessionController {
      * WITHOUT model/thinking so the rebind lands on the profile's own pins.
      */
     profile?: string;
+    execution?: ExecutionSelection;
     model?: string;
     thinking?: string;
     permissionMode?: PermissionMode;
@@ -2355,12 +2481,18 @@ export class SessionController {
     promptId?: string;
     skills?: import('@kiki/protocol').PromptSubmission['skills'];
     personaGreetingReply?: boolean;
+    onPreservation?: (persisted: boolean) => void;
+    onAcknowledged?: () => void;
   }): Promise<PromptSubmitResult> {
     assertSessionWritable(this.state);
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
+    const promptId = input.promptId ?? newSteerPromptId();
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId: MAIN_AGENT_ID, promptId, content, createdAt: new Date().toISOString() });
+    input.onPreservation?.(preservation.persisted);
     const result = await this.client.submitPrompt(this.sessionId, {
       content,
       profile: input.profile,
+      execution: input.execution,
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
@@ -2374,10 +2506,12 @@ export class SessionController {
       append_timing: input.appendTiming,
       after_model_switch: input.afterModelSwitch,
       model_switch_mode: input.modelSwitchMode,
-      prompt_id: input.promptId,
+      prompt_id: promptId,
       skills: input.skills,
       persona_greeting_reply: input.personaGreetingReply,
     });
+    preservation.acknowledge();
+    input.onAcknowledged?.();
     const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
@@ -2715,12 +2849,16 @@ export class SessionController {
     readonly permissionMode?: PermissionMode;
     readonly planMode?: boolean;
     readonly planGate?: PromptPlanGate;
+    readonly onPreservation?: (persisted: boolean) => void;
+    readonly onAcknowledged?: () => void;
   }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' }> {
     assertSessionWritable(this.state);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
     const projection = projectMessageContent(content);
+    const preservation = preserveSubmission({ sessionId: this.sessionId, agentId, promptId, content, createdAt: new Date().toISOString() });
+    input.onPreservation?.(preservation.persisted);
     this.setPendingSteer(agentId, {
       promptId,
       text: input.text,
@@ -2746,6 +2884,8 @@ export class SessionController {
       this.clearPendingSteer(agentId, promptId);
       throw new SendNowError('submit', error);
     }
+    preservation.acknowledge();
+    input.onAcknowledged?.();
     if (result.status !== 'queued') {
       // Idle by the time it landed: the prompt opened its own turn, which is
       // an ordinary send — the projection owns the row from here.

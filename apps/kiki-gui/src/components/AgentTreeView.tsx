@@ -160,7 +160,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
                       aria-label={node.executorProtocol ? `${executorDisplayName(node.executorId)} (${node.executorProtocol})` : executorDisplayName(node.executorId)}
                       className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] font-normal leading-tight bg-ink/[0.05] text-ink-faint hover:text-ink-soft focus-visible:outline-1 focus-visible:outline-selected-ink"
                     >
-                      <Icon name="external" size={10} className="shrink-0 text-ink-faint" />
+                      <Icon name="external" size={12} className="shrink-0 text-ink-faint" />
                       <span className="truncate max-w-16">{executorDisplayName(node.executorId)}</span>
                     </span>
                   ) : null}

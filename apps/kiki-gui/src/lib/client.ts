@@ -131,6 +131,7 @@ import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
   providerTemplateFor,
+  readSettings,
   type ProviderModelDraft,
   type RemoteModelsProbe,
 } from '@kiki/session-core/settings';
@@ -1123,6 +1124,10 @@ export class KikiClient {
     return result;
   }
 
+  readingOptions(): { timeoutMs: number } {
+    return { timeoutMs: typeof localStorage === 'undefined' ? 0 : readSettings().readingTimeoutSeconds * 1000 };
+  }
+
   sessionView(sessionId: string): SessionViewFacade {
     const view = this.klient.session(sessionId).view;
     return {
@@ -1222,32 +1227,25 @@ export class KikiClient {
     return this.patchConfig({
       request_governance: {
         rules: rules.map((rule) => {
-          const anyRule = rule as Record<string, unknown>;
-          const rawResource = anyRule.resource;
-          const resource = rawResource === 'live_agent' ? 'agent_execution' : rawResource;
+          const raw: Record<string, unknown> = { ...rule };
+          const rawResource = raw['resource'];
+          const resource = rawResource === 'live_agent' ? 'agent_execution'
+            : rawResource === 'agent_execution' || rawResource === 'model_request' ? rawResource : undefined;
           const roles = (rule.roles ?? []).filter((role): role is 'main' | 'subagent' | 'independent' =>
             role === 'main' || role === 'subagent' || role === 'independent');
           return {
             id: rule.id,
-            ...(resource !== undefined ? { resource } : {}),
+            resource,
             scope: rule.scope,
-            ...(rule.models !== undefined ? { models: [...rule.models] } : {}),
-            ...(rule.providers !== undefined ? { providers: [...rule.providers] } : {}),
-            ...(Array.isArray(anyRule.executors) ? { executors: [...anyRule.executors] } : {}),
-            ...(Array.isArray(anyRule.profiles) ? { profiles: [...anyRule.profiles] } : {}),
-            ...(roles.length > 0 ? { roles } : {}),
-            subagents_only: rule.subagentsOnly !== undefined ? rule.subagentsOnly : Boolean(anyRule.subagents_only),
-            ...(rule.maxConcurrent !== undefined
-              ? { max_concurrent: rule.maxConcurrent }
-              : anyRule.max_concurrent !== undefined
-                ? { max_concurrent: anyRule.max_concurrent }
-                : {}),
+            models: rule.models === undefined ? undefined : [...rule.models],
+            providers: rule.providers === undefined ? undefined : [...rule.providers],
+            executors: rule.executors === undefined ? undefined : [...rule.executors],
+            profiles: rule.profiles === undefined ? undefined : [...rule.profiles],
+            roles: roles.length === 0 ? undefined : roles,
+            subagents_only: rule.subagentsOnly ?? raw['subagents_only'] === true,
+            max_concurrent: rule.maxConcurrent ?? (typeof raw['max_concurrent'] === 'number' ? raw['max_concurrent'] : undefined),
             overflow: rule.overflow,
-            ...(rule.maxWaitMs !== undefined
-              ? { max_wait_ms: rule.maxWaitMs }
-              : anyRule.max_wait_ms !== undefined
-                ? { max_wait_ms: anyRule.max_wait_ms }
-                : {}),
+            max_wait_ms: rule.maxWaitMs ?? (typeof raw['max_wait_ms'] === 'number' ? raw['max_wait_ms'] : undefined),
             enabled: rule.enabled,
           };
         }),

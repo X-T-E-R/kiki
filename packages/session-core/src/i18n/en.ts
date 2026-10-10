@@ -3314,6 +3314,8 @@ export const en = {
     'Write at least one field, such as client.user_agent. Unknown fields are rejected.',
   'st.requestIdentity.overridesOptionalHint':
     'Optional sparse overrides are applied on top of the selected preset. Changing presets keeps this JSON.',
+  'st.requestIdentity.overridesStartHint':
+    'Leave empty to keep the inherited identity. Writing here switches this layer to custom overrides only.',
   'st.requestIdentity.clearLayer': 'Clear layer',
   'st.providers.requestIdentity': 'Provider request identity',
   'st.providers.requestIdentityHint':
@@ -9607,6 +9609,7 @@ export const en = {
   'st.recipe.slot.anchor': 'Anchored prompt',
   'st.recipe.slotFields': 'Prompt fields',
   'st.recipe.scope.session': 'session',
+  'st.recipe.scope.turn': 'turn',
   'st.recipe.anchorWindow': 'Replaces the Recipe prompt for the first {steps} {scope} request(s).',
   'st.recipe.usedBy': 'Used by: {models}',
   'st.recipe.forkCopy': 'Copy and edit',

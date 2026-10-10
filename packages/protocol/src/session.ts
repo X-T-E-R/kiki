@@ -195,7 +195,16 @@ export const sessionCreateSchema = z.object({
   delivery: sessionDeliverySchema.optional(),
   persona: z.string().min(1).optional(),
   persona_home: z.boolean().optional(),
-  metadata: sessionMetadataSchema.optional(),
+  metadata: z.union([
+    sessionMetadataSchema,
+    sessionMetadataSchema.extend({
+      cwd: z.string().min(1).optional(),
+      externalClient: z.object({
+        driver: z.literal('external'),
+        connectionId: z.string().min(1),
+      }),
+    }),
+  ]).optional(),
   agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
   ephemeral: z.boolean().optional(),

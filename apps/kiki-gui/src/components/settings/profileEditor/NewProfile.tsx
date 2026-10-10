@@ -58,7 +58,7 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
     return (workspacesQuery.data?.items ?? []).map((w) => ({
       value: w.id,
       label: w.name ?? w.id,
-      description: w.path,
+      description: w.root,
     }));
   }, [providedWorkspaceOptions, workspacesQuery.data]);
   const committedName = name.trim();
