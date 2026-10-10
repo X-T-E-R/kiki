@@ -163,21 +163,38 @@ export interface PersistedComposerScalars {
   readonly effortChoice?: ComposerModelChoice;
 }
 
-/** Restore draft choices only for their original binding; unversioned chrome must not rebind an existing conversation. */
+/** A locally accepted binding change; this refresh allowance is never persisted with draft choices. */
+export interface ComposerModelBindingChange {
+  readonly previous: ComposerModelChoice;
+  readonly next: ComposerModelChoice;
+}
+
+function sameComposerModelBinding(left: ComposerModelChoice | undefined, right: ComposerModelChoice): boolean {
+  return left !== undefined && left.model === right.model && left.thinking === right.thinking;
+}
+
+/** Restore choices for their original binding, or carry newer picks across an explicitly accepted local change. */
 export function resolveComposerModelOverrides(input: PersistedComposerScalars & {
   readonly conversationStarted: boolean;
   readonly pendingBinding: boolean;
   readonly binding: ComposerModelChoice;
+  readonly acceptedBindingChange?: ComposerModelBindingChange;
 }): PersistedComposerScalars {
+  const resolveChoice = (choice: ComposerModelChoice | undefined) => {
+    const change = input.acceptedBindingChange;
+    if (!input.pendingBinding && change !== undefined && sameComposerModelBinding(choice, change.previous)
+      && sameComposerModelBinding(input.binding, change.next)) return input.binding;
+    return choice;
+  };
+  const modelChoice = resolveChoice(input.modelChoice);
+  const effortChoice = resolveChoice(input.effortChoice);
   const keep = (choice: ComposerModelChoice | undefined) => !input.conversationStarted || input.pendingBinding
-    || choice !== undefined && choice.model === input.binding.model && choice.thinking === input.binding.thinking;
-  const modelCurrent = keep(input.modelChoice);
-  const effortCurrent = keep(input.effortChoice);
+    || sameComposerModelBinding(choice, input.binding);
   return {
-    modelOverride: modelCurrent ? input.modelOverride : undefined,
-    effortOverride: effortCurrent ? input.effortOverride : undefined,
-    modelChoice: modelCurrent ? input.modelChoice : undefined,
-    effortChoice: effortCurrent ? input.effortChoice : undefined,
+    modelOverride: keep(modelChoice) ? input.modelOverride : undefined,
+    effortOverride: keep(effortChoice) ? input.effortOverride : undefined,
+    modelChoice: keep(modelChoice) ? modelChoice : undefined,
+    effortChoice: keep(effortChoice) ? effortChoice : undefined,
   };
 }
 
