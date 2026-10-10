@@ -307,20 +307,20 @@ display_name = "Kimi for Coding (custom)"
 
 ### 模型认知
 
-`[models."<alias>".cognition]` 把提示词文件挂到单个模型别名上，这样 catalog 里某个需要不同调节（用来塑造推理方式的额外指令）的模型就能单独拿到，而不必改任何 Agent profile。每个字段都指向运行时从磁盘读取的文件；CLI 不附带任何默认正文，未声明文件时也不会注入任何内容。
+`[models."<alias>".cognition]` 把提示词文件挂到单个模型别名上，这样 catalog 里某个需要不同调节（用来塑造推理方式的额外指令）的模型就能单独拿到，而不必改任何 Agent profile。文件正文在模型绑定时读取并保存，之后的注入复用这份快照，不会重新读取磁盘上的修改。CLI 不附带任何默认正文，未声明文件时也不会注入任何内容。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `overlay` | `string` 或 `array<string>` | — | 合并进所绑定模型系统提示词的文件。多条路径按声明顺序以空行拼接 |
 | `overlay_mode` | `string` | `append` | `overlay` 与 profile 提示词的组合方式：`append`、`prepend`、`wrap`、`persona` 或 `replace` |
-| `steering` | `string` 或 `array<string>` | — | 作为 User 消息、紧接在你的提示词之后、在每一轮开头注入的文件 |
+| `steering` | `string` 或 `array<string>` | — | 在每一轮开头及接纳轮内纠偏后，作为 User 消息跟在你的提示词之后注入的文件 |
 | `anchor` | `string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的文件，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
 
 路径相对于[数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径——写错路径会让会话停下来，而不是静默送出未经调节的提示词。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。
 
-三个字段离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前只读一次。`steering` 紧接在你的提示词之后，作为普通 User 消息注入——不是 `<system-reminder>`——并且每一轮新开始时都会重新注入同一段正文，压缩后重新装填上下文时也一样，因此这条提示不会从最近一次请求旁边漂走。
+三个字段离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 在每一轮新开始以及压缩后重新装填上下文时，作为普通 User 消息跟在你的提示词之后注入，不包装成 `<system-reminder>`。运行中通过「立即发送」追加纠偏时，下一个安全的模型请求会先包含已接纳的纠偏，再附上一份已绑定的 steering 正文。同一批送达的多条纠偏共用这一份正文；仅有工具继续执行时不会再次追加。用户通过斜杠激活的 Skill 和插件命令也算人类输入，但 peer 消息和后台通知不会触发这次额外的轮内注入。
 
 `overlay_mode` 决定 profile 提示词还剩多少：
 

@@ -309,20 +309,20 @@ You can also switch models temporarily without touching the config file — by s
 
 ### Model cognition
 
-`[models."<alias>".cognition]` attaches prompt files to a single model alias, so a model that needs different conditioning (extra instructions shaping how it reasons) than the rest of your catalog gets it without touching any agent profile. Every field points at a file read from disk at runtime; no default text ships with the CLI, and nothing is injected unless you declare a file.
+`[models."<alias>".cognition]` attaches prompt files to a single model alias, so a model that needs different conditioning (extra instructions shaping how it reasons) than the rest of your catalog gets it without touching any agent profile. File text is read and saved when the model binds; later injections reuse that snapshot rather than rereading edits on disk. No default text ships with the CLI, and nothing is injected unless you declare a file.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `overlay` | `string` or `array<string>` | — | File(s) merged into the bound model's system prompt. Multiple paths are joined with a blank line in declaration order |
 | `overlay_mode` | `string` | `append` | How `overlay` combines with the profile's prompt: `append`, `prepend`, `wrap`, `persona`, or `replace` |
-| `steering` | `string` or `array<string>` | — | File(s) injected as a user message right after your prompt, at the start of every turn |
+| `steering` | `string` or `array<string>` | — | File(s) injected as a user message after your prompt at each turn start and after accepted in-turn corrections |
 | `anchor` | `string` or `array<string>` | — | File(s) used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
 
 Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
 
-The three fields differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads once, before your request. `steering` sits directly after your prompt as an ordinary user message — not a `<system-reminder>` — and the same text is re-injected on every new turn, including after compaction re-arms the context, so the cue never drifts away from the latest request.
+The three fields differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your prompt as an ordinary user message — not a `<system-reminder>` — on every new turn and after compaction re-arms the context. If you send a correction into a running turn with **Send now**, the next safe model request includes the accepted correction followed by one copy of the bound steering text. Several corrections delivered together share that copy; tool-only continuation does not append it again. User-slash skills and plugin commands count as human input, but peer messages and background notifications do not trigger this extra in-turn injection.
 
 `overlay_mode` decides how much of the profile's prompt survives:
 
