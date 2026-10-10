@@ -458,3 +458,19 @@ describe('visible snapshot and attachment continuation', () => {
     expect(controller.contentMemoryReport().rangeBytes).toBe(8192);
     lease.release(); controller.close();
   });
+
+it('restores evicted marker previews in older-page snapshots without retaining hydrated payloads', async () => {
+  const { applyContentSegment, restoreContentPreview } = await import('@kiki/transcript');
+  const { replaceSnapshotContentEntity } = await import('./transcript/content');
+  const source = { kind: 'marker' as const, id: 'history-marker' };
+  const ref = { source, revision: 'marker-r1', path: ['payload', 'text'], kind: 'text' as const, offset: 3, total: 400_000 };
+  const preview = { kind: 'marker' as const, markerId: source.id, marker: 'hook', payload: { text: 'abc' }, contentRefs: [ref] };
+  const hydrated = applyContentSegment(preview, { ref, value: 'x'.repeat(ref.total - ref.offset), contentRefs: [] });
+  const other = { kind: 'marker' as const, markerId: 'other-marker', marker: 'clear' };
+  const page = emptySnapshot({ items: [hydrated, other] });
+  const restored = replaceSnapshotContentEntity(page, source, restoreContentPreview(hydrated, preview));
+  expect(restored.items[0]).toEqual(preview);
+  expect(restored.items[1]).toBe(other);
+  expect(page.items[0]).toBe(hydrated);
+  expect(replaceSnapshotContentEntity(page, { ...source, id: 'missing-marker' }, preview).items).toEqual(page.items);
+});

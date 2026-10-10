@@ -118,6 +118,7 @@ export function replaceSnapshotContentEntity(snapshot: AgentTranscriptSnapshot, 
     case 'interaction': return { ...snapshot, interactions: snapshot.interactions.map((item) => item.interactionId === source.id ? value as import('@kiki/transcript').TranscriptInteraction : item) };
     case 'todo': return { ...snapshot, todos: snapshot.todos.map((item) => item.todoId === source.id ? value as import('@kiki/transcript').TranscriptTodo : item) };
     case 'meta': return { ...snapshot, meta: value };
+    case 'marker': return { ...snapshot, items: snapshot.items.map((item) => item.kind === 'marker' && item.markerId === source.id ? value as import('@kiki/transcript').TranscriptMarker : item) };
     default: return snapshot;
   }
 }
