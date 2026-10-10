@@ -13,7 +13,8 @@ import type { Session } from '@kiki/protocol';
 import { useHost } from '../../host';
 import { openExternalUrl } from '../../host/external';
 import { useI18n } from '../../i18n';
-import { locateInTimeline, normalizeTurnId } from '../../lib/timelineLocate';
+import { normalizeTurnId } from '../../lib/timelineLocate';
+import { useTimelineNavigation } from '../../lib/useTimelineNavigation';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DisclosureChevron, Icon } from '../icons';
 import { useMediaPreview } from '../mediaPreviewContext';
@@ -56,6 +57,7 @@ export function useSemanticContext(): SemanticContext {
  */
 export function useFollowLink(onOpenAgent?: (agentId: string) => void): (link: SemanticLink) => void {
   const navigate = useGuardedNavigate();
+  const locate = useTimelineNavigation();
   const host = useHost();
   const { t } = useI18n();
   const currentSession = useMediaPreview()?.sessionId;
@@ -64,17 +66,15 @@ export function useFollowLink(onOpenAgent?: (agentId: string) => void): (link: S
       case 'session': {
         const sessionId = link.sessionId ?? currentSession;
         if (sessionId === undefined) return;
-        if (sessionId === currentSession && link.turn !== undefined) {
-          void locateInTimeline({ kind: 'turn', turnId: normalizeTurnId(link.turn) }, { sessionId, agentId: link.agentId });
-          return;
-        }
-        const base = link.agentId === undefined ? `/s/${sessionId}` : `/s/${sessionId}/agent/${link.agentId}`;
-        navigate(link.turn === undefined ? base : `${base}?turn=${String(link.turn)}`);
+        const base = `/s/${encodeURIComponent(sessionId)}`;
+        const route = link.agentId === undefined || link.agentId === 'main' ? base : `${base}/agent/${encodeURIComponent(link.agentId)}`;
+        if (link.turn !== undefined) locate({ kind: 'turn', turnId: normalizeTurnId(link.turn) }, { sessionId, agentId: link.agentId, route });
+        else navigate(route);
         return;
       }
       case 'agent':
         if (onOpenAgent !== undefined) onOpenAgent(link.agentId);
-        else if (currentSession !== undefined) navigate(`/s/${currentSession}/agent/${link.agentId}`);
+        else if (currentSession !== undefined) navigate(`/s/${encodeURIComponent(currentSession)}/agent/${encodeURIComponent(link.agentId)}`);
         return;
       case 'route':
         navigate(link.path);
@@ -82,7 +82,7 @@ export function useFollowLink(onOpenAgent?: (agentId: string) => void): (link: S
       case 'external':
         void openExternalUrl(host, link.url, t('common.popupBlocked')).catch(() => undefined);
     }
-  }, [currentSession, host, navigate, onOpenAgent, t]);
+  }, [currentSession, host, navigate, locate, onOpenAgent, t]);
 }
 
 const JUMP_SLOT = 'flex h-7 w-7 shrink-0 items-center justify-center';

@@ -41,8 +41,10 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   const explicitRef = useRef<{ target: ScopeDestination; visitId: string; redirect?: NavigationRedirect } | null>(null);
   const retryRef = useRef<(() => void) | null>(null);
   const bootAttemptRef = useRef<AbortController | null>(null);
+  const verifiedBootRef = useRef<string | null>(null);
+  const notificationBoot = (location.state as { kikiNav?: { intent?: string } } | null)?.kikiNav?.intent === 'notification';
   const target = destinationForLocation(location, active);
-  const safe = !isCrossScopeNavigation(active, target.scope) &&
+  const safe = !(notificationBoot && verifiedBootRef.current !== location.key) && !isCrossScopeNavigation(active, target.scope) &&
     (target.scope.serverHomeId === undefined || target.scope.serverHomeId === active.serverHomeId);
   const performNavigation = useCallback<GuardedNavigate>((to, options) => {
     const explicit = explicitRef.current;
@@ -59,62 +61,71 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     const source = getCurrentVisit();
     if (source !== null) captureVisitSnapshots(source.visitId);
   };
+  const preparationTailRef = useRef<Promise<void>>(Promise.resolve());
   const prepare = useCallback(async (next: ScopeDestination, signal: AbortSignal, requestedLocation?: ScopeLocation): Promise<void | NavigationRedirect> => {
-    capture();
-    const source = getCurrentVisit();
-    const assertCurrent = () => {
+    const previous = preparationTailRef.current;
+    let release!: () => void;
+    preparationTailRef.current = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
       signal.throwIfAborted();
-      if (source !== null && getVisitDelta(source.visitId, source) !== 0) throw new DOMException('Navigation changed', 'AbortError');
-    };
-    let candidate = next;
-    let candidateVisit = requestedLocation === undefined ? null : getVisitForLocation(requestedLocation);
-    let skipped = false;
-    let token = tokenRef.current;
-    tokenRef.current = undefined;
-    for (;;) {
-      assertCurrent();
-      let prepared;
-      try {
-        if (candidateVisit?.missing === true) throw new ScopeRestoreError('target-missing');
-        prepared = await prepareScopeDestination(candidate, connection.scopeAdapter, signal, setState, token);
-      } catch (error) {
+      capture();
+      const source = getCurrentVisit();
+      const assertCurrent = () => {
+        signal.throwIfAborted();
+        if (source !== null && getVisitDelta(source.visitId, source) !== 0) throw new DOMException('Navigation changed', 'AbortError');
+      };
+      let candidate = next;
+      let candidateVisit = requestedLocation === undefined ? null : getVisitForLocation(requestedLocation);
+      let skipped = false;
+      let token = tokenRef.current;
+      tokenRef.current = undefined;
+      for (;;) {
         assertCurrent();
-        if (!(error instanceof ScopeRestoreError) || error.reason !== 'target-missing') throw error;
-        if (candidateVisit !== null) markVisitMissing(candidateVisit.visitId);
-        candidateVisit = candidateVisit === null ? source : getPreviousVisit(candidateVisit.visitId);
-        if (candidateVisit === null) {
-          // Every checked source was truly deleted. The adapter has rolled back;
-          // replace in the already-confirmed source scope, never in an unverified target.
-          acceptedRef.current = { scope: active, route: '/new' };
-          setState({ phase: 'idle' });
-          return { target: '/new', options: { replace: true, state: { kikiNav: { visitId: source?.visitId ?? createVisitId(), scope: active } } } };
+        let prepared;
+        try {
+          if (candidateVisit?.missing === true) throw new ScopeRestoreError('target-missing');
+          prepared = await prepareScopeDestination(candidate, connection.scopeAdapter, signal, setState, token);
+        } catch (error) {
+          assertCurrent();
+          if (!(error instanceof ScopeRestoreError) || error.reason !== 'target-missing' || requestedLocation === undefined ||
+              (requestedLocation.state as { kikiNav?: { intent?: string } } | null)?.kikiNav?.intent === 'notification') throw error;
+          if (candidateVisit !== null) markVisitMissing(candidateVisit.visitId);
+          candidateVisit = candidateVisit === null ? source : getPreviousVisit(candidateVisit.visitId);
+          if (candidateVisit === null) {
+            // Every checked source was truly deleted. The adapter has rolled back;
+            // replace in the already-confirmed source scope, never in an unverified target.
+            acceptedRef.current = { scope: active, route: '/new' };
+            setState({ phase: 'idle' });
+            return { target: '/new', options: { replace: true, state: { kikiNav: { visitId: source?.visitId ?? createVisitId(), scope: active } } } };
+          }
+          candidate = { scope: candidateVisit.scope, route: `${candidateVisit.pathname}${candidateVisit.search}${candidateVisit.hash}` };
+          skipped = true;
+          token = undefined;
+          continue;
         }
-        candidate = { scope: candidateVisit.scope, route: `${candidateVisit.pathname}${candidateVisit.search}${candidateVisit.hash}` };
-        skipped = true;
-        token = undefined;
-        continue;
+        try {
+          assertCurrent();
+          acceptedRef.current = { ...candidate, scope: prepared.scope };
+          await prepared.commit();
+          assertCurrent();
+          if (skipped && candidateVisit !== null && source !== null) {
+            const delta = getVisitDelta(candidateVisit.visitId, source);
+            if (delta === null) throw new DOMException('Navigation changed', 'AbortError');
+            setState({ phase: 'idle' });
+            return { target: delta };
+          }
+          return;
+        } catch (error) {
+          acceptedRef.current = null;
+          await prepared.dispose();
+          if (!signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+            setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
+          }
+          throw error;
+        }
       }
-      try {
-        assertCurrent();
-        acceptedRef.current = { ...candidate, scope: prepared.scope };
-        await prepared.commit();
-        assertCurrent();
-        if (skipped && candidateVisit !== null && source !== null) {
-          const delta = getVisitDelta(candidateVisit.visitId, source);
-          if (delta === null) throw new DOMException('Navigation changed', 'AbortError');
-          setState({ phase: 'idle' });
-          return { target: delta };
-        }
-        return;
-      } catch (error) {
-        acceptedRef.current = null;
-        await prepared.dispose();
-        if (!signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
-          setState({ phase: 'failed', target: candidate, reason: error instanceof ScopeRestoreError ? error.reason : 'offline' });
-        }
-        throw error;
-      }
-    }
+    } finally { release(); }
   }, [connection.scopeAdapter, active]);
   const guard = useDirtyGuardState(location, performNavigation, {
     needsPreparation: (next) => {
@@ -178,7 +189,12 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     const controller = new AbortController();
     bootAttemptRef.current = controller;
     const run = () => { void prepare(target, controller.signal, location).then((redirect) => {
-      if (controller.signal.aborted || redirect === undefined) return;
+      if (controller.signal.aborted) return;
+      if (redirect === undefined) {
+        verifiedBootRef.current = location.key;
+        if (!connection.needsScopeReload) setState({ phase: 'idle' });
+        return;
+      }
       if (typeof redirect.target === 'number') { if (redirect.target !== 0) void rawNavigate(redirect.target); }
       else void rawNavigate(redirect.target, redirect.options);
     }).catch(() => {}); };
@@ -188,16 +204,14 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
   }, [safe, location.key, connection.needsScopeReload, prepare]);
 
   useEffect(() => registerScopeNavigation(async (request) => {
-    const scope = { homeId: request.homeId ?? active.homeId, scopeId: request.scopeId ?? 'local' };
-    if (!isCrossScopeNavigation(active, scope)) {
-      if (request.route !== undefined) guard.navigate(request.route);
-      return;
-    }
+    const scope = request.scope ?? { homeId: request.homeId ?? active.homeId, scopeId: request.scopeId ?? 'local' };
+    if (!isCrossScopeNavigation(active, scope) && request.route === undefined &&
+        (scope.serverHomeId === undefined || scope.serverHomeId === active.serverHomeId)) return;
     // Windows mode: a remote space gets its own window, served by this window's
     // own home. Nothing is prepared, staged or navigated here — the new window
     // resolves the connection itself, and a cancelled or failed launch leaves
     // this window's page, draft and visit exactly as they were.
-    if (host.kind === 'tauri' && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
+    if (request.route === undefined && host.kind === 'tauri' && scope.scopeId.startsWith('remote:') && host.openRemoteSpace !== undefined &&
         launchWindowMode(readDesktopPrefs().windowMode) === 'windows') {
       const launch = async (signal = new AbortController().signal) => { await openRemoteScopeWindow(host, scope, signal); };
       retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(launch)).catch(() => {}); };
@@ -209,15 +223,24 @@ export function NavScopeBoundary({ children }: { readonly children: ReactNode })
     const execute = async (signal: AbortSignal) => {
       tokenRef.current ??= initialToken;
       initialToken = undefined;
+      explicitRef.current = null;
+      acceptedRef.current = null;
       const redirect = await prepare(next, signal);
+      signal.throwIfAborted();
       explicitRef.current = { target: acceptedRef.current ?? next, visitId: createVisitId(), redirect: redirect ?? undefined };
     };
     retryRef.current = () => { void Promise.resolve(guard.value.runAction?.(execute, next.route)).catch(() => {}); };
     await guard.value.runAction?.(execute, next.route);
   }), [active, guard.value.runAction, guard.navigate, prepare]);
-  useEffect(() => host.onNotificationClick?.((route, homeId) => {
-    if (homeId === undefined) return;
-    void requestScopeNavigation({ homeId, scopeId: 'local', route }).catch(() => {});
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  useEffect(() => host.onNotificationClick?.((route, homeId, scope) => {
+    bootAttemptRef.current?.abort();
+    bootAttemptRef.current = null;
+    // Old home-only notifications stay local; old route-only notifications belong
+    // to this window. New producers carry the complete captured identity.
+    const targetScope = scope ?? (homeId === undefined ? activeRef.current : { homeId, scopeId: 'local' });
+    void requestScopeNavigation({ scope: targetScope, route }).catch(() => {});
   }), [host]);
 
   const cancel = useCallback(() => {

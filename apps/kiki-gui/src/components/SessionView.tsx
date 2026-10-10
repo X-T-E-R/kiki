@@ -1546,18 +1546,22 @@ export function SessionView({
   const locatorParams = new URLSearchParams(location.search);
   const turnLocator = locatorParams.get('turn');
   const blockLocator = locatorParams.get('block');
+  const interactionLocator = locatorParams.get('interaction');
   const navVisitId = useNavVisitId();
   useEffect(() => {
-    if (turnLocator === null && blockLocator === null) return;
+    if (turnLocator === null && blockLocator === null && interactionLocator === null) return;
     // Returning to a visit with an old ?turn/?block URL restores where the
     // reader actually was; the URL's first-entry target must not re-claim it.
     if (navVisitId !== null &&
       getReadingSnapshot(navVisitId, timelineSnapshotKey(sessionId, selectedAgentIdRef.current ?? MAIN_AGENT_ID)) !== undefined) return;
-    const target = blockLocator !== null
-      ? { kind: 'block' as const, blockId: blockLocator }
-      : { kind: 'turn' as const, turnId: normalizeTurnId(turnLocator!) };
-    void locateInTimeline(target, { sessionId, agentId: selectedAgentIdRef.current });
-  }, [turnLocator, blockLocator, sessionId, navVisitId]);
+    const target = interactionLocator !== null
+      ? { kind: 'interaction' as const, id: interactionLocator }
+      : blockLocator !== null ? { kind: 'block' as const, blockId: blockLocator }
+        : { kind: 'turn' as const, turnId: normalizeTurnId(turnLocator!) };
+    const controller = new AbortController();
+    void locateInTimeline(target, { sessionId, agentId: selectedAgentId, signal: controller.signal });
+    return () => { controller.abort(); };
+  }, [turnLocator, blockLocator, interactionLocator, sessionId, selectedAgentId, navVisitId]);
   const initialPromptRef = useRef(createHandoff.initialPrompt);
   const initialSkillRef = useRef(createHandoff.initialSkill);
   const initialOptionsRef = useRef(createHandoff);
@@ -3620,8 +3624,13 @@ boundExecution,
     const previous = lastNotifiedInteractionRef.current;
     lastNotifiedInteractionRef.current = pending;
     if (pending === 'none' || pending === previous) return;
-    reportAttention([{ sessionId, kind: pending, title: sessionTitle }]);
-  }, [sessionId, sessionTitle, state.pendingInteraction]);
+    const interaction = state.blocks.find((block): block is ApprovalBlock | QuestionBlock =>
+      (pending === 'approval' && block.kind === 'approval' && block.resolution === undefined) ||
+      (pending === 'question' && block.kind === 'question' && block.outcome === undefined));
+    reportAttention([{ sessionId, kind: pending, title: sessionTitle,
+      agentId: interaction?.originUnknown === true ? undefined : interaction?.originAgentId,
+      interactionId: interaction?.originUnknown === true ? undefined : interaction?.id }]);
+  }, [sessionId, sessionTitle, state.pendingInteraction, state.blocks]);
   // The first tail seen on open is history, not news.
   const lastTurnTailRef = useRef<string | null | undefined>(undefined);
   const turnTail = state.transcriptReady ? state.turnTail : undefined;
@@ -3632,7 +3641,7 @@ boundExecution,
     lastTurnTailRef.current = key;
     if (previous === undefined || key === null || key === previous) return;
     if (turnTail?.state !== 'completed' && turnTail?.state !== 'failed') return;
-    reportAttention([{ sessionId, kind: turnTail.state, title: sessionTitle }]);
+    reportAttention([{ sessionId, agentId: MAIN_AGENT_ID, turnId: turnTail.turnId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
   const composerDisabled =

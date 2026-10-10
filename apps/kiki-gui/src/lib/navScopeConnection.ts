@@ -35,7 +35,15 @@ export async function validateScopeRoute(client: KikiClient, route: string, sign
   const sessionId = /^\/s\/([^/]+)/.exec(pathname)?.[1];
   const roomId = /^\/(?:rooms|r)\/([^/]+)$/.exec(pathname)?.[1];
   try {
-    if (sessionId !== undefined) await client.getSession(decodeURIComponent(sessionId));
+    if (sessionId !== undefined) {
+      await client.getSession(decodeURIComponent(sessionId));
+      signal.throwIfAborted();
+      const agentId = /^\/s\/[^/]+\/agent\/([^/]+)$/.exec(pathname)?.[1];
+      if (agentId !== undefined && decodeURIComponent(agentId) !== 'main') {
+        const agents = await client.klient.session(decodeURIComponent(sessionId)).agents();
+        if (!Object.hasOwn(agents, decodeURIComponent(agentId))) throw new ScopeRestoreError('target-missing');
+      }
+    }
     if (roomId !== undefined) {
       // Use the same room facade as createBotRoomApi, without importing its
       // React connection hook back into ConnectionProvider's adapter.
@@ -62,6 +70,21 @@ export function createScopeConnectionAdapter(options: ScopeConnectionOptions): S
       signal.throwIfAborted();
       const source = options.active();
       const crossHome = source.scope.homeId !== scope.homeId;
+      if (!crossHome && scope.scopeId === source.scope.scopeId && token === undefined) {
+        let meta: MetaResponse;
+        try { meta = await source.client.meta(); }
+        catch (error) {
+          if ((error instanceof ApiError || error instanceof RPCError) && error.code === API_CODES.UNAUTHORIZED) throw new ScopeRestoreError('auth-required');
+          throw error;
+        }
+        signal.throwIfAborted();
+        const expectedHome = scope.serverHomeId ?? source.scope.serverHomeId;
+        if ((expectedHome !== undefined && expectedHome !== meta.server_home_id) ||
+            (scope.connectionRef !== undefined && scope.connectionRef !== source.scope.connectionRef)) throw new ScopeRestoreError('identity-mismatch');
+        return { scope: { ...source.scope, serverHomeId: meta.server_home_id },
+          validate: (route, nextSignal) => validateScopeRoute(source.client, route, nextSignal),
+          commit: () => { signal.throwIfAborted(); }, dispose: () => {} };
+      }
       let selection: ConnectionSelection;
       let instance: KikiClient | undefined;
       let ownsClient = false;

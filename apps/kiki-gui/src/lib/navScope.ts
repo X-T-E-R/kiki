@@ -73,6 +73,7 @@ export async function prepareScopeDestination(
 }
 
 export interface ScopeNavigationRequest {
+  readonly scope?: NavScopeIdentity;
   readonly homeId?: string;
   readonly scopeId?: string;
   readonly route?: string;
@@ -124,13 +125,13 @@ export function consumeScopeReload(homeId: string): boolean {
 export function beginNavWindow(controlledReload: boolean, documentReload: boolean): void {
   if (!controlledReload && !documentReload) clearNavHistory();
 }
-export function applyColdNavigationIntent(intent: { route: string; homeId?: string }, homeId: string): boolean {
+export function applyColdNavigationIntent(intent: { route: string; homeId?: string; scope?: NavScopeIdentity }, homeId: string): boolean {
   if (!isSpaceViewRoute(intent.route)) return false;
   clearNavHistory();
   const state = window.history.state as Record<string, unknown> | null;
-  const scope = { homeId: intent.homeId ?? homeId, scopeId: 'local' };
+  const scope = cloneNavScope(intent.scope ?? { homeId: intent.homeId ?? homeId, scopeId: 'local' });
   window.history.replaceState({ ...state, idx: state?.['idx'] ?? 0, key: state?.['key'] ?? `cold_${createVisitId()}`,
-    usr: { kikiNav: { visitId: createVisitId(), scope } } }, '', intent.route);
+    usr: { kikiNav: { visitId: createVisitId(), scope, intent: 'notification' } } }, '', intent.route);
   return true;
 }
 

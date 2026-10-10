@@ -105,6 +105,40 @@ describe('native desktop bridge', () => {
     await expect(tauriHost.openRemoteSpace(connectionId)).rejects.toThrow('window unavailable');
   });
 
+  it('subscribes before draining boot clicks, dedupes live delivery and never lets a late old intent replace the newer click', async () => {
+    let event!: (event: { payload: unknown }) => void;
+    let release!: (value: unknown) => void;
+    const unlisten = vi.fn();
+    listen.mockImplementation(async (_name, callback) => { event = callback; return unlisten; });
+    invoke.mockImplementation(async (command) => command === 'take_navigation_intent'
+      ? new Promise((resolve) => { release = resolve; }) : undefined);
+    const click = vi.fn();
+    const unsubscribe = tauriHost.onNotificationClick(click);
+    await Promise.resolve(); await Promise.resolve();
+    const scope = { homeId: 'home-a', scopeId: 'ssh:example', serverHomeId: 'server-ssh', connectionRef: 'tunnel-a' };
+    event({ payload: { route: '/s/new/agent/child?turn=t4', scope, navigationId: '2' } });
+    event({ payload: { route: '/s/new/agent/child?turn=t4', scope, navigationId: '2' } });
+    release({ route: '/s/old', navigationId: '1' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(click.mock.calls).toEqual([['/s/new/agent/child?turn=t4', undefined, scope]]);
+    expect(invoke).toHaveBeenCalledWith('ack_navigation_intent', { navigationId: '2' });
+    expect(invoke).not.toHaveBeenCalledWith('ack_navigation_intent', { navigationId: '1' });
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    event({ payload: { route: '/s/after-dispose', navigationId: '3' } });
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers a click that arrived between initial boot and listener registration', async () => {
+    listen.mockResolvedValue(() => {});
+    invoke.mockResolvedValue({ route: '/activity', homeId: 'home-b', navigationId: '4' });
+    const click = vi.fn();
+    const unsubscribe = tauriHost.onNotificationClick(click);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(click).toHaveBeenCalledWith('/activity', 'home-b', undefined);
+    unsubscribe();
+  });
+
   it('routes external links through the native default-browser command', async () => {
     await openExternalUrl('https://example.test/docs');
     expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://example.test/docs' });

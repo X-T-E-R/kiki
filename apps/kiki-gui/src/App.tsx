@@ -399,7 +399,6 @@ export function App() {
     host,
     sessions,
     listSessions: listNewestSessions,
-    navigate: (route) => { navigate(route); },
   });
 
   // document.title follows the route: session title, page name, or bare Kiki.

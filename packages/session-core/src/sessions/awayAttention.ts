@@ -40,6 +40,9 @@ export interface AttentionEvent {
   readonly sessionId: string;
   readonly kind: AttentionKind;
   readonly title: string;
+  readonly agentId?: string;
+  readonly turnId?: string;
+  readonly interactionId?: string;
 }
 
 export function attentionSnapshotOf(session: Session): AttentionSnapshot {

@@ -1125,7 +1125,7 @@ impl SpaceBackendManager {
             if mode == WindowMode::Switch && newly_pending > 0 && read_main_desktop_prefs(&main_home_for(Path::new(&space.path)).unwrap_or_else(|_| PathBuf::from(&space.path))).notifications {
                 let _ = show_native_notification(app.clone(), format!("Kiki · {}", space.name),
                     Some(format!("{newly_pending} session(s) need your input")),
-                    Some("/activity".to_string()), Some(id.clone()));
+                    Some("/activity".to_string()), Some(id.clone()), None);
             }
         }
         true
@@ -1690,8 +1690,12 @@ fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow<Wry>) -> tauri
     })
 }
 
-fn notification_action_opens(action: &str) -> bool {
-    matches!(action, "default" | "open")
+fn notification_response_opens(response: &notify_rust::NotificationResponse) -> bool {
+    match response {
+        notify_rust::NotificationResponse::Default => true,
+        notify_rust::NotificationResponse::Action(action) => matches!(action.as_str(), "default" | "open"),
+        _ => false,
+    }
 }
 
 static PENDING_NAVIGATION_INTENT: Mutex<Option<serde_json::Value>> = Mutex::new(None);
@@ -1701,12 +1705,32 @@ fn take_navigation_intent() -> Option<serde_json::Value> {
     PENDING_NAVIGATION_INTENT.lock().ok()?.take()
 }
 
-fn notification_navigation_intent(route: &str, home_id: Option<&str>) -> serde_json::Value {
-    serde_json::json!({ "route": route, "homeId": home_id })
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationScope {
+    home_id: String,
+    scope_id: String,
+    server_home_id: Option<String>,
+    connection_ref: Option<String>,
 }
 
-fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>) {
-    let intent = notification_navigation_intent(route, home_id);
+#[tauri::command]
+fn ack_navigation_intent(navigation_id: String) {
+    if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() {
+        if pending.as_ref().and_then(|value| value.get("navigationId")).and_then(|value| value.as_str()) == Some(navigation_id.as_str()) {
+            pending.take();
+        }
+    }
+}
+
+fn notification_navigation_intent(route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) -> serde_json::Value {
+    static NEXT_CLICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT_CLICK.fetch_add(1, Ordering::SeqCst).to_string();
+    serde_json::json!({ "route": route, "homeId": home_id, "scope": scope, "navigationId": id })
+}
+
+fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) {
+    let intent = notification_navigation_intent(route, home_id, scope);
     if let Ok(mut pending) = PENDING_NAVIGATION_INTENT.lock() { *pending = Some(intent.clone()); }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -1715,10 +1739,10 @@ fn deliver_notification_click(app: &AppHandle, route: &str, home_id: Option<&str
     }
     // The live Router owns guard, source capture and scope commit. A booting
     // page consumes the same intent without inventing a predecessor.
-    let _ = app.emit("kiki://notification-click", intent);
+    let _ = app.emit_to("main", "kiki://notification-click", intent);
 }
 
-fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>) -> Result<(), String> {
+fn show_native_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, home_id: Option<String>, scope: Option<NotificationScope>) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
     notification.summary(&title).body(body.as_deref().unwrap_or(""));
     if route.is_some() { notification.action("open", "Open Kiki"); }
@@ -1734,18 +1758,22 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
         let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &app.config().identifier });
         if let Some(route) = route {
             let handle = notify_rust::NotificationHandle::new(notification.finalize());
-            thread::spawn(move || handle.wait_for_action(|action| {
-                if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
-            }));
+            thread::spawn(move || {
+                let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+                    if notification_response_opens(response) { deliver_notification_click(&app, &route, home_id.as_deref(), scope.as_ref()); }
+                });
+            });
             return Ok(());
         }
     }
     let handle = notification.show().map_err(|error| format!("Cannot show desktop notification: {error}"))?;
     #[cfg(not(target_os = "macos"))]
     if let Some(route) = route {
-        thread::spawn(move || handle.wait_for_action(|action| {
-            if notification_action_opens(action) { deliver_notification_click(&app, &route, home_id.as_deref()); }
-        }));
+        thread::spawn(move || {
+            let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+                if notification_response_opens(response) { deliver_notification_click(&app, &route, home_id.as_deref(), scope.as_ref()); }
+            });
+        });
     }
     #[cfg(target_os = "macos")]
     let _ = handle;
@@ -1753,8 +1781,9 @@ fn show_native_notification(app: AppHandle, title: String, body: Option<String>,
 }
 
 #[tauri::command]
-async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, None))
+async fn send_desktop_notification(app: AppHandle, title: String, body: Option<String>, route: Option<String>, scope: Option<NotificationScope>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
+    let home_id = scope.as_ref().map(|value| value.home_id.clone()).or_else(|| manager.active_space().ok().map(|space| space.home_id));
+    tauri::async_runtime::spawn_blocking(move || show_native_notification(app, title, body, route, home_id, scope))
         .await.map_err(|error| format!("Notification task failed: {error}"))?
 }
 
@@ -3581,19 +3610,31 @@ mod tests {
 
     #[test]
     fn notification_activation_routes_only_clicks_not_dismissals() {
-        assert!(notification_action_opens("default"));
-        assert!(notification_action_opens("open"));
-        assert!(!notification_action_opens("__closed"));
-        assert!(!notification_action_opens("reply"));
+        use notify_rust::{CloseReason, NotificationResponse};
+        assert!(notification_response_opens(&NotificationResponse::Default));
+        assert!(notification_response_opens(&NotificationResponse::Action("open".to_string())));
+        assert!(notification_response_opens(&NotificationResponse::Action("default".to_string())));
+        assert!(!notification_response_opens(&NotificationResponse::Closed(CloseReason::Dismissed)));
+        assert!(!notification_response_opens(&NotificationResponse::Closed(CloseReason::Expired)));
+        assert!(!notification_response_opens(&NotificationResponse::Reply("text".to_string())));
+        assert!(!notification_response_opens(&NotificationResponse::Action("reply".to_string())));
     }
 
     #[test]
     fn cross_space_notification_preserves_the_scope_intent_for_router_guarding() {
-        let intent = notification_navigation_intent("/activity", Some("home-b"));
-        assert_eq!(intent, serde_json::json!({ "route": "/activity", "homeId": "home-b" }));
-        assert_eq!(notification_navigation_intent("/s/example", None), serde_json::json!({ "route": "/s/example", "homeId": null }));
+        let scope = NotificationScope { home_id: "home-b".to_string(), scope_id: "ssh:example".to_string(),
+            server_home_id: Some("server-b".to_string()), connection_ref: Some("tunnel-b".to_string()) };
+        let intent = notification_navigation_intent("/s/example/agent/child?turn=t4", Some("home-b"), Some(&scope));
+        assert_eq!(intent["route"], "/s/example/agent/child?turn=t4");
+        assert_eq!(intent["scope"]["scopeId"], "ssh:example");
+        assert_eq!(intent["scope"]["serverHomeId"], "server-b");
+        let newer = notification_navigation_intent("/activity", Some("home-b"), None);
+        *PENDING_NAVIGATION_INTENT.lock().unwrap() = Some(newer.clone());
+        ack_navigation_intent(intent["navigationId"].as_str().unwrap().to_string());
+        assert_eq!(take_navigation_intent(), Some(newer));
+        assert_eq!(take_navigation_intent(), None);
         *PENDING_NAVIGATION_INTENT.lock().unwrap() = Some(intent.clone());
-        assert_eq!(take_navigation_intent(), Some(intent));
+        ack_navigation_intent(intent["navigationId"].as_str().unwrap().to_string());
         assert_eq!(take_navigation_intent(), None);
     }
 

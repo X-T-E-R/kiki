@@ -12,6 +12,8 @@ import { locateInTimeline, locateSpawnTarget, registerTimelineLocator, resetTime
 import { useNavSnapshotAdapter } from './useNavSnapshot';
 import { useTimelineNavigation, useTimelineVisitLocator } from './useTimelineNavigation';
 import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from '../components/dirtyGuard';
+import { useFollowLink } from '../components/timeline/ToolSemanticParts';
+import { I18nProvider } from '../i18n';
 
 const scope = { homeId: 'main', scopeId: 'local' };
 const reading = (key: string, atEnd = false): TimelineReadingSnapshot => ({ anchor: { key, atEnd, offset: 17 }, openFolds: ['fold:t1'] });
@@ -158,6 +160,35 @@ describe('N2 Router + snapshot adapter', () => {
     position = reading('after-success');
     await act(async () => { await router.navigate('/away'); });
     expect(getReadingSnapshot<TimelineReadingSnapshot>(visit.visitId, key)?.anchor.key).toBe('after-success');
+  });
+
+  it('semantic thread/notify turn links route to their named agent before locating and keep a return visit', async () => {
+    let follow!: ReturnType<typeof useFollowLink>;
+    const locateMain = vi.fn(async () => ({ status: 'found' as const }));
+    const locateChild = vi.fn(async () => ({ status: 'found' as const }));
+    function Page() {
+      const location = useLocation();
+      const action = useNavigationType();
+      const agentId = location.pathname.endsWith('/agent/child') ? 'child' : 'main';
+      useLayoutEffect(() => { recordNavigation({ location, scope, action }); }, [location, action]);
+      follow = useFollowLink();
+      useLayoutEffect(() => registerTimelineLocator('example', agentId, { isVisible: () => true,
+        locate: agentId === 'child' ? locateChild : locateMain }), [agentId]);
+      useTimelineVisitLocator('example', agentId);
+      return <div>{agentId}</div>;
+    }
+    const router = createMemoryRouter([{ path: '*', element: <Page /> }], { initialEntries: ['/s/example'] });
+    root = createRoot(container);
+    await act(async () => { root!.render(<I18nProvider><RouterProvider router={router} /></I18nProvider>); });
+    const source = getCurrentVisit()!.visitId;
+    await act(async () => { follow({ kind: 'session', sessionId: 'example', agentId: 'child', turn: 4, label: 'Show reply' }); });
+    expect(router.state.location.pathname).toBe('/s/example/agent/child');
+    expect(locateChild).toHaveBeenCalledWith({ kind: 'turn', turnId: 't4' }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(locateMain).not.toHaveBeenCalled();
+    expect(getCurrentVisit()!.visitId).not.toBe(source);
+    await act(async () => { await router.navigate(-1); });
+    expect(router.state.location.pathname).toBe('/s/example');
+    expect(getCurrentVisit()!.visitId).toBe(source);
   });
 
   it('same URL jumps return/forward per visit, deduplicate current targets and discard forward on a new jump', async () => {

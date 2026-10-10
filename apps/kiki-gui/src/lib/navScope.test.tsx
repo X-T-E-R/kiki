@@ -20,7 +20,7 @@ import { canGoBack, clearNavHistory, getCurrentVisit, getVisitForLocation, recor
 import { readHomeViewRoute, writeSpaceViewRoute } from './spaceViewState';
 import { useNavSnapshotAdapter } from './useNavSnapshot';
 import { NavScopeBoundary, useScopeRestore, type ScopeRestoreValue } from '../components/NavScopeBoundary';
-import { useDirtyGuard, useDirtyGuardState, useGuardedNavigate, type DirtyGuardState } from '../components/dirtyGuard';
+import { useDirtyGuard, useDirtyGuardState, type DirtyGuardState } from '../components/dirtyGuard';
 import { useAwayNotifications } from './useAwayNotifications';
 
 const injected = vi.hoisted(() => ({ connection: undefined as (() => unknown) | undefined, host: undefined as unknown }));
@@ -189,8 +189,7 @@ function Fixture({ children }: { children: ReactNode }) {
   return <Context.Provider value={context}><QueryClientProvider client={queryClient}><NavScopeBoundary>{children}</NavScopeBoundary></QueryClientProvider></Context.Provider>;
 }
 function ShellNotificationListener() {
-  const navigate = useGuardedNavigate();
-  useAwayNotifications({ host, sessions: [], listSessions: async () => [], navigate });
+  useAwayNotifications({ host, sessions: [], listSessions: async () => [] });
   return null;
 }
 function Surface() {
@@ -384,7 +383,7 @@ function sessionRequests() { return requests.filter((request) => request.include
     });
     withAwayNotifications = true;
     const router = await mount('/s/source-a');
-    expect(listeners.size).toBe(2);
+    expect(listeners.size).toBe(1);
     const sourceKey = router.state.location.key;
     const sourceRequests = sessionRequests();
     let release!: () => void;
@@ -405,7 +404,104 @@ function sessionRequests() { return requests.filter((request) => request.include
     expect(router.state.location.pathname).toBe('/s/same-home');
     expect(current.scope.homeId).toBe('home-b');
     expect(vi.mocked(host.prepareSpace!).mock.calls.length).toBe(preparedCount);
-    expect(sessionRequests().slice(beforeSameHome)).toEqual([`${endpoints.b}/api/sessions/same-home`]);
+    expect(sessionRequests().slice(beforeSameHome)).toEqual([
+      `${endpoints.b}/api/sessions/same-home`, `${endpoints.b}/api/sessions/same-home`,
+    ]);
+  });
+
+  it('keeps a missing notification explicit and recoverable instead of falling back to the current session', async () => {
+    const router = await mount('/s/source');
+    const source = getCurrentVisit()!.visitId;
+    entityFailures.set(`${endpoints.a}/api/sessions/deleted`, new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null }));
+    const click = vi.mocked(host.onNotificationClick!).mock.calls[0]![0];
+    await act(async () => { click('/s/deleted', 'home-a', current.scope); }); await flush();
+    expect(router.state.location.pathname).toBe('/s/source');
+    expect(recovery?.state).toMatchObject({ phase: 'failed', reason: 'target-missing', target: { route: '/s/deleted' } });
+    expect(getCurrentVisit()!.visitId).toBe(source);
+    await act(async () => { recovery!.cancel(); });
+    expect(router.state.location.pathname).toBe('/s/source');
+  });
+
+  it('checks the captured server identity even for an identical local home and session id', async () => {
+    const router = await mount('/s/shared');
+    const click = vi.mocked(host.onNotificationClick!).mock.calls[0]![0];
+    const before = sessionRequests().length;
+    await act(async () => { click('/s/shared', 'home-a', { ...current.scope, serverHomeId: 'old-server' }); }); await flush();
+    expect(recovery?.state).toMatchObject({ phase: 'failed', reason: 'identity-mismatch' });
+    expect(router.state.location.pathname).toBe('/s/shared');
+    expect(sessionRequests()).toHaveLength(before);
+  });
+
+  it('serializes cancelled cross-home rollback before accepting a newer notification', async () => {
+    const router = await mount('/s/source');
+    const click = vi.mocked(host.onNotificationClick!).mock.calls[0]![0];
+    let release!: () => void;
+    delay = new Promise<void>((done) => { release = done; });
+    await act(async () => { click('/s/old', 'home-b'); }); await flush();
+    await act(async () => { click('/s/latest', 'home-a', { homeId: 'home-a', scopeId: 'local', serverHomeId: 'server-a' }); });
+    await act(async () => { release(); }); await flush();
+    expect(nativeHome).toBe('home-a');
+    expect(router.state.location.pathname).toBe('/s/latest');
+    expect(sessionRequests()).not.toContain(`${endpoints.b}/api/sessions/old`);
+    expect(sessionRequests()).not.toContain(`${endpoints.b}/api/sessions/latest`);
+    expect(sessionRequests()).toContain(`${endpoints.a}/api/sessions/latest`);
+  });
+
+  it('reuses an active remote connection without reopening, rebinding or losing the child/frame route', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const selection = localSelection('home-a');
+    current = { scope: { homeId: `remote:${id}`, scopeId: `remote:${id}`, serverHomeId: 'server-ssh', connectionRef: id },
+      selection, client: newClient({ ...selection, config: { url: endpoints.ssh, token } }) };
+    configureSpaceStorage({ homeId: current.scope.homeId });
+    const agents = vi.fn(async () => ({ child: {} }));
+    vi.spyOn(current.client.klient, 'session').mockReturnValue({ agents } as never);
+    const router = await mount('/s/source');
+    const click = vi.mocked(host.onNotificationClick!).mock.calls[0]![0];
+    await act(async () => { click('/s/shared/agent/child?turn=t4', current.scope.homeId, current.scope); }); await flush();
+    expect(router.state.location.pathname).toBe('/s/shared/agent/child');
+    expect(router.state.location.search).toBe('?turn=t4');
+    expect(current.scope.scopeId).toBe(`remote:${id}`);
+    expect(agents).toHaveBeenCalledTimes(1);
+    expect(host.prepareSpace).not.toHaveBeenCalled();
+    expect(host.connection.prepareSshProfile).not.toHaveBeenCalled();
+    expect(reloads).toBe(0);
+    expect(sessionRequests()).not.toContain(`${endpoints.a}/api/sessions/shared`);
+  });
+
+  it('does not downgrade a deleted child route to its main agent', async () => {
+    vi.spyOn(current.client.klient, 'session').mockReturnValue({ agents: async () => ({}) } as never);
+    await expect(validateScopeRoute(current.client, '/s/shared/agent/deleted?turn=t3', new AbortController().signal))
+      .rejects.toMatchObject({ reason: 'target-missing' });
+  });
+
+  it('a live click supersedes a still-validating cold intent before its old target mounts', async () => {
+    let release!: () => void;
+    entityDelays.set(`${endpoints.b}/api/sessions/boot-old`, new Promise<void>((resolve) => { release = resolve; }));
+    applyColdNavigationIntent({ route: '/s/boot-old', homeId: 'home-b' }, 'home-a');
+    root = createRoot(container);
+    const router = createMemoryRouter([{ path: '*', element: <Fixture><Surface /></Fixture> }], { initialEntries: [{ pathname: '/s/boot-old', key: window.history.state.key, state: window.history.state.usr }] });
+    await act(async () => { root!.render(<RouterProvider router={router} />); }); await flush();
+    expect(surfaceMounts).toBe(0);
+    const click = vi.mocked(host.onNotificationClick!).mock.calls[0]![0];
+    await act(async () => { click('/s/live-new', 'home-a', { homeId: 'home-a', scopeId: 'local', serverHomeId: 'server-a' }); });
+    await act(async () => { release(); }); await flush();
+    expect(router.state.location.pathname).toBe('/s/live-new');
+    expect(current.scope.homeId).toBe('home-a');
+    expect(nativeHome).toBe('home-a');
+    expect(sessionRequests()).not.toContain(`${endpoints.a}/api/sessions/boot-old`);
+    expect(sessionRequests()).not.toContain(`${endpoints.b}/api/sessions/live-new`);
+  });
+
+  it('cold same-home notification verifies before mounting, without inventing a return visit', async () => {
+    entityFailures.set(`${endpoints.a}/api/sessions/deleted`, new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null }));
+    expect(applyColdNavigationIntent({ route: '/s/deleted', scope: current.scope }, 'home-a')).toBe(true);
+    root = createRoot(container);
+    const cold = createMemoryRouter([{ path: '*', element: <Fixture><Surface /></Fixture> }], { initialEntries: [{ pathname: '/s/deleted', key: window.history.state.key, state: window.history.state.usr }] });
+    await act(async () => { root!.render(<RouterProvider router={cold} />); }); await flush();
+    expect(surfaceMounts).toBe(0);
+    expect(container.textContent).not.toBe('');
+    expect(canGoBack()).toBe(false);
+    expect(sessionRequests()).toEqual([`${endpoints.a}/api/sessions/deleted`]);
   });
 
   it('cross-home hot notification retains its source and cold notification has no invented source', async () => {

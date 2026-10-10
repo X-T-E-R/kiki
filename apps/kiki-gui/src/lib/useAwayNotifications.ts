@@ -27,6 +27,9 @@ import { sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/se
 import type { HostAdapter, HostNotification } from '../host';
 import { useI18n } from '../i18n';
 import { awayNotifier, notificationRoute } from './awayNotify';
+import { useConnection } from '../state/connection';
+import { activeSpace } from './spaceStorage';
+import type { NavScopeIdentity } from './navHistory';
 import { useThreadTitleResolver } from './threadTitles';
 
 /** Poll cadence while the document is hidden (the visible app polls on its own). */
@@ -37,10 +40,9 @@ export interface AwayNotificationsOptions {
   readonly sessions: readonly Session[];
   /** Fetches the newest sessions while hidden; the app's list query is paused then. */
   readonly listSessions: () => Promise<readonly Session[]>;
-  readonly navigate: (route: string) => void;
 }
 
-function useFormatter(sessions: readonly Session[]): (notification: AttentionNotification) => HostNotification {
+function useFormatter(sessions: readonly Session[], scope: NavScopeIdentity): (notification: AttentionNotification) => HostNotification {
   const { t, tp } = useI18n();
   const resolveTitle = useThreadTitleResolver(sessions.map((session) => session.title), sessions);
   return useMemo(() => (notification: AttentionNotification): HostNotification => {
@@ -53,8 +55,8 @@ function useFormatter(sessions: readonly Session[]): (notification: AttentionNot
       return {
         title: t('away.merged.title', { count: notification.events.length }),
         body: parts.join(' · '),
-        route,
-        tag: 'kiki-activity',
+        route, scope,
+        tag: `kiki-activity-${scope.homeId}-${scope.scopeId}`,
       };
     }
     const { event } = notification;
@@ -62,16 +64,27 @@ function useFormatter(sessions: readonly Session[]): (notification: AttentionNot
     return {
       title: t(`away.${event.kind}.title`, { title }),
       body: t(`away.${event.kind}.body`),
-      route,
-      tag: `kiki-session-${event.sessionId}`,
+      route, scope,
+      tag: `kiki-session-${scope.homeId}-${scope.scopeId}-${event.sessionId}`,
     };
-  }, [t, tp, resolveTitle]);
+  }, [t, tp, resolveTitle, scope]);
 }
 
-export function useAwayNotifications({ host, sessions, listSessions, navigate }: AwayNotificationsOptions): void {
-  const format = useFormatter(sessions);
+export function useAwayNotifications({ host, sessions, listSessions }: AwayNotificationsOptions): void {
+  const connection = useConnection();
+  const scope = useMemo<NavScopeIdentity>(() => ({
+    homeId: connection.spaceKey || activeSpace()?.homeId || 'main', scopeId: connection.scopeId,
+    serverHomeId: connection.meta.server_home_id, connectionRef: connection.connectionRef,
+  }), [connection.spaceKey, connection.scopeId, connection.meta.server_home_id, connection.connectionRef]);
+  const scopeKey = JSON.stringify(scope);
+  const format = useFormatter(sessions, scope);
   const sinceRef = useRef(Date.now());
   const baselineRef = useRef<AttentionBaseline | undefined>(undefined);
+  useEffect(() => {
+    sinceRef.current = Date.now();
+    baselineRef.current = undefined;
+    awayNotifier.reset();
+  }, [scopeKey]);
 
   // Wire the shared notifier to this host and locale.
   useEffect(() => {
@@ -113,9 +126,10 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
   useEffect(() => {
     if (host.notify === undefined || typeof document === 'undefined') return;
     let timer: ReturnType<typeof setInterval> | undefined;
+    let stopped = false;
     const tick = () => {
       if (document.visibilityState !== 'hidden') return;
-      void listRef.current().then((list) => { observe.current(list); }, () => undefined);
+      void listRef.current().then((list) => { if (!stopped) observe.current(list); }, () => undefined);
     };
     const sync = () => {
       if (document.visibilityState === 'hidden') {
@@ -128,10 +142,11 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
     sync();
     document.addEventListener('visibilitychange', sync);
     return () => {
+      stopped = true;
       document.removeEventListener('visibilitychange', sync);
       if (timer !== undefined) clearInterval(timer);
     };
-  }, [host]);
+  }, [host, scopeKey]);
 
   // Taskbar / dock badge: the same count as the activity entry.
   const seen = useSyncExternalStore(subscribeSessionSeen, sessionSeenSnapshot, sessionSeenSnapshot);
@@ -140,13 +155,5 @@ export function useAwayNotifications({ host, sessions, listSessions, navigate }:
     void host.setUnreadBadge?.(total);
   }, [host, total]);
 
-  // Clicks come back with the route the notification carried.
-  const navigateRef = useRef(navigate);
-  navigateRef.current = navigate;
-  useEffect(() => {
-    if (host.onNotificationClick === undefined) return;
-    return host.onNotificationClick((route, homeId) => {
-      if (homeId === undefined && route.startsWith('/')) navigateRef.current(route);
-    });
-  }, [host]);
+  // NavScopeBoundary owns the one click consumer, including same-scope verification.
 }

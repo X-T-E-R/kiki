@@ -2,6 +2,14 @@ import type { DesktopLogLevel, DesktopNativePrefs, DesktopUpdateState, UpdateCha
 
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { ResolvedTheme } from '../lib/theme';
+import type { NavScopeIdentity } from '../lib/navHistory';
+
+export interface NotificationNavigationIntent {
+  readonly route: string;
+  readonly homeId?: string;
+  readonly scope?: NavScopeIdentity;
+  readonly navigationId?: string;
+}
 
 export type DesktopUpdateMutation =
   | { readonly kind: 'checked'; readonly at: number }
@@ -20,6 +28,8 @@ export interface HostNotification {
    * a native click can be routed back through `onNotificationClick`.
    */
   readonly route?: string;
+  /** Credential-free identity captured when the notification is produced, not clicked. */
+  readonly scope?: NavScopeIdentity;
   /** Same tag replaces the previous notification where the platform supports it. */
   readonly tag?: string;
 }
@@ -124,8 +134,8 @@ interface HostCapabilities {
    * Present where the shell reports clicks back to the page; the returned
    * function unsubscribes.
    */
-  onNotificationClick?: (callback: (route: string, homeId?: string) => void) => () => void;
-  takeNavigationIntent?: () => Promise<{ readonly route: string; readonly homeId?: string } | { readonly connectionId: string } | null>;
+  onNotificationClick?: (callback: (route: string, homeId?: string, scope?: NavScopeIdentity) => void) => () => void;
+  takeNavigationIntent?: () => Promise<NotificationNavigationIntent | { readonly connectionId: string } | null>;
   /**
    * The unread count for the taskbar / dock icon (0 clears it). Best effort:
    * a platform without badges ignores it.

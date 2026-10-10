@@ -76,6 +76,26 @@ describe('AwayNotifier', () => {
     expect(notify).toHaveBeenCalledWith({ title: 'merged', route: ACTIVITY_ROUTE });
   });
 
+  it('preserves a child and exact turn or interaction without falling back to main', () => {
+    const child = { ...event('session / one', 'completed'), agentId: 'child / two', turnId: 't4' };
+    expect(notificationRoute({ type: 'single', event: child })).toBe('/s/session%20%2F%20one/agent/child%20%2F%20two?turn=t4');
+    expect(notificationRoute({ type: 'single', event: { ...child, kind: 'approval', interactionId: 'approval/3' } }))
+      .toBe('/s/session%20%2F%20one/agent/child%20%2F%20two?interaction=approval%2F3');
+  });
+
+  it('drops a late away probe from the previous connection rather than delivering it under the new scope', async () => {
+    let release!: (value: boolean) => void;
+    isAway.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const pending = notifier.report([event('same-session', 'question')]);
+    notifier.reset();
+    notifier.configure({ isAway: async () => true, notify, format: () => ({ title: 'new-scope' }), prefs: () => ALL_ON });
+    release(true);
+    expect(await pending).toBeUndefined();
+    expect(notify).not.toHaveBeenCalled();
+    await notifier.report([event('same-session', 'question')]);
+    expect(notify).toHaveBeenCalledWith({ title: 'new-scope' });
+  });
+
   it('survives a host that rejects the notification', async () => {
     notify.mockRejectedValueOnce(new Error('denied'));
     await expect(notifier.report([event('a', 'failed')])).resolves.toMatchObject({ type: 'single' });

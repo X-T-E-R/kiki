@@ -17,6 +17,7 @@ import type {
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import { pastedMediaType } from '../lib/pastedFiles';
+import { notificationIntent, notificationScope } from '../lib/notificationNavigation';
 
 let remoteWorkspaceActive = false;
 
@@ -43,19 +44,32 @@ async function ensureNotificationPermission(): Promise<boolean> {
   return granted;
 }
 
-/** Native notification clicks forwarded by the desktop shell with `{ route }`. */
-function onNotificationClick(callback: (route: string, homeId?: string) => void): () => void {
+/** Subscribe before draining the boot queue; acknowledge only the delivered click. */
+function onNotificationClick(callback: Parameters<NonNullable<TauriHostAdapter['onNotificationClick']>>[0]): () => void {
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
-  void listen<unknown>('kiki://notification-click', (event) => {
-    const payload = event.payload as { route?: unknown; homeId?: unknown } | null;
-    if (!unsubscribed && typeof payload?.route === 'string') {
-      void invoke('take_navigation_intent');
-      callback(payload.route, typeof payload.homeId === 'string' ? payload.homeId : undefined);
+  const delivered = new Set<string>();
+  let latestClick = 0n;
+  const deliver = (value: unknown) => {
+    const payload = notificationIntent(value);
+    if (unsubscribed || payload === undefined) return;
+    if (payload.navigationId !== undefined) {
+      if (delivered.has(payload.navigationId)) return;
+      if (/^\d+$/.test(payload.navigationId)) {
+        const click = BigInt(payload.navigationId);
+        if (click <= latestClick) return;
+        latestClick = click;
+      }
+      delivered.add(payload.navigationId);
+      if (delivered.size > 64) delivered.delete(delivered.values().next().value!);
+      void invoke('ack_navigation_intent', { navigationId: payload.navigationId });
     }
-  }).then((fn) => {
-    if (unsubscribed) fn();
-    else unlisten = fn;
+    callback(payload.route, payload.homeId, payload.scope);
+  };
+  void listen<unknown>('kiki://notification-click', (event) => { deliver(event.payload); }).then(async (fn) => {
+    if (unsubscribed) { fn(); return; }
+    unlisten = fn;
+    deliver(await invoke('take_navigation_intent').catch(() => null));
   }, () => undefined);
   return () => {
     unsubscribed = true;
@@ -144,7 +158,7 @@ export const tauriHost: TauriHostAdapter = {
   },
   async notify(options) {
     if (!(await ensureNotificationPermission())) return;
-    await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route });
+    await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route, scope: notificationScope(options.scope) });
   },
   onNotificationClick,
   async setUnreadBadge(count) {

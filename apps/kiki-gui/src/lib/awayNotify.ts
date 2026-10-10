@@ -43,7 +43,14 @@ export const ACTIVITY_ROUTE = '/activity';
 
 /** Where a click on this notification should land. */
 export function notificationRoute(notification: AttentionNotification): string {
-  return notification.type === 'single' ? sessionRoute(notification.event.sessionId) : ACTIVITY_ROUTE;
+  if (notification.type !== 'single') return ACTIVITY_ROUTE;
+  const event = notification.event;
+  const base = sessionRoute(event.sessionId);
+  const route = event.agentId && event.agentId !== 'main' ? `${base}/agent/${encodeURIComponent(event.agentId)}` : base;
+  const params = new URLSearchParams();
+  if (event.interactionId !== undefined) params.set('interaction', event.interactionId);
+  else if (event.turnId !== undefined) params.set('turn', event.turnId);
+  return params.size === 0 ? route : `${route}?${params}`;
 }
 
 export class AwayNotifier {
@@ -72,7 +79,7 @@ export class AwayNotifier {
     }
     // The user is looking at the window: the inbox and the row states carry
     // it, and nothing is spent from the rate limit.
-    if (!away) return undefined;
+    if (!away || this.deps !== deps) return undefined;
     const now = (deps.now ?? Date.now)();
     const plan = planAttentionNotifications(wanted, prefs, this.rate, now);
     this.rate = plan.state;

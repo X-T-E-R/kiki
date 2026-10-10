@@ -19,6 +19,7 @@ macro_rules! app_commands {
             commit_scope_connection,
             take_scope_connection,
             take_navigation_intent,
+            ack_navigation_intent,
             ssh_tunnel_running,
             disconnect_ssh_profile,
             cancel_desktop_startup,

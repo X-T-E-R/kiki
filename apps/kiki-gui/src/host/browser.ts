@@ -1,7 +1,8 @@
 import type { BrowserHostAdapter, HostNotification } from './host';
 import { browserSaveSink } from './saveSink';
 
-const clickListeners = new Set<(route: string) => void>();
+type ClickListener = Parameters<NonNullable<BrowserHostAdapter['onNotificationClick']>>[0];
+const clickListeners = new Set<ClickListener>();
 
 function notificationsAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.Notification === 'function';
@@ -22,10 +23,11 @@ async function browserNotify(options: HostNotification): Promise<void> {
     ...(options.tag === undefined ? {} : { tag: options.tag }),
   });
   const route = options.route;
+  const scope = options.scope;
   notification.onclick = () => {
     window.focus();
     notification.close();
-    if (route !== undefined) for (const listener of clickListeners) listener(route);
+    if (route !== undefined) for (const listener of clickListeners) listener(route, scope?.homeId, scope);
   };
 }
 
@@ -41,7 +43,7 @@ export const browserHost: BrowserHostAdapter = {
   ...(notificationsAvailable()
     ? {
       notify: browserNotify,
-      onNotificationClick: (callback: (route: string) => void) => {
+      onNotificationClick: (callback: ClickListener) => {
         clickListeners.add(callback);
         return () => { clickListeners.delete(callback); };
       },

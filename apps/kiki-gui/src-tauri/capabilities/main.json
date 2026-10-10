@@ -25,6 +25,7 @@
     "allow-switch-space",
     "allow-prepare-space",
     "allow-take-navigation-intent",
+    "allow-ack-navigation-intent",
     "allow-restart-space",
     "allow-open-space",
     "allow-create-space-shortcut",
