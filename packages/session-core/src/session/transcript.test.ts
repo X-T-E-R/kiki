@@ -1886,6 +1886,46 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it('carries engine session facts and keeps only the newest context reading of a turn', () => {
+    const marker = (markerId: string, name: string, payload: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: name, payload, at: FIXED_AT });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          marker('u-1', 'executor.usage', { turnId: 2, kind: 'usage', value: { type: 'usage', used: 41_000, size: 200_000 } }),
+          marker('u-2', 'executor.usage', { turnId: 2, kind: 'usage', value: { type: 'usage', used: 61_700, size: 200_000 } }),
+          marker('u-3', 'executor.usage', { turnId: 2, kind: 'usage', value: { source: 'prompt_response', reported: {} } }),
+          marker('u-4', 'executor.usage', { turnId: 3, kind: 'usage', value: { type: 'usage', used: 900 } }),
+          marker('i-1', 'executor.session', {
+            turnId: 2, kind: 'session',
+            value: { meta: { source: 'claude-acp', actualModel: 'claude-sonnet-4.5', agentVersion: '0.84.0' } },
+          }),
+          marker('s-1', 'executor.session', {
+            turnId: 2, kind: 'session',
+            value: { meta: { actualModel: 'claude-sonnet-4.5', imageDropped: { reason: 'image exceeds the engine limit', notes: ['Dropped before upload'] } } },
+          }),
+          marker('i-2', 'executor.session', {
+            turnId: 3, kind: 'session',
+            value: { meta: { source: 'codex-app-server', actualModel: 'gpt-5.5-codex', modelProvider: 'openai' } },
+          }),
+          marker('s-2', 'executor.session', { turnId: 2, kind: 'session', value: { title: 'Limit fix' } }),
+        ],
+      }),
+    );
+    const notes = projected.blocks.map((block) => (block.kind === 'notice' ? [block.turnId, block.executor] : undefined));
+    // Within a turn the newest context reading replaces the earlier one; across
+    // the session the engine's own identity is one row, newest report only. A
+    // usage record with no numbers and a title echo state nothing, while a
+    // dropped image stays where it happened.
+    expect(notes).toEqual([
+      ['t2', { kind: 'usage', used: 61_700, size: 200_000 }],
+      ['t3', { kind: 'usage', used: 900 }],
+      ['t2', { kind: 'session', droppedImage: { reason: 'image exceeds the engine limit', notes: ['Dropped before upload'] } }],
+      ['t3', { kind: 'session', observed: { source: 'codex-app-server', model: 'gpt-5.5-codex', provider: 'openai' } }],
+    ]);
+  });
+
   it('suppresses the redundant live cron marker and preserves interruption ownership', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),

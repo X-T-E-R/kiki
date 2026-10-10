@@ -137,8 +137,9 @@ const HINT_KEY = {
  * One external-engine runtime fact in the timeline, reusing the native
  * shapes: an engine compaction is the same divider as a Kiki compaction, the
  * whole-turn diff is an edit activity row that opens the native DiffCard, and
- * a prompt-delivery status or unmapped update is a one-line quiet note.
- * `queued` reads as waiting, never as delivered.
+ * a prompt-delivery status, an engine session fact or the engine's own context
+ * reading is a one-line quiet note. `queued` reads as waiting, never as
+ * delivered.
  */
 export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }: { note: ExecutorNote; createdAt?: string }) {
   const { t, time } = useI18n();
@@ -158,11 +159,33 @@ export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }
       return <QuietNote kind={`hint-${note.status}`} title={title} text={t(key)}
         icon={note.status === 'delivered' ? 'check' : note.status === 'queued' ? 'clock' : 'cross'} tone={note.status === 'undelivered' ? 'warn' : 'plain'} />;
     }
+    // The engine's own context reading. It is named as the engine's because
+    // Kiki's context meter measures a different window.
+    case 'usage':
+      return <QuietNote kind="usage" icon="usage" title={title}
+        text={note.size === undefined
+          ? t('transcript.exec.engineContextUsed', { used: time.formatTokens(note.used) })
+          : t('transcript.exec.engineContextOf', { used: time.formatTokens(note.used), size: time.formatTokens(note.size) })} />;
+    case 'session': {
+      const dropped = note.droppedImage;
+      const observed = note.observed;
+      const supporting = observed === undefined ? '' : [observed.source, observed.provider, observed.version].filter(Boolean).join(' · ');
+      return <>
+        {dropped === undefined ? null : <QuietNote kind="session" icon="warning" tone="warn"
+          title={[title, ...(dropped.notes ?? [])].filter(Boolean).join('\n') || undefined}
+          text={dropped.reason === undefined
+            ? t('transcript.exec.imageDropped')
+            : t('transcript.exec.imageDroppedReason', { reason: dropped.reason })} />}
+        {observed?.model === undefined ? null : <QuietNote kind="session-model" icon="sliders"
+          title={[title, supporting].filter(Boolean).join('\n') || undefined}
+          text={t('transcript.exec.engineModel', { model: observed.model })} />}
+      </>;
+    }
   }
 });
 
 function QuietNote({ kind, text, icon, title, tone = 'plain' }: {
-  kind: string; text: string; icon: 'check' | 'clock' | 'cross' | 'dash'; title?: string; tone?: 'plain' | 'warn';
+  kind: string; text: string; icon: 'check' | 'clock' | 'cross' | 'dash' | 'sliders' | 'usage' | 'warning'; title?: string; tone?: 'plain' | 'warn';
 }) {
   return (
     <div data-executor-note={kind} title={title} className="anim-enter flex min-h-[22px] items-center gap-2 text-[12px]">

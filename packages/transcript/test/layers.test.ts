@@ -857,6 +857,22 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('projects engine session and context-usage updates through recovery instead of dropping them', () => {
+    const updates = [
+      { type: 'executor.runtime.update', turnId: 0, executorId: 'claude-acp', kind: 'session',
+        value: { meta: { imageDropped: { reason: 'image exceeds the engine limit', notes: [] } } } },
+      { type: 'executor.runtime.update', turnId: 0, executorId: 'claude-acp', kind: 'usage',
+        value: { type: 'usage', used: 41_000, size: 200_000 } },
+    ];
+    const snapshot = agentTranscriptSnapshotSchema.parse(replay([records[0]!, ...updates, records.at(-1)!]).snapshot());
+    const recovered = new AgentTranscript('main');
+    recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
+    expect(recovered.getItems().filter((item) => item.kind === 'marker')).toMatchObject([
+      { marker: 'executor.session', payload: updates[0] },
+      { marker: 'executor.usage', payload: updates[1] },
+    ]);
+  });
+
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
     const transcript = replay([
       {

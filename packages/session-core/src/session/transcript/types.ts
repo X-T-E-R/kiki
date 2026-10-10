@@ -417,7 +417,21 @@ export type ExecutorNote =
     }
   | { readonly kind: 'compaction' }
   | { readonly kind: 'diff'; readonly diff: string }
-  | { readonly kind: 'unknown'; readonly updateType?: string };
+  | { readonly kind: 'unknown'; readonly updateType?: string }
+  | { readonly kind: 'usage'; readonly used: number; readonly size?: number }
+  | {
+      readonly kind: 'session';
+      readonly observed?: {
+        readonly source?: string;
+        readonly model?: string;
+        readonly provider?: string;
+        readonly version?: string;
+      };
+      readonly droppedImage?: {
+        readonly reason?: string;
+        readonly notes?: readonly string[];
+      };
+    };
 
 export interface ApprovalResolution {
   readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';

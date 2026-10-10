@@ -583,6 +583,13 @@ const MARKER_SUMMARY_KEYS = {
   'model.switch': 'transcript.marker.modelSwitch',
 } as const satisfies Record<string, I18nKey>;
 
+/**
+ * Engine markers that are emitted on every engine state change. When their
+ * payload states no fact the timeline would lose, they are dropped whole
+ * rather than rendered as their own marker name.
+ */
+const SILENT_EXECUTOR_MARKERS: ReadonlySet<string> = new Set(['executor.session', 'executor.usage']);
+
 /** Project durable external-engine marker payloads into timeline notes. */
 function executorNoteOf(marker: string, payload: Record<string, unknown> | undefined): NoticeBlock['executor'] {
   switch (marker) {
@@ -605,9 +612,45 @@ function executorNoteOf(marker: string, payload: Record<string, unknown> | undef
       const origin = payload?.['origin'];
       return { kind: 'hint', method, status, ...(typeof origin === 'string' ? { origin } : {}) };
     }
+    case 'executor.usage': {
+      const value = objectRecord(payload?.['value']);
+      const used = value?.['used'];
+      if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) return undefined;
+      const size = value?.['size'];
+      return { kind: 'usage', used,
+        size: typeof size === 'number' && Number.isFinite(size) && size > 0 ? size : undefined };
+    }
+    case 'executor.session': {
+      const value = objectRecord(payload?.['value']);
+      const meta = objectRecord(value?.['meta']);
+      const dropped = objectRecord(meta?.['imageDropped']);
+      const reason = dropped?.['reason'];
+      const notes = Array.isArray(dropped?.['notes'])
+        ? dropped['notes'].filter((note): note is string => typeof note === 'string' && note !== '')
+        : undefined;
+      const droppedImage = dropped === undefined ? undefined : {
+        reason: typeof reason === 'string' && reason !== '' ? reason : undefined,
+        notes: notes === undefined || notes.length === 0 ? undefined : notes,
+      };
+      const model = meta?.['actualModel'];
+      const observed = typeof model === 'string' && model !== '' ? {
+        source: typeof meta?.['source'] === 'string' ? meta['source'] : undefined,
+        model,
+        provider: typeof meta?.['modelProvider'] === 'string' && meta['modelProvider'] !== '' ? meta['modelProvider'] : undefined,
+        version: typeof meta?.['agentVersion'] === 'string' && meta['agentVersion'] !== '' ? meta['agentVersion'] : undefined,
+      } : undefined;
+      if (droppedImage === undefined && observed === undefined) return undefined;
+      return { kind: 'session', observed, droppedImage };
+    }
     default:
       return undefined;
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function markerToBlock(item: {
@@ -669,6 +712,10 @@ function markerToBlock(item: {
   // `executor.degradation`): a quiet line in the engine's turn, never a banner.
   const executorNote = executorNoteOf(item.marker, payloadRecord);
   if (executorNote !== undefined) return { ...base, text: item.marker, executor: executorNote };
+  // Engine state that repeats (a context reading, a title echo) states nothing
+  // the first time round, so it states nothing here either: the row would only
+  // be its own marker name.
+  if (SILENT_EXECUTOR_MARKERS.has(item.marker)) return undefined;
 
   if (item.marker === 'compaction') {
     const result = payloadRecord?.['result'];
@@ -2649,12 +2696,47 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return foldConsecutiveMarkerDividers(mergeTaskNotifications(insertInteractionBlocks(
+  return foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(insertInteractionBlocks(
     withSubagentEvents,
     response.interactions ?? [],
     response.agent_id,
     previous,
-  )));
+  ))));
+}
+
+/**
+ * The engine reports running state — its context size, the identity it is
+ * actually running — whenever that state changes. Those are readings, not
+ * events: the context number keeps only the newest reading per turn, and the
+ * engine identity keeps only the newest report overall, so neither repeats.
+ * Per-occurrence facts such as a dropped image, and everything else the engine
+ * reported, are left alone.
+ */
+export function keepLatestExecutorReadings(blocks: readonly Block[]): Block[] {
+  const latestByTurn = new Map<string, string>();
+  let latestIdentity: string | undefined;
+  for (const block of blocks) {
+    if (block.kind !== 'notice') continue;
+    if (block.executor?.kind === 'usage') {
+      latestByTurn.set(block.turnId ?? '', block.id);
+      continue;
+    }
+    // The engine's own identity is session state: the newest report replaces
+    // the earlier one wherever the reader is, rather than repeating per turn.
+    if (block.executor?.kind === 'session' && block.executor.observed !== undefined) latestIdentity = block.id;
+  }
+  if (latestByTurn.size === 0 && latestIdentity === undefined) return [...blocks];
+  const keep = new Set(latestByTurn.values());
+  if (latestIdentity !== undefined) keep.add(latestIdentity);
+  return blocks.flatMap((block): Block[] => {
+    if (block.kind !== 'notice') return [block];
+    const note = block.executor;
+    if (note?.kind === 'usage') return keep.has(block.id) ? [block] : [];
+    if (note?.kind === 'session' && note.observed !== undefined && !keep.has(block.id)) {
+      return note.droppedImage === undefined ? [] : [{ ...block, executor: { ...note, observed: undefined } }];
+    }
+    return [block];
+  });
 }
 
 /** One terminal notification per task execution, preferring its delivered receipt over a summary echo. */
