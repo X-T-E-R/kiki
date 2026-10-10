@@ -10,6 +10,25 @@ describe('executor prompt contract', () => {
     expect(z.toJSONSchema(profileSchema, { io: 'output' })).toEqual(z.toJSONSchema(protocolSchema, { io: 'output' }));
   });
 
+  it('inherits common include for a body-only engine override', () => {
+    const config = profileSchema.parse({
+      include: ['agents_md', 'memory_snapshot'],
+      per_engine: { codex: { body: 'Engine instructions' } },
+    });
+    expect(config.per_engine?.['codex']?.include).toBeUndefined();
+    expect(resolveExecutorPrompt(config, 'codex').include).toEqual(['agents_md', 'memory_snapshot']);
+  });
+
+  it('keeps an explicit empty include override and defaults an absent include at resolution', () => {
+    const config = profileSchema.parse({
+      include: ['agents_md'],
+      per_engine: { codex: { include: [] } },
+    });
+    expect(resolveExecutorPrompt(config, 'codex').include).toEqual([]);
+    expect(resolveExecutorPrompt(profileSchema.parse({}), 'codex').include).toEqual([]);
+    expect(resolveExecutorPrompt(undefined, 'codex').include).toEqual([]);
+  });
+
   it('resolves per-engine delivery and include without changing other engines', () => {
     const config = profileSchema.parse({
       delivery: 'append',
