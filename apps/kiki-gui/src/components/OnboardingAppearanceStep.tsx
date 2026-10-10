@@ -1,10 +1,11 @@
 /**
- * The appearance half of the onboarding welcome page: light / dark / system,
- * the built-in palettes as tappable swatches, and an optional background
- * picture with one strength slider. Every choice writes the real setting at
- * once, and the app behind the dialog is the preview — there is no mock
- * frame here. The wizard renders the language row above these rows with the
- * same `OnboardingRow`, so the page reads as one short form.
+ * The appearance choices of the onboarding welcome page: light / dark /
+ * system, the built-in palettes as tappable swatches, and an optional
+ * background picture with one strength slider. Every choice writes the real
+ * setting at once, and the app behind the dialog is the preview — there is no
+ * mock frame here. The wizard folds these rows behind one "Appearance" row
+ * under the intro, so the first screen says what Kiki is for and the look is
+ * one click away, complete.
  */
 
 import { useState, useSyncExternalStore, type ReactNode } from 'react';

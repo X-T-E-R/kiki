@@ -4,13 +4,14 @@
 
 ## 从这里开始
 
-- **安装与首次运行。** npm 需要 Node.js 24.15.0+，也可以从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载桌面版。新会话默认是自动模式；`/permission` 在手动、自动、审查和 YOLO 之间切换。[安装 →](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
+- **安装与首次运行。** npm 需要 Node.js 24.15.0+，也可以从 [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) 下载桌面版。新会话默认是「自动」；`/permission` 在「每步询问」（`manual`）、「自动」（`auto`）、「替我审批」（`review`）和「完全放行」（`yolo`）之间切换。[安装 →](https://x-t-e-r.github.io/kiki/zh/getting-started/installation)
+- **首次运行先讲能做什么。** 桌面版欢迎页先介绍 Kiki 能帮你做什么，再给几条导览路线；侧栏的 **发现 Kiki** 一直留着它们，起步建议没连模型也能填进草稿。[首次启动 →](https://x-t-e-r.github.io/kiki/zh/getting-started/first-launch)
 - **三个界面，一个守护进程。** 桌面应用、终端里的 `kiki` 和 `kiki web` 读写同一批会话。[桌面版 →](https://x-t-e-r.github.io/kiki/zh/getting-started/desktop-app) · [本地服务 →](https://x-t-e-r.github.io/kiki/zh/server/local-server)
 - **登录。** Kimi Code OAuth 或 Kimi 开放平台 API 密钥开箱即用；Anthropic、OpenAI 兼容服务、OpenAI Responses API、Gemini、Vertex AI 都能接。[平台与模型 →](https://x-t-e-r.github.io/kiki/zh/configuration/providers)
 
-## 每个角色各用各的模型
+## 每个智能体各用各的模型
 
-- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个角色可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents#具名子-agent)
+- **子智能体，各用各的模型。** 主智能体自己派子智能体，每个智能体可以绑不同供应商的模型，强模型负责规划，便宜的模型跑日常。每个子智能体有独立上下文，对话记录随时点开看。[具名子 Agent →](https://x-t-e-r.github.io/kiki/zh/customization/agents#具名子-agent)
 - **智能体就是你自己的文件。** 每个智能体一份 Markdown：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。可以从现有 profile 复制、从内置模板起，或者从空白开始。[Agent 文件格式 →](https://x-t-e-r.github.io/kiki/zh/customization/agents#agent-文件格式)
 - **把别的智能体当引擎用。** 一个 profile 可以通过 ACP 或 Codex app-server 跑在 Claude Code、Codex、Cursor、Gemini CLI、Kimi CLI、OpenCode 或 Grok Build 上。[派遣能力 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#派遣能力)
 - **后台任务。** 耗时的命令和子智能体丢到后台跑，跑完结果自动回到智能体手里。[后台任务 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#后台任务)
@@ -31,12 +32,12 @@
 - **用量。** 某个日期区间的 token 与费用、正在跑和排队的请求及并发规则，以及不含内容的外部同步。[Usage →](https://x-t-e-r.github.io/kiki/zh/guides/settings#usage)
 - **搜索。** `HistorySearch` 和 `HistoryRead` 让智能体搜索之前的消息和工具输出，压缩前的内容也在范围内；侧栏里会话标题始终可搜。[内置工具 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#历史工具)
 
-## 能一起干活的人
+## 能一起干活的角色
 
 - **角色。** 长期身份——名字、头像、职责、它该怎样工作的长期约定，以及它自己的记忆——存成一份你能读能改的 Markdown。[角色、Bot 与房间 →](https://x-t-e-r.github.io/kiki/zh/customization/personas)
 - **固定的日常对话。** 点角色的名字每次落进同一个对话；同一个角色可以同时有多段对话。
 - **房间。** 两到六个角色按顺序讨论同一个话题，有主持人、有预算、有暂停和继续。
-- **角色不等于 profile。** profile 是执行配置——工具、权限、模型、思考强度；角色是身份——它是谁、记得什么。
+- **角色不等于智能体配置。** profile 是执行配置——工具、权限、模型、思考强度；角色是身份——它是谁、记得什么。
 
 ## 数据与机器都在你手上
 
@@ -50,7 +51,7 @@
 
 - **提示词字段覆写。** 内置提示词的任意具名部分都能换掉，细到单个工具描述，可以全局、按模型或按智能体设；`kiki prompt-fields` 能看到模型最终收到什么。[提示词字段与覆写 →](https://x-t-e-r.github.io/kiki/zh/customization/prompt-fields)
 - **连接与 OAuth。** Kiki 触达模型的每一种方式都是一张列表里的一行，怎么认证也是这一行自身的事。用设备流登录订阅账号，或者复用本机已有的登录。[连接服务 →](https://x-t-e-r.github.io/kiki/zh/guides/settings#连接)
-- **权限模式。** 手动模式有副作用就问；自动模式放行日常操作，碰到敏感目标还是会问；YOLO 全部放行；「替我审批」把策略产生的审批请求交给你配置的审查者。显式 deny 永远优先。[权限模式 →](https://x-t-e-r.github.io/kiki/zh/guides/interaction#权限模式)
+- **权限模式。** 「每步询问」（`manual`）有副作用就问；「自动」（`auto`）放行日常操作，碰到敏感目标还是会问；「替我审批」（`review`）把策略产生的审批请求交给你配置的审查者；「完全放行」（`yolo`）全部放行。显式 deny 永远优先。[权限模式 →](https://x-t-e-r.github.io/kiki/zh/guides/interaction#权限模式)
 - **Hooks。** 在生命周期事件上跑你自己的脚本：拦下危险的 shell 命令、提交消息时补充上下文、任务跑完弹通知。[Hooks →](https://x-t-e-r.github.io/kiki/zh/customization/hooks)
 
 ## 带进历史，接上别的工具

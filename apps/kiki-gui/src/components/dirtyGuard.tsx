@@ -7,7 +7,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { UNSAFE_DataRouterContext, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
 
-export type GuardedNavigate = (target: To | number, options?: NavigateOptions) => void;
+export type GuardedNavigate = (target: To | number, options?: NavigateOptions, onCancel?: () => void) => void | Promise<void>;
 export type GuardedAction = (signal: AbortSignal) => void | Promise<void>;
 
 export interface NavigationRedirect { readonly target: To | number; readonly options?: NavigateOptions }
@@ -84,15 +84,21 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
   const getBlocker = useCallback(() => activeRouter?.state.blockers.get(blockerKey) ?? null, [activeRouter, blockerKey]);
   const blocker = useSyncExternalStore(subscribe, getBlocker, getBlocker);
   const [pending, setPending] = useState(false);
-  const pendingRef = useRef<{ id: string | null; action: () => void | Promise<void> } | null>(null);
+  const pendingRef = useRef<{ id: string | null; action: () => void | Promise<void>; onCancel?: () => void } | null>(null);
+  const pendingCancelRef = useRef<(() => void) | undefined>(undefined);
   const generationRef = useRef(0);
   const activeActionRef = useRef<AbortController | null>(null);
   const cancel = useCallback(() => {
     generationRef.current += 1;
     activeActionRef.current?.abort();
     activeActionRef.current = null;
+    const leave = pendingRef.current;
     pendingRef.current = null;
     setPending(false);
+    leave?.onCancel?.();
+    const onCancel = pendingCancelRef.current;
+    pendingCancelRef.current = undefined;
+    onCancel?.();
     const currentBlocker = getBlocker();
     if (currentBlocker?.state === 'blocked') currentBlocker.reset();
   }, [getBlocker]);
@@ -103,8 +109,10 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
     generationRef.current += 1;
     activeActionRef.current?.abort();
     activeActionRef.current = null;
+    const leave = pendingRef.current;
     pendingRef.current = null;
     setPending(false);
+    leave?.onCancel?.();
   }, [blocker]);
   const reportDirty = useCallback((id: string, dirty: boolean) => {
     setDirtyIds((current) => {
@@ -112,14 +120,50 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
       return dirty ? [...current, id] : current.filter((entry) => entry !== id);
     });
   }, []);
-  const request = useCallback(<R extends void | Promise<void>,>(guarded: boolean, id: string | null, action: () => R): R | undefined => {
+  const request = useCallback(<R extends void | Promise<void>,>(guarded: boolean, id: string | null, action: () => R, onCancel?: () => void): Promise<void> | R | undefined => {
     cancel();
-    if (guarded) { pendingRef.current = { id, action }; setPending(true); }
+    if (guarded) {
+      // A caller that watches the queued transition gets a promise that
+      // settles when the action runs or the seat is cancelled. Without that
+      // request the queue stays fire-and-forget.
+      if (onCancel === undefined) {
+        pendingRef.current = { id, action };
+        setPending(true);
+        return undefined;
+      }
+      return new Promise<void>((resolve, reject) => {
+        pendingRef.current = {
+          id,
+          action: () => {
+            try {
+              const res = action();
+              if (res instanceof Promise) {
+                return res.then((val) => { resolve(val); }, (err: unknown) => { reject(err); throw err; });
+              }
+              resolve();
+              return res;
+            } catch (err) {
+              reject(err);
+              throw err;
+            }
+          },
+          onCancel: () => {
+            onCancel();
+            resolve();
+          },
+        };
+        setPending(true);
+      });
+    }
     else return action();
   }, [cancel]);
-  const navigate = useCallback<GuardedNavigate>((target, options) => {
-    if (router) { cancel(); rawNavigate(target, options); }
-    else request(shouldGuardNavigation(currentRoute, target, dirtyIds.length > 0), null, () => { rawNavigate(target, options); });
+  const navigate = useCallback<GuardedNavigate>((target, options, onCancel) => {
+    if (router) {
+      cancel();
+      pendingCancelRef.current = onCancel;
+      return rawNavigate(target, options);
+    }
+    return request(shouldGuardNavigation(currentRoute, target, dirtyIds.length > 0), null, () => { rawNavigate(target, options); }, onCancel);
   }, [router, cancel, currentRoute, dirtyIds.length, rawNavigate, request]);
   const confirmDiscard = useCallback((id: string, action: () => void) => {
     request(dirtyIds.includes(id), id, action);
@@ -146,6 +190,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
     });
   }, [router, dirtyIds.length, rawNavigate, request]);
   const confirm = useCallback(() => {
+    pendingCancelRef.current = undefined;
     const currentBlocker = getBlocker();
     if (currentBlocker?.state === 'blocked') {
       const controller = new AbortController();
@@ -169,6 +214,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
     }
     const leave = pendingRef.current;
     if (leave === null) return;
+    pendingRef.current = null;
     cancel();
     const generation = generationRef.current;
     const result = leave.action();

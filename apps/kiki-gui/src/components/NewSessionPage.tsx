@@ -17,7 +17,7 @@
  * navigate here).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
@@ -90,6 +90,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
         aria-label={t('hero.workspaceAria')}
         aria-haspopup="dialog"
         aria-expanded={open}
+        data-anchor="workspace-picker"
         className="hero-workspace-chip motion-press flex h-8 max-w-[min(100%,360px)] items-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-medium text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
       >
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
@@ -131,37 +132,78 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
 }
 
 /**
- * First-run readiness card: shown only when the server reports no provider
- * and no model, i.e. the next send is guaranteed to fail. Both actions deep
- * link into the providers section so the fix happens where it lives.
+ * Where each connection choice lands. The providers section preselects its
+ * lane from the card hash: `#st-card-auth` opens the account sign-in lane,
+ * `#st-card-providers-add` the API key / local server lane. Navigating there
+ * starts nothing by itself — sign-in and keys stay the user's own action.
  */
-function ProviderSetupCard() {
+const CONNECT_ACCOUNT_HREF = '/settings/ai?tab=providers#st-card-auth';
+const CONNECT_KEY_HREF = '/settings/ai?tab=providers#st-card-providers-add';
+
+/**
+ * First-run model connection, shown only when the server reports no provider
+ * and no model, i.e. the next send is guaranteed to fail. Exploring the page
+ * (starters, discovery, the workspace) works without a model, so at rest this
+ * is one quiet line under the starters. Once the user actually tries to send,
+ * it becomes the card that explains the fix. Both forms carry the same two
+ * choices, each to its own lane in the providers section.
+ */
+function ProviderSetupPrompt({ emphasis }: { emphasis: 'quiet' | 'card' }) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const openAccount = () => { void navigate(CONNECT_ACCOUNT_HREF); };
+  const openKey = () => { void navigate(CONNECT_KEY_HREF); };
+
+  if (emphasis === 'quiet') {
+    return (
+      <p
+        data-provider-setup="quiet"
+        className="mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] text-left text-[12.5px] leading-relaxed text-ink-faint"
+      >
+        <span>{t('new.connect.quiet')}</span>{' '}
+        <button
+          type="button"
+          onClick={openAccount}
+          className="rounded-sm text-ink-soft underline decoration-hairline-strong underline-offset-[3px] hover:text-ink hover:decoration-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          {t('new.connect.account')}
+        </button>
+        <span aria-hidden className="px-1.5">·</span>
+        <button
+          type="button"
+          onClick={openKey}
+          className="rounded-sm text-ink-soft underline decoration-hairline-strong underline-offset-[3px] hover:text-ink hover:decoration-ink-soft focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          {t('new.connect.key')}
+        </button>
+      </p>
+    );
+  }
 
   return (
     <div
-      data-provider-setup
-      className="mx-auto mt-2 w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-[var(--kiki-sheet-radius)] bg-panel px-4 py-3 text-left shadow-[var(--kiki-sheet-shadow)]"
+      data-provider-setup="card"
+      role="status"
+      className="anim-enter mx-auto w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-[var(--kiki-sheet-radius)] bg-panel px-4 py-3 text-left shadow-[var(--kiki-sheet-shadow)]"
     >
       <p className="font-display text-[15px] font-semibold tracking-tight text-ink">
-        {t('new.setupTitle')}
+        {t('new.connect.title')}
       </p>
-      <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">{t('new.setupBody')}</p>
+      <p className="mt-1 text-[13px] leading-relaxed text-ink-soft">{t('new.connect.body')}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-          className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+          onClick={openAccount}
+          className="motion-press h-8 rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none pointer-coarse:h-11"
         >
-          {t('new.setupSignIn')}
+          {t('new.connect.account')}
         </button>
         <button
           type="button"
-          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
-          className="motion-press h-8 rounded-md border border-hairline px-3 text-[13px] text-ink hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+          onClick={openKey}
+          className="motion-press h-8 rounded-md border border-hairline px-3 text-[13px] text-ink hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
         >
-          {t('new.setupApiKey')}
+          {t('new.connect.key')}
         </button>
       </div>
     </div>
@@ -261,6 +303,14 @@ function NewSessionPageContent({
   const heroAvatarSize = narrow ? 48 : 56;
   const personaPick = useMemo(() => ({ value: personaChip, onChange: state.selectPersona }), [personaChip, state.selectPersona]);
   const echo = useTypingEcho(state.draft);
+  // The connection prompt stays a quiet line until the user actually tries to
+  // send; then it becomes the card. The draft is untouched either way.
+  const [sendAttempted, setSendAttempted] = useState(false);
+  const stateSend = state.send;
+  const send = useCallback((...args: Parameters<NewSessionDraftState['send']>) => {
+    setSendAttempted(true);
+    return stateSend(...args);
+  }, [stateSend]);
 
   // Only creation locks input. Catalog validation and missing targets block
   // sending while keeping the draft and selection controls editable.
@@ -333,7 +383,7 @@ function NewSessionPageContent({
           onChangePlanMode={state.setPlanMode}
           onChangeGoalObjective={state.setGoalObjective}
           onChangeEffort={state.setEffortOverride}
-          onSend={state.send}
+          onSend={send}
           onAbort={state.cancelCreation}
           onActivateSkill={state.activateSkill}
           />
@@ -372,7 +422,7 @@ function NewSessionPageContent({
       state.setPlanMode,
       state.setGoalObjective,
       state.setEffortOverride,
-      state.send,
+      send,
       state.activateSkill,
       t,
     ],
@@ -571,7 +621,11 @@ function NewSessionPageContent({
                 </div>
               </div>
 
-              {state.needsProviderSetup ? <div className="mt-6"><ProviderSetupCard /></div> : null}
+              {state.needsProviderSetup ? (
+                <div className={sendAttempted ? 'mt-6' : 'mt-4'}>
+                  <ProviderSetupPrompt emphasis={sendAttempted ? 'card' : 'quiet'} />
+                </div>
+              ) : null}
             </div>,
             slots.heroFooter,
           )

@@ -369,29 +369,31 @@ describe('the /new page', () => {
   });
 
   it.each([
-    ['en', 0, 'OAuth sign-in'],
-    ['en', 1, 'Add an API key'],
-    ['zh', 0, 'OAuth 登录'],
-    ['zh', 1, '配置 API key'],
-  ] as const)('routes the %s setup choice %i to connection settings without authentication side effects', async (locale, choice, label) => {
+    ['en', 0, 'Sign in with an account', 'st-card-auth'],
+    ['en', 1, 'Use an API key or local server', 'st-card-providers-add'],
+    ['zh', 0, '使用账号登录', 'st-card-auth'],
+    ['zh', 1, '填写 API 密钥或本地服务', 'st-card-providers-add'],
+  ] as const)('routes the %s connection choice %i to its own settings lane without authentication side effects', async (locale, choice, label, cardId) => {
     firstRun.needsProviderSetup = true;
     localStorage.setItem('kiki.locale', locale);
     const openWindow = vi.spyOn(window, 'open').mockReturnValue(null);
     try {
       const container = await mountNewSessionPage();
-      const card = document.querySelector('#first-run-hero-footer [data-provider-setup]')!;
-      const buttons = card.querySelectorAll('button');
+      // At rest the prompt is one quiet line, not a card competing with the starters.
+      expect(document.querySelector('#first-run-hero-footer [data-provider-setup="card"]')).toBeNull();
+      const line = document.querySelector('#first-run-hero-footer [data-provider-setup="quiet"]')!;
+      const buttons = line.querySelectorAll('button');
       expect(buttons).toHaveLength(2);
       expect(buttons[choice]?.textContent).toBe(label);
-      expect(card.textContent).not.toContain('Kimi');
+      expect(line.textContent).not.toContain('Kimi');
       await act(async () => { buttons[choice]!.click(); });
       expect(container.querySelector('[data-location]')?.textContent)
-        .toBe('/settings/ai?tab=providers#st-card-providers-add');
+        .toBe(`/settings/ai?tab=providers#${cardId}`);
       expect(container.querySelector('[data-settings-destination]')).not.toBeNull();
-      expect(SETTINGS_SEARCH_SPEC.find((entry) => entry.cardId === 'st-card-providers-add'))
+      expect(SETTINGS_SEARCH_SPEC.find((entry) => entry.cardId === cardId))
         .toMatchObject({ section: 'ai', tab: 'providers' });
-      expect(resolveSettingsRoute('ai', '#st-card-providers-add'))
-        .toMatchObject({ status: 'ok', section: 'ai', tab: 'providers', cardId: 'st-card-providers-add' });
+      expect(resolveSettingsRoute('ai', `#${cardId}`))
+        .toMatchObject({ status: 'ok', section: 'ai', tab: 'providers', cardId });
       expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
       expect(firstRun.client.cancelOAuthLogin).not.toHaveBeenCalled();
       expect(firstRun.client.createProvider).not.toHaveBeenCalled();
@@ -399,5 +401,23 @@ describe('the /new page', () => {
     } finally {
       openWindow.mockRestore();
     }
+  });
+
+  it('turns the quiet connection line into a card once the user tries to send', async () => {
+    firstRun.needsProviderSetup = true;
+    await mountNewSessionPage();
+    const footer = document.querySelector('#first-run-hero-footer')!;
+    expect(footer.querySelector('[data-provider-setup="quiet"]')).not.toBeNull();
+    expect(footer.querySelector('[data-provider-setup="card"]')).toBeNull();
+    const seat = firstRun.seat?.composer as import('react').ReactElement<{ children: import('react').ReactElement<{ onSend: () => unknown }> }>;
+    await act(async () => { seat.props.children.props.onSend(); });
+    const card = footer.querySelector('[data-provider-setup="card"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain('Connect a model to send');
+    const buttons = card!.querySelectorAll('button');
+    expect(Array.from(buttons, (button) => button.textContent)).toEqual(['Sign in with an account', 'Use an API key or local server']);
+    expect(footer.querySelector('[data-provider-setup="quiet"]')).toBeNull();
+    expect(firstRun.client.startOAuthLogin).not.toHaveBeenCalled();
+    expect(firstRun.client.createProvider).not.toHaveBeenCalled();
   });
 });

@@ -1,15 +1,25 @@
 # Kiki
 
-**Agents that answer to you.**
+**Your agents, your call.**
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/en/) <br>
 [Documentation](https://x-t-e-r.github.io/kiki/en/) · [All features](https://x-t-e-r.github.io/kiki/en/features/) · [Screenshot tour](marketing/gallery.en.md) · [Issues](https://github.com/X-T-E-R/kiki/issues) · [Acknowledgements](ACKNOWLEDGEMENTS.md) · [中文](README.zh-CN.md)
 
-Kiki is an open-source AI agent workbench that runs on your machine. The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
+Hand Kiki a task in a folder. It reads, plans, and does the work there — bringing in helper agents when the task is bigger than one — and keeps the work going with memory, a task board, and schedules. It is open source and runs on your machine.
+
+The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
 
 ![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](marketing/shots/wl-hero-workbench.en.light.png)
 
 ## Start here
+
+### On the desktop
+
+1. Download a build for your platform (see [Desktop builds](#desktop-builds) below) and open Kiki.
+2. The welcome shows what Kiki can help you do, asks how much it may do on its own, and offers a few places to look around. Each one is the same short guided tour, and **Discover Kiki** in the sidebar brings it back any time.
+3. On a new conversation, pick a folder and describe a task, or click a starter — starters only fill the draft and never send on their own. If no model is connected yet, Kiki asks when you send: sign in with an account, or use an API key or a local server.
+
+### In the terminal
 
 ```sh
 npm install -g kiki-agent   # needs Node.js 24.15.0+; a desktop build is linked below
@@ -23,11 +33,14 @@ Run `/login` and pick Kimi Code OAuth or a Kimi Platform API key — other provi
 Take a look at this project and explain its main directories.
 ```
 
-New sessions start in Auto mode: routine work runs on its own, and you are still asked before it touches sensitive files or runs dangerous commands. `/permission` switches among Manual, Auto, Review, and YOLO.
+New sessions start in **Auto**: routine work runs on its own, and you are still asked before it touches sensitive files or runs dangerous commands. `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`).
 
-## Install a desktop build
+### Desktop builds
 
-Pick a build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) under `kiki-v<version>`:
+Pick a build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases) under `kiki-v<version>`.
+
+<details>
+<summary>Platforms, files, and first-launch notes</summary>
 
 | Platform | Desktop app | Standalone CLI/TUI |
 | --- | --- | --- |
@@ -45,33 +58,63 @@ With npm, `kiki-agent` installs the CLI/TUI and downloads and checksum-verifies 
 
 Verify with `kiki --version`. See [Installation](https://x-t-e-r.github.io/kiki/en/getting-started/installation) for checksum commands and update channels.
 
-## Give every role its own model
+</details>
+
+## Do one thing first
+
+Choose the folder Kiki works in and what it should read, then hand it the task. Normal, Plan, and Goal shape how the task is done, and the result keeps its sources and the steps behind it. When you start a session you can also pick a git worktree, so that session's work lands on its own branch instead of your checkout. Temporary conversations stay out of history, search, and memory, and are deleted when they end.
+
+See [First launch](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch) and [Interaction and approvals](https://x-t-e-r.github.io/kiki/en/guides/interaction).
+
+## Understand and direct work
+
+### Give every agent its own model
 
 The lead agent splits your task and dispatches subagents, and each one can run a different model — or a different vendor — in the same session. A strong reasoning model can plan while cheaper models do the routine work, and a review by a different vendor is not anchored to the same blind spots as the implementation. Kimi works out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added, and you can sign in with a GitHub Copilot or ChatGPT account.
 
-![One session, several models: each role in the dispatch tree bound to a different model.](marketing/shots/r05-multi-model-fleet.en.light.png)
+![One session, several models: each agent in the dispatch tree bound to a different model.](marketing/shots/r05-multi-model-fleet.en.light.png)
 
-Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Kiki watches those folders and reloads edits in about 200 ms. You can build one by copying an existing profile, from a shipped template, or blank — no need to hand-write a file first. When you start a session you can also pick a git worktree, so that session's work lands on its own branch instead of your checkout.
+Agents themselves are Markdown files you own: the frontmatter sets tools, model, effort, and which agents it may dispatch, and the body is the system prompt. Kiki watches those folders and reloads edits in about 200 ms. You can build one by copying an existing profile, from a shipped template, or blank — no need to hand-write a file first.
 
-Open any dispatched subagent to read its own transcript, and message it from its own composer. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents).
+Open any dispatched subagent to read its own transcript, and message it from its own composer. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish. Long commands move to the background and notify the agent when they finish, so it never has to poll. See [One workbench, many lines](https://x-t-e-r.github.io/kiki/en/features/workbench) and [Agents and Sub-Agents](https://x-t-e-r.github.io/kiki/en/customization/agents).
 
-## Keep work going past the session
+### Work in the window you have open
 
-A goal keeps the target in view across turns instead of restating the task each time. While the agent works, what you type joins a queue rather than cutting in, and each queued message can go out when the agent is idle, after its subagents finish, or after its background tasks finish.
+Finished stretches of tool calls, thinking, and shell output fold into one line such as "Worked · 8 steps", and every fold opens back up in order. The right rail shows pending approvals and questions, what the agent is doing now, context and cost, its working notes, the agent team, and background tasks — and it follows you into a subagent. Annotations let you leave a note on a message and send it with your next one instead of interrupting with a separate turn.
+
+The agent can search its own earlier messages and tool output — including text from before a compaction — with `HistorySearch` and `HistoryRead`, and you can search sessions by title in the sidebar. Web search and fetch run on named lanes you can inspect; GitHub repository search works without a key. Appearance is six built-in skins, picture and video backgrounds, and appearance packs that bundle colors with media. See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [Look and feel](https://x-t-e-r.github.io/kiki/en/features/look).
+
+### Know what it costs, and where the numbers go
+
+The **Usage** page breaks a date range into tokens, cost, and cache hit rate — a provider that never returned usage reads as unknown rather than as a real zero — and names the concurrency rule holding each waiting request. External sync sends only content-free numbers, never a prompt, answer, title, or path, to a webhook, a VibeCafe account, or a script you approve, and nothing is sent until you add a destination, preview the exact payload, agree once, and enable it.
+
+![The usage page's Live tab: a request waiting on a named concurrency rule, with the rule list below showing one enabled and one paused.](marketing/shots/ux-usage-live.en.light.png)
+
+See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [`kiki usage-export`](https://x-t-e-r.github.io/kiki/en/reference/command#kiki-usage-export).
+
+## Keep work going
+
+A goal keeps the target in view across turns instead of restating the task each time.
 
 Memory is what outlives the session: preferences, feedback, verified project facts, and references, kept as global, per workspace, or per persona. You can read every entry, and undo any change one operation at a time — including a delete. Set approval to `review` and proposed writes wait in an inbox instead of applying themselves. See the [memory guide](https://x-t-e-r.github.io/kiki/en/guides/memory).
 
 Each workspace also has a board where requirements are cards that link to the sessions working on them, and the agent reads and updates it. Scheduled prompts cover the recurring case: a prompt fires on a cron schedule while a Kiki process holds that session open. See [Work that runs long](https://x-t-e-r.github.io/kiki/en/features/long-work).
 
-## Roles you can talk to
+## Extend Kiki when needed
+
+### Personas you can talk to
 
 A **persona** is a long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. Clicking its name lands you in the same conversation every time, so "ask Lin Lan" means one thing; the same persona can hold several conversations at once for different projects.
 
 A **room** puts two to six of them on one topic, speaking in order, with a host, a budget, and pause and continue.
 
-A persona is not a profile. A profile is execution configuration — tools, permissions, model, effort; a persona is identity — who it is and what it remembers. Rebinding one does not touch the other. See [Roles you can talk to](https://x-t-e-r.github.io/kiki/en/features/people).
+A persona is not an agent profile. A profile is execution configuration — tools, permissions, model, effort; a persona is identity — who it is and what it remembers. Rebinding one does not touch the other. See [Roles you can talk to](https://x-t-e-r.github.io/kiki/en/features/people).
 
 ![A room where three personas discuss a release, each message attributed to its speaker.](marketing/shots/people-room.en.light.png)
+
+### Skills, plugins, and tool connections
+
+A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page, and the official marketplace includes Kiki Office Suite and Kiki Writing. Sessions stay on your machine — there is no cloud relay.
 
 ## Your data, your machines
 
@@ -79,15 +122,7 @@ A **space** is a Kiki you open, with its own shortcuts, window behavior, and cre
 
 **Remote connections** point one Kiki home at another with an approval on each side, and every connection is one row with its own state. A **thread bridge** is narrower: a one-way channel for messages between two homes that never grants browsing access. **Web access** opens this Kiki in a browser on another device through a single-use link, and turning it off revokes every link without stopping work already running. **SSH hosts** joined to a session belong to that session, so the timeline stays clean. See [Your data, your machines](https://x-t-e-r.github.io/kiki/en/features/spaces).
 
-## Work in the window you have open
-
-Finished stretches of tool calls, thinking, and shell output fold into one line such as "Worked · 8 steps", and every fold opens back up in order. The right rail shows pending approvals and questions, what the agent is doing now, context and cost, its working notes, the agent team, and background tasks — and it follows you into a subagent. Annotations let you leave a note on a message and send it with your next one instead of interrupting with a separate turn.
-
-Temporary conversations stay out of history, search, and memory, and are deleted when they end. The agent can search its own earlier messages and tool output — including text from before a compaction — with `HistorySearch` and `HistoryRead`, and you can search sessions by title in the sidebar. Web search and fetch run on named lanes you can inspect; GitHub repository search works without a key. Appearance is six built-in skins, picture and video backgrounds, and appearance packs that bundle colors with media. See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [Look and feel](https://x-t-e-r.github.io/kiki/en/features/look).
-
 ## Bring in history, plug in other tools
-
-A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install them on the Capabilities page, and the official marketplace includes Kiki Office Suite and Kiki Writing. Sessions stay on your machine — there is no cloud relay.
 
 Any built-in prompt field can be replaced, down to a single tool description, globally or per model or agent, and `kiki prompt-fields` shows what the model will receive. Import another tool's conversations as Kiki sessions you can keep working in, or as read-only archives; the preview tells you what is kept and what is not, and nothing is installed or trusted to reach it. `kiki acp` puts Kiki inside Zed, JetBrains, and other ACP clients, and `kiki seat` lets Cursor, Claude Code, or Codex call it as a service with the workspace, permission mode, and model fixed before they connect. An agent profile can also run on another harness entirely as its engine. See [Bring your history, meet other tools](https://x-t-e-r.github.io/kiki/en/features/ecosystem) and [Every layer is yours](https://x-t-e-r.github.io/kiki/en/features/freedom).
 

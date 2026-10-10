@@ -4,13 +4,14 @@ What each capability does for you, and where to read the details. The online **F
 
 ## Start here
 
-- **Install and first run.** Node.js 24.15.0+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto mode; `/permission` switches among Manual, Auto, Review, and YOLO. [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
+- **Install and first run.** Node.js 24.15.0+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto; `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`). [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
+- **A first run that starts with what it is for.** The desktop welcome shows what Kiki can help you do, then offers a few guided routes; **Discover Kiki** in the sidebar keeps them, and starters fill a draft without calling a model. [First launch →](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch)
 - **Three surfaces, one daemon.** The desktop app, `kiki` in the terminal, and `kiki web` read and write the same sessions. [Desktop app →](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app) · [Local server →](https://x-t-e-r.github.io/kiki/en/server/local-server)
 - **Sign in.** Kimi Code OAuth or a Kimi Platform API key out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added. [Providers and models →](https://x-t-e-r.github.io/kiki/en/configuration/providers)
 
-## Give every role its own model
+## Give every agent its own model
 
-- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each role can run a different provider's model, so a strong model can plan while cheaper models do the routine work. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents#named-child-agents)
+- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each agent can run a different provider's model, so a strong model can plan while cheaper models do the routine work. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents#named-child-agents)
 - **Agents are files you own.** One Markdown file per agent: the frontmatter sets tools, model, effort, and which subagents it may dispatch, and the body is the system prompt. Create one by copying a profile, from a shipped template, or blank. [Agent file format →](https://x-t-e-r.github.io/kiki/en/customization/agents#agent-file-format)
 - **Other agents as engines.** A profile can run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build through ACP or the Codex app-server. [Dispatch capabilities →](https://x-t-e-r.github.io/kiki/en/guides/settings#dispatch-capabilities)
 - **Background tasks.** Long commands and subagents run in the background; when one finishes its result goes back to the agent automatically. [Background tasks →](https://x-t-e-r.github.io/kiki/en/reference/tools#background-tasks)
@@ -31,12 +32,12 @@ What each capability does for you, and where to read the details. The online **F
 - **Usage.** Token and cost for a date range, live request and queue state with concurrency limits, and content-free external sync. [Usage →](https://x-t-e-r.github.io/kiki/en/guides/settings#usage)
 - **Search.** `HistorySearch` and `HistoryRead` let the agent search earlier messages and tool output, including text from before a compaction. Session titles are searchable in the sidebar. [Built-in tools →](https://x-t-e-r.github.io/kiki/en/reference/tools#history-tools)
 
-## Roles you can talk to
+## Personas you can talk to
 
 - **Personas.** A long-term identity — a name, an avatar, what it is for, the standing rules for how it works, and its own memory — stored as a Markdown file you can read and edit. [Personas and rooms →](https://x-t-e-r.github.io/kiki/en/customization/personas)
 - **A fixed daily conversation.** Clicking a persona's name lands in the same conversation every time; the same persona can hold several conversations at once.
 - **Rooms.** Two to six personas discuss one topic in order, with a host, a budget, and pause and continue.
-- **A persona is not a profile.** A profile is execution configuration — tools, permissions, model, effort. A persona is identity — who it is and what it remembers.
+- **A persona is not an agent profile.** A profile is execution configuration — tools, permissions, model, effort. A persona is identity — who it is and what it remembers.
 
 ## Your data, your machines
 
@@ -50,7 +51,7 @@ What each capability does for you, and where to read the details. The online **F
 
 - **Prompt field overrides.** Replace any named part of the built-in prompt, down to a single tool description, globally, per model, or per agent; `kiki prompt-fields` shows what the model will receive. [Prompt field overrides →](https://x-t-e-r.github.io/kiki/en/customization/prompt-fields)
 - **Connections and OAuth.** Every way Kiki reaches a model is one row in one list, and how it authenticates is part of that row. Sign in with a subscription account over a device flow, or reuse a sign-in the machine already holds. [Connections →](https://x-t-e-r.github.io/kiki/en/guides/settings#connections)
-- **Permission modes.** Manual asks for side effects, Auto handles routine work and still asks about sensitive targets, YOLO approves everything, and Approve for me routes policy-generated approvals to a reviewer you configured. Explicit deny rules always win. [Permission modes →](https://x-t-e-r.github.io/kiki/en/guides/interaction#permission-modes)
+- **Permission modes.** Ask every time (`manual`) asks for side effects, Auto (`auto`) handles routine work and still asks about sensitive targets, Approve for me (`review`) routes policy-generated approvals to a reviewer you configured, and Full access (`yolo`) approves everything. Explicit deny rules always win. [Permission modes →](https://x-t-e-r.github.io/kiki/en/guides/interaction#permission-modes)
 - **Hooks.** Run your own scripts on lifecycle events: block a dangerous shell command, add context when a message is submitted, or get a notification when a task finishes. [Hooks →](https://x-t-e-r.github.io/kiki/en/customization/hooks)
 
 ## Bring in history, plug in other tools

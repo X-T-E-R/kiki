@@ -39,6 +39,7 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { CronPage } from './components/GlobalCronPanel';
 import { TaskBoardPage } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
+import { DiscoveryPage, DiscoveryProvider, DiscoveryTourTag } from './components/discovery';
 import { NewSessionPage } from './components/NewSessionPage';
 import {
   OnboardingWizard,
@@ -224,7 +225,9 @@ export function App() {
     const home = scopeId.startsWith('remote:') ? scopeId : localHome;
     const label = location.pathname.startsWith('/settings')
       ? 'Settings'
-      : location.pathname === '/usage'
+      : location.pathname === '/discover'
+        ? 'Discover'
+        : location.pathname === '/usage'
         ? 'Usage'
         : location.pathname === '/board'
           ? 'Task board'
@@ -741,9 +744,24 @@ export function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [sidebarOpen]);
 
+  const activeSession = sessions.find((session) => session.id === activeSessionId);
+  const isSessionReachable = Boolean(
+    activeSessionId
+    && !sessionsQuery.isLoading
+    && sessionsQuery.data
+    && activeSession
+    && !activeSession.archived
+    && !(activeSession as { deleted?: boolean }).deleted,
+  );
+
   return (
     <DirtyGuardContext.Provider value={dirtyGuardValue}>
       <NavHistoryBridge>
+      <DiscoveryProvider
+        activeSessionId={activeSessionId}
+        isSessionBusy={activeSession?.busy}
+        sessionReachable={isSessionReachable}
+      >
       <div className="flex h-full overflow-hidden bg-canvas">
       <Sidebar
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
@@ -791,6 +809,10 @@ export function App() {
         <SpaceViewMemory />
         <Routes>
           <Route path="/" element={<RootRedirect />} />
+          <Route
+            path="/discover"
+            element={<DiscoveryPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
           {/* The conversation shell owns the composer mount across /new and
               /s/:id/*, so sending the hero draft never remounts the textarea. */}
           <Route element={<ConversationShell />}>
@@ -955,6 +977,8 @@ export function App() {
         }); }}
         onCancel={cancelNavigation}
       />
+      <DiscoveryTourTag />
+      </DiscoveryProvider>
       </NavHistoryBridge>
     </DirtyGuardContext.Provider>
   );
