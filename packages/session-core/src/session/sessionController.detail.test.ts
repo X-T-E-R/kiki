@@ -474,3 +474,227 @@ it('restores evicted marker previews in older-page snapshots without retaining h
   expect(page.items[0]).toBe(hydrated);
   expect(replaceSnapshotContentEntity(page, { ...source, id: 'missing-marker' }, preview).items).toEqual(page.items);
 });
+
+describe('canonical tool copy', () => {
+  function foundTool(output: string, turnId = 't-canonical', frameId = 'f-canonical', toolCallId = 'call'): SessionViewTranscriptDetail {
+    return {
+      session_id: 'session_test', agent_id: 'main', kind: 'tool',
+      lookup: { status: 'found', turnId, stepId: 's1', frame: { kind: 'tool', frameId, toolCallId, name: 'Read', state: 'done', output } },
+    } as SessionViewTranscriptDetail;
+  }
+
+  function toolTurn(turnId: string, toolCallId: string, output: string, frameId: string, ordinal = 1) {
+    return {
+      kind: 'turn' as const, turnId, ordinal, state: 'completed' as const, origin: { kind: 'user' as const },
+      steps: [{ kind: 'step' as const, stepId: 's1', turnId, ordinal: 1, state: 'completed' as const, frames: [
+        { kind: 'tool' as const, frameId, toolCallId, name: 'Read', state: 'done' as const, output },
+      ] }],
+    };
+  }
+
+  it('returns the found output when one copy crosses two preparing reads', async () => {
+    const detail = vi.fn()
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'tool', lookup: { status: 'preparing' } } as SessionViewTranscriptDetail)
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'tool', lookup: { status: 'preparing' } } as SessionViewTranscriptDetail)
+      .mockResolvedValueOnce(foundTool('fresh output'));
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('fresh output');
+      expect(detail).toHaveBeenCalledTimes(3);
+    } finally { controller.close(); }
+  });
+
+  it('rejects the copy when preparing is aborted', async () => {
+    let release!: (value: SessionViewTranscriptDetail) => void;
+    const detail = vi.fn(() => new Promise<SessionViewTranscriptDetail>((resolve) => { release = resolve; }));
+    const { controller } = harness(detail);
+    const abort = new AbortController();
+    await controller.open();
+    try {
+      const pending = controller.copyToolCallField('main', 'call', 'output', abort.signal);
+      await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(1));
+      release({ session_id: 'session_test', agent_id: 'main', kind: 'tool', lookup: { status: 'preparing' } } as SessionViewTranscriptDetail);
+      await Promise.resolve();
+      await Promise.resolve();
+      abort.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(detail).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('rejects the copy when the canonical call is not found', async () => {
+    const detail = vi.fn(async () => ({ session_id: 'session_test', agent_id: 'main', kind: 'tool', lookup: { status: 'not_found' } }) as SessionViewTranscriptDetail);
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await expect(controller.copyToolCallField('main', 'missing', 'output')).rejects.toThrow('Invocation is not ready');
+      expect(detail).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('rejects the copy when the detail read fails', async () => {
+    const detail = vi.fn(async () => { throw new Error('detail down'); });
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await expect(controller.copyToolCallField('main', 'call', 'output')).rejects.toThrow('detail down');
+    } finally { controller.close(); }
+  });
+
+  it('returns the stored output when the call is still resident', async () => {
+    const detail = vi.fn();
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'call', 'resident body', 'f1')] }), 2));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('resident body');
+      expect(detail).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('returns the later output when the resident call result changes', async () => {
+    const detail = vi.fn();
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'call', 'first body', 'f1')] }), 2));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('first body');
+      deliver(opsEvent('main', [{ op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'Read', state: 'done', output: 'late result' } }], 3));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('late result');
+      expect(detail).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('returns the resident result when it arrives during a canonical read', async () => {
+    let release!: (value: SessionViewTranscriptDetail) => void;
+    const detail = vi.fn(() => new Promise<SessionViewTranscriptDetail>((resolve) => { release = resolve; }));
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      const pending = controller.copyToolCallField('main', 'call', 'output');
+      await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(1));
+      deliver(opsEvent('main', [{ op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'Read', state: 'done', output: 'late resident' } }], 2));
+      release(foundTool('old canonical'));
+      await expect(pending).resolves.toBe('late resident');
+    } finally { controller.close(); }
+  });
+
+  it('returns the newer canonical output when the cached call is not in the store', async () => {
+    const detail = vi.fn()
+      .mockResolvedValueOnce(foundTool('old body', 't-old', 'f-old'))
+      .mockResolvedValueOnce(foundTool('new body', 't-new', 'f-new'));
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('old body');
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('new body');
+      expect(detail).toHaveBeenCalledTimes(2);
+    } finally { controller.close(); }
+  });
+
+  it('returns the reused call output when the stored turn is removed', async () => {
+    const detail = vi.fn(async () => foundTool('reused body', 't2', 'f2'));
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'call', 'stored body', 'f1')] }), 2));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('stored body');
+      expect(detail).not.toHaveBeenCalled();
+      deliver(opsEvent('main', [{ op: 'items.remove', ids: ['t1'] }], 3));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('reused body');
+      expect(detail).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('returns the other turn output when one turn is removed', async () => {
+    const detail = vi.fn();
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'gone', 'old body', 'f1', 1), toolTurn('t2', 'kept', 'kept body', 'f2', 2)] }), 2));
+      deliver(opsEvent('main', [{ op: 'items.remove', ids: ['t1'] }], 3));
+      await expect(controller.copyToolCallField('main', 'kept', 'output')).resolves.toBe('kept body');
+      expect(detail).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('does not copy a removed frame from the detail cache', async () => {
+    const source = { kind: 'frame' as const, id: 'f1', turnId: 't1', stepId: 's1' };
+    const detail = vi.fn();
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'call', 'stored body', 'f1')] }), 2));
+      await expect(controller.copyToolCallField('main', 'call', 'output')).resolves.toBe('stored body');
+      deliver(opsEvent('main', [{ op: 'items.remove', ids: ['t1'] }], 3));
+      await expect(controller.copyContentField('main', source, ['output'])).rejects.toThrow('Copy target unavailable');
+    } finally { controller.close(); }
+  });
+
+  it('does not keep a stale found detail when removal cancels the in-flight read', async () => {
+    let release!: (value: SessionViewTranscriptDetail) => void;
+    const detail = vi.fn(() => new Promise<SessionViewTranscriptDetail>((resolve) => { release = resolve; }));
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      const pending = controller.copyToolCallField('main', 'call', 'output');
+      await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(1));
+      deliver(opsEvent('main', [
+        { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'Read', state: 'done', output: 'briefly resident' } },
+        { op: 'items.remove', ids: ['t1'] },
+      ], 2));
+      release(foundTool('stale detail'));
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(controller.getToolCallDetail('main', 'call')?.status).not.toBe('found');
+    } finally { controller.close(); }
+  });
+
+  function foundInput(prompt: string, frameId = 'f-canonical'): SessionViewTranscriptDetail {
+    return {
+      session_id: 'session_test', agent_id: 'main', kind: 'tool',
+      lookup: { status: 'found', turnId: 't-canonical', stepId: 's1', frame: { kind: 'tool', frameId, toolCallId: 'call', name: 'AgentRun', state: 'done', input: { prompt } } },
+    } as SessionViewTranscriptDetail;
+  }
+
+  it('refreshes a nonresident cached invocation before copying its nested input', async () => {
+    const detail = vi.fn()
+      .mockResolvedValueOnce(foundInput('old prompt'))
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'tool', lookup: { status: 'preparing' } } as SessionViewTranscriptDetail)
+      .mockResolvedValueOnce(foundInput('current prompt'));
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await controller.lookupToolCall('main', 'call');
+      await expect(controller.copyContentField('main', { kind: 'frame', id: 'f-canonical', turnId: 't-canonical', stepId: 's1' }, ['input', 'prompt'])).resolves.toBe('current prompt');
+      expect(detail).toHaveBeenCalledTimes(3);
+    } finally { controller.close(); }
+  });
+
+  it('does not copy a reused canonical frame into the old nested input target', async () => {
+    const detail = vi.fn()
+      .mockResolvedValueOnce(foundInput('old prompt'))
+      .mockResolvedValueOnce(foundInput('different target', 'f-reused'));
+    const { controller } = harness(detail);
+    await controller.open();
+    try {
+      await controller.lookupToolCall('main', 'call');
+      await expect(controller.copyContentField('main', { kind: 'frame', id: 'f-canonical', turnId: 't-canonical', stepId: 's1' }, ['input', 'prompt'])).rejects.toThrow('Copy target changed');
+      expect(detail).toHaveBeenCalledTimes(2);
+    } finally { controller.close(); }
+  });
+
+  it('copies the current resident nested input without a canonical read', async () => {
+    const detail = vi.fn();
+    const { controller, deliver } = harness(detail);
+    await controller.open();
+    try {
+      deliver(resetEvent('main', emptySnapshot({ items: [toolTurn('t1', 'call', 'body', 'f1')] }), 2));
+      await controller.lookupToolCall('main', 'call');
+      deliver(opsEvent('main', [{ op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'AgentRun', state: 'done', input: { prompt: 'resident prompt' } } }], 3));
+      await expect(controller.copyContentField('main', { kind: 'frame', id: 'f1', turnId: 't1', stepId: 's1' }, ['input', 'prompt'])).resolves.toBe('resident prompt');
+      expect(detail).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+});

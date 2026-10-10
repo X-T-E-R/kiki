@@ -93,6 +93,7 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 }
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
+const TOOL_DETAIL_PREPARING_RETRY_MS = 80;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 /**
@@ -285,6 +286,7 @@ export class SessionController {
   private readonly rangeControllers = new Map<AbortController, string>();
   private readonly contentBodies = new Map<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
   private readonly toolDetails = new Map<string, Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>();
+  private readonly toolDetailEpochs = new Map<string, number>();
   private readonly toolDetailReads = new Map<string, { promise: Promise<Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup']>; controller: AbortController; readers: number }>();
   private readonly entityPageCursors = new Map<string, string | null>();
   private latestSnapshot: SessionSnapshotResponse | undefined;
@@ -1300,11 +1302,40 @@ export class SessionController {
   }
 
   async copyToolCallField(agentId: string, toolCallId: string, root: 'input' | 'output', signal?: AbortSignal): Promise<string> {
-    const lookup = await this.lookupToolCall(agentId, toolCallId, signal);
-    if (lookup.status !== 'found') throw new Error('Invocation is not ready');
+    const lookup = await this.lookupToolCallForCopy(agentId, toolCallId, signal);
     const source = { kind: 'frame' as const, id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId };
     const field = root === 'input' && lookup.frame.input === undefined ? 'inputText' : root === 'output' && lookup.frame.output === undefined ? 'error' : root;
-    return this.copyContentField(agentId, source, [field], signal);
+    return this.copyResolvedContentField(agentId, source, [field], signal);
+  }
+
+  private async lookupToolCallForCopy(agentId: string, toolCallId: string, signal?: AbortSignal) {
+    for (;;) {
+      signal?.throwIfAborted();
+      const lookup = await this.lookupToolCall(agentId, toolCallId, signal);
+      if (lookup.status === 'preparing') {
+        await this.waitForToolDetailPreparation(signal);
+        continue;
+      }
+      if (lookup.status !== 'found') throw new Error('Invocation is not ready');
+      return lookup;
+    }
+  }
+
+  private waitForToolDetailPreparation(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onAbort = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        reject(new DOMException('Read cancelled', 'AbortError'));
+      };
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, TOOL_DETAIL_PREPARING_RETRY_MS);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
   }
 
   getToolCallDetail(agentId: string, toolCallId: string): Extract<SessionViewTranscriptDetail, { kind: 'tool' }>['lookup'] | undefined {
@@ -1320,11 +1351,11 @@ export class SessionController {
       this.toolDetails.set(key, lookup);
       return lookup;
     }
-    const cached = this.toolDetails.get(key);
-    if (cached?.status === 'found') return cached;
+    if (this.toolDetails.get(key)?.status === 'found') this.invalidateToolDetail(key);
     let flight = this.toolDetailReads.get(key);
     if (flight === undefined) {
       const generation = this.historyGeneration.get(agentId) ?? 0;
+      const epoch = this.toolDetailEpochs.get(key) ?? 0;
       const read = this.view.transcript.detail?.bind(this.view.transcript);
       if (this.closed || read === undefined) throw new Error('Tool details are unavailable on this connection');
       const controller = new AbortController();
@@ -1334,6 +1365,13 @@ export class SessionController {
         controller.signal.throwIfAborted();
         if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation) throw new Error('Tool detail scope changed');
         if (detail.kind !== 'tool' || detail.agent_id !== agentId || detail.session_id !== this.sessionId) throw new Error('Tool detail target mismatch');
+        const resident = this.agentTranscripts.get(agentId)?.getToolCall(toolCallId);
+        if (resident !== undefined) {
+          const lookup = { status: 'found' as const, ...resident };
+          this.toolDetails.set(key, lookup);
+          return lookup;
+        }
+        if ((this.toolDetailEpochs.get(key) ?? 0) !== epoch) throw new Error('Tool detail scope changed');
         this.toolDetails.set(key, detail.lookup);
         return detail.lookup;
       })().finally(() => { this.snapshotControllers.delete(controller); if (this.toolDetailReads.get(key)?.controller === controller) this.toolDetailReads.delete(key); });
@@ -1429,6 +1467,19 @@ export class SessionController {
   }
 
   async copyContentField(agentId: string, source: ContentSource, path: readonly (string | number)[], signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
+    if (source.kind === 'frame') {
+      for (const [key, cached] of this.toolDetails) {
+        if (!key.startsWith(`${agentId}/`) || cached.status !== 'found' || cached.frame.frameId !== source.id || cached.turnId !== source.turnId || cached.stepId !== source.stepId) continue;
+        const lookup = await this.lookupToolCallForCopy(agentId, cached.frame.toolCallId, signal);
+        if (lookup.frame.frameId !== source.id || lookup.turnId !== source.turnId || lookup.stepId !== source.stepId) throw new Error('Copy target changed');
+        break;
+      }
+    }
+    return this.copyResolvedContentField(agentId, source, path, signal);
+  }
+
+  private async copyResolvedContentField(agentId: string, source: ContentSource, path: readonly (string | number)[], signal?: AbortSignal): Promise<string> {
     const select = (entity: unknown): unknown => {
       for (const key of path) {
         if (entity === null || typeof entity !== 'object') return undefined;
@@ -1673,7 +1724,7 @@ export class SessionController {
         const transient = code === -1 || code === API_CODES.TIMEOUT ||
           error instanceof TypeError || (error instanceof RPCError && error.reason === 'transport.timeout');
         if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
-        const delay = preparing ? 80 : RESYNC_BACKOFF_MS[failures++];
+        const delay = preparing ? TOOL_DETAIL_PREPARING_RETRY_MS : RESYNC_BACKOFF_MS[failures++];
         await new Promise<void>((resolve) => setTimeout(resolve, delay));
       }
     }
@@ -1921,7 +1972,7 @@ export class SessionController {
     const store = this.ensureAgentTranscript(agentId);
     const priorCursor = this.transcriptCursors.get(agentId);
     const previousTodo = store.getTodo('todo');
-    const result = store.apply(batch.ops);
+    const result = this.applyAgentTranscriptOps(agentId, store, batch.ops);
     if (result.gap !== undefined) {
       this.toolCountSpans.delete(agentId);
       this.toolCountObservations.delete(agentId);
@@ -2018,7 +2069,7 @@ export class SessionController {
         recoveredOps.push(...(batch.ops as readonly TranscriptOperation[]));
       }
       let previousTodo = store.getTodo('todo');
-      const recovered = store.apply(recoveredOps);
+      const recovered = this.applyAgentTranscriptOps(agentId, store, recoveredOps);
       if (recovered.gap !== undefined) {
         this.catchupReplay.delete(agentId);
         await this.resync();
@@ -2041,7 +2092,7 @@ export class SessionController {
       this.catchupReplay.delete(agentId);
       if (pending !== undefined) {
         const previousTodo = store.getTodo('todo');
-        const retry = store.apply(pending.ops);
+        const retry = this.applyAgentTranscriptOps(agentId, store, pending.ops);
         if (retry.gap !== undefined) {
           await this.resync();
           return;
@@ -2064,6 +2115,52 @@ export class SessionController {
       this.catchupReplay.delete(agentId);
       await this.resync();
     }
+  }
+
+  private applyAgentTranscriptOps(agentId: string, store: AgentTranscript, ops: readonly TranscriptOperation[]) {
+    const removed = new Set<string>();
+    for (const op of ops) if (op.op === 'items.remove') for (const id of op.ids) removed.add(id);
+    const planned: { key: string; turnId: string }[] = [];
+    if (removed.size > 0) {
+      planned.push(...this.residentToolDetailsOnTurns(agentId, store, removed));
+      for (const op of ops) {
+        if (op.op === 'frame.upsert' && op.frame.kind === 'tool' && removed.has(op.turnId)) planned.push({ key: `${agentId}/${op.frame.toolCallId}`, turnId: op.turnId });
+      }
+      const prefix = `${agentId}/`;
+      for (const [key, lookup] of this.toolDetails) {
+        if (key.startsWith(prefix) && lookup.status === 'found' && removed.has(lookup.turnId)) planned.push({ key, turnId: lookup.turnId });
+      }
+    }
+    const result = store.apply(ops);
+    if (removed.size > 0) {
+      const accepted = new Set<string>();
+      for (const op of result.accepted) if (op.op === 'items.remove') for (const id of op.ids) accepted.add(id);
+      const keys = new Set<string>();
+      for (const entry of planned) if (accepted.has(entry.turnId)) keys.add(entry.key);
+      for (const key of keys) this.invalidateToolDetail(key);
+    }
+    return result;
+  }
+
+  private residentToolDetailsOnTurns(agentId: string, store: AgentTranscript, turnIds: ReadonlySet<string>): { key: string; turnId: string }[] {
+    const entries: { key: string; turnId: string }[] = [];
+    for (const turnId of turnIds) {
+      const turn = store.getTurn(turnId);
+      if (turn === undefined) continue;
+      for (const step of turn.steps) for (const frame of step.frames) {
+        if (frame.kind === 'tool') entries.push({ key: `${agentId}/${frame.toolCallId}`, turnId });
+      }
+    }
+    return entries;
+  }
+
+  private invalidateToolDetail(key: string): void {
+    this.toolDetails.delete(key);
+    this.toolDetailEpochs.set(key, (this.toolDetailEpochs.get(key) ?? 0) + 1);
+    const flight = this.toolDetailReads.get(key);
+    if (flight === undefined) return;
+    this.toolDetailReads.delete(key);
+    flight.controller.abort();
   }
 
   private bumpHistoryGeneration(agentId: string): void {
