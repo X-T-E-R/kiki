@@ -744,8 +744,11 @@ export function Composer({
   } | null>(null);
   const [slashCatalogPending, setSlashCatalogPending] = useState(false);
   const slashCatalogPendingRef = useRef(false);
-  const currentSlashDraftRef = useRef({ text, sessionId, workspaceId });
-  currentSlashDraftRef.current = { text, sessionId, workspaceId };
+  const skillCwd = agentProfileCatalogMode.mode === 'cwd' ? agentProfileCatalogMode.cwd : undefined;
+  const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined || agentProfileCatalogMode.mode !== 'disabled';
+  const skillScope = JSON.stringify([scopeId, sessionId, workspaceId, skillCwd, skillCatalogReady]);
+  const currentSlashDraftRef = useRef({ text, skillScope });
+  currentSlashDraftRef.current = { text, skillScope };
   // Queue-edit remove is a two-step control: the first click arms the button
   // ("Remove?"), the second actually drops the queued message. The arm times
   // out so a stray hover never leaves a live one-click remove behind.
@@ -926,23 +929,21 @@ export function Composer({
     redoStackRef.current = [];
   }, [sessionId]);
 
-  // Skill catalog for the slash menu. Live sessions use GET /sessions/{id}/skills;
-  // the /new draft uses GET /workspaces/{id}/skills so the menu fills before a
-  // session exists. Session-only shortcuts (/fork, /undo, /compact) stay gated
-  // on sessionId — listing skills does not imply those actions are available.
+  // Catalog browsing needs no session. Directory drafts use a read-only
+  // snapshot; automatic drafts can already browse global skills and commands.
+  // Session-only actions still depend on sessionId, not catalog availability.
   const skillsQuery = useQuery({
-    queryKey: sessionId !== undefined
-      ? ['skills', 'session', sessionId]
-      : ['skills', 'workspace', workspaceId],
-    queryFn: () =>
-      sessionId !== undefined
-        ? client.listSessionSkills(sessionId)
-        : client.listWorkspaceSkills(workspaceId!),
-    enabled: sessionId !== undefined || workspaceId !== undefined,
+    queryKey: ['skills', skillScope],
+    queryFn: () => sessionId !== undefined
+      ? client.listSessionSkills(sessionId)
+      : workspaceId !== undefined
+        ? client.listWorkspaceSkills(workspaceId)
+        : client.listDraftSkills(skillCwd),
+    enabled: skillCatalogReady,
     staleTime: 60_000,
+    retry: false,
   });
   const skills = skillsQuery.data?.skills ?? [];
-  const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined;
   const slashMenuOpen = menu?.kind === 'slash';
   const refetchSkills = skillsQuery.refetch;
   const slashMenuWasOpenRef = useRef(false);
@@ -1702,7 +1703,7 @@ export function Composer({
         slashCatalogPendingRef.current = false;
         setSlashCatalogPending(false);
         const current = currentSlashDraftRef.current;
-        if (current.text !== text || current.sessionId !== sessionId || current.workspaceId !== workspaceId) return;
+        if (current.text !== text || current.skillScope !== skillScope) return;
         if (result.data === undefined) {
           setAttachmentError(t('composer.slash.submitCatalogFailed'));
           return;
@@ -1785,17 +1786,20 @@ export function Composer({
   };
 
   const activateSkill = (name: string, args: string) => {
+    const sentAttachments = sessionId === undefined && ssh.snapshot.length > 0
+      ? [...attachments, ...ssh.snapshot]
+      : attachments;
     if (!vscodeRuntime) {
       runAgentTurn(async () => {
         recordSubmission();
-        await onActivateSkill?.(name, args, attachments, text);
+        await onActivateSkill?.(name, args, sentAttachments, text);
       });
       return;
     }
     runAgentTurn(async () => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
       recordSubmission();
-      await onActivateSkill?.(name, args, attachments, text);
+      await onActivateSkill?.(name, args, sentAttachments, text);
     });
   };
 

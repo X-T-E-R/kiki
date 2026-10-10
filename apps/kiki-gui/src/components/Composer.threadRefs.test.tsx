@@ -24,6 +24,7 @@ vi.mock('../state/connection', () => ({
       listModels,
       listSessionSkills,
       listWorkspaceSkills: vi.fn().mockResolvedValue({ skills: [] }),
+      listDraftSkills: vi.fn().mockResolvedValue({ skills: [] }),
       listNamedAgentProfiles: vi.fn().mockResolvedValue({ items: [] }),
       getAgentCapabilities: vi.fn().mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true,
         profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] }),

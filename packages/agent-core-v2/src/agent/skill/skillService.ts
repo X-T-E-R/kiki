@@ -278,12 +278,15 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         retryFingerprint: activation.retryFingerprint,
       });
     }
-    return (await this.prompt.enqueue({
+    const handle = await this.prompt.enqueue({
       id: activation?.promptId,
       userMessageId: activation?.promptId,
       retryFingerprint: activation?.retryFingerprint,
       message,
-    })).launched;
+    });
+    const turn = await handle.launched;
+    if (turn === undefined && handle.state === 'failed') throw promptLaunchFailure(handle);
+    return turn;
   }
 
   private renderSkillPrompt(skill: SkillDefinition, rawArgs: string): string {

@@ -7,6 +7,11 @@ import {
   IBootstrapService,
   IBuiltinSkillSource,
   IFileService,
+  IConfigService,
+  IHostFileSystem,
+  IInstantiationService,
+  ILogService,
+  IUserFileSkillSource,
   ISessionContext,
   ISessionIndex,
   ISessionMediaStore,
@@ -26,8 +31,13 @@ import {
   type SkillDefinition,
 } from '@kiki/agent-core-v2';
 import { KIKI_AS_SUBAGENT_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/builtin/kiki-as-subagent';
+import { InMemorySkillCatalog } from '@kiki/agent-core-v2/app/skillCatalog/registry';
+import { configuredRoots } from '@kiki/agent-core-v2/app/skillCatalog/skillRoots';
+import { EXTRA_SKILL_DIRS_SECTION, type ExtraSkillDirsConfig } from '@kiki/agent-core-v2/app/skillCatalog/configSection';
+import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
+import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -213,6 +223,43 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
     builtinContentRoute.options,
     builtinContentRoute.handler as Parameters<SkillsRouteHost['get']>[2],
   );
+
+  const draftSkillsRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/skills',
+      querystring: z.object({ cwd: z.string().trim().min(1).refine(isAbsolute).optional() }).strict(),
+      success: { data: listSkillsResponseSchema },
+      errors: { [ErrorCode.WORKSPACE_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
+      description: 'List global or directory skills without creating a session or workspace',
+      tags: ['skills'],
+      operationId: 'listDraftSkills',
+    },
+    async (req, reply) => {
+      const { cwd } = req.query;
+      if (cwd === undefined) {
+        reply.send(okEnvelope({ skills: (await listGlobalSkills(core)).map(toProtocolSkill) }, req.id));
+        return;
+      }
+      try {
+        if (!(await core.accessor.get(IHostFileSystem).stat(cwd)).isDirectory) {
+          reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `directory ${cwd} does not exist`, req.id));
+          return;
+        }
+      } catch {
+        reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `directory ${cwd} does not exist`, req.id));
+        return;
+      }
+      const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd);
+      try {
+        await preview.skills!.ready;
+        reply.send(okEnvelope({ skills: preview.skills!.catalog.listSkills().map(toProtocolSkill) }, req.id));
+      } finally {
+        await preview.dispose();
+      }
+    },
+  );
+  app.get(draftSkillsRoute.path, draftSkillsRoute.options, draftSkillsRoute.handler as Parameters<SkillsRouteHost['get']>[2]);
 
   const listSkillsRoute = defineRoute(
     {
@@ -430,19 +477,35 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
   );
 }
 
+async function listGlobalSkills(core: Scope): Promise<readonly SkillDefinition[]> {
+  const bootstrap = core.accessor.get(IBootstrapService);
+  const config = core.accessor.get(IConfigService);
+  await config.ready;
+  const discovery = new RuntimeSkillDiscovery(core.accessor.get(ILogService), core.accessor.get(IHostFileSystem));
+  const [builtin, user, explicit, extra] = await Promise.all([
+    core.accessor.get(IBuiltinSkillSource).load(),
+    core.accessor.get(IUserFileSkillSource).load(),
+    configuredRoots(bootstrap.args.skillDirs ?? [], bootstrap.cwd, bootstrap.osHomeDir, 'user').then((roots) => discovery.discover(roots)),
+    configuredRoots(config.get<ExtraSkillDirsConfig>(EXTRA_SKILL_DIRS_SECTION) ?? [], bootstrap.cwd, bootstrap.osHomeDir, 'extra').then((roots) => discovery.discover(roots)),
+  ]);
+  const catalog = new InMemorySkillCatalog();
+  for (const contribution of [builtin, extra, user, explicit]) {
+    for (const skill of contribution.skills) catalog.register(skill, { replace: true });
+  }
+  return catalog.listSkills();
+}
+
 async function listWorkspaceSkillsForRoot(
   core: Scope,
   workspaceId: string,
   workDir: string,
 ): Promise<readonly SkillDefinition[]> {
-  const lease = await core.accessor
-    .get(IWorkspaceInstanceManager)
-    .acquire({ workspaceId, root: workDir });
+  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), workDir, workspaceId);
   try {
-    await lease.instance.program.ready;
-    return lease.instance.program.skills.catalog.listSkills();
+    await preview.skills!.ready;
+    return preview.skills!.catalog.listSkills();
   } finally {
-    lease.dispose();
+    await preview.dispose();
   }
 }
 

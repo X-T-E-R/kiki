@@ -66,6 +66,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       draft: '',
       attachments: [],
       busy: false,
+      cancelCreation: () => {},
       error: null,
       workspaceId: '',
       cwd: '',

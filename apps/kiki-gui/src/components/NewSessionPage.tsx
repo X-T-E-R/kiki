@@ -336,6 +336,7 @@ function NewSessionPageContent({
           onChangeGoalObjective={state.setGoalObjective}
           onChangeEffort={state.setEffortOverride}
           onSend={state.send}
+          onAbort={state.cancelCreation}
           onActivateSkill={state.activateSkill}
           />
         </ContextBreakdownProvider>
@@ -354,6 +355,8 @@ function NewSessionPageContent({
       personaPick,
       state.inheritedDefault,
       state.modelSource,
+      state.setExecution,
+      state.cancelCreation,
       state.permissionMode,
       state.planMode,
       state.goalObjective,

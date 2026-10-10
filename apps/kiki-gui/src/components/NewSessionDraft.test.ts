@@ -303,6 +303,63 @@ describe('useNewSessionDraft agent profile scope', () => {
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
 
+  it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the real created session on retry', async (kind) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/manual', 'high')] });
+    const creation = deferred<{ id: string }>();
+    client.createSession.mockReturnValue(creation.promise);
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    const text = kind === 'skill' ? '/review --fix' : 'Inspect this file';
+    const attachments = [{ kind: 'file' as const, path: '/workspace/input.txt', name: 'input.txt', isDir: false }];
+    await act(async () => {
+      state.updateDraft(text);
+      state.setAttachments(attachments);
+      state.setModelOverride('fixture/manual');
+      state.setEffortOverride('high');
+    });
+    state = latestDraftState!;
+    let submission: Promise<unknown> | undefined;
+    await act(async () => {
+      submission = kind === 'skill' ? state.activateSkill('review', '--fix', attachments, text) : state.send(text, attachments);
+      void state.send('Duplicate must not create', attachments);
+    });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    state = latestDraftState!;
+    await act(async () => { state.cancelCreation(); state.updateDraft(`${text}\nMore context`); });
+    await act(async () => { creation.resolve({ id: 'session-created-once' }); await submission; });
+    expect(navigate).not.toHaveBeenCalled();
+    state = latestDraftState!;
+    expect(state.busy).toBe(false);
+    expect(state.draft).toBe(`${text}\nMore context`);
+    expect(state.attachments).toEqual(attachments);
+    expect(state.modelOverride).toBe('fixture/manual');
+    expect(state.effectiveEffort).toBe('high');
+    await act(async () => { await state.send(state.draft, state.attachments); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith('/s/session-created-once', expect.objectContaining({
+      state: expect.objectContaining({ initialPrompt: `${text}\nMore context`, initialAttachments: attachments,
+        model: 'fixture/manual', thinking: 'high' }),
+    }));
+  });
+
+  it('restores explicit model and effort on a bare external draft into both first-send hops', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined }); });
+    state = latestDraftState!;
+    await act(async () => { state.setModelOverride('external/manual'); state.setEffortOverride('high'); });
+    await unmountDraft();
+    await renderDraft();
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { await state.send('Use my choices', []); });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      agent_config: expect.objectContaining({ execution: { executor: 'claude-acp' }, model: 'external/manual', thinking: 'high' }),
+    }));
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({ model: 'external/manual', thinking: 'high' });
+  });
+
   it('refreshes workspace choices after creation but leaves them unchanged on a failed submit', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     const queryClient = await renderDraft();

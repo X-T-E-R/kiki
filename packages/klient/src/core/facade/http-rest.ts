@@ -424,6 +424,8 @@ export interface HttpRestFacade {
   };
 
   readonly skills: {
+    /** Read global skills, or a disposable directory snapshot for an absolute cwd, without registering a workspace or creating a session. */
+    list(cwd?: string): Promise<ListSkillsResponse>;
     readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
     previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents'): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
     installHost(host: 'claude' | 'codex' | 'grok' | 'agents', revision: string): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;

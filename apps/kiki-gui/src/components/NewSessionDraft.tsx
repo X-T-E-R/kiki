@@ -401,8 +401,8 @@ export function useNewSessionDraft({
   // Which controls the *user* moved on this draft, as distinct from the values
   // merely resolved onto the page. A bare external engine is run as it is, so
   // only a touched control is sent — see `buildNewSessionCreate`.
-  const modelTouched = useRef(false);
-  const effortTouched = useRef(false);
+  const modelTouched = useRef(!modelOverrideFromProfile.current && initialRestoredDraft.modelOverride !== undefined);
+  const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
   const permissionTouched = useRef(false);
 
   const workspacesQuery = useQuery({
@@ -645,6 +645,17 @@ export function useNewSessionDraft({
   };
 
   const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
+  const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const cancelCreation = useCallback(() => {
+    if (creationIntent.current === undefined) return;
+    creationIntent.current.cancelled = true;
+    setBusy(false);
+  }, []);
+  useEffect(() => () => {
+    if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
+  }, [scopeId]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialAttachments?: readonly ComposerAttachment[];
@@ -663,7 +674,7 @@ export function useNewSessionDraft({
     goalObjectiveOverride?: string;
   }) => {
     const context = sendContextRef.current;
-    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) {
+    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current || creationIntent.current !== undefined) {
       return;
     }
     const trimmedCwd = context.cwd.trim();
@@ -673,6 +684,9 @@ export function useNewSessionDraft({
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
+    const intent = { cancelled: false };
+    creationIntent.current = intent;
+    const submittedDraft = draftRef.current;
     setBusy(true);
     setError(null);
 
@@ -704,11 +718,13 @@ export function useNewSessionDraft({
       .then(async (session) => {
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         createdForRetry.current = { body: bodyKey, sessionId: session.id };
+        if (intent.cancelled) return;
         // Hosts preselected on /new become session resources before anything
         // is sent: the real PUT lands first, and a failure here aborts the
         // navigation instead of delivering a first message that believes it
         // has hosts the session does not have.
         for (const host of handoff.sshHosts ?? []) {
+          if (intent.cancelled) return;
           try {
             await sshApi(client).addSessionHost(session.id, host.id);
           } catch (cause: unknown) {
@@ -719,8 +735,9 @@ export function useNewSessionDraft({
             throw cause;
           }
         }
+        if (intent.cancelled) return;
         createdForRetry.current = undefined;
-        writeDraft(draftKey, '');
+        if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
         clearScopedNewSessionDraft(draftScopeId);
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
@@ -756,8 +773,12 @@ export function useNewSessionDraft({
         });
       })
       .catch((error: unknown) => {
+        if (intent.cancelled) return;
         setBusy(false);
         setError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (creationIntent.current === intent) creationIntent.current = undefined;
       });
   }, [client, draftKey, draftScopeId, locale, scopeId, sshLabel, navigate, queryClient, t]);
 
@@ -916,6 +937,7 @@ export function useNewSessionDraft({
     draft,
     attachments,
     busy,
+    cancelCreation,
     error,
     workspaceId,
     cwd,

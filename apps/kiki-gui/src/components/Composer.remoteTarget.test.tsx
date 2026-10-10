@@ -30,6 +30,7 @@ vi.mock('../state/connection', () => ({
       listModels,
       listSessionSkills: vi.fn().mockResolvedValue({ skills: [] }),
       listWorkspaceSkills: vi.fn().mockResolvedValue({ skills: [] }),
+      listDraftSkills: vi.fn().mockResolvedValue({ skills: [] }),
       listNamedAgentProfiles: vi.fn().mockResolvedValue({ items: [] }),
       uploadFile: vi.fn(),
     },

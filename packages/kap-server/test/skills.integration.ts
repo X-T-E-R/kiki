@@ -5,12 +5,16 @@ import { join } from 'node:path';
 import {
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentProfileService,
+  IAgentPromptService,
   IAgentSkillService,
+  IModelCatalogMutationService,
   ISessionManager,
   ISessionSkillCatalog,
   KIKI_OPS_SKILL,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
+import { IAgentLLMRequesterService } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
 import {
   activateSkillResultSchema,
   builtinSkillContentResponseSchema,
@@ -175,6 +179,79 @@ describe('server-v2 /api skills', () => {
     await expect.poll(async () => (await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`))
       .body.data.skills.find((skill) => skill.name === 'notes')?.description, { timeout: 10000 })
       .toBe('Updated user notes.');
+  });
+
+  describe('GET /api/skills draft catalog', () => {
+    it('lists global user skills and commands before there is a workspace or session', async () => {
+      await seedExplicitSkill(join(home!, 'skills'), 'global-review');
+      await mkdir(join(home!, 'commands'), { recursive: true });
+      await writeFile(join(home!, 'commands', 'notes.md'), 'Discuss these notes.');
+      const sessionsBefore = await getJson<{ items: unknown[] }>('/api/sessions');
+      const workspacesBefore = await getJson<{ items: unknown[] }>('/api/workspaces');
+      const listed = await getJson<{ skills: SkillWire[] }>('/api/skills');
+      expect(listed.body.code).toBe(0);
+      expect(listSkillsResponseSchema.parse(listed.body.data).skills).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'kiki-ops', source: 'builtin' }),
+        expect.objectContaining({ name: 'global-review', source: 'user' }),
+        expect.objectContaining({ name: 'notes', source: 'user', prompt_command: true }),
+      ]));
+      expect((await getJson<{ items: unknown[] }>('/api/sessions')).body.data.items).toEqual(sessionsBefore.body.data.items);
+      expect((await getJson<{ items: unknown[] }>('/api/workspaces')).body.data.items).toEqual(workspacesBefore.body.data.items);
+    });
+
+    it('previews a directory skill without registering it, and the same skill is available at actual session creation', async () => {
+      const root = await makeWorkspaceDir();
+      await mkdir(join(root, '.git'));
+      await seedProjectSkill(root, 'directory-review');
+      const before = await getJson<{ items: unknown[] }>('/api/workspaces');
+      const preview = await getJson<{ skills: SkillWire[] }>(`/api/skills?cwd=${encodeURIComponent(root)}`);
+      expect(preview.body.code).toBe(0);
+      expect(preview.body.data.skills).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'directory-review', source: 'project' })]));
+      expect((await getJson<{ items: unknown[] }>('/api/workspaces')).body.data.items).toEqual(before.body.data.items);
+      const id = await createSession(root);
+      const actual = await getJson<{ skills: SkillWire[] }>(`/api/sessions/${id}/skills`);
+      expect(actual.body.data.skills.find((skill) => skill.name === 'directory-review')).toEqual(preview.body.data.skills.find((skill) => skill.name === 'directory-review'));
+      expect((await getJson<{ items: unknown[] }>('/api/models')).body.data.items).toEqual([]);
+      const rejected = await postJson(`/api/sessions/${id}/skills/directory-review:activate`, {
+        prompt_id: 'unbound-first-skill', args: 'sample', user_input: '/directory-review sample',
+      });
+      expect(rejected.body.code).toBe(50001);
+      expect(rejected.body.msg).toContain('model.not_configured');
+      expect(rejected.body.msg).not.toContain('another turn is active');
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      expect(main.accessor.get(IAgentPromptService).lookup('unbound-first-skill')).toMatchObject({ phase: 'terminal', terminal: { state: 'failed', result: { error: { code: 'model.not_configured' } } } });
+      const models = server!.core.accessor.get(IModelCatalogMutationService);
+      await models.createProvider({ id: 'fixture', type: 'openai', base_url: 'http://127.0.0.1:1/v1', api_key: 'fixture' });
+      await models.createModel({ id: 'fixture', provider_id: 'fixture', remote_id: 'fixture', max_context_size: 100000 });
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'fixture', thinking: 'off' });
+      const requester = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(() => ({
+        trace: { traceId: 'fixture-first-skill' },
+        result: Promise.resolve({
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Fixture reply.' }], toolCalls: [] },
+          usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+          providerFinishReason: 'completed',
+        }),
+      }));
+      try {
+        const activation = await postJson(`/api/sessions/${id}/skills/directory-review:activate`, {
+          args: 'sample', user_input: '/directory-review sample',
+        });
+        expect(activation.body.code, activation.body.msg).toBe(0);
+        await main.accessor.get(IAgentLoopService).settled();
+        const messages = await getJson<{ items: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }>(`/api/sessions/${id}/messages`);
+        const sent = messages.body.data.items.filter((item) => item.role === 'user')
+          .flatMap((item) => item.content.map((part) => part.text ?? '')).join('\n');
+        expect(sent.match(/Say hello to sample\./g)).toHaveLength(1);
+        expect(requester).toHaveBeenCalledTimes(1);
+      } finally {
+        requester.mockRestore();
+      }
+    });
+
+    it('reports invalid or missing directories instead of presenting an empty catalog', async () => {
+      expect((await getJson('/api/skills?cwd=relative')).body.code).toBe(40001);
+      expect((await getJson(`/api/skills?cwd=${encodeURIComponent(join(home!, 'missing-directory'))}`)).body.code).toBe(40410);
+    });
   });
 
   describe('GET /api/skills/{name}:content', () => {

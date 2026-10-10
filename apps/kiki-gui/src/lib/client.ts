@@ -2256,6 +2256,10 @@ export class KikiClient {
     return this.run(this.rest.runtime.restartMcpServer(serverId));
   }
 
+  listDraftSkills(cwd?: string): Promise<ListSkillsResponse> {
+    return this.run(this.rest.skills.list(cwd));
+  }
+
   listWorkspaceSkills(workspaceId: string): Promise<ListSkillsResponse> {
     return this.run(this.rest.workspaces.listSkills(workspaceId));
   }

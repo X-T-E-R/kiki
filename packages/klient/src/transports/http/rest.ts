@@ -378,6 +378,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     skills: {
+      list: (cwd) => transport.json<ListSkillsResponse>('/skills', { query: { cwd } }),
       readBuiltinContent: (name: string) => transport.json<import('@kiki/protocol').BuiltinSkillContentResponse>(
         `/skills/${encodeURIComponent(name)}:content`,
       ),

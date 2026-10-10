@@ -32,6 +32,7 @@ const { selectFilesNative, readClipboardFiles, connectionScope, onFileDrop, desk
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
+const listDraftSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const getAgentCapabilities = vi.fn();
 const uploadFile = vi.fn();
@@ -52,6 +53,7 @@ vi.mock('../state/connection', () => ({
       listModels,
       listSessionSkills,
       listWorkspaceSkills,
+      listDraftSkills,
       listNamedAgentProfiles,
       getAgentCapabilities,
       uploadFile,
@@ -96,6 +98,7 @@ beforeEach(() => {
     profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
+  listDraftSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   meta.mockReset().mockResolvedValue({ experimental_flags: { native_ssh: false } });
   sshList.mockReset().mockResolvedValue({ hosts: [sshHost] });
@@ -1845,12 +1848,33 @@ describe('Composer slash skill catalog', () => {
     expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/fork');
   });
 
-  it('does not fetch skills without a session or workspace', async () => {
-    const { container } = await renderComposer();
+  it('browses global skills on an automatic draft without creating a session or workspace', async () => {
+    listDraftSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer({ value: '/', onActivateSkill: vi.fn() });
     for (let index = 0; index < 5; index += 1) await settle();
+    expect(listDraftSkills).toHaveBeenCalledWith(undefined);
     expect(listSessionSkills).not.toHaveBeenCalled();
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
+    await openSlashMenu(container);
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
+    expect(container.querySelector('[data-composer-menu]')?.textContent).not.toContain('/fork');
+    expect(container.querySelector('[data-skill-preview]')?.textContent ?? container.textContent).toContain('Review');
+  });
+
+  it('loads a custom directory catalog and activates its skill with args and attachment unchanged', async () => {
+    listDraftSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const attachment = { kind: 'file' as const, path: '/workspace/input.txt', name: 'input.txt', isDir: false };
+    const { container } = await renderComposer({
+      value: '/review --fix', attachments: [attachment], onActivateSkill,
+      agentProfileCatalogMode: { mode: 'cwd', cwd: '/workspace/custom', effective: true },
+    });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await pressKey(textarea, { key: 'Enter' });
+    expect(listDraftSkills).toHaveBeenCalledWith('/workspace/custom');
+    expect(listWorkspaceSkills).not.toHaveBeenCalled();
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix', [attachment], '/review --fix');
   });
 
   it('waits for a pending catalog before sending /kiki-ops without an unknown warning', async () => {
@@ -1904,7 +1928,8 @@ describe('Composer slash skill catalog', () => {
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('kiki-ops', 'Help me get started.', [], '/kiki-ops Help me get started.');
   });
 
-  it('activates the built-in first-run command for a new directory without a workspace catalog', async () => {
+  it('activates the built-in first-run command from the global catalog without a workspace', async () => {
+    listDraftSkills.mockResolvedValue({ skills: [{ ...workspaceSkill, name: 'kiki-ops', source: 'builtin' }] });
     const onActivateSkill = vi.fn();
     const onSend = vi.fn();
     const { container } = await renderComposer({
@@ -3087,6 +3112,21 @@ describe('session SSH stays resident and rides no message', () => {
     expect(onSend).toHaveBeenCalledWith('Inspect the host', [{ kind: 'ssh', id: 'example-host', name: 'Example host' }]);
     expect(container.querySelector('[data-context-tray] [data-composer-ssh-chip]')).toBeNull();
     expect(container.querySelector('[data-attachment-chips]')?.textContent ?? '').not.toContain('Example host');
+  });
+
+  it('carries a preselected SSH host with the first skill activation on /new', async () => {
+    meta.mockResolvedValue({ experimental_flags: { native_ssh: true } });
+    listDraftSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const { container } = await renderComposer({ value: '/review --fix', onActivateSkill });
+    await openAddMenu(container);
+    await click(container.querySelector('[data-add-menu-ssh]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    await click(container.querySelector('[data-add-menu-trigger]')!);
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix',
+      [{ kind: 'ssh', id: 'example-host', name: 'Example host' }], '/review --fix');
+    expect(sshAdd).not.toHaveBeenCalled();
   });
 
   it('keeps the joined host resident across consecutive sends and a skill, with no ref in any of them', async () => {

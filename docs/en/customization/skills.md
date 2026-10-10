@@ -107,6 +107,8 @@ extra_skill_dirs = ["~/team-skills", ".agents/team-skills"]
 
 ## Invoking a Skill
 
+In the GUI's new-session input, type `/` or open **+ → Skills** to browse before sending your first message. With an automatic workspace, the list contains global Skills and commands; choosing a workspace or entering a valid working directory also shows its project entries. Browsing and selecting an entry create no conversation and send no message. The selected engine and model are validated when you send.
+
 Users can invoke a Skill manually with a slash command:
 
 ```text

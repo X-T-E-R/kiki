@@ -442,6 +442,24 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('reads global and directory skill catalogs through the typed session-less surface', async () => {
+    const urls: URL[] = [];
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      urls.push(new URL(String(input)));
+      return envelope({ skills: [] });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.skills.list()).resolves.toEqual({ skills: [] });
+      await expect(channel.rest.skills.list('C:/work/a b')).resolves.toEqual({ skills: [] });
+      expect(urls.map((url) => url.pathname)).toEqual(['/api/skills', '/api/skills']);
+      expect(urls[0]!.search).toBe('');
+      expect(urls[1]!.searchParams.get('cwd')).toBe('C:/work/a b');
+    } finally {
+      await channel.close();
+    }
+  });
+
   it('reads built-in skill content by name without passing its URI to the file endpoint', async () => {
     const fetchMock = vi.fn(async (input: string | URL) => {
       expect(new URL(String(input)).pathname).toBe('/api/skills/kiki%2Fops:content');
