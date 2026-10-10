@@ -61,7 +61,7 @@ interface WriterEntry {
 
 interface ReaderEntry {
   handle: ShardHandle;
-  fingerprint: string;
+  fingerprint: string | null;
   /** Per-file fingerprint parts, in FINGERPRINT_FILES order. */
   fpParts: string[];
   /** WAL watermark the instance's data represents: the {dev, ino} anchor of
@@ -96,6 +96,15 @@ function readerWalMark(handle: ShardHandle): ReaderEntry['walMark'] {
   const ri = handle.db.recoveryInfo;
   if (!ri || !ri.walIno) return null;
   return { dev: ri.walDev, ino: ri.walIno, size: ri.walScanEnd };
+}
+
+/** A stat fingerprint is reusable only when its WAL is fully represented by
+ *  the reader. Keep the observed parts for reopen decisions even when an
+ *  append raced open or catch-up stopped before the observed end. */
+function readerFingerprint(parts: string[], mark: ReaderEntry['walMark']): string | null {
+  if (!mark) return parts[0] === '-' ? parts.join('|') : null;
+  const [dev, ino, size] = parts[0]!.split(':').map(Number);
+  return dev === mark.dev && ino === mark.ino && size === mark.size ? parts.join('|') : null;
 }
 
 export class ShardLockPool {
@@ -366,11 +375,12 @@ export class ShardLockPool {
         const handle = await ShardHandle.openReader(shardId, dir, this.opts.readerOpts);
         this.stats.readerOpens++;
         const openedParts = await shardFingerprint(dir);
+        const walMark = readerWalMark(handle);
         const entry: ReaderEntry = {
           handle,
-          fingerprint: openedParts.join('|'),
+          fingerprint: readerFingerprint(openedParts, walMark),
           fpParts: openedParts,
-          walMark: readerWalMark(handle),
+          walMark,
           lastUsedAt: Date.now(),
           busy: 0,
         };
@@ -408,12 +418,11 @@ export class ShardLockPool {
       cached.busy--;
     }
     if (res === null) return false;
-    // Advance the watermark only to what was actually applied — a frame
-    // appended after this stat (or after catch-up scanned) sits beyond
-    // res.offset and is picked up by the next fingerprint miss.
+    // Advance only to applied frames. An observed but unapplied tail must
+    // force another catch-up even if its complete fingerprint stays unchanged.
     cached.walMark = { dev: st.dev, ino: st.ino, size: res.offset };
     cached.fpParts = parts;
-    cached.fingerprint = parts.join('|');
+    cached.fingerprint = readerFingerprint(parts, cached.walMark);
     cached.lastUsedAt = Date.now();
     this.stats.incrementalCatchups++;
     this.stats.catchupFramesApplied += res.appliedFrames;

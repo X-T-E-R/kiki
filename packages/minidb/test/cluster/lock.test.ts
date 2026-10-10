@@ -158,6 +158,109 @@ test('read-only instance coexists with a live writer and sees its commits', asyn
   }
 });
 
+test.each([false, true])('reader watermark: append between recovery and stat is not cached (readOnly=%s)', async (readOnly) => {
+  const dir = await tmpDir('minidb-cluster-');
+  try {
+    const opts = { dir, shardCount: 16, valueCodec: 'json' as const, valueMode: 'disk' as const, lockHoldMs: 0 };
+    const writer = await ClusterDb.open(opts);
+    const reader = await ClusterDb.open({ ...opts, readOnly });
+    const recovered = deferred<ShardHandle>();
+    const releaseOpen = deferred<void>();
+    const origOpenReader = ShardHandle.openReader;
+    let pendingRead: Promise<unknown> | undefined;
+    try {
+      const key = keyOnShard('watermark-open', 0, 16);
+      await writer.set(key, { v: 1 });
+      ShardHandle.openReader = async function (...args: Parameters<typeof origOpenReader>) {
+        const handle = await origOpenReader.apply(this, args);
+        recovered.resolve(handle);
+        await releaseOpen.promise;
+        return handle;
+      };
+      pendingRead = reader.get(key);
+      const handle = await Promise.race([
+        recovered.promise,
+        pendingRead.then(() => {
+          throw new Error('read finished without reaching the recovery gate');
+        }),
+      ]);
+      assert.equal(handle.db.readOnly, true, 'the pool uses a real read-only shard even for a writable cluster');
+      assert.deepEqual(handle.db.get(key), { v: 1 }, 'recovery finished before the concurrent append');
+      const walPath = path.join(handle.dir, 'db.wal');
+      const mark = handle.db.recoveryInfo!.walScanEnd;
+      await writer.set(key, { v: 2 });
+      assert.ok((await fs.stat(walPath)).size > mark, 'the successful set appended a complete frame after recovery');
+      releaseOpen.resolve();
+      assert.deepEqual(await pendingRead, { v: 1 }, 'the first read began before the append');
+      ShardHandle.openReader = origOpenReader;
+
+      // No writes after the gate: the second read must catch up despite an
+      // unchanged fingerprint, not wait for another append to invalidate it.
+      assert.deepEqual(await reader.get(key), { v: 2 });
+      assert.equal(reader.stats().incrementalCatchups, 1);
+      assert.equal(reader.stats().readerReopens, 0, 'a same-inode append does not force a reopen');
+      const fresh = await ClusterDb.open({ ...opts, readOnly: true });
+      try {
+        assert.deepEqual(await reader.get(key), await fresh.get(key), 'the cached view equals a fresh reader');
+        assert.equal(reader.stats().incrementalCatchups, 1, 'a fully applied fingerprint is reusable');
+      } finally {
+        await fresh.close();
+      }
+    } finally {
+      releaseOpen.resolve();
+      await pendingRead?.catch(() => {});
+      ShardHandle.openReader = origOpenReader;
+      await Promise.all([reader.close(), writer.close()]);
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test('reader watermark: an unapplied observed tail retries with an unchanged fingerprint', async () => {
+  const dir = await tmpDir('minidb-cluster-');
+  try {
+    const opts = { dir, shardCount: 16, valueCodec: 'json' as const, valueMode: 'disk' as const, lockHoldMs: 0 };
+    const writer = await ClusterDb.open(opts);
+    const reader = await ClusterDb.open(opts);
+    const origCatchUp = MiniDb.prototype.catchUpFromWal;
+    const offsets: number[] = [];
+    try {
+      const key = keyOnShard('watermark-tail', 0, 16);
+      await writer.set(key, { v: 1 });
+      assert.deepEqual(await reader.get(key), { v: 1 });
+      await writer.set(key, { v: 2 });
+      // Model the scanner stopping before an observed tail; this is not a
+      // reproduction of a torn writev. The real WAL already has a full frame.
+      MiniDb.prototype.catchUpFromWal = async function (offset: number) {
+        offsets.push(offset);
+        if (offsets.length === 1) return { offset, appliedFrames: 0 };
+        return origCatchUp.call(this, offset);
+      };
+      assert.deepEqual(await reader.get(key), { v: 1 }, 'a short applied offset leaves the old view');
+      const reads = await Promise.all([reader.get(key), reader.get(key)]);
+      assert.deepEqual(reads, [{ v: 2 }, { v: 2 }], 'the next reads retry the unapplied tail without any further write');
+      assert.equal(offsets.length, 2, 'overlapping refreshes share one serialized catch-up');
+      assert.equal(offsets[1], offsets[0], 'retry starts at the applied offset, not the observed file size');
+      assert.equal(reader.stats().readerReopens, 0);
+      assert.equal(reader.stats().catchupFramesApplied, 1, 'the real frame is applied exactly once');
+      MiniDb.prototype.catchUpFromWal = origCatchUp;
+      const fresh = await ClusterDb.open({ ...opts, readOnly: true });
+      try {
+        assert.deepEqual(await reader.get(key), await fresh.get(key));
+        assert.equal(reader.stats().incrementalCatchups, 2, 'fully applied readers return to normal cache hits');
+      } finally {
+        await fresh.close();
+      }
+    } finally {
+      MiniDb.prototype.catchUpFromWal = origCatchUp;
+      await Promise.all([reader.close(), writer.close()]);
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
 test('lock lease: db.lock timestamp advances while a writer is held', async () => {
   const dir = await tmpDir('minidb-cluster-');
   try {
