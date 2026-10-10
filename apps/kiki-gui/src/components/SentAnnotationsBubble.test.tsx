@@ -4,7 +4,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { resetAnnotationOverridesForTests } from '@kiki/session-core/composer';
+import {
+  annotationOverrideId,
+  getAnnotationOverridesSnapshot,
+  resetAnnotationOverridesForTests,
+} from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
 import { notePreviewText, SentAnnotationsBubble } from './SentAnnotationsBubble';
 
@@ -52,6 +56,14 @@ async function renderBubble(
     );
   });
   return container;
+}
+
+async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 describe('notePreviewText', () => {
@@ -153,6 +165,105 @@ describe('SentAnnotationsBubble rendering forms', () => {
     expect(panel).not.toBeNull();
     expect(panel.textContent).toContain('target quote');
     expect(panel.textContent).toContain('Detailed comment');
+  });
+
+  it('keeps multiline quote and comment fully readable in the scrollable popover', async () => {
+    const blockId = 'block-multiline-read';
+    const quote = 'First quoted line\nsecond quoted line';
+    const comment = 'First note line\n  second note line';
+    const container = await renderBubble(blockId, [{ quote, comment }]);
+    const button = container.querySelector<HTMLButtonElement>(`[data-annotation-bubble="${blockId}"]`)!;
+
+    await act(async () => { button.click(); });
+    const panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
+    const quoteSpan = panel.querySelector<HTMLElement>('[data-annotation-bubble-quote]')!;
+    const commentSpan = panel.querySelector<HTMLElement>('[data-annotation-bubble-comment]')!;
+    const quoteParagraph = quoteSpan.closest('p')!;
+
+    expect(quoteSpan.textContent).toBe(quote);
+    expect(quoteSpan.className).toContain('whitespace-pre-wrap');
+    expect(quoteParagraph.className).not.toContain('max-h-16');
+    expect(quoteParagraph.className).not.toContain('overflow-hidden');
+    expect(commentSpan.textContent).toBe(comment);
+    expect(commentSpan.className).toContain('whitespace-pre-wrap');
+    expect(panel.querySelector('ul')?.className).toContain('overflow-y-auto');
+  });
+
+  it('edits multiline comments with modifier commit and IME-safe cancel semantics', async () => {
+    const blockId = 'block-multiline-edit';
+    const quote = 'A quoted line';
+    const originalComment = 'Original first line\nOriginal second line';
+    const container = await renderBubble(blockId, [{ quote, comment: originalComment }]);
+    const noteId = annotationOverrideId(quote, originalComment, blockId, 0);
+    const button = container.querySelector<HTMLButtonElement>(`[data-annotation-bubble="${blockId}"]`)!;
+
+    await act(async () => { button.click(); });
+    let panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
+    await act(async () => { panel.querySelector<HTMLButtonElement>('[data-annotation-bubble-edit]')!.click(); });
+    let textarea = panel.querySelector<HTMLTextAreaElement>('[data-annotation-bubble-input]')!;
+    expect(textarea).not.toBeNull();
+    expect(textarea.value).toBe(originalComment);
+
+    const ctrlValue = 'Edited first line\n  Edited second line';
+    await setTextareaValue(textarea, ctrlValue);
+    const newline = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' });
+    await act(async () => { textarea.dispatchEvent(newline); });
+    expect(newline.defaultPrevented).toBe(false);
+    expect(textarea.value).toBe(ctrlValue);
+    expect(getAnnotationOverridesSnapshot()[noteId]).toBeUndefined();
+
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    });
+    const composingCommit = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: 'Enter',
+    });
+    await act(async () => { textarea.dispatchEvent(composingCommit); });
+    expect(composingCommit.defaultPrevented).toBe(false);
+    expect(textarea.isConnected).toBe(true);
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    });
+
+    const ctrlCommit = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: 'Enter',
+    });
+    await act(async () => { textarea.dispatchEvent(ctrlCommit); });
+    expect(ctrlCommit.defaultPrevented).toBe(true);
+    expect(getAnnotationOverridesSnapshot()[noteId]?.comment).toBe(ctrlValue);
+    expect(document.body.querySelector('[data-annotation-bubble-input]')).toBeNull();
+
+    panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
+    await act(async () => { panel.querySelector<HTMLButtonElement>('[data-annotation-bubble-edit]')!.click(); });
+    textarea = panel.querySelector<HTMLTextAreaElement>('[data-annotation-bubble-input]')!;
+    const metaValue = `${ctrlValue}\nMeta committed line`;
+    await setTextareaValue(textarea, metaValue);
+    const metaCommit = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+      metaKey: true,
+    });
+    await act(async () => { textarea.dispatchEvent(metaCommit); });
+    expect(metaCommit.defaultPrevented).toBe(true);
+    expect(getAnnotationOverridesSnapshot()[noteId]?.comment).toBe(metaValue);
+
+    panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
+    await act(async () => { panel.querySelector<HTMLButtonElement>('[data-annotation-bubble-edit]')!.click(); });
+    textarea = panel.querySelector<HTMLTextAreaElement>('[data-annotation-bubble-input]')!;
+    await setTextareaValue(textarea, 'Discarded line\nDiscarded detail');
+    const escape = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' });
+    await act(async () => { textarea.dispatchEvent(escape); });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(panel.querySelector('[data-annotation-bubble-input]')).toBeNull();
+    expect(getAnnotationOverridesSnapshot()[noteId]?.comment).toBe(metaValue);
+    expect(panel.querySelector<HTMLElement>('[data-annotation-bubble-comment]')?.textContent).toBe(metaValue);
   });
 
   it('opens popover when clicking merged bubble', async () => {

@@ -29,7 +29,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import type { ContentRef } from '@kiki/transcript';
+import { shiftTextPresentation, type TextPresentation, type ContentRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -44,12 +44,12 @@ import {
   writeAnnotationOverride,
   sourceTextVersion,
   parseSelectionCarryovers,
-  parseSshHostContext,
+  selectionCarryoverPresentation,
+  buildQuotePrefix,
   type TimelineAnnotation,
   appendToDraft,
-  appendThreadRefContext,
+  prepareThreadRefContext,
   findThreadRefs,
-  stripThreadRefContext,
 } from '@kiki/session-core/composer';
 import {
   subscribeSettings,
@@ -114,7 +114,6 @@ import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navVie
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
-import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
   HistoryLine,
   isAbortedPromptNotice,
@@ -299,7 +298,7 @@ export function projectUserText(text: string): ReactNode {
 export interface TranscriptRowActions {
   /** Turn running / resyncing: mutating actions render but disable. */
   disabled: boolean;
-  onEditMessage: (block: UserBlock, text: string) => void;
+  onEditMessage: (block: UserBlock, text: string, presentation?: TextPresentation) => void;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
@@ -340,12 +339,7 @@ const UserMessage = memo(function UserMessage({
   const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
-  const { contentRef, contentId, isOverflowing, expanded, toggle } =
-    useCollapsibleOverflow<HTMLDivElement>(block.text);
-  const clipped = !expanded;
-  // A find match below the clamp opens the long message (the landing asks
-  // with `clamp:<id>` once it sees the painted range cut off).
-  useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
+
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
@@ -393,20 +387,18 @@ const UserMessage = memo(function UserMessage({
           model: senderIdentity?.model ?? unknownDetail,
           task: block.agentMessage?.senderTaskName ?? unknownDetail,
         });
-  // Linked threads ride the prompt as a trailing <thread_refs> block for the
-  // model; the bubble (and copy / edit / retry) works on the text as typed.
-  // Sessions sent before SSH became a resident control also carry a trailing
-  // <ssh_host_refs> block: strip it so the bubble reads as it was typed. Those
-  // hosts are shown by the composer's session control, not per message.
-  const typedText = useMemo(() => stripThreadRefContext(parseSshHostContext(block.text).body), [block.text]);
+  const carry = useMemo(() => parseSelectionCarryovers(block.text, block.presentation), [block.text, block.presentation]);
+  const bodyText = carry.body;
+  const typedText = [
+    ...carry.annotations.map((annotation) => `${buildQuotePrefix(annotation.quote)}${annotation.comment}\n\n`),
+    carry.quote === null ? '' : buildQuotePrefix(carry.quote),
+    bodyText,
+  ].join('');
   const threadRefDirectory = useThreadRefDirectory(
-    useMemo(() => findThreadRefs(typedText).map((ref) => ref.sessionId), [typedText]),
+    useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
   );
-  // Selection carry-overs (quote / annotations) sent as a text prefix render
-  // as the composer tray's chips above the bubble; the bubble keeps the body.
-  const carry = useMemo(() => parseSelectionCarryovers(typedText), [typedText]);
   const carried = carry.annotations.length > 0 || carry.quote !== null;
-  const bodyText = carried ? carry.body : typedText;
+  const media = block.media ?? [];
   const projectBody = useCallback(
     (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
     [],
@@ -463,7 +455,7 @@ const UserMessage = memo(function UserMessage({
           ) : null}
         </div>
       ) : null}
-      {block.media !== undefined ? <div data-user-media className="mb-1.5"><MediaPartList media={block.media} align="end" /></div> : null}
+      {media.length > 0 ? <div data-user-media className="mb-1.5"><MediaPartList media={media} align="end" /></div> : null}
       {/* A message that crossed a machine names where it came from, above the
           bubble it belongs to; a source this window can open is a link. */}
       {block.bridgedPeer !== undefined && !editing ? (
@@ -471,10 +463,13 @@ const UserMessage = memo(function UserMessage({
       ) : null}
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
-          initialText={typedText}
-          onSubmit={(text) => {
+          initialText={bodyText}
+          onSubmit={async (text) => {
+            const prepared = prepareThreadRefContext(text, threadRefDirectory.info);
+            const selections = selectionCarryoverPresentation(carry.annotations, carry.quote, carry.quoteSource);
+            const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
+            await rowActions.onEditMessage(block, selections.prefix + prepared.text, presentation);
             setEditing(false);
-            rowActions.onEditMessage(block, appendThreadRefContext(text, threadRefDirectory.info));
           }}
           onCancel={() => { setEditing(false); }}
         />
@@ -486,16 +481,8 @@ const UserMessage = memo(function UserMessage({
           }`}
         >
           <div
-            ref={contentRef}
-            id={contentId}
             data-source-block-id={block.id}
             data-source-version={sourceTextVersion(block.text)}
-            data-collapsible-content
-            className={
-              clipped
-                ? `max-h-60 overflow-hidden${isOverflowing ? ' collapsed-content-fade' : ''}`
-                : undefined
-            }
           >
             {annotations === undefined || annotations.length === 0
               ? projectBody(bodyText)
@@ -503,7 +490,7 @@ const UserMessage = memo(function UserMessage({
           </div>
         </div>
       )}
-      <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} label={t('subagent.message')} className="mt-1 justify-end" />
+      <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation} renderText={projectBody} label={t('subagent.message')} className="mt-1 justify-end" />
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}
@@ -519,19 +506,7 @@ const UserMessage = memo(function UserMessage({
           onFork={() => { rowActions?.onFork(block); }}
         />
       ) : null}
-      {!editing && isOverflowing ? (
-        <button
-          type="button"
-          data-collapsible-toggle
-          onClick={toggle}
-          aria-expanded={expanded}
-          aria-controls={contentId}
-          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink"
-        >
-          {expanded ? t('transcript.showLess') : t('transcript.showMore')}
-          <Icon name="chevron" size={12} className={expanded ? '-rotate-90' : 'rotate-90'} />
-        </button>
-      ) : null}
+
       {block.optimisticStatus !== undefined ? (
         <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[11px] text-ink-faint">
           {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}

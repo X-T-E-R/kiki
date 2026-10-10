@@ -87,6 +87,8 @@ import {
   promptGoalObjective,
   replaceQueuedPrompt,
   withoutQueuedAttachment,
+  removeQueuedAttachment,
+  fileMentionFromPathMedia,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
   sessionAgentProfileWorkspaceId,
@@ -312,6 +314,53 @@ describe('queued prompt editing', () => {
     expect(withoutQueuedAttachment([first], 0)).toEqual([]);
   });
 
+  it('removes structured and presentation attachments in media order while preserving text metadata', () => {
+    const first = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/first.png' } };
+    const second = { type: 'file' as const, file_id: 'file_2', name: 'notes.txt', media_type: 'text/plain', size: 12 };
+    const notice = 'Attached file "report.pdf": C:/session/report.pdf';
+    const attachment = { path: 'C:/session/report.pdf', name: 'report.pdf', mime: 'application/pdf', size: 42 };
+    const content = [
+      { type: 'text' as const, text: 'keep', presentation: { spans: [{ start: 0, end: 4, kind: 'context' as const }] } },
+      first,
+      { type: 'text' as const, text: notice, presentation: { spans: [{ start: 0, end: notice.length, kind: 'attachment' as const, attachment }] } },
+      second,
+      { type: 'text' as const, text: 'after', presentation: { spans: [{ start: 0, end: 5, kind: 'context' as const }] } },
+    ];
+    expect(removeQueuedAttachment(content, 0)).toEqual({
+      text: `keep\n\n${notice}\n\nafter`,
+      media: [second],
+      presentation: {
+        spans: [
+          { start: 0, end: 4, kind: 'context' },
+          { start: 'keep'.length + 2, end: 'keep'.length + 2 + notice.length, kind: 'attachment', attachment },
+          { start: 'keep'.length + notice.length + 4, end: 'keep'.length + notice.length + 9, kind: 'context' },
+        ],
+      },
+    });
+    expect(removeQueuedAttachment(content, 2)).toEqual({
+      text: 'keep\n\nafter',
+      media: [first, second],
+      presentation: { spans: [{ start: 0, end: 4, kind: 'context' }, { start: 6, end: 11, kind: 'context' }] },
+    });
+  });
+
+  it('does not remove literal text when a selected media entry has no presentation span', () => {
+    const file = { type: 'file' as const, file_id: 'file-1', name: 'literal.txt', media_type: 'text/plain', size: 1 };
+    const content = [{ type: 'text' as const, text: 'literal mention' }, file];
+    expect(removeQueuedAttachment(content, 0)).toEqual({ text: 'literal mention', media: [], presentation: undefined });
+  });
+
+  it('removes only the marked notice range from text that also contains user prose', () => {
+    const notice = 'Attached file report.pdf';
+    const text = `keep ${notice} this literal text`;
+    const content = [{
+      type: 'text' as const,
+      text,
+      presentation: { spans: [{ start: 5, end: 5 + notice.length, kind: 'attachment' as const, attachment: { path: 'C:/report.pdf', name: 'report.pdf', mime: 'application/pdf', size: 1 } }] },
+    }];
+    expect(removeQueuedAttachment(content, 0)).toEqual({ text: 'keep  this literal text', media: [], presentation: undefined });
+  });
+
   it('surfaces replace failure without falling back to abort or resend', async () => {
     const replace = vi.fn(async () => { throw new Error('replace failed'); });
     await expect(replaceQueuedPrompt('p1', 'replacement', replace)).rejects.toThrow(
@@ -485,6 +534,15 @@ describe('parseSessionCreateHandoff', () => {
     expect(parsed.initialSkill).toBeUndefined();
   });
 
+  it('validates presentation metadata before carrying a first prompt across navigation', () => {
+    const presentation = { spans: [{ start: 0, end: 5, kind: 'selection' as const, quote: 'hello' }] };
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hello', initialPresentation: presentation }).initialPresentation).toEqual(presentation);
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hello', initialPresentation: { spans: [{ start: -1, end: 5, kind: 'selection' }] } }).initialPresentation).toBeUndefined();
+    expect(resolveSessionCreateSubmission({ initialPrompt: 'hello', initialPresentation: presentation })).toMatchObject({
+      kind: 'prompt', text: 'hello', presentation,
+    });
+  });
+
   it('resolves a skill as the single post-snapshot action with its attachments', () => {
     const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
     expect(
@@ -521,6 +579,20 @@ describe('parseSessionCreateHandoff', () => {
       goalObjective: 'ship safely',
     });
     expect(resolveSessionCreateSubmission({})).toBeUndefined();
+  });
+});
+
+describe('fileMentionFromPathMedia', () => {
+  it('maps durable path-only file media to a file mention', () => {
+    expect(fileMentionFromPathMedia({ kind: 'file', path: 'C:/session/report.pdf', name: 'report.pdf', mime: 'application/pdf', size: 42 })).toEqual({
+      kind: 'file', path: 'C:/session/report.pdf', name: 'report.pdf', isDir: false,
+    });
+  });
+
+  it('does not reinterpret uploaded or deferred file media as a mention', () => {
+    expect(fileMentionFromPathMedia({ kind: 'file', path: 'report.pdf', fileId: 'file-1' })).toBeUndefined();
+    expect(fileMentionFromPathMedia({ kind: 'file', path: 'report.pdf', detail: { agentId: 'main', attachmentId: 'a1' } })).toBeUndefined();
+    expect(fileMentionFromPathMedia({ kind: 'image', path: 'report.png' })).toBeUndefined();
   });
 });
 

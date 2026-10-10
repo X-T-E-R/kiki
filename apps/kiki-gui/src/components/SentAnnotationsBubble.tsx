@@ -181,6 +181,7 @@ function SentNotesPopover({
     const unregister = registerOverlay('sent-annotations');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.target instanceof Element && event.target.closest('[data-annotation-bubble-input]') !== null) return;
       event.preventDefault();
       event.stopPropagation();
       onClose();
@@ -260,7 +261,11 @@ function SentNoteRow({
   const composingRef = useRef(false);
   const trimmed = draft.trim();
   const canSave = trimmed !== '' && trimmed !== note.comment;
-  const quote = oneLine(note.quote);
+  const quoteLabel = oneLine(note.quote);
+  const cancel = () => {
+    setDraft(note.comment);
+    setEditing(false);
+  };
   const commit = () => {
     if (!canSave) return;
     onSave(note.id, trimmed);
@@ -268,15 +273,19 @@ function SentNoteRow({
   };
   return (
     <li data-annotation-bubble-row={note.id} className="rounded-lg px-2 py-1.5 hover:bg-ink/[0.025]">
-      <p className="max-h-16 overflow-hidden border-l-2 border-accent/50 pl-2 text-[11.5px] leading-snug whitespace-pre-wrap text-ink-faint">“{quote}”</p>
+      <p className="border-l-2 border-accent/50 pl-2 text-[11.5px] leading-snug whitespace-pre-wrap text-ink-faint [overflow-wrap:anywhere]">
+        <span aria-hidden>“</span>
+        <span data-annotation-bubble-quote className="whitespace-pre-wrap [overflow-wrap:anywhere]">{note.quote}</span>
+        <span aria-hidden>”</span>
+      </p>
       {editing ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <input
-            type="text"
+        <div className="mt-1.5 flex flex-wrap items-start gap-1.5">
+          <textarea
+            rows={3}
             data-annotation-bubble-input
             autoFocus
             value={draft}
-            aria-label={t('annotationTray.editAria', { quote })}
+            aria-label={t('annotationTray.editAria', { quote: quoteLabel })}
             onChange={(event) => { setDraft(event.target.value); }}
             onCompositionStart={() => { composingRef.current = true; }}
             onCompositionEnd={() => { composingRef.current = false; }}
@@ -284,27 +293,34 @@ function SentNoteRow({
               event.stopPropagation();
               const imeActive = composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
               if (imeActive) return;
-              if (event.key === 'Enter') { event.preventDefault(); commit(); }
-              if (event.key === 'Escape') { event.preventDefault(); setDraft(note.comment); setEditing(false); }
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+                event.preventDefault();
+                commit();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                cancel();
+              }
             }}
-            className="min-h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
+            className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12.5px] leading-snug text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
           />
           <button type="button" data-annotation-bubble-save disabled={!canSave} onClick={commit}
             className="min-h-8 rounded-md bg-ink/[0.06] px-3 text-[12px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40">
             {t('annotationTray.save')}
           </button>
-          <button type="button" onClick={() => { setDraft(note.comment); setEditing(false); }} className={ROW_ACTION}>
+          <button type="button" onClick={cancel} className={ROW_ACTION}>
             {t('annotationTray.cancel')}
           </button>
         </div>
       ) : (
-        <div className="mt-1 flex items-center gap-1">
-          <p className="min-w-0 flex-1 text-[13px] leading-snug text-ink [overflow-wrap:anywhere]">{note.comment}</p>
+        <div className="mt-1 flex items-start gap-1">
+          <p className="min-w-0 flex-1 text-[13px] leading-snug whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">
+            <span data-annotation-bubble-comment className="whitespace-pre-wrap [overflow-wrap:anywhere]">{note.comment}</span>
+          </p>
           <button
             type="button"
             data-annotation-bubble-edit
             onClick={() => { setDraft(note.comment); setEditing(true); }}
-            aria-label={t('annotationTray.editAria', { quote })}
+            aria-label={t('annotationTray.editAria', { quote: quoteLabel })}
             title={t('annotationTray.edit')}
             className={`${ROW_ACTION} w-7 justify-center px-0 pointer-coarse:w-10`}
           >

@@ -51,6 +51,7 @@ import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
+import { contentTextPresentation, readTextPresentation } from '@kiki/transcript';
 import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
@@ -62,10 +63,9 @@ import {
 } from '@kiki/session-core/commands';
 import {
   addAnnotation,
-  buildAnnotationsPrefix,
+  selectionCarryoverPresentation,
   stripThreadRefContext,
   buildPromptContent,
-  buildQuotePrefix,
   buildSkillActivation,
   flushDrafts,
   parseSelectionCarryovers,
@@ -79,6 +79,7 @@ import {
   writeComposerState,
   writeDraft,
   type ComposerAttachment,
+  type FileMention,
   type ComposerModelChoice,
   type ComposerModelBindingChange,
   type SelectionAnnotation,
@@ -175,12 +176,102 @@ export async function replaceQueuedPrompt(
   await replace(promptId, text);
 }
 
+type QueuedMediaContent = Extract<MessageContent, { type: 'image' | 'video' | 'file' }>;
+
+type QueuedAttachmentRemoval = {
+  readonly text: string;
+  readonly media: readonly QueuedMediaContent[];
+  readonly presentation?: import('@kiki/transcript').TextPresentation;
+};
+
+function isQueuedMediaContent(part: MessageContent): part is QueuedMediaContent {
+  return part.type === 'image' || part.type === 'video' || part.type === 'file';
+}
+
+function adjustPresentationAfterTextRemoval(
+  span: import('@kiki/transcript').TextPresentationSpan,
+  removeStart: number,
+  removeEnd: number,
+  removedLength: number,
+): import('@kiki/transcript').TextPresentationSpan[] {
+  if (span.end <= removeStart) return [span];
+  if (span.start >= removeEnd) return [{ ...span, start: span.start - removedLength, end: span.end - removedLength }];
+  const pieces: import('@kiki/transcript').TextPresentationSpan[] = [];
+  if (span.start < removeStart) pieces.push({ ...span, end: Math.min(span.end, removeStart) });
+  if (span.end > removeEnd) {
+    pieces.push({
+      ...span,
+      start: Math.max(span.start, removeEnd) - removedLength,
+      end: span.end - removedLength,
+    });
+  }
+  return pieces.filter((piece) => piece.end > piece.start);
+}
+
+export function removeQueuedAttachment(
+  content: readonly MessageContent[],
+  attachmentIndex: number,
+  separator = '\n\n',
+): QueuedAttachmentRemoval {
+  const media = content.filter(isQueuedMediaContent);
+  const textParts = content.filter((part): part is Extract<MessageContent, { type: 'text' }> => part.type === 'text');
+  const text = textParts.map((part) => part.text).join(separator);
+  const presentation = contentTextPresentation(content, separator);
+  const structuredCount = media.length;
+  if (attachmentIndex < structuredCount) {
+    return {
+      text,
+      media: media.filter((_, index) => index !== attachmentIndex),
+      presentation,
+    };
+  }
+
+  const attachmentSpans = (presentation?.spans ?? []).flatMap((span, index) => (
+    span.kind === 'attachment' && span.attachment !== undefined ? [{ span, index }] : []
+  ));
+  const target = attachmentSpans[attachmentIndex - structuredCount];
+  if (target === undefined) return { text, media, presentation };
+  const targetStart = target.span.start;
+  const targetEnd = target.span.end;
+  const textRanges: { start: number; end: number }[] = [];
+  let cursor = 0;
+  for (const [index, part] of textParts.entries()) {
+    const end = cursor + part.text.length;
+    textRanges.push({ start: cursor, end });
+    cursor = end + (index === textParts.length - 1 ? 0 : separator.length);
+  }
+  const targetPartIndex = textRanges.findIndex((range) => targetStart >= range.start && targetEnd <= range.end);
+  const targetPart = targetPartIndex === -1 ? undefined : textRanges[targetPartIndex];
+  let removeStart = targetStart;
+  let removeEnd = targetEnd;
+  if (targetPart !== undefined && targetStart === targetPart.start && targetEnd === targetPart.end) {
+    if (targetPartIndex > 0) removeStart -= separator.length;
+    else if (textParts.length > 1) removeEnd += separator.length;
+  }
+  const removedLength = removeEnd - removeStart;
+  const nextPresentationSpans = (presentation?.spans ?? []).flatMap((span, index) => (
+    index === target.index ? [] : adjustPresentationAfterTextRemoval(span, removeStart, removeEnd, removedLength)
+  ));
+  return {
+    text: `${text.slice(0, removeStart)}${text.slice(removeEnd)}`,
+    media,
+    presentation: nextPresentationSpans.length === 0 ? undefined : { spans: nextPresentationSpans },
+  };
+}
+
 export function withoutQueuedAttachment(content: readonly MessageContent[], attachmentIndex: number): MessageContent[] {
-  let index = 0;
-  return content.filter((part) => {
-    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return part.type !== 'text';
-    return index++ !== attachmentIndex;
-  });
+  return [...removeQueuedAttachment(content, attachmentIndex).media];
+}
+
+export function fileMentionFromPathMedia(media: NonNullable<UserBlock['media']>[number]): FileMention | undefined {
+  if (media.kind !== 'file' || media.fileId !== undefined || media.detail !== undefined || media.path === undefined || media.path === '') return undefined;
+  const pathParts = media.path.split(/[\\/]/u).filter((part) => part !== '');
+  return {
+    kind: 'file',
+    path: media.path,
+    name: media.name ?? pathParts.at(-1) ?? media.path,
+    isDir: false,
+  };
 }
 
 /** The saved terminal chord (VS Code's Ctrl+` unless remapped), and the only
@@ -865,6 +956,7 @@ export function resolveSessionSeatPhase(input: {
 
 interface SessionCreateHandoff {
   readonly initialPrompt?: string;
+  readonly initialPresentation?: import('@kiki/transcript').TextPresentation;
   readonly initialAttachments?: readonly ComposerAttachment[];
   readonly initialSkill?: DraftSkillHandoff;
   readonly model?: string;
@@ -880,6 +972,7 @@ export type SessionCreateSubmission =
   | {
       readonly kind: 'prompt';
       readonly text: string;
+      readonly presentation?: import('@kiki/transcript').TextPresentation;
       readonly attachments: readonly ComposerAttachment[];
       readonly goalObjective?: string;
       readonly personaGreetingReply?: boolean;
@@ -910,6 +1003,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
   const raw = state as SessionCreateHandoff;
   return {
     initialPrompt: typeof raw.initialPrompt === 'string' ? raw.initialPrompt : undefined,
+    initialPresentation: readTextPresentation(raw.initialPresentation),
     initialAttachments: Array.isArray(raw.initialAttachments) ? raw.initialAttachments : undefined,
     initialSkill: isDraftSkillHandoff(raw.initialSkill) ? raw.initialSkill : undefined,
     model: raw.model,
@@ -939,6 +1033,7 @@ export function resolveSessionCreateSubmission(
   return {
     kind: 'prompt',
     text: handoff.initialPrompt,
+    presentation: handoff.initialPresentation,
     attachments: handoff.initialAttachments ?? [],
     goalObjective: handoff.goalObjective,
     ...(handoff.personaGreetingReply === true ? { personaGreetingReply: true } : {}),
@@ -2619,14 +2714,15 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote, quoteSource) : ''}`;
-        const quotedText = prefix === '' ? text : `${prefix}${text}`;
-        const content = buildPromptContent(quotedText, composerAttachments);
+        const carry = selectionCarryoverPresentation(annotations, quote, quoteSource);
+        const quotedText = `${carry.prefix}${text}`;
+        const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
+        const content = buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
         // Local echo shows the mention-folded text; a media-only message
@@ -2951,11 +3047,11 @@ export function SessionView({
           });
         });
       },
-      editQueued: (promptId: string, text: string) =>
+      editQueued: (promptId: string, text: string, presentation?: import('@kiki/transcript').TextPresentation) =>
         replaceQueuedPrompt(
           promptId,
           text,
-          (id, replacement) => controller.replaceQueued(id, replacement),
+          (id, replacement) => controller.replaceQueued(id, replacement, undefined, presentation),
         ).catch((error: unknown) => {
           pushToast({
             tone: 'error',
@@ -3175,9 +3271,11 @@ boundExecution,
   // ---- message-closure row actions (edit-resend / regenerate / fork) ----
 
   const handleEditMessage = useCallback(
-    (block: UserBlock, text: string) => {
+    (block: UserBlock, text: string, presentation?: import('@kiki/transcript').TextPresentation) => {
       if (controller === null || block.userMessageId === undefined) return;
-      controller.editMessage(block.userMessageId, { text }).catch((error: unknown) => {
+      const content = buildPromptContent(text, [], presentation);
+      if (content === null) return;
+      controller.editMessage(block.userMessageId, { text, content }).catch((error: unknown) => {
         pushToast({
           tone: 'error',
           text: t('action.editFailed', { detail: sessionActionErrorText(locale, error) }),
@@ -3476,7 +3574,8 @@ boundExecution,
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
-    return controller.replaceQueued(promptId, item.text, withoutQueuedAttachment(item.content, attachmentIndex))
+    const replacement = removeQueuedAttachment(item.content, attachmentIndex);
+    return controller.replaceQueued(promptId, replacement.text, replacement.media, replacement.presentation)
       .catch((error: unknown) => {
         pushToast({
           tone: 'error',
@@ -3491,6 +3590,9 @@ boundExecution,
     (promptId: string) => {
       if (queueEdit !== null) return;
       const item = queuedItems.find((entry) => entry.promptId === promptId);
+      const block = state.blocks.find(
+        (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
+      );
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
       setQueueEdit({
         promptId,
@@ -3503,7 +3605,10 @@ boundExecution,
       // text's selection carry-overs come back as composer chips, so notes and
       // the plain quote stay editable (and keep marking the timeline) instead
       // of flattening into plain text.
-      const carryovers = parseSelectionCarryovers(stripThreadRefContext(item.text));
+      const carryovers = parseSelectionCarryovers(
+        block?.text ?? item.text,
+        block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n'),
+      );
       updateDraft(carryovers.body);
       setQuote(carryovers.quote);
       setQuoteSource(carryovers.quoteSource);
@@ -3514,10 +3619,10 @@ boundExecution,
         ),
       );
     },
-    [queueEdit, queuedItems, quote, quoteSource, annotations, updateDraft],
+    [queueEdit, queuedItems, state.blocks, quote, quoteSource, annotations, updateDraft],
   );
   const handleQueueEditConfirm = useCallback(
-    (text: string): Promise<void> => {
+    (text: string, argumentPresentation?: import('@kiki/transcript').TextPresentation): Promise<void> => {
       const edit = queueEdit;
       if (edit === null) return Promise.resolve();
       const exit = () => {
@@ -3528,10 +3633,18 @@ boundExecution,
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
-      // The edited chips ride back into the queued text as the same plain-text
-      // prefix the send path builds.
-      const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote, quoteSource) : ''}`;
-      const finalText = prefix === '' ? text : `${prefix}${text}`;
+      const carry = selectionCarryoverPresentation(annotations, quote, quoteSource);
+      const presentation: import('@kiki/transcript').TextPresentation = {
+        spans: [
+          ...carry.presentation.spans,
+          ...(argumentPresentation?.spans ?? []).map((span) => ({
+            ...span,
+            start: span.start + carry.prefix.length,
+            end: span.end + carry.prefix.length,
+          })),
+        ],
+      };
+      const finalText = `${carry.prefix}${text}`;
       // Row vanished (sent/cleared elsewhere) or text unchanged: nothing to
       // replace — just restore the draft.
       if (item === undefined || stripThreadRefContext(item.text) === finalText || actions === null) {
@@ -3539,7 +3652,7 @@ boundExecution,
         return Promise.resolve();
       }
       return actions
-        .editQueued(edit.promptId, finalText)
+        .editQueued(edit.promptId, finalText, presentation)
         .then(() => { exit(); })
         // editQueued already toasted the failure; keep the edit open so the
         // text can be retried or cancelled.
@@ -3660,9 +3773,13 @@ boundExecution,
     void actions.send(
       submission.text,
       submission.attachments,
-      submission.goalObjective === undefined && submission.personaGreetingReply !== true
+      submission.goalObjective === undefined && submission.personaGreetingReply !== true && submission.presentation === undefined
         ? undefined
-        : { goalObjective: submission.goalObjective, personaGreetingReply: submission.personaGreetingReply },
+        : {
+            goalObjective: submission.goalObjective,
+            personaGreetingReply: submission.personaGreetingReply,
+            presentation: submission.presentation,
+          },
     );
   }, [
     controller,
@@ -3761,13 +3878,20 @@ boundExecution,
     (
       text: string,
       composerAttachments: readonly ComposerAttachment[],
-      options?: { readonly goalObjective?: string },
+      options?: {
+        readonly goalObjective?: string;
+        readonly appendTiming?: DeferredAppendTiming;
+        readonly presentation?: import('@kiki/transcript').TextPresentation;
+      },
     ) => actions?.send(text, composerAttachments, options),
     [actions],
   );
   const handleComposerSendNow = useCallback(
-    (text: string, composerAttachments: readonly ComposerAttachment[]) =>
-      actions?.send(text, composerAttachments, { now: true }),
+    (
+      text: string,
+      composerAttachments: readonly ComposerAttachment[],
+      presentation?: import('@kiki/transcript').TextPresentation,
+    ) => actions?.send(text, composerAttachments, { now: true, presentation }),
     [actions],
   );
   const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);

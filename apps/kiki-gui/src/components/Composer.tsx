@@ -43,7 +43,7 @@ import {
 } from '@kiki/session-core/commands';
 import {
   ACCEPTED_IMAGE_MIMES,
-  appendThreadRefContext,
+  prepareThreadRefContext,
   fileToImageAttachment,
   findThreadRefs,
   formatBytes,
@@ -523,19 +523,21 @@ export function Composer({
    * the submission as `goal_objective` (a `/goal …` prefix or an armed goal
    * mode), creating the session goal with the message. `options.appendTiming`
    * is the send-timing menu's one-shot pick: it overrides the session's
-   * configured queue timing for this prompt only.
+   * configured queue timing for this prompt only. `options.presentation`
+   * annotates spans in the raw text sent with this prompt.
    */
   onSend: (
     text: string,
     attachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string; readonly appendTiming?: DeferredAppendTiming },
+    options?: { readonly goalObjective?: string; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation },
   ) => void | Promise<unknown>;
   /**
    * Send into the running turn instead of queueing behind it (⌘/Ctrl+Enter
    * under the default Enter semantics). Omit where there is no running turn
-   * to join; the key then falls back to a normal send.
+   * to join; the key then falls back to a normal send. `presentation` carries
+   * spans in the raw text sent with this prompt.
    */
-  onSendNow?: (text: string, attachments: readonly ComposerAttachment[]) => void | Promise<unknown>;
+  onSendNow?: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<unknown>;
   /**
    * The session's configured default queue timing. When set, hovering the
    * send button of a BUSY composer floats a menu that sends once with the
@@ -582,7 +584,7 @@ export function Composer({
    * classification is skipped: the draft is verbatim message text here.
    */
   queueEditing?: boolean;
-  onQueueEditConfirm?: (text: string) => void | Promise<unknown>;
+  onQueueEditConfirm?: (text: string, presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<unknown>;
   onQueueEditCancel?: () => void;
   onQueueEditRemove?: () => void;
   /**
@@ -1701,9 +1703,9 @@ export function Composer({
     // never to command classification, skill activation, or a fresh send.
     if (queueEditing) {
       setMenu(null);
-      const edited = appendThreadRefContext(text.trim(), threadRefDirectory.info);
+      const edited = prepareThreadRefContext(text.trim(), threadRefDirectory.info);
       runAgentTurn(async () => {
-        await onQueueEditConfirm?.(edited);
+        await onQueueEditConfirm?.(edited.text, edited.presentation);
       });
       return;
     }
@@ -1773,7 +1775,7 @@ export function Composer({
     setInputFocused(false);
     // Linked threads ride along as a trailing <thread_refs> context block the
     // model reads; the transcript strips it back off and shows chips.
-    const withContext = (prepared: string) => appendThreadRefContext(prepared, threadRefDirectory.info);
+    const withContext = (prepared: string) => prepareThreadRefContext(prepared, threadRefDirectory.info);
     // Hosts joined to a live session live on the server's session host list and
     // ride no message, so a send in a session carries exactly the draft's own
     // attachments. On /new there is no session yet: the preselected hosts ride
@@ -1785,14 +1787,14 @@ export function Composer({
     const deliver = (raw: string) => {
       const prepared = withContext(raw);
       if (now && options === undefined && onSendNow !== undefined) {
-        return onSendNow(prepared, sentAttachments);
+        return prepared.presentation === undefined ? onSendNow(prepared.text, sentAttachments)
+          : onSendNow(prepared.text, sentAttachments, prepared.presentation);
       }
-      // The timing menu's one-shot pick rides the same options object as a
-      // goal objective; a plain send keeps the exact (text, attachments) call.
-      const merged = timing === undefined ? options : { ...options, appendTiming: timing };
+      const merged = timing === undefined && prepared.presentation === undefined ? options
+        : { ...options, appendTiming: timing, presentation: prepared.presentation };
       return merged === undefined
-        ? onSend(prepared, sentAttachments)
-        : onSend(prepared, sentAttachments, merged);
+        ? onSend(prepared.text, sentAttachments)
+        : onSend(prepared.text, sentAttachments, merged);
     };
     if (!vscodeRuntime) {
       runAgentTurn(async () => {

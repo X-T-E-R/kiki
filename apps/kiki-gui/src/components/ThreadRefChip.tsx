@@ -13,7 +13,7 @@
 import { useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 
-import { findThreadRefs, shortThreadId, threadRefLink, threadRefStatusOf } from '@kiki/session-core/composer';
+import { findConversationRefs, shortThreadId, threadRefLink, threadRefStatusOf } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
 import { lifeOf } from '../lib/motion';
 import { useThreadRefDirectory, type ThreadRefEntry } from '../lib/threadRefs';
@@ -30,6 +30,7 @@ export function ThreadRefChip({
   onRemove,
   inline = false,
   group,
+  href: suppliedHref,
 }: {
   sessionId: string;
   entry: ThreadRefEntry;
@@ -39,9 +40,11 @@ export function ThreadRefChip({
   onRemove?: () => void;
   /** Inside a user bubble: sized to the running text. */
   inline?: boolean;
+  href?: string;
 }) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
+  const href = suppliedHref ?? threadRefLink(sessionId);
   const session = entry.session;
   const title = session !== undefined && session.title.trim() !== '' ? session.title.trim() : undefined;
   const label = title ?? t('threadRef.unknown', { id: shortThreadId(sessionId) });
@@ -93,7 +96,7 @@ export function ThreadRefChip({
   return (
     <>
     <a
-      href={threadRefLink(sessionId)}
+      href={href}
       data-thread-ref-chip={sessionId}
       data-thread-ref-status={status}
       title={tooltip}
@@ -101,7 +104,7 @@ export function ThreadRefChip({
       onClick={(event) => {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        navigate(threadRefLink(sessionId));
+        navigate(href);
       }}
       onContextMenu={room.onContextMenu}
       className={`${shape} ${inline ? '' : 'pr-3'} no-underline transition-colors hover:bg-paper focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none`}
@@ -159,15 +162,15 @@ export function ThreadRefText({
   text: string;
   projectSegment: (segment: string) => ReactNode;
 }) {
-  const refs = findThreadRefs(text);
-  const directory = useThreadRefDirectory(refs.map((ref) => ref.sessionId));
+  const refs = findConversationRefs(text).filter((ref) => ref.kind === 'session');
+  const directory = useThreadRefDirectory(refs.map((ref) => ref.id));
   if (refs.length === 0) return <>{projectSegment(text)}</>;
-  const group = refs.map((ref) => directory.lookup(ref.sessionId));
+  const group = refs.map((ref) => directory.lookup(ref.id));
   const parts: ReactNode[] = [];
   let cursor = 0;
   for (const ref of refs) {
     if (ref.start > cursor) parts.push(<span key={`t-${cursor}`}>{projectSegment(text.slice(cursor, ref.start))}</span>);
-    parts.push(<ThreadRefChip key={`r-${ref.start}`} sessionId={ref.sessionId} entry={directory.lookup(ref.sessionId)} group={group} inline />);
+    parts.push(<ThreadRefChip key={`r-${ref.start}`} sessionId={ref.id} entry={directory.lookup(ref.id)} group={group} href={ref.href} inline />);
     cursor = ref.end;
   }
   if (cursor < text.length) parts.push(<span key={`t-${cursor}`}>{projectSegment(text.slice(cursor))}</span>);

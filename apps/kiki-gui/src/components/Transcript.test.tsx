@@ -30,14 +30,15 @@ import { getReadingSnapshot, saveReadingSnapshot, timelineSnapshotKey, type Time
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
-import type { AgentTranscriptSnapshot } from '@kiki/transcript';
+import { projectPresentedText, type AgentTranscriptSnapshot } from '@kiki/transcript';
 
 import {
   annotationOverrideId,
   getAnnotationOverridesSnapshot,
   readDraft,
   resetAnnotationOverridesForTests,
-  buildAnnotationsPrefix,
+  selectionCarryoverPresentation,
+  buildQuotePrefix,
   sourceTextVersion,
 } from '@kiki/session-core/composer';
 import {
@@ -762,14 +763,71 @@ describe('user message token projection', () => {
 
   it('shows thread links as chips and keeps the model-only context block out of the bubble', async () => {
     const id = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
-    const sent = `compare with /s/${id} first\n\n<thread_refs>\n<thread_ref id="${id}" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>`;
-    const container = await renderTranscript([userBlock({ id: 'user-thread-ref', text: sent })]);
+    const body = `compare with /s/${id} first`;
+    const context = `<thread_refs>\n<thread_ref id="${id}" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>`;
+    const sent = `${body}\n\n${context}`;
+    const presentation = { spans: [{ start: body.length, end: sent.length, kind: 'context' as const }] };
+    const container = await renderTranscript([userBlock({ id: 'user-thread-ref', text: sent, presentation })]);
     const bubble = container.querySelector('[data-block-id="user-thread-ref"]')!;
     expect(bubble.querySelector(`[data-thread-ref-chip="${id}"]`)).not.toBeNull();
     expect(bubble.textContent).toContain('compare with');
     expect(bubble.textContent).toContain('first');
     expect(bubble.textContent).not.toContain('thread_ref');
     expect(bubble.textContent).not.toContain('ThreadRead');
+  });
+
+  it('hides a generated thread context and file notice while keeping the attachment chip', async () => {
+    const id = 'session_7f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
+    const body = `compare with /s/${id} first`;
+    const threadContext = `<thread_refs>\n<thread_ref id="${id}" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>`;
+    const fileNotice = 'Attached file "report.pdf" (application/pdf, 4096 bytes): C:/work/report.pdf — open it with the Read tool';
+    const sent = `${body}\n\n${threadContext}\n\n${fileNotice}`;
+    const threadStart = body.length + 2;
+    const attachmentStart = threadStart + threadContext.length + 2;
+    const presentation = {
+      spans: [
+        { start: threadStart, end: threadStart + threadContext.length, kind: 'context' as const },
+        {
+          start: attachmentStart,
+          end: sent.length,
+          kind: 'attachment' as const,
+          attachment: { path: 'C:/work/report.pdf', name: 'report.pdf', mime: 'application/pdf', size: 4096 },
+        },
+      ],
+    };
+    const container = await renderTranscript([userBlock({
+      id: 'user-thread-file',
+      text: sent,
+      presentation,
+      media: [{ kind: 'file', path: 'C:/work/report.pdf', name: 'report.pdf', mime: 'application/pdf', size: 4096 }],
+    })]);
+    const row = container.querySelector('[data-block-id="user-thread-file"]')!;
+    expect(row.querySelector(`[data-thread-ref-chip="${id}"]`)).not.toBeNull();
+    expect(row.querySelector('[data-user-media]')?.textContent).toContain('report.pdf');
+    expect(row.querySelector('[data-user-media]')?.textContent).toContain('4.0 KB');
+    expect(row.textContent).not.toContain('thread_ref');
+    expect(row.textContent).not.toContain('Attached file');
+    expect(row.textContent).not.toContain('C:/work/report.pdf');
+  });
+
+  it('keeps user-authored unknown XML, code, quotes, and comments literal', async () => {
+    const raw = [
+      '```xml',
+      '<thread_refs>',
+      '<unknown_ref id="literal"/>',
+      '</thread_refs>',
+      '<system-reminder>literal reminder</system-reminder>',
+      '```',
+      '',
+      '> A user-authored quote',
+      '',
+      'Comment: keep this note literal',
+    ].join('\n');
+    const container = await renderTranscript([userBlock({ id: 'user-raw-envelope', text: raw })]);
+    const body = container.querySelector('[data-source-block-id="user-raw-envelope"]')!;
+    expect(body.textContent).toBe(raw);
+    expect(container.querySelector('[data-user-context]')).toBeNull();
+    expect(container.querySelector('[data-thread-ref-chip]')).toBeNull();
   });
 
   it('still decorates subagent references without promoting slash prose to a skill', async () => {
@@ -834,6 +892,7 @@ describe('timeline annotations', () => {
     resetAnnotationOverridesForTests();
     const quote = 'batches transcript blocks into floors';
     const originalComment = 'Floor batching keeps long sessions cheap';
+    const carry = selectionCarryoverPresentation([{ quote, comment: originalComment }], null);
     const container = await renderTranscript([
       assistantBlock(
         'assistant-annotation-source',
@@ -841,7 +900,8 @@ describe('timeline annotations', () => {
       ),
       userBlock({
         id: 'user-annotation-carrier',
-        text: `> ${quote}\n\nComment: ${originalComment}\n\nPlease factor this in.`,
+        text: `${carry.prefix}Please factor this in.`,
+        presentation: carry.presentation,
       }),
     ]);
 
@@ -879,17 +939,57 @@ describe('timeline annotations', () => {
     resetAnnotationOverridesForTests();
   });
 
+  it('hides a generated source prefix only when its presentation metadata is present', async () => {
+    const source = { blockId: 'assistant-source-prefix', version: sourceTextVersion('quoted'), start: 0, end: 6, text: 'quoted' };
+    const carry = selectionCarryoverPresentation([], 'quoted', source);
+    const presented = await renderTranscript([
+      assistantBlock('assistant-source-prefix', 'quoted source'),
+      userBlock({ id: 'user-presented-source', text: `${carry.prefix}follow up`, presentation: carry.presentation }),
+    ]);
+    const raw = await renderTranscript([
+      assistantBlock('assistant-raw-source-prefix', 'quoted source'),
+      userBlock({ id: 'user-raw-source', text: `${carry.prefix}follow up` }),
+    ]);
+    expect(presented.querySelector('[data-block-id="user-presented-source"]')?.textContent).not.toContain('kiki-source:');
+    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).toContain('kiki-source:');
+  });
+
+  it('renders two multiline annotations without leaking source anchor comments', async () => {
+    const sourceText = 'first second';
+    const source = {
+      blockId: 'assistant-multiline-source',
+      version: sourceTextVersion(sourceText),
+      start: 5,
+      end: 11,
+      text: 'second',
+    };
+    const carry = selectionCarryoverPresentation([
+      { quote: 'first', comment: 'first note\nwith detail' },
+      { quote: 'second', comment: 'second note', source },
+    ], null);
+    const container = await renderTranscript([
+      assistantBlock('assistant-multiline-source', sourceText),
+      userBlock({ id: 'user-multiline-annotations', text: `${carry.prefix}follow up`, presentation: carry.presentation }),
+    ]);
+    const row = container.querySelector('[data-block-id="user-multiline-annotations"]')!;
+    expect(row.querySelectorAll('[data-annotation-bubble="user-multiline-annotations"]')).toHaveLength(2);
+    expect(container.querySelectorAll('mark[data-annotation-ref]')).toHaveLength(2);
+    expect(row.textContent).toContain('follow up');
+    expect(row.textContent).not.toContain('kiki-source:');
+    expect(row.textContent).not.toContain('Comment:');
+  });
+
   it.each([undefined, 'queued'] as const)('marks the captured older message without guessing another source (%s carrier)', async (promptStatus) => {
     const text = 'same same tail';
     const source = { blockId: 'older-source', version: sourceTextVersion(text), start: 4, end: 8, text: 'same' };
-    const carrier = buildAnnotationsPrefix([
+    const carry = selectionCarryoverPresentation([
       { quote: 'same', comment: 'second occurrence', source },
       { quote: 'same', comment: 'invalid version', source: { ...source, version: 'stale' } },
       { quote: 'same', comment: 'missing message', source: { ...source, blockId: 'missing' } },
-    ]) + 'follow up';
+    ], null);
     const container = await renderTranscript([
       assistantBlock('older-source', text), assistantBlock('newer-source', text),
-      userBlock({ id: 'carrier', text: carrier, promptStatus }),
+      userBlock({ id: 'carrier', text: `${carry.prefix}follow up`, presentation: carry.presentation, promptStatus }),
     ]);
     const mark = container.querySelector<HTMLElement>('mark')!;
     expect(container.querySelectorAll('mark')).toHaveLength(1);
@@ -2149,6 +2249,53 @@ describe('message row actions', () => {
     expect(container.querySelector('[data-edit-editor]')).toBeNull();
   });
 
+  it('copies the typed body and preserves selected carry annotations in the edit metadata', async () => {
+    const quote = 'selected fragment';
+    const comment = 'keep this selection';
+    const carry = selectionCarryoverPresentation([{ quote, comment }], null);
+    const originalText = `${carry.prefix}original body`;
+    const expectedTypedText = `${buildQuotePrefix(quote)}${comment}\n\noriginal body`;
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const onEditMessage = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-annotation-edit', text: originalText, presentation: carry.presentation, userMessageId: 'm-annotation-edit' })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-annotation-edit"]')!;
+    await act(async () => { click(row.querySelector('[data-row-action="copy"]')!); });
+    expect(writeText).toHaveBeenCalledWith(expectedTypedText);
+
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')!;
+    expect(textarea.value).toBe('original body');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(textarea, 'edited body /s/session_example');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { click(container.querySelector('[data-edit-submit]')!); });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    expect(onEditMessage.mock.calls[0]?.[0]).toMatchObject({ text: originalText });
+    const submittedText = onEditMessage.mock.calls[0]?.[1] as string;
+    const submittedPresentation = onEditMessage.mock.calls[0]?.[3] as import('@kiki/transcript').TextPresentation;
+    expect(submittedText.startsWith(`${carry.prefix}edited body /s/session_example`)).toBe(true);
+    expect(submittedText.match(/<thread_refs>/g)).toHaveLength(1);
+    expect(submittedPresentation.spans[0]).toEqual(carry.presentation.spans[0]);
+    expect(projectPresentedText(submittedText, submittedPresentation)).toBe('edited body /s/session_example');
+  });
+
   it('disables mutating actions while the session is busy', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: true,
@@ -2240,7 +2387,7 @@ describe('message row actions', () => {
     const assistantStrip = assistantRow.querySelector('[data-row-actions]')!;
     // The strip follows the bubble / the prose as a sibling — it is not floating
     // in the row's top-right corner, over whatever the text happens to paint.
-    expect(userStrip.previousElementSibling?.querySelector('[data-collapsible-content]')).not.toBeNull();
+    expect(userStrip.previousElementSibling?.querySelector('[data-source-block-id="user-m1"]')).not.toBeNull();
     expect(assistantStrip.previousElementSibling?.hasAttribute('data-assistant-prose')).toBe(true);
     expect(userStrip.getAttribute('data-row-actions-align')).toBe('right');
     expect(assistantStrip.getAttribute('data-row-actions-align')).toBe('left');
@@ -2306,14 +2453,14 @@ describe('message row actions', () => {
       expect(row().querySelector('[data-actions-open]')).toBeNull();
 
       // A tap on the bubble text opens the strip; a second tap closes it.
-      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      await act(async () => { click(row().querySelector('[data-source-block-id="user-m1"]')!); });
       expect(row().querySelector('[data-actions-open]')).not.toBeNull();
-      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      await act(async () => { click(row().querySelector('[data-source-block-id="user-m1"]')!); });
       expect(row().querySelector('[data-actions-open]')).toBeNull();
 
       // A tap on a tile acts on the tile — the toggle never swallows it, and
       // the summon survives the edit round-trip.
-      await act(async () => { click(row().querySelector('[data-collapsible-content]')!); });
+      await act(async () => { click(row().querySelector('[data-source-block-id="user-m1"]')!); });
       expect(row().querySelector('[data-actions-open]')).not.toBeNull();
       await act(async () => { click(row().querySelector('[data-row-action="edit"]')!); });
       expect(row().querySelector('[data-edit-editor]')).not.toBeNull();
@@ -2345,7 +2492,7 @@ describe('message row actions', () => {
       rowActions,
     );
     const row = container.querySelector('[data-block-id="user-m1"]')!;
-    await act(async () => { click(row.querySelector('[data-collapsible-content]')!); });
+    await act(async () => { click(row.querySelector('[data-source-block-id="user-m1"]')!); });
     expect(row.querySelector('[data-actions-open]')).toBeNull();
   });
 
@@ -2424,54 +2571,21 @@ describe('message row actions', () => {
   });
 });
 
-describe('collapsible user message', () => {
-  // jsdom has no layout: drive the overflow decision with prototype getters
-  // keyed on the clamp class (clamped → clientHeight caps at 240px).
-  function stubMetrics() {
-    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(
-      function (this: HTMLElement) {
-        return (this.textContent ?? '').length;
-      },
-    );
-    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(
-      function (this: HTMLElement) {
-        const full = (this.textContent ?? '').length;
-        return this.classList.contains('max-h-60') ? Math.min(240, full) : full;
-      },
-    );
-    return () => {
-      scroll.mockRestore();
-      client.mockRestore();
-    };
-  }
-
-  it('shows no toggle for short messages', async () => {
-    const restore = stubMetrics();
+describe('user message body sizing', () => {
+  it('does not render a collapse toggle for short messages', async () => {
     const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short' })]);
     expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
-    restore();
   });
 
-  it('clamps overflowing messages and expands on toggle', async () => {
-    const restore = stubMetrics();
-    const container = await renderTranscript([
-      userBlock({ id: 'user-m1', text: 'x'.repeat(600) }),
-    ]);
-    const content = container.querySelector('[data-collapsible-content]')!;
-    const toggle = container.querySelector('[data-collapsible-toggle]');
-    expect(toggle).not.toBeNull();
-    expect(content.className).toContain('max-h-60');
-    expect(content.className).toContain('collapsed-content-fade');
-    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
-    await act(async () => {
-      flushSync(() => {
-        click(toggle!);
-      });
-    });
+  it('keeps a long user body fully expanded without a max-height clamp', async () => {
+    const text = 'x'.repeat(600);
+    const container = await renderTranscript([userBlock({ id: 'user-m1', text })]);
+    const content = container.querySelector<HTMLElement>('[data-source-block-id="user-m1"]')!;
+    expect(content.textContent).toBe(text);
     expect(content.className).not.toContain('max-h-60');
     expect(content.className).not.toContain('collapsed-content-fade');
-    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
-    restore();
+    expect(container.querySelector('[data-collapsible-content]')).toBeNull();
+    expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
   });
 });
 

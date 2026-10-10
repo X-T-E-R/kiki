@@ -98,6 +98,8 @@ A thread created by another thread nests under its creator by default. **Show at
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 
 Resolved questions, approvals, markers and finished background tasks stay in the timeline as compact entries. Finished work can be grouped under **Worked**; expand it to see the individual entries. Expanding a question shows the full question and, for an answered one, the saved answer — dismissed and expired questions show their original choices too. Output from completed tasks stays in task history. File references can be previewed, opened or revealed in their folder; a preview is generated on demand, and the original file is still there to open or download.
+User messages show linked threads, attachments, quotations and notes as their own readable items, without generated prompt instructions in the bubble. Text you write yourself, including XML, code and blockquotes, stays visible. Older messages without recorded display metadata remain unchanged.
+
 
 Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. Above roughly 512 KB the first view is the beginning of the file and read-only; **Load full file** in either view shows the rest, and still does not enable editing.
 

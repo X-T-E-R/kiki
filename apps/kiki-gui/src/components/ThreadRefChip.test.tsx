@@ -47,7 +47,8 @@ const workspace: Workspace = {
 };
 
 function Where() {
-  return <span data-where>{useLocation().pathname}</span>;
+  const location = useLocation();
+  return <span data-where>{location.pathname}{location.search}{location.hash}</span>;
 }
 
 async function render(text: string, sessions: Session[]) {
@@ -87,6 +88,15 @@ describe('ThreadRefText', () => {
     expect(container.textContent?.endsWith('.' + '/s/session_here')).toBe(true);
     await act(async () => { chip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); });
     expect(container.querySelector('[data-where]')?.textContent).toBe(`/s/${ID}`);
+  });
+
+  it('preserves a linked thread subroute, query and hash when it opens the chip', async () => {
+    const href = `/s/${ID}/agent/child?turn=42#tail`;
+    const container = await render(`open ${href}`, [record()]);
+    const chip = container.querySelector<HTMLAnchorElement>(`[data-thread-ref-chip="${ID}"]`)!;
+    expect(chip.getAttribute('href')).toBe(href);
+    await act(async () => { chip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); });
+    expect(container.querySelector('[data-where]')?.textContent).toBe(href);
   });
 
   it('labels an untitled or unknown thread with its short id', async () => {

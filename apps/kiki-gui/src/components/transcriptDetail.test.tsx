@@ -416,7 +416,34 @@ describe('bounded content continuation', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(view.action()?.textContent).toBe('Continue loading');
   });
-});
+
+  it('projects presentation spans for a range without changing its raw read offset', async () => {
+    const ref: ContentRef = { source: { kind: 'frame', id: 'f', turnId: 't1', stepId: 's1' }, path: ['output'], revision: 'presented', kind: 'text', offset: 0, total: 600 };
+    const readContentRange = vi.fn(async (_agentId: string, _contentRef: ContentRef, offset: number) => {
+      expect(offset).toBe(0);
+      return 'abcd';
+    });
+    const controller = {
+      contentRefsFor: () => [ref],
+      isContentRange: () => true,
+      beginContentRead: () => ({ release() {}, retry() {} }),
+      readContentRange,
+    } as unknown as SessionController;
+    const renderText = vi.fn((text: string) => <span data-presented-range>{text}</span>);
+    const presentation = { spans: [{ start: 1, end: 3, kind: 'context' as const }] };
+    const previousOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 240 });
+    try {
+      const container = await render(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="s" agentId="main"><ContentContinuation source={ref.source} roots={['output']} label="Output" presentation={presentation} renderText={renderText} /></TranscriptDetailProvider>);
+      await act(async () => { await vi.waitFor(() => { expect(renderText).toHaveBeenCalledWith('ad'); }); });
+      expect(container.querySelector('[data-presented-range]')?.textContent).toBe('ad');
+      expect(container.querySelector('[data-presented-range]')?.parentElement?.className).toContain('whitespace-pre-wrap');
+      expect(readContentRange).toHaveBeenCalledWith('main', ref, 0, expect.any(AbortSignal));
+    } finally {
+      if (previousOffsetHeight === undefined) Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight');
+      else Object.defineProperty(HTMLElement.prototype, 'offsetHeight', previousOffsetHeight);
+    }
+  });});
 
 /**
  * The session's own remainder: refs that belong to no rendered body. Only the
