@@ -186,10 +186,10 @@ describe('buildNewSessionCreate', () => {
     expect(body.agent_config).toEqual({ permission_mode: 'review', plan_mode: false,
       ...(profileFile === undefined ? {} : { execution: { executor: 'native', profile_file: profileFile } }) });
     const registered = buildNewSessionCreate({
-      cwd: '', workspaceId: 'wd_example', profile: 'agent', permissionMode: 'manual', planMode: false,
+      cwd: '', workspaceId: 'wd_example_0123456789ab', profile: 'agent', permissionMode: 'manual', planMode: false,
       execution: { executor: 'external-client', profile: undefined, overrides: undefined, external_connection_id: 'conn_example' },
     });
-    expect(registered.workspace_id).toBe('wd_example');
+    expect(registered.workspace_id).toBe('wd_example_0123456789ab');
     expect(registered.metadata).not.toHaveProperty('cwd');
     expect(sessionCreateSchema.safeParse(registered).success).toBe(true);
     const automatic = buildNewSessionCreate({
