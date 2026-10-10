@@ -3734,7 +3734,7 @@ boundExecution,
       const finalText = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
       const media = content.filter((part) => part.type !== 'text');
       return actions
-        .editQueued(edit.promptId, finalText, media, presentation)
+        .editQueued(edit.promptId, finalText, media, contentTextPresentation(content, '\n\n'))
         .then(exit)
         .catch(() => undefined);
     },

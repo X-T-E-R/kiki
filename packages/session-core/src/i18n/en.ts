@@ -1706,6 +1706,7 @@ export const en = {
   'cb.copy': 'copy',
   'cb.preparing': 'Preparing to copy…',
   'cb.copyBody': 'Copy {field}',
+  'subagent.call.copyFailed': 'Could not copy the full content. Try again.',
   'cb.copied': 'copied',
   'cb.showLess': 'Show less',
   'cb.viewMore': 'View more ({count} lines)',

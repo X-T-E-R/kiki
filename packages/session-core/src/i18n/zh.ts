@@ -1689,6 +1689,7 @@ export const zh = {
   'cb.copy': '复制',
   'cb.preparing': '正在准备复制…',
   'cb.copyBody': '复制{field}',
+  'subagent.call.copyFailed': '未能复制完整内容，请重试。',
   'cb.copied': '已复制',
   'cb.showLess': '收起',
   'cb.viewMore': '展开更多（{count} 行）',

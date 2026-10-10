@@ -299,6 +299,29 @@ describe('QueueStrip', () => {
 });
 
 describe('queued prompt editing', () => {
+  it.each([true, false])('keeps queued quote, thread and room spans aligned with a file mention (%s)', async (withMention) => {
+    const { buildPromptContent } = await import('@kiki/session-core/composer');
+    const { contentTextPresentation, projectPresentedText } = await import('@kiki/transcript');
+    const quote = 'quoted passage\n\n';
+    const thread = '<thread_refs>thread context</thread_refs>\n\n';
+    const room = '<room_ref>room context</room_ref>\n\n';
+    const text = `${quote}${thread}${room}visible body`;
+    const spans = [
+      { start: 0, end: quote.length, kind: 'selection' as const, quote: 'quoted passage' },
+      { start: quote.length, end: quote.length + thread.length, kind: 'context' as const },
+      { start: quote.length + thread.length, end: quote.length + thread.length + room.length, kind: 'context' as const },
+    ];
+    const attachments = withMention ? [{ kind: 'file' as const, path: 'src/example.ts', name: 'example.ts', isDir: false }] : [];
+    const content = buildPromptContent(text, attachments, { spans })!;
+    const finalText = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
+    const mapped = contentTextPresentation(content, '\n\n');
+    const offset = withMention ? '@src/example.ts\n\n'.length : 0;
+    expect(mapped?.spans).toEqual(spans.map((span) => ({ ...span, start: span.start + offset, end: span.end + offset })));
+    expect(finalText).toBe(`${withMention ? '@src/example.ts\n\n' : ''}${text}`);
+    expect(projectPresentedText(finalText, mapped)).toBe(`${withMention ? '@src/example.ts\n\n' : ''}visible body`);
+    expect(contentTextPresentation(buildPromptContent('plain body', attachments, { spans: [] })!, '\n\n')).toBeUndefined();
+  });
+
   it('uses the atomic replace action with the same prompt identity', async () => {
     const replace = vi.fn(async () => undefined);
     await replaceQueuedPrompt('p1', 'replacement', replace);
