@@ -45,6 +45,7 @@ import {
   type ToolCountSetOp,
   type TranscriptTaskRef,
   type TranscriptTurn,
+  type ContentSource,
 } from '@kiki/transcript';
 
 import {
@@ -62,6 +63,9 @@ import {
   type WireRecordsStreamOptions,
   type WireRecordsStreamResult,
 } from '@kiki/transcript-live';
+
+import type { HistoryLocatorStore } from '../history/historyLocatorStore';
+import { CanonicalEntityPreparingError, type CanonicalToolLookup } from '../history/historyCanonicalReader';
 
 import {
   readWireRecordsBounded,
@@ -1555,6 +1559,63 @@ export class TranscriptService {
     return snapshot;
   }
 
+  detailCacheBudgetBytes(): number {
+    return (this.deps.core.accessor.get(IConfigService) as IConfigService | undefined)
+      ?.get<TranscriptMemoryConfig>(TRANSCRIPT_MEMORY_SECTION)?.maxDetailCacheBytes ??
+      DEFAULT_TRANSCRIPT_MEMORY_CONFIG.maxDetailCacheBytes;
+  }
+
+  private historyLocatorReader?: () => HistoryLocatorStore;
+
+  private detailHistoryLocator?: HistoryLocatorStore;
+
+  setHistoryLocatorReader(reader: () => HistoryLocatorStore): void {
+    this.detailHistoryLocator?.invalidateCanonical();
+    this.detailHistoryLocator = undefined;
+    this.historyLocatorReader = reader;
+  }
+
+  canonicalReadReport(): ReturnType<HistoryLocatorStore['canonicalReadReport']> | undefined {
+    return this.detailHistoryLocator?.canonicalReadReport();
+  }
+
+  private detailLocator(): HistoryLocatorStore {
+    if (this.historyLocatorReader === undefined) throw new Error('history_canonical_reader_unavailable');
+    return this.detailHistoryLocator ??= this.historyLocatorReader();
+  }
+
+  async lookupToolCall(sessionId: string, agentId: string, toolCallId: string,
+    signal?: AbortSignal): Promise<CanonicalToolLookup> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
+    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
+      signal?.throwIfAborted();
+      const hit = transcript.getToolCall(toolCallId);
+      if (hit !== undefined) return { status: 'found', ...hit };
+    }
+    return this.detailLocator().lookupToolCall(sessionId, agentId, toolCallId, signal);
+  }
+
+  async readCanonicalEntity(sessionId: string, agentId: string, source: ContentSource,
+    signal?: AbortSignal): Promise<object | undefined> {
+    signal?.throwIfAborted();
+    this.assertReadableAgent(sessionId, agentId);
+    if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
+    const transcript = this.live.get(sessionId)?.store.getAgent(agentId);
+    if (transcript !== undefined && await this.verifyTranscriptLiveCoverage(sessionId, agentId)) {
+      signal?.throwIfAborted();
+      const turn = transcript.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
+      const entity = source.kind === 'turn' ? turn : turn?.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) return entity;
+    }
+    const result = await this.detailLocator().readCanonicalEntity(sessionId, agentId, source, signal);
+    signal?.throwIfAborted();
+    if (result.status === 'preparing') throw new CanonicalEntityPreparingError();
+    return result.status === 'found' ? result.entity : undefined;
+  }
+
   async historyWireLocation(sessionId: string, agentId: string): Promise<{ workspaceId: string; wirePath: string } | undefined> {
     this.assertReadableAgent(sessionId, agentId);
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
@@ -2067,6 +2128,7 @@ export class TranscriptService {
   }
 
   dispose(): void {
+    this.detailHistoryLocator?.invalidateCanonical();
     this.eventLoopDelay.disable();
     this.clearVerifiedWireReceipts();
     this.resolvedToolCallCounts.clear();

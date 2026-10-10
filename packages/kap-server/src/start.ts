@@ -654,6 +654,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const connectionRegistry = new ConnectionRegistry();
   const transcriptService = new TranscriptService({ homeDir, core, logger });
+  transcriptService.setHistoryLocatorReader(navigation);
   const broadcaster = new SessionEventBroadcaster({
     eventsDir: join(homeDir, 'server', 'events'),
     core,

@@ -143,14 +143,20 @@ function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>)
 }
 
 describe('transcript memory config', () => {
-  it('exposes only the resident limits consumed by TranscriptService', () => {
+  it('exposes only the resident and detail cache limits consumed by TranscriptService', () => {
     expect(DEFAULT_TRANSCRIPT_MEMORY_CONFIG).toEqual({
       tailTurns: 20,
       maxAgentBytes: 16 << 20,
+      maxDetailCacheBytes: 256 << 20,
     });
     expect(TranscriptMemoryConfigSchema.parse(DEFAULT_TRANSCRIPT_MEMORY_CONFIG)).toEqual(
       DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
     );
+    expect(TranscriptMemoryConfigSchema.parse({ maxDetailCacheBytes: 0 })).toEqual({ maxDetailCacheBytes: 0 });
+    expect(TranscriptMemoryConfigSchema.parse({ maxDetailCacheBytes: Number.MAX_SAFE_INTEGER })).toEqual({ maxDetailCacheBytes: Number.MAX_SAFE_INTEGER });
+    for (const maxDetailCacheBytes of [-1, 0.5, Number.POSITIVE_INFINITY, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(TranscriptMemoryConfigSchema.safeParse({ maxDetailCacheBytes }).success).toBe(false);
+    }
     for (const field of [
       'maxSessionBytes',
       'maxTotalBytes',

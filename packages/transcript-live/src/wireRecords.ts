@@ -24,6 +24,7 @@ export interface WireRecordsStreamOptions {
   readonly maxRecords?: number;
   readonly maxLineBytes?: number;
   readonly startByteOffset?: number;
+  readonly endByteOffset?: number;
   readonly startRecordOrdinal?: number;
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => unknown;
@@ -68,6 +69,10 @@ export async function streamWireRecords(
   const maxRecords = optionalLimit(options.maxRecords);
   const maxLineBytes = optionalLimit(options.maxLineBytes);
   const startByteOffset = optionalLimit(options.startByteOffset) ?? 0;
+  const endByteOffset = options.endByteOffset;
+  if (endByteOffset !== undefined && (!Number.isSafeInteger(endByteOffset) || endByteOffset < startByteOffset)) {
+    throw new Error('invalid wire end offset');
+  }
   const startRecordOrdinal = optionalLimit(options.startRecordOrdinal) ?? 0;
   if (!Number.isSafeInteger(startRecordOrdinal)) throw new Error('invalid wire record ordinal');
   const signal = options.signal;
@@ -163,7 +168,7 @@ export async function streamWireRecords(
     if (!Number.isSafeInteger(info.size) || info.size < 0) {
       throw new Error(`wire.jsonl: invalid size for ${wirePath}`);
     }
-    const fileSize = info.size;
+    const fileSize = Math.min(info.size, endByteOffset ?? info.size);
     if (startByteOffset > fileSize) {
       throw new Error(`wire.jsonl: start offset exceeds file size for ${wirePath}`);
     }
@@ -187,8 +192,11 @@ export async function streamWireRecords(
       absorb(chunk.subarray(0, read));
     }
     if (!stopped && lineBytes > 0) {
-      lineNumber += 1;
-      consume(mergeLine(), false);
+      if (endByteOffset !== undefined) stop('partial_tail');
+      else {
+        lineNumber += 1;
+        consume(mergeLine(), false);
+      }
     }
   } finally {
     await handle.close().catch(() => undefined);
@@ -237,6 +245,7 @@ export async function streamWireRecordsAwaited(
       maxRecords: recordBudget === undefined ? BATCH_RECORDS : Math.min(BATCH_RECORDS, recordBudget - recordCount),
       maxLineBytes: options.maxLineBytes,
       startByteOffset: nextByteOffset,
+      endByteOffset: options.endByteOffset,
       startRecordOrdinal: (optionalLimit(options.startRecordOrdinal) ?? 0) + recordCount,
       signal: options.signal,
       includeRawRecord: options.includeRawRecord,

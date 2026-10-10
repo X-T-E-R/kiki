@@ -23,10 +23,10 @@ import { jsonBytes, type ContentRef, type ContentSegment, type TranscriptItem } 
 
 export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
-  input: { readonly agentId: string; readonly ref: ContentRef; readonly signal?: AbortSignal },
+  input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
-  return entity === undefined ? undefined : readContentSegment(entity, input.ref);
+  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range);
 }
 
 export async function readSessionViewCanonicalEntity(
@@ -34,6 +34,9 @@ export async function readSessionViewCanonicalEntity(
   input: { readonly agentId: string; readonly ref: Pick<ContentRef, 'source'>; readonly signal?: AbortSignal },
 ): Promise<object | undefined> {
   input.signal?.throwIfAborted();
+  if (input.ref.source.kind === 'turn' || input.ref.source.kind === 'frame') {
+    return service.readCanonicalEntity(sessionId, input.agentId, input.ref.source, input.signal);
+  }
   const store = service.forSessionLive(sessionId);
   const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId);
   const snapshot = transcript?.snapshot() ?? await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
@@ -77,6 +80,10 @@ export async function readSessionViewTranscriptDetail(
 ): ReturnType<typeof readSessionViewTranscriptDetailRaw> {
   const detail = await readSessionViewTranscriptDetailRaw(...args);
   if (detail === undefined) return undefined;
+  if (detail.kind === 'tool') {
+    const lookup = detail.lookup;
+    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }) } };
+  }
   if (detail.kind === 'task') return { ...detail, task: boundedEntity(detail.task, { kind: 'task', id: detail.task.taskId }) };
   if (detail.kind === 'attachment') return { ...detail, attachment: boundedAttachment(detail.attachment, detail.agent_id) };
   return { ...detail, prompt: boundedEntity(detail.prompt, { kind: 'prompt', id: detail.prompt.promptId }) };
@@ -229,7 +236,7 @@ async function readSessionViewTranscriptDetailRaw(
   sessionId: string,
   input: {
     readonly agentId: string;
-    readonly kind: 'task' | 'attachment' | 'prompt';
+    readonly kind: 'task' | 'attachment' | 'prompt' | 'tool';
     readonly id: string;
     readonly signal?: AbortSignal;
   },
@@ -255,8 +262,18 @@ async function readSessionViewTranscriptDetailRaw(
       readonly prompt: TranscriptPrompt;
       readonly read?: TranscriptRead;
     }
+  | { readonly session_id: string; readonly agent_id: string; readonly kind: 'tool'; readonly lookup: Awaited<ReturnType<TranscriptService['lookupToolCall']>>; readonly read?: TranscriptRead }
   | undefined
 > {
+  if (input.kind === 'tool') {
+    const lookup = await transcriptService.lookupToolCall(sessionId, input.agentId, input.id, input.signal);
+    return {
+      session_id: sessionId, agent_id: input.agentId, kind: 'tool', lookup,
+      read: lookup.status === 'preparing'
+        ? { source: 'derived', readiness: 'preparing' }
+        : { source: transcriptService.forSessionLive(sessionId) === undefined ? 'cold' : 'live', readiness: 'ready' },
+    };
+  }
   const store = transcriptService.forSessionLive(sessionId);
   let task: TranscriptTask | undefined;
   let attachment: TranscriptAttachment | undefined;

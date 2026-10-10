@@ -136,15 +136,18 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
   return Object.fromEntries(entries.map(([key, child]) => [key, projectValue(child, [...path, key], cuts, textBytes, arrayWindow, depth + 1, budget)]));
 }
 
-export function readContentSegment(entity: object, ref: ContentRef): ContentSegment {
+export function readContentSegment(entity: object, ref: ContentRef, range = false): ContentSegment {
   const selected = selectContent(entity, ref.path);
+  if (range && ref.kind === 'text' && typeof selected === 'string' && ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!)) ref = { ...ref, offset: ref.offset - 1 };
   if (fieldRevision(entity, ref.path) !== ref.revision) throw new ContentChangedError();
   const refs: ContentRef[] = [];
   let value: unknown;
   let offset: number;
   if (ref.kind === 'text') {
     if (typeof selected !== 'string' || selected.length !== ref.total || ref.offset >= selected.length || (ref.offset > 0 && /[\uD800-\uDBFF]/u.test(selected[ref.offset - 1]!))) throw new ContentChangedError();
-    value = jsonTextPrefix(selected, ref.offset, CONTENT_PAGE_BYTES / 2);
+    let end = Math.min(selected.length, ref.offset + 4097);
+    if (end < selected.length && /[\uD800-\uDBFF]/u.test(selected[end - 1]!)) end -= 1;
+    value = range ? jsonTextPrefix(selected.slice(ref.offset, end), 0, CONTENT_PAGE_BYTES / 2) : jsonTextPrefix(selected, ref.offset, CONTENT_PAGE_BYTES / 2);
     offset = ref.offset + (value as string).length;
   } else if (ref.kind === 'array') {
     if (!Array.isArray(selected) || selected.length !== ref.total || ref.offset >= selected.length) throw new ContentChangedError();

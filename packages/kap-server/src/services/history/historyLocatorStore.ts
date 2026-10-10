@@ -7,7 +7,7 @@ import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import { NavigationWireAdapter, openingText, type NavigationEffect } from '@kiki/transcript/navigationWireAdapter';
-import { streamWireRecordsAwaited, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
+import { streamWireRecordsAwaited, type AwaitedWireRecordsStreamOptions, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
 
 import { decodeHistoryRef, encodeHistoryRef, hashHistoryRecord, historySourceIncarnation, verifyHistorySource,
   type HistorySourceAnchor, type HistoryRefKind } from './historySource';
@@ -17,6 +17,8 @@ import { matchHistoryText, planHistoryQuery, type HistoryMode } from './historyQ
 import { makeSnippet } from '../../search/snippet';
 import { searchSortedHistory, type HistorySortedCursor } from './historySortedSearch';
 import type { TranscriptService } from '../transcript/transcriptService';
+import { HistoryCanonicalReader, type CanonicalToolLookup, type CanonicalEntityLookup } from './historyCanonicalReader';
+import type { ContentSource } from '@kiki/transcript';
 
 export const HISTORY_NAV_COLLECTION = 'history_navigation_v1';
 export const HISTORY_NAV_SCAN_BYTES = 8 << 20;
@@ -109,6 +111,13 @@ interface Scanner {
   ordinal: number;
 }
 
+interface NavigationScanFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<HistoryNavScan>;
+  waiters: number;
+  settled: boolean;
+}
+
 interface PendingRecord {
   readonly operations: readonly NavigationEffect[];
   readonly span: WireRecordSpan;
@@ -118,6 +127,11 @@ interface PendingRecord {
 
 function digest(text: string): string {
   return createHash('sha256').update(text).digest('hex');
+}
+
+function sourceMutationOrThrow(error: unknown): false {
+  if (error instanceof Error && error.message === 'history_source_changed') return false;
+  throw error;
 }
 
 const NON_ASCII_LOWERCASE = /[^\u0000-\u007F]|[A-Z]/u;
@@ -182,12 +196,34 @@ function originalText(record: Record<string, unknown>, part: HistoryNavRow['part
 
 export class HistoryLocatorStore {
   private readonly scanners = new Map<string, Scanner>();
-  private readonly flights = new Map<string, Promise<HistoryNavScan>>();
+  private readonly flights = new Map<string, NavigationScanFlight>();
   private scanTail: Promise<void> = Promise.resolve();
   private queuedScans = 0;
 
   constructor(private readonly store: Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>,
     private readonly transcript: TranscriptService) {}
+
+  private canonicalReader?: HistoryCanonicalReader;
+
+  private canonical(): HistoryCanonicalReader {
+    if (!('ready' in this.store)) throw new Error('history_canonical_requires_navigation_db');
+    return this.canonicalReader ??= new HistoryCanonicalReader(this.store as LazyHistoryNavigationDb,
+      this.transcript, (session, agent, signal) => this.scan(session, agent, signal));
+  }
+
+  lookupToolCall(session: string, agent: string, toolCallId: string, signal?: AbortSignal): Promise<CanonicalToolLookup> {
+    return this.canonical().lookupToolCall(session, agent, toolCallId, signal);
+  }
+
+  readCanonicalEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal): Promise<CanonicalEntityLookup> {
+    return this.canonical().readEntity(session, agent, source, signal);
+  }
+
+  invalidateCanonical(): void { this.canonicalReader?.invalidate(); }
+
+  canonicalReadReport(): ReturnType<HistoryCanonicalReader['report']> {
+    return this.canonical().report();
+  }
 
   get supportsSortedSearch(): boolean { return 'ready' in this.store; }
 
@@ -205,8 +241,11 @@ export class HistoryLocatorStore {
     const incarnation = await historySourceIncarnation(wirePath);
     if (incarnation === undefined) return undefined;
     const key = `${workspace}\0${session}\0${agent}`;
+    signal?.throwIfAborted();
     const existing = search === undefined ? this.flights.get(key) : undefined;
-    if (existing !== undefined) return existing;
+    if (existing !== undefined && !existing.controller.signal.aborted) return this.awaitScan(existing, signal);
+    const controller = search === undefined ? new AbortController() : undefined;
+    const scanSignal = controller?.signal ?? signal;
     if (this.queuedScans >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
     this.queuedScans += 1;
     const previous = this.scanTail;
@@ -215,8 +254,8 @@ export class HistoryLocatorStore {
     const flight = (async (): Promise<HistoryNavScan> => {
       try {
         await previous;
-        signal?.throwIfAborted();
-        const input = { workspace, session, agent, wirePath, incarnation, key, signal };
+        scanSignal?.throwIfAborted();
+        const input = { workspace, session, agent, wirePath, incarnation, key, signal: scanSignal };
         if (search?.sort !== undefined && 'ready' in this.store) {
           return await searchSortedHistory({ ...input, search,
             db: await (this.store as LazyHistoryNavigationDb).ready(),
@@ -238,10 +277,32 @@ export class HistoryLocatorStore {
         release();
       }
     })();
-    if (search === undefined) this.flights.set(key, flight);
-    try { return await flight; }
-    catch (error) { this.scanners.delete(key); throw error; }
-    finally { if (this.flights.get(key) === flight) this.flights.delete(key); }
+    if (controller === undefined) return flight;
+    const shared: NavigationScanFlight = { controller, promise: flight, waiters: 0, settled: false };
+    this.flights.set(key, shared);
+    void flight.finally(() => {
+      shared.settled = true;
+      if (this.flights.get(key) === shared) this.flights.delete(key);
+    }).catch(() => undefined);
+    return this.awaitScan(shared, signal);
+  }
+
+  private async awaitScan(flight: NavigationScanFlight, signal?: AbortSignal): Promise<HistoryNavScan> {
+    signal?.throwIfAborted();
+    flight.waiters += 1;
+    let abort: (() => void) | undefined;
+    try {
+      return await (signal === undefined ? flight.promise : Promise.race([flight.promise,
+        new Promise<never>((_, reject) => {
+          abort = () => reject(signal.reason ?? new DOMException('Navigation read aborted', 'AbortError'));
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
+        })]));
+    } finally {
+      if (abort !== undefined) signal?.removeEventListener('abort', abort);
+      flight.waiters -= 1;
+      if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
+    }
   }
 
   /** Search reads a fixed byte page against the one durable session projection. Query state is ephemeral. */
@@ -260,7 +321,7 @@ export class HistoryLocatorStore {
       const manifest = saved;
       if (manifest.incarnation !== input.incarnation ||
           !await historyNavigationProof(input.wirePath, manifest.offset)
-            .then((proof) => matchesNavigationProof(manifest.source, proof), () => false)) {
+            .then((proof) => matchesNavigationProof(manifest.source, proof), sourceMutationOrThrow)) {
         if (search.cursor !== undefined) throw new Error('stale_scan_cursor');
         saved = undefined;
       }
@@ -354,9 +415,9 @@ export class HistoryLocatorStore {
     let scanner = this.scanners.get(input.key);
     const saved = stateDb?.readManifest(input.key);
     const cursor = saved === undefined ? undefined : stateDb?.readAdapterCursor(input.key);
-    const sourceMatches = saved !== undefined && cursor?.ordinal === saved.ordinal &&
+    const sourceMatches = saved !== undefined && stateDb?.hasCanonicalSources(input.key) === true && cursor?.ordinal === saved.ordinal &&
       saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset)
-        .then((proof) => matchesNavigationProof(saved.source, proof), () => false);
+        .then((proof) => matchesNavigationProof(saved.source, proof), sourceMutationOrThrow);
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
     const rebuild = stateDb === undefined
       ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
@@ -408,18 +469,46 @@ export class HistoryLocatorStore {
       return row;
     };
     let pendingBytes = 0;
-    const read = await streamWireRecordsAwaited(input.wirePath, {
+    const readOptions: AwaitedWireRecordsStreamOptions = {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: input.search?.asOf === undefined ? HISTORY_NAV_SCAN_BYTES :
-        Math.min(HISTORY_NAV_SCAN_BYTES, Math.max(0, input.search.asOf - scanner.offset)),
+      maxBytes: HISTORY_NAV_SCAN_BYTES,
+      endByteOffset: input.stopAt ?? input.search?.asOf,
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: async (record, span, raw) => {
         if (input.stopAt !== undefined && span.endByteOffset > input.stopAt) throw new Error('stale_scan_cursor');
+        const before = scanner.adapter.checkpoint();
         const projected = scanner.adapter.add(record);
+        const recordDigest = hashHistoryRecord(raw!);
+        if (record.type === 'context.clear') stateDb?.clearUnlocatedCanonicalCalls(input.key);
+        if (stateDb !== undefined && record.type !== 'context.undo' && record.type !== 'context.clear') {
+          const event = record['event'] as Record<string, unknown> | undefined;
+          const scalar = stateDb.scalarState(input.key);
+          const rootCallId = record['toolCallId'] ?? record['parentToolCallId'];
+          const callId = typeof event?.['toolCallId'] === 'string' ? event['toolCallId'] :
+            typeof rootCallId === 'string' ? rootCallId : undefined;
+          const message = record['message'] as Record<string, unknown> | undefined;
+          const legacyCallId = typeof message?.['toolCallId'] === 'string' ? message['toolCallId'] : undefined;
+          const stepId = typeof event?.['stepUuid'] === 'string' ? event['stepUuid'] : undefined;
+          const explicitTurn = record['turnId'] ?? event?.['turnId'];
+          const effect = projected.find((op) => op.op === 'turn.upsert' || op.op === 'step.upsert' || op.op === 'frame.upsert');
+          const turnId = callId !== undefined || legacyCallId !== undefined
+            ? scalar.tools.get(callId ?? legacyCallId!)?.turnId ??
+              (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn
+            : explicitTurn !== undefined && /^\d+$/u.test(String(explicitTurn)) ? `t${explicitTurn}`
+              : effect?.op === 'turn.upsert' ? effect.turn.turnId
+                : effect?.op === 'step.upsert' || effect?.op === 'frame.upsert' ? effect.turnId
+                  : (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn;
+          const sourceCallId = callId ?? legacyCallId;
+          if (sourceCallId !== undefined) stateDb.markCanonicalCall(input.key, sourceCallId,
+            scalar.tools.has(sourceCallId), turnId, span.ordinal);
+          if (turnId !== undefined) stateDb.addCanonicalSource(input.key,
+            { turnId, start: span.startByteOffset, end: span.endByteOffset, ordinal: span.ordinal, digest: recordDigest },
+            { legacyTurn: before.legacyTurn, ordinal: before.ordinal });
+        }
         pending.push({ operations: projected, span,
-          digest: hashHistoryRecord(raw!), recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
+          digest: recordDigest, recordTime: typeof record['time'] === 'number' ? record['time'] : undefined });
         pendingBytes += span.endByteOffset - span.startByteOffset;
         if (plan !== undefined) {
           const hasMatch = projected.some((op) => {
@@ -449,7 +538,20 @@ export class HistoryLocatorStore {
         if (pageFull || pending.length >= 128 || pendingBytes >= (1 << 20)) await flushPending();
         return !pageFull && (input.stopAt === undefined || span.endByteOffset < input.stopAt);
       },
-    });
+    };
+    let read = await streamWireRecordsAwaited(input.wirePath, readOptions);
+    if (input.search === undefined && input.stopAt === undefined && read.recordCount === 0 &&
+        (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === scanner.offset) {
+      const attemptedBytes = read.bytesRead;
+      read = await streamWireRecordsAwaited(input.wirePath, {
+        ...readOptions, maxBytes: undefined, maxLineBytes: undefined, maxRecords: 1,
+        onRecord: async (record, span, raw) => {
+          await readOptions.onRecord(record, span, raw);
+          return false;
+        },
+      });
+      read = { ...read, bytesRead: attemptedBytes + read.bytesRead };
+    }
     async function flushPending(): Promise<void> {
       const commitTouched = async (): Promise<void> => {
         for (const [key, value] of touched) writes.push({ kind: 'put', collection: HISTORY_NAV_COLLECTION,
@@ -610,6 +712,7 @@ export class HistoryLocatorStore {
     const nextOrdinal = scanner.ordinal + read.recordCount;
     if (stateDb !== undefined) {
       const proof = await historyNavigationProof(input.wirePath, read.nextByteOffset);
+      input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
       stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
         incarnation: input.incarnation, offset: read.nextByteOffset, ordinal: nextOrdinal,

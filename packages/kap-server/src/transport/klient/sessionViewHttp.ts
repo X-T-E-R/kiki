@@ -27,6 +27,7 @@ import {
   TranscriptDetailCursorError,
 } from './sessionViewReads';
 import { ContentChangedError, readContentSegment } from './boundedContent';
+import { CanonicalEntityPreparingError } from '../../services/history/historyCanonicalReader';
 import { SessionViewTarget } from './sessionViewTarget';
 import { recordSessionViewTiming } from './sessionViewTiming';
 
@@ -55,6 +56,7 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
       });
       return await reply.send(data === undefined ? { code: 40401, msg: 'content unavailable', data: null, request_id: req.id } : okEnvelope(data, req.id));
     } catch (error) {
+      if (error instanceof CanonicalEntityPreparingError) return reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });
       if (error instanceof ContentChangedError) return reply.send({ code: 40922, msg: error.message, data: null, request_id: req.id });
       throw error;
     }

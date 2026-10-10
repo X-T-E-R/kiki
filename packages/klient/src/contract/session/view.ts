@@ -72,6 +72,7 @@ export interface SessionViewTranscriptEntitiesInput {
 export const sessionViewTranscriptContentInputSchema = z.object({
   agentId: z.string().min(1),
   ref: contentRefSchema,
+  range: z.boolean().optional(),
 }).refine((value) => isPlainAgentId(value.agentId), { message: 'agentId must be a plain agent id', path: ['agentId'] });
 export const sessionViewTranscriptContentOutputSchema = contentSegmentSchema;
 export type SessionViewTranscriptContentInput = z.infer<typeof sessionViewTranscriptContentInputSchema>;

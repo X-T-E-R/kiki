@@ -8,6 +8,7 @@ export const TranscriptMemoryConfigSchema = z
   .object({
     tailTurns: z.number().int().positive().optional(),
     maxAgentBytes: z.number().int().positive().optional(),
+    maxDetailCacheBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 
@@ -16,6 +17,7 @@ export type TranscriptMemoryConfig = z.infer<typeof TranscriptMemoryConfigSchema
 export const DEFAULT_TRANSCRIPT_MEMORY_CONFIG: Required<TranscriptMemoryConfig> = {
   tailTurns: 20,
   maxAgentBytes: 16 << 20,
+  maxDetailCacheBytes: 256 << 20,
 };
 
 registerConfigSection(TRANSCRIPT_MEMORY_SECTION, TranscriptMemoryConfigSchema, {
