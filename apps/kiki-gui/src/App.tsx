@@ -260,6 +260,32 @@ export function App() {
   const { value: dirtyGuardValue, navigate, pending: pendingNavigation, confirm: confirmNavigation, cancel: cancelNavigation } =
     useDirtyGuardState(location, performNavigation);
 
+  useEffect(() => {
+    let closed = false;
+    let initialized = false;
+    let seen = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const read = async () => {
+      try {
+        const { request } = await client.pluginNavigation();
+        if (closed) return;
+        if (initialized && request !== undefined && request.id > seen) {
+          navigate(`/s/${encodeURIComponent(request.sessionId)}`);
+          if (host.kind === 'tauri') {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            const window = getCurrentWindow();
+            await window.show(); await window.unminimize(); await window.setFocus();
+          }
+        }
+        initialized = true;
+        if (request !== undefined) seen = Math.max(seen, request.id);
+      } catch {}
+      if (!closed) timer = setTimeout(() => { void read(); }, 1500);
+    };
+    void read();
+    return () => { closed = true; clearTimeout(timer); };
+  }, [client, host, navigate]);
+
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
   useEffect(() => {

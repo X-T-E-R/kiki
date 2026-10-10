@@ -2259,6 +2259,10 @@ export class KikiClient {
     return this.run(this.rest.plugins.panelDocument(pluginId, panelId));
   }
 
+  pluginNavigation(): Promise<import('@kiki/protocol').PluginNavigation> {
+    return this.run(this.rest.plugins.navigation());
+  }
+
   callPluginPanelBridge(
     pluginId: string,
     panelId: string,
