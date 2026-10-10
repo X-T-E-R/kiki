@@ -11,6 +11,7 @@ export interface CognitionBinding {
   readonly modelSettings?: Readonly<Record<string, unknown>>;
   readonly recipe?: { readonly installation_id: string; readonly resolved: import('#/state/state').DeepReadonly<import('@kiki/protocol').ResolvedRecipe>; readonly anchorSystem?: string };
   readonly anchor?: string;
+  readonly steeringSources?: import('@kiki/protocol').ModelSteeringSources<string>;
 }
 
 export function selectCognitionConfig(
@@ -21,7 +22,7 @@ export function selectCognitionConfig(
   const branch = position === 'sub' ? undefined : cognition[position];
   if (branch === 'off') return undefined;
   if (typeof branch === 'object') return branch;
-  const { overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, anchor, overlayMode, anchorSteps, anchorScope } = cognition;
-  if ([overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, anchor, overlayMode, anchorSteps, anchorScope].every((value) => value === undefined)) return undefined;
-  return { overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, anchor, overlayMode, anchorSteps, anchorScope };
+  const { overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, steeringSources, anchor, overlayMode, anchorSteps, anchorScope } = cognition;
+  if ([overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, steeringSources, anchor, overlayMode, anchorSteps, anchorScope].every((value) => value === undefined)) return undefined;
+  return { overlay, steering, steeringOnTurn, steeringOnInput, steeringIntervalSteps, steeringSources, anchor, overlayMode, anchorSteps, anchorScope };
 }

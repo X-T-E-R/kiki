@@ -20,6 +20,42 @@ import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
 
 describe('generation parameter entity mutations', () => {
+  it('CAS-merges source modes and saved custom leaves without erasing user bodies or model/profile fields', async () => {
+    const storage = new InMemoryStorageService(); const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', '[providers.edge]\ntype="openai"\n[models.fast]\nprovider="edge"\nmodel="remote-fast"\nmax_context_size=8192\n[models.fast.cognition]\nsteering={text="USER BODY"}\nmain="same"\n[models.fast.parameters]\ntemperature=0.2\n[models.fast.prompt_overrides.fields]\n"system.shared"="MODEL FIELD"\n[models.sibling]\nprovider="edge"\nmodel="other"\n');
+    const host = () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog()); ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+      ix.stub(IFileSystemStorageService, storage); ix.stub(IAtomicTomlDocumentStore, store); ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry)); ix.set(IConfigService, new SyncDescriptor(ConfigService)); ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+      return ix;
+    };
+    const first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const initial = await catalog.readModel('fast');
+      await expect(catalog.updateModel('fast', { steering_sources_patch: { common: { thread: { mode: 'inherit' } } } })).rejects.toMatchObject({ code: 'config.invalid' });
+      const custom = await catalog.updateModel('fast', { base_revision: initial.revision, steering_sources_patch: { common: { thread: { mode: 'custom', custom: { steering: { text: 'THREAD BODY' }, steering_interval_steps: 3 } } } } });
+      const off = await catalog.updateModel('fast', { base_revision: custom.revision, steering_sources_patch: { common: { thread: { mode: 'off' } } } });
+      expect(off.cognition?.steering_sources?.thread).toEqual({ mode: 'off', custom: { steering: { text: 'THREAD BODY' }, steering_interval_steps: 3 } });
+      expect(off.cognition_bodies?.branches.common.steering_sources?.thread?.text).toBe('THREAD BODY');
+      const inherited = await catalog.updateModel('fast', { base_revision: off.revision, steering_sources_patch: { main: { agent: { mode: 'inherit' } } } });
+      expect(inherited.cognition?.main).toMatchObject({ steering: { text: 'USER BODY' }, steering_sources: { thread: { mode: 'off' }, agent: { mode: 'inherit' } } });
+      expect(inherited.cognition?.steering).toEqual({ text: 'USER BODY' });
+      expect(inherited.parameters?.temperature).toBe(0.2); expect(inherited.prompt_overrides?.fields?.['system.shared']).toBe('MODEL FIELD');
+      expect((await catalog.readModel('sibling')).remote_id).toBe('other');
+      await expect(catalog.updateModel('fast', { base_revision: initial.revision, steering_sources_patch: { common: { thread: { mode: 'inherit' } } } })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+    } finally { await first.dispose(); }
+    const cold = host();
+    try {
+      const saved = await cold.get(IModelCatalogMutationService).readModel('fast');
+      expect(saved.cognition?.steering_sources?.thread?.custom?.steering_interval_steps).toBe(3);
+      expect(saved.cognition_bodies?.branches.main.steering_sources?.thread?.text).toBe('THREAD BODY');
+      const cleared = await cold.get(IModelCatalogMutationService).updateModel('fast', { base_revision: saved.revision, steering_sources_patch: { common: null } });
+      expect(cleared.cognition?.steering_sources).toBeUndefined(); expect(cleared.cognition?.steering).toEqual({ text: 'USER BODY' });
+      expect(typeof cleared.cognition?.main).toBe('object');
+    } finally { await cold.dispose(); }
+  });
   it('saves complete native prompt bodies with one model CAS, cold reads, clears slots and preserves unrelated state', async () => {
     const storage = new InMemoryStorageService();
     const store = new TomlAtomicDocumentStore(storage);

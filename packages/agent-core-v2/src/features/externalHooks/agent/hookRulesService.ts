@@ -5,7 +5,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
-import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
+import { IAgentSystemReminderService, wrapSystemReminder } from '#/agent/systemReminder/systemReminder';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -74,10 +74,13 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     this._register(prompt.hooks.onBeforeSubmitPrompt.register('hook-rules', async (ctx, next) => {
       await next();
       if (ctx.block) return;
-      const origin = ctx.promptMessage.origin?.kind ?? 'user';
+      const origin = ctx.promptMessage.origin;
+      const human = origin?.kind === 'user' || origin?.kind === 'plugin_command' || (origin?.kind === 'skill_activation' && origin.trigger === 'user-slash');
+      const mailbox = origin?.kind === 'agent_message' || origin?.kind === 'peer_thread' || origin?.kind === 'bridged_peer' || origin?.kind === 'room_message';
       const promptId = ctx.promptMessage.id ?? randomUUID();
       const { event, snapshot } = await this.event('prompt.submit', `prompt/${promptId}`, {
-        promptId, source: ctx.isSteer ? 'steering' : origin === 'task' ? 'task' : origin === 'agent_message' || origin === 'peer_thread' ? 'mailbox' : origin === 'user' ? 'user' : undefined,
+        promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
+        delivery: ctx.isSteer ? 'steering' : undefined,
       });
       this.configure(snapshot);
       for (const rule of snapshot.rules) {
@@ -85,7 +88,11 @@ export class AgentHookRules extends Service implements IAgentHookRules {
         if (receipt === undefined) continue;
         if (rule.rule.action.type === 'observe') this.observeRule(rule, event, receipt);
         else {
-          try { this.reminders.appendSystemReminder(renderHookInjection(rule), { kind: 'injection', variant: `hook_rule/${rule.id}`, ownerPromptId: promptId, disclosure: receipt }); }
+          try {
+            const origin = { kind: 'injection' as const, variant: `hook_rule/${rule.id}`, ownerPromptId: promptId, disclosure: receipt };
+            if (ctx.appendMessage !== undefined) ctx.appendMessage({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder(renderHookInjection(rule)) }], toolCalls: [], origin });
+            else this.reminders.appendSystemReminder(renderHookInjection(rule), origin);
+          }
           catch (error) { this.log.error('hook prompt injection failed; skipping it', { hookId: rule.id, error }); }
         }
       }

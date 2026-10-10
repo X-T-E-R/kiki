@@ -6,7 +6,7 @@ import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentTaskService, type AgentTaskInfo, type AgentTaskNotificationContext } from '#/agent/task/task';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { USER_PROMPT_ORIGIN } from '#/agent/contextMemory/types';
+import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentFullCompactionService,
   type FullCompactionTask,
@@ -361,12 +361,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
     const block = renderUserPromptHookBlockResult(results);
     if (block !== undefined) {
-      this.context.append({
-        role: 'assistant',
-        content: [{ type: 'text', text: block.text }],
-        toolCalls: [],
-        origin: { kind: 'hook_result', event: block.event, blocked: true },
-      });
+      const message: ContextMessage = { role: 'assistant', content: [{ type: 'text', text: block.text }], toolCalls: [], origin: { kind: 'hook_result', event: block.event, blocked: true } };
+      if (ctx.appendMessage !== undefined) ctx.appendMessage(message);
+      else this.context.append(message);
       void this.dispatcher.dispatch(
         new HookResult({
           hookEvent: block.event,
@@ -379,12 +376,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
 
     const append = renderUserPromptHookResult(results);
     if (append !== undefined) {
-      this.context.appendObservable({
-        role: 'user',
-        content: [{ type: 'text', text: append.text }],
-        toolCalls: [],
-        origin: { kind: 'hook_result', event: append.event },
-      });
+      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: append.text }], toolCalls: [], origin: { kind: 'hook_result', event: append.event } };
+      if (ctx.appendMessage !== undefined) ctx.appendMessage(message);
+      else this.context.appendObservable(message);
       void this.dispatcher.dispatch(
         new HookResult({
           hookEvent: append.event,

@@ -60,6 +60,7 @@ export interface CognitionContent {
   steeringOnTurn?: boolean;
   steeringOnInput?: boolean;
   steeringIntervalSteps?: number;
+  steeringSources?: import('@kiki/protocol').ModelSteeringSources<CognitionSlotContent>;
 }
 
 export interface CognitionConfig extends CognitionContent {

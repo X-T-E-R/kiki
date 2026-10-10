@@ -10,12 +10,15 @@ import {
 import type { ContextMessage } from './types';
 
 export function isUndoAnchorOrigin(origin: ContextMessage['origin']): boolean {
+  if (origin?.kind === 'merged') return origin.origins.some(isUndoAnchorOrigin);
+  if (origin?.kind === 'external_thread' || origin?.kind === 'unknown') return true;
   if (
     origin === undefined ||
     origin.kind === 'user' ||
     origin.kind === 'peer_thread' ||
     origin.kind === 'bridged_peer' ||
     origin.kind === 'agent_message' ||
+    (origin.kind === 'system_trigger' && origin.name === 'thread_create') ||
     (origin.kind === 'room_message' && origin.targeted)
   ) return true;
   return (

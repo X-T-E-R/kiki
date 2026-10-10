@@ -48,6 +48,9 @@ export function deliveryOriginOf(origin: PromptOrigin | undefined): MessageDeliv
     case 'external_client':
     case 'external_record':
     case 'compaction_summary':
+    case 'merged':
+    case 'unknown':
+    case 'external_thread':
       return 'queue';
   }
 }

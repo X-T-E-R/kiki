@@ -8,6 +8,7 @@ import {
   isFullyUndoable,
 } from '#/agent/contextMemory/contextOps';
 import { ContextUndo } from '#/agent/contextMemory/contextEvents';
+import { isUndoAnchorOrigin } from '#/agent/contextMemory/conversationTime';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { expandedStateFolds, type FoldContext } from '#/state/state';
 
@@ -49,6 +50,21 @@ function compaction(): ContextMessage {
 const USER_ORIGIN: ContextMessage['origin'] = { kind: 'user' };
 
 describe('computeUndoCut', () => {
+  it('anchors a thread-created task without promoting other system triggers', () => {
+    const origin: ContextMessage['origin'] = { kind: 'system_trigger', name: 'thread_create' };
+    const history = [user(origin), assistant(), user({ kind: 'system_trigger', name: 'goal_continuation' })];
+    expect(isUndoAnchorOrigin(origin)).toBe(true);
+    expect(isUndoAnchorOrigin({ kind: 'merged', origins: [origin, { kind: 'system_trigger', name: 'future_trigger' }] })).toBe(true);
+    for (const name of ['goal_continuation', 'subagent', 'future_trigger']) {
+      expect(isUndoAnchorOrigin({ kind: 'system_trigger', name })).toBe(false);
+      expect(isFullyUndoable(computeUndoCut([user({ kind: 'system_trigger', name }), assistant()], 1), 1)).toBe(false);
+    }
+    const cut = computeUndoCut(history, 1);
+    expect(cut).toEqual({ cutIndex: 0, removedCount: 1, stoppedAtCompaction: false });
+    expect(isFullyUndoable(cut, 1)).toBe(true);
+    expect(history[0]?.origin).toEqual(origin);
+  });
+
   it('finds the cut for the last real user prompt', () => {
     const cut = computeUndoCut([user(USER_ORIGIN), assistant()], 1);
     expect(cut).toEqual({ cutIndex: 0, removedCount: 1, stoppedAtCompaction: false });

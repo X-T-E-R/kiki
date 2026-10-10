@@ -242,7 +242,8 @@ export class RecipeService extends Disposable implements IRecipeService {
   private branchManifest(branch: ResolvedRecipe['branches']['main']): Record<string, unknown> {
     return { system: branch.system === undefined ? 'off' : { text: branch.system }, steering: branch.steering === undefined ? 'off' : { text: branch.steering },
       anchor: branch.anchor === undefined ? 'off' : { content: { text: branch.anchor.content }, steps: branch.anchor.steps, scope: branch.anchor.scope }, fields: branch.fields,
-      steering_on_turn: branch.steering_on_turn, steering_on_input: branch.steering_on_input, steering_interval_steps: branch.steering_interval_steps };
+      steering_on_turn: branch.steering_on_turn, steering_on_input: branch.steering_on_input, steering_interval_steps: branch.steering_interval_steps,
+      steering_sources: branch.steering_sources === undefined ? undefined : Object.fromEntries(Object.entries(branch.steering_sources).map(([source, setting]) => [source, { ...setting, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: setting.custom.steering === undefined ? 'off' : { text: setting.custom.steering } } }])) };
   }
   async saveLocal(input: RecipeSaveLocalInput): Promise<RecipeDetail> {
     this.enabled(); const old = await this.record(input.installation_id); if (!old.editable) recipeFailure('Copy or inherit this Recipe before editing', input.installation_id);

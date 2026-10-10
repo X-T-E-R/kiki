@@ -63,6 +63,7 @@ import {
 import { IRecipeService } from '#/app/recipes/recipes';
 import { IModelPromptReader } from './modelPromptReader';
 import { modelPromptBodies } from './modelPromptBodies';
+import { patchModelSteeringSources } from './modelSteeringPatch';
 
 interface ParsedLike<T> {
   parse(value: unknown): T;
@@ -392,6 +393,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('promptOverrides', patch.prompt_overrides);
   setOrClear('recipe', patch.recipe);
   setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : cognitionFromToml(patch.cognition));
+  if (patch.steering_sources_patch !== undefined) next['cognition'] = patchModelSteeringSources(next['cognition'] as ModelRecord['cognition'], patch.steering_sources_patch);
   setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
   if (patch.parameters !== undefined) {
     next['parameters'] = patchGenerationParameters(record.parameters, patch.parameters);

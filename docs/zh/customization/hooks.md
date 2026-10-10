@@ -42,7 +42,7 @@ text = "继续前核对目标、已有证据和下一步。"
 
 规则来自用户配置、已信任项目的 `.kiki/hooks.toml` 和已启用插件的 manifest，并各自带上 `user/evidence-check`、`workspace/check` 这样的全限定 id。`priority` 小的先执行，同优先级按全限定 id 排序。同一命名空间内 id 重复是错误，不同命名空间用相同短 id 没问题。未信任项目的规则仍可见但不激活，纯文本规则同样如此。
 
-`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。工具名写在 `match.tools`，工具结果写在 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认只匹配 `source = user`，其他来源要在 `match.sources` 里写明。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
+`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。工具名写在 `match.tools`，工具结果写在 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认只匹配 `source = user`，包括通过「立即发送」投递的人类输入；任务或邮箱来源需在 `match.sources` 中写 `task` 或 `mailbox`。`sources = ["steering"]` 匹配「立即发送」投递路径，不限原生产者，也不会把邮箱消息变成用户输入。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
 
 长文本可以用 `text_file = "reminders/check.md"` 代替 `text`（二者互斥），`[hooks] files = ["hooks.toml"]` 可以引入其他 v2 文档。路径相对于声明文件，解析后必须仍在其来源作用域内；include 不能是 URL、不能重复或形成循环。缺文件、空文本、不支持的动作、无效节拍以及超过 8 KiB 的注入都是加载期错误。注入的指导文本是带来源标记的对话上下文，不替换系统提示词，也无法覆盖更高优先级的指令。
 

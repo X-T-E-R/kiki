@@ -12,6 +12,7 @@ import type { PlanGate } from '#/features/plan/configSection';
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
   readonly isSteer: boolean;
+  readonly appendMessage?: (message: ContextMessage) => void;
   block: boolean;
 }
 

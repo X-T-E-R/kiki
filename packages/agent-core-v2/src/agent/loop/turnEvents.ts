@@ -41,7 +41,8 @@ export function turnPromptText(
   input: readonly ContentPart[],
   origin?: PromptOrigin,
 ): string | undefined {
-  const bundledBlocks = origin?.kind === 'user' ? (origin.skillActivations?.length ?? 0) : 0;
+  const countBlocks = (source: PromptOrigin | undefined): number => source?.kind === 'merged' ? source.origins.reduce((count, item) => count + countBlocks(item), 0) : source?.kind === 'user' ? source.skillActivations?.length ?? 0 : 0;
+  const bundledBlocks = countBlocks(origin);
   const text = input
     .filter((part): part is TextPart => part.type === 'text')
     .slice(bundledBlocks)
@@ -82,8 +83,10 @@ export function turnPromptAttachments(
 }
 
 export function isDisplayablePromptOrigin(origin: PromptOrigin): boolean {
+  if (origin.kind === 'merged') return origin.origins.some(isDisplayablePromptOrigin);
+  if (origin.kind === 'external_thread' || origin.kind === 'unknown') return true;
   if (origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted)) return true;
-  if (origin.kind === 'system_trigger' && origin.name === 'subagent') return true;
+  if (origin.kind === 'system_trigger' && (origin.name === 'subagent' || origin.name === 'thread_create')) return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
     origin.trigger === 'user-slash'

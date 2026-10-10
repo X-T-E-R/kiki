@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { ContentPart } from '#/kosong/contract/message';
 import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
-import { USER_PROMPT_ORIGIN, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 
 export type StepRequestState = 'pending' | 'materialized' | 'aborted';
 
@@ -91,7 +91,7 @@ export class MessageStepRequest extends StepRequest {
   }
 
   override get turnSeed(): TurnSeed {
-    return { input: this.message.content, origin: this.message.origin ?? USER_PROMPT_ORIGIN };
+    return { input: this.message.content, origin: this.message.origin ?? { kind: 'unknown' } };
   }
 
   resolveContextMessages(): readonly ContextMessage[] {

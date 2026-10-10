@@ -103,7 +103,20 @@ Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模�
 
 `prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
 
-Steering 节奏属于所选分支；未声明项沿用下层值。所有层均未声明时，`steering_on_turn` 默认 `true`，用于新轮次及压缩后的重新注入；`steering_on_input` 默认 `true`，用于已物化的明确用户输入；`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 距最近注入的实际模型 loop step，不是秒数或工具调用次数。
+Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
+
+在同一分支中使用 `steering_sources` 开启其他来源：`mode = "inherit"` 在绑定时沿用最终用户正文与节奏，`mode = "custom"` 使用自己的 `custom` 正文与节奏。来源及 custom 字段在父配方、模型 Recipe、profile Recipe 各层按声明的叶项合并，再随绑定冻结；改用户设置不会重写已有会话。来源键与默认值见 [模型认知](../configuration/config-files.md#模型认知)。例如：
+
+```toml
+[prompts.steering_sources.thread]
+mode = "inherit"
+
+[prompts.steering_sources.task]
+mode = "custom"
+custom = { steering = { file = "task-cue.md" }, steering_interval_steps = 2 }
+```
+
+单独 Recipe 正文接受原有 text/file/array 形式或 `"off"`；后者抑制下层单独正文。Off 与 inherit 模式保留已保存的 custom 草稿。
 
 `global.recipes.fork` 可生成独立的 `copy` 或继承父源的 `extend` 子配方；用 `saveLocal` 和 `expected_revision` 校验编辑生成的本地包。已安装包锁定完整依赖链，可离线使用。`follow` 每日检查更新；`pinned` 保留已接受版本。无效更新保留整个上次接受的 revision。HTTPS ZIP 源必须提供 `sha256`，继承的 ZIP 源也可在 `extends` 中携带。预览与安装接受同一份已检查快照，安装时不再次下载来源。
 

@@ -795,7 +795,7 @@ describe('ThreadCommunicationService', () => {
       id: 'message-1',
       message: expect.objectContaining({
         role: 'user',
-        origin: { kind: 'user' },
+        origin: { kind: 'external_thread', messageId: 'message-1', acceptedAt: expect.any(Number) },
       }),
     });
     const prompt = promptEnqueue.mock.calls[0]![0].message;
@@ -808,7 +808,7 @@ describe('ThreadCommunicationService', () => {
       limit: 10,
     });
     expect(read.turns).toEqual([
-      expect.objectContaining({ origin: 'user', input: 'external input' }),
+      expect.objectContaining({ origin: 'external', input: 'external input' }),
     ]);
     expect(read.turns[0]?.peer).toBeUndefined();
   });
@@ -942,6 +942,22 @@ describe('ThreadCommunicationService', () => {
         peer: { source: peerSource, messageId: 'peer-1' },
       }),
     ]);
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('reads persisted created-thread, unknown and mixed input without claiming human or peer identity', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const origins = [{ kind: 'system_trigger', name: 'thread_create' }, { kind: 'unknown' }, { kind: 'merged', origins: [{ kind: 'user' }, { kind: 'external_thread', messageId: 'example-external', acceptedAt: 1 }] }];
+    wireRecords = origins.flatMap((origin, turnId) => [
+      { type: 'turn.prompt', time: turnId * 10 + 1, input: [{ type: 'text', text: `Input ${turnId}` }], origin },
+      { type: 'context.append_loop_event', event: { type: 'content.part', stepUuid: `step-${turnId}`, turnId: String(turnId), part: { type: 'text', text: `Answer ${turnId}` } } },
+      { type: 'turn.ended', time: turnId * 10 + 2, turnId, reason: 'completed' },
+    ]);
+    const read = await service.readThread({ thread: ref(service.hostId, 'workspace-b', 'target'), limit: 10 });
+    expect(read.turns.map((turn) => [turn.origin, turn.input, turn.output])).toEqual([
+      ['thread_created', 'Input 0', 'Answer 0'], ['unknown', 'Input 1', 'Answer 1'], ['mixed', 'Input 2', 'Answer 2'],
+    ]);
+    expect(read.turns.every((turn) => turn.peer === undefined)).toBe(true);
     expect(resume).not.toHaveBeenCalled();
   });
 

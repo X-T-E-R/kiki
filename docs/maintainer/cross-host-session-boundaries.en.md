@@ -64,7 +64,7 @@ The current decision is to keep this behavior rather than make the homes shared 
 
 - Session data, mailbox state, bearer tokens, instance records, and device identity remain scoped to the process family that owns them.
 - The Codex launcher can enforce a dedicated home, read-only shared configuration, a signed workspace binding, an exclusive port, and a narrowly admitted external-delegation Session.
-- A compromised or stale client cannot claim peer provenance merely by submitting a `source` field. Existing REST and Klient sends are target-only and are recorded as user-origin input.
+- A compromised or stale client cannot claim peer provenance merely by submitting a `source` field. Existing REST and Klient sends are target-only and are recorded as `external_thread` input, not human or peer provenance.
 - Failures, cleanup, and data retention stay local. One host does not need to understand or repair the other host's on-disk state.
 
 The cost of this decision is explicit: built-in thread communication cannot coordinate a GUI Session with a Codex-delegated Session.
@@ -95,7 +95,7 @@ If cross-host coordination becomes a product requirement, it must be introduced 
 
 - The bridge must preserve the full source and target host-qualified references; it must never replace a remote `hostId` with a local one.
 - Peer attribution may be recorded only after the destination verifies a bridge-issued, integrity-protected source assertion. Arbitrary client-supplied provenance remains forbidden.
-- When provenance cannot be verified, the destination must record the input as external/user-origin rather than peer-origin.
+- When provenance cannot be verified, the destination must record the input as external-origin rather than peer-origin.
 - Bridge messages need their own protocol version, bridge identity, message ID, and optional hop metadata so loops and replay paths can be detected.
 
 ### Delivery semantics

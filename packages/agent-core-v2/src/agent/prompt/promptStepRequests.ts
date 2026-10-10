@@ -1,4 +1,4 @@
-import { USER_PROMPT_ORIGIN, type ContextMessage } from '#/agent/contextMemory/types';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDelivery';
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
@@ -20,7 +20,7 @@ abstract class UserMessageStepRequest extends StepRequest {
   }
 
   override get turnSeed(): TurnSeed {
-    return { input: this.message.content, origin: this.message.origin ?? USER_PROMPT_ORIGIN };
+    return { input: this.message.content, origin: this.message.origin ?? { kind: 'unknown' } };
   }
 
   override onWillMaterialize(): void {
@@ -55,7 +55,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
   override get turnSeed(): TurnSeed {
     return {
       input: this.message.content,
-      origin: this.message.origin ?? USER_PROMPT_ORIGIN,
+      origin: this.message.origin ?? { kind: 'unknown' },
       promptId: this.message.id,
     };
   }
@@ -81,6 +81,7 @@ export class SteerStepRequest extends UserMessageStepRequest {
     private readonly forgetSteer: (request: SteerStepRequest) => void,
     admission: 'activeTurnOnly' | 'activeOrNewTurn' = 'activeTurnOnly',
     deliveryOrigin?: MessageDeliveryOrigin,
+    private readonly hookMessages: readonly ContextMessage[] = [],
   ) {
     super(message, captions, reminders, {
       mergeable: true,
@@ -93,6 +94,10 @@ export class SteerStepRequest extends UserMessageStepRequest {
   override onWillMaterialize(): void {
     this.recordSteer(this.message);
     super.onWillMaterialize();
+  }
+
+  override resolveContextMessages(): readonly ContextMessage[] {
+    return [...super.resolveContextMessages(), ...this.hookMessages];
   }
 
   protected override onSettled(): void {

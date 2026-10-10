@@ -64,7 +64,7 @@ Peer-thread communication lets a main agent coordinate other Kiki sessions on th
 
 A thread reference identifies a host, workspace and session. `ThreadList` returns the references later calls need, `ThreadRead` reads completed main-agent turns without resuming a cold session, `ThreadSend` derives the source from the current main-agent session, and `ThreadWait` waits up to 60 seconds for activity from up to eight threads. Messages cannot cross hosts.
 
-A message is recorded as coming from a peer only when the source thread's own main agent calls `ThreadSend`. REST and the `global.threads` Klient facade take target-addressed input only and record it as user-origin, so an external client cannot claim a source thread.
+A message is recorded as coming from a peer only when the source thread's own main agent calls `ThreadSend`. REST and the `global.threads` Klient facade take target-addressed input only and record it as external-client input, so an external client cannot claim a source thread or a direct human origin.
 
 Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending can resume a cold target session and consume model quota. A workspace can persist an enable or disable override, but it cannot turn the feature on while the global switch is off. See [Server API](../server/rest-api.md#session-leases-and-peer-threads) for those interfaces.
 

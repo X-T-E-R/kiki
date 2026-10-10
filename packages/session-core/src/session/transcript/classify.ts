@@ -17,6 +17,7 @@ export function splitSystemReminders(text: string, generated = false): SplitSyst
 
 export interface PromptOriginLike {
   readonly kind?: string;
+  readonly origins?: readonly PromptOriginLike[];
   readonly trigger?: string;
   readonly skillName?: string;
   readonly commandName?: string;
@@ -240,6 +241,12 @@ export function classifyTranscriptText(input: {
 }): ClassifiedText {
   const origin = unwrapOrigin(input.origin);
   const kind = origin?.kind;
+  if (kind === 'unknown' || kind === 'external_thread' || (kind === 'system_trigger' && origin?.name === 'thread_create')) return { lane: 'peer', origin, text: input.text, presentation: input.presentation, reminders: [] };
+  if (kind === 'merged') {
+    const lanes = (origin?.origins ?? []).map((part) => classifyTranscriptText({ text: '', role: input.role, origin: part, subagentPromptAsUser: input.subagentPromptAsUser }).lane);
+    const lane = lanes.length > 0 && lanes.every((value) => value === 'you') ? 'you' : lanes.some((value) => value === 'you' || value === 'peer' || value === 'skill') ? 'peer' : 'system';
+    return { lane, origin, text: input.text, presentation: input.presentation, reminders: [], systemVariant: lane === 'system' ? 'system' : undefined };
+  }
   const split = splitSystemReminders(input.text, kind === 'injection');
   const notification = kind === 'task' || kind === 'background_task' ? splitTaskNotification(split.text) : undefined;
   if (notification !== undefined) {

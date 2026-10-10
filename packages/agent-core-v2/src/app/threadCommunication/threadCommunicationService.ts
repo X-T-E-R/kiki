@@ -14,7 +14,6 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import {
-  USER_PROMPT_ORIGIN,
   type PeerThreadOrigin,
   type PromptOrigin,
 } from '#/agent/contextMemory/types';
@@ -928,7 +927,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
               targeted: message.producer.targeted === true,
               generation: message.producer.generation,
             }
-          : USER_PROMPT_ORIGIN;
+          : { kind: 'external_thread', messageId: message.messageId, acceptedAt: message.acceptedAt };
       const text = message.producer.kind === 'bridged_peer'
         ? `Verified message from space ${message.producer.sourceHomeId} · thread ${message.producer.source.sessionId} (${message.producer.location}):\n\n${message.content}`
         : message.producer.kind === 'peer_thread'
@@ -1350,6 +1349,10 @@ function publicTurnOrigin(
     return { kind: 'peer', peer: { source: origin.source, messageId: origin.messageId } };
   }
   if (origin.kind === 'user') return { kind: 'user' };
+  if (origin.kind === 'external_thread') return { kind: 'external' };
+  if (origin.kind === 'merged') return { kind: 'mixed' };
+  if (origin.kind === 'unknown') return { kind: 'unknown' };
+  if (origin.kind === 'system_trigger' && origin.name === 'thread_create') return { kind: 'thread_created' };
   if (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
     origin.trigger === 'user-slash'

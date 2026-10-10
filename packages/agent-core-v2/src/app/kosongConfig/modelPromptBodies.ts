@@ -1,4 +1,4 @@
-import type { ModelCognitionBodies } from '@kiki/protocol';
+import { modelSteeringSourceIds, type ModelCognitionBodies } from '@kiki/protocol';
 import { cognitionPathRefs, isCognitionInline, type CognitionSlot } from '#/agent/cognition/cognitionFiles';
 import { selectCognitionConfig } from '#/agent/cognition/cognitionConfig';
 import type { CognitionConfig, CognitionContent } from '#/kosong/model/model';
@@ -33,6 +33,7 @@ export async function modelPromptBodies(cognition: CognitionConfig | undefined, 
       selection,
       source_scope: selection === 'common' ? 'common' : scope,
       slots: { overlay: await slotBody('overlay', selected?.overlay), steering: await slotBody('steering', selected?.steering), anchor: await slotBody('anchor', selected?.anchor) },
+      steering_sources: Object.fromEntries(await Promise.all(modelSteeringSourceIds.filter((source) => selected?.steeringSources?.[source]?.custom !== undefined).map(async (source) => [source, await slotBody('steering', selected?.steeringSources?.[source]?.custom?.steering)]))),
     };
   }
   return { revision, branches: { common: await branch('common'), main: await branch('main'), independent: await branch('independent') } };

@@ -166,6 +166,41 @@ describe('per-model cognition overlay', () => {
     expect(await recipes.list()).toHaveLength(1);
   });
 
+  it('freezes source inheritance through actual requests and cold recovery, then resolves updated model/profile Recipe layers on rebuild', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let user = 'USER OLD';
+    let modelPack = resolvedRecipeSchema.parse({ ...recipe('source-model-old'), model: {}, branches: { main: { steering: user, steering_sources: { thread: { mode: 'inherit' }, task: { mode: 'custom', custom: { steering: 'MODEL TASK' } } }, fields: {} }, sub: { fields: {} }, independent: { fields: {} } } });
+    let profilePack = resolvedRecipeSchema.parse({ ...recipe('source-profile-old'), model: {}, branches: { main: { steering_sources: { task: { mode: 'off' }, agent: { mode: 'custom', custom: { steering: 'PROFILE AGENT' } } }, fields: {} }, sub: { fields: {} }, independent: { fields: {} } } });
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: 'profile-source', systemPrompt: () => 'ROLE' });
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => reg.definePartialInstance(IRecipeService, { resolve: async (id) => structuredClone(id === 'model-source' ? modelPack : profilePack), onDidChange: Event.None as Event<void> })));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, recipe: 'model-source', cognition: { steering: { text: 'MANUAL USER' }, steeringSources: { room: { mode: 'inherit' } } } } } };
+      vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockReturnValue(role);
+      return ctx;
+    };
+    let agent = create(); let profile = agent.get(IAgentProfileService);
+    await profile.bind({ resolvedProfile: role, model: MOCK_MODEL });
+    const frozen = await profile.getCognitionBinding();
+    expect(frozen.steeringSources).toMatchObject({ room: { mode: 'inherit' }, thread: { mode: 'inherit' }, task: { mode: 'off', custom: { steering: 'MODEL TASK' } }, agent: { mode: 'custom', custom: { steering: 'PROFILE AGENT' } } });
+    const request = async () => {
+      agent.get(IAgentContextMemoryService).append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Peer input' }], origin: { kind: 'peer_thread', source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' }, messageId: 'example-peer', acceptedAt: 1 } });
+      await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
+      agent.mockNextResponse({ type: 'text', text: 'Answer' });
+      await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+      return agent.llmCalls.at(-1)!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
+    };
+    expect(await request()).toContain('USER OLD');
+    await agent.get(IWireService).flush(); await agent.dispose();
+    user = 'USER NEW'; modelPack = { ...modelPack, revision: 'source-model-new', branches: { ...modelPack.branches, main: { ...modelPack.branches.main, steering: user } } };
+    profilePack = { ...profilePack, revision: 'source-profile-new' };
+    agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService); await profile.syncBindingMetadata();
+    expect(await profile.getCognitionBinding()).toEqual(frozen);
+    expect(await request()).not.toContain('USER NEW');
+    await profile.rebuildPromptContext();
+    expect((await profile.getCognitionBinding()).steeringSources?.thread?.mode).toBe('inherit');
+    expect(await request()).toContain('USER NEW');
+  });
+
   it('freezes the effective request and cold recovery, adopts explicit rebuilds, and restores original model settings when switching away', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     let selected = recipe();
@@ -224,6 +259,7 @@ describe('per-model cognition overlay', () => {
     expect(observed).toContain(body); expect(observed).toContain(`shared:${body}`);
     expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBe(`anchor:${body}`);
     agent.get(IAgentModelSteeringService);
+    agent.get(IAgentContextMemoryService).append({ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'User request' }], origin: { kind: 'user' } });
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
     expect(agent.get(IAgentContextMemoryService).get().some((message) => message.content.some((part) => part.type === 'text' && part.text === `cue:${body}`))).toBe(true);
     await agent.get(IWireService).flush(); await agent.dispose();
@@ -248,6 +284,7 @@ describe('per-model cognition overlay', () => {
     expect(profile.getSystemPrompt()).toContain('ROLE BODY');
     expect(profile.getSystemPrompt()).not.toContain('COMMON BODY');
     expect(await agent.get(IAgentCognitionAnchorService).project({ sourceType: 'turn', turnId: 0, step: 1, hasExplicitSystemPrompt: false })).toBeUndefined();
+    agent.get(IAgentContextMemoryService).append({ role: 'user', content: [{ type: 'text', text: 'Human request' }], toolCalls: [], origin: { kind: 'user' } });
     agent.get(IAgentModelSteeringService);
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
     expect(agent.get(IAgentContextMemoryService).get().some((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === ''))).toBe(false);
@@ -380,6 +417,7 @@ describe('per-model cognition overlay', () => {
     const profile = agent.get(IAgentProfileService);
     agent.get(IAgentModelSteeringService);
     await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, delegationPosition: position });
+    agent.get(IAgentContextMemoryService).append({ role: 'user', content: [{ type: 'text', text: 'Human request' }], toolCalls: [], origin: { kind: 'user' } });
     expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
     await runWillBeginStepHooks(agent.get(IAgentLoopService), true);
     const cues = () => agent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering');
@@ -487,6 +525,7 @@ describe('per-model cognition overlay', () => {
     agent.get(IAgentModelSteeringService);
     const loop = agent.get(IAgentLoopService);
     const memory = agent.get(IAgentContextMemoryService);
+    memory.append({ role: 'user', content: [{ type: 'text', text: 'Human request' }], toolCalls: [], origin: { kind: 'user' } });
     const cues = () => memory.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering');
     await runWillBeginStepHooks(loop, true);
     await runWillBeginStepHooks(loop, false);

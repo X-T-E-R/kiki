@@ -261,7 +261,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 `ThreadCreate` 默认启用，设置页的「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 与持久化 workspace 覆盖控制。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
 
-只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
 
 Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents.md) 没有这组工具。
 

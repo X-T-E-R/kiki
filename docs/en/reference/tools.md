@@ -273,7 +273,7 @@ Omitting `host_id`, leaving it empty, or using `"local"` addresses the executing
 
 `ThreadCreate` is enabled by default and has its own setting under Settings → Permissions → Tools, so it can be disabled without disabling the other thread tools. Peer communication is controlled by [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) and persisted workspace overrides. Bridge receiving is separately off by default and must be approved by the target owner; disabling either target communication or inbound access stops bridge delivery without deleting sessions.
 
-Only `ThreadSend`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only user-origin input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+Only `ThreadSend`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only external-client input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
 
 On Kiki desktop and the `kiki` CLI/TUI, the main `agent` profile always receives `AgentRun`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. The built-in [`coder` and `explore` profiles](../customization/agents.md) do not receive them.
 

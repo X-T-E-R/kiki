@@ -172,11 +172,16 @@ export function compactionUserMessageDisposition(
 ): 'keep' | 'drop' {
   if (origin === undefined) return 'keep';
   switch (origin.kind) {
+    case 'merged': return origin.origins.some((item) => compactionUserMessageDisposition(item) === 'keep') ? 'keep' : 'drop';
+    case 'unknown':
+    case 'external_thread':
     case 'user':
     case 'peer_thread':
     case 'bridged_peer':
     case 'agent_message':
       return 'keep';
+    case 'system_trigger':
+      return origin.name === 'thread_create' ? 'keep' : 'drop';
     case 'room_message':
       return origin.targeted ? 'keep' : 'drop';
     case 'skill_activation':
@@ -186,7 +191,6 @@ export function compactionUserMessageDisposition(
     case 'injection':
     case 'shell_command':
     case 'compaction_summary':
-    case 'system_trigger':
     case 'task':
     case 'cron_job':
     case 'cron_missed':

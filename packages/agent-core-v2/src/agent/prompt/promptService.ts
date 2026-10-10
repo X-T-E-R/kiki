@@ -505,8 +505,13 @@ interface Record extends PromptSnapshot {
   outcomeCommitted?: boolean;
 }
 
+export function bundledSkillActivations(origin: PromptOrigin | undefined): readonly BundledSkillActivation[] {
+  if (origin?.kind === 'merged') return origin.origins.flatMap((item) => bundledSkillActivations(item));
+  return origin?.kind === 'user' ? origin.skillActivations ?? [] : [];
+}
+
 function bundledSkillBlockCount(message: ContextMessage): number {
-  return message.origin?.kind === 'user' ? (message.origin.skillActivations?.length ?? 0) : 0;
+  return bundledSkillActivations(message.origin).length;
 }
 
 function stripBundledSkillBlocks(message: ContextMessage): ContentPart[] {
@@ -536,9 +541,7 @@ function replacePromptContent(
 }
 
 function mergeSteerMessages(records: readonly Record[]): ContextMessage {
-  const skillActivations = records.flatMap((item) =>
-    item.message.origin?.kind === 'user' ? (item.message.origin.skillActivations ?? []) : [],
-  );
+  const skillActivations = records.flatMap((item) => bundledSkillActivations(item.message.origin));
   return {
     id: records[0]?.message.id,
     role: 'user',
@@ -555,22 +558,10 @@ function sharedSteerOrigin(
   records: readonly Record[],
   skillActivations: readonly BundledSkillActivation[],
 ): PromptOrigin {
-  if (skillActivations.length > 0) return { kind: 'user', skillActivations };
-  const [first] = records;
-  if (
-    first === undefined ||
-    first.message.origin === undefined ||
-    first.message.origin.kind === 'user'
-  ) {
-    return USER_PROMPT_ORIGIN;
-  }
-  const origin = first.message.origin;
-  for (const item of records) {
-    if (JSON.stringify(item.message.origin) !== JSON.stringify(origin)) {
-      return USER_PROMPT_ORIGIN;
-    }
-  }
-  return origin;
+  const origins = records.map((item): PromptOrigin => item.message.origin ?? { kind: 'unknown' });
+  if (origins.every((origin) => origin.kind === 'user')) return skillActivations.length > 0 ? { kind: 'user', skillActivations } : USER_PROMPT_ORIGIN;
+  if (origins.length === 1) return origins[0]!;
+  return { kind: 'merged', origins };
 }
 
 interface PresentedSpan {
@@ -1330,6 +1321,7 @@ export class AgentPromptService implements IAgentPromptService {
       role: 'user',
       content: [...payload.input],
       toolCalls: [],
+      origin: USER_PROMPT_ORIGIN,
     } });
     if (queued.state !== 'pending') {
       const turn = await queued.launched;
@@ -1688,6 +1680,7 @@ export class AgentPromptService implements IAgentPromptService {
       void this.startNext();
       return selected.map((item) => item.handle);
     }
+    const allSelected = [...selected];
     for (const item of selected) this.steeringPromptIds.add(item.id);
     try {
       const activeAtEntry = this.active;
@@ -1701,6 +1694,29 @@ export class AgentPromptService implements IAgentPromptService {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan or goal changes must run as their own turn');
         }
       }
+      const hookMessages: ContextMessage[] = [];
+      const blockedMessages: ContextMessage[] = [];
+      const blocked: Record[] = [];
+      for (const item of selected) {
+        const collected: ContextMessage[] = [];
+        if (await this.blockedByHook(item.message, true, (message) => collected.push(message))) { blocked.push(item); blockedMessages.push(...collected); }
+        else hookMessages.push(...collected);
+      }
+      if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry || this.loop.status().activeTurnId !== targetTurnId) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
+      for (const item of blocked) {
+        this.pending.splice(this.pending.indexOf(item), 1);
+        item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
+        item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
+        this.publishCompleted(item, 'blocked');
+        selected.splice(selected.indexOf(item), 1);
+      }
+      if (blockedMessages.length > 0) void this.loop.atStepBoundary(async () => {
+        for (const message of blockedMessages) {
+          if (message.role === 'user') this.context.appendObservable(message);
+          else this.context.append(message);
+        }
+      }).catch(onUnexpectedError);
+      if (selected.length === 0) { this.syncRecoveryHold(); return allSelected.map((item) => item.handle); }
       const { message: rerouted, captions } = this.extractCompressionCaptions(mergeSteerMessages(selected));
       await this.materializeDaemonRefs(rerouted);
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry ||
@@ -1729,7 +1745,7 @@ export class AgentPromptService implements IAgentPromptService {
             managed: true,
           }),
         );
-      }, () => {}, 'activeTurnOnly', 'queue');
+      }, () => {}, 'activeTurnOnly', 'queue', hookMessages);
       let turn: Turn | undefined;
       try {
         const receipt = this.loop.enqueue(request);
@@ -1786,9 +1802,9 @@ export class AgentPromptService implements IAgentPromptService {
         new PromptSteered({ activePromptId: activeAtEntry?.id ?? selected[0]!.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
       );
       this.syncRecoveryHold();
-      return selected.map((item) => item.handle);
+      return allSelected.map((item) => item.handle);
     } finally {
-      for (const item of selected) {
+      for (const item of allSelected) {
         this.steeringPromptIds.delete(item.id);
         this.steeringFlights.delete(item.id);
       }
@@ -2285,8 +2301,8 @@ export class AgentPromptService implements IAgentPromptService {
     await materializePromptDaemonRefs(message.content, { files, mediaStore });
   }
 
-  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean): Promise<boolean> {
-    const ctx = { promptMessage, isSteer, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
+  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean, appendMessage?: (message: ContextMessage) => void): Promise<boolean> {
+    const ctx = { promptMessage, isSteer, appendMessage, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
   }
   private get fullCompaction(): IAgentFullCompactionService {
     if (this.fullCompactionService === undefined) {

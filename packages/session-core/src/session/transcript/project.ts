@@ -173,6 +173,7 @@ function classifiedTextToBlocks(input: {
           kind: 'user',
           id: `user-${identity}`,
           contentSource: input.contentSource,
+          sourceOrigin: classified.origin,
           text: classified.text,
           presentation: classified.presentation ?? input.presentation,
           media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
@@ -280,8 +281,10 @@ function originFromFrame(frame: unknown): PromptOriginLike | undefined {
 }
 
 function isUserVisibleOrigin(origin: PromptOriginLike | undefined): boolean {
-  const kind = unwrapOrigin(origin)?.kind;
-  return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer';
+  const unwrapped = unwrapOrigin(origin);
+  const kind = unwrapped?.kind;
+  if (kind === 'merged') return (unwrapped?.origins ?? []).some(isUserVisibleOrigin);
+  return kind === 'user' || kind === 'peer_thread' || kind === 'bridged_peer' || kind === 'external_thread' || kind === 'unknown' || (kind === 'system_trigger' && unwrapped?.name === 'thread_create');
 }
 
 function identityFromTurnOrigin(origin: PromptOriginLike | undefined): {
@@ -1722,8 +1725,6 @@ function upsertPromptItemBlocks(
   mediaOverride?: readonly MediaRef[],
 ): readonly Block[] {
   const projection = projectMessageContent(item.content);
-  const split = splitSystemReminders(projection.text);
-  const text = split.text;
   const media = mediaOverride ?? projection.media;
   const nextMedia = media.length === 0 ? undefined : media;
   const queuedContent = item.status === 'queued' ? item.content : undefined;
@@ -1732,6 +1733,24 @@ function upsertPromptItemBlocks(
       block.kind === 'user' &&
       (block.userMessageId === item.user_message_id || block.promptId === item.prompt_id),
   );
+  const previous = stableIndex < 0 ? undefined : blocks[stableIndex] as UserBlock;
+  const sourceOrigin = item.origin === undefined ? previous?.sourceOrigin : item.origin;
+  const origin = sourceOrigin === undefined ? { kind: 'user' } : originFromRecord({ origin: sourceOrigin }) ?? { kind: 'unknown' };
+  const classified = classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin });
+  const text = classified.text;
+  const additions = classifiedTextToBlocks({
+    id: item.user_message_id,
+    classified,
+    createdAt: item.created_at,
+    media,
+    promptId: item.prompt_id,
+    userMessageId: item.user_message_id,
+    promptStatus: item.status,
+  }).map((block): Block => block.kind === 'user' ? { ...block, queuedContent, sourceOrigin } : block);
+  const incoming = additions.find((block): block is UserBlock => block.kind === 'user');
+  if (previous !== undefined && classified.lane !== 'you' && classified.lane !== 'peer') {
+    return upsertPromptItemBlocks(blocks.filter((block) => block !== previous), { ...item, origin: sourceOrigin }, mediaOverride);
+  }
   if (stableIndex >= 0) {
     const existing = blocks[stableIndex] as UserBlock;
     const nextStatus = isRegeneratingJournalUser(existing, {
@@ -1741,7 +1760,7 @@ function upsertPromptItemBlocks(
     })
       ? undefined
       : item.status;
-    const reminders = reminderBlocks(item.user_message_id, item.created_at, split.reminders, existing.turnId);
+    const reminders = reminderBlocks(item.user_message_id, item.created_at, classified.reminders, existing.turnId);
     const reminderPrefix = `reminder-${item.user_message_id}-`;
     const isPromptReminder = (block: Block) => block.kind === 'system-reminder' && block.id.startsWith(reminderPrefix);
     if (
@@ -1750,13 +1769,17 @@ function upsertPromptItemBlocks(
       transcriptValueEquals(existing.presentation, projection.presentation) &&
       sameMedia(existing.media, nextMedia) &&
       transcriptValueEquals(existing.queuedContent, queuedContent) &&
+      transcriptValueEquals(existing.sourceOrigin, sourceOrigin) &&
       transcriptValueEquals(blocks.filter(isPromptReminder), reminders)
     ) {
       return blocks;
     }
     const next = blocks.filter((block) => !isPromptReminder(block));
     const index = next.indexOf(existing);
-    next.splice(index, 1, { ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent }, ...reminders);
+    next.splice(index, 1, {
+      ...existing, text, presentation: projection.presentation, promptStatus: nextStatus, media: nextMedia, queuedContent, sourceOrigin,
+      agentMessage: incoming?.agentMessage, bridgedPeer: incoming?.bridgedPeer, peerThread: incoming?.peerThread,
+    }, ...reminders);
     return next;
   }
   const placeholderIndex =
@@ -1766,18 +1789,9 @@ function upsertPromptItemBlocks(
             block.kind === 'user' &&
             block.userMessageId === undefined &&
             block.promptId === undefined &&
-            block.text === split.text,
+            block.text === text,
         )
       : -1;
-  const additions = classifiedTextToBlocks({
-    id: item.user_message_id,
-    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: { kind: 'user' } }),
-    createdAt: item.created_at,
-    media,
-    promptId: item.prompt_id,
-    userMessageId: item.user_message_id,
-    promptStatus: item.status,
-  }).map((block): Block => block.kind === 'user' ? { ...block, queuedContent } : block);
   if (placeholderIndex >= 0 && additions[0]?.kind === 'user') {
     const next = blocks.slice();
     next.splice(placeholderIndex, 1, ...additions);
@@ -1998,7 +2012,7 @@ function placePromptOutcome(
   const identity = prompt.userMessageId ?? prompt.promptId;
   const created = classifiedTextToBlocks({
     id: identity,
-    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: { kind: 'user' } }),
+    classified: classifyTranscriptText({ text: projection.text, presentation: projection.presentation, role: 'user', origin: originFromRecord(prompt) ?? { kind: 'user' } }),
     createdAt: prompt.createdAt,
     media: projection.media,
     promptId: prompt.promptId,
@@ -2874,6 +2888,7 @@ export function appendLocalUserMessage(
     status: PromptStatus;
     media?: readonly MediaRef[];
     content?: PromptItem['content'];
+    origin?: PromptItem['origin'];
     clientRequestId?: string;
     appendTiming?: DeferredAppendTiming;
   },
@@ -2889,6 +2904,7 @@ export function appendLocalUserMessage(
     prompt_id: input.promptId,
     user_message_id: input.userMessageId,
     status: input.status,
+    origin: input.origin,
     content: input.content ?? [{ type: 'text', text: input.text }],
     created_at: input.createdAt,
   };

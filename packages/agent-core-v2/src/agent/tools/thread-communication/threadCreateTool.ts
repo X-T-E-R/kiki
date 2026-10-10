@@ -133,7 +133,7 @@ export class ThreadCreateTool implements IThreadCreateTool {
                 role: 'user',
                 content: [{ type: 'text', text: input.prompt }],
                 toolCalls: [],
-                origin: { kind: 'user' },
+                origin: { kind: 'system_trigger', name: 'thread_create' },
               },
             });
             promptAccepted = true;

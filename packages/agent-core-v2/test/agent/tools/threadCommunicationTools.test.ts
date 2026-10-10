@@ -10,6 +10,9 @@ import type { ServicesAccessor } from '#/_base/di/instantiation';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { buildContextCompactionShape } from '#/agent/contextMemory/compactionHandoff';
+import { computeUndoCut } from '#/agent/contextMemory/contextOps';
+import { isUndoAnchor } from '#/agent/contextMemory/conversationTime';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -328,7 +331,7 @@ describe('thread communication tools', () => {
     expect(prompt.enqueue).not.toHaveBeenCalled();
   });
 
-  it('submits the first prompt as a user message and waits for its turn to launch', async () => {
+  it('submits the first prompt with thread-created provenance and waits for its turn to launch', async () => {
     let launch!: (value: { id: number }) => void;
     const launched = new Promise<{ id: number }>((resolve) => { launch = resolve; });
     const { tool, prompt, lifecycle, metadata } = createThreadFixture({ launched });
@@ -338,9 +341,15 @@ describe('thread communication tools', () => {
     await vi.waitFor(() => expect(prompt.enqueue).toHaveBeenCalledOnce());
     expect(prompt.enqueue).toHaveBeenCalledExactlyOnceWith({
       message: {
-        role: 'user', content: [{ type: 'text', text: content }], toolCalls: [], origin: { kind: 'user' },
+        role: 'user', content: [{ type: 'text', text: content }], toolCalls: [], origin: { kind: 'system_trigger', name: 'thread_create' },
       },
     });
+    const createdPrompt = prompt.enqueue.mock.calls[0]![0].message;
+    expect(isUndoAnchor(createdPrompt)).toBe(true);
+    expect(computeUndoCut([createdPrompt], 1)).toEqual({ cutIndex: 0, removedCount: 1, stoppedAtCompaction: false });
+    const compacted = buildContextCompactionShape([createdPrompt], { summary: 'task handoff', compactedCount: 1, tokensBefore: 100 });
+    expect(compacted.messages[0]).toEqual(createdPrompt);
+    expect(compacted.messages[0]?.origin).toEqual({ kind: 'system_trigger', name: 'thread_create' });
     expect(metadata.setTitle).toHaveBeenCalledExactlyOnceWith('A'.repeat(80));
     expect(lifecycle.create).toHaveBeenCalledExactlyOnceWith({ agentId: 'main' });
     let returned = false;
@@ -355,8 +364,9 @@ describe('thread communication tools', () => {
   });
 
   it('delivers a new thread prompt to a real agent loop and starts its turn', async () => {
-    const { createTestAgent } = await import('../../harness/agent');
-    const target = createTestAgent();
+    const { createTestAgent, InMemoryWireRecordPersistence } = await import('../../harness/agent');
+    const persistence = new InMemoryWireRecordPersistence();
+    const target = createTestAgent({ persistence });
     try {
       target.mockNextResponse({ type: 'text', text: 'new thread answered' });
       const agent: IAgentScopeHandle = {
@@ -385,10 +395,15 @@ describe('thread communication tools', () => {
       expect(target.llmCalls).toHaveLength(1);
       expect(target.contextData().history).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          role: 'user', origin: { kind: 'user' },
+          role: 'user', origin: { kind: 'system_trigger', name: 'thread_create' },
           content: [{ type: 'text', text: 'Work in the new thread' }],
         }),
       ]));
+      expect(persistence.records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'turn.prompt', origin: { kind: 'system_trigger', name: 'thread_create' } }),
+        expect.objectContaining({ type: 'turn.ended', turnId: 0, reason: 'completed' }),
+      ]));
+      await target.expectResumeMatches();
     } finally {
       await target.dispose();
     }
@@ -478,7 +493,7 @@ function createThreadFixture(options: {
     }),
   };
   const prompt = {
-    enqueue: vi.fn(async () => {
+    enqueue: vi.fn(async (_input: Parameters<IAgentPromptService['enqueue']>[0]) => {
       calls.push('prompt');
       return {
         launched: options.launched ?? Promise.resolve({ id: 1 }),

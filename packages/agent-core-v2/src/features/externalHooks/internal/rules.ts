@@ -86,6 +86,7 @@ export interface HookEvent extends HookBinding {
   readonly toolCallId?: string;
   readonly status?: string;
   readonly source?: string;
+  readonly delivery?: 'steering';
   readonly outcome?: string;
   readonly reason?: string;
   readonly finishReason?: string;
@@ -144,6 +145,7 @@ export function matchesHook(rule: EffectiveHookRule, event: HookBinding & {
   readonly tool?: string;
   readonly status?: string;
   readonly source?: string;
+  readonly delivery?: 'steering';
   readonly outcome?: string;
 }): boolean {
   const match = rule.rule.match;
@@ -153,7 +155,7 @@ export function matchesHook(rule: EffectiveHookRule, event: HookBinding & {
     contains(match.routes, event.routeId) && contains(match.executors, event.executorId) &&
     contains(match.agentRoles, event.agentRole) && contains(match.tools, event.tool) &&
     contains(match.statuses, event.status) && contains(match.outcomes, event.outcome) &&
-    contains(match.sources ?? (event.event === 'prompt.submit' ? ['user'] : undefined), event.source);
+    (contains(match.sources ?? (event.event === 'prompt.submit' ? ['user'] : undefined), event.source) || (match.sources?.includes('steering') === true && event.delivery === 'steering'));
 }
 
 export function hookOrder(a: EffectiveHookRule, b: EffectiveHookRule): number {

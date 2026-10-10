@@ -716,6 +716,16 @@ describe('Agent context', () => {
     expect(context.get().map((m) => m.role)).toEqual(['user', 'assistant']);
   });
 
+  it('undo removes the thread-created task and its response rather than the preceding user exchange', async () => {
+    ctx.appendTurnExchange('earlier question', 'earlier answer');
+    const earlier = context.get();
+    context.append(userMessage('Complete the new thread task.', { kind: 'system_trigger', name: 'thread_create' }));
+    context.append({ role: 'assistant', content: [{ type: 'text', text: 'task answer' }], toolCalls: [] });
+    context.append(userMessage('Continue automatically.', { kind: 'system_trigger', name: 'goal_continuation' }));
+    await ctx.undoHistory(1);
+    expect(context.get()).toEqual(earlier);
+  });
+
   it('removes injection messages inside the undone turn', async () => {
     ctx.appendUserTurn('earlier question');
     ctx.appendUserTurn('do the work');
@@ -830,6 +840,20 @@ describe('Agent context', () => {
   });
 
   describe('compaction handoff under a zero estimator', () => {
+    it('retains a thread-created task as original input without retaining other system triggers', () => {
+      const origin: ContextMessage['origin'] = { kind: 'system_trigger', name: 'thread_create' };
+      const prompt = userMessage('Complete the new thread task.', origin);
+      const mixed = userMessage('A mixed thread task.', { kind: 'merged', origins: [origin, { kind: 'system_trigger', name: 'future_trigger' }] });
+      const internal = ['goal_continuation', 'subagent', 'future_trigger'].map((name) => userMessage(`Internal ${name}`, { kind: 'system_trigger', name }));
+      const history = [prompt, mixed, ...internal];
+      const shape = buildContextCompactionShape(history, { summary: 'carried context', compactedCount: history.length, tokensBefore: 100 });
+      expect(shape.messages.map(textOf)).toEqual(['Complete the new thread task.', 'A mixed thread task.', 'carried context']);
+      expect(shape.messages[0]).toEqual(prompt);
+      expect(shape.messages[0]?.origin).toEqual(origin);
+      expect(shape.messages[1]).toEqual(mixed);
+      expect(shape.keptUserMessageCount).toBe(2);
+    });
+
     const zero: TokenEstimate = { text: () => 0, message: () => 0, messages: () => 0 };
 
     it('keeps every user message without elision', () => {
