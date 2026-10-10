@@ -104,10 +104,12 @@ import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 import { recordNavigation } from './lib/navHistory';
 import {
-  desktopPluginFocus,
-  desktopPluginFocusTargets,
+  desktopPluginFocusHandoff,
+  pluginFocusPublication,
+  pluginFocusSameIdentity,
   pluginFocusStep,
   type PluginFocusCursor,
+  type PluginFocusIdentity,
   type PluginFocusStep,
 } from './lib/pluginFocus';
 import { requestScopeNavigation } from './lib/navScope';
@@ -158,6 +160,12 @@ async function showDesktopWindow(): Promise<void> {
   await invoke('show_main_window');
 }
 
+async function publishConsumedPluginFocus(homeId: string, requestId: number): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('remember_plugin_focus', { homeId, requestId });
+  await invoke('ack_plugin_focus', { homeId, requestId });
+}
+
 /** Show through the permitted native command before changing route. A rejection leaves the cursor unchanged. */
 async function applyConnectionPluginFocus(input: {
   request: { readonly id: number; readonly sessionId: string } | undefined;
@@ -167,19 +175,19 @@ async function applyConnectionPluginFocus(input: {
   closed: () => boolean;
   hostKind: string;
   navigate: (route: string) => void;
-}): Promise<PluginFocusCursor> {
+}): Promise<{ cursor: PluginFocusCursor; consumed: PluginFocusIdentity | undefined }> {
   const step: PluginFocusStep = pluginFocusStep({
     request: input.request === undefined ? undefined : { id: input.request.id, sessionId: input.request.sessionId },
     cursor: input.cursor,
     sameConnection: input.sameConnection,
     owner: input.owner,
   });
-  if (step.kind === 'remember') return step.cursor;
+  if (step.kind === 'remember') return { cursor: step.cursor, consumed: undefined };
   if (step.kind !== 'focus-current') throw new Error('Current plugin focus lost its connection');
   if (input.hostKind === 'tauri') await showDesktopWindow();
-  if (input.closed()) return input.cursor;
+  if (input.closed()) return { cursor: input.cursor, consumed: undefined };
   input.navigate(step.route);
-  return step.cursor;
+  return { cursor: step.cursor, consumed: pluginFocusPublication(step, input.owner) };
 }
 
 function RootRedirect() {
@@ -314,11 +322,29 @@ export function App() {
     current: { initialized: false, seenId: 0 } as PluginFocusCursor,
     local: null as object | null,
     localCursor: { initialized: false, seenId: 0 } as PluginFocusCursor,
+    armedNative: null as PluginFocusIdentity | null,
+    armedLocal: null as PluginFocusIdentity | null,
+    pendingPublish: [] as PluginFocusIdentity[],
   });
+  const pendingNavigationRef = useRef(pendingNavigation);
+  pendingNavigationRef.current = pendingNavigation;
 
   useEffect(() => {
     let closed = false;
     let timer: ReturnType<typeof setTimeout>;
+    const noteConsumed = (identity: PluginFocusIdentity) => {
+      const pending = focusWatch.current.pendingPublish;
+      if (!pending.some((item) => pluginFocusSameIdentity(item, identity))) pending.push(identity);
+    };
+    const flushConsumed = async () => {
+      const pending = focusWatch.current.pendingPublish;
+      while (pending.length > 0) {
+        const identity = pending[0];
+        if (identity === undefined) return;
+        await publishConsumedPluginFocus(identity.homeId, identity.requestId);
+        if (focusWatch.current.pendingPublish[0] === identity) focusWatch.current.pendingPublish.shift();
+      }
+    };
     const read = async () => {
       try {
         if (focusWatch.current.client !== client) {
@@ -328,62 +354,83 @@ export function App() {
         if (focusWatch.current.local !== localClient) {
           focusWatch.current.local = localClient;
           focusWatch.current.localCursor = { initialized: false, seenId: 0 };
+          focusWatch.current.armedLocal = null;
         }
-        if (host.kind === 'tauri') {
-          try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            const pending = desktopPluginFocusTargets(
-              desktopPluginFocus(await invoke('read_plugin_focus')),
-              activeSpace()?.homeId ?? 'main',
-            );
-            if (pending !== undefined) {
-              await invoke('show_main_window');
-              if (!closed) {
-                navigate(pending.route);
-                await invoke('ack_plugin_focus', { requestId: pending.requestId });
+        if (host.kind === 'tauri') await flushConsumed();
+        if (closed) return;
+        // An open confirmation owns the seat. A later poll retries after it closes.
+        if (!pendingNavigationRef.current) {
+          let nativeHandoff: ReturnType<typeof desktopPluginFocusHandoff> = undefined;
+          if (host.kind === 'tauri') {
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              nativeHandoff = desktopPluginFocusHandoff(await invoke('read_plugin_focus'));
+            } catch {
+              nativeHandoff = undefined;
+            }
+          }
+          let localRestore: Extract<PluginFocusStep, { kind: 'restore-owner' }> | undefined;
+          if (nativeHandoff === undefined && host.kind === 'tauri' && localClient !== null && (connectionSource === 'remote' || connectionSource === 'ssh')) {
+            const home = parseActiveSpacePayload(await host.activeSpace());
+            if (home === null) throw new Error('Active desktop space is unavailable');
+            const localRequest = (await localClient.pluginNavigation()).request;
+            if (!closed) {
+              const localStep = pluginFocusStep({
+                request: localRequest === undefined ? undefined : { id: localRequest.id, sessionId: localRequest.sessionId },
+                cursor: focusWatch.current.localCursor,
+                sameConnection: false,
+                owner: { homeId: home.homeId, scopeId: 'local' },
+              });
+              if (localStep.kind === 'remember') focusWatch.current.localCursor = localStep.cursor;
+              else if (localStep.kind === 'restore-owner') {
+                if (!pluginFocusSameIdentity(focusWatch.current.armedLocal, { homeId: localStep.homeId, requestId: localStep.cursor.seenId })) {
+                  localRestore = localStep;
+                }
+              } else {
+                throw new Error('Local plugin focus lost its owning space');
               }
             }
-          } catch {
-            // The native intent stays pending. The on-screen connection is still polled below.
           }
-        }
-        if (closed) return;
-        const nextCursor = await applyConnectionPluginFocus({
-          request: (await client.pluginNavigation()).request,
-          cursor: focusWatch.current.current,
-          sameConnection: true,
-          owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
-          closed: () => closed,
-          hostKind: host.kind,
-          navigate,
-        });
-        if (closed) return;
-        focusWatch.current.current = nextCursor;
-        if (host.kind === 'tauri' && localClient !== null && (connectionSource === 'remote' || connectionSource === 'ssh')) {
-          const home = parseActiveSpacePayload(await host.activeSpace());
-          if (home === null) throw new Error('Active desktop space is unavailable');
-          const localRequest = (await localClient.pluginNavigation()).request;
-          if (!closed) {
-            const localStep = pluginFocusStep({
-              request: localRequest === undefined ? undefined : { id: localRequest.id, sessionId: localRequest.sessionId },
-              cursor: focusWatch.current.localCursor,
-              sameConnection: false,
-              owner: { homeId: home.homeId, scopeId: 'local' },
+          if (closed) return;
+          if (nativeHandoff !== undefined && !pluginFocusSameIdentity(focusWatch.current.armedNative, nativeHandoff)) {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('show_main_window');
+            if (closed) return;
+            await requestScopeNavigation({ homeId: nativeHandoff.homeId, scopeId: nativeHandoff.scopeId, route: nativeHandoff.route });
+            const handed = { homeId: nativeHandoff.homeId, requestId: nativeHandoff.requestId };
+            focusWatch.current.armedNative = handed;
+            noteConsumed(handed);
+            await flushConsumed();
+          } else if (localRestore !== undefined) {
+            await showDesktopWindow();
+            if (closed) return;
+            await requestScopeNavigation({ homeId: localRestore.homeId, scopeId: localRestore.scopeId, route: localRestore.route });
+            const handed = { homeId: localRestore.homeId, requestId: localRestore.cursor.seenId };
+            focusWatch.current.armedLocal = handed;
+            focusWatch.current.localCursor = localRestore.cursor;
+            noteConsumed(handed);
+            await flushConsumed();
+          } else {
+            const applied = await applyConnectionPluginFocus({
+              request: (await client.pluginNavigation()).request,
+              cursor: focusWatch.current.current,
+              sameConnection: true,
+              owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
+              closed: () => closed,
+              hostKind: host.kind,
+              navigate,
             });
-            if (localStep.kind === 'remember') focusWatch.current.localCursor = localStep.cursor;
-            else if (localStep.kind === 'restore-owner') {
-              await showDesktopWindow();
-              if (!closed) {
-                await requestScopeNavigation({ homeId: localStep.homeId, scopeId: localStep.scopeId, route: localStep.route });
-                focusWatch.current.localCursor = localStep.cursor;
-              }
-            } else {
-              throw new Error('Local plugin focus lost its owning space');
+            if (closed) return;
+            focusWatch.current.current = applied.cursor;
+            if (applied.consumed !== undefined && host.kind === 'tauri') {
+              noteConsumed(applied.consumed);
+              await flushConsumed();
             }
           }
         }
       } catch {
-        // A rejected restore or a failed scope return leaves the request unconsumed.
+        // A rejected show or a thrown scope transaction leaves that request unconsumed.
+        // Returning from the existing confirmation consumes it, so a later poll does not open the dialog again.
       }
       if (!closed) timer = setTimeout(() => { void read(); }, 1500);
     };

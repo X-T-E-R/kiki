@@ -90,11 +90,34 @@ export function desktopPluginFocus(value: unknown): DesktopPluginFocus | undefin
   return { homeId: record['homeId'], route: record['route'], requestId };
 }
 
-/** The reloaded page applies the intent only when it is already that home. */
-export function desktopPluginFocusTargets(
-  intent: DesktopPluginFocus | undefined,
-  pageHomeId: string,
-): DesktopPluginFocus | undefined {
-  if (intent === undefined || intent.homeId !== pageHomeId) return undefined;
-  return intent;
+export interface PluginFocusIdentity {
+  readonly homeId: string;
+  readonly requestId: number;
+}
+
+export interface DesktopPluginFocusHandoff extends PluginFocusIdentity {
+  readonly scopeId: 'local';
+  readonly route: string;
+}
+
+/** The foreground page hands this to the existing cancellable scope transaction. */
+export function desktopPluginFocusHandoff(value: unknown): DesktopPluginFocusHandoff | undefined {
+  const intent = desktopPluginFocus(value);
+  if (intent === undefined) return undefined;
+  return { homeId: intent.homeId, scopeId: 'local', route: intent.route, requestId: intent.requestId };
+}
+
+/** An ack clears pending focus only when it names that same home and request. */
+export function pluginFocusSameIdentity(
+  pending: PluginFocusIdentity | undefined,
+  ack: PluginFocusIdentity,
+): boolean {
+  return pending !== undefined && pending.homeId === ack.homeId && pending.requestId === ack.requestId;
+}
+
+/** Recording an id stays on this page. A focus that changes the desktop is shared for that home. */
+export function pluginFocusPublication(step: PluginFocusStep, owner: PluginFocusOwner): PluginFocusIdentity | undefined {
+  if (step.kind === 'focus-current') return { homeId: owner.homeId, requestId: step.cursor.seenId };
+  if (step.kind === 'restore-owner') return { homeId: step.homeId, requestId: step.cursor.seenId };
+  return undefined;
 }

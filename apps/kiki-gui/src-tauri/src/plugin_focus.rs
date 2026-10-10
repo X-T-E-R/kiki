@@ -1,9 +1,10 @@
 //! Background plugin-focus requests.
 //!
 //! Each App host keeps one short-lived navigation request. The desktop poll
-//! reads that request from homes that are not on screen, then the reloaded
-//! page for that home consumes it. The session route is stored with the home
-//! id so a foreground connection cannot open the same path on its own host.
+//! reads that request from homes that are not on screen and stores the owning
+//! home with the session route. The foreground page hands that intent to the
+//! existing scope transaction. A consumed request id is remembered per home
+//! and is shared with that poll.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -54,7 +55,10 @@ pub fn seen_request_id(home_id: &str) -> u64 {
 pub fn remember_request_id(home_id: &str, request_id: u64) {
     let mut seen = seen_map();
     if let Some(map) = seen.as_mut() {
-        map.insert(home_id.to_string(), request_id);
+        let current = map.get(home_id).copied().unwrap_or(0);
+        if request_id > current {
+            map.insert(home_id.to_string(), request_id);
+        }
     }
 }
 
@@ -68,9 +72,9 @@ pub fn pending_plugin_focus() -> Option<PluginFocusIntent> {
     PENDING.lock().ok().and_then(|pending| pending.clone())
 }
 
-pub fn acknowledge_plugin_focus(request_id: u64) {
+pub fn acknowledge_plugin_focus(home_id: &str, request_id: u64) {
     let Ok(mut pending) = PENDING.lock() else { return; };
-    if pending.as_ref().is_some_and(|intent| intent.request_id == request_id) {
+    if pending.as_ref().is_some_and(|intent| intent.home_id == home_id && intent.request_id == request_id) {
         pending.take();
     }
 }
@@ -157,7 +161,25 @@ fn http_json_body(response: &[u8]) -> Result<&[u8], String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    static FOCUS_TEST: Mutex<()> = Mutex::new(());
+
+    fn with_focus_state(test: impl FnOnce()) {
+        let _guard = FOCUS_TEST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Ok(mut pending) = PENDING.lock() {
+            *pending = None;
+        }
+        {
+            let mut seen = seen_map();
+            if let Some(map) = seen.as_mut() {
+                map.clear();
+            }
+        }
+        test();
+    }
 
     fn envelope(body: &str) -> Vec<u8> {
         format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{body}").into_bytes()
@@ -223,12 +245,65 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_clears_only_the_matching_pending_intent() {
-        let intent = PluginFocusIntent { home_id: "space-a".to_string(), route: "/s/session-a".to_string(), request_id: 6 };
-        assert!(store_plugin_focus(intent.clone()));
-        acknowledge_plugin_focus(5);
-        assert_eq!(pending_plugin_focus(), Some(intent));
-        acknowledge_plugin_focus(6);
-        assert_eq!(pending_plugin_focus(), None);
+    fn acknowledge_clears_only_the_same_home_and_request() {
+        with_focus_state(|| {
+            let intent = PluginFocusIntent { home_id: "space-a".to_string(), route: "/s/session-a".to_string(), request_id: 6 };
+            assert!(store_plugin_focus(intent.clone()));
+            acknowledge_plugin_focus("space-a", 5);
+            assert_eq!(pending_plugin_focus(), Some(intent.clone()));
+            acknowledge_plugin_focus("space-b", 6);
+            assert_eq!(pending_plugin_focus(), Some(intent));
+            acknowledge_plugin_focus("space-a", 6);
+            assert_eq!(pending_plugin_focus(), None);
+        });
+    }
+
+    #[test]
+    fn a_late_ack_for_home_a_does_not_clear_home_b_request_1() {
+        with_focus_state(|| {
+            let home_b = PluginFocusIntent { home_id: "space-b".to_string(), route: "/s/session-b".to_string(), request_id: 1 };
+            assert!(store_plugin_focus(PluginFocusIntent { home_id: "space-a".to_string(), route: "/s/session-a".to_string(), request_id: 1 }));
+            assert!(store_plugin_focus(home_b.clone()));
+            acknowledge_plugin_focus("space-a", 1);
+            assert_eq!(pending_plugin_focus(), Some(home_b.clone()));
+            acknowledge_plugin_focus("space-b", 1);
+            assert_eq!(pending_plugin_focus(), None);
+        });
+    }
+
+    #[test]
+    fn a_consumed_request_is_not_actionable_for_that_home() {
+        with_focus_state(|| {
+            remember_request_id("space-a", 4);
+            let request = PluginFocusRequest { id: 4, session_id: "session-a".to_string(), at_ms: 5_000 };
+            assert!(!plugin_focus_is_actionable(&request, seen_request_id("space-a"), 6_000));
+        });
+    }
+
+    #[test]
+    fn a_consumed_request_on_one_home_does_not_hide_another_home() {
+        with_focus_state(|| {
+            remember_request_id("space-a", 4);
+            let request = PluginFocusRequest { id: 4, session_id: "session-b".to_string(), at_ms: 5_000 };
+            assert!(plugin_focus_is_actionable(&request, seen_request_id("space-b"), 6_000));
+        });
+    }
+
+    #[test]
+    fn the_next_request_on_a_consumed_home_stays_actionable() {
+        with_focus_state(|| {
+            remember_request_id("space-a", 4);
+            let request = PluginFocusRequest { id: 5, session_id: "session-a".to_string(), at_ms: 5_000 };
+            assert!(plugin_focus_is_actionable(&request, seen_request_id("space-a"), 6_000));
+        });
+    }
+
+    #[test]
+    fn an_older_consumed_id_does_not_reduce_the_remembered_id() {
+        with_focus_state(|| {
+            remember_request_id("space-a", 4);
+            remember_request_id("space-a", 3);
+            assert_eq!(seen_request_id("space-a"), 4);
+        });
     }
 }

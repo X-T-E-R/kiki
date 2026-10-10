@@ -1132,9 +1132,10 @@ impl SpaceBackendManager {
         true
     }
 
-    /// Read plugin focus from homes that are not on screen. One newest request
-    /// switches that home in and leaves the session route for the reloaded page.
-    fn poll_plugin_focus(&self, app: &AppHandle) {
+    /// Read plugin focus from homes that are not on screen. The newest request
+    /// is stored for the foreground page. That page asks the existing scope
+    /// transaction to restore the home; this poll does not switch or reload.
+    fn poll_plugin_focus(&self) {
         let targets = {
             let Ok(state) = self.inner.lock() else { return; };
             if state.stopping || state.mode != WindowMode::Switch { return; }
@@ -1164,17 +1165,7 @@ impl SpaceBackendManager {
             return;
         };
         if self.active_space().ok().is_some_and(|space| space.home_id == selected.home_id) { return; }
-        if !plugin_focus::store_plugin_focus(intent) { return; }
-        if let Err(error) = self.switch(app, &selected.home_id) {
-            plugin_focus::acknowledge_plugin_focus(selected.request.id);
-            eprintln!("Kiki could not restore the desktop space for plugin focus: {}", error.message);
-            return;
-        }
-        plugin_focus::remember_request_id(&selected.home_id, selected.request.id);
-        if let Err(error) = reload_space_window(app) {
-            eprintln!("Kiki could not reload the restored desktop space for plugin focus: {error}");
-        }
-        let _ = show_main_window(app.clone());
+        let _ = plugin_focus::store_plugin_focus(intent);
     }
 
     fn restart_space(&self, app: &AppHandle, id: &str) -> Result<(), String> {
@@ -1775,8 +1766,13 @@ fn read_plugin_focus() -> Option<plugin_focus::PluginFocusIntent> {
 }
 
 #[tauri::command]
-fn ack_plugin_focus(request_id: u64) {
-    plugin_focus::acknowledge_plugin_focus(request_id);
+fn ack_plugin_focus(home_id: String, request_id: u64) {
+    plugin_focus::acknowledge_plugin_focus(&home_id, request_id);
+}
+
+#[tauri::command]
+fn remember_plugin_focus(home_id: String, request_id: u64) {
+    plugin_focus::remember_request_id(&home_id, request_id);
 }
 
 fn notification_navigation_intent(route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) -> serde_json::Value {
@@ -3490,7 +3486,7 @@ pub fn run() {
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_secs(5));
                 if !poll_manager.poll_attention(&handle) { break; }
-                poll_manager.poll_plugin_focus(&handle);
+                poll_manager.poll_plugin_focus();
             });
             Ok(())
         })

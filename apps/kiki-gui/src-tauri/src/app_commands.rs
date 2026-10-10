@@ -22,6 +22,7 @@ macro_rules! app_commands {
             ack_navigation_intent,
             read_plugin_focus,
             ack_plugin_focus,
+            remember_plugin_focus,
             ssh_tunnel_running,
             disconnect_ssh_profile,
             cancel_desktop_startup,
