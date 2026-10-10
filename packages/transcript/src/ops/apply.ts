@@ -17,6 +17,7 @@ import type {
   StepHeader,
 } from './operation';
 import { transcriptValueEquals } from './equality';
+import { carryContentHydration, mergeContentPreview } from '../contract/content';
 
 const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
 const REMOVED_ITEM_ID_LIMIT = 2048;
@@ -277,7 +278,18 @@ function reconcileItems(
   const currentById = new Map(current.map((item) => [itemIdOf(item), item]));
   const stableIncoming = incoming.map((item) => {
     const existing = currentById.get(itemIdOf(item));
-    return existing !== undefined && transcriptValueEquals(existing, item) ? existing : item;
+    let candidate = item;
+    if (item.kind === 'turn' && existing?.kind === 'turn') {
+      const retained = mergeContentPreview(existing, item);
+      candidate = carryContentHydration(retained, { ...retained, steps: retained.steps.map((step) => {
+        const previous = existing.steps.find((entry) => entry.stepId === step.stepId);
+        return previous === undefined ? step : { ...step, frames: step.frames.map((frame) => {
+          const current = previous.frames.find((entry) => entry.frameId === frame.frameId);
+          return current === undefined ? frame : mergeContentPreview(current, frame);
+        }) };
+      }) });
+    }
+    return existing !== undefined && transcriptValueEquals(existing, candidate) ? existing : candidate;
   });
   if (coverage.kind === 'full') {
     return transcriptValueEquals(current, stableIncoming) ? current : stableIncoming;
@@ -329,7 +341,7 @@ function stabilizeMap<K, V>(
 }
 
 function turnHeaderToTurn(header: TurnHeader, steps: readonly TranscriptStep[]): TranscriptTurn {
-  return { ...header, kind: 'turn', steps: [...steps] };
+  return carryContentHydration(header, { ...header, kind: 'turn', steps: [...steps] });
 }
 
 function skeletonTurn(turnId: TurnId): TranscriptTurn {
@@ -382,29 +394,14 @@ function replaceAt<T>(items: readonly T[], index: number, value: T): T[] {
 function applyTurnUpsert(state: AgentState, header: TurnHeader): ApplyResult {
   const located = findTurn(state.items, header.turnId);
   if (located !== undefined) {
-    if (turnEquals(located.turn, header)) return { state, changed: false };
-    return {
-      state: {
-        ...state,
-        items: replaceAt(
-          state.items,
-          located.index,
-          turnHeaderToTurn(header, located.turn.steps),
-        ),
-      },
-      changed: true,
-    };
+    const incoming = mergeContentPreview(located.turn, turnHeaderToTurn(header, located.turn.steps));
+    if (transcriptValueEquals(located.turn, incoming)) return { state, changed: false };
+    return { state: { ...state, items: replaceAt(state.items, located.index, incoming) }, changed: true };
   }
   return {
     state: { ...state, items: insertTurn(state.items, turnHeaderToTurn(header, [])) },
     changed: true,
   };
-}
-
-function turnEquals(turn: TranscriptTurn, header: TurnHeader): boolean {
-  const { steps: _steps, ...current } = turn;
-  void _steps;
-  return transcriptValueEquals(current, header);
 }
 
 function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader): ApplyResult {
@@ -431,7 +428,7 @@ function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader):
     );
   }
   if (!changed) return { state, changed: false };
-  const nextTurn: TranscriptTurn = { ...turn, steps: [...steps] };
+  const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps: [...steps] });
   const items =
     located !== undefined
       ? replaceAt(state.items, located.index, nextTurn)
@@ -459,14 +456,15 @@ function applyFrameUpsert(
   let toolCallCountDelta = 0;
   if (frameIndex >= 0) {
     const current = step.frames[frameIndex];
-    if (current !== undefined && frameEquals(current, op.frame)) {
+    const incoming = current === undefined ? op.frame : mergeContentPreview(current, op.frame);
+    if (current !== undefined && frameEquals(current, incoming)) {
       return { state, changed: false, toolCallCountDelta: 0 };
     }
     if (current !== undefined && (current.kind === 'tool') !== (op.frame.kind === 'tool')) {
       toolCallCountDelta = op.frame.kind === 'tool' ? 1 : -1;
       toolCallCount = adjustToolCallCount(toolCallCount, toolCallCountDelta);
     }
-    frames = replaceAt(step.frames, frameIndex, op.frame);
+    frames = replaceAt(step.frames, frameIndex, incoming);
   } else {
     if (op.frame.kind === 'tool') {
       toolCallCountDelta = 1;
@@ -479,7 +477,7 @@ function applyFrameUpsert(
     stepIndex >= 0
       ? replaceAt(turn.steps, stepIndex, nextStep)
       : [...turn.steps, nextStep].toSorted((a, b) => a.ordinal - b.ordinal);
-  const nextTurn: TranscriptTurn = { ...turn, steps };
+  const nextTurn: TranscriptTurn = carryContentHydration(turn, { ...turn, steps });
   const items =
     located !== undefined
       ? replaceAt(state.items, located.index, nextTurn)
@@ -518,10 +516,10 @@ function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
     ...step,
     frames: replaceAt(step.frames, frameIndex, nextFrame),
   };
-  const nextTurn: TranscriptTurn = {
+  const nextTurn: TranscriptTurn = carryContentHydration(turn, {
     ...turn,
     steps: replaceAt(turn.steps, stepIndex, nextStep),
-  };
+  });
   return {
     state: { ...state, items: replaceAt(state.items, located.index, nextTurn) },
     changed: true,

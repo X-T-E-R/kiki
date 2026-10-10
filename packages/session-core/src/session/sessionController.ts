@@ -65,8 +65,8 @@ import {
   type TranscriptDetailKind,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
-import { collectTranscriptContentRefs, patchTranscriptContent } from './transcript/content';
-import { applyContentSegment, sameContentRef, type ContentRef } from '@kiki/transcript';
+import { collectTranscriptContentRefs, patchTranscriptContent, transcriptContentEntity, snapshotContentEntity, replaceAgentContentEntity, replaceSnapshotContentEntity, patchAgentTranscriptContent } from './transcript/content';
+import { applyContentSegment, sameContentRef, restoreContentPreview, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
@@ -76,6 +76,11 @@ import { stabilizeAgentForest, type AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
 
 export type Listener = () => void;
+
+export const CONTENT_INLINE_TEXT_CHARS = 512 * 1024;
+export const CONTENT_RANGE_CHARS = 4096;
+const CONTENT_RANGE_CACHE_BYTES = 2 * 1024 * 1024;
+const CONTENT_BODY_CACHE_BYTES = 8 * 1024 * 1024;
 
 export const RESYNC_PAUSED_ERROR = 'Session is resyncing; sending is paused';
 
@@ -269,6 +274,11 @@ export class SessionController {
   private readonly detailReads = new Map<string, Promise<boolean>>();
   private readonly olderPageCursors = new Map<string, string>();
   private readonly contentControllers = new Map<string, AbortController>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; readers: number; blocked: boolean; ref?: ContentRef }>();
+  private contentPumpRunning = false;
+  private readonly contentRanges = new Map<string, string>();
+  private contentRangeBytes = 0;
+  private readonly contentBodies = new Map<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
   private readonly entityPageCursors = new Map<string, string | null>();
   private latestSnapshot: SessionSnapshotResponse | undefined;
   private readonly catchupReplay = new Map<
@@ -554,6 +564,7 @@ export class SessionController {
     }
     this.transcriptGrades = this.requestedTranscriptGrades();
     this.attachView(this.state.cursor);
+    void this.pumpContentReads();
     void this.refreshShell();
   }
 
@@ -612,6 +623,9 @@ export class SessionController {
     this.pendingTranscriptAgents.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
+    this.contentReaders.clear();
+    this.contentBodies.clear();
+    this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.inFlightOlder.clear();
     if (this.state.loadingOlder || this.state.olderError !== undefined) {
       this.state = { ...this.state, loadingOlder: false, olderError: undefined };
@@ -1206,7 +1220,14 @@ export class SessionController {
       if (snapshot.olderCursor !== undefined) this.olderPageCursors.set(agentId, snapshot.olderCursor);
       else this.olderPageCursors.delete(agentId);
     }
+    const retainedBodies = [...this.contentBodies.entries()].filter(([, entry]) => entry.agentId === agentId);
     store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
+    for (const target of this.contentReaders.values()) if (target.agentId === agentId) target.blocked = false;
+    for (const [key, entry] of retainedBodies) {
+      const entity = this.contentEntity(agentId, entry.source);
+      if (entity === undefined) this.contentBodies.delete(key);
+      else this.contentBodies.set(key, { ...entry, base: snapshotContentEntity(snapshot, entry.source) ?? entry.base, bytes: estimateJsonBytes(entity) });
+    }
     this.transcriptCursors.set(agentId, cursor);
     if (read !== undefined) this.historyReads.set(agentId, read);
     else this.historyReads.delete(agentId);
@@ -1269,6 +1290,152 @@ export class SessionController {
     return run;
   }
 
+  isContentRange(agentId: string, ref: ContentRef): boolean {
+    return ref.kind === 'text' && (ref.total > CONTENT_INLINE_TEXT_CHARS || (this.contentBodies.get(JSON.stringify([agentId, ref.source]))?.bytes ?? 0) >= CONTENT_BODY_CACHE_BYTES / 2 || this.contentMemoryReport().bodyBytes >= CONTENT_BODY_CACHE_BYTES);
+  }
+
+  contentRefsFor(agentId: string, source: ContentSource): readonly ContentRef[] {
+    return this.contentEntity(agentId, source)?.contentRefs ?? [];
+  }
+
+  private contentEntity(agentId: string, source: ContentSource): ContentWindow | undefined {
+    if (source.kind === 'snapshot') return this.latestSnapshot;
+    const store = this.agentTranscripts.get(agentId);
+    const entity = store === undefined ? undefined : transcriptContentEntity(store, source);
+    if (entity !== undefined) return entity;
+    const older = this.olderPages.get(agentId);
+    if (older === undefined) return undefined;
+    if (source.kind === 'turn') return older.items.find((item) => item.kind === 'turn' && item.turnId === source.id) as ContentWindow | undefined;
+    if (source.kind === 'frame') {
+      const turn = older.items.find((item) => item.kind === 'turn' && item.turnId === source.turnId);
+      return turn?.kind === 'turn' ? turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id) : undefined;
+    }
+    const collection = { task: older.tasks, attachment: older.attachments, prompt: older.prompts, interaction: older.interactions, todo: older.todos };
+    if (source.kind in collection) return collection[source.kind as keyof typeof collection].find((item) => Object.entries(item).some(([key, value]) => key.endsWith('Id') && value === source.id));
+    return source.kind === 'meta' ? older.meta : undefined;
+  }
+
+  contentMemoryReport(): { bodies: number; bodyBytes: number; rangeBytes: number; bodyBudget: number; rangeBudget: number } {
+    return { bodies: this.contentBodies.size, bodyBytes: [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0), rangeBytes: this.contentRangeBytes, bodyBudget: CONTENT_BODY_CACHE_BYTES, rangeBudget: CONTENT_RANGE_CACHE_BYTES };
+  }
+
+  private observeContentPreview(agentId: string, op: TranscriptOperation): void {
+    const selected = (): readonly [ContentSource, ContentWindow] | undefined => {
+      switch (op.op) {
+        case 'frame.upsert': return [{ kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, op.frame];
+        case 'turn.upsert': return [{ kind: 'turn', id: op.turn.turnId }, op.turn];
+        case 'task.upsert': return [{ kind: 'task', id: op.task.taskId }, op.task];
+        case 'attachment.upsert': return [{ kind: 'attachment', id: op.attachment.attachmentId }, op.attachment];
+        case 'prompt.upsert': return [{ kind: 'prompt', id: op.prompt.promptId }, op.prompt];
+        case 'interaction.upsert': return [{ kind: 'interaction', id: op.interaction.interactionId }, op.interaction];
+        case 'todo.upsert': return [{ kind: 'todo', id: op.todo.todoId }, op.todo];
+        case 'marker.upsert': return [{ kind: 'marker', id: op.item.markerId }, op.item];
+        case 'meta.merge': return [{ kind: 'meta', id: '' }, op.meta];
+        default: return undefined;
+      }
+    };
+    const target = selected();
+    if (target === undefined) return;
+    const [source, preview] = target;
+    const key = JSON.stringify([agentId, source]);
+    const entry = this.contentBodies.get(key);
+    if (entry === undefined) return;
+    const changed = JSON.stringify(entry.base.contentRefs ?? []) !== JSON.stringify(preview.contentRefs ?? []);
+    this.contentBodies.set(key, { ...entry, base: source.kind === 'turn' || source.kind === 'meta' ? { ...entry.base, ...preview } : preview, bytes: changed ? estimateJsonBytes(this.contentEntity(agentId, source)) : entry.bytes });
+  }
+
+  private accountContentBody(agentId: string, source: ContentSource, base?: ContentWindow): void {
+    const key = JSON.stringify([agentId, source]);
+    const previous = this.contentBodies.get(key);
+    const entity = this.contentEntity(agentId, source);
+    if (entity === undefined) return;
+    this.contentBodies.delete(key);
+    this.contentBodies.set(key, { agentId, source, base: previous?.base ?? base ?? entity, bytes: estimateJsonBytes(entity) });
+    let total = [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+    for (const [candidateKey, candidate] of this.contentBodies) {
+      if (total <= CONTENT_BODY_CACHE_BYTES) break;
+      if ([...this.contentReaders.values()].some((target) => target.agentId === candidate.agentId && JSON.stringify(target.source) === JSON.stringify(candidate.source))) continue;
+      const current = this.contentEntity(candidate.agentId, candidate.source);
+      const restored = current === undefined ? undefined : restoreContentPreview(current, candidate.base);
+      const store = this.agentTranscripts.get(candidate.agentId);
+      if (restored !== undefined && store !== undefined && transcriptContentEntity(store, candidate.source) !== undefined) replaceAgentContentEntity(store, candidate.source, restored);
+      const older = this.olderPages.get(candidate.agentId);
+      if (restored !== undefined && older !== undefined) this.olderPages.set(candidate.agentId, replaceSnapshotContentEntity(older, candidate.source, restored));
+      this.contentBodies.delete(candidateKey);
+      total -= candidate.bytes;
+      this.pendingTranscriptAgents.add(candidate.agentId);
+    }
+    this.flushFrames();
+  }
+
+  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[]): { release(): void; retry(): void } {
+    const key = JSON.stringify([agentId, source, roots]);
+    const target = this.contentReaders.get(key) ?? { agentId, source, roots, readers: 0, blocked: false };
+    target.readers += 1;
+    target.blocked = false;
+    this.contentReaders.set(key, target);
+    void this.pumpContentReads();
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        target.readers -= 1;
+        if (target.readers > 0) return;
+        this.contentReaders.delete(key);
+        this.accountContentBody(agentId, source);
+        if (target.ref !== undefined && ![...this.contentReaders.values()].some((other) => other.agentId === agentId && JSON.stringify(other.source) === JSON.stringify(source) && other.roots.includes(String(target.ref!.path[0])))) this.cancelContentSegment(agentId, target.ref);
+      },
+      retry: () => { target.blocked = false; void this.pumpContentReads(); },
+    };
+  }
+
+  private async pumpContentReads(): Promise<void> {
+    if (this.contentPumpRunning || this.closed || this.isSuspended) return;
+    this.contentPumpRunning = true;
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      while (!this.closed && !this.isSuspended) {
+        let didRead = false;
+        const targets = [...this.contentReaders.values()];
+        for (const target of targets) {
+          if (target.readers === 0 || target.blocked) continue;
+          const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
+            if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate)) return false;
+            return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
+          });
+          if (ref === undefined) continue;
+          target.ref = ref;
+          const applied = await this.loadContentSegment(target.agentId, ref);
+          target.ref = applied ? undefined : ref;
+          if (!applied && target.readers > 0) target.blocked =
+            this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref));
+          didRead = true;
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        if (!didRead) break;
+      }
+    } finally { this.contentPumpRunning = false; }
+  }
+
+  private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    let failures = 0;
+    for (;;) {
+      signal?.throwIfAborted();
+      try { return await read(); }
+      catch (error) {
+        signal?.throwIfAborted();
+        const code = error instanceof RPCError || error instanceof ApiError ? error.code : undefined;
+        const preparing = code === 40923;
+        const transient = code === -1 || code === API_CODES.TIMEOUT ||
+          error instanceof TypeError || (error instanceof RPCError && error.reason === 'transport.timeout');
+        if (!preparing && (!transient || failures >= RESYNC_BACKOFF_MS.length)) throw error;
+        const delay = preparing ? 80 : RESYNC_BACKOFF_MS[failures++];
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
   async loadContentSegment(agentId: string, ref: ContentRef): Promise<boolean> {
     const read = this.view.transcript.content?.bind(this.view.transcript);
     if (this.closed || read === undefined) return false;
@@ -1284,7 +1451,10 @@ export class SessionController {
       try {
         const refs = ref.source.kind === 'snapshot' ? this.latestSnapshot?.contentRefs ?? [] : collectTranscriptContentRefs(this.composeAgentSnapshot(agentId));
         if (!refs.some((current) => sameContentRef(current, ref))) return false;
-        const segment = await read({ agentId, ref }, { signal: controller.signal });
+        const generation = this.historyGeneration.get(agentId) ?? 0;
+        const baseline = this.contentEntity(agentId, ref.source);
+        const segment = await this.readPreparedContent(() => read({ agentId, ref }, { signal: controller.signal }), controller.signal);
+        if ((this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
         if (this.closed || controller.signal.aborted) return false;
         if (ref.source.kind === 'snapshot') {
           const current = this.latestSnapshot;
@@ -1295,14 +1465,20 @@ export class SessionController {
           this.setState({ ...applyTranscriptShell(this.sessionId, patched, this.state), contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])] });
           this.publishForest();
         } else {
-          const current = this.composeAgentSnapshot(agentId);
-          const patched = patchTranscriptContent(current, segment);
-          if (patched === current) return false;
           const store = this.ensureAgentTranscript(agentId);
-          store.apply([{ op: 'reset', agentId, snapshot: patched }]);
+          let applied = patchAgentTranscriptContent(store, segment);
+          if (!applied) {
+            const older = this.olderPages.get(agentId);
+            if (older !== undefined) {
+              const patched = patchTranscriptContent(older, segment);
+              if (patched !== older) { this.olderPages.set(agentId, patched); applied = true; }
+            }
+          }
+          if (!applied) return false;
           this.forestDirtyAgents.add(agentId);
           this.pendingTranscriptAgents.add(agentId);
           this.flushFrames();
+          if (ref.source.kind !== 'turn' || ref.path[0] !== 'steps') this.accountContentBody(agentId, ref.source, baseline);
         }
         return true;
       } catch (error) {
@@ -1481,6 +1657,13 @@ export class SessionController {
     if (this.hasTranscriptBaseline(agentId)) this.viewHandle?.updateTranscriptCursor(agentId, resumeCursor);
     const adoptedCount = this.adoptToolCountObservation(agentId);
     if (result.accepted.length > 0 || adoptedCount) {
+      for (const op of result.accepted) this.observeContentPreview(agentId, op);
+      for (const target of this.contentReaders.values()) {
+        if (target.agentId !== agentId || !target.blocked) continue;
+        const refs = this.contentRefsFor(agentId, target.source);
+        if (target.ref === undefined || !refs.some((ref) => sameContentRef(ref, target.ref!))) target.blocked = false;
+      }
+      void this.pumpContentReads();
       if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
       // A spawn names an agent the viewer has no roster row for; the row (role
       // profile and model) rides the session snapshot, not this op stream.
