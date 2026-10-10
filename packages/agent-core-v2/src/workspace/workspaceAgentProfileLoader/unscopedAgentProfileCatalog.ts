@@ -1,4 +1,5 @@
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { IInstantiationService } from '#/_base/di/instantiation';
@@ -97,9 +98,10 @@ export function createUnscopedAgentProfileCatalog(
     resources.add(registry.registerSourceReadiness('preview', workspaceKey, Promise.all(loaders.map((loader) => loader.ready)).then(() => {})));
     const skills = cwd === undefined || !includeSkills ? undefined : resources.add(container.createInstance(WorkspaceSkillCatalogService));
     const catalog = resources.add(container.createInstance(SessionAgentProfileCatalogService));
-    return { registry, catalog, skills, workspaceId: workspaceKey, dispose: () => { resources.dispose(); } };
+    return { registry, catalog, skills, workspaceId: workspaceKey, dispose: () => resources.dispose() };
   } catch (error) {
-    resources.dispose();
+    const cleanup = resources.dispose();
+    if (cleanup instanceof Promise) cleanup.catch(onUnexpectedError);
     throw error;
   }
 }
