@@ -567,7 +567,11 @@ export class ConfigService extends Disposable implements IConfigService {
         }
         if (Object.keys(root).length === 0) delete stagedRawSnake[snake];
         const transformed = transformTomlData({ [snake]: stagedRawSnake[snake] }, this.registry);
-        stagedRaw[domain] = transformed[domain];
+        if (transformed[domain] === undefined) {
+          delete stagedRaw[domain];
+        } else {
+          stagedRaw[domain] = transformed[domain];
+        }
       }, true);
       this.rebuildEffective('set', [domain]);
     });

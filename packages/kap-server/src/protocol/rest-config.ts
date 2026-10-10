@@ -28,6 +28,7 @@ import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
 import { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
+import { computerControlConfigResponseSchema, computerControlConfigPatchSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -203,6 +204,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigResponseSchema.optional(),
   interaction: interactionConfigResponseSchema.optional(),
+  computer_control: computerControlConfigResponseSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
@@ -252,6 +254,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigPatchSchema.optional(),
   interaction: interactionConfigPatchSchema.optional(),
+  computer_control: computerControlConfigPatchSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
   nb_search_source: nbSearchSourceConfigSchema.optional(),
