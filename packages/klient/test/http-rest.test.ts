@@ -291,6 +291,7 @@ describe('HTTP REST domains', () => {
       const path = new URL(String(input)).pathname;
       calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       if (path === '/api/homes' && init?.method === 'GET') return envelope({ items: [{ id: 'main', name: 'Main space', path: '/main', primary: true }] });
+      if (path === '/api/homes:inspect') return envelope({ state: 'nonempty' });
       if (path === '/api/homes' || path === '/api/homes:attach') return envelope({ id: 'h-abc', name: 'Secret', path: '/space' });
       if (path.endsWith('/ssh-copy-candidates')) return envelope({ hosts: [{ hostId: 'prod', name: 'Production', credential_kinds: ['password'] }] });
       if (path.startsWith('/api/homes/') && init?.method === 'PATCH') return envelope({ space: { id: 'h-abc', name: 'Secret', path: '/space', credentials_shared: false }, restart_required: true, copied_ssh_entries: 1 });
@@ -303,6 +304,7 @@ describe('HTTP REST domains', () => {
     try {
       await expect(channel.rest.homes.list()).resolves.toMatchObject({ items: [{ id: 'main' }] });
       await channel.rest.homes.create({ name: 'Secret', path: '/space', inherit: { credentials: 'isolated' } });
+      await expect(channel.rest.homes.inspect({ path: '/space' })).resolves.toEqual({ state: 'nonempty' });
       await channel.rest.homes.attach({ path: '/space' });
       await expect(channel.rest.homes.sshCopyCandidates('h-abc')).resolves.toMatchObject({ hosts: [{ hostId: 'prod' }] });
       await expect(channel.rest.homes.update('h-abc', { inherit: { credentials: 'isolated' }, copy_ssh_credentials: { hosts: [{ hostId: 'prod' }] } })).resolves.toMatchObject({ restart_required: true, copied_ssh_entries: 1 });
@@ -313,6 +315,7 @@ describe('HTTP REST domains', () => {
       expect(calls).toEqual([
         { path: '/api/homes', method: 'GET', body: undefined },
         { path: '/api/homes', method: 'POST', body: { name: 'Secret', path: '/space', inherit: { credentials: 'isolated' } } },
+        { path: '/api/homes:inspect', method: 'POST', body: { path: '/space' } },
         { path: '/api/homes:attach', method: 'POST', body: { path: '/space' } },
         { path: '/api/homes/h-abc/ssh-copy-candidates', method: 'GET', body: undefined },
         { path: '/api/homes/h-abc', method: 'PATCH', body: { inherit: { credentials: 'isolated' }, copy_ssh_credentials: { hosts: [{ hostId: 'prod' }] } } },

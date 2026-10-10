@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, normalize, parse, resolve, sep } from 'node:path';
+import { isAbsolute, join, normalize, parse, resolve, sep } from 'node:path';
 
 import { IBootstrapService, ISshHostService, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
 import { readSpaceHome } from '@kiki/agent-core-v2/app/bootstrap/spaceHome';
@@ -13,7 +13,7 @@ import { listLiveServerInstances } from '../instanceRegistry';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
-  attachSpaceRequestSchema, createSpaceRequestSchema, spaceIdParamsSchema,
+  attachSpaceRequestSchema, createSpaceRequestSchema, inspectSpacePathResponseSchema, spaceIdParamsSchema,
   spaceRecordSchema, spacesResponseSchema, spacePresetsResponseSchema, deleteSpaceParamsSchema, deleteSpaceRequestSchema,
   updateSpaceRequestSchema, updateSpaceResponseSchema, sshCopyCandidatesResponseSchema,
 } from '../protocol/rest-space';
@@ -202,6 +202,29 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
   });
   app.get(presets.path, presets.options, presets.handler as Parameters<HomesRouteHost['get']>[2]);
 
+  const inspect = defineRoute({
+    method: 'POST', path: '/homes::inspect', body: attachSpaceRequestSchema,
+    success: { data: inspectSpacePathResponseSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {} },
+    description: 'Inspect a space location without changing its files', tags: ['homes'],
+  }, async (req, reply) => {
+    try {
+      requireMainSpace(scope);
+      if (!isAbsolute(req.body.path)) throw new Error('Space path must be an absolute directory');
+      let state: z.infer<typeof inspectSpacePathResponseSchema>['state'];
+      try {
+        const entries = await readdir(req.body.path);
+        state = readSpaceHome(req.body.path).space !== undefined ? 'space' : entries.length === 0 ? 'empty' : 'nonempty';
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        state = 'missing';
+      }
+      reply.send(okEnvelope({ state }, req.id));
+    } catch (error) {
+      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, `Cannot inspect space location: ${String(error)}`, req.id));
+    }
+  });
+  app.post(inspect.path, inspect.options, inspect.handler as Parameters<HomesRouteHost['post']>[2]);
+
   const create = defineRoute({
     method: 'POST', path: '/homes', body: createSpaceRequestSchema,
     success: { data: spaceRecordSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SPACE_PRESET_NOT_FOUND]: {} },
@@ -217,9 +240,21 @@ export function registerHomesRoutes(app: HomesRouteHost, scope: Scope, credentia
         if (!isAbsolute(req.body.path) || samePath(req.body.path, base)) throw new Error('Space path must be a distinct absolute directory');
         const path = normalize(req.body.path);
         const records = await readHomes(base);
+        const existing = readSpaceHome(path);
+        if (existing.diagnostic !== undefined) throw new Error(existing.diagnostic);
+        if (existing.space !== undefined) {
+          const attached = childRecord(path, base);
+          const registered = records.find((item) => samePath(item.path, path));
+          if (registered !== undefined) {
+            if (registered.id !== attached.id) throw new Error('Space identity changed since registration');
+            return attached;
+          }
+          if (records.some((item) => item.id === attached.id)) throw new Error('This space is already registered at another location');
+          await writeHomes(base, [...records, attached]);
+          return attached;
+        }
         if (records.some((item) => samePath(item.path, path))) throw new Error('This space is already registered');
-        await mkdir(dirname(path), { recursive: true });
-        await mkdir(path);
+        await mkdir(path, { recursive: true });
         const id = `h-${randomBytes(8).toString('hex')}`;
         const inherit = req.body.inherit ?? {};
         const lines = [

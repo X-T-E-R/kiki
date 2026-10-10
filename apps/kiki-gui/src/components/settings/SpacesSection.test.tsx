@@ -22,11 +22,12 @@ import { clearSpaceAuthority, configureSpaceAuthority, spaceAuthoritySnapshot } 
 
 import { I18nProvider } from '../../i18n';
 import { OriginBadge } from './spaces/OriginBadge';
+import { CreateSpaceDialog } from './spaces/CreateSpaceDialog';
 import { SpacesSection } from './SpacesSection';
 
 const homes = {
   list: vi.fn(), create: vi.fn(), attach: vi.fn(), remove: vi.fn(), erase: vi.fn(),
-  update: vi.fn(), sshCopyCandidates: vi.fn(),
+  update: vi.fn(), sshCopyCandidates: vi.fn(), inspect: vi.fn(),
   detail: vi.fn(), preview: vi.fn(), apply: vi.fn(), undo: vi.fn(), importPreferences: vi.fn(),
 };
 const config = { removeOverride: vi.fn() };
@@ -34,6 +35,7 @@ const ssh = { list: vi.fn(), copySharedCredentialsToIsolated: vi.fn() };
 const getConfig = vi.fn();
 const host = {
   kind: 'tauri' as const,
+  pickDirectory: vi.fn(),
   spaceStatuses: vi.fn(),
   openSpace: vi.fn(),
   switchSpace: vi.fn(),
@@ -87,6 +89,8 @@ afterAll(() => { env.IS_REACT_ACT_ENVIRONMENT = false; vi.unstubAllGlobals(); })
 beforeEach(() => {
   for (const fn of [...Object.values(homes), ...Object.values(config), ...Object.values(ssh), getConfig, host.spaceStatuses]) fn.mockReset();
   homes.list.mockResolvedValue(LIST);
+  homes.inspect.mockResolvedValue({ state: 'missing' });
+  host.pickDirectory.mockReset().mockResolvedValue(null);
   localMeta.mockReset().mockResolvedValue({ server_id: 'server-test', current_space_id: 'main' });
   clearSpaceAuthority();
   connection.remoteClient = null;
@@ -141,6 +145,100 @@ async function type(selector: string, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
 }
+
+describe('CreateSpaceDialog existing locations', () => {
+  async function inspect() {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    await flush();
+  }
+
+  it('shows a non-blocking content notice after choosing a folder and still creates the space', async () => {
+    const record = { id: 'h-project', name: 'Project', path: 'D:\\project' };
+    homes.inspect.mockResolvedValue({ state: 'nonempty' });
+    homes.create.mockResolvedValue(record);
+    host.pickDirectory.mockResolvedValue(record.path);
+    const onCreated = vi.fn();
+    await render(<CreateSpaceDialog mainPath={LIST.items[0]!.path} canOpen={false} onClose={vi.fn()} onCreated={onCreated} />);
+    await type('[data-space-name]', 'Project');
+    expect(document.querySelector<HTMLButtonElement>('[data-space-browse]')?.disabled).toBe(false);
+    await click('[data-space-browse]');
+    expect(host.pickDirectory).toHaveBeenCalledOnce();
+    await inspect();
+    expect(homes.inspect).toHaveBeenCalledWith({ path: record.path });
+    expect(document.querySelector('[data-space-location-note]')?.textContent).toBe('Existing files will be kept');
+    expect(document.querySelector<HTMLButtonElement>('[data-space-create-submit]')?.disabled).toBe(false);
+    await click('[data-space-create-submit]');
+    expect(homes.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Project', path: record.path }));
+    expect(onCreated).toHaveBeenCalledWith(record, false, false);
+  });
+
+  it('distinguishes an existing space, preserves its settings, and does not require a new name', async () => {
+    homes.inspect.mockResolvedValue({ state: 'space' });
+    homes.create.mockResolvedValue(LIST.items[1]);
+    const onCreated = vi.fn();
+    await render(<CreateSpaceDialog mainPath={LIST.items[0]!.path} canOpen={true} onClose={vi.fn()} onCreated={onCreated} />);
+    await type('[data-space-path]', LIST.items[1]!.path);
+    await inspect();
+    expect(document.querySelector('[data-space-location-note]')?.textContent).toBe('Existing space');
+    expect(document.querySelector<HTMLButtonElement>('[data-space-browse]')?.disabled).toBe(false);
+    expect(document.querySelector('[data-space-create-submit]')?.textContent).toBe('Add and open');
+    expect(document.querySelector<HTMLFieldSetElement>('[data-space-inherit]')?.disabled).toBe(true);
+    await click('[data-space-create-submit]');
+    expect(homes.create).toHaveBeenCalledWith(expect.objectContaining({ name: undefined, path: LIST.items[1]!.path }));
+    expect(onCreated).toHaveBeenCalledWith(LIST.items[1], true, true);
+  });
+
+  it('keeps browsing available in an existing space and restores choices after selecting an ordinary folder', async () => {
+    homes.inspect.mockImplementation(async ({ path }: { path: string }) => ({ state: path === 'D:\\existing' ? 'space' : 'nonempty' }));
+    host.pickDirectory.mockResolvedValueOnce('D:\\existing').mockResolvedValueOnce(null).mockResolvedValueOnce('D:\\project');
+    await render(<CreateSpaceDialog mainPath={LIST.items[0]!.path} canOpen={true} onClose={vi.fn()} onCreated={vi.fn()} />);
+    await type('[data-space-name]', 'Project');
+    await click('[data-space-inherit-credentials="isolated"]');
+    await click('[data-space-browse]');
+    await inspect();
+    expect(document.querySelector<HTMLFieldSetElement>('[data-space-inherit]')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-space-browse]')?.disabled).toBe(false);
+    expect(document.querySelector<HTMLInputElement>('[data-space-path]')?.disabled).toBe(false);
+    await click('[data-space-browse]');
+    expect(document.querySelector<HTMLInputElement>('[data-space-path]')?.value).toBe('D:\\existing');
+    await click('[data-space-browse]');
+    await inspect();
+    expect(host.pickDirectory).toHaveBeenCalledTimes(3);
+    expect(document.querySelector<HTMLInputElement>('[data-space-path]')?.value).toBe('D:\\project');
+    expect(document.querySelector<HTMLFieldSetElement>('[data-space-inherit]')?.disabled).toBe(false);
+    expect(document.querySelector('[data-space-inherit-credentials="isolated"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('[data-space-location-note]')?.textContent).toBe('Existing files will be kept');
+    expect(document.querySelector('[data-space-create-submit]')?.textContent).toBe('Create and open');
+    expect(document.querySelector('[data-space-create]')?.textContent).not.toContain('Suggested location:');
+    expect(document.querySelector('[data-space-create]')?.textContent).not.toContain('Conversations, memory, search');
+  });
+
+  it('does not block creation when a location inspection fails', async () => {
+    homes.inspect.mockRejectedValue(new Error('Read unavailable'));
+    homes.create.mockResolvedValue(LIST.items[1]);
+    const onCreated = vi.fn();
+    await render(<CreateSpaceDialog mainPath={LIST.items[0]!.path} canOpen={false} onClose={vi.fn()} onCreated={onCreated} />);
+    await type('[data-space-name]', 'Project');
+    await type('[data-space-path]', 'D:\\project');
+    await inspect();
+    expect(document.querySelector('[data-space-location-note]')).toBeNull();
+    await click('[data-space-create-submit]');
+    expect(onCreated).toHaveBeenCalled();
+  });
+
+  it('ignores a stale existing-space inspection after changing the location', async () => {
+    let finish: (value: { state: string }) => void = () => undefined;
+    homes.inspect.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render(<CreateSpaceDialog mainPath={LIST.items[0]!.path} canOpen={false} onClose={vi.fn()} onCreated={vi.fn()} />);
+    await type('[data-space-path]', 'D:\\old-space');
+    await inspect();
+    await type('[data-space-path]', 'D:\\new-space');
+    await act(async () => { finish({ state: 'space' }); });
+    await inspect();
+    expect(document.querySelector('[data-space-location-note]')).toBeNull();
+    expect(document.querySelector<HTMLFieldSetElement>('[data-space-inherit]')?.disabled).toBe(false);
+  });
+});
 
 describe('SpacesSection target domain', () => {
   it('uses local homes for a directly opened remote settings page, including colliding IDs and names', async () => {

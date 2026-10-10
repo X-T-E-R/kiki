@@ -5,6 +5,7 @@ export {
   spacePresetsResponseSchema,
   createSpaceRequestSchema,
   attachSpaceRequestSchema,
+  inspectSpacePathResponseSchema,
   spaceIdParamsSchema,
   updateSpaceRequestSchema,
   updateSpaceResponseSchema,

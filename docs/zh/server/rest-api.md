@@ -99,7 +99,9 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 { "path": "C:/example/space", "preset": "kiki" }
 ```
 
-路径必须是绝对路径，且目录尚不存在。可选 `name` 和 `color` 覆盖预设的显示默认值。创建返回 `{ id, name, color?, preset?, path }`；`GET /api/homes` 列出有效值。格式合法但未注册的预设返回 `40427`（`space.preset_not_found`）；格式错误、已存在的目录，以及从子空间发起的创建请求返回 `40001`。
+路径必须是绝对路径，且不同于主 home。目录不存在时会创建；已有文件夹即使非空，也会保留里面的内容。可选 `name` 和 `color` 覆盖新空间的预设显示默认值。如果文件夹已包含继承自此主 home 的有效空间，创建操作会将它登记进列表，保留原身份、名称和设置，不重写 `home.toml`；对同一已登记空间重复请求会再次返回该空间。创建返回 `{ id, name, color?, preset?, path }`；`GET /api/homes` 列出有效值。格式合法但未注册的预设返回 `40427`（`space.preset_not_found`）；格式错误、无效空间信息、属于其他主 home 的空间，以及从子空间发起的创建请求返回 `40001`。
+
+`POST /api/homes:inspect` 接受 `{ "path": "C:/example/space" }`，返回 `{ state }`，其中 `state` 为 `missing`、`empty`、`nonempty` 或 `space`。检查不会改动文件夹。GUI 在提交前据此提示文件夹已有内容或已是一个空间，不会因此阻止创建。
 
 空间的 `home.toml` 仍使用 `schema = 1`，新增可选 `preset` 键，不会重写已有 home。省略 `preset` 使用 Kiki 默认值；磁盘上已有的未知预设保留其标识及用户值，回退到 Kiki 默认值，并报告配置诊断。默认配置随包只读，不复制到 `config.toml`：schema 默认值 < 预设 < 继承的 base 配置 < 本 home 配置 < 环境变量（内存覆盖仍最高）。凭据和模型沿用现有 home 继承规则。基线提供显示名 `Kiki` 与 UI 默认值，不改变 Bot 设置，也不安装另一个应用。
 

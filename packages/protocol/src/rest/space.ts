@@ -69,6 +69,10 @@ export const createSpaceRequestSchema = z.object({
 export type CreateSpaceRequest = z.infer<typeof createSpaceRequestSchema>;
 export const attachSpaceRequestSchema = z.object({ path: spaceRecordSchema.shape.path }).strict();
 export type AttachSpaceRequest = z.infer<typeof attachSpaceRequestSchema>;
+export const inspectSpacePathResponseSchema = z.object({
+  state: z.enum(['missing', 'empty', 'nonempty', 'space']),
+});
+export type InspectSpacePathResponse = z.infer<typeof inspectSpacePathResponseSchema>;
 export const spaceIdParamsSchema = z.object({ id: spaceRecordSchema.shape.id });
 export const sshCopyTargetSchema = z.object({
   hostId: z.string().min(1),

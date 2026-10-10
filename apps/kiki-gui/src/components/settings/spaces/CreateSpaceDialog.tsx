@@ -1,6 +1,6 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 
-import type { CreateSpaceRequest, SpaceRecord } from '@kiki/protocol';
+import type { CreateSpaceRequest, InspectSpacePathResponse, SpaceRecord } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../../host';
@@ -77,7 +77,7 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
   /** Desktop only: the primary action also opens the new space. */
   canOpen: boolean;
   onClose: () => void;
-  onCreated: (record: SpaceRecord, open: boolean) => void;
+  onCreated: (record: SpaceRecord, open: boolean, existing: boolean) => void;
 }) {
   const { client: connectionClient } = useConnection();
   const client = controlClient ?? connectionClient;
@@ -98,18 +98,34 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
 
   const suggested = suggestSpacePath(mainPath, name);
   const effectivePath = pathEdited ? path : suggested;
+  const [inspection, setInspection] = useState<{ path: string; state: InspectSpacePathResponse['state'] } | null>(null);
+  const pathState = inspection?.path === effectivePath.trim() ? inspection.state : undefined;
+  const existingSpace = pathState === 'space';
+  const api = homesApi(client);
+
+  useEffect(() => {
+    const location = effectivePath.trim();
+    if (!isAbsolutePath(location)) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      void api.inspect({ path: location })
+        .then(({ state }) => { if (active) setInspection({ path: location, state }); })
+        .catch(() => { if (active) setInspection(null); });
+    }, 200);
+    return () => { active = false; clearTimeout(timer); };
+  }, [api, effectivePath]);
 
   const submit = () => {
     const nextIssues = {
-      name: name.trim() === '' ? t('st.spaces.nameRequired') : null,
+      name: !existingSpace && name.trim() === '' ? t('st.spaces.nameRequired') : null,
       path: !isAbsolutePath(effectivePath) ? t('st.spaces.pathRequired') : null,
     };
     setIssues(nextIssues);
     if (nextIssues.name !== null || nextIssues.path !== null || busy) return;
     setBusy(true);
     setFeedback(null);
-    void homesApi(client).create({ name: name.trim(), color, path: effectivePath.trim(), inherit })
-      .then((record) => { onCreated(record, canOpen); })
+    void api.create({ name: name.trim() || undefined, color, path: effectivePath.trim(), inherit })
+      .then((record) => { onCreated(record, canOpen, existingSpace); })
       .catch((error: unknown) => {
         setBusy(false);
         setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -129,7 +145,7 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
       <form data-space-create onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.createTitle')}</h2>
-        <div className="mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <fieldset disabled={existingSpace} className={`mt-4 grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] ${existingSpace ? 'opacity-50' : ''}`}>
           <div className="min-w-0">
             <label htmlFor={nameId} className={FORM_LABEL}>{t('st.spaces.name')}</label>
             <input id={nameId} data-autofocus data-space-name value={name} maxLength={80} autoComplete="off"
@@ -151,7 +167,7 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
               ))}
             </div>
           </fieldset>
-        </div>
+        </fieldset>
 
         <div className="mt-4">
           <label htmlFor={pathId} className={FORM_LABEL}>{t('st.spaces.location')}</label>
@@ -161,14 +177,18 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
               onChange={(event) => { setPath(event.target.value); setPathEdited(true); setIssues((current) => ({ ...current, path: null })); }}
               className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`} />
             {host.pickDirectory !== undefined ? (
-              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void browse(); }}>{t('st.spaces.browse')}</button>
+              <button type="button" data-space-browse className={SECONDARY_BUTTON} onClick={() => { void browse(); }}>{t('st.spaces.browse')}</button>
             ) : null}
           </div>
           <FieldIssue id={pathIssueId} text={issues.path} />
-          {issues.path === null && pathEdited && path !== suggested ? <p className="mt-1 text-[12px] text-ink-faint">{t('st.spaces.locationHint', { path: suggested })}</p> : null}
+          {pathState === 'nonempty' || existingSpace ? (
+            <p role="status" data-space-location-note className="mt-2 text-[12px] leading-relaxed text-ink-soft">
+              {t(existingSpace ? 'st.spaces.locationExistingSpace' : 'st.spaces.locationHasContent')}
+            </p>
+          ) : null}
         </div>
 
-        <fieldset className="mt-5 border-t border-hairline pt-4" data-space-inherit>
+        <fieldset disabled={existingSpace} className={`mt-5 border-t border-hairline pt-4 ${existingSpace ? 'opacity-50' : ''}`} data-space-inherit>
           <legend className="sr-only">{t('st.spaces.inheritHeading')}</legend>
           <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.inheritHeading')}</p>
           <div className="mt-2 divide-y divide-hairline">
@@ -185,9 +205,9 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
               );
             })}
           </div>
-          {/* The rest of the inheritance, and the always-separate note, are one
-              disclosure: they are how this space is wired later, not a
-              decision made while naming it. Defaults and payload are unchanged. */}
+          {/* The rest of the inheritance is one disclosure: it is how this
+              space is wired later, not a decision made while naming it.
+              Defaults and payload are unchanged. */}
           <AdvancedDetails summary={t('st.spaces.inheritMore')} data-space-inherit-more className="mt-1">
             <div className="divide-y divide-hairline">
               {FOLDED_ROWS.map((row) => {
@@ -203,7 +223,6 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
                 );
               })}
             </div>
-            <p className="mt-2 text-[12px] text-ink-faint">{t('st.spaces.alwaysSeparate')}</p>
           </AdvancedDetails>
         </fieldset>
 
@@ -211,7 +230,9 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
           <button type="submit" data-space-create-submit className={PRIMARY_BUTTON} disabled={busy}>
-            {busy ? t('common.saving') : t(canOpen ? 'st.spaces.createAndOpen' : 'st.spaces.create')}
+            {busy ? t('common.saving') : t(existingSpace
+              ? canOpen ? 'st.spaces.attachAndOpen' : 'st.spaces.attachConfirm'
+              : canOpen ? 'st.spaces.createAndOpen' : 'st.spaces.create')}
           </button>
         </div>
       </form>

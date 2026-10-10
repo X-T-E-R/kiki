@@ -448,6 +448,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       undo: (id, undo_id) => transport.json<import('@kiki/protocol').SpaceMutationResponse>(`/homes/${encodeURIComponent(id)}/settings/undo`, { method: 'POST', body: { undo_id } }),
       importPreferences: (id, body) => transport.json<import('@kiki/protocol').SpacePreferenceImportResponse>(`/homes/${encodeURIComponent(id)}/settings/import-preferences`, { method: 'POST', body }),
       create: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes', { method: 'POST', body }),
+      inspect: (body) => transport.json<import('@kiki/protocol').InspectSpacePathResponse>('/homes:inspect', { method: 'POST', body }),
       attach: (body) => transport.json<import('@kiki/protocol').SpaceRecord>('/homes:attach', { method: 'POST', body }),
       sshCopyCandidates: (id) => transport.json<import('@kiki/protocol').SshCopyCandidatesResponse>(`/homes/${encodeURIComponent(id)}/ssh-copy-candidates`),
       update: (id, body) => transport.json<import('@kiki/protocol').UpdateSpaceResponse>(`/homes/${encodeURIComponent(id)}`, { method: 'PATCH', body }),

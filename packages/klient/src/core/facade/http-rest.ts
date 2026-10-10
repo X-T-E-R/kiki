@@ -462,6 +462,7 @@ export interface HttpRestFacade {
     undo(id: string, undoId: string): Promise<import('@kiki/protocol').SpaceMutationResponse>;
     importPreferences(id: string, body: import('@kiki/protocol').SpacePreferenceImport): Promise<import('@kiki/protocol').SpacePreferenceImportResponse>;
     create(body: import('@kiki/protocol').CreateSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
+    inspect(body: import('@kiki/protocol').AttachSpaceRequest): Promise<import('@kiki/protocol').InspectSpacePathResponse>;
     attach(body: import('@kiki/protocol').AttachSpaceRequest): Promise<import('@kiki/protocol').SpaceRecord>;
     sshCopyCandidates(id: string): Promise<import('@kiki/protocol').SshCopyCandidatesResponse>;
     update(id: string, body: import('@kiki/protocol').UpdateSpaceRequest): Promise<import('@kiki/protocol').UpdateSpaceResponse>;

@@ -471,10 +471,10 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       {dialog?.kind === 'create' ? (
         <CreateSpaceDialog client={client} mainPath={main?.path ?? ''} canOpen={desktop}
           onClose={() => { setDialog(null); }}
-          onCreated={(record, open) => {
+          onCreated={(record, open, existing) => {
             setDialog(null);
             refresh();
-            pushToast({ tone: 'success', text: t('st.spaces.created', { name: record.name }) });
+            pushToast({ tone: 'success', text: t(existing ? 'st.spaces.attached' : 'st.spaces.created', { name: record.name }) });
             if (open) enter(record);
           }} />
       ) : null}

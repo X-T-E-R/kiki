@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { IBootstrapService, IConfigRegistry, IConfigService, ILogService, ISshHostService, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
+import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerHomesRoutes } from '../src/routes/homes';
@@ -28,7 +29,7 @@ describe('main-space SSH credential copying', () => {
     const routes = new Map<string, Route>();
     const app = {
       ...Object.fromEntries(['get', 'post', 'patch', 'delete'].map((method) => [method,
-        (path: string, _options: unknown, handler: Route) => { routes.set(`${method.toUpperCase()} ${path}`, handler); },
+        (path: string, _options: unknown, handler: Route) => { routes.set(`${method.toUpperCase()} ${path.replaceAll('::', ':')}`, handler); },
       ])),
       addHook: (_name: 'onClose', handler: () => Promise<void>) => { cleanups.push(handler); },
     };
@@ -71,8 +72,96 @@ describe('main-space SSH credential copying', () => {
     const update = (copy_ssh_credentials: true | { hosts: { hostId: string; workspaceId?: string }[] }) =>
       request('PATCH', '/homes/:id', { inherit: { credentials: 'isolated' }, copy_ssh_credentials }, id);
     const candidates = () => request('GET', '/homes/:id/ssh-copy-candidates', undefined, id);
-    return { child, id, saved, writes, update, candidates, fail: (after: number) => { failAfter = after; } };
+    return { main, child, id, scope, request, saved, writes, update, candidates, fail: (after: number) => { failAfter = after; } };
   }
+
+  it('registers inspection alongside attachment and creation on the real HTTP router', async () => {
+    const { main, child, scope } = await fixture();
+    const app = Fastify();
+    app.setValidatorCompiler(() => () => true);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    try {
+      registerHomesRoutes(app as unknown as Parameters<typeof registerHomesRoutes>[0], scope);
+      const path = join(main, 'http-folder');
+      await mkdir(path);
+      await writeFile(join(path, 'notes.txt'), 'Keep HTTP content');
+      const inspected = await app.inject({ method: 'POST', url: '/homes:inspect', payload: { path } });
+      expect(inspected.json()).toMatchObject({ code: 0, data: { state: 'nonempty' } });
+      const created = await app.inject({ method: 'POST', url: '/homes', payload: { path, name: 'HTTP space' } });
+      expect(created.json()).toMatchObject({ code: 0, data: { name: 'HTTP space', path } });
+      expect(await readFile(join(path, 'notes.txt'), 'utf8')).toBe('Keep HTTP content');
+      const attached = await app.inject({ method: 'POST', url: '/homes:attach', payload: { path: child } });
+      expect(attached.json()).toMatchObject({ msg: expect.stringContaining('already registered') });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([false, true])('creates in an existing directory, preserving its contents (nonempty=%s)', async (nonempty) => {
+    const { main, request } = await fixture();
+    const path = join(main, nonempty ? 'with-content' : 'empty');
+    await mkdir(path);
+    if (nonempty) {
+      await writeFile(join(path, 'notes.txt'), 'Keep these notes');
+      await mkdir(join(path, 'assets'));
+      await writeFile(join(path, 'assets', 'example.txt'), 'Keep nested content');
+    }
+    expect(await request('POST', '/homes:inspect', { path })).toMatchObject({ code: 0, data: { state: nonempty ? 'nonempty' : 'empty' } });
+    expect(await request('POST', '/homes', { path, name: 'Project', inherit: { credentials: 'isolated' } }))
+      .toMatchObject({ code: 0, data: { name: 'Project', path } });
+    expect(await readFile(join(path, 'home.toml'), 'utf8')).toContain('credentials = "isolated"');
+    if (nonempty) {
+      expect(await readFile(join(path, 'notes.txt'), 'utf8')).toBe('Keep these notes');
+      expect(await readFile(join(path, 'assets', 'example.txt'), 'utf8')).toBe('Keep nested content');
+    }
+  });
+
+  it('creates a missing nested location after a read-only inspection', async () => {
+    const { main, request } = await fixture();
+    const path = join(main, 'parent', 'new-space');
+    expect(await request('POST', '/homes:inspect', { path })).toMatchObject({ code: 0, data: { state: 'missing' } });
+    expect(await readdir(main)).not.toContain('parent');
+    expect(await request('POST', '/homes', { path, name: 'Nested' })).toMatchObject({ code: 0, data: { name: 'Nested' } });
+  });
+
+  it('reuses an existing space identity and settings after removal, and does not duplicate its registration', async () => {
+    const { main, child, id, request } = await fixture();
+    const original = await readFile(join(child, 'home.toml'), 'utf8');
+    await writeFile(join(child, 'notes.txt'), 'User content');
+    expect(await request('POST', '/homes:inspect', { path: child })).toMatchObject({ code: 0, data: { state: 'space' } });
+    expect((await request('DELETE', '/homes/:id', undefined, id)).code).toBe(0);
+    for (let i = 0; i < 2; i++) {
+      expect(await request('POST', '/homes', { path: child, name: 'Ignored name', inherit: { credentials: 'isolated' } }))
+        .toMatchObject({ code: 0, data: { id, name: 'Cold', path: child } });
+    }
+    expect(await readFile(join(child, 'home.toml'), 'utf8')).toBe(original);
+    expect(await readFile(join(child, 'notes.txt'), 'utf8')).toBe('User content');
+    expect(JSON.parse(await readFile(join(main, 'homes.json'), 'utf8'))).toHaveLength(1);
+  });
+
+  it('does not overwrite a file or invalid space metadata', async () => {
+    const { main, request } = await fixture();
+    const file = join(main, 'not-a-folder');
+    await writeFile(file, 'Preserve file');
+    expect((await request('POST', '/homes', { path: file, name: 'File' })).code).not.toBe(0);
+    expect(await readFile(file, 'utf8')).toBe('Preserve file');
+    const path = join(main, 'invalid-space');
+    await mkdir(path);
+    await writeFile(join(path, 'home.toml'), 'Unrelated content');
+    expect((await request('POST', '/homes', { path, name: 'Invalid' })).code).not.toBe(0);
+    expect(await readFile(join(path, 'home.toml'), 'utf8')).toBe('Unrelated content');
+  });
+
+  it('does not reparent a space belonging to another main home', async () => {
+    const { main, child, request } = await fixture();
+    const other = join(main, 'other-main');
+    await mkdir(other);
+    const file = join(child, 'home.toml');
+    const original = (await readFile(file, 'utf8')).replace(`base = ${JSON.stringify(main)}`, `base = ${JSON.stringify(other)}`);
+    await writeFile(file, original);
+    expect((await request('POST', '/homes', { path: child, name: 'Other' })).code).not.toBe(0);
+    expect(await readFile(file, 'utf8')).toBe(original);
+  });
 
   it('copies every saved password and passphrase from the main space into a cold child before switching mode', async () => {
     const { child, id, saved, writes, update, candidates } = await fixture();
