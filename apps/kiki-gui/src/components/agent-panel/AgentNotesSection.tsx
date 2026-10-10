@@ -16,8 +16,11 @@ export interface AgentNotesSectionProps {
   readonly meta: TranscriptTodoNotesMeta | undefined;
   readonly status?: TranscriptTodoNotesStatus;
   readonly loaded: boolean;
+  readonly viewStatus?: 'unknown' | 'loading' | 'error' | 'partial';
+  readonly loadError?: string;
+  readonly onRetry?: () => void;
   readonly beginRead?: () => { release(): void; retry(): void } | undefined;
-  readonly contentStatus?: 'loading' | 'error';
+  readonly contentStatus?: 'loading' | 'error' | 'partial' | 'unknown';
   readonly contentSignature?: string;
 }
 
@@ -30,12 +33,28 @@ function QuietHead() {
   return <h3 className="flex h-8 items-center gap-1.5"><span className={INSPECTOR_HEAD}>{t('agentPanel.notes')}</span></h3>;
 }
 
-export const AgentNotesSection = memo(function AgentNotesSection({ notes, meta, status, loaded, beginRead, contentStatus, contentSignature }: AgentNotesSectionProps) {
+export const AgentNotesSection = memo(function AgentNotesSection({
+  notes,
+  meta,
+  status,
+  loaded,
+  viewStatus,
+  loadError,
+  onRetry,
+  beginRead,
+  contentStatus,
+  contentSignature,
+}: AgentNotesSectionProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const read = useRef<ReturnType<NonNullable<AgentNotesSectionProps['beginRead']>>>(undefined);
   const sections = [...SECTIONS, ...Object.keys(notes ?? {}).filter((section) => !SECTIONS.includes(section))];
   const present = sections.filter((section) => (notes?.[section] ?? '').trim() !== '');
+  const effectiveContentStatus = viewStatus === 'unknown'
+    ? 'unknown'
+    : (contentStatus ?? (
+        viewStatus === 'error' ? 'error' : viewStatus === 'loading' ? 'loading' : viewStatus === 'partial' ? 'partial' : undefined
+      ));
   const readable = present.length > 0 || contentStatus !== undefined;
   useEffect(() => {
     if (!open || !readable) return;
@@ -44,21 +63,71 @@ export const AgentNotesSection = memo(function AgentNotesSection({ notes, meta, 
     return () => { lease?.release(); read.current = undefined; };
   }, [open, readable, beginRead]);
   useEffect(() => {
-    if (open && contentStatus === 'loading' && contentSignature !== '[]') read.current?.retry();
-  }, [open, beginRead, contentStatus, contentSignature]);
+    if (open && effectiveContentStatus === 'loading' && contentSignature !== '[]') read.current?.retry();
+  }, [open, beginRead, effectiveContentStatus, contentSignature]);
+  const handleRetry = () => {
+    if (onRetry !== undefined) {
+      onRetry();
+    } else {
+      read.current?.retry();
+    }
+  };
   if (!readable) {
-    const state = status !== undefined ? 'incompatible' : loaded ? 'empty' : 'loading';
-    const message = status !== undefined ? t('agentPanel.notes.unavailable') : !loaded ? t('agentPanel.notes.loading')
-      : meta !== undefined ? t('agentPanel.notes.cleared', { rev: meta.rev }) : t('agentPanel.notes.empty');
-    return <section data-agent-notes-section data-agent-notes-state={state}>
-      <QuietHead />
-      <p role={status !== undefined || !loaded ? 'status' : undefined} className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">{message}</p>
-    </section>;
+    const isError = viewStatus === 'error' || (!loaded && loadError !== undefined);
+    const isUnknown = viewStatus === 'unknown';
+    const isPartial = viewStatus === 'partial';
+    const isLoading = !loaded || viewStatus === 'loading';
+    const state = status !== undefined
+      ? 'incompatible'
+      : isError
+        ? 'error'
+        : isUnknown
+          ? 'unknown'
+          : isPartial
+            ? 'partial'
+            : isLoading
+              ? 'loading'
+              : 'empty';
+    const message = status !== undefined
+      ? t('agentPanel.notes.unavailable')
+      : isError
+        ? t('agentPanel.notes.loadFailed')
+        : isUnknown
+          ? t('agentPanel.notes.notRead')
+          : isPartial
+            ? t('agentPanel.notes.partial')
+            : isLoading
+              ? t('agentPanel.notes.loading')
+              : meta !== undefined
+                ? t('agentPanel.notes.cleared', { rev: meta.rev })
+                : t('agentPanel.notes.empty');
+    const isStatus = status !== undefined || isError || isUnknown || isPartial || isLoading;
+    return (
+      <section data-agent-notes-section data-agent-notes-state={state}>
+        <QuietHead />
+        <p role={isStatus ? 'status' : undefined} className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
+          {message}
+          {(isError || isPartial) && onRetry !== undefined ? (
+            <button
+              type="button"
+              className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+              onClick={onRetry}
+            >
+              {t('common.retry')}
+            </button>
+          ) : null}
+        </p>
+      </section>
+    );
   }
   const goal = notes?.goal === undefined ? undefined : firstLine(notes.goal);
-  const readState = contentStatus !== undefined ? open ? contentStatus : 'unread' : status !== undefined ? 'stale' : 'written';
+  const readState = effectiveContentStatus !== undefined
+    ? open ? effectiveContentStatus : 'unread'
+    : status !== undefined
+      ? 'stale'
+      : 'written';
   return (
-    <section data-agent-notes-section data-agent-notes-state={readState} aria-busy={open && contentStatus === 'loading' ? true : undefined}>
+    <section data-agent-notes-section data-agent-notes-state={readState} aria-busy={open && effectiveContentStatus === 'loading' ? true : undefined}>
       <button
         type="button"
         aria-expanded={open}
@@ -72,13 +141,29 @@ export const AgentNotesSection = memo(function AgentNotesSection({ notes, meta, 
         <InspectorChevron open={open} />
       </button>
       {status !== undefined ? <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.stale')}</p> : null}
-      {!open && contentStatus !== undefined && present.length === 0 ? <p className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.readOnOpen')}</p> : null}
+      {!open && effectiveContentStatus !== undefined && present.length === 0 ? <p className="text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.notes.readOnOpen')}</p> : null}
       {open ? (
         <div className="pt-1">
-          {contentStatus !== undefined ? <p role="status" data-agent-notes-read-status={contentStatus} className="mb-2 text-[12px] leading-relaxed text-ink-faint">
-            {t(contentStatus === 'error' ? 'agentPanel.notes.loadFailed' : 'agentPanel.notes.loading')}
-            {contentStatus === 'error' ? <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={() => { read.current?.retry(); }}>{t('common.retry')}</button> : null}
-          </p> : null}
+          {effectiveContentStatus !== undefined ? (
+            <p role="status" data-agent-notes-read-status={effectiveContentStatus} className="mb-2 text-[12px] leading-relaxed text-ink-faint">
+              {t(effectiveContentStatus === 'error'
+                ? 'agentPanel.notes.loadFailed'
+                : effectiveContentStatus === 'partial'
+                  ? 'agentPanel.notes.partial'
+                  : effectiveContentStatus === 'unknown'
+                    ? 'agentPanel.notes.notRead'
+                    : 'agentPanel.notes.loading')}
+              {((effectiveContentStatus === 'error' && (onRetry !== undefined || beginRead !== undefined)) || (effectiveContentStatus === 'partial' && onRetry !== undefined)) ? (
+                <button
+                  type="button"
+                  className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink"
+                  onClick={handleRetry}
+                >
+                  {t('common.retry')}
+                </button>
+              ) : null}
+            </p>
+          ) : null}
           <dl className="max-h-80 min-w-0 space-y-2 overflow-y-auto overscroll-y-contain pr-0.5">
             {present.map((section) => (
               <div key={section} data-agent-notes-part={section}>

@@ -43,6 +43,7 @@ import {
   type TranscriptTask,
   type TranscriptTurn,
   type TranscriptWireRecord,
+  type TranscriptChangeEvent,
 } from '@kiki/transcript';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -189,6 +190,74 @@ describe('bindSessionTranscript', () => {
       },
     } as unknown as ISessionScopeHandle;
   }
+
+  it.each(['main', 'child'])('keeps %s working notes authoritative through TodoList results and cold replay', (agentId) => {
+    const agents = new FakeAgents();
+    const selected = agents.add(agentId);
+    const otherId = agentId === 'main' ? 'child' : 'main';
+    agents.add(otherId);
+    const store = new TranscriptStore('session_notes');
+    const publications: TranscriptChangeEvent[] = [];
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents), undefined, (event) => publications.push(event));
+    onTestFinished(() => binding.dispose());
+    const records: TranscriptWireRecord[] = [];
+    const emit = (record: TranscriptWireRecord) => {
+      records.push(record);
+      selected.bus.emit(record as unknown as Event2);
+    };
+    const notes = { goal: 'Keep the saved goal', evidence: 'Keep all evidence', next: 'Read the result' };
+    const notesMeta = { rev: 4, hash: 'notes-four', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };
+    const items = [{ title: 'Read the result', status: 'in_progress' }];
+    emit({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, time: 1000 });
+    emit({ type: 'turn.step.started', turnId: 1, step: 1, time: 1001 });
+    emit({ type: 'tools.update_store', key: 'todo_notes', value: { notes, notesMeta }, time: 1002 });
+    emit({ type: 'tools.update_store', key: 'todo', value: items, time: 1003 });
+    const transcript = store.ensureAgent(agentId);
+    const expected = transcript.getTodo('todo');
+    emit({ type: 'tool.call.started', turnId: 1, toolCallId: 'todo-write', name: 'TodoList', args: { todos: items }, time: 1004 });
+    const beforeResult = publications.length;
+    emit({ type: 'tool.result', toolCallId: 'todo-write', output: 'updated', time: 1005 });
+    expect(transcript.getTodo('todo')).toEqual(expected);
+    expect(publications.slice(beforeResult).flatMap((event) => event.ops).some((op) => op.op === 'todo.upsert')).toBe(false);
+    const projected = projectAgentTranscriptView(createViewState('session_notes'), agentId, transcript.snapshot());
+    expect(projected.todoNotes).toEqual(notes);
+    expect(projected.todoNotesMeta).toEqual(notesMeta);
+    expect(projected.todos).toEqual(items);
+    expect(store.getAgent(otherId)?.getTodo('todo')).toBeUndefined();
+
+    const nextNotes = { ...notes, next: 'The revised next action' };
+    const nextMeta = { ...notesMeta, rev: 5, hash: 'notes-five' };
+    emit({ type: 'tool.call.started', turnId: 1, toolCallId: 'notes-and-todos', name: 'TodoList', args: { todos: [], notes: { next: nextNotes.next } }, time: 1006 });
+    emit({ type: 'tools.update_store', key: 'todo_notes', value: { notes: nextNotes, notesMeta: nextMeta }, time: 1007 });
+    emit({ type: 'tools.update_store', key: 'todo', value: [], time: 1008 });
+    emit({ type: 'tool.result', toolCallId: 'notes-and-todos', output: 'updated', time: 1009 });
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [], notes: nextNotes, notesMeta: nextMeta });
+
+    const partialNotes = { goal: nextNotes.goal, next: nextNotes.next };
+    const partialMeta = { ...nextMeta, rev: 6, hash: 'notes-six' };
+    emit({ type: 'tool.call.started', turnId: 1, toolCallId: 'notes-only', name: 'TodoList', args: { notes: { evidence: '' } }, time: 1010 });
+    emit({ type: 'tools.update_store', key: 'todo_notes', value: { notes: partialNotes, notesMeta: partialMeta }, time: 1011 });
+    emit({ type: 'tool.result', toolCallId: 'notes-only', output: 'updated', time: 1012 });
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [], notes: partialNotes, notesMeta: partialMeta });
+    emit({ type: 'tool.call.started', turnId: 1, toolCallId: 'failed-write', name: 'TodoList', args: { todos: items, notes: null }, time: 1013 });
+    emit({ type: 'tool.result', toolCallId: 'failed-write', output: 'invalid input', isError: true, time: 1014 });
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [], notes: partialNotes, notesMeta: partialMeta });
+
+    const cold = new AgentTranscript(agentId);
+    const reducer = new TranscriptFactReducer(cold);
+    const adapter = new TranscriptWireAdapter(agentId);
+    for (const record of records) reducer.apply(adapter.add(record));
+    expect(transcript.getTodo('todo')).toEqual(cold.getTodo('todo'));
+
+    const clearedMeta = { ...partialMeta, rev: 7, hash: 'notes-cleared' };
+    emit({ type: 'tools.update_store', key: 'todo_notes', value: { notesMeta: clearedMeta }, time: 1015 });
+    emit({ type: 'tool.call.started', turnId: 1, toolCallId: 'clear-result', name: 'TodoList', args: { todos: [], notes: null }, time: 1016 });
+    emit({ type: 'tool.result', toolCallId: 'clear-result', output: 'cleared', time: 1017 });
+    expect(transcript.getTodo('todo')).toMatchObject({ items: [], notesMeta: clearedMeta });
+    expect(transcript.getTodo('todo')?.notes).toBeUndefined();
+    for (const record of records.slice(-3)) reducer.apply(adapter.add(record));
+    expect(transcript.getTodo('todo')).toEqual(cold.getTodo('todo'));
+  });
 
   it('keeps durable prompt ownership structurally identical across cold and live projection', () => {
     const promptRecord = {

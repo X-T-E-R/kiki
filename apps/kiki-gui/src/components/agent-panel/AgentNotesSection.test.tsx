@@ -175,6 +175,127 @@ describe('AgentNotesSection', () => {
     expect(container.textContent).toContain('No working notes yet.');
     await cleanup();
   });
+
+  it('shows error state with actionable retry instead of infinite loading on loadError', async () => {
+    const onRetry = vi.fn();
+    const { container, cleanup } = await render({ notes: undefined, meta: undefined, loaded: false, loadError: 'Session error', onRetry });
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('error');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Could not read working notes');
+    expect(container.textContent).not.toContain('Reading working notes');
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-agent-notes-state="error"] button');
+    expect(retryBtn).not.toBeNull();
+    await act(async () => { retryBtn!.click(); });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it('renders unknown state when notes have not been read and does not mislabel it with unknown field copy', async () => {
+    const { container, cleanup } = await render({ notes: undefined, meta: undefined, loaded: false, viewStatus: 'unknown' });
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Working notes have not been read yet');
+    expect(container.textContent).not.toContain('Newer notes field');
+    expect(container.textContent).not.toContain('No working notes yet');
+    await cleanup();
+  });
+
+  it('never mislabels unknown or error as cleared just because meta is present', async () => {
+    const { container, rerender, cleanup } = await render({ notes: undefined, meta, loaded: false, viewStatus: 'unknown' });
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+    expect(container.textContent).not.toContain('Working notes are empty');
+    expect(container.textContent).not.toContain('revision 4');
+
+    await rerender({ notes: undefined, meta, loaded: false, loadError: 'Network failed' });
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('error');
+    expect(container.textContent).not.toContain('Working notes are empty');
+    expect(container.textContent).not.toContain('revision 4');
+    await cleanup();
+  });
+
+  it('preserves existing notes body and meta revision during error and attaches status line with retry', async () => {
+    const onRetry = vi.fn();
+    const { container, cleanup } = await render({
+      notes: { goal: 'Preserved goal', next: 'Preserved next' },
+      meta,
+      loaded: true,
+      contentStatus: 'error',
+      onRetry,
+    });
+    await openSection(container);
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('error');
+    expect(container.querySelector('[data-agent-notes-read-status="error"]')?.textContent).toContain('Could not read working notes');
+    expect(container.querySelector('[data-agent-notes-part="goal"] dd')?.textContent).toBe('Preserved goal');
+    expect(container.querySelector('[data-agent-notes-part="next"] dd')?.textContent).toBe('Preserved next');
+    expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 4');
+
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="error"] button');
+    expect(retryBtn).not.toBeNull();
+    await act(async () => { retryBtn!.click(); });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it('preserves existing notes body and meta revision during partial read and attaches status line with retry', async () => {
+    const onRetry = vi.fn();
+    const { container, cleanup } = await render({
+      notes: { goal: 'Partial preserved goal', next: 'Partial next' },
+      meta,
+      loaded: true,
+      viewStatus: 'partial',
+      onRetry,
+    });
+    await openSection(container);
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('partial');
+    expect(container.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('Showing read version, latest notes not yet confirmed.');
+    expect(container.querySelector('[data-agent-notes-part="goal"] dd')?.textContent).toBe('Partial preserved goal');
+    expect(container.querySelector('[data-agent-notes-part="next"] dd')?.textContent).toBe('Partial next');
+    expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 4');
+
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="partial"] button');
+    expect(retryBtn).not.toBeNull();
+    await act(async () => { retryBtn!.click(); });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it('never mislabels partial as cleared when notes are empty and meta is present', async () => {
+    const { container, cleanup } = await render({ notes: undefined, meta, loaded: true, viewStatus: 'partial' });
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('partial');
+    expect(container.textContent).toContain('Showing read version, latest notes not yet confirmed.');
+    expect(container.textContent).not.toContain('Working notes are empty');
+    expect(container.textContent).not.toContain('revision 4');
+    await cleanup();
+  });
+
+  it('preserves existing notes body and meta revision during unknown read and attaches status line without retry button', async () => {
+    const { container, cleanup } = await render({
+      notes: { goal: 'Unknown preserved goal', next: 'Unknown next' },
+      meta,
+      loaded: true,
+      viewStatus: 'unknown',
+    });
+    await openSection(container);
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+    expect(container.querySelector('[data-agent-notes-read-status="unknown"]')?.textContent).toBe('Working notes have not been read yet');
+    expect(container.querySelector('[data-agent-notes-read-status="unknown"] button')).toBeNull();
+    expect(container.querySelector('[data-agent-notes-part="goal"] dd')?.textContent).toBe('Unknown preserved goal');
+    expect(container.querySelector('[data-agent-notes-part="next"] dd')?.textContent).toBe('Unknown next');
+    expect(container.querySelector('[data-agent-notes-meta]')?.textContent).toContain('revision 4');
+    await cleanup();
+  });
+
+  it('does not render dead retry button during error when neither onRetry nor beginRead is provided', async () => {
+    const { container, cleanup } = await render({
+      notes: { goal: 'Preserved goal' },
+      meta,
+      loaded: true,
+      contentStatus: 'error',
+    });
+    await openSection(container);
+    expect(container.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('error');
+    expect(container.querySelector('[data-agent-notes-read-status="error"]')?.textContent).toContain('Could not read working notes');
+    expect(container.querySelector('[data-agent-notes-read-status="error"] button')).toBeNull();
+    await cleanup();
+  });
 });
 
 it('keeps omitted and failed note content distinct from empty and releases its read when folded', async () => {

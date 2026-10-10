@@ -7390,6 +7390,8 @@ export const zh = {
   'agentPanel.notes.loading': '正在读取工作笔记…',
   'agentPanel.notes.readOnOpen': '展开后读取工作笔记。',
   'agentPanel.notes.loadFailed': '工作笔记读取失败',
+  'agentPanel.notes.notRead': '工作笔记尚未读取',
+  'agentPanel.notes.partial': '显示已读取的版本，最新笔记尚未确认。',
   'agentPanel.notes.unavailable': '工作笔记暂无法读取。',
   'agentPanel.notes.stale': '最新笔记未能读取，暂显示上次可读的版本。',
   'agentPanel.notes.unknown': '新版笔记字段：{field}',

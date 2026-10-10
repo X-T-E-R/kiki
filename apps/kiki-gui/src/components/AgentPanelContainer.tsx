@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import type { AgentForest, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import { sumAgentTreeMetrics, UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
+import type { TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 import { useI18n } from '../i18n';
 import { useAutoCompact } from './useAutoCompact';
@@ -120,12 +121,30 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   /** Cockpit lane rows open that agent. */
   onOpenAgent?: (agentId: string) => void;
 }) {
-  const { klient } = useConnection();
+  const connection = useConnection();
+  const { klient } = connection;
+  const identityKey = `${connection.spaceKey}:${connection.scopeId}:${state.sessionId}:${agentId}`;
+  const retainedNotesRef = useRef<Map<string, { notes?: TranscriptTodoNotes; meta?: TranscriptTodoNotesMeta }>>(new Map());
   const { t } = useI18n();
   const navigate = useNavigate();
   const query = { session_id: state.sessionId, agent_id: agentId };
   const node = forest.byId[agentId];
   const { controller, agentState } = useAgentViewState(state.sessionId, agentId);
+
+  if (agentState !== undefined && (agentState.loaded || agentState.todoNotes !== undefined || agentState.todoNotesMeta !== undefined)) {
+    if (retainedNotesRef.current.size > 50) {
+      const oldestKey = retainedNotesRef.current.keys().next().value;
+      if (oldestKey !== undefined) retainedNotesRef.current.delete(oldestKey);
+    }
+    retainedNotesRef.current.set(identityKey, {
+      notes: agentState.todoNotes,
+      meta: agentState.todoNotesMeta,
+    });
+  }
+
+  const retainedNotes = retainedNotesRef.current.get(identityKey);
+  const effectiveNotes = agentState?.todoNotes ?? (controller === undefined ? retainedNotes?.notes : undefined);
+  const effectiveMeta = agentState?.todoNotesMeta ?? (controller === undefined ? retainedNotes?.meta : undefined);
   const readsTodos = visible && (part === 'all' || part === 'work');
   const todoRead = useRef<ReturnType<SessionController['beginContentRead']> | undefined>(undefined);
   useEffect(() => {
@@ -153,8 +172,34 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     (ref.path[0] === 'notes' || ref.path[0] === 'notesMeta')) ?? [];
   const notesReadFailed = notesRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
     todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
-  const notesContentStatus = notesReadFailed ? 'error' : notesRefs.length > 0 || todoCoverage?.hasMore === true ? 'loading' : undefined;
-  const beginNotesRead = useCallback(() => controller?.beginContentRead(agentId, { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']), [controller, agentId]);
+  const notesContentStatus = controller === undefined
+    ? undefined
+    : notesReadFailed ? 'error' : notesRefs.length > 0 || todoCoverage?.hasMore === true ? 'loading' : undefined;
+  const notesRead = useRef<{ release(): void; retry(): void } | undefined>(undefined);
+  useEffect(() => {
+    return () => {
+      notesRead.current?.release();
+      notesRead.current = undefined;
+    };
+  }, [controller, agentId]);
+  const beginNotesRead = useCallback(() => {
+    if (controller === undefined) return undefined;
+    const lease = controller.beginContentRead(agentId, { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']);
+    let released = false;
+    const handle = {
+      release: () => {
+        if (released) return;
+        released = true;
+        lease.release();
+        if (notesRead.current === handle) notesRead.current = undefined;
+      },
+      retry: () => {
+        lease.retry();
+      },
+    };
+    notesRead.current = handle;
+    return handle;
+  }, [controller, agentId]);
   // Poll cadence follows THIS agent's activity — its own view state or its
   // forest node. The routed agent being busy must neither start nor stop it.
   const active = agentState?.busy === true || node?.busy === true ||
@@ -229,6 +274,37 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       : !loaded || todoRefs.length > 0 || todoCoverage?.hasMore === true
         ? 'loading'
         : undefined;
+  const notesReadProvenance = agentState?.todoRead ?? agentState?.historyRead;
+  const notesPartial = agentState?.todoRead !== undefined
+    ? agentState.todoRead.readiness !== 'ready'
+    : (notesReadProvenance !== undefined && notesReadProvenance.readiness !== 'ready') ||
+      agentState?.historyCoverageKind === 'unknown';
+  const notesStatus = agentState === undefined || controller === undefined
+    ? 'unknown'
+    : notesReadFailed || (!loaded && agentState.loadError !== undefined)
+      ? 'error'
+      : !loaded
+        ? 'loading'
+        : notesPartial
+          ? 'partial'
+          : undefined;
+  const retryNotes = useCallback(() => {
+    if (controller === undefined) return;
+    if (!loaded) {
+      if (!state.loaded && controller.retryOpen !== undefined) {
+        void controller.retryOpen();
+      } else {
+        void controller.resync();
+      }
+      return;
+    }
+    if (notesStatus === 'partial' && todoCoverage?.hasMore !== true) {
+      void controller.resync();
+      return;
+    }
+    notesRead.current?.retry();
+    if (todoCoverage?.hasMore) void controller.loadTranscriptEntities(agentId, 'todo');
+  }, [controller, agentId, loaded, state.loaded, notesStatus, todoCoverage?.hasMore]);
   const todoSection = <>
     {todos.length > 0 ? <AgentTodoSection
       key={`${state.sessionId}:${agentId}`}
@@ -251,14 +327,16 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // The agent's own working notes sit under its checklist: the same writer
   // (TodoList), read-only here, from this agent's state only. The section
   // itself tells a still-loading agent from one that has no notes yet.
-  const notesSection = agentState !== undefined
-    ? <AgentNotesSection
-      key={`notes:${state.sessionId}:${agentId}`}
-      notes={agentState.todoNotes} meta={agentState.todoNotesMeta} status={agentState.todoNotesStatus} loaded={loaded}
-      beginRead={readsTodos ? beginNotesRead : undefined}
+  const notesSection = (
+    <AgentNotesSection
+      key={`notes:${identityKey}`}
+      notes={effectiveNotes} meta={effectiveMeta} status={agentState?.todoNotesStatus} loaded={loaded}
+      viewStatus={notesStatus} loadError={agentState?.loadError}
+      onRetry={controller !== undefined ? retryNotes : undefined}
+      beginRead={controller !== undefined && readsTodos ? beginNotesRead : undefined}
       contentStatus={notesContentStatus} contentSignature={JSON.stringify(notesRefs)}
     />
-    : null;
+  );
   // Which hook rules this agent runs with, and from which file: an on-demand
   // detail under its notes, asked only when this agent has live state.
   const hooksSection = agentState !== undefined

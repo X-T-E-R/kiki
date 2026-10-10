@@ -7448,6 +7448,8 @@ export const en = {
   'agentPanel.notes.loading': 'Reading working notes…',
   'agentPanel.notes.readOnOpen': 'Expand to read working notes.',
   'agentPanel.notes.loadFailed': 'Could not read working notes',
+  'agentPanel.notes.notRead': 'Working notes have not been read yet',
+  'agentPanel.notes.partial': 'Showing read version, latest notes not yet confirmed.',
   'agentPanel.notes.unavailable': 'Working notes cannot be read right now.',
   'agentPanel.notes.stale': 'The latest notes could not be read. Showing the last readable version.',
   'agentPanel.notes.unknown': 'Newer notes field: {field}',

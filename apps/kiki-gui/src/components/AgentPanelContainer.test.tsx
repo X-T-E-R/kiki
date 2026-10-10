@@ -33,9 +33,13 @@ const harness = vi.hoisted(() => {
   const retryTodoRead = vi.fn();
   const beginContentRead = vi.fn(() => ({ release: releaseTodoRead, retry: retryTodoRead }));
   const loadTranscriptEntities = vi.fn();
+  const retryOpen = vi.fn();
+  const resync = vi.fn();
   const controller = {
     beginContentRead,
     loadTranscriptEntities,
+    retryOpen,
+    resync,
     sessionId: 'session',
     getState: () => agents['main'],
     getAgentState: (agentId: string) => agents[agentId],
@@ -56,11 +60,15 @@ const harness = vi.hoisted(() => {
     releaseTodoRead,
     retryTodoRead,
     loadTranscriptEntities,
+    retryOpen,
+    resync,
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
     getAgentCapabilities: vi.fn(),
     getAgentPlan: vi.fn(),
+    spaceKey: 'main',
+    scopeId: 'local',
   };
 });
 const { getAgentCapabilities, getAgentPlan } = harness;
@@ -68,6 +76,8 @@ const { getAgentCapabilities, getAgentPlan } = harness;
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => harness.holder.value,
   useConnection: () => ({
+    spaceKey: harness.spaceKey,
+    scopeId: harness.scopeId,
     klient: {
       global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => harness.getAgentCapabilities(query, options.signal) } },
       session: (_sessionId: string) => ({
@@ -109,9 +119,13 @@ beforeEach(() => {
   harness.releaseTodoRead.mockClear();
   harness.retryTodoRead.mockClear();
   harness.loadTranscriptEntities.mockReset();
+  harness.retryOpen.mockClear();
+  harness.resync.mockClear();
   for (const agentId of Object.keys(harness.agents)) delete harness.agents[agentId];
   harness.agents['main'] = viewState();
   harness.holder.value = harness.registry;
+  harness.spaceKey = 'main';
+  harness.scopeId = 'local';
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   element = document.createElement('div');
@@ -531,10 +545,20 @@ it('settles to the empty state when the agent clears its notes', async () => {
   expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('empty');
 });
 
-it('keeps the notes section out when no live controller owns the session', async () => {
+it('renders unknown state without a dead retry button when no live controller owns the session', async () => {
   harness.holder.value = null;
   await render('main', { part: 'work' });
-  expect(element.querySelector('[data-agent-notes-section]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-section]')).not.toBeNull();
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+  expect(element.querySelector('[data-agent-notes-section] [role="status"]')?.textContent).toBe('工作笔记尚未读取');
+  expect(element.querySelector('[data-agent-notes-section] button')).toBeNull();
+});
+
+it('renders unknown state for working notes when controller is live but agent state is unreported', async () => {
+  delete harness.agents['unreported'];
+  await render('unreported', { part: 'work' });
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+  expect(element.querySelector('[data-agent-notes-section] [role="status"]')?.textContent).toBe('工作笔记尚未读取');
 });
 
 const renderOverviewLayout = (body: React.ReactNode, scopeSwitch: React.ReactNode) => (
@@ -935,4 +959,320 @@ it('shows legal complete inline working notes and all 14 todos on first open and
     await act(async () => { root.render(null); });
     controller.close();
   }
+});
+
+it('retries entity page and notes lease for this agent when entity coverage has more and detail load failed', async () => {
+  const ref = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 0, total: 20 };
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Incomplete notes' },
+    todoNotesMeta: notesMeta,
+    globalCoverage: {
+      version: 1, tasks: { returned: 0, total: 0, hasMore: false },
+      attachments: { returned: 0, total: 0, hasMore: false }, prompts: { returned: 0, total: 0, hasMore: false },
+      todos: { returned: 1, total: 5, hasMore: true },
+    },
+    detailLoads: { 'entities:todo': { status: 'error', message: 'Failed to load entities' } },
+    contentRefs: [ref],
+  });
+  await render('main', { part: 'work' });
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="error"]')).not.toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="error"]')?.textContent).toContain('工作笔记读取失败');
+
+  const retriesBefore = harness.retryTodoRead.mock.calls.length;
+  const retryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="error"] button')!;
+  expect(retryBtn).not.toBeNull();
+  await act(async () => { retryBtn.click(); });
+  expect(harness.retryTodoRead).toHaveBeenCalledTimes(retriesBefore + 1);
+  expect(harness.loadTranscriptEntities).toHaveBeenCalledWith('main', 'todo');
+});
+
+it('does not cross-read or leak retries when switching agents', async () => {
+  const refMain = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 0, total: 20 };
+  const refChild = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 0, total: 30 };
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Main goal' },
+    todoNotesMeta: notesMeta,
+    globalCoverage: {
+      version: 1, tasks: { returned: 0, total: 0, hasMore: false },
+      attachments: { returned: 0, total: 0, hasMore: false }, prompts: { returned: 0, total: 0, hasMore: false },
+      todos: { returned: 1, total: 2, hasMore: true },
+    },
+    detailLoads: { 'entities:todo': { status: 'error', message: 'Example read failed' } },
+    contentRefs: [refMain],
+  });
+  harness.agents['child'] = viewState({
+    todoNotes: { goal: 'Child goal' },
+    todoNotesMeta: { ...notesMeta, rev: 2 },
+    globalCoverage: {
+      version: 1, tasks: { returned: 0, total: 0, hasMore: false },
+      attachments: { returned: 0, total: 0, hasMore: false }, prompts: { returned: 0, total: 0, hasMore: false },
+      todos: { returned: 1, total: 2, hasMore: true },
+    },
+    detailLoads: { 'entities:todo': { status: 'error', message: 'Example read failed' } },
+    contentRefs: [refChild],
+  });
+
+  await render('main', { part: 'work' });
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!.click(); });
+  expect(harness.beginContentRead).toHaveBeenLastCalledWith('main', { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']);
+
+  await render('child', { part: 'work' });
+  expect(element.textContent).toContain('Child goal');
+  expect(element.textContent).not.toContain('Main goal');
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!.click(); });
+  expect(harness.beginContentRead).toHaveBeenLastCalledWith('child', { kind: 'todo', id: 'todo' }, ['notes', 'notesMeta']);
+
+  const childRetryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="error"] button')!;
+  await act(async () => { childRetryBtn.click(); });
+  expect(harness.loadTranscriptEntities).toHaveBeenLastCalledWith('child', 'todo');
+  expect(harness.loadTranscriptEntities).not.toHaveBeenCalledWith('main', 'todo');
+});
+
+it('prioritizes todoRead over historyRead and keeps child notes state isolated', async () => {
+  harness.agents['main'] = {
+    ...viewState({
+      todoNotes: { goal: 'Main goal' },
+      todoNotesMeta: notesMeta,
+      historyRead: { source: 'live', readiness: 'ready' },
+    }),
+    todoRead: { readiness: 'partial' },
+  };
+  harness.agents['child'] = viewState({
+    todoNotes: { goal: 'Child goal' },
+    todoNotesMeta: { ...notesMeta, rev: 1 },
+    historyRead: { source: 'live', readiness: 'ready' },
+  });
+
+  await render('main', { part: 'work', forest: forestOf(['main', 'child']) });
+  const mainToggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { mainToggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('显示已读取的版本，最新笔记尚未确认。');
+  expect(element.textContent).toContain('Main goal');
+
+  await render('child', { part: 'work', forest: forestOf(['main', 'child']) });
+  const childToggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { childToggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="written"]')).not.toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')).toBeNull();
+  expect(element.textContent).toContain('Child goal');
+  expect(element.textContent).not.toContain('Main goal');
+});
+
+it('calls session resync on explicit partial retry when entity page is exhausted and preserves notes content', async () => {
+  harness.agents['main'] = {
+    ...viewState({
+      todoNotes: { goal: 'Partial goal' },
+      todoNotesMeta: notesMeta,
+      globalCoverage: {
+        version: 1, tasks: { returned: 0, total: 0, hasMore: false },
+        attachments: { returned: 0, total: 0, hasMore: false }, prompts: { returned: 0, total: 0, hasMore: false },
+        todos: { returned: 1, total: 1, hasMore: false },
+      },
+    }),
+    todoRead: { readiness: 'partial' },
+  };
+  await render('main', { part: 'work' });
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
+  expect(element.textContent).toContain('Partial goal');
+
+  const retryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="partial"] button');
+  expect(retryBtn).not.toBeNull();
+  await act(async () => { retryBtn!.click(); });
+  expect(harness.resync).toHaveBeenCalledTimes(1);
+  expect(harness.resync).toHaveBeenCalledWith();
+  expect(element.textContent).toContain('Partial goal');
+});
+
+it('calls session resync instead of no-op retryOpen when selected child fails to load in an already loaded session', async () => {
+  harness.agents['main'] = viewState({ loaded: true });
+  harness.agents['child'] = viewState({ loaded: false, loadError: 'Child failed to load' });
+  await render('child', { part: 'work', forest: forestOf(['main', 'child']) });
+
+  expect(element.querySelector('[data-agent-notes-state="error"]')).not.toBeNull();
+  expect(element.textContent).toContain('工作笔记读取失败');
+
+  const retryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-state="error"] button');
+  expect(retryBtn).not.toBeNull();
+  await act(async () => { retryBtn!.click(); });
+
+  expect(harness.resync).toHaveBeenCalledTimes(1);
+  expect(harness.resync).toHaveBeenCalledWith();
+  expect(harness.retryOpen).not.toHaveBeenCalled();
+});
+
+it('preserves existing notes body and meta revision without dead retry when controller is missing and old refs or errors remain', async () => {
+  const ref = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 0, total: 20 };
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Preserved disconnected goal' },
+    todoNotesMeta: notesMeta,
+    contentRefs: [ref],
+    detailLoads: { [`content:${JSON.stringify(ref)}`]: { status: 'error', message: 'Old error' } },
+  });
+  await render('main', { part: 'work' });
+
+  harness.holder.value = null;
+  await render('main', { part: 'work' });
+
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('unknown');
+  expect(element.querySelector('[data-agent-notes-read-status="unknown"]')?.textContent).toBe('工作笔记尚未读取');
+  expect(element.querySelector('[data-agent-notes-section] [data-agent-notes-read-status] button')).toBeNull();
+  expect(element.textContent).toContain('Preserved disconnected goal');
+  expect(element.querySelector('[data-agent-notes-meta]')?.textContent).toContain('第 4 版');
+});
+
+it('shows true unknown without borrowing or unfolding when agent has never been read and controller is missing from the start', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Unobserved notes' },
+    todoNotesMeta: notesMeta,
+  });
+  harness.holder.value = null;
+
+  await render('main', { part: 'work' });
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-state="unknown"]')).not.toBeNull();
+  expect(element.textContent).toContain('工作笔记尚未读取');
+  expect(element.textContent).not.toContain('Unobserved notes');
+});
+
+it('does not leak preserved notes across agent switches when second agent has not read notes', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Main goal' },
+    todoNotesMeta: notesMeta,
+  });
+  await render('main', { part: 'work', forest: forestOf(['main', 'child']) });
+
+  harness.holder.value = null;
+  await render('child', { part: 'work', forest: forestOf(['main', 'child']) });
+
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-state="unknown"]')).not.toBeNull();
+  expect(element.textContent).toContain('工作笔记尚未读取');
+  expect(element.textContent).not.toContain('Main goal');
+});
+
+it('does not leak preserved notes across connection spaces', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Space 1 notes' },
+    todoNotesMeta: notesMeta,
+  });
+  await render('main', { part: 'work' });
+
+  harness.holder.value = null;
+  harness.spaceKey = 'remote:other-space';
+  await render('main', { part: 'work' });
+
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-state="unknown"]')).not.toBeNull();
+  expect(element.textContent).toContain('工作笔记尚未读取');
+  expect(element.textContent).not.toContain('Space 1 notes');
+});
+
+it('does not leak preserved notes across scopes sharing the same spaceKey when disconnected', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Scope A notes' },
+    todoNotesMeta: notesMeta,
+  });
+  harness.spaceKey = 'main';
+  harness.scopeId = 'ssh:profile-a';
+  await render('main', { part: 'work' });
+
+  harness.holder.value = null;
+  harness.scopeId = 'ssh:profile-b';
+  await render('main', { part: 'work' });
+
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-state="unknown"]')).not.toBeNull();
+  expect(element.textContent).toContain('工作笔记尚未读取');
+  expect(element.textContent).not.toContain('Scope A notes');
+});
+
+it('settles to empty baseline when reconnecting and agent explicitly clears notes', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Old notes' },
+    todoNotesMeta: notesMeta,
+  });
+  await render('main', { part: 'work' });
+
+  harness.holder.value = null;
+  await render('main', { part: 'work' });
+
+  harness.holder.value = harness.registry;
+  harness.agents['main'] = viewState({
+    todoNotes: undefined,
+    todoNotesMeta: undefined,
+    loaded: true,
+  });
+  await render('main', { part: 'work' });
+
+  expect(element.querySelector('[data-agent-notes-section] button[aria-expanded]')).toBeNull();
+  expect(element.querySelector('[data-agent-notes-state="empty"]')).not.toBeNull();
+  expect(element.textContent).toContain('还没有工作笔记。');
+  expect(element.textContent).not.toContain('Old notes');
+});
+
+it('resumes notes content lease and actionable retry when controller becomes available', async () => {
+  const ref = { ...todoItemsRef, path: ['notes', 'goal'], kind: 'text' as const, offset: 0, total: 20 };
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Recoverable goal' },
+    todoNotesMeta: notesMeta,
+    contentRefs: [ref],
+    detailLoads: { [`content:${JSON.stringify(ref)}`]: { status: 'error', message: 'Load error' } },
+  });
+  harness.holder.value = harness.registry;
+
+  await render('main', { part: 'work' });
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+
+  expect(element.querySelector<HTMLElement>('[data-agent-notes-state]')?.dataset['agentNotesState']).toBe('error');
+  expect(element.querySelector('[data-agent-notes-read-status="error"]')?.textContent).toContain('工作笔记读取失败');
+  const retryBtn = element.querySelector<HTMLButtonElement>('[data-agent-notes-read-status="error"] button');
+  expect(retryBtn).not.toBeNull();
+
+  const retriesBefore = harness.retryTodoRead.mock.calls.length;
+  await act(async () => { retryBtn!.click(); });
+  expect(harness.retryTodoRead).toHaveBeenCalledTimes(retriesBefore + 1);
+  expect(element.textContent).toContain('Recoverable goal');
+});
+
+it('falls back to history unknown coverage as partial while preserving notes body when todoRead is absent', async () => {
+  harness.agents['main'] = viewState({
+    todoNotes: { goal: 'Fallback preserved goal' },
+    todoNotesMeta: notesMeta,
+    historyCoverageKind: 'unknown',
+  });
+  await render('main', { part: 'work' });
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="partial"]')).not.toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')?.textContent).toContain('显示已读取的版本，最新笔记尚未确认。');
+  expect(element.textContent).toContain('Fallback preserved goal');
+});
+
+it('prioritizes ready todoRead over old unknown history coverage without reverting to partial', async () => {
+  harness.agents['main'] = {
+    ...viewState({
+      todoNotes: { goal: 'Confirmed latest goal' },
+      todoNotesMeta: notesMeta,
+      historyCoverageKind: 'unknown',
+      historyRead: { source: 'live', readiness: 'partial', reason: 'source_unverified' },
+    }),
+    todoRead: { source: 'live', readiness: 'ready' },
+  };
+  await render('main', { part: 'work' });
+  const toggle = element.querySelector<HTMLButtonElement>('[data-agent-notes-section] button[aria-expanded]')!;
+  await act(async () => { toggle.click(); });
+  expect(element.querySelector('[data-agent-notes-state="written"]')).not.toBeNull();
+  expect(element.querySelector('[data-agent-notes-read-status="partial"]')).toBeNull();
+  expect(element.textContent).toContain('Confirmed latest goal');
 });
