@@ -4214,3 +4214,26 @@ describe('wire model binding facts', () => {
     expect(resume.flatMap((fact) => fact.operations)).toContainEqual(expect.objectContaining({ task: expect.objectContaining({ model: 'example/new' }) }));
   });
 });
+
+
+it('windows a resident tail independently of historical standalone headers without deleting them', () => {
+  const transcript = new AgentTranscript('main');
+  transcript.apply([
+    turnOp(0),
+    { op: 'marker.upsert', item: { kind: 'marker', markerId: 'old-marker', marker: 'compaction' } },
+    turnOp(1),
+    { op: 'taskref.upsert', item: { kind: 'taskref', refId: 'old-taskref', taskId: 'task-example' } },
+    turnOp(2),
+    { op: 'marker.upsert', item: { kind: 'marker', markerId: 'tail-marker', marker: 'compaction' } },
+  ]);
+  expect(transcript.snapshot({ tailTurns: 20 }).items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
+  const durable = transcript.snapshot();
+  transcript.apply([{ op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' } } },
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' } } }]);
+  const complete = transcript.snapshot();
+  transcript.releaseDurableHistory(complete, { tailTurns: 1, maxBytes: Number.MAX_SAFE_INTEGER });
+  expect(transcript.snapshot({ tailTurns: 20 }).items.map(idLabel)).toEqual(['t2', 'tail-marker']);
+  expect(transcript.snapshot({ tailTurns: 20 }).hasMoreOlder).toBe(true);
+  expect(transcript.snapshot().items.map(idLabel)).toEqual(['old-marker', 'old-taskref', 't2', 'tail-marker']);
+  expect(durable.items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
+});
