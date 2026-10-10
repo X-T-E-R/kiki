@@ -5927,6 +5927,8 @@ export const zh = {
   'st.exp.usageExport.desc': '让这台服务器把模型、token、质量与价格桶发送到你选择的目的端。对话内容、标题与路径不会发送。',
   'st.exp.pluginImport.name': '从其他工具导入历史',
   'st.exp.pluginImport.desc': '从已安装的来源读取对话并保存为只读归档。归档是历史，不是可以继续的会话。',
+  'st.exp.pluginAppLifecycle.name': '应用级插件服务',
+  'st.exp.pluginAppLifecycle.desc': '随 Kiki 启动已安装且已启用的应用级插件，退出时停止它们的服务。',
   'st.exp.unknown.name': '此服务器特有的功能',
   'st.exp.unknown.desc': '此服务器报告了一个本应用没有说明的功能。',
   'st.labs.openIn': '在「{page}」中打开',

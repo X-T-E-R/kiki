@@ -2195,6 +2195,7 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   // that could restart anything for it. The panel that would sit on the section
   // is on the Usage page and states its own outcome.
   { id: 'usage_export', section: 'developer', labelKey: 'st.exp.usageExport.name', descriptionKey: 'st.exp.usageExport.desc', effect: 'restart' },
+  { id: 'plugin_app_lifecycle', section: 'plugins', labelKey: 'st.exp.pluginAppLifecycle.name', descriptionKey: 'st.exp.pluginAppLifecycle.desc', effect: 'restart' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */

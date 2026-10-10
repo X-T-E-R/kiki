@@ -5993,6 +5993,8 @@ export const en = {
   'st.exp.usageExport.desc': 'Let this server send model, token, quality and cost buckets to a destination you choose. Conversation text, titles and paths are never sent.',
   'st.exp.pluginImport.name': 'Import history from other tools',
   'st.exp.pluginImport.desc': 'Read conversations from an installed source and keep them as read-only archives. They are history, not sessions you can continue.',
+  'st.exp.pluginAppLifecycle.name': 'App plugin services',
+  'st.exp.pluginAppLifecycle.desc': 'Start installed, enabled App plugins with Kiki and stop their services when Kiki shuts down.',
   'st.exp.unknown.name': 'Server-specific feature',
   'st.exp.unknown.desc': 'This server reports a feature this app has no description for.',
   'st.labs.openIn': 'Open in {page}',

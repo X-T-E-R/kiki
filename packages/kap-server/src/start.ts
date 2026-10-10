@@ -16,6 +16,7 @@ import {
   ISessionInteractionService,
   ICapabilityService,
   IPluginService,
+  IPluginHostService,
   resolvePluginMarketplaceSource,
   IHomeRuntimeService,
   ISessionManager,
@@ -373,6 +374,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       ...historyDirectorySeed(() => transcriptService, navigation), ...(opts.seeds ?? [])],
   );
 
+  await core.accessor.get(IPluginHostService).ready.catch(() => {
+    logger.warn({ event_type: 'plugin_app_activation_failed' }, 'An App plugin could not start; open its settings to recover');
+  });
+
   if (exposureClass !== 'loopback') {
     logger.warn(
       { host, exposureClass },
@@ -602,6 +607,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();
       await core.accessor.get(IMcpOAuthService).shutdown();
+      await core.accessor.get(IPluginHostService).stopAll();
       fsWatchBridge.dispose();
       const appendLogStore = core.accessor.get(IAppendLogStore);
       core.dispose();

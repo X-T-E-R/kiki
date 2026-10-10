@@ -67,3 +67,29 @@ export function definePlugin(tools: readonly PluginTool[]) {
     },
   };
 }
+
+/** Settings and owned lifetime supplied only to an explicitly App-activated plugin. */
+export interface PluginAppContext {
+  readonly settings: Readonly<Record<string, unknown>>;
+  readonly userHome: string;
+  readonly dataDir: string;
+  readonly signal: AbortSignal;
+  updateSettings(values: Record<string, string | number | boolean | null>): Promise<unknown>;
+  onActivity(listener: (activity: readonly PluginSessionActivity[]) => void): () => void;
+  focusSession(sessionId: string): Promise<unknown>;
+}
+
+/** Privacy-filtered live activity; no prompts, tool arguments, paths or credentials. */
+export interface PluginSessionActivity {
+  readonly sessionId: string;
+  readonly busy: boolean;
+  readonly pendingInteraction: 'none' | 'approval' | 'question';
+  readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly at: number;
+}
+
+/** Entry module lifecycle exports; deactivate must release every owned child process. */
+export interface PluginAppLifecycle {
+  activate(context: PluginAppContext): Promise<unknown>;
+  deactivate(): Promise<void>;
+}
