@@ -251,6 +251,7 @@ export function bindSessionTranscript(
     const wireFacts = liveOwned ? [] : wireAdapterFor(agentId).add(event);
     applyFacts(agentId, wireFacts);
     if (
+      event.type.startsWith('compaction.') ||
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
       (event.type === 'task.notified' && wireAdapterFor(agentId).hasTaskNotification(event)) ||
@@ -279,6 +280,7 @@ export function bindSessionTranscript(
     if (state !== undefined) {
       wireAdapterFor(agentId).restore(state.adapter);
       reducerFor(agentId).restore(state.acceptedDurableFacts);
+      applyOps(agentId, wireAdapterFor(agentId).activeCompactionOperations());
     }
     replayingAgents.delete(agentId);
     const buffered = bufferedEvents.get(agentId) ?? [];

@@ -366,6 +366,15 @@ export interface SubagentEventBlock {
 }
 
 export interface NoticeBlock {
+  readonly compactionPhase?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  readonly compactionFailure?: string;
+  readonly compactionHistory?: readonly {
+    readonly id: string;
+    readonly createdAt?: string;
+    readonly startedAt?: string;
+    readonly source?: 'auto' | 'manual';
+    readonly reasonCodes?: readonly string[];
+  }[];
   readonly modelSwitch?: {
     readonly operationId: string;
     readonly mode: 'direct' | 'compact' | 'fresh';

@@ -682,7 +682,22 @@ function markerToBlock(item: {
     const reasonCodes = Array.isArray(payloadRecord?.['reasonCodes'])
       ? payloadRecord['reasonCodes'].filter((code): code is string => typeof code === 'string')
       : undefined;
-    return { ...base, text: item.marker, i18n: { key }, reasonCodes };
+    const rawPhase = payloadRecord?.['phase'];
+    const phase: NoticeBlock['compactionPhase'] = rawPhase === 'started' || rawPhase === 'blocked' ? 'running'
+      : rawPhase === 'queued' || rawPhase === 'running' || rawPhase === 'failed' || rawPhase === 'cancelled' || rawPhase === 'interrupted' ? rawPhase : 'completed';
+    const reason = typeof payloadRecord?.['reason'] === 'string' ? payloadRecord['reason'] : undefined;
+    const effectivePhase = phase === 'cancelled' && reason !== undefined ? 'failed' : phase;
+    const stateKey: I18nKey = effectivePhase === 'running' ? 'transcript.marker.compactionRunning'
+      : effectivePhase === 'queued' ? 'transcript.marker.compactionQueued'
+      : effectivePhase === 'failed' ? 'transcript.marker.compactionFailed'
+      : effectivePhase === 'cancelled' ? 'transcript.marker.compactionCancelled'
+      : effectivePhase === 'interrupted' ? 'transcript.marker.compactionInterrupted' : key;
+    return { ...base, text: item.marker, tone: effectivePhase === 'failed' ? 'danger' : base.tone,
+      i18n: { key: stateKey }, reasonCodes, compactionPhase: effectivePhase, compactionFailure: reason,
+      compactionHistory: effectivePhase === 'completed' ? [{ id: base.id, createdAt: item.at,
+        startedAt: typeof payloadRecord?.['startedAt'] === 'string' ? payloadRecord['startedAt'] : undefined,
+        source: payloadRecord?.['source'] === 'auto' || payloadRecord?.['source'] === 'manual' ? payloadRecord['source'] : undefined, reasonCodes }] : undefined,
+    };
   }
 
   const text =
@@ -2672,12 +2687,14 @@ function foldConsecutiveMarkerDividers(blocks: readonly Block[]): Block[] {
   for (const block of blocks) {
     const previous = folded.at(-1);
     if (isMarkerDivider(block) && isMarkerDivider(previous) &&
+      (block.compactionPhase === undefined || block.compactionPhase === 'completed' && previous.compactionPhase === 'completed') &&
       block.text === previous.text && block.tone === previous.tone &&
       block.turnId === previous.turnId && block.i18n?.key === previous.i18n?.key &&
       JSON.stringify(block.i18n?.params) === JSON.stringify(previous.i18n?.params)) {
       folded[folded.length - 1] = {
         ...block,
         markerRepeatCount: (previous.markerRepeatCount ?? 1) + (block.markerRepeatCount ?? 1),
+        compactionHistory: block.compactionHistory === undefined ? undefined : [...(previous.compactionHistory ?? []), ...block.compactionHistory],
       };
     } else {
       folded.push(block);

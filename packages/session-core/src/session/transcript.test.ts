@@ -1621,6 +1621,32 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     })]);
   });
 
+  it('counts only separate committed compactions and retains every folded time and reason', () => {
+    const records = [
+      { type: 'full_compaction.begin', source: 'auto', time: 1000 },
+      { type: 'context.apply_compaction', summary: 'same summary', reasonCodes: ['notes_missing'], time: 2000 },
+      { type: 'full_compaction.complete', time: 2001 },
+      { type: 'full_compaction.begin', source: 'auto', time: 3000 },
+      { type: 'context.apply_compaction', summary: 'same summary', reasonCodes: ['tool_error'], time: 4000 },
+      { type: 'full_compaction.complete', time: 4001 },
+      { type: 'full_compaction.begin', source: 'manual', queued: true, time: 5000 },
+      { type: 'full_compaction.cancel', queued: true, time: 6000 },
+      { type: 'full_compaction.begin', source: 'auto', time: 7000 },
+      { type: 'full_compaction.cancel', reason: 'Summary failed after retries', time: 8000 },
+    ];
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', records)).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ compactionPhase: 'completed', markerRepeatCount: 2,
+      compactionHistory: [{ createdAt: new Date(2000).toISOString(), reasonCodes: ['notes_missing'] }, { createdAt: new Date(4000).toISOString(), reasonCodes: ['tool_error'] }] });
+    expect(blocks[1]).toMatchObject({ compactionPhase: 'cancelled', i18n: { key: 'transcript.marker.compactionCancelled' } });
+    expect(blocks[2]).toMatchObject({ compactionPhase: 'failed', i18n: { key: 'transcript.marker.compactionFailed' }, compactionFailure: 'Summary failed after retries' });
+    expect(blocks[1]).not.toHaveProperty('markerRepeatCount');
+    const active = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', [{ type: 'full_compaction.begin', source: 'auto', time: 9000 }]));
+    expect(active.blocks[0]).toMatchObject({ compactionPhase: 'running', i18n: { key: 'transcript.marker.compactionRunning' } });
+    const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', [{ type: 'full_compaction.begin', source: 'manual', queued: true, time: 9000 }]));
+    expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
+  });
+
   it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
     const records = [
       { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },

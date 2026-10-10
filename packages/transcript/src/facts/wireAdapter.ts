@@ -1,4 +1,5 @@
 import type { TranscriptFact } from './reducer';
+import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
@@ -107,6 +108,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly modelAlias?: string;
+  readonly compaction?: CompactionProjectionCheckpoint;
   readonly queuedModelSwitchIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
@@ -160,6 +162,11 @@ export class TranscriptWireAdapter {
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
   #modelAlias: string | undefined;
+  readonly #compaction = new CompactionProjection();
+
+  activeCompactionOperations(): TranscriptOperation[] {
+    return this.#compaction.activeOperations();
+  }
 
   constructor(
     readonly agentId: string,
@@ -206,6 +213,7 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       modelAlias: this.#modelAlias,
+      compaction: this.#compaction.checkpoint(),
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
@@ -284,6 +292,7 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
+    this.#compaction.restore(checkpoint.compaction);
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
@@ -330,7 +339,7 @@ export class TranscriptWireAdapter {
   }
 
   finish(): TranscriptFact[] {
-    const operations: TranscriptOperation[] = [];
+    const operations: TranscriptOperation[] = this.#compaction.finish();
     const endedAt = isoOf(this.#lastRecordTime);
     for (const [toolCallId, hit] of this.#tools) {
       if (hit.frame.state !== 'running') continue;
@@ -415,22 +424,8 @@ export class TranscriptWireAdapter {
     if (record.type === 'turn.ended') return this.turnEnded(record);
     if (record.type === 'context.undo') return this.undo(numberOf(record['count']) ?? 1);
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
-    if (record.type === 'context.apply_compaction') {
-      return [
-        {
-          op: 'marker.upsert',
-          item: {
-            kind: 'marker',
-            markerId:
-              stringOf(record['id']) ??
-              (record.time === undefined ? `wire:v2:r${ordinal}:compaction` : `wire:v2:compaction:t${record.time}`),
-            marker: 'compaction',
-            payload: record,
-            at: isoOf(record.time),
-          },
-        },
-      ];
-    }
+    const compaction = this.#compaction.project(record, ordinal);
+    if (compaction !== undefined) return compaction;
     if (record.type.startsWith('prompt.')) return this.promptRecord(record);
     return this.supplemental(record, ordinal);
   }
@@ -2194,6 +2189,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.aborted' ||
     type === 'prompt.steered' ||
     type.startsWith('context.') ||
+    type.startsWith('full_compaction.') ||
     type.startsWith('executor.') ||
     type.startsWith('subagent.')
   );

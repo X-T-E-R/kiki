@@ -22,7 +22,7 @@ export class FullCompactionBegin extends Event2<z.infer<typeof fullCompactionBeg
 }
 export interface FullCompactionBegin extends z.infer<typeof fullCompactionBeginSchema> {}
 
-const fullCompactionCancelSchema = z.object({ queued: z.boolean().optional() });
+const fullCompactionCancelSchema = z.object({ queued: z.boolean().optional(), reason: z.string().optional() });
 
 export class FullCompactionCancel extends Event2<z.infer<typeof fullCompactionCancelSchema>> {
   static override readonly type = 'full_compaction.cancel';

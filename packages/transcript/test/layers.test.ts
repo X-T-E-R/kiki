@@ -1359,6 +1359,52 @@ describe('TranscriptWireAdapter', () => {
     expect(canonical[0]?.operations).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ markerId: 'model-switch:standalone', payload: expect.objectContaining({ state: 'completed' }) }) })]);
   });
 
+  it('upserts one compaction through queued, running and committed lifecycle, including checkpoint tails', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'full_compaction.begin', source: 'manual', queued: true, time: 1000 }));
+    const id = transcript.getItems()[0];
+    expect(id).toMatchObject({ payload: { phase: 'queued' } });
+    reducer.apply(adapter.add({ type: 'full_compaction.begin', source: 'manual', time: 2000 }));
+    expect(transcript.getItems()).toEqual([expect.objectContaining({ markerId: id?.kind === 'marker' ? id.markerId : '', payload: expect.objectContaining({ phase: 'running' }) })]);
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    reducer.apply(restored.finish());
+    expect(transcript.getItems()[0]).toMatchObject({ payload: { phase: 'interrupted' } });
+    transcript.apply(restored.activeCompactionOperations());
+    expect(transcript.getItems()[0]).toMatchObject({ payload: { phase: 'running' } });
+    reducer.apply(restored.add({ type: 'context.apply_compaction', summary: 'committed summary', time: 3000 }));
+    reducer.apply(restored.add({ type: 'full_compaction.complete', time: 3001 }));
+    reducer.apply(restored.add({ type: 'compaction.completed', result: { summary: 'committed summary' }, time: 3002 }));
+    expect(transcript.getItems()).toHaveLength(1);
+    expect(transcript.getItems()[0]).toMatchObject({ at: new Date(3000).toISOString(), payload: { phase: 'completed', startedAt: new Date(2000).toISOString() } });
+    expect(transcript.snapshot()).toEqual(replay([
+      { type: 'full_compaction.begin', source: 'manual', queued: true, time: 1000 },
+      { type: 'full_compaction.begin', source: 'manual', time: 2000 },
+      { type: 'context.apply_compaction', summary: 'committed summary', time: 3000 },
+      { type: 'full_compaction.complete', time: 3001 },
+    ]).snapshot());
+  });
+
+  it('keeps queued cancellation separate from an active run, preserves failures on cold replay and never invents a commit', () => {
+    const records: TranscriptWireRecord[] = [
+      { type: 'full_compaction.begin', source: 'auto', time: 1000 },
+      { type: 'full_compaction.begin', source: 'manual', queued: true, time: 2000 },
+      { type: 'full_compaction.cancel', queued: true, time: 3000 },
+      { type: 'full_compaction.cancel', reason: 'Summary request exhausted retries', time: 4000 },
+      { type: 'full_compaction.begin', source: 'auto', time: 5000 },
+      { type: 'full_compaction.complete', time: 6000 },
+      { type: 'context.apply_compaction', summary: 'old successful record', time: 7000 },
+    ];
+    expect(replay(records).getItems()).toEqual([
+      expect.objectContaining({ payload: expect.objectContaining({ phase: 'failed', reason: 'Summary request exhausted retries' }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: 'cancelled' }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: 'interrupted' }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'old successful record' }) }),
+    ]);
+  });
+
   it('projects notes metadata alongside todos, including notes-only writes and restored checkpoints', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

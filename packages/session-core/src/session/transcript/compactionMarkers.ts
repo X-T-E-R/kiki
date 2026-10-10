@@ -1,19 +1,4 @@
-/**
- * One compaction, one timeline marker.
- *
- * A single compaction reaches the store through several producers: the live
- * bus adds progress markers (`phase: started | blocked | cancelled |
- * completed`), and the durable `context.apply_compaction` record can be
- * replayed by more than one wire adapter (live binding + cold backfill), each
- * minting its own ordinal-based marker id. Rendering all of them stacks four
- * or five identical "Context compacted" lines at the same spot.
- *
- * This pass picks exactly one marker per compaction, keyed by the summary the
- * compaction produced (unique per run), and prefers the durable record so the
- * marker carries the real strategy and the record's own time. Progress-only
- * markers are hidden, except a `started` run that has not settled yet, which
- * renders as the in-flight "Compacting context…" line.
- */
+/** Reconciles legacy live/replayed markers; durable commits with equal summaries at different times remain separate runs. */
 
 export type CompactionMarkerFate = 'hidden' | 'pending';
 
@@ -67,20 +52,20 @@ export function compactionMarkerFates(items: readonly MarkerLike[]): ReadonlyMap
       fates.set(openStart, 'hidden');
       openStart = undefined;
     }
-    if (phase === 'cancelled') {
-      fates.set(item.markerId, 'hidden');
-      continue;
-    }
     const summary = summaryOf(payload);
     if (summary === undefined) continue;
     const durable = payload?.['type'] === 'context.apply_compaction';
-    const keeper = keeperBySummary.get(summary);
+    const key = durable ? `${String(payload?.['time'] ?? item.markerId)}\0${summary}` : summary;
+    const bySummary = keeperBySummary.get(summary);
+    const keeper = keeperBySummary.get(key) ?? (durable && bySummary?.durable ? undefined : bySummary);
     if (keeper === undefined) {
-      keeperBySummary.set(summary, { markerId: item.markerId, durable });
+      keeperBySummary.set(key, { markerId: item.markerId, durable });
+      if (durable) keeperBySummary.set(summary, { markerId: item.markerId, durable });
       continue;
     }
     if (durable && !keeper.durable) {
       fates.set(keeper.markerId, 'hidden');
+      keeperBySummary.set(key, { markerId: item.markerId, durable });
       keeperBySummary.set(summary, { markerId: item.markerId, durable });
       continue;
     }
