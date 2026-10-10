@@ -33,10 +33,10 @@ Settings → Appearance → Background puts a picture or a short video behind th
 - **Or paste a link**: an `https` link to a picture or video. The server fetches it once, under the policy in [Linked pictures](#linked-pictures), and keeps the copy on this device. Nothing is loaded from that link again, so it cannot track you and the background still shows offline.
 - **Show behind**: the whole window, only the conversation, or only the sidebar (tablet width and up).
 - **Fit** (fill, fit, tile, center), **Anchor** (nine points), **Picture strength**, **Blur**, **Brightness** and **Soften** (a wash of the window color over the picture).
-- **Panel opacity** and **Panel blur**: how much the sidebar and the conversation let the picture through.
+- **Panel opacity** and **Panel blur**: how much the sidebar, page sheets, headers and composer surfaces let the picture through, within the scope you chose.
 - **Separate for light and dark**: off by default. Turn it on to pick a different background for each theme.
 
-Text stays readable whatever you pick. Kiki measures the picture and raises **Panel opacity** as far as it needs to keep the faintest text at WCAG AA (4.5:1) against the picture's lightest and darkest areas, and the setting tells you when it did that. Menus, dialogs, approval prompts and the composer card always keep a solid background.
+Readability assist adds a local wash behind conversation and settings text without raising your **Panel opacity** setting. Page sheets, headers and the composer follow that setting; menus, dialogs and approval prompts keep solid backgrounds. A busy picture can still make text hard to read at low opacity, so raise **Panel opacity** when you need more separation.
 
 Video plays muted and on a loop. It holds on its first frame — or the pack's poster — while the window is hidden or not focused, when reduced motion is on, and when the battery is low and you are unplugged. Kiki warns about videos above 1440p or 40 MB: they cost a lot of memory and you cannot see the difference behind the panels.
 
@@ -199,7 +199,7 @@ Settings → Appearance → Appearance packs lists installed packs with their pr
 - `background.media` names 1–12 files; with more than one, `interval` (seconds) turns them into a carousel. `poster` is the still shown while a video is paused.
 - The background dials are `fit` (`cover` `contain` `tile` `center`), `alignment` (`center` `top` `bottom` `left` `right` `topLeft` `topRight` `bottomLeft` `bottomRight`), `opacity` (0–1), `blur` (0–40), `brightness` (0.4–1.4), `scrim` (0–0.9), `scope` (`window` `main` `sidebar`), `surfaceOpacity` (0.3–1) and `surfaceBlur` (0–32). The names follow Windows Terminal's background settings.
 
-`surfaceOpacity` sets how far the sheet washes on each GUI page — and the inspector — let the background through, within the scope you chose. Readability assist keeps the local text wash in the conversation and settings, and frosts the other page sheets and the inspector instead of raising their opacity. Text over a busy picture can still be hard to read at low opacity even with assist on; raise `surfaceOpacity` when you need more separation. Dialogs, popovers and the composer card keep solid fills.
+`surfaceOpacity` sets how far the sheet washes, headers, composer surfaces and inspector let the background through, within the scope you chose. Readability assist keeps the local text wash in the conversation and settings, and frosts the other page sheets and the inspector instead of raising their opacity. Text over a busy picture can still be hard to read at low opacity even with assist on; raise `surfaceOpacity` when you need more separation. Dialogs and popovers keep solid fills.
 
 The built-in `kiki-appearance` skill walks an agent through making a pack: the format, the contrast rules for each color, media sizes and encoding, packaging, and the usual mistakes.
 

@@ -58,9 +58,9 @@
  * preview) become a wash of their own color at --kiki-surface-alpha. One frost
  * layer covers the scoped media, including stage padding and gaps between
  * sheets; blurring each sheet separately would leave those gaps sharp. The
- * text layer is solved in JS for WCAG AA over the media. Popovers,
- * dialogs, the composer card and dock sheets keep their solid fills: they
- * carry the controls a user must never misread. */
+ * text layer is solved in JS for WCAG AA over the media. Page headers and
+ * composer surfaces follow the transparency dial; popovers, dialogs and
+ * dock sheets keep their solid fills. */
 [data-kiki-backdrop] {
   position: fixed;
   inset: 0;
@@ -155,10 +155,33 @@
   /* Keep negative-z reading layers inside the sheet without a second blur. */
   isolation: isolate;
 }
-/* Routed page roots sit on the sheet wash, rather than covering it with a
- * second paper fill. Board has one more full-size paper wrapper. Controls,
- * cards and dialogs inside the page keep their own fills. */
-:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > .bg-paper,
+/* Routed page roots and their headers share the sheet wash. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > :is(
+  .bg-paper,
+  .bg-canvas,
+  [data-capabilities-page],
+  [data-discovery-page],
+  [data-cron-page],
+  [data-memory-page],
+  [data-activity-page],
+  [data-personas-page],
+  [data-room-page],
+  [data-task-board-page]
+),
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-discovery-page],
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > :is(
+  [data-capabilities-page],
+  [data-discovery-page],
+  [data-cron-page],
+  [data-memory-page],
+  [data-activity-page],
+  [data-personas-page],
+  [data-room-page],
+  [data-task-board-page],
+  .bg-paper
+) > :is(header, [data-room-header], header.bg-paper, header.bg-panel),
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .app-sheet > header.bg-panel,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-header-slot > div.bg-panel,
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-task-board-page] [data-task-board-container] {
   background-color: transparent;
 }
@@ -195,17 +218,48 @@
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='settling'] .conversation-seat::before {
   content: '';
   position: absolute;
-  inset: 0 auto 0 50%;
+  inset: 0 auto auto 50%;
+  height: 36px;
   z-index: -1;
   width: calc(min(var(--kiki-chat-content-width, 760px), 100%) + 120px);
   translate: -50% 0;
   pointer-events: none;
-  background: linear-gradient(180deg, transparent 0px, var(--kiki-seat-paper, var(--kiki-surface-paper)) 36px);
+  background: linear-gradient(180deg, transparent 0px, var(--kiki-surface-paper) 36px);
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
   mask-image: linear-gradient(90deg, transparent, #000 64px, #000 calc(100% - 64px), transparent);
 }
-:root[data-kiki-bg-assist] {
-  --kiki-seat-paper: var(--kiki-text-paper);
+
+/* Composer and list chrome follow the panel wash over wallpaper. */
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-card {
+  background-color: var(--kiki-surface-panel);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-sheet {
+  background-color: var(--kiki-surface-panel);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-goal {
+  background-color: color-mix(in srgb, var(--color-ink) 5%, var(--kiki-surface-panel));
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-scroll {
+  background-color: var(--kiki-surface-panel);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-queue[data-slivers]::before,
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .composer-header-queue[data-slivers='2']::after {
+  background-color: color-mix(in srgb, var(--kiki-surface-panel) 70%, transparent);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) :is([data-resync-status] > div, [data-submission-recovery], [data-goal-armed]) {
+  background-color: var(--kiki-surface-panel);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-recovery-hold] {
+  background-color: var(--kiki-surface-canvas);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-list-toolbar] {
+  background-color: var(--kiki-surface-paper);
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
+}
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-list-body],
+:root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-room-page] aside[data-room-members] {
+  background-color: var(--kiki-surface-panel);
 }
 
 /* ---- text layer (readability assist) ----
@@ -408,5 +462,9 @@
   }
   :root[data-kiki-bg] [data-kiki-backdrop][data-scope='main'] {
     left: 0;
+  }
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='active'] .conversation-seat::before,
+  :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) .conversation-shell[data-phase='settling'] .conversation-seat::before {
+    display: none;
   }
 }
