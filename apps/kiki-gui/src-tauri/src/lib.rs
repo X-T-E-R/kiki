@@ -18,6 +18,7 @@ mod space_badge;
 mod space_shortcut;
 mod remote_space;
 mod clipboard_files;
+mod plugin_focus;
 use clipboard_files::read_clipboard_file_paths;
 use desktop_log::DesktopLogLevel;
 include!("app_commands.rs");
@@ -1131,6 +1132,51 @@ impl SpaceBackendManager {
         true
     }
 
+    /// Read plugin focus from homes that are not on screen. One newest request
+    /// switches that home in and leaves the session route for the reloaded page.
+    fn poll_plugin_focus(&self, app: &AppHandle) {
+        let targets = {
+            let Ok(state) = self.inner.lock() else { return; };
+            if state.stopping || state.mode != WindowMode::Switch { return; }
+            state.slots.iter()
+                .filter(|(id, _)| *id != &state.active)
+                .map(|(id, (_, backend))| (id.clone(), backend.hot_connection()))
+                .collect::<Vec<_>>()
+        };
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis() as u64).unwrap_or(0);
+        let mut candidates = Vec::new();
+        for (id, connection) in targets {
+            let Some(connection) = connection else { continue; };
+            let Ok(port) = connection_port(&connection) else { continue; };
+            let Ok(response) = http_get_body(
+                port,
+                plugin_focus::PLUGIN_NAVIGATION_PATH,
+                &connection.token,
+                plugin_focus::MAX_PLUGIN_NAVIGATION_RESPONSE_BYTES,
+            ) else { continue; };
+            let Ok(Some(request)) = plugin_focus::parse_plugin_navigation_response(&response) else { continue; };
+            if !plugin_focus::plugin_focus_is_actionable(&request, plugin_focus::seen_request_id(&id), now_ms) { continue; }
+            candidates.push(plugin_focus::PluginFocusCandidate { home_id: id, request });
+        }
+        let Some(selected) = plugin_focus::select_background_plugin_focus(&candidates).cloned() else { return; };
+        let Some(intent) = plugin_focus::plugin_focus_intent(&selected.home_id, &selected.request) else {
+            plugin_focus::remember_request_id(&selected.home_id, selected.request.id);
+            return;
+        };
+        if self.active_space().ok().is_some_and(|space| space.home_id == selected.home_id) { return; }
+        if !plugin_focus::store_plugin_focus(intent) { return; }
+        if let Err(error) = self.switch(app, &selected.home_id) {
+            plugin_focus::acknowledge_plugin_focus(selected.request.id);
+            eprintln!("Kiki could not restore the desktop space for plugin focus: {}", error.message);
+            return;
+        }
+        plugin_focus::remember_request_id(&selected.home_id, selected.request.id);
+        if let Err(error) = reload_space_window(app) {
+            eprintln!("Kiki could not reload the restored desktop space for plugin focus: {error}");
+        }
+        let _ = show_main_window(app.clone());
+    }
+
     fn restart_space(&self, app: &AppHandle, id: &str) -> Result<(), String> {
         let space = self.find_space(id)?;
         let backend = self.backend_for(space)?;
@@ -1721,6 +1767,16 @@ fn ack_navigation_intent(navigation_id: String) {
             pending.take();
         }
     }
+}
+
+#[tauri::command]
+fn read_plugin_focus() -> Option<plugin_focus::PluginFocusIntent> {
+    plugin_focus::pending_plugin_focus()
+}
+
+#[tauri::command]
+fn ack_plugin_focus(request_id: u64) {
+    plugin_focus::acknowledge_plugin_focus(request_id);
 }
 
 fn notification_navigation_intent(route: &str, home_id: Option<&str>, scope: Option<&NotificationScope>) -> serde_json::Value {
@@ -3434,6 +3490,7 @@ pub fn run() {
             thread::spawn(move || loop {
                 thread::sleep(Duration::from_secs(5));
                 if !poll_manager.poll_attention(&handle) { break; }
+                poll_manager.poll_plugin_focus(&handle);
             });
             Ok(())
         })

@@ -103,7 +103,15 @@ import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 import { recordNavigation } from './lib/navHistory';
-import { activeSpace } from './lib/spaceStorage';
+import {
+  desktopPluginFocus,
+  desktopPluginFocusTargets,
+  pluginFocusStep,
+  type PluginFocusCursor,
+  type PluginFocusStep,
+} from './lib/pluginFocus';
+import { requestScopeNavigation } from './lib/navScope';
+import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
@@ -145,6 +153,35 @@ export async function runStartupUpdateCheck(
   return 'installed';
 }
 
+async function showDesktopWindow(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('show_main_window');
+}
+
+/** Show through the permitted native command before changing route. A rejection leaves the cursor unchanged. */
+async function applyConnectionPluginFocus(input: {
+  request: { readonly id: number; readonly sessionId: string } | undefined;
+  cursor: PluginFocusCursor;
+  sameConnection: boolean;
+  owner: { readonly homeId: string; readonly scopeId: string };
+  closed: () => boolean;
+  hostKind: string;
+  navigate: (route: string) => void;
+}): Promise<PluginFocusCursor> {
+  const step: PluginFocusStep = pluginFocusStep({
+    request: input.request === undefined ? undefined : { id: input.request.id, sessionId: input.request.sessionId },
+    cursor: input.cursor,
+    sameConnection: input.sameConnection,
+    owner: input.owner,
+  });
+  if (step.kind === 'remember') return step.cursor;
+  if (step.kind !== 'focus-current') throw new Error('Current plugin focus lost its connection');
+  if (input.hostKind === 'tauri') await showDesktopWindow();
+  if (input.closed()) return input.cursor;
+  input.navigate(step.route);
+  return step.cursor;
+}
+
 function RootRedirect() {
   const host = useHost();
   const { scopeId } = useConnection();
@@ -165,7 +202,7 @@ export function App() {
   const rawNavigate = useNavigate();
   const location = useLocation();
   const navType = useNavigationType();
-  const { scopeId, meta, connectionRef } = useConnection();
+  const { scopeId, meta, connectionRef, localClient, connectionSource } = useConnection();
   const desktop = host.kind === 'tauri';
 
   // Commit the target visit before descendants' passive restoration effects.
@@ -270,32 +307,89 @@ export function App() {
   }, [rawNavigate]);
   const { value: dirtyGuardValue, navigate, pending: pendingNavigation, confirm: confirmNavigation, cancel: cancelNavigation } =
     useDirtyGuardState(location, performNavigation);
+  // The watch survives a new navigate callback. A new client starts again, so a
+  // request that already existed is recorded instead of replayed.
+  const focusWatch = useRef({
+    client: null as object | null,
+    current: { initialized: false, seenId: 0 } as PluginFocusCursor,
+    local: null as object | null,
+    localCursor: { initialized: false, seenId: 0 } as PluginFocusCursor,
+  });
 
   useEffect(() => {
     let closed = false;
-    let initialized = false;
-    let seen = 0;
     let timer: ReturnType<typeof setTimeout>;
     const read = async () => {
       try {
-        const { request } = await client.pluginNavigation();
-        if (closed) return;
-        if (initialized && request !== undefined && request.id > seen) {
-          navigate(`/s/${encodeURIComponent(request.sessionId)}`);
-          if (host.kind === 'tauri') {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            const window = getCurrentWindow();
-            await window.show(); await window.unminimize(); await window.setFocus();
+        if (focusWatch.current.client !== client) {
+          focusWatch.current.client = client;
+          focusWatch.current.current = { initialized: false, seenId: 0 };
+        }
+        if (focusWatch.current.local !== localClient) {
+          focusWatch.current.local = localClient;
+          focusWatch.current.localCursor = { initialized: false, seenId: 0 };
+        }
+        if (host.kind === 'tauri') {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const pending = desktopPluginFocusTargets(
+              desktopPluginFocus(await invoke('read_plugin_focus')),
+              activeSpace()?.homeId ?? 'main',
+            );
+            if (pending !== undefined) {
+              await invoke('show_main_window');
+              if (!closed) {
+                navigate(pending.route);
+                await invoke('ack_plugin_focus', { requestId: pending.requestId });
+              }
+            }
+          } catch {
+            // The native intent stays pending. The on-screen connection is still polled below.
           }
         }
-        initialized = true;
-        if (request !== undefined) seen = Math.max(seen, request.id);
-      } catch {}
+        if (closed) return;
+        const nextCursor = await applyConnectionPluginFocus({
+          request: (await client.pluginNavigation()).request,
+          cursor: focusWatch.current.current,
+          sameConnection: true,
+          owner: { homeId: activeSpace()?.homeId ?? 'main', scopeId: 'local' },
+          closed: () => closed,
+          hostKind: host.kind,
+          navigate,
+        });
+        if (closed) return;
+        focusWatch.current.current = nextCursor;
+        if (host.kind === 'tauri' && localClient !== null && (connectionSource === 'remote' || connectionSource === 'ssh')) {
+          const home = parseActiveSpacePayload(await host.activeSpace());
+          if (home === null) throw new Error('Active desktop space is unavailable');
+          const localRequest = (await localClient.pluginNavigation()).request;
+          if (!closed) {
+            const localStep = pluginFocusStep({
+              request: localRequest === undefined ? undefined : { id: localRequest.id, sessionId: localRequest.sessionId },
+              cursor: focusWatch.current.localCursor,
+              sameConnection: false,
+              owner: { homeId: home.homeId, scopeId: 'local' },
+            });
+            if (localStep.kind === 'remember') focusWatch.current.localCursor = localStep.cursor;
+            else if (localStep.kind === 'restore-owner') {
+              await showDesktopWindow();
+              if (!closed) {
+                await requestScopeNavigation({ homeId: localStep.homeId, scopeId: localStep.scopeId, route: localStep.route });
+                focusWatch.current.localCursor = localStep.cursor;
+              }
+            } else {
+              throw new Error('Local plugin focus lost its owning space');
+            }
+          }
+        }
+      } catch {
+        // A rejected restore or a failed scope return leaves the request unconsumed.
+      }
       if (!closed) timer = setTimeout(() => { void read(); }, 1500);
     };
     void read();
     return () => { closed = true; clearTimeout(timer); };
-  }, [client, host, navigate]);
+  }, [client, localClient, connectionSource, host, navigate]);
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.

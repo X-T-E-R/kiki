@@ -20,6 +20,8 @@ macro_rules! app_commands {
             take_scope_connection,
             take_navigation_intent,
             ack_navigation_intent,
+            read_plugin_focus,
+            ack_plugin_focus,
             ssh_tunnel_running,
             disconnect_ssh_profile,
             cancel_desktop_startup,

@@ -26,6 +26,8 @@
     "allow-prepare-space",
     "allow-take-navigation-intent",
     "allow-ack-navigation-intent",
+    "allow-read-plugin-focus",
+    "allow-ack-plugin-focus",
     "allow-restart-space",
     "allow-open-space",
     "allow-create-space-shortcut",
