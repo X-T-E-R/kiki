@@ -535,6 +535,64 @@ describe('McpConnectionManager', () => {
     }
   }, 7000);
 
+  it('settles the startup deadline while shutdown joins the outstanding process close', async () => {
+    let releaseKill!: () => void;
+    const killGate = new Promise<void>((resolve) => { releaseKill = resolve; });
+    const spawnOriginal = testProcess.spawn;
+    const spawn = vi.spyOn(testProcess, 'spawn').mockImplementation(async (...args) => {
+      const child = await spawnOriginal.apply(testProcess, args);
+      const killOriginal = child.kill;
+      vi.spyOn(child, 'kill').mockImplementation(async (...killArgs) => {
+        await killGate;
+        await killOriginal.apply(child, killArgs);
+      });
+      return child;
+    });
+    const cm = createManager();
+    const seen: McpServerEntry['status'][] = [];
+    cm.onStatusChange((entry) => seen.push(entry.status));
+    const connecting = cm.connectAll({
+      slowList: {
+        transport: 'stdio',
+        command: process.execPath,
+        args: [hangingListStdioFixture],
+        startupTimeoutMs: 100,
+      },
+    });
+    try {
+      const result = await Promise.race([
+        connecting.then(() => 'resolved' as const),
+        sleep(1_000).then(() => 'hung' as const),
+      ]);
+      expect(result).toBe('resolved');
+      expect(cm.get('slowList')).toMatchObject({
+        status: 'failed',
+        toolCount: 0,
+        error: expect.stringContaining('Timed out'),
+      });
+      expect(seen).toEqual(['pending', 'failed']);
+      expect(cm.resolved('slowList')).toBeUndefined();
+      await cm.waitForInitialLoad();
+      const child = await spawn.mock.results[0]!.value;
+      expect(child.kill).toHaveBeenCalledOnce();
+      let shutdownFinished = false;
+      const shutdown = cm.shutdown().then(() => { shutdownFinished = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(shutdownFinished).toBe(false);
+      expect(child.exitCode).toBeNull();
+      releaseKill();
+      await shutdown;
+      await child.wait();
+      expect(child.exitCode).not.toBeNull();
+      expect(child.kill).toHaveBeenCalledOnce();
+    } finally {
+      releaseKill();
+      await cm.shutdown();
+      await connecting;
+      vi.restoreAllMocks();
+    }
+  }, 7000);
+
   it('applies the resolved default startup timeout when the server entry omits startupTimeoutMs', async () => {
     const cm = createManager({
       resolveDefaultTimeouts: () => ({ startupTimeoutMs: 100 }),

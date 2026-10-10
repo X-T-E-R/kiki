@@ -103,6 +103,7 @@ export class McpConnectionManager implements McpConnectionView {
   private readonly entries = new Map<string, InternalEntry>();
   private readonly listeners = new Set<McpStatusListener>();
   private readonly inFlightReconnects = new Map<string, Promise<void>>();
+  private readonly closingClients = new WeakMap<RuntimeMcpClient, Promise<void>>();
   private initialLoad: Promise<void> = Promise.resolve();
   private initialLoadAttemptId = 0;
   private initialLoadStartedAt: number | undefined;
@@ -368,6 +369,7 @@ export class McpConnectionManager implements McpConnectionView {
       DEFAULT_STARTUP_TIMEOUT_MS;
 
     let client: RuntimeMcpClient | undefined;
+    let startupTimedOut = false;
     try {
       const startupClient = await this.createClient(entry.config, entry.name, timeoutMs);
       client = startupClient;
@@ -376,7 +378,8 @@ export class McpConnectionManager implements McpConnectionView {
         this.connectAndDiscoverTools(startupClient, entry.name),
         timeoutMs,
         () => {
-          void this.closeRuntimeClient(startupClient);
+          startupTimedOut = true;
+          void this.closeRuntimeClient(startupClient).catch(() => undefined);
         },
       );
       if (!this.isCurrent(entry, attemptId)) {
@@ -405,7 +408,12 @@ export class McpConnectionManager implements McpConnectionView {
         entry.enabledNames = undefined;
         entry.rawTools = undefined;
       }
-      await this.closeClient(entry);
+      const closing = this.closeClient(entry);
+      if (startupTimedOut) {
+        void closing.catch(() => undefined);
+      } else {
+        await closing;
+      }
     }
     if (!this.isCurrent(entry, attemptId)) return;
     this.emit(entry);
@@ -527,8 +535,9 @@ export class McpConnectionManager implements McpConnectionView {
     const client = entry.client;
     try {
       await this.closeRuntimeClient(client);
-      entry.client = undefined;
+      if (entry.client === client) entry.client = undefined;
     } catch (error) {
+      if (entry.client !== client) throw error;
       entry.status = 'failed';
       entry.error = error instanceof Error ? error.message : String(error);
       this.emit(entry);
@@ -536,12 +545,14 @@ export class McpConnectionManager implements McpConnectionView {
     }
   }
 
-  private async closeRuntimeClient(client: RuntimeMcpClient): Promise<void> {
-    try {
-      await client.close();
-    } catch (error) {
+  private closeRuntimeClient(client: RuntimeMcpClient): Promise<void> {
+    const existing = this.closingClients.get(client);
+    if (existing !== undefined) return existing;
+    const closing = client.close().catch((error: unknown) => {
       if (error instanceof Error2 && error.code === ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED) throw error;
-    }
+    });
+    this.closingClients.set(client, closing);
+    return closing;
   }
 
   private isCurrent(entry: InternalEntry, attemptId: number): boolean {
