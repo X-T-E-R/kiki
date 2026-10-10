@@ -4,6 +4,22 @@
 
 MCP tool results can carry embedded media. When the current model cannot take an embedded image — because of its format or because the part is over the per-part size cap — Kiki keeps a text notice *and* saves the original into the session's media storage, so nothing is lost. The notice carries the saved file's absolute path and a `kimi-file://` reference; pass the path to `Read` or `ReadMediaFile` to inspect the original. A resource blob in a format Kiki does not deliver is preserved the same way. When the list of saved attachments would crowd the tool output, it is written to a text file and the output keeps a short pointer to it.
 
+## Share Kiki tools with another client
+
+Kiki can also serve its native tools to an explicitly authorized MCP client. The feature is available by default; it does not start a listener or authorize a client until you configure access.
+
+1. In Settings → model providers → connection services, add an external client and choose its shared tools and permission ceiling. These are access settings, not a workspace or conversation.
+2. Create a conversation in Kiki, choose that external client, and select the workspace, worktree, Profile, and permission mode there. Kiki binds the resolved workspace to the conversation; the client cannot supply an arbitrary working directory.
+3. Configure the other application's MCP entry with the local command below, replacing `CONNECTION_ID` with the connection's ID. For remote access, enable the MCP listener in connection services and use its displayed HTTPS URL; approve the client's authorization request in Kiki.
+
+```sh
+kiki mcp --client CONNECTION_ID --tools
+```
+
+Connecting alone does not create a conversation. Before a conversation is attached, the tool catalog contains only `kiki_session`, `kiki_operation`, and `kiki_save_text`. Call `kiki_session` with `{"action":"list"}`, then explicitly resume a shared conversation with `{"action":"resume","session_ref":"SESSION_REF"}`. Keep the returned reference in `_kiki.session_ref` on native tool calls. After attachment, the catalog exposes the selected conversation's shared native tools and sends a tool-list change notification. To start another conversation with the same workspace and settings, call `kiki_session` with `action: "new"`, that `session_ref`, and a stable `_kiki.idempotency_key`.
+
+For side-effecting calls, keep the same `_kiki.idempotency_key` when retrying. Use `kiki_operation` to query or cancel an accepted operation instead of resubmitting it; its `read` action pages the saved original result. `kiki_save_text` saves only text the external client explicitly supplies—it does not synchronize the client's private chat automatically. Pause or revoke the connection in Settings to stop its access.
+
 ## Connection Methods
 
 Kiki supports three MCP server connection methods:

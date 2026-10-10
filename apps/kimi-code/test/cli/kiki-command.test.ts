@@ -22,7 +22,7 @@ import { doctor, registerDoctorCommand } from '../../src/kiki/doctor';
 import { resolveKikiHome } from '../../src/kiki/home';
 import { mcpCommandConfig, upsertMcpServer } from '../../src/kiki/install';
 import { createSeatOnConnection } from '../../src/kiki/seat';
-import { mcpPrincipal } from '../../src/kiki/mcp';
+import { mcpPrincipal, registerMcpCommand } from '../../src/kiki/mcp';
 import { registerKikiCommands } from '../../src/kiki/register';
 import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
 
@@ -172,6 +172,29 @@ describe('kiki command helpers', () => {
   it('derives a stable MCP principal from the workspace', () => {
     expect(mcpPrincipal('C:\\workspace')).toBe(mcpPrincipal('C:\\workspace'));
     expect(mcpPrincipal('C:\\workspace')).toMatch(/^mcp:[a-f0-9]{16}$/);
+  });
+
+  it('resolves a fresh owner credential whenever the external MCP bridge requests one', async () => {
+    const program = new Command('kiki');
+    const credentials = [{ mcpUrl: 'http://127.0.0.1:1234/mcp', token: 'first' },
+      { mcpUrl: 'http://127.0.0.1:1234/mcp', token: 'second' }];
+    let requests = 0;
+    const daemon = vi.fn<typeof import('../../src/kiki/seat').daemonRequest>(async <T>() => credentials[requests++] as T);
+    registerMcpCommand(program, {
+      ensureServer: vi.fn(async () => ({ url: 'http://127.0.0.1:1234', token: 'owner' })) as typeof ensureServer,
+      daemonRequest: daemon as typeof import('../../src/kiki/seat').daemonRequest,
+      createExternalClientStdioBridge: async (options) => {
+        expect(await options.resolveCredential(options.connectionId)).toEqual(credentials[0]);
+        expect(await options.resolveCredential(options.connectionId)).toEqual(credentials[1]);
+        return {} as Awaited<ReturnType<typeof import('@kiki/kap-server').createExternalClientStdioBridge>>;
+      },
+    });
+    await program.parseAsync(['node', 'kiki', 'mcp', '--client', 'connection_example', '--tools']);
+    expect(daemon).toHaveBeenCalledTimes(2);
+    expect(daemon.mock.calls.map((call) => call[2])).toEqual([
+      '/api/external-clients/connection_example/credential',
+      '/api/external-clients/connection_example/credential',
+    ]);
   });
 
   it('sends only the seat API contract fields', async () => {

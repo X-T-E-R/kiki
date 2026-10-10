@@ -8,6 +8,7 @@ import {
   type ServerNotification,
   type ServerRequest,
   ListToolsRequestSchema,
+  ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -69,8 +70,11 @@ export async function createExternalClientStdioBridge(
   await client.listTools();
   const server = new Server(
     { name: 'kiki-external-client-stdio', version: '0.3.3' },
-    { capabilities: { tools: { listChanged: false } } },
+    { capabilities: { tools: { listChanged: true } } },
   );
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+    void server.sendToolListChanged().catch(() => undefined);
+  });
   server.setRequestHandler(ListToolsRequestSchema, async () => client.listTools());
   server.setRequestHandler(CallToolRequestSchema, async (
     request,

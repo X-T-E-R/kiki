@@ -4,6 +4,22 @@
 
 MCP 工具结果可以携带内嵌媒体。当当前模型无法接收某张内嵌图片——格式不被接受，或该 part 超过单 part 体积上限——Kiki 会同时保留文本提示，并把原件存入会话媒体存储，不会丢失字节。提示中带有已保存文件的绝对路径和 `kimi-file://` 引用；把该路径传给 `Read` 或 `ReadMediaFile` 即可查看原件。Kiki 不直接交付的 resource blob 也会以同样方式保留。当附件清单会挤占工具输出时，清单会写入一个文本文件，输出中只保留指向它的简短指针。
 
+## 把 Kiki 工具分享给其他客户端
+
+Kiki 也可以向明确授权的 MCP 客户端提供原生工具。此功能默认可用，但只有你配置访问后，才会启动监听器或授权客户端。
+
+1. 在设置 → 模型提供商 → 连接服务中添加外部客户端，选择共享工具和权限上限。这里配置的是访问权限，不是工作目录或会话。
+2. 在 Kiki 中新建会话，选择该外部客户端，再选择工作区、worktree、Profile 和权限模式。Kiki 会将解析后的工作区绑定到会话，客户端不能传入任意工作目录。
+3. 在另一个应用的 MCP 配置中使用下面的本地命令，将 `CONNECTION_ID` 替换为连接 ID。远程访问则在连接服务中启用 MCP 监听器，使用界面显示的 HTTPS URL，并在 Kiki 中批准客户端的授权请求。
+
+```sh
+kiki mcp --client CONNECTION_ID --tools
+```
+
+建立连接本身不会创建会话。尚未绑定会话时，工具目录只有 `kiki_session`、`kiki_operation` 和 `kiki_save_text`。先调用 `kiki_session`，传入 `{"action":"list"}`，再用 `{"action":"resume","session_ref":"SESSION_REF"}` 明确恢复一个已共享的会话。后续原生工具调用应在 `_kiki.session_ref` 中保留返回的引用。绑定完成后，目录会提供该会话已共享的原生工具，并发送工具列表变更通知。要沿用相同工作区和设置新建另一个会话，可向 `kiki_session` 传入 `action: "new"`、该 `session_ref` 和稳定的 `_kiki.idempotency_key`。
+
+重试有副作用的调用时，保持相同的 `_kiki.idempotency_key`。用 `kiki_operation` 查询或取消已受理的操作，不要再次提交；其 `read` 操作可以分段读取已保存的原始结果。`kiki_save_text` 只保存外部客户端明确提供的文本，不会自动同步客户端的私密聊天。在设置中暂停或撤销连接，即可停止它的访问。
+
 ## 接入方式
 
 Kiki 支持三种 MCP server 接入方式：

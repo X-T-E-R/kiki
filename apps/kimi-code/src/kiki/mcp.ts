@@ -39,15 +39,14 @@ export function registerMcpCommand(program: Command, dependencies: McpCommandDep
         if (options.tools !== true) throw new Error('--tools is required with --client.');
         if (options.attached === true || options.workspace !== undefined) throw new Error('--client cannot be combined with --attached or --workspace.');
         const connection = await ensureServerImpl({ homeDir: resolveKikiHome(options.home) });
-        const credential = await daemonRequestImpl<ExternalClientLocalCredential>(
-          connection,
-          'POST',
-          `/api/external-clients/${encodeURIComponent(options.client)}/credential`,
-          {},
-        );
         await createExternalClientStdioBridgeImpl({
           connectionId: options.client,
-          resolveCredential: async () => ({ mcpUrl: credential.mcpUrl, token: credential.token }),
+          resolveCredential: (connectionId) => daemonRequestImpl<ExternalClientLocalCredential>(
+            connection,
+            'POST',
+            `/api/external-clients/${encodeURIComponent(connectionId)}/credential`,
+            {},
+          ),
         });
         return;
       }

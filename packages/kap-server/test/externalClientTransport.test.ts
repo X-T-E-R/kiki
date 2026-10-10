@@ -7,6 +7,7 @@ import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backend
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -106,6 +107,36 @@ describe('external client transport', () => {
     expect(revoked.status).toBe(401);
     await client.close();
     await restarted.close();
+  });
+
+  it('publishes grant-scoped catalog changes through the SDK listener', async () => {
+    const fixture = createFixtureHost();
+    let catalogChanged: ((grantId: string) => void) | undefined;
+    const host: ExternalClientTransportHost = { ...fixture.host,
+      onCatalogChanged: (listener) => { catalogChanged = listener; return { dispose() { catalogChanged = undefined; } }; },
+    };
+    const listener = createExternalClientListener({ host, port: 0 });
+    const client = new Client({ name: 'catalog-fixture', version: '1.0.0' });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await listener.start();
+      const resource = `${listener.address()!.origin}/mcp`;
+      fixture.setGrant({ ...fixture.current(), resource, audience: resource });
+      const changed = new Promise<void>((resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('Catalog notification timed out.')), 1000);
+        client.setNotificationHandler(ToolListChangedNotificationSchema, () => resolve());
+      });
+      await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
+        requestInit: { headers: { authorization: 'Bearer local-fixture-token' } },
+      }));
+      expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+      catalogChanged!(fixture.current().id);
+      await changed;
+    } finally {
+      clearTimeout(deadline);
+      await client.close();
+      await listener.close();
+    }
   });
 
   it('bridges the same host over a real SDK stdio client', async () => {

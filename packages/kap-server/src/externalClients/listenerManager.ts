@@ -30,7 +30,8 @@ export class NativeExternalClientListenerManager implements ExternalClientListen
         const resolve=(id:string)=>this.grant(id);
         const transport:ExternalClientTransportHost={oauthStore:this.host.store.documents,oauthStoreScope:this.host.store.scope,
           resolveBearer:async token=>{const grant=await this.host.resolveBearer(token);return grant===null?null:resolve(grant.id);},
-          resolveGrant:resolve,catalog:grant=>this.host.catalog(grant),call:(grant,name,args,meta,signal)=>this.host.call(grant,name,args,meta,signal)};
+          resolveGrant:resolve,catalog:grant=>this.host.catalog(grant),onCatalogChanged:listener=>this.host.onCatalogChanged(listener),
+          call:(grant,name,args,meta,signal)=>this.host.call(grant,name,args,meta,signal)};
         this.listener=createExternalClientListener({host:transport,bindHost:input.host??'127.0.0.1',port:input.port??0,publicUrl:config.publicUrl,
           oauthOptions:{store:this.host.store.documents,storeScope:`${this.host.store.scope}/external-clients/oauth`,scopesSupported:['tools']}});
         try{await this.listener.start();}catch(error){this.error=error instanceof Error?error.message:String(error);await this.listener.close().catch(()=>undefined);this.listener=undefined;}
