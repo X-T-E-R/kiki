@@ -33,6 +33,7 @@ export interface MCPToolDefinition {
 
 export interface MCPClient {
   listTools(): Promise<MCPToolDefinition[]>;
+  onToolsListChanged?(listener: () => void): () => void;
   callTool(
     name: string,
     args: Record<string, unknown>,

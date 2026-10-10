@@ -10,6 +10,7 @@ import {
   KIMI_MCP_CLIENT_NAME,
   KIMI_MCP_CLIENT_VERSION,
   MCP_LIVENESS_PROBE_TIMEOUT_MS,
+  McpToolsListChanged,
   listAllMcpTools,
   toMcpToolResult,
   type UnexpectedCloseListener,
@@ -30,6 +31,7 @@ export interface SseMcpClientOptions {
 }
 
 export class SseMcpClient implements MCPClient {
+  private readonly toolsListChanged: McpToolsListChanged;
   private readonly client: Client;
   private readonly transport: SSEClientTransport;
   private readonly startupTimeoutMs?: number;
@@ -56,6 +58,7 @@ export class SseMcpClient implements MCPClient {
       name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
       version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
     });
+    this.toolsListChanged = new McpToolsListChanged(this.client);
     this.startupTimeoutMs = options.startupTimeoutMs;
     this.toolCallTimeoutMs = options.toolCallTimeoutMs;
   }
@@ -86,6 +89,7 @@ export class SseMcpClient implements MCPClient {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.toolsListChanged.close();
     await this.closeStartedClient();
   }
 
@@ -100,6 +104,10 @@ export class SseMcpClient implements MCPClient {
 
   async listTools(): Promise<MCPToolDefinition[]> {
     return listAllMcpTools(this.client, this.startupTimeoutMs);
+  }
+
+  onToolsListChanged(listener: () => void): () => void {
+    return this.toolsListChanged.subscribe(listener);
   }
 
   getServerCapabilities(): ServerCapabilities | undefined {
@@ -121,6 +129,7 @@ export class SseMcpClient implements MCPClient {
   }
 
   private async closeStartedClient(): Promise<void> {
+    this.toolsListChanged.close();
     if (!this.started) return;
     this.started = false;
     await this.client.close();
@@ -130,17 +139,18 @@ export class SseMcpClient implements MCPClient {
     if (this.hooksInstalled) return;
     this.hooksInstalled = true;
     this.client.onclose = () => {
+      this.toolsListChanged.close();
       if (this.closed) return;
       if (!this.ready) return;
       this.fireUnexpectedClose({ error: this.lastTransportError });
     };
     this.client.onerror = (error) => {
       this.lastTransportError = error;
+      const terminal = isTerminalSseTransportError(error);
+      if (terminal) this.toolsListChanged.close();
       if (this.closed) return;
       if (!this.ready) return;
-      if (isTerminalSseTransportError(error)) {
-        this.fireUnexpectedClose({ error });
-      }
+      if (terminal) this.fireUnexpectedClose({ error });
     };
   }
 

@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Error2 } from '#/errors';
+import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import { KIMI_MCP_CLIENT_NAME } from '#/mcpCore/client-shared';
 import { McpConnectionManager, type McpConnectionManagerOptions, type McpServerEntry } from '#/mcpCore/connection-manager';
 import { McpOAuthService } from '#/mcpCore/oauth/service';
@@ -117,6 +118,54 @@ describe('McpConnectionManager', () => {
       await cm.shutdown();
     }
   }, 20000);
+
+  it('refreshes tools after dynamic list notifications, coalesces repeats, and ignores stale clients', async () => {
+    const initialTools = [{
+      name: 'echo',
+      description: 'Echoes back',
+      inputSchema: { type: 'object', properties: {} },
+    }];
+    const refreshedTools = [...initialTools, {
+      name: 'dynamic',
+      description: 'Added after connect',
+      inputSchema: { type: 'object', properties: {} },
+    }];
+    const snapshots = [initialTools, refreshedTools];
+    const notifications: Array<() => void> = [];
+    const connect = vi.spyOn(StdioMcpClient.prototype, 'connect').mockResolvedValue();
+    const listTools = vi.spyOn(StdioMcpClient.prototype, 'listTools').mockImplementation(async () =>
+      snapshots.shift() ?? refreshedTools,
+    );
+    const onToolsListChanged = vi.spyOn(StdioMcpClient.prototype, 'onToolsListChanged').mockImplementation((listener) => {
+      notifications.push(listener);
+      return () => {};
+    });
+    const cm = createManager();
+    try {
+      await cm.connectAll({ dynamic: stdioConfig() });
+      expect(cm.get('dynamic')?.toolCount).toBe(1);
+      expect(notifications).toHaveLength(1);
+
+      const staleNotification = notifications[0]!;
+      staleNotification();
+      staleNotification();
+      await vi.waitFor(() => expect(cm.get('dynamic')?.toolCount).toBe(2));
+      expect(connect).toHaveBeenCalledOnce();
+
+      await cm.reconnect('dynamic');
+      expect(cm.get('dynamic')?.toolCount).toBe(2);
+      expect(notifications).toHaveLength(2);
+      const listCallsAfterReconnect = listTools.mock.calls.length;
+      staleNotification();
+      await Promise.resolve();
+      expect(listTools).toHaveBeenCalledTimes(listCallsAfterReconnect);
+    } finally {
+      await cm.shutdown();
+      onToolsListChanged.mockRestore();
+      listTools.mockRestore();
+      connect.mockRestore();
+    }
+  });
 
   it('isolates failures: a bad server is marked failed without blocking the rest', async () => {
     const cm = createManager();
