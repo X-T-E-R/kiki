@@ -56,6 +56,7 @@ import {
   type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { ErrorCodes, Error2 } from "#/errors";
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import {
@@ -95,6 +96,7 @@ import { renderPrompt } from '@kiki/agent-profiles/renderPrompt';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
 import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
 import { restoreProfileFileSources } from '#/session/dispatch/profileFile';
+import { loadMainAgentProfileFile } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
 import type { LoopControl } from '#/agent/loop/configSection';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
@@ -299,6 +301,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
+    @IAgentProfileRegistry private readonly profileRegistry: IAgentProfileRegistry,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
     @ISessionInstructionsProvider private readonly instructions: ISessionInstructionsProvider,
     @ISessionToolPolicy private readonly sessionToolPolicy: ISessionToolPolicy,
@@ -780,13 +783,26 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.syncBindingMetadata();
   }
 
+  async resolveFile(path: string): Promise<ResolvedAgentProfile> {
+    await this.catalog.ready;
+    return loadMainAgentProfileFile({ file: path, cwd: this.sessionContext.cwd,
+      osHomeDir: this.bootstrap.osHomeDir, fs: this.hostFs, executors: this.executors,
+      defaultProfile: this.catalog.getDefault(), builtinProfile: this.builtinProfiles.getDefault(),
+      resolveBase: (name) => this.catalog.get(name),
+      baseEntries: this.profileRegistry.entries().filter((entry) => entry.workspaceKey === undefined || entry.workspaceKey === this.sessionContext.workspaceId),
+    });
+  }
+
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
     if (this.agentScope.agentId !== MAIN_AGENT_ID) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Execution selection is supported only for the main agent');
-    const selected = requested.profile === undefined ? undefined : this.catalog.resolveSelection({ profile: requested.profile }).profile;
+    if (requested.profile !== undefined && requested.profile_file !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'profile and profile_file are mutually exclusive');
+    const selected = requested.profile_file !== undefined ? await this.resolveFile(requested.profile_file)
+      : requested.profile === undefined ? undefined : this.catalog.resolveSelection({ profile: requested.profile }).profile;
+    if (requested.profile_file !== undefined) requested = { ...requested, profile_file: selected!.sourcePath };
     const profile = selected === undefined ? undefined : captureProfileModelMenu(selected,
       requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
     if (profile !== undefined && (profile.executor ?? 'native') !== requested.executor) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, `Profile "${requested.profile}" does not use executor "${requested.executor}"`);
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Profile "${profile.name}" does not use executor "${requested.executor}"`);
     }
     const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
     const execution = resolveExecutionBinding({ ...requested, overrides: {
@@ -797,6 +813,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
     if (requested.executor === 'native') {
       await this.bind({ ...input, execution: undefined, profile: requested.profile,
+        resolvedProfile: requested.profile_file === undefined ? input.resolvedProfile : profile,
         model: execution.effective.model, thinking: execution.effective.thinking }, assertCurrent);
       this.applyBindingSnapshot({ ...this.data(), execution });
       await this.syncBindingMetadata();
@@ -885,6 +902,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async restoreCommittedPromptProjections(): Promise<void> {
     const current = this.profileState;
+    if (current.execution !== undefined && this.isExternalExecutor) return;
     const diagnostics = current.boundProfile?.promptBase?.promptDiagnostics;
     if (diagnostics === undefined) return;
     const modelAlias = this.isExternalExecutor ? diagnostics.identity.model_alias ?? '' : current.modelAlias;
@@ -1382,6 +1400,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async setModel(alias: string, assertCurrent?: () => void): Promise<ProfileSetModelResult> {
+    if (this.profileState.execution !== undefined && this.isExternalExecutor) {
+      await this.bind({ execution: this.profileState.execution.selection, model: alias }, assertCurrent);
+      return { model: this.modelAlias! };
+    }
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
@@ -1606,6 +1628,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.systemPromptRefreshTail.catch(() => undefined);
     this.memorySnapshot.invalidate();
     const current = this.profileState;
+    if (current.execution !== undefined && this.isExternalExecutor) {
+      await this.bind({ execution: current.execution.selection });
+      return;
+    }
+    if (current.execution?.selection.profile_file !== undefined) {
+      await this.bind({ execution: current.execution.selection, model: current.modelAlias, thinking: current.thinkingLevel,
+        personaSnapshot: current.persona ?? this.currentPersona, personaOverrides: current.personaOverrides,
+        delegationPosition: this.delegationPosition });
+      return;
+    }
     if (current.profileName === undefined) return;
     const liveProfile = this.catalog.get(current.profileName);
     if (liveProfile === undefined || liveProfile.private === true ||
@@ -1661,6 +1693,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async refreshSystemPromptNow(): Promise<void> {
     try {
+      if (this.profileState.execution !== undefined && this.isExternalExecutor) return;
       this.syncRestoredPersona();
       const profile = this.resolveActiveProfile();
       if (profile === undefined) return;
@@ -2418,6 +2451,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private promptConfigurationSignature: string | undefined;
 
   async preparePromptConfiguration(): Promise<boolean> {
+    if (this.profileState.execution !== undefined && this.isExternalExecutor) return false;
     const profile = this.resolveActiveProfile();
     if (profile === undefined) {
       if (this.profileName === undefined) return false;

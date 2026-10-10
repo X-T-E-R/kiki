@@ -287,6 +287,7 @@ export interface IAgentProfileService {
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void;
   /** Runs the optional guard synchronously before committing a prepared binding; throwing prevents the commit. */
   bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void>;
+  resolveFile(path: string): Promise<ResolvedAgentProfile>;
   applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   /** Runs the optional guard synchronously before committing a prepared model; throwing prevents the commit. */
   setModel(model: string, assertCurrent?: () => void): Promise<ProfileSetModelResult>;
