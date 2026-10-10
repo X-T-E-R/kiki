@@ -119,7 +119,7 @@ Archive is a state change: provide the target and reason, not a replacement body
     if (input.action === 'create' ? input.id !== undefined || input.expected_revision !== undefined : input.id === undefined) return failure(new MemoryDomainError('invalid_input', 'Invalid action target', 'Omit id and expected_revision for create; provide id for existing targets.'));
     if (input.action !== 'create' && !input.expected_revision) return failure(new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.'));
     if (input.action !== 'archive' && input.covered_by !== undefined) return failure(new MemoryDomainError('invalid_input', 'covered_by is only accepted for archive', 'Remove covered_by from this action.'));
-    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId }) => {
+    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId, signal }) => {
       if (this.session.ephemeral === true || !available(this.capabilities, this.session)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
       try {
         const persona = this.memorySnapshot.getPersona();
@@ -134,7 +134,7 @@ Archive is a state change: provide the target and reason, not a replacement body
           scope = selected[0]!.scope;
         }
         const result = await this.store.put({ action: input.action, scope, type: input.type, title: input.title, body: input.body, reason: input.reason,
-          id: input.id, expectedRevision: input.expected_revision, basis: input.basis, validity: input.validity, covered_by: input.covered_by,
+          id: input.id, expectedRevision: input.expected_revision, basis: input.basis, validity: input.validity, covered_by: input.covered_by, signal,
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId }, pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review' });
         const outcome = result.outcome;
         const entry = result.entry;
@@ -149,6 +149,7 @@ Archive is a state change: provide the target and reason, not a replacement body
           output: JSON.stringify({ action: input.action, outcome, id: entry.id, title: entry.title, scope: scope.kind, owner_scope: scope, target: owningTarget,
             status: entry.status, revision: entry.revision, operation_id: result.operationId, entry, proposed_target: proposedTarget, covered_by: entry.covered_by, warnings: result.warnings, reference_hint: hint }) };
       } catch (error) {
+        signal.throwIfAborted();
         if (error instanceof MemoryDomainError && error.code === 'duplicate_title') {
           const scope = resolveScope(input.scope, this.session, this.memorySnapshot.getPersona());
           const found = (await this.store.list(scope, true)).filter((entry) => entry.status === 'active' && entry.title.toLowerCase() === input.title?.trim().toLowerCase()).map((entry) => ({ entry, scope }));
@@ -185,7 +186,7 @@ Each item has its complete title, status, owning scope, revision, and a target w
     const input = parsed.data;
     if (input.statuses !== undefined && input.include_superseded !== undefined) return failure(new MemoryDomainError('invalid_query', 'statuses cannot be combined with include_superseded', 'Use statuses alone for explicit state filters.'));
     if (input.cursor !== undefined && Object.keys(input).some((key) => key !== 'cursor')) return failure(new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the query if its filters need changing.'));
-    return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
+    return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async ({ signal }) => {
       if (!available(this.capabilities, this.session, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {
         const persona = this.memorySnapshot.getPersona();
@@ -193,11 +194,11 @@ Each item has its complete title, status, owning scope, revision, and a target w
         const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor } : {
           mode: input.mode, query: input.query, scope: input.scope, type: input.type, page_size: input.page_size,
           statuses: input.statuses ?? (input.include_superseded === true ? ['active', 'superseded'] : undefined),
-        });
+        }, signal);
         return { output: JSON.stringify({ ...page, items: page.items.map((entry) => ({ id: entry.id, title: entry.title, type: entry.type, status: entry.status,
           revision: entry.revision, scope: entry.scope, target: target(entry.scope, entry), basis_kind: entry.basis?.kind ?? 'unknown', applicability: memoryApplicability(entry),
           snippet: page.mode === 'search' ? entry.body.slice(0, 200) : undefined, score: page.mode === 'search' ? entry.score : undefined })) }) };
-      } catch (error) { return failure(error); }
+      } catch (error) { signal.throwIfAborted(); return failure(error); }
     } };
   }
 }

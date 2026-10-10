@@ -62,13 +62,13 @@ export function memoryQueryRequest(scopes: readonly MemoryScope[], input: Memory
     throw new MemoryDomainError('invalid_query', 'Invalid memory query or filters', 'Use search with a short query or list without query, with page_size 1–20.');
   }
 }
-export function memoryQueryPage(scopes: readonly MemoryScope[], parsed: ReturnType<typeof memoryQueryRequest>, entries: readonly (MemoryEntry & { scope: MemoryScope })[], nextSourceOffset: number, sourceLength: number, skipped: number, salt: string): MemoryQueryPage {
+export function memoryQueryPage(scopes: readonly MemoryScope[], parsed: ReturnType<typeof memoryQueryRequest>, entries: readonly (MemoryEntry & { scope: MemoryScope })[], nextSourceOffset: number, sourceLength: number, skipped: number, salt: string, wholeChunk = false): MemoryQueryPage {
   const { request, position } = parsed;
   const mode = request.mode ?? 'search';
   const statuses = request.statuses ?? ['active'];
   const filtered = entries.filter((entry) => statuses.includes(entry.status) && (request.type === undefined || entry.type === request.type));
   const ordered = mode === 'search' ? rankMemoryEntries(filtered, request.query!, request.type) : filtered.toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id) || JSON.stringify(a.scope).localeCompare(JSON.stringify(b.scope)));
-  const pageSize = request.page_size ?? 20;
+  const pageSize = wholeChunk ? Math.max(1, ordered.length) : request.page_size ?? 20;
   const items = ordered.slice(position.offset, position.offset + pageSize);
   const chunkExhausted = position.offset + pageSize >= ordered.length;
   const exhausted = chunkExhausted && nextSourceOffset >= sourceLength;

@@ -609,3 +609,112 @@ describe('memory query read reuse and pending-only writes', () => {
     expect(await store.get(global, pending.entry.id)).toEqual(pending.entry);
   });
 });
+
+
+describe('memory write capacity scans and namespace isolation', () => {
+  it('validates capacity once per source chunk instead of once per public result page', async () => {
+    const base = pathFor(global);
+    await mkdir(join(home, base, 'entries'), { recursive: true });
+    const { writeFile } = await import('node:fs/promises');
+    for (let offset = 0; offset < 1_304; offset += 32) {
+      await Promise.all(Array.from({ length: Math.min(32, 1_304 - offset) }, async (_, index) => {
+        const number = offset + index;
+        const id = `m_capacity_${String(number).padStart(4, '0')}`;
+        const entry = { id, type: 'reference', title: `Capacity ${number}`, status: number < 280 ? 'active' : 'archived', source, reason: 'Fixture' };
+        await writeFile(join(home, base, `entries/${id}.md`), `---\n${JSON.stringify(entry)}\n---\nNeutral fixture rule.\n`);
+      }));
+    }
+    const reads = vi.spyOn(storage, 'readStream');
+    const saved = await save('New capacity rule', global);
+    expect(saved.entry.status).toBe('active');
+    expect(reads).toHaveBeenCalledTimes(1_304);
+    expect((await store.journal(global))).toHaveLength(1);
+    const page = await store.query([global], { mode: 'list' });
+    expect(page.items).toHaveLength(20);
+    expect(page.next_cursor).not.toBeNull();
+  }, 30_000);
+
+  it('keeps a cancelled queued writer behind its predecessor while other namespaces and light reads complete', async () => {
+    const base = pathFor(global);
+    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const write = storage.write.bind(storage);
+    let hold = true;
+    vi.spyOn(storage, 'write').mockImplementation(async (scope, key, bytes, options) => {
+      if (scope === base && key === 'MEMORY.md' && hold) {
+        hold = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return write(scope, key, bytes, options);
+    });
+    const locks = vi.spyOn(storage, 'acquireLock');
+    const first = save('First queued rule', global);
+    await entered.promise;
+    const firstEntry = (await store.list(global))[0]!;
+    const controller = new AbortController();
+    const cancelled = store.put({ action: 'create', scope: global, type: 'reference', title: 'Cancelled rule', body: 'Must not be written.', reason: 'Fixture', source, signal: controller.signal });
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    controller.abort();
+    await rejected;
+    const third = save('Third queued rule', global);
+    try {
+      expect(await store.get(global, firstEntry.id)).toEqual(firstEntry);
+      const unrelated = await save('Other namespace', workspace);
+      expect(unrelated.entry.status).toBe('active');
+      await storage.write('sessions/example', 'meta.json', encoder.encode('{}'));
+      expect(Array.from((await storage.read('sessions/example', 'meta.json'))!)).toEqual(Array.from(encoder.encode('{}')));
+      expect(locks.mock.calls.filter(([scope]) => scope === base)).toHaveLength(1);
+    } finally { release.resolve(); }
+    await Promise.all([first, third]);
+    const journal = await store.journal(global);
+    expect(journal).toHaveLength(2);
+    expect((await store.list(global)).map((entry) => entry.title)).not.toContain('Cancelled rule');
+    expect(locks.mock.calls.filter(([scope]) => scope === base)).toHaveLength(2);
+  });
+
+  it('cancels an active capacity scan before journaling and releases its namespace for the next writer', async () => {
+    await save('Scan cancellation source', global);
+    const controller = new AbortController();
+    const stream = storage.readStream.bind(storage);
+    let abort = true;
+    vi.spyOn(storage, 'readStream').mockImplementation(async function* (...args) {
+      if (abort) { abort = false; controller.abort(); }
+      yield* stream(...args);
+    });
+    const journal = await store.journal(global);
+    await expect(store.put({ action: 'create', scope: global, type: 'reference', title: 'Interrupted scan', body: 'Must not be written.', reason: 'Fixture', source, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(await store.journal(global)).toEqual(journal);
+    expect((await save('After cancelled scan', global)).entry.status).toBe('active');
+  });
+
+  it('releases the acquired lock when reading the initial journal metadata fails', async () => {
+    const size = storage.size.bind(storage);
+    let fail = true;
+    vi.spyOn(storage, 'size').mockImplementation(async (scope, key) => {
+      if (key === 'journal.jsonl' && fail) { fail = false; throw new Error('Journal metadata unavailable'); }
+      return size(scope, key);
+    });
+    await expect(save('Failed metadata', global)).rejects.toThrow('Journal metadata unavailable');
+    expect((await save('Recovered metadata', global)).entry.status).toBe('active');
+  });
+
+  it('retains capacity and completeness checks across later source chunks', async () => {
+    Object.defineProperty(store, 'queryBudget', { value: { records: 2, bytes: 1400 } });
+    Object.defineProperty(store, 'activeCapacity', { value: 2 });
+    const base = pathFor(global);
+    for (let index = 0; index < 7; index++) {
+      const id = `m_suffix_${index}`;
+      const entry = { id, type: 'reference', title: `Suffix ${index}`, status: index === 3 || index === 6 ? 'active' : 'archived', source, reason: 'Fixture' };
+      await storage.write(base, `entries/${id}.md`, encoder.encode(`---\n${JSON.stringify(entry)}\n---\nNeutral fixture rule.\n`));
+    }
+    await expect(save('Growth across chunks', global)).rejects.toThrow('full');
+    const retained = (await store.get(global, 'm_suffix_6'))!;
+    const replacement = await store.put({ action: 'supersede', scope: global, id: retained.id, expectedRevision: retained.revision, type: retained.type, title: 'Suffix replacement', body: retained.body, reason: 'Replace', source });
+    expect(replacement.entry.status).toBe('active');
+    await storage.write(base, 'entries/m_suffix_bad.md', encoder.encode('Unreadable fixture'));
+    const first = (await store.get(global, 'm_suffix_3'))!;
+    await expect(update(first, global, 'Changed rule.')).rejects.toMatchObject({ code: 'storage_unavailable' });
+    expect(await store.get(global, first.id)).toEqual(first);
+  });
+});

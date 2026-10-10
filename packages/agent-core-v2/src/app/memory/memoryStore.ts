@@ -3,6 +3,7 @@ import { load } from 'js-yaml';
 import { memoryQueryCursor, memoryQueryPage, memoryQueryRequest, rankMemoryEntries } from './memoryQuery';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
+import { abortable } from '#/_base/utils/abort';
 import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -64,6 +65,8 @@ export interface MemoryMutation {
   readonly basis?: MemoryBasis;
   readonly validity?: MemoryValidity | null;
   readonly covered_by?: { readonly id: string; readonly expected_revision: string };
+  /** Cancels waiting and validation before journaling; a started commit finishes its catalog refresh. */
+  readonly signal?: AbortSignal;
 }
 export interface MemoryPutResult {
   readonly entry: MemoryEntry;
@@ -129,7 +132,7 @@ export interface IMemoryStore {
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;
   put(input: MemoryMutation): Promise<MemoryPutResult>;
-  query(scopes: readonly MemoryScope[], input: MemoryQuery): Promise<MemoryQueryPage>;
+  query(scopes: readonly MemoryScope[], input: MemoryQuery, signal?: AbortSignal): Promise<MemoryQueryPage>;
   delete(scope: MemoryScope, id: string, expectedRevision: string, writer?: MemoryWriter): Promise<string>;
   journal(scope: MemoryScope, id?: string): Promise<readonly MemoryJournalRecord[]>;
   undo(scope: MemoryScope, operationId: string | null): Promise<MemoryEntry | undefined>;
@@ -206,27 +209,33 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     @IMemoryScopes private readonly scopes: IMemoryScopes,
   ) { super(); }
 
-  private async serializedWrite<T>(base: string, action: () => Promise<T>, changesActive = true): Promise<T> {
+  private async serializedWrite<T>(base: string, action: () => Promise<T>, changesActive = true, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
     const previous = this.writeQueues.get(base) ?? Promise.resolve();
     let done!: () => void;
-    const current = new Promise<void>((resolve) => { done = resolve; });
+    const released = new Promise<void>((resolve) => { done = resolve; });
+    const current = previous.then(() => released);
     this.writeQueues.set(base, current);
-    await previous;
+    void current.then(() => {
+      if (this.writeQueues.get(base) === current) this.writeQueues.delete(base);
+    });
     try {
+      await (signal === undefined ? previous : abortable(previous, signal));
+      signal?.throwIfAborted();
       const lock = await this.storage.acquireLock(base, 'memory-write', {
         leaseMs: 30_000, waitForMs: 5_000, owner: { kind: 'memory-write', scope: base, pid: process.pid },
       });
-      const before = await this.storage.size(base, 'journal.jsonl');
       try {
-        return await action();
-      } finally {
+        signal?.throwIfAborted();
+        const before = await this.storage.size(base, 'journal.jsonl');
         try {
+          return await action();
+        } finally {
           if (changesActive && await this.storage.size(base, 'journal.jsonl') !== before) await this.rebuildCatalog(base);
-        } finally { await lock.release(); }
-      }
+        }
+      } finally { await lock.release(); }
     } finally {
       done();
-      if (this.writeQueues.get(base) === current) this.writeQueues.delete(base);
     }
   }
 
@@ -377,7 +386,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         let duplicateTitle = false;
         let cursor: string | undefined;
         do {
-          const page = await this.query([scope], cursor === undefined ? { mode: 'list', statuses: ['active'] } : { cursor });
+          const page = await this.queryChunk([scope], cursor === undefined ? { mode: 'list', statuses: ['active'] } : { cursor }, true, input.signal);
           if (!page.coverage.complete) throw new MemoryDomainError('storage_unavailable', page.coverage.warnings.join(' '), 'Repair unreadable memory records before changing active capacity.');
           count += page.items.length;
           duplicateTitle ||= page.items.some((item) => item.title.toLowerCase() === title.toLowerCase());
@@ -391,6 +400,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
         if (input.action === 'create' && duplicateTitle) throw new MemoryDomainError('duplicate_title', 'Similar memory already exists; update or supersede it', 'Search this title in the owning scope and read the existing target.');
       }
       await checkDependency();
+      input.signal?.throwIfAborted();
       const key = entryKey(id, entry.status === 'pending');
       const encoded = encode(entry);
       const op = randomUUID();
@@ -413,7 +423,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       if (!isCreate && !isProposal && target!.key !== key) await this.storage.delete(base, target!.key);
       if (accepted !== undefined) await this.commit(scope, base, accepted.key, accepted, undefined, 'accept_proposal', candidate!.id, input.source.writer, op);
       return { entry: decode(encoded), operationId: op, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings };
-    }, input.pending !== true);
+    }, input.pending !== true, input.signal);
   }
 
   async delete(scope: MemoryScope, id: string, expectedRevision: string, writer: MemoryWriter = 'user'): Promise<string> {
@@ -468,7 +478,12 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   private readonly queryBudget = { records: 10_000, bytes: 16 * 1024 * 1024 };
   private readonly activeCapacity = 300;
 
-  async query(scopes: readonly MemoryScope[], input: MemoryQuery): Promise<MemoryQueryPage> {
+  async query(scopes: readonly MemoryScope[], input: MemoryQuery, signal?: AbortSignal): Promise<MemoryQueryPage> {
+    return this.queryChunk(scopes, input, false, signal);
+  }
+
+  private async queryChunk(scopes: readonly MemoryScope[], input: MemoryQuery, wholeChunk: boolean, signal?: AbortSignal): Promise<MemoryQueryPage> {
+    signal?.throwIfAborted();
     const parsed = memoryQueryRequest(scopes, input, this.cursorSalt);
     const { request, position } = parsed;
     const sources: { scope: MemoryScope; base: string; key: string }[] = [];
@@ -497,7 +512,8 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     const readBytes = async (base: string, key: string, charge: (bytes: number) => void): Promise<Uint8Array> => {
       const parts: Uint8Array[] = [];
       let length = 0;
-      for await (const part of this.storage.readStream(base, key, { start: 0, end: 64 * 1024 }, { recoverMissing: false, chunkBytes: 64 * 1024 })) {
+      for await (const part of this.storage.readStream(base, key, { start: 0, end: 64 * 1024 }, { recoverMissing: false, chunkBytes: 64 * 1024, signal })) {
+        signal?.throwIfAborted();
         charge(part.byteLength);
         length += part.byteLength;
         if (length > 64 * 1024) throw new Error('Memory entry too large');
@@ -510,6 +526,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     let validationBytes = 0;
     const validated = new Map<number, { bytes: Uint8Array; size: number; mtime: number }>();
     while (validationEnd < sources.length && validationEnd - position.validationOffset < this.queryBudget.records) {
+      signal?.throwIfAborted();
       const { base, key } = sources[validationEnd]!;
       const size = await this.storage.size(base, key).catch(() => undefined);
       if (size !== undefined && size <= 64 * 1024 && validationBytes + size > this.queryBudget.bytes && validationEnd > position.validationOffset) break;
@@ -528,6 +545,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       validationHash = revision(JSON.stringify([validationHash, key, size, mtime, contentHash]));
       validationEnd++;
     }
+    signal?.throwIfAborted();
     if (validationEnd < sources.length) {
       const warnings = position.skipped === 0 ? [] : [`${position.skipped} memory records were skipped (unavailable, invalid, or oversized).`];
       return { items: [], mode: request.mode ?? 'search', next_cursor: memoryQueryCursor(scopes, request, { ...position, validationOffset: validationEnd, validationHash }, this.cursorSalt), coverage: { scopes: scopes.filter((scope) => request.scope === undefined || scope.kind === request.scope), statuses: request.statuses ?? ['active'], exhausted: false, complete: position.skipped === 0, warnings } };
@@ -541,6 +559,7 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     let chunkHash = '';
     let reused = false;
     while (nextSourceOffset < sources.length && nextSourceOffset - position.sourceOffset < this.queryBudget.records) {
+      signal?.throwIfAborted();
       const { base, key, scope } = sources[nextSourceOffset]!;
       const cached = validated.get(nextSourceOffset);
       const size = await this.storage.size(base, key).catch(() => undefined);
@@ -565,7 +584,8 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     }
     if (position.chunkHash !== undefined && position.chunkHash !== chunkHash) invalidated();
     position.chunkHash = chunkHash;
-    return memoryQueryPage(scopes, parsed, entries, nextSourceOffset, sources.length, skipped, this.cursorSalt);
+    signal?.throwIfAborted();
+    return memoryQueryPage(scopes, parsed, entries, nextSourceOffset, sources.length, skipped, this.cursorSalt, wholeChunk);
   }
 
   async search(scopes: readonly MemoryScope[], query: string, type?: MemoryType, includeInactive = false): Promise<readonly (MemoryEntry & { score: number; scope: MemoryScope })[]> {
