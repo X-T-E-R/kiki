@@ -8,6 +8,7 @@ export interface CognitionBinding {
   readonly contentRevision: string;
   readonly bindingRevision?: string;
   readonly config?: CognitionContent;
+  readonly modelSettings?: Readonly<Record<string, unknown>>;
   readonly recipe?: { readonly installation_id: string; readonly resolved: import('#/state/state').DeepReadonly<import('@kiki/protocol').ResolvedRecipe>; readonly anchorSystem?: string };
   readonly anchor?: string;
 }

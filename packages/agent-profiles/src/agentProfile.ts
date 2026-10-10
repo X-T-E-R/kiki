@@ -157,6 +157,7 @@ export function captureProfileModelMenu<T extends Pick<AgentProfile,
 }
 
 export interface AgentProfile extends AgentModelParameters, AgentModelConstraints {
+  readonly recipe?: string;
   readonly restrictModelsToMenu?: boolean;
   readonly modelMenuConstraint?: ProfileModelMenuConstraint;
   readonly effectiveModelAliases?: readonly string[];

@@ -16,6 +16,8 @@ Every override surface uses the same format — optional `files` (strict TOML fi
 | --- | --- |
 | Global | `[prompt.overrides]` in `config.toml` |
 | Per model | `[models."<alias>".prompt_overrides]` in `config.toml` |
+| Model Recipe | `prompts.fields` in the model's selected Recipe |
+| Profile Recipe | `prompts.fields` in the profile's selected Recipe |
 | Agent or `SYSTEM.md` frontmatter | `prompt_overrides:` in the frontmatter |
 | Model profile entry | `model_profiles[].prompt_overrides` in an agent file |
 
@@ -75,15 +77,31 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-Selecting a Recipe replaces the model prompt-tuning surface, not the agent's role, persona, workspace instructions or host context. Previously saved model prompts are retained but ignored while the Recipe is selected. Declared model setting leaves override saved tuning values; undeclared settings retain ordinary resolution. Set `recipe: null` with the current `base_revision` to stop using it and restore saved manual settings. New bindings adopt the selection; existing sessions keep their frozen Recipe revision until a context rebuild or explicit model change.
+A profile can reference the same installed package without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. Save through the existing profile Markdown editor or edit the profile file. A URL or local path is a package source to preview and install first, not an implicit download during binding.
+
+```markdown
+---
+name: reviewer
+description: Review changes
+model_alias: example-model
+recipe: installation:YOUR_INSTALLED_ID
+request_params:
+  temperature: 0.2
+---
+Review the changes and report actionable findings.
+```
+
+Recipes contribute only their declared values. Model settings resolve from the saved model, then the model Recipe, local model `overrides`, the profile Recipe, explicit profile parameters, and matching `model_profiles` parameters. Context and output caps still take the smallest applicable limit. Prompt fields resolve from global, saved model fields, model Recipe fields, profile Recipe fields, profile fields, then matching profile-model or caller-lease fields. Uncovered cognition slots and ordinary model-profile prompt text continue to apply; the role, persona, workspace instructions, host context and permissions keep their existing authority.
+
+Set the model's `recipe: null` with the current `base_revision`, or set `recipe: off` in a profile, to remove only that layer's contribution. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, expanded text and effective model settings, including inherited parameters. Existing sessions and cold restores keep that snapshot until a context rebuild or explicit model change; subscription updates and profile edits do not silently rebind them.
 
 ### Inherit or customize
 
-A package can declare one parent with `extends = { source = "https://example.com/presets/recipe.toml" }` before its tables. Missing slots inherit; each text source or source array replaces its parent atomically. Model settings merge by declared leaf, and arrays replace as a whole. Root `model = "off"` clears inherited Recipe settings and returns to saved model settings. A prompt slot such as `steering = "off"` disables it without restoring the old manual model prompt; a field value of `false` removes that inherited Recipe field.
+A package can declare one parent with `extends = { source = "https://example.com/presets/recipe.toml" }` before its tables. Missing slots inherit; each text source or source array replaces its parent atomically. Model settings merge by declared leaf, and arrays replace as a whole. Root `model = "off"` clears inherited Recipe settings and returns to saved model settings. A prompt slot such as `steering = "off"` removes that package's inherited slot; a field value of `false` removes that inherited Recipe field. Other model or profile layers can still supply a value.
 
 `prompts` is the common branch used by subagents. A `[prompts.main]` or `[prompts.independent]` table selects a whole position-specific branch; it does not implicitly fill missing slots from common. Set `main = "same"` or `independent = "same"` inside `[prompts]` to explicitly use common, or use `"off"` to disable the whole branch. Text slots accept `{ text = "..." }`, `{ file = "prompt.md" }`, or an array of those sources. An anchor uses `{ content = { text = "..." }, steps = 1, scope = "session" }`; `scope` also accepts `"turn"`.
 
-Steering cadence belongs to the selected branch: `steering_on_turn` defaults to `true` for new turns and rearming after compaction, `steering_on_input` defaults to `true` for materialized human input, and `steering_interval_steps` defaults to `0` (no additional periodic injection). A positive interval counts this agent's actual model loop steps since the last injection, not seconds or tool calls.
+Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. With no declaration, `steering_on_turn` defaults to `true` for new turns and rearming after compaction, `steering_on_input` defaults to `true` for materialized human input, and `steering_interval_steps` defaults to `0` (no additional periodic injection). A positive interval counts this agent's actual model loop steps since the last injection, not seconds or tool calls.
 
 `global.recipes.fork` creates either an independent `copy` or an `extend` child; `saveLocal` edits the resulting local package with an `expected_revision` guard. Installed packages lock the complete dependency chain and work offline. `follow` checks updates daily; `pinned` keeps the accepted revision. Invalid updates leave the whole last accepted revision active. HTTPS ZIP sources require `sha256`; an inherited ZIP source can supply it in `extends`. Preview and install accept the same inspected snapshot, with no second source download at install time.
 

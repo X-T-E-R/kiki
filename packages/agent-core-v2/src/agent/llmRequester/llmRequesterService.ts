@@ -842,7 +842,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           : undefined,
     });
     const requester = this.modelCatalog.getRequester(resolved.modelAlias,
-      turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
+      turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     await this.identityCatalog.ready;
     const providerConfig =
       turnConfig?.providerConfig ??

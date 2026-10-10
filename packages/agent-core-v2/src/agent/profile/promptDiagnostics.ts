@@ -109,25 +109,18 @@ export function promptConfigurationChannels(input: {
   }
   const recipe = input.recipe;
   if (recipe === undefined) return channels;
-  const ignored = new Set(['model', 'profile-model', 'caller-lease-model', 'model-cognition']);
-  for (const declaration of input.overrideDeclarations.filter((entry) => ignored.has(entry.surface))) {
-    const layers = declaration.overrides === undefined ? [] : Array.isArray(declaration.overrides) ? declaration.overrides : [declaration.overrides as PromptOverrides];
-    for (const [index, layer] of layers.entries()) {
-      const branch = position === 'sub' ? undefined : layer[position];
-      const selected = typeof branch === 'object' ? branch : layer;
-      for (const id of Object.keys(selected.fields ?? {})) channels.push({ id: `${declaration.surface}:${index}:${id}:ignored`, channel: promptChannelForField(id), state: 'shadowed', sources: [{ surface: declaration.surface, kind: 'inline', path: declaration.path }] });
-      for (const path of selected.files ?? []) channels.push({ id: `${declaration.surface}:${index}:${path}:ignored`, channel: 'system', state: 'shadowed', sources: [{ surface: declaration.surface, kind: 'file', path }] });
-    }
-  }
-  const result = channels.map((channel) => channel.sources.some((source) => ignored.has(source.surface))
-    ? { ...channel, state: 'shadowed' as const, reason_code: 'recipe-selected', reason: 'Recipe selected; this saved model prompt is retained but was not read or applied.' } : channel);
-  const branch = recipe.resolved.branches[position];
-  for (const slot of ['system', 'steering', 'anchor'] as const) {
-    const origins = recipe.resolved.origins.filter((origin) => origin.position === position && origin.slot === slot);
-    result.push({ id: `recipe.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state: branch[slot] === undefined ? 'inactive' : 'effective',
-      reason: slot === 'anchor' ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.' : undefined,
-      recipe: { installation_id: recipe.installation_id, revision: recipe.resolved.revision, slot, origins: origins.map((origin) => ({ ...origin })) },
-      sources: origins.map((origin) => ({ surface: 'recipe', kind: origin.file === undefined ? 'inline' as const : 'file' as const, path: origin.file ?? origin.source })),
+  const effective = recipe.resolved.branches[position];
+  const result = channels.map((channel) => (channel.id === 'cognition.steering' && effective.steering !== undefined || channel.id === 'cognition.anchor' && effective.anchor !== undefined)
+    ? { ...channel, state: 'shadowed' as const, reason: 'A higher-priority Recipe supplies this cognition slot; the saved value is retained.' } : channel);
+  const layers = recipe.resolved.layers ?? [{ surface: 'model' as const, installation_id: recipe.installation_id, resolved: recipe.resolved }];
+  for (const [index, layer] of layers.entries()) for (const slot of ['system', 'steering', 'anchor'] as const) {
+    const branch = layer.resolved.branches[position];
+    const origins = layer.resolved.origins.filter((origin) => origin.position === position && origin.slot === slot);
+    const shadowed = layers.slice(index + 1).some((next) => next.resolved.branches[position][slot] !== undefined);
+    result.push({ id: `recipe.${layer.surface}.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state: branch[slot] === undefined ? 'inactive' : shadowed ? 'shadowed' : 'effective',
+      reason: shadowed ? 'A higher-priority Recipe supplies this slot.' : slot === 'anchor' ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.' : undefined,
+      recipe: { installation_id: layer.installation_id, revision: layer.resolved.revision, slot, origins: origins.map((origin) => ({ ...origin })) },
+      sources: origins.length === 0 ? [{ surface: 'recipe', kind: 'inline', path: `${layer.surface}:${layer.installation_id}@${layer.resolved.revision}` }] : origins.map((origin) => ({ surface: 'recipe', kind: origin.file === undefined ? 'inline' as const : 'file' as const, path: origin.file ?? origin.source })),
       anchor_steps: slot === 'anchor' ? branch.anchor?.steps : undefined, anchor_scope: slot === 'anchor' ? branch.anchor?.scope : undefined });
   }
   return result;

@@ -21,6 +21,7 @@ import {
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
+import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -569,20 +570,22 @@ export class ModelCatalogMutationService
     if (saved.recipe === undefined) return saved;
     try {
       if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-      const recipe = await this.recipes.resolve(saved.recipe);
+      const resolved = await this.recipes.resolve(saved.recipe);
       const record = effectiveModelsOf(this.config)[id]!;
+      const recipe = composeRecipeLayers([{ surface: 'model', installation_id: saved.recipe, resolved }], record.overrides)!;
       const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+      const localSources = Object.fromEntries(Object.entries(resolveGenerationParameters(undefined, { overrides: record.overrides }).sources).map(([key, value]) => [key, value.detail]));
       const sources = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, source]) => {
         const field = key.replaceAll(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase());
         const legacyField = field === 'thinkingEffort' ? 'defaultEffort' : field === 'temperature' ? 'requestParams.temperature' : field === 'topP' ? 'requestParams.top_p' : field;
         const path = source === '[models.*.parameters]' ? `parameters.${field}` : source === '[models.*] legacy generation fields' ? legacyField
           : source.startsWith('[models.*.') && source.endsWith(']') ? source.slice('[models.*.'.length, -1) : undefined;
         const origin = path === undefined ? undefined : recipe.model_origins[path];
-        return [key, origin === undefined ? source : `Recipe ${origin.manifest_id}@${origin.version} (${origin.source})`];
+        return [key, origin === undefined ? source === '[models.*.parameters]' ? localSources[field] ?? source : source : `Recipe ${origin.manifest_id}@${origin.version} (${origin.source})`];
       }));
       return { ...saved, issues: effective.issues, effective_parameters: effective.effective_parameters, parameter_sources: sources(effective.parameter_sources), usage_effective: effective.usage_effective,
         usage_sources: effective.usage_sources === undefined ? undefined : { main: sources(effective.usage_sources.main), sub: sources(effective.usage_sources.sub), independent: sources(effective.usage_sources.independent) },
-        recipe_model_binding: { installation_id: saved.recipe, revision: recipe.revision, model: recipe.model, model_origins: recipe.model_origins } };
+        recipe_model_binding: { installation_id: saved.recipe, revision: resolved.revision, model: recipe.model, model_origins: recipe.model_origins, references: recipeReferences(recipe) } };
     } catch (error) {
       return { ...saved, issues: [...saved.issues, { code: 'recipe-unavailable', severity: 'error', path: 'recipe', message: error instanceof Error ? error.message : String(error) }] };
     }

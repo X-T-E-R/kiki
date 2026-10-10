@@ -2,7 +2,7 @@ import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHea
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
-import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
+import { applyModelSettings } from './modelSettings';
 import { resolveModelProtocol } from './modelProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -339,7 +339,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         { details: { model: id } },
       );
     }
-    const configuredModel = applyRecipeModelSettings(savedModel, recipeSettings);
+    const configuredModel = applyModelSettings(savedModel, recipeSettings);
     trace.capture(TRACE.configuredModel, configuredModel);
     trace.record('model.record', { kind: 'config', detail: '[models.*] section' });
 

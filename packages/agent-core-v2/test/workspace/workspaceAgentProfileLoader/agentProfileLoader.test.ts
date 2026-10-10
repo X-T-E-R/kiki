@@ -744,6 +744,23 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('loads a Recipe frontmatter reference through whole Markdown save and preserves it during ordinary GUI field patches', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(join(fixture.homeDir, 'agents'), 'reviewer.md', agentMd('reviewer', 'original'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const rawText = (await readFile(profilePath, 'utf8')).replace('description:', 'recipe: installation:example-installed-id\ndescription:');
+        const saved = await stack.writer.update({ name: 'reviewer', scope: 'user', rawText });
+        expect(saved.profile.recipe).toBe('installation:example-installed-id');
+        const patched = await stack.writer.update({ name: 'reviewer', scope: 'user', description: 'Edited description' });
+        expect(patched.profile.recipe).toBe('installation:example-installed-id');
+        expect(await readFile(profilePath, 'utf8')).toContain('recipe: installation:example-installed-id');
+        await stack.writer.update({ name: 'reviewer', scope: 'user', rawText: rawText.replace('installation:example-installed-id', 'off') });
+        expect(await readFile(profilePath, 'utf8')).toContain('recipe: off');
+      });
+    });
+  });
+
   it('patches common profile fields using parser-compatible frontmatter values', async () => {
     await withFixture(async (fixture) => {
       const profilePath = await writeAgent(
