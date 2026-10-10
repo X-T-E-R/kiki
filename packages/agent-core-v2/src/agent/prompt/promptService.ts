@@ -494,6 +494,8 @@ interface Record extends PromptSnapshot {
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
+  detachedForClose?: boolean;
+  outcomeCommitted?: boolean;
 }
 
 function bundledSkillBlockCount(message: ContextMessage): number {
@@ -581,6 +583,7 @@ export class AgentPromptService implements IAgentPromptService {
   private launchingPrompt: {
     readonly record: Record;
     readonly controller: AbortController;
+    readonly settled: Promise<void>;
     receipt?: EnqueueReceipt;
   } | undefined;
   private readonly promptIds = new KeyReservationRegistry<string>();
@@ -999,7 +1002,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const id = input.id ?? input.message.id ?? newMessageId();
     const signal = input.signal;
-    if (signal?.aborted) throw submissionCancelled(id);
+    if (signal?.aborted || this.closing !== undefined) throw submissionCancelled(id);
     const message = { ...input.message, id };
     const launchedDeferred = deferred<Turn | undefined>();
     const completionDeferred = deferred<PromptCompletion>();
@@ -1039,6 +1042,12 @@ export class AgentPromptService implements IAgentPromptService {
     if (signal?.aborted) {
       this.cancelUnlaunched(record, true);
       throw submissionCancelled(record.id);
+    }
+    if (this.closing !== undefined) {
+      if (this.closing === 'preserve-pending') this.detachPendingForClose(record);
+      else this.cancelUnlaunched(record, true);
+      await this.wire.flush();
+      return record.handle;
     }
     this.pending.push(record);
     this.bindSubmissionSignal(record, signal);
@@ -1306,17 +1315,25 @@ export class AgentPromptService implements IAgentPromptService {
     this.promptHandles.set(record.id, handle);
     void record.completionDeferred.promise.then((completion) => {
       void record.launchedDeferred.promise.then((turn) => {
-        const result = completion.result;
-        const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
-          result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
-            : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
-        void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+        if (record.detachedForClose) return;
+        this.commitOutcome(record, completion, turn);
       });
     });
     return handle;
   }
 
+  private commitOutcome(record: Record, completion: PromptCompletion, turn: Turn | undefined): void {
+    if (record.outcomeCommitted) return;
+    record.outcomeCommitted = true;
+    const result = completion.result;
+    const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
+      result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
+        : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
+    void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+  }
+
   private restorePendingQueue(): void {
+    if (this.closing !== undefined) return;
     if (this.pending.length > 0 || this.active !== undefined) return;
     const persisted = this.states.get(promptQueueKey);
     for (const promptId of persisted.order) {
@@ -1722,16 +1739,42 @@ export class AgentPromptService implements IAgentPromptService {
     }));
     item.state = 'cancelled';
     item.launchedDeferred.resolve(undefined);
-    item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
+    const completion: PromptCompletion = { promptId: item.id, result: undefined, state: 'cancelled' };
+    item.completionDeferred.resolve(completion);
     this.publishAborted(item, beforeStart);
+    this.commitOutcome(item, completion, undefined);
   }
 
-  async drain(reason: Error = userCancellationReason()): Promise<void> {
+  private closing: 'cancel' | 'preserve-pending' | undefined;
+
+  private detachPendingForClose(item: Record): void {
+    item.detachedForClose = true;
+    item.state = 'cancelled';
+    this.immediatePromptIds.delete(item.id);
+    this.recoveryPendingIds.delete(item.id);
+    item.launchedDeferred.resolve(undefined);
+    item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
+  }
+
+  async drain(reason: Error = userCancellationReason(), mode: 'cancel' | 'preserve-pending' = 'cancel'): Promise<void> {
+    this.closing = mode;
+    this.releaseEditHold();
     for (const flight of this.steeringFlights.values()) {
       this.cancelLivePrompt(flight.record.id, reason);
     }
-    for (const item of this.pending.slice()) this.abort(item.id, reason);
-    if (this.launchingPrompt !== undefined) this.abort(this.launchingPrompt.record.id, reason);
+    if (mode === 'preserve-pending') {
+      for (const item of this.pending.splice(0)) this.detachPendingForClose(item);
+    } else {
+      for (const item of this.pending.slice()) this.abort(item.id, reason);
+    }
+    const launching = this.launchingPrompt;
+    if (launching !== undefined) {
+      if (mode === 'preserve-pending' && this.states.get(promptIdentityKey).get(launching.record.id)?.phase === 'pending') {
+        this.detachPendingForClose(launching.record);
+        launching.controller.abort(reason);
+      } else this.abort(launching.record.id, reason);
+    }
+    await launching?.settled;
     const active = this.active;
     if (active !== undefined) {
       this.abort(active.id, reason);
@@ -1768,7 +1811,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async startNext(): Promise<void> {
-    if (this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
+    if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
     if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
     const candidateId = this.nextReadyQueueId();
     if (candidateId === undefined) return;
@@ -1805,7 +1848,8 @@ export class AgentPromptService implements IAgentPromptService {
     const immediate = this.immediatePromptIds.delete(item.id);
     this.syncRecoveryHold();
     const controller = new AbortController();
-    const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller };
+    const launchSettled = deferred<void>();
+    const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller, settled: launchSettled.promise };
     this.launchingPrompt = launching;
     this.launching = true;
     try {
@@ -1892,10 +1936,13 @@ export class AgentPromptService implements IAgentPromptService {
         this.publishCompleted(item, 'failed');
       }
     } finally {
-      admission.dispose();
-      this.launchingPrompt = undefined;
-      this.launching = false;
-      if (this.active === undefined) void this.startNext();
+      try { await admission.dispose(); }
+      finally {
+        this.launchingPrompt = undefined;
+        this.launching = false;
+        launchSettled.resolve();
+        if (this.active === undefined) void this.startNext();
+      }
     }
   }
 

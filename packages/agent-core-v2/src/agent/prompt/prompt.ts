@@ -233,7 +233,7 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
-  drain(reason?: Error): Promise<void>;
+  drain(reason?: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
   clear(): void;
