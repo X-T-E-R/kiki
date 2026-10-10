@@ -9,6 +9,7 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
@@ -349,6 +350,8 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       continue;
     } else if (domain === 'providers') {
       wire['providers'] = toProviderResponses(value);
+    } else if (domain === MODEL_SWITCH_SECTION) {
+      wire['model_switch'] = modelSwitchPreferencesToToml(value, {});
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
     } else if (domain === 'permission' && isPlainObject(value)) {

@@ -113,6 +113,12 @@ describe('server-v2 /api/config', () => {
     base = `http://127.0.0.1:${server.port}`;
   }
 
+  async function restartServer(selectedHome = home as string): Promise<void> {
+    if (server !== undefined) await server.close();
+    server = undefined;
+    await boot(undefined, selectedHome);
+  }
+
   async function getConfig(): Promise<ConfigResponse> {
     const res = await authedFetch(server as RunningServer, base, '/api/config');
     expect(res.status).toBe(200);
@@ -136,6 +142,101 @@ describe('server-v2 /api/config', () => {
   async function readCredentialsFile(): Promise<string> {
     return readFile(join(home as string, 'credentials', 'credentials.toml'), 'utf-8').catch(() => '');
   }
+
+  it('saves and reloads nested model switch preferences through real REST with snake_case wire and TOML', async () => {
+    await boot();
+    expect((await getConfig()).model_switch).toEqual({ default_mode: 'direct', confirm: true, rules: [] });
+    const preferences = {
+      default_mode: 'compact', confirm: true,
+      rules: [
+        { id: 'first', enabled: true, from_models: ['example/Source-*', 'example/alternative'], to_models: ['example/target?'], mode: 'fresh', confirm: false },
+        { id: 'second', enabled: false, to_models: ['example/target?'], mode: 'direct' },
+      ],
+    };
+    expect((await patchConfig({ model_switch: preferences })).model_switch).toEqual(preferences);
+    expect((await getConfig()).model_switch).toEqual(preferences);
+    const config = (server as RunningServer).core.accessor.get(IConfigService);
+    expect(config.get('modelSwitch')).toEqual({ defaultMode: 'compact', confirm: true, rules: [
+      { id: 'first', enabled: true, fromModels: ['example/Source-*', 'example/alternative'], toModels: ['example/target?'], mode: 'fresh', confirm: false },
+      { id: 'second', enabled: false, toModels: ['example/target?'], mode: 'direct' },
+    ] });
+    const path = join(home as string, 'config.toml');
+    const written = await readFile(path, 'utf8');
+    expect(written).toContain('[model_switch]');
+    expect(written).toContain('[[model_switch.rules]]');
+    expect(written).toContain('from_models');
+    expect(written).toContain('to_models');
+    expect(written).not.toContain('fromModels');
+    expect(written).not.toContain('defaultMode');
+    await restartServer();
+    expect((await getConfig()).model_switch).toEqual(preferences);
+    expect((await patchConfig({ model_switch: { confirm: false } })).model_switch).toEqual({ ...preferences, confirm: false });
+    const reordered = [preferences.rules[1], { id: 'first', enabled: true, mode: 'compact' }];
+    expect((await patchConfig({ model_switch: { rules: reordered } })).model_switch).toEqual({ ...preferences, confirm: false, rules: reordered });
+    expect(await readFile(path, 'utf8')).not.toContain('from_models');
+    expect((await patchConfig({ model_switch: { rules: [] } })).model_switch?.rules).toEqual([]);
+    expect(await readFile(path, 'utf8')).not.toContain('[[model_switch.rules]]');
+  });
+
+  it('rejects invalid model switch REST saves without changing disk or the accepted preferences', async () => {
+    await boot();
+    await patchConfig({ model_switch: { default_mode: 'fresh', confirm: false } });
+    const path = join(home as string, 'config.toml');
+    const before = await readFile(path, 'utf8');
+    for (const invalid of [
+      { default_mode: 'invalid' }, { defaultMode: 'direct' }, { confirm: 'yes' },
+      { rules: [{ id: 'empty', mode: 'direct', from_models: [] }] },
+      { rules: [{ id: 'empty', mode: 'direct', to_models: [] }] },
+      { rules: [{ id: 'blank', mode: 'fresh', from_models: [' '] }] },
+      { rules: [{ id: 'missing' }] },
+      { rules: [{ id: 'same', mode: 'direct' }, { id: 'same', mode: 'fresh' }] },
+      { rules: [{ id: 'unknown', mode: 'fresh', vendor: 'example' }] },
+    ]) {
+      const res = await authedFetch(server as RunningServer, base, '/api/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model_switch: invalid, default_plan_mode: true }),
+      });
+      expect((await res.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf8')).toBe(before);
+      expect((await getConfig()).model_switch).toEqual({ default_mode: 'fresh', confirm: false, rules: [] });
+    }
+  });
+
+  it('keeps model switch preferences isolated to the current space and restores base inheritance through REST', async () => {
+    const main = home as string;
+    const child = join(main, 'space');
+    const sibling = join(main, 'sibling');
+    await mkdir(child);
+    await mkdir(sibling);
+    const initial = '[model_switch]\ndefault_mode = "compact"\nconfirm = true\n';
+    await writeFile(join(main, 'config.toml'), initial);
+    for (const [directory, id] of [[child, 'h-child'], [sibling, 'h-sibling']]) {
+      await writeFile(join(directory as string, 'home.toml'), `schema = 1\nid = "${id}"\nname = "Example space"\nbase = ${JSON.stringify(main)}\n`);
+    }
+    await boot(undefined, child);
+    expect((await getConfig()).model_switch).toEqual({ default_mode: 'compact', confirm: true, rules: [] });
+    const childPreferences = { default_mode: 'fresh', confirm: false, rules: [{ id: 'local', enabled: true, to_models: ['example/*'], mode: 'direct' }] };
+    expect((await patchConfig({ model_switch: childPreferences })).model_switch).toEqual(childPreferences);
+    expect(await readFile(join(main, 'config.toml'), 'utf8')).toBe(initial);
+    const childBytes = await readFile(join(child, 'config.toml'), 'utf8');
+    expect(childBytes).toContain('[[model_switch.rules]]');
+    await restartServer(sibling);
+    expect((await getConfig()).model_switch).toEqual({ default_mode: 'compact', confirm: true, rules: [] });
+    await restartServer(main);
+    expect((await getConfig()).model_switch).toEqual({ default_mode: 'compact', confirm: true, rules: [] });
+    await restartServer(child);
+    expect((await getConfig()).model_switch).toEqual(childPreferences);
+    expect(await readFile(join(child, 'config.toml'), 'utf8')).toBe(childBytes);
+    const res = await authedFetch(server as RunningServer, base, '/api/config/overrides:remove', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: 'model_switch', key_path: [] }),
+    });
+    const result = await res.json() as Envelope<ConfigResponse>;
+    expect(result.code).toBe(0);
+    expect(result.data.model_switch).toEqual({ default_mode: 'compact', confirm: true, rules: [] });
+    expect(await readFile(join(child, 'config.toml'), 'utf8')).not.toContain('model_switch');
+    expect(await readFile(join(main, 'config.toml'), 'utf8')).toBe(initial);
+  });
 
   it('round trips computer preference and removes the override without changing permissions or installing MCP', async () => {
     await boot('default_permission_mode="manual"\n[search]\nenabled=false\n');

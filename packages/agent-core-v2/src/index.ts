@@ -666,6 +666,7 @@ export * from '#/app/auth/auth';
 export * from '#/app/auth/authService';
 export * from '#/app/nbSearch/index';
 export * from '#/app/notifications/configSection';
+export * from '#/app/modelSwitchPreferences/configSection';
 export * from '#/app/prompt/configSection';
 export * from '#/app/promptField/builtinPromptFields';
 export * from '#/app/promptField/promptFieldContribution';
