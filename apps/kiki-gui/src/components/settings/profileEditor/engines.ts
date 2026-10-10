@@ -183,7 +183,7 @@ export function isConfiguredEngine(
   return Object.keys(entry).some((key) => key !== 'show_in_profile_list');
 }
 
-/** Executable picker eligibility; launch preferences and profiles are not credentials. */
+/** Picker eligibility, not authentication proof: an unchecked login does not hide a discovered binary. */
 export function isRunnableEngine(
   item: ExecutorCatalogItem,
   overrides: Readonly<Record<string, unknown>> | undefined,
@@ -197,21 +197,7 @@ export function isRunnableEngine(
   const env = { ...asConfigRecord(descriptor?.['env']), ...asConfigRecord(asConfigRecord(overrides?.[item.id])?.['env']) };
   const value = apiKeyEnv === undefined ? undefined : env[apiKeyEnv];
   if (typeof value === 'string' && value.trim() !== '') return true;
-  if (item.connection?.login_status === 'logged_out') return false;
-  const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim() !== '';
-  const sourceFields: Record<string, string> = { 'explicit-path': 'path', env: 'name', glob: 'pattern', 'path-lookup': 'command', 'node-script': 'path' };
-  const sources = descriptor?.['sources'];
-  const hasSource = Array.isArray(sources) && sources.some((value) => {
-    const source = asConfigRecord(value);
-    const field = typeof source?.['kind'] === 'string' ? sourceFields[source['kind']] : undefined;
-    return source !== undefined && field !== undefined && nonEmpty(source['id']) && nonEmpty(source[field]) &&
-      (descriptor?.['source'] === undefined || descriptor['source'] === source['id']);
-  });
-  return descriptor !== undefined && descriptor['protocol'] === item.protocol &&
-    (nonEmpty(descriptor['command']) || hasSource) &&
-    descriptor['auth'] === undefined && descriptor['loginCommand'] === undefined &&
-    descriptor['apiKeyEnv'] === undefined && item.connection?.login_command === undefined &&
-    apiKeyEnv === undefined;
+  return item.connection?.login_status !== 'logged_out';
 }
 
 /** Runnable engines offered for a new choice; Settings retains the full catalog. */

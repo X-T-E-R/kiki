@@ -268,12 +268,12 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     };
   }
 
-  async discover(id: string): Promise<readonly AgentExecutorSourceProbe[]> {
+  async discover(id: string, exhaustive = true): Promise<readonly AgentExecutorSourceProbe[]> {
     const descriptor = this.get(id);
     if (descriptor === undefined) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
     }
-    return discoverExecutorSources(
+    return (exhaustive ? discoverExecutorSources : resolveExecutorSource)(
       await this.#withManagedSource(descriptor),
       this.#probeProcessService(),
       this.fs,

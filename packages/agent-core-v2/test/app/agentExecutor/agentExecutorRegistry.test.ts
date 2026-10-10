@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Readable, Writable } from 'node:stream';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -67,6 +68,41 @@ function configWith(value: unknown): IConfigService {
 }
 
 describe('AgentExecutorRegistryService', () => {
+  it('resolves catalog availability without probing lower-priority sources and honors a pinned source', async () => {
+    const calls: string[] = [];
+    const process = {
+      spawn: async (command: string) => {
+        calls.push(command);
+        return {
+          _serviceBrand: undefined, pid: 1, exitCode: 0,
+          stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+          stdout: Readable.from(['example 1.0\n']), stderr: Readable.from([]),
+          wait: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return 0; },
+          kill: async () => {}, dispose: async () => {},
+        };
+      },
+    } as unknown as IHostProcessService;
+    const config = configWith({
+      example: { protocol: 'acp-v1', args: [], sources: [
+        { id: 'first', kind: 'explicit-path', path: '/first' },
+        { id: 'second', kind: 'explicit-path', path: '/second' },
+      ] },
+      pinned: { protocol: 'acp-v1', args: [], source: 'missing', sources: [
+        { id: 'first', kind: 'explicit-path', path: '/first' },
+        { id: 'missing', kind: 'explicit-path', path: '/missing' },
+      ] },
+    });
+    const registry = new AgentExecutorRegistryService(config, process,
+      { stat: async (path: string) => ({ isFile: path !== '/missing', isDirectory: false, size: 1 }) } as unknown as IHostFileSystem,
+      { platform: 'linux', getEnv: () => undefined } as unknown as IBootstrapService);
+    expect(await registry.discover('example', false)).toMatchObject([{ id: 'first', available: true }]);
+    expect(calls).toEqual(['/first']);
+    expect(await registry.discover('pinned', false)).toMatchObject([{ id: 'missing', available: false }]);
+    expect(calls).toEqual(['/first']);
+    expect(await registry.discover('example')).toMatchObject([{ id: 'first', available: true }, { id: 'second', available: true }]);
+    expect(calls).toEqual(['/first', '/first', '/second']);
+  });
+
   let services: TestInstantiationService;
   let provider: IDisposable | undefined;
 

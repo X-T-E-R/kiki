@@ -269,7 +269,8 @@ export interface IAgentExecutorRegistry {
     binding: ExecutorBinding,
   ): ExecutorValidationResult;
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
-  discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
+  /** Defaults to full diagnostics; false resolves only the admitted source needed for catalog availability. */
+  discover(id: string, exhaustive?: boolean): Promise<readonly AgentExecutorSourceProbe[]>;
   recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void;
   negotiated?(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined;
   /** Last observation for the current descriptor, without launching the executor or verifying its installed version. */

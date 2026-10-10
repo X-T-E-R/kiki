@@ -1159,7 +1159,7 @@ function executorOverrideProjection(descriptor: AgentExecutorDescriptor) {
 
 async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
   check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
-  const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id).catch(() => undefined);
+  const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id, false).catch(() => undefined);
   const selected = probes?.find((probe) => probe.available);
   const capabilities = executorCapabilities(descriptor);
   return {

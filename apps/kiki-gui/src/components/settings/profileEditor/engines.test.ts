@@ -161,23 +161,29 @@ describe('visibleEngines', () => {
     expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'claude-acp']);
     expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native']);
   });
-  it('hides an installed harness without its own configuration despite a profile or launch override', () => {
-    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const }];
+  it('offers discovered bare Codex and Claude when login has not been checked', () => {
+    const codex = { ...engine('codex-app-server'), status: 'ready' as const };
+    const claude = { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'unknown' as const, default_args: [] } };
+    expect(visibleEngines([engine('native'), codex, claude], [], undefined).map(item => item.id))
+      .toEqual(['native', 'codex-app-server', 'claude-acp']);
+    expect(claude.connection.login_status).toBe('unknown');
+  });
+  it('does not mistake a profile or launch override for a checked vendor login', () => {
+    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [] } }];
     expect(visibleEngines(catalog, [profile('lead', 'claude-acp')], { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'native-default' } } }).map(item => item.id)).toEqual(['native']);
   });
   it('never revives a missing binary through a configured descriptor or profile', () => {
     expect(visibleEngines(CATALOG, [profile('lead', 'claude-acp')], undefined, undefined, { 'claude-acp': { protocol: 'acp-v1', command: 'claude' } }).map(item => item.id)).toEqual(['native']);
   });
-  it('accepts a ready user-authored anonymous local descriptor but not an empty object', () => {
+  it('uses server discovery rather than revalidating a local descriptor in the picker', () => {
     const catalog = [engine('native'), { ...engine('local-acp'), status: 'ready' as const }];
-    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': {} }).map(item => item.id)).toEqual(['native']);
-    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', command: 'local-server' } }).map(item => item.id)).toEqual(['native', 'local-acp']);
-    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', sources: [{ id: 'local', kind: 'path-lookup', command: 'local-server' }] } }).map(item => item.id)).toEqual(['native', 'local-acp']);
-    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', sources: [{}] } }).map(item => item.id)).toEqual(['native']);
-    expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': { protocol: 'acp-v1', source: 'missing', sources: [{ id: 'local', kind: 'path-lookup', command: 'local-server' }] } }).map(item => item.id)).toEqual(['native']);
+    for (const descriptor of [undefined, {}, { protocol: 'acp-v1', command: 'local-server' }]) {
+      expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': descriptor }).map(item => item.id))
+        .toEqual(['native', 'local-acp']);
+    }
   });
-  it('accepts only the declared vendor API-key environment rather than arbitrary launch settings', () => {
-    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'unknown' as const, default_args: [], api_key_env: 'VENDOR_API_KEY' } }];
+  it('accepts only the declared vendor API-key environment when the login is checked logged out', () => {
+    const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [], api_key_env: 'VENDOR_API_KEY' } }];
     expect(visibleEngines(catalog, [], { 'claude-acp': { env: { OTHER_SETTING: 'fixture' } } }).map(item => item.id)).toEqual(['native']);
     expect(visibleEngines(catalog, [], { 'claude-acp': { env: { VENDOR_API_KEY: 'fixture' } } }).map(item => item.id)).toEqual(['native', 'claude-acp']);
   });

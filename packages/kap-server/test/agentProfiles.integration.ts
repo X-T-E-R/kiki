@@ -536,6 +536,32 @@ describe('GET /api/agents', () => {
     }, { timeout: 5000 });
   });
 
+  it('lists discovered bare engines without exhaustive source diagnostics or login mutation', async () => {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const registry = server.core.accessor.get(IAgentExecutorRegistry);
+    const discovery = vi.spyOn(registry, 'discover').mockImplementation(async (id, exhaustive = true): ReturnType<IAgentExecutorRegistry['discover']> => {
+      if (exhaustive) return new Promise<never>(() => {});
+      return ['codex-app-server', 'claude-acp'].includes(id)
+        ? [{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/example', version: '1.0' }]
+        : [];
+    });
+    const client = createKlient({ endpoint: base, token: server.localOwnerToken, timeoutMs: 1000 });
+    try {
+      const catalog = await client.rest!.executors.list();
+      expect(catalog.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'native', status: 'ready' }),
+        expect.objectContaining({ id: 'codex-app-server', status: 'ready', connection: expect.objectContaining({ login_status: 'unknown', source: 'fixture' }) }),
+        expect.objectContaining({ id: 'claude-acp', status: 'ready', connection: expect.objectContaining({ login_status: 'unknown', source: 'fixture' }) }),
+      ]));
+      expect(discovery.mock.calls.every(([, exhaustive]) => exhaustive === false)).toBe(true);
+      expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
+    } finally {
+      await client.close();
+      discovery.mockRestore();
+    }
+  });
+
   it('lists executor capabilities and round-trips a file profile spawn constraint patch', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     const profilePath = join(home!, 'agents', 'reviewer.md');
