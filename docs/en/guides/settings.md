@@ -57,6 +57,19 @@ If the machine cannot be used, the page says why in terms you can act on — no 
 
 **Stop using it** lets go of the machine's sign-in for this connection. It removes Kiki's reference and the models it provisioned; the sign-in itself is still there, and the other app is unaffected.
 
+## Models and Recipes
+
+**Settings → Models & providers → Available models** opens each model's editor. Change its request settings and prompt text here, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
+
+A [Recipe](../customization/prompt-fields.md#recipe-model-presets) contributes a reusable set of prompt and model-setting overrides. In the model editor, choose **Choose a Recipe**, then browse installed packages, configured markets or **Import**. Preview a URL or an absolute path on the server; HTTPS ZIP imports also need their SHA-256 checksum. Reading or selecting a package does not apply it.
+
+- **Apply to model** commits the selected Recipe together with the model's current unsaved edits. **Restore manual settings** removes that model's Recipe reference and saves those edits too; it does not erase saved manual values or a profile's separate Recipe.
+- **Install and apply** installs the preview and performs that same model save. **Install only** stores the package without applying it or saving model drafts. If applying fails, the installation, selection and drafts remain; correct the reported problem and retry **Apply to model** without reinstalling.
+- **Copy and edit** creates an independent local Recipe; **Extend from this** keeps a parent reference. In its author view, edit **Prompt words** or **Source files**, then **Save Recipe**. This saves the package, not a new model selection. Mixed inline/file text stays in separate editable segments. A notice appears when a prompt edit will rewrite the manifest's TOML formatting; file-only edits leave that manifest unchanged.
+- **Download as ZIP** shares the accepted package, including inherited content, without uploading it. Save author drafts first. A profile can also reference an installed Recipe through its [Markdown frontmatter](../customization/prompt-fields.md#recipe-model-presets).
+
+Recipe values cover only the fields or prompt slots they declare; uncovered settings keep their lower-layer values, and explicit profile differences still apply. A running conversation keeps its bound revision. Use [Rebuild context](../customization/agents.md#rebuilding-a-session-context) while idle to adopt current sources.
+
 ## About
 
 **Settings → About** shows the current version and owns the update settings. **Update channel** picks Stable or Beta, and every check — automatic or manual — reads the channel from here. **Check for updates automatically** turns the daily check on or off; with it off, only **Check for updates** checks. The **When an update is found** setting applies: **Notify me** shows a dialog with the version and a short summary and waits for you, while **Download and install** starts the install without that dialog. Either way, Kiki asks before closing spaces that still have running work.

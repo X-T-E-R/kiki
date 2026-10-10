@@ -40,7 +40,7 @@ kiki prompt-fields explain delegation.sub.notice --agent reviewer --model fast -
 
 ## Recipe 模型配方
 
-Recipe 把模型调教打包成可复用配方：提示词字段、system/steering/anchor 正文，以及模型设置。Recipe 是默认关闭的实验能力；先在服务端环境启用 `KIKI_EXPERIMENTAL_RECIPES=true`，再通过 [客户端 SDK](../server/sdk.md) 的 `global.recipes` 使用。
+Recipe 把模型调教打包成可复用配方：提示词字段、system/steering/anchor 正文，以及模型设置。Recipe 默认开启，可在[模型编辑器](../guides/settings.md#模型与-recipe)中使用，也可通过 [客户端 SDK](../server/sdk.md) 的 `global.recipes` 使用。服务端显式设置 `KIKI_EXPERIMENTAL_RECIPES=false` 或 `[experimental] recipes = false` 时仍会关闭；移除该覆盖即可采用默认值。
 
 用绝对路径创建包目录，其中放入 `recipe.toml`。提示词文件必须是该目录内的 Markdown 相对路径：
 

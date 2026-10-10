@@ -40,7 +40,7 @@ If your config still carries the old `prompt.shared` and `prompt.tools` keys, mo
 
 ## Recipe model presets
 
-A Recipe packages model tuning into one reusable preset: prompt fields, system/steering/anchor text, and model settings. Recipes are experimental and default off; enable `KIKI_EXPERIMENTAL_RECIPES=true` in the server environment before using `global.recipes` in the [client SDK](../server/sdk.md).
+A Recipe packages model tuning into one reusable preset: prompt fields, system/steering/anchor text, and model settings. Recipes are enabled by default. Use the [model editor](../guides/settings.md#models-and-recipes) or `global.recipes` in the [client SDK](../server/sdk.md). An explicit `KIKI_EXPERIMENTAL_RECIPES=false` or `[experimental] recipes = false` on the server keeps them disabled; remove that override to use the default.
 
 Create an absolute-path package directory containing `recipe.toml`. Prompt files must be Markdown paths inside that directory:
 

@@ -18,6 +18,10 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
+import { IFlagRegistry } from '#/app/flag/flagRegistry';
+import { FlagRegistryService } from '#/app/flag/flagRegistryService';
+import { FlagService } from '#/app/flag/flagService';
+import { Event } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
 import { IPromptFieldRegistry, type PromptFieldDefinition } from '#/app/promptField/promptFieldRegistry';
 
@@ -33,13 +37,18 @@ describe('Recipe accepted revisions', () => {
   let sources: Map<string, Record<string, string>>;
   let reads: string[];
   const modelWrites = vi.fn();
-  function newStore() {
+  function newStore(flagInputs?: { env?: Record<string, string>; recipes?: boolean }) {
     return createServices(disposables, { additionalServices: (reg) => {
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
       reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore); reg.define(IBlobStore, BlobStoreService);
-      reg.definePartialInstance(IBootstrapService, { scope: () => 'store' });
-      reg.definePartialInstance(IConfigService, { ready: new Promise<void>(() => {}), get: <T>() => ({ markets: [] }) as T, replaceSections: modelWrites });
-      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', getEnv: (key) => flagInputs?.env?.[key] });
+      reg.definePartialInstance(IConfigService, {
+        ready: new Promise<void>(() => {}),
+        get: <T>(domain: string) => (domain === 'experimental' ? (flagInputs?.recipes === undefined ? {} : { recipes: flagInputs.recipes }) : { markets: [] }) as T,
+        onDidChangeConfiguration: Event.None, replaceSections: modelWrites,
+      });
+      if (flagInputs === undefined) reg.definePartialInstance(IFlagService, { enabled: () => true });
+      else { reg.define(IFlagRegistry, FlagRegistryService); reg.define(IFlagService, FlagService); }
       reg.definePartialInstance(IModelService, { list: () => ({}) });
       reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
       reg.definePartialInstance(IRecipeSourceReader, {
@@ -63,6 +72,29 @@ describe('Recipe accepted revisions', () => {
     const preview = await service.preview({ source: { locator } }); reads.length = 0;
     const result = await service.install({ preview_id: preview.preview_id }); expect(reads).toEqual([]); return result;
   }
+  it('reads installed Recipes with the released default and no experimental overrides', async () => {
+    const ix = newStore({});
+    const flags = ix.get(IFlagService);
+    expect(flags.explain('recipes')).toMatchObject({ enabled: true, source: 'default' });
+    const recipes = ix.get(IRecipeService);
+    expect(await recipes.list()).toEqual([]);
+    const preview = await recipes.preview({ source: { locator: parent } });
+    const installed = await recipes.install({ preview_id: preview.preview_id });
+    expect(await recipes.list()).toHaveLength(1);
+    expect((await recipes.get(installed.installation_id))?.summary.revision).toBe(installed.revision);
+    expect((await recipes.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+  });
+  it.each([
+    { env: { KIKI_EXPERIMENTAL_FLAG: 'true' }, recipes: false, source: 'config' },
+    { env: { KIKI_EXPERIMENTAL_RECIPES: 'false', KIKI_EXPERIMENTAL_FLAG: 'true' }, recipes: true, source: 'env' },
+  ])('keeps explicit $source false above the released Recipe default', async ({ env, recipes, source }) => {
+    const ix = newStore({ env, recipes });
+    expect(ix.get(IFlagService).explain('recipes')).toMatchObject({ enabled: false, source });
+    const disabled = ix.get(IRecipeService);
+    await expect(disabled.list()).rejects.toThrow('Enable experimental recipes');
+    await expect(disabled.get('unused')).rejects.toThrow('Enable experimental recipes');
+    await expect(disabled.resolve('unused')).rejects.toThrow('Enable experimental recipes');
+  });
   it('resolves three levels deterministically, replaces arrays and atomic sources, preserves parent file origins and field deletion', async () => {
     const installed = await install(); const recipe = await service.resolve(installed.installation_id);
     expect(recipe.branches.main.system).toBe('PARENT FILE'); expect(recipe.branches.main.steering).toBe('CHILD MAIN STEERING');
