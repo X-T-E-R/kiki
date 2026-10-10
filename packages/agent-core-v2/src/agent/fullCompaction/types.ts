@@ -16,6 +16,7 @@ export interface CompactionResult {
 export type CompactionSource = 'manual' | 'auto';
 
 export interface CompactionBeginData {
+  queued?: boolean;
   instruction?: string;
   strategy?: 'summarize' | 'relay';
   source: CompactionSource;
