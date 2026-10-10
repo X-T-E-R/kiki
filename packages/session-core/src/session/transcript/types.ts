@@ -582,6 +582,8 @@ export interface SessionViewState {
   readonly todoNotes: TranscriptTodoNotes | undefined;
   readonly todoNotesMeta: TranscriptTodoNotesMeta | undefined;
   readonly todoNotesStatus: TranscriptTodoNotesStatus | undefined;
+  /** Last todo entity-page provenance; a new baseline clears it and supplies historyRead instead. */
+  readonly todoRead: TranscriptRead | undefined;
   readonly tasks: readonly Task[];
   /**
    * Compact REST snapshot roster (`snapshot.subagents`). Display fallback for
@@ -659,6 +661,7 @@ export function createViewState(sessionId: string): SessionViewState {
     todoNotes: undefined,
     todoNotesMeta: undefined,
     todoNotesStatus: undefined,
+    todoRead: undefined,
     tasks: [],
     snapshotSubagents: [],
     globalCoverage: undefined,

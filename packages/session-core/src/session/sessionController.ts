@@ -247,6 +247,7 @@ export class SessionController {
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
   private readonly historyReads = new Map<string, TranscriptRead>();
+  private readonly todoReads = new Map<string, TranscriptRead>();
   private readonly appliedTranscriptGrades = new Map<string, TranscriptGrade>();
   private readonly publishedTranscriptCursors = new Map<string, TranscriptCursor>();
   private readonly toolCountObservations = new Map<string, ToolCountObservation>();
@@ -1196,6 +1197,7 @@ export class SessionController {
     const store = this.ensureAgentTranscript(agentId);
     this.bumpHistoryGeneration(agentId);
     for (const key of this.entityPageCursors.keys()) if (key.startsWith(`${agentId}/`)) this.entityPageCursors.delete(key);
+    this.todoReads.delete(agentId);
     if (coverage.kind === 'full') {
       this.olderPages.delete(agentId);
       this.olderPageCursors.delete(agentId);
@@ -1346,6 +1348,10 @@ export class SessionController {
           case 'todo': for (const todo of page.items) if (!store.getTodos().has(todo.todoId)) ops.push({ op: 'todo.upsert', todo }); break;
         }
         store.apply(ops);
+        if (kind === 'todo') {
+          if (page.read === undefined) this.todoReads.delete(agentId);
+          else this.todoReads.set(agentId, page.read);
+        }
         this.entityPageCursors.set(requestKey, page.has_more ? page.next_cursor ?? null : null);
         const snapshot = store.snapshot();
         const field = { task: 'tasks', attachment: 'attachments', prompt: 'prompts', interaction: 'interactions', todo: 'todos' }[kind] as 'tasks' | 'attachments' | 'prompts' | 'interactions' | 'todos';
@@ -1689,7 +1695,7 @@ export class SessionController {
           };
     const globalCoverage = this.globalCoverage.get(agentId);
     const contentRefs = [...collectTranscriptContentRefs(snapshot), ...(agentId === MAIN_AGENT_ID ? this.latestSnapshot?.contentRefs ?? [] : [])];
-    const withCoverage = { ...projected, globalCoverage, contentRefs, historyRead: this.historyReads.get(agentId), transcriptReady: this.hasTranscriptBaseline(agentId) };
+    const withCoverage = { ...projected, globalCoverage, contentRefs, historyRead: this.historyReads.get(agentId), todoRead: this.todoReads.get(agentId), transcriptReady: this.hasTranscriptBaseline(agentId) };
     const forestChanged = this.forestDirtyAgents.delete(agentId) || this.publishedForest === undefined
       ? this.publishForest()
       : false;

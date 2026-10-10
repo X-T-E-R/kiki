@@ -63,6 +63,45 @@ function taskDetail(outputTail: string): SessionViewTranscriptDetail {
 }
 
 describe('SessionController transcript detail', () => {
+  it.each(['main', 'child'] as const)('preserves the %s todo entity read source and readiness until its next baseline', async (agentId) => {
+    const notes = { goal: 'Retained goal', next: 'Retained next action' };
+    const notesMeta = { rev: 4, hash: 'notes-four', writtenTurn: 1, writtenStep: 't1.1', coveredMessageId: '', windowEpoch: 0 };
+    const read = { source: 'derived' as const, readiness: 'partial' as const, reason: 'source_unverified' as const, watermark: { transcript: { seq: 9, epoch: 'source-epoch' } } };
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>(async () => ({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [{ todoId: 'todo', items: [], notes, notesMeta }], has_more: false, total: 1, read }));
+    const { controller, deliver, view } = harness(undefined, undefined, entities);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('notes-child', agentId, 'delta');
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      deliver(resetEvent(agentId, emptySnapshot(), 2));
+      expect(await controller.loadTranscriptEntities(agentId, 'todo')).toBe(true);
+      expect(state().todoNotes).toEqual(notes);
+      expect(state().todoNotesMeta).toEqual(notesMeta);
+      expect(state().todoRead).toEqual(read);
+      expect(state().historyRead).toBeUndefined();
+      expect(state().globalCoverage?.todos?.hasMore).toBe(false);
+      const other = agentId === 'main' ? controller.getAgentState('child') : controller.getState();
+      expect(other.todoRead).toBeUndefined();
+      const subscribe = vi.spyOn(view, 'subscribe');
+      await controller.resync();
+      expect(state().todoNotes).toEqual(notes);
+      expect(state().todoRead).toEqual(read);
+      if (agentId === 'child') expect(subscribe.mock.lastCall?.[0].transcriptGrades?.['child']).toBe('delta');
+      deliver(resetEvent(agentId, emptySnapshot({ todos: [{ todoId: 'todo', items: [], notes, notesMeta: { ...notesMeta, rev: 5 } }] }), 3));
+      expect(state().todoRead).toBeUndefined();
+      expect(state().todoNotesMeta?.rev).toBe(5);
+      entities.mockRejectedValueOnce(new Error('Read failed'));
+      expect(await controller.loadTranscriptEntities(agentId, 'todo')).toBe(false);
+      expect(state().todoNotes).toEqual(notes);
+      expect(state().todoNotesMeta?.rev).toBe(5);
+      expect(state().todoRead).toBeUndefined();
+      entities.mockResolvedValueOnce({ session_id: 'session_test', agent_id: agentId, kind: 'todo', items: [], has_more: false });
+      await controller.loadTranscriptEntities(agentId, 'todo');
+      expect(state().todoRead).toBeUndefined();
+      expect(state().todoNotes).toEqual(notes);
+    } finally { controller.close(); }
+  });
+
   it('continues root shell fields without losing transcript references', async () => {
     const root: import('@kiki/transcript').ContentRef = { source: { kind: 'snapshot', id: '' }, revision: 'fixture-root', path: ['session', 'title'], kind: 'text', offset: 3, total: 6 };
     const content = vi.fn(async () => ({ ref: root, value: 'def', contentRefs: [] }));
