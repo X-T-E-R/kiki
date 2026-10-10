@@ -1160,7 +1160,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
           <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
         </div>
       ) : null}
-      {state.autoWorkspace ? (
+      {state.autoWorkspace && !firstRun ? (
         <p className="text-[11px] leading-relaxed text-ink-faint">{t('new.autoWorkspaceHint')}</p>
       ) : null}
     </div>

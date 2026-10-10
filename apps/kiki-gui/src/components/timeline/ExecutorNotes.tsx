@@ -23,7 +23,8 @@ export function executorDisplayName(id: string): string {
  * External-executor provenance opening a turn (`executor.turn.metadata`).
  * `Claude Code · ACP`, plus one quiet line: how the profile instructions were
  * delivered, and — only when the record is partial — a neutral "Partial
- * record" whose tooltip reads each loss in words. Loss codes stay in the
+ * record". The tooltip keeps every loss, including protocol detail. The
+ * spoken label keeps the functional losses only. Loss codes stay in the
  * DOM as data for tests and copy-paste, not as visible jargon.
  */
 export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }: { execution: TurnExecutionInfo }) {
@@ -31,11 +32,23 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
   const executor = executorDisplayName(execution.executorId);
   const protocol = PROTOCOL_SHORT[execution.protocol] ?? execution.protocol;
   const degraded = execution.fidelity === 'degraded' || execution.losses.length > 0;
-  const lossLines = execution.losses.map((code) => {
-    const key = `transcript.loss.${code}` as I18nKey;
+  const spokenLoss = new Set([
+    'tool_input_partial', 'tool_output_summary_only', 'message_id_missing', 'usage_context_only',
+    'unknown_update_dropped', 'resume_new_session_handoff', 'handoff_truncated', 'prompt_delivery_downgraded',
+    'user_message_attribution_missing', 'permission_mode_unverified', 'additional_directories_dropped',
+    'thought_level_unconfigured',
+  ]);
+  const lossText = (code: string, spokenLine: boolean) => {
+    const key = (spokenLine ? `transcript.lossSpoken.${code}` : `transcript.loss.${code}`) as I18nKey;
     const text = t(key);
-    return text === key ? code : text;
-  });
+    if (text !== key) return text;
+    if (!spokenLine) return code;
+    const fallback = `transcript.loss.${code}` as I18nKey;
+    const original = t(fallback);
+    return original === fallback ? code : original;
+  };
+  const lossLines = execution.losses.map((code) => lossText(code, false));
+  const spokenLines = execution.losses.filter((code) => spokenLoss.has(code)).map((code) => lossText(code, true));
   const deliveryKey = execution.profileDelivery === undefined ? undefined
     : `transcript.exec.delivery.${execution.profileDelivery}` as I18nKey;
   const delivery = deliveryKey === undefined || t(deliveryKey) === deliveryKey ? undefined : t(deliveryKey);
@@ -51,7 +64,7 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
       {degraded ? (
         <span data-turn-degraded data-loss-codes={execution.losses.join(' ')} tabIndex={0}
           title={lossLines.length === 0 ? undefined : lossLines.map((line) => `· ${line}`).join('\n')}
-          aria-label={[t('transcript.exec.degradedNote'), ...lossLines].join('. ')}
+          aria-label={[t('transcript.exec.degradedNote'), ...spokenLines].join('. ')}
           className="inline-flex cursor-help items-center gap-1 rounded-[4px] underline decoration-dotted decoration-ink-faint/60 underline-offset-2 outline-none focus-visible:outline-2 focus-visible:outline-selected-ink">
           · {t('transcript.exec.degradedNote')}
         </span>

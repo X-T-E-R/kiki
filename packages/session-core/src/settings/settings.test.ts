@@ -530,10 +530,10 @@ describe('settings persistence and validation', () => {
   it('rejects invalid engine integers before config writes', () => {
     const draft = runtimeConfigDraftFromConfig({ providers: {} });
     draft.imageMaxEdgePx = '0';
-    expect(() => resourceLimitPatch(draft)).toThrow(/image\.max_edge_px/);
+    expect(() => resourceLimitPatch(draft)).toThrow(/Image maximum edge/);
     draft.imageMaxEdgePx = '';
     // The mcp domain upper bound is enforced by its own leaf's patch helper.
-    expect(() => mcpTimeoutsPatch('2147483648', '')).toThrow(/mcp\.startup_timeout_ms/);
+    expect(() => mcpTimeoutsPatch('2147483648', '')).toThrow(/MCP startup timeout/);
   });
 
   it('emits only fields changed from the last server echo', () => {
@@ -961,7 +961,7 @@ describe('settings persistence and validation', () => {
     expect(() => requestIdentityPolicyFromDraft({
       requestIdentityChoice: 'custom_overrides',
       requestIdentityOverridesJson: '{}',
-    })).toThrow(/supported leaf/);
+    })).toThrow(/at least one supported field/);
   });
 
   it('tracks provider and model request identity edits as dirty', () => {

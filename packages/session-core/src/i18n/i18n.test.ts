@@ -118,6 +118,26 @@ describe('LocalizedError / errorText', () => {
     expect(errorText('en', error)).toBe(error.message);
   });
 
+  it('keeps dictionary-looking field parameters literal in both locales', () => {
+    const field = 'st.resourceLimits.imageMaxEdge';
+    expect(translate('en', 'val.runtimePositive', { field })).toBe(
+      `${field} must be a positive whole number within the supported range.`,
+    );
+    expect(translate('zh', 'val.runtimePositive', { field })).toBe(`${field} 必须是支持范围内的正整数。`);
+    const error = new LocalizedError({ key: 'val.runtimePositive', params: { field } });
+    expect(errorText('en', error)).toContain(field);
+    expect(errorText('zh', error)).toContain(field);
+  });
+
+  it('renders explicitly marked validation labels in both locales', () => {
+    const error = new LocalizedError({
+      key: 'val.runtimePositive',
+      labelKeys: { field: 'st.resourceLimits.imageMaxEdge' },
+    });
+    expect(error.message).toBe('Image maximum edge (px) must be a positive whole number within the supported range.');
+    expect(errorText('zh', error)).toBe('图片最长边（像素） 必须是支持范围内的正整数。');
+  });
+
   it('passes plain errors and unknown values through', () => {
     expect(errorText('zh', new Error('boom'))).toBe('boom');
     expect(errorText('zh', 'string failure')).toBe('string failure');

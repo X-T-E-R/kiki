@@ -173,6 +173,7 @@ export function SshProfilesPanel({
           <input value={alias} onChange={(event) => setAlias(event.target.value)} required maxLength={255}
             autoComplete="off" spellCheck={false} placeholder="dev-linux"
             className="mt-1 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 font-mono text-[12px] text-ink" />
+          <span className="mt-1 block leading-relaxed">{t('connect.sshAliasHint')}</span>
         </label>
         <label className="text-[11px] text-ink-soft">{t('connect.sshIdentity')}
           <input value={identityFile} onChange={(event) => setIdentityFile(event.target.value)}
@@ -195,6 +196,7 @@ export function SshProfilesPanel({
             <option value="stable">{t('st.about.stable')}</option>
             <option value="beta">{t('st.about.beta')}</option>
           </select>
+          <span className="mt-1 block leading-relaxed">{t('connect.sshChannelHint')}</span>
         </label>
         <div className="flex gap-2">
           <button type="submit" disabled={busy !== null}

@@ -3436,7 +3436,7 @@ function ModelChip({
   const { t } = useI18n();
   const displayEfforts = sortThinkingEffortsForDisplay(efforts ?? []);
   const showEffort = displayEfforts.length > 0 && effort !== undefined;
-  const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
+  const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelProvenance.${modelSource}`) });
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
   const title = engineLabel !== undefined

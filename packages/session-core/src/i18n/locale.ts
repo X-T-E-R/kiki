@@ -61,11 +61,15 @@ export function translatePlural(
 export interface ValidationIssue {
   readonly key: I18nKey;
   readonly params?: I18nParams;
+  readonly labelKeys?: Readonly<Record<string, I18nKey>>;
 }
 
 /** Render an issue in the active locale (components) or English (throwers/tests). */
 export function issueText(locale: Locale, issue: ValidationIssue): string {
-  return translate(locale, issue.key, issue.params);
+  if (issue.labelKeys === undefined) return translate(locale, issue.key, issue.params);
+  const params: Record<string, string | number> = { ...issue.params };
+  for (const [name, key] of Object.entries(issue.labelKeys)) params[name] = translate(locale, key);
+  return translate(locale, issue.key, params);
 }
 
 /**

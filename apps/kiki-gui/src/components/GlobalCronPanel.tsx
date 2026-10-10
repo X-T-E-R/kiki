@@ -181,7 +181,7 @@ function CronTaskRow({
             {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
           </span>
           {task.stale ? (
-            <span data-cron-status="stale" className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
+            <span data-cron-status="stale" title={t('cron.status.staleTitle')} className={`${CHIP_BASE} bg-amber-card text-amber-ink`}>
               {t('cron.status.stale')}
             </span>
           ) : null}

@@ -976,8 +976,8 @@ export function mcpTimeoutsPatch(startupTimeoutMs: string, toolTimeoutMs: string
   const mcpMax = 2_147_483_647;
   return {
     mcp: {
-      startup_timeout_ms: parseOptionalInteger(startupTimeoutMs, 'mcp.startup_timeout_ms', 1, mcpMax),
-      tool_timeout_ms: parseOptionalInteger(toolTimeoutMs, 'mcp.tool_timeout_ms', 1, mcpMax),
+      startup_timeout_ms: parseOptionalInteger(startupTimeoutMs, 'st.runtime.mcpStartupTimeout', 1, mcpMax),
+      tool_timeout_ms: parseOptionalInteger(toolTimeoutMs, 'st.runtime.mcpToolTimeout', 1, mcpMax),
     },
     replace_domains: ['mcp'],
   };
@@ -1108,18 +1108,18 @@ export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft
 
 function parseOptionalInteger(
   value: string,
-  field: string,
+  field: I18nKey,
   minimum: number,
   maximum = Number.MAX_SAFE_INTEGER,
 ): number | undefined {
   const trimmed = value.trim();
   if (trimmed === '') return undefined;
   if (!/^\d+$/.test(trimmed)) {
-    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', params: { field } });
+    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', labelKeys: { field } });
   }
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', params: { field } });
+    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', labelKeys: { field } });
   }
   return parsed;
 }
@@ -1138,15 +1138,15 @@ function normalizeStringList(values: readonly string[]): string[] {
 export function taskRuntimePatch(draft: RuntimeConfigDraft['task']): KikiConfigPatch {
   return {
     task: {
-      max_running_tasks: parseOptionalInteger(draft.maxRunningTasks, 'task.max_running_tasks', 1),
+      max_running_tasks: parseOptionalInteger(draft.maxRunningTasks, 'st.taskPolicy.maxRunningTasks', 1),
       keep_alive_on_exit: draft.keepAliveOnExit,
       bash_auto_background_on_timeout: draft.bashAutoBackgroundOnTimeout,
       bash_file_tool_hints: draft.bashFileToolHints,
-      bash_task_timeout_s: parseOptionalInteger(draft.bashTaskTimeoutS, 'task.bash_task_timeout_s', 0),
-      kill_grace_period_ms: parseOptionalInteger(draft.killGracePeriodMs, 'task.kill_grace_period_ms', 0),
-      print_wait_ceiling_s: parseOptionalInteger(draft.printWaitCeilingS, 'task.print_wait_ceiling_s', 1),
+      bash_task_timeout_s: parseOptionalInteger(draft.bashTaskTimeoutS, 'st.taskPolicy.bashTimeout', 0),
+      kill_grace_period_ms: parseOptionalInteger(draft.killGracePeriodMs, 'st.taskPolicy.killGrace', 0),
+      print_wait_ceiling_s: parseOptionalInteger(draft.printWaitCeilingS, 'st.taskPolicy.printWait', 1),
       print_background_mode: draft.printBackgroundMode,
-      print_max_turns: parseOptionalInteger(draft.printMaxTurns, 'task.print_max_turns', 1),
+      print_max_turns: parseOptionalInteger(draft.printMaxTurns, 'st.taskPolicy.printTurns', 1),
     },
     replace_domains: ['task'],
   };
@@ -1158,11 +1158,11 @@ export function resourceLimitPatch(
 ): KikiConfigPatch {
   return {
     workspace_instance: {
-      idle_ttl_ms: parseOptionalInteger(draft.workspaceIdleTtlMs, 'workspace_instance.idle_ttl_ms', 0),
+      idle_ttl_ms: parseOptionalInteger(draft.workspaceIdleTtlMs, 'st.resourceLimits.workspaceIdle', 0),
     },
     image: {
-      max_edge_px: parseOptionalInteger(draft.imageMaxEdgePx, 'image.max_edge_px', 1),
-      read_byte_budget: parseOptionalInteger(draft.imageReadByteBudget, 'image.read_byte_budget', 1),
+      max_edge_px: parseOptionalInteger(draft.imageMaxEdgePx, 'st.resourceLimits.imageMaxEdge', 1),
+      read_byte_budget: parseOptionalInteger(draft.imageReadByteBudget, 'st.resourceLimits.imageBudget', 1),
     },
     replace_domains: ['workspace_instance', 'image'],
   };
