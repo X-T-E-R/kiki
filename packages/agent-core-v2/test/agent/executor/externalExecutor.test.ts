@@ -828,8 +828,16 @@ describe('ACP external executor', () => {
       { type: 'content', content: { type: 'diff', path: 'src/example.ts', oldText: diffOldText, newText: diffNewText } },
       { type: 'content', content: { type: 'terminal', terminalId: 'terminal-1', output: terminalOutput } },
     ];
-    await recorder.record({ type: 'tool.call', toolCallId: 'media-tool', title: 'Media tool', content: resourceContent });
-    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', status: 'in_progress', content: resourceContent });
+    await recorder.record({ type: 'tool.call', toolCallId: 'media-tool', title: 'Media tool', content: resourceContent, rawOutput: 'same update summary' });
+    expect(observed.filter((event) => event.type === 'executor.tool.display').at(-1)).toMatchObject({
+      output: { text: expect.stringContaining('same update summary'), media: expect.arrayContaining([
+        expect.objectContaining({ attachment: expect.any(Object) }),
+      ]) },
+    });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', status: 'in_progress', rawOutput: 'later summary' });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', rawOutput: 'later summary' });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', rawOutput: '' });
+    await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', content: [{ type: 'content', content: { type: 'text', text: 'later text content' } }] });
     await recorder.record({ type: 'tool.update', toolCallId: 'media-tool', status: 'completed' });
     await recorder.complete('end_turn');
 
@@ -851,6 +859,9 @@ describe('ACP external executor', () => {
       expect.objectContaining({ type: 'text', attachment: expect.objectContaining({ mimeType: 'application/octet-stream' }) }),
       expect.objectContaining({ type: 'text', text: expect.stringContaining(diffOldText) }),
       expect.objectContaining({ type: 'text', text: expect.stringContaining(terminalOutput) }),
+      { type: 'text', text: 'same update summary' },
+      { type: 'text', text: 'later summary' },
+      { type: 'text', text: 'later text content' },
     ]);
     expect((toolResult.result.output as readonly { text?: string }[])[1]?.text).toContain(diffNewText);
     expect(JSON.stringify(loopEvents)).not.toContain('AQID');
@@ -870,6 +881,38 @@ describe('ACP external executor', () => {
     await diagnostic.complete('end_turn');
     expect(JSON.stringify(loopEvents)).toContain('invalid base64');
     expect(JSON.stringify(loopEvents)).toContain('media storage is unavailable');
+
+    const rejectedStorage = new Map(services);
+    rejectedStorage.set(ISessionMediaStore, { ...mediaStore, materialize: async () => { throw new Error('storage rejected'); } });
+    const failures = [
+      { services, reason: 'invalid base64', encoded: '!invalid-tool!', content: { type: 'image', mimeType: 'image/png', data: '!invalid-tool!' } },
+      { services: withoutStorage, reason: 'media storage is unavailable', encoded: 'AQI=', content: { type: 'audio', mimeType: 'audio/wav', data: 'AQI=' } },
+      { services: rejectedStorage, reason: 'media storage rejected it', encoded: 'AQI=', content: { type: 'resource', resource: { uri: 'urn:failed', blob: 'AQI=', mimeType: 'application/octet-stream' } } },
+    ];
+    for (const [index, failure] of failures.entries()) {
+      const start = loopEvents.length;
+      const displayStart = observed.length;
+      const tool = new ExternalTurnRecorder(
+        { id: 'failed-media-agent', accessor: { get: (id) => failure.services.get(id) as never } }, 5 + index, 'failed-media-session',
+        { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native' },
+      );
+      await tool.begin('work', { kind: 'user' });
+      await tool.record({ type: 'tool.update', toolCallId: `failed-media-${index}`, title: 'Failed media tool', status: 'completed',
+        content: [{ type: 'content', content: failure.content }], rawOutput: 'safe summary' });
+      await tool.complete('end_turn');
+      const result = loopEvents.slice(start).find((event): event is { type: 'tool.result'; result: { output: unknown } } =>
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'tool.result');
+      expect(result?.result.output).toEqual([
+        { type: 'text', text: expect.stringContaining(failure.reason) },
+        { type: 'text', text: 'safe summary' },
+      ]);
+      expect(observed.slice(displayStart).filter((event) => event.type === 'executor.tool.display').at(-1)).toMatchObject({
+        output: { text: expect.stringContaining(failure.reason), media: result?.result.output },
+      });
+      expect(JSON.stringify(loopEvents.slice(start))).not.toContain(failure.encoded);
+      expect(JSON.stringify(observed.slice(displayStart))).not.toContain(failure.encoded);
+      expect(tool.losses).toContain('unknown_update_dropped');
+    }
   });
 
   it('does not duplicate a terminal result when the first update creates the tool', async () => {

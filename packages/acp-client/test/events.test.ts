@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AcpClientErrorCode, mapAcpSessionUpdate } from '../src';
+import { AcpClientErrorCode, mapAcpSessionNotification, mapAcpSessionUpdate } from '../src';
 
 describe('ACP normalized executor event mapper', () => {
   it('maps message, thought, tool, plan, usage, and unknown updates', () => {
@@ -63,6 +63,27 @@ describe('ACP normalized executor event mapper', () => {
     } })).toEqual({ type: 'message.delta', role: 'assistant', messageId: undefined, content: {
       type: 'opaque', contentType: 'future_block', payload: { type: 'future_block', body: { token: '[REDACTED]' } },
     } });
+  });
+
+  it.each(['agent_message_chunk', 'agent_thought_chunk'])('degrades malformed resources in %s without failing the notification', (sessionUpdate) => {
+    for (const resource of [undefined, null, [], 'invalid', 42, {}, { text: 'body' }, { uri: null }, { uri: 42 }, { uri: 'urn:embedded', mimeType: 42 }]) {
+      expect(mapAcpSessionNotification({ sessionId: 'resource-session', update: {
+        sessionUpdate, content: { type: 'resource', resource, token: 'private-value' },
+      } })).toMatchObject({ sessionId: 'resource-session', event: { content: {
+        type: 'opaque', contentType: 'resource', payload: { type: 'resource', token: '[REDACTED]' },
+      } } });
+    }
+    expect(mapAcpSessionNotification({ sessionId: 'resource-session', update: {
+      sessionUpdate, content: { type: 'text', text: 'next chunk' },
+    } })).toMatchObject({ event: { content: { type: 'text', text: 'next chunk' } } });
+  });
+
+  it.each([
+    { uri: 'urn:embedded', text: 'body', mimeType: 'text/plain' },
+    { uri: 'urn:embedded', blob: 'AQI=', mimeType: 'application/octet-stream' },
+  ])('keeps well-formed embedded resources typed: $mimeType', (resource) => {
+    expect(mapAcpSessionUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'resource', resource } }))
+      .toMatchObject({ content: { type: 'resource', resource: { ...resource, type: 'text' in resource ? 'text' : 'blob' } } });
   });
 
   it('fails known malformed updates instead of silently dropping them', () => {

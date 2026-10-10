@@ -78,8 +78,16 @@ function content(value: unknown): NormalizedExecutorContent {
     };
   }
   if (type === 'resource') {
-    const resource = object(block['resource'], 'update.content.resource');
-    const uri = string(resource['uri'], 'update.content.resource.uri')!;
+    const value = block['resource'];
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return { type: 'opaque', contentType: type, payload: boundedDiagnostic(block) };
+    }
+    const resource = value as Record<string, unknown>;
+    if (typeof resource['uri'] !== 'string' ||
+      (resource['mimeType'] !== undefined && resource['mimeType'] !== null && typeof resource['mimeType'] !== 'string')) {
+      return { type: 'opaque', contentType: type, payload: boundedDiagnostic(block) };
+    }
+    const uri = resource['uri'];
     const mimeType = string(resource['mimeType'], 'update.content.resource.mimeType', true);
     if (typeof resource['text'] === 'string') {
       return { type, resource: { type: 'text', uri, text: resource['text'], mimeType } };

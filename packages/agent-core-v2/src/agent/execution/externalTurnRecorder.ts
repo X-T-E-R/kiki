@@ -123,6 +123,16 @@ interface RecordedTool {
 const TERMINAL_TOOL_STATUSES = new Set(['completed', 'failed']);
 const MAX_BOUNDED_JSON_BYTES = 32 * 1024;
 
+function mergeToolSnapshot(
+  previous: RecordedTool['outputSnapshot'],
+  incoming: string | readonly ContentPart[] | undefined,
+): RecordedTool['outputSnapshot'] {
+  if (incoming === undefined) return previous;
+  if (!Array.isArray(previous) || typeof incoming !== 'string') return incoming;
+  if (incoming.length === 0 || previous.some((part) => part.type === 'text' && part.text === incoming)) return previous;
+  return [...previous, { type: 'text', text: incoming }];
+}
+
 export class ExternalTurnRecorder {
   readonly stepId: string;
   readonly losses = new Set<ExecutorLossCode>();
@@ -397,6 +407,9 @@ export class ExternalTurnRecorder {
       diagnostic ||= normalized.type === 'opaque';
       structured ||= normalized.type === 'diff' || normalized.type === 'terminal';
       const part = await this.#contentPart(normalized);
+      diagnostic ||= (normalized.type === 'image' || normalized.type === 'audio' ||
+        (normalized.type === 'resource' && normalized.resource.type === 'blob')) &&
+        part?.type === 'text' && part.attachment === undefined;
       if (part !== undefined) parts.push(part);
     }
     if (parts.length === 0) return undefined;
@@ -673,10 +686,9 @@ export class ExternalTurnRecorder {
     tool.acp = mergeAcpToolState(tool.acp, event);
     tool.title = tool.acp.title;
     tool.rawInput = tool.acp.rawInput;
-    if (event.content?.length) tool.outputSnapshot = await this.#toolSnapshot(event.content);
+    if (event.content?.length) tool.outputSnapshot = mergeToolSnapshot(tool.outputSnapshot, await this.#toolSnapshot(event.content));
     if (event.rawOutput !== undefined) {
-      const raw = await this.#rawOutput(event.rawOutput);
-      if (raw !== undefined) tool.outputSnapshot = raw;
+      tool.outputSnapshot = mergeToolSnapshot(tool.outputSnapshot, await this.#rawOutput(event.rawOutput));
     }
     const terminal = ['completed', 'failed', 'cancelled'].includes(tool.acp.status ?? '');
     if (terminal && !tool.terminal) {
