@@ -175,7 +175,7 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
     ) : null}
     {start === 'blank' && !blankOk && (description !== '' || prompt !== '') ? <Hint>{t('st.agentManager.promptRequired')}</Hint> : null}
     <SettingsDraftFooter id="agent-create" persistent saving={saving}
-      dirty={(name !== '' && !name.endsWith('-copy')) || description !== '' || prompt !== '' || main !== undefined}
+      dirty={ready || (name !== '' && !name.endsWith('-copy')) || description !== '' || prompt !== '' || main !== undefined || selectedWsId !== undefined}
       saveLabel={t('st.agentManager.create')} saveDisabled={!ready} onSave={() => void create()} onDiscard={onCancel} />
     <FeedbackLine feedback={feedback} />
   </div>;

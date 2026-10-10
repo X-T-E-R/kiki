@@ -452,6 +452,20 @@ describe('new profile', () => {
     });
   });
 
+  it('allows creating an agent with the suggested -copy name when ready', async () => {
+    const created = { ...explore, name: 'explore-copy', source: 'user', source_file: '/fixture/home/agents/explore-copy.md', workspace_id: 'ws-one' };
+    client.createAgentProfile.mockResolvedValue(created);
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());
+    expect(sheet().querySelector<HTMLInputElement>('#new-profile-name')!.value).toBe('explore-copy');
+    expect(buttonIn(sheet(), 'Create agent').disabled).toBe(false);
+    await act(async () => buttonIn(sheet(), 'Create agent').click());
+    await settle();
+    expect(client.createAgentProfile).toHaveBeenCalledWith({
+      workspace_id: 'ws-one', name: 'explore-copy', scope: 'user', template: 'duplicate:explore',
+    });
+  });
+
   it('preserves profile-name preedit and trims the name at creation', async () => {
     client.createAgentProfile.mockResolvedValue({ ...explore, name: 'helper', source: 'user' });
     await render();
