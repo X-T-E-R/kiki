@@ -38,6 +38,7 @@ import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/taskService';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
+import { SessionController } from '../../session-core/src/session/sessionController';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -308,6 +309,58 @@ describe('server-v2 /api prompts', () => {
     }, { before: 'context-injector' });
     return child;
   }
+
+  it('prompt-bound confirmation mode reaches the HTTP provider and live/cold prompt projection', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'attached-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let controller: SessionController | undefined;
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      for (const model of ['stub', 'stub-alt']) await mutations.updateModel(model, { max_context_size: 100000 });
+      const id = await createSession(home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'low' });
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      await controller.open();
+      const input = { promptId: 'http-attached-fresh', text: 'This real message owns the confirmed fresh mode.', model: 'stub-alt', thinking: 'high', modelSwitchMode: 'fresh' as const };
+      const receipt = await controller.sendPrompt(input);
+      await main.accessor.get(IAgentLoopService).settled();
+      await main.accessor.get(IEventDispatcher).flush();
+      expect(main.accessor.get(IAgentPromptService).lookup(receipt.prompt_id)).toMatchObject({ phase: 'terminal', terminal: { state: 'completed' } });
+      expect(bodies.map(body => [body['model'], body['reasoning_effort']])).toEqual([['stub-alt', 'high']]);
+      expect(JSON.stringify(bodies[0])).toContain(input.text);
+      const live = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(live.prompts).toContainEqual(expect.objectContaining({ promptId: input.promptId, runtimeControls: expect.objectContaining({ model: 'stub-alt', thinking: 'high', modelSwitchMode: 'fresh' }) }));
+      expect(main.accessor.get(IAgentPromptService).listModelSwitches()).toEqual([]);
+      const journal = [];
+      for await (const record of main.accessor.get(IWireService).readJournal()) journal.push(record);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toMatchObject([{ mode: 'fresh' }]);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: 'stub-alt', thinkingEffort: 'high' }]);
+      controller.close(); controller = undefined;
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(cold.prompts).toContainEqual(expect.objectContaining({ promptId: input.promptId, runtimeControls: expect.objectContaining({ modelSwitchMode: 'fresh' }) }));
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    } finally {
+      controller?.close();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
+  });
 
   it('validates recover mode only for retry actions', () => {
     expect(modelSwitchActionSchema.parse({ action: 'retry', mode: 'fresh' })).toEqual({ action: 'retry', mode: 'fresh' });

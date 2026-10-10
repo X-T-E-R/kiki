@@ -51,6 +51,111 @@ afterEach(async () => {
 });
 
 describe('model switch control queue with real engine', () => {
+  it('prompt-bound fresh survives reopen and retries without a control-only queue row', async () => {
+    const ctx = await host();
+    vi.spyOn(ctx.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
+    const input = { id: 'attached-fresh', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Use a fresh window for this real question.' }], toolCalls: [] }, appendTiming: 'subagents_done' as const, execution: { model: NEW, modelSwitchMode: 'fresh' as const } };
+    const svc = ctx.get(IAgentPromptService);
+    const queued = await svc.enqueue(input);
+    expect(svc.list().pending).toMatchObject([{ id: input.id, execution: input.execution }]);
+    expect(svc.listModelSwitches()).toEqual([]);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    const cold = await host();
+    await cold.restore(await records(ctx));
+    cold.mockNextResponse({ type: 'text', text: 'The real question uses the fresh selected window.' });
+    const restored = cold.get(IAgentPromptService);
+    expect(restored.list().pending).toMatchObject([{ id: input.id, execution: input.execution }]);
+    const selected = await restored.enqueue(input);
+    await restored.steer([selected.id]);
+    expect((await selected.completion).state).toBe('completed');
+    const journal = await records(cold);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: NEW }]);
+    expect(journal.filter(record => record.type === 'agent.model_switch')).toMatchObject([{ mode: 'fresh', newEpoch: 1 }]);
+    expect(journal.filter(record => record.type === 'prompt.model_switch_queued')).toEqual([]);
+    expect(JSON.stringify(cold.llmCalls[0])).toContain('Use a fresh window for this real question.');
+    expect(await restored.enqueue(input)).toBe(selected);
+    await expect(restored.enqueue({ ...input, execution: { ...input.execution, modelSwitchMode: 'compact' } })).rejects.toMatchObject({ code: 'prompt.id_conflict' });
+    expect(cold.llmCalls).toHaveLength(1);
+    await svc.drain(new Error('Fixture closed'), 'preserve-pending');
+    await queued.completion;
+  });
+  it('prompt-bound compact Send now preserves the in-flight request and freezes model plus effort', async () => {
+    const scripted = createScriptedGenerate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) { entered.resolve(); await release.promise; }
+      return scripted.generate(...args);
+    });
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['high', 'max'], defaultEffort: 'high' } } };
+    scripted.mockNextResponse({ type: 'text', text: 'Original work completed intact.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Summary of original completed work.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Selected binding receives the real question.' });
+    const svc = ctx.get(IAgentPromptService);
+    try {
+      const active = await svc.enqueue({ id: 'attached-active', message: { role: 'user', content: [{ type: 'text', text: 'Original work.' }], toolCalls: [] } });
+      await entered.promise;
+      const input = { id: 'attached-compact', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Continue my real question after compaction.' }], toolCalls: [] }, execution: { model: NEW, thinking: 'max', modelSwitchMode: 'compact' as const } };
+      const selected = await svc.enqueue(input);
+      expect(await svc.steer([selected.id])).toEqual([selected]);
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+      expect(calls).toBe(1);
+      release.resolve();
+      expect((await selected.completion).state).toBe('completed');
+      await active.completion;
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: OLD }, { modelAlias: NEW, thinkingEffort: 'max' }]);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toMatchObject([{ mode: 'compact', summaryGenerated: true, thinking: 'max' }]);
+      expect(journal.filter(record => record.type === 'prompt.enqueued' && record['promptId'] === selected.id)).toMatchObject([{ execution: input.execution }]);
+      expect(journal.filter(record => record.type === 'prompt.model_switch_queued')).toEqual([]);
+      expect(journal.filter(record => record.type === 'full_compaction.begin')).toEqual([]);
+      expect(JSON.stringify(scripted.calls[2])).toContain('Continue my real question after compaction.');
+    } finally { release.resolve(); }
+  });
+
+  it('prompt-bound selection rejects mixed legacy controls and unsupported context rebuilds', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const message = { role: 'user' as const, content: [{ type: 'text' as const, text: 'The intended binding must not be silently replaced.' }], toolCalls: [] };
+    await expect(svc.enqueue({ id: 'mixed-selection', message, execution: { afterModelSwitch: 'legacy', model: NEW } })).rejects.toMatchObject({ code: 'request.invalid' });
+    const profile = ctx.get(IAgentProfileService);
+    vi.spyOn(profile, 'data').mockReturnValue({ ...profile.data(), executorId: 'codex', driver: 'external' });
+    const selected = await svc.enqueue({ id: 'external-rebuild', message, execution: { model: 'codex/default', modelSwitchMode: 'fresh' } });
+    expect((await selected.completion).state).toBe('failed');
+    expect(svc.lookup(selected.id)).toMatchObject({ phase: 'terminal', terminal: { state: 'failed' } });
+    expect(ctx.llmCalls).toEqual([]);
+    expect((await records(ctx)).filter(record => record.type === 'agent.model_switch')).toEqual([]);
+  });
+
+  it.each(['cancel', 'summary-failure'] as const)('prompt-bound compact does not launch or commit after %s', async outcome => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    ctx.mockNextResponse({ type: 'text', text: 'Original work remains recoverable.' });
+    await (await svc.enqueue({ id: 'before-summary', message: { role: 'user', content: [{ type: 'text', text: 'Original work.' }], toolCalls: [] } })).completion;
+    const history = ctx.get(IAgentContextMemoryService).get();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => {
+      entered.resolve(); await release.promise; signal.throwIfAborted();
+      throw new Error('Example summary failed');
+    });
+    try {
+      const admission = svc.enqueue({ id: 'summary-selected', message: { role: 'user', content: [{ type: 'text', text: 'Do not send this on the old binding.' }], toolCalls: [] }, execution: { model: NEW, modelSwitchMode: 'compact' } });
+      await entered.promise;
+      if (outcome === 'cancel') expect(svc.abort('summary-selected')).toBe(true);
+      release.resolve();
+      const selected = await admission;
+      expect((await selected.completion).state).toBe(outcome === 'cancel' ? 'cancelled' : 'failed');
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+      expect(ctx.get(IAgentContextMemoryService).get()).toBe(history);
+      const journal = await records(ctx);
+      expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }]);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toEqual([]);
+      expect(journal.filter(record => record.type === 'turn.prompt' && record['promptId'] === selected.id)).toEqual([]);
+    } finally { release.resolve(); }
+  });
+
   it('safe Send now retains a failed original delivery until an explicit normal retry', async () => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);
