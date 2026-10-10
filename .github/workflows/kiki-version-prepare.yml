@@ -316,10 +316,16 @@ jobs:
           Invoke-CandidateCommand 'pnpm' @('install', '--frozen-lockfile')
           Invoke-CandidateCommand 'node' @('apps/kiki-gui/scripts/desktop-version.mjs', 'check')
           if ((node apps/kiki-gui/scripts/desktop-version.mjs check).Trim() -cne $env:EXPECTED_VERSION) { throw 'Version identity mismatch' }
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'typecheck')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'run', 'typecheck')
+          $typeFailures = @()
+          try { Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'typecheck') } catch { $typeFailures += $_.Exception.Message }
+          try { Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'run', 'typecheck') } catch { $typeFailures += $_.Exception.Message }
+          if ($typeFailures.Count -gt 0) { throw ($typeFailures -join "`n") }
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'exec', 'vitest', 'run', 'test/htmlPreview.test.ts', '-t', 'remote HTML refusals through the real connection manager', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/runtime/runtimeWorkspaceView.test.ts', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/agent/prompt/promptService.test.ts', '-t', 'reorders scheduled prompts without changing durable origin', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/session/sessionController.test.ts', '-t', 'changes only user queue positions|restores an evicted history preview|settles failed and cancelled history preview', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/protocol', 'exec', 'vitest', 'run', 'src/__tests__/session.test.ts', '-t', 'sessionCreateSchema', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/NewSessionDraft.test.ts', '-t', 'buildNewSessionCreate', '--maxWorkers=1', '--no-file-parallelism')
           $env:KIKI_BUILT_IN_CATALOG_FILE = Join-Path $env:RUNNER_TEMP 'kiki-built-in-catalog.json'
           Invoke-CandidateCommand 'node' @('apps/kimi-code/scripts/update-catalog.mjs', '--out', $env:KIKI_BUILT_IN_CATALOG_FILE)
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'build:native:release')
