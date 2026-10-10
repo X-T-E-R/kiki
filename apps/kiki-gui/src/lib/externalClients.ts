@@ -112,7 +112,7 @@ export const EXTERNAL_CLIENT_DEFAULT_TOOLS: readonly string[] = [
   'Grep',
   'Write',
   'Edit',
-  'ReadMedia',
+  'ReadMediaFile',
   'AgentRun',
   'TaskList',
   'TaskOutput',

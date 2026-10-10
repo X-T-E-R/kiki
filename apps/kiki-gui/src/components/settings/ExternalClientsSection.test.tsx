@@ -285,8 +285,25 @@ describe('external clients settings panel', () => {
     expect(body).not.toHaveProperty('cwd');
     // A create has nothing saved to compare against, so the whole grant
     // travels; the delta rule only applies once there is something to keep.
-    expect(body['tools']).toEqual(['Read', 'Glob', 'Grep', 'Write', 'Edit', 'ReadMedia', 'AgentRun',
+    expect(body['tools']).toEqual(['Read', 'Glob', 'Grep', 'Write', 'Edit', 'ReadMediaFile', 'AgentRun',
       'TaskList', 'TaskOutput', 'TaskStop', 'HistoryList', 'HistoryRead', 'HistorySearch', 'kiki_save_text']);
+  });
+
+  it.each(['ReadMediaFile', 'ReadMedia'])('matches the default template only for the registered media tool (%s)', async mediaTool => {
+    const tools = ['Read', 'Glob', 'Grep', 'Write', 'Edit', mediaTool, 'AgentRun',
+      'TaskList', 'TaskOutput', 'TaskStop', 'HistoryList', 'HistoryRead', 'HistorySearch', 'kiki_save_text'].reverse();
+    facade.list.mockResolvedValue({ connections: [{ ...chatgpt, tools }], listener: stopped });
+    await render();
+    (firstRow().querySelector('summary') as HTMLElement).click();
+    await settle();
+    (firstRow().querySelector('[data-xc-edit]') as HTMLElement).click();
+    await settle();
+    expect(firstRow().querySelector('[data-xc-tools="default"]')?.getAttribute('aria-pressed'))
+      .toBe(mediaTool === 'ReadMediaFile' ? 'true' : 'false');
+    if (mediaTool === 'ReadMedia') {
+      expect(firstRow().querySelector('[data-xc-tool="ReadMediaFile"]')).not.toBeNull();
+      expect(firstRow().querySelector('[data-xc-tool="ReadMedia"]')).toBeNull();
+    }
   });
 
   it('refuses to create a connection with no name, without calling the server', async () => {

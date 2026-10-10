@@ -101,7 +101,8 @@ export class ExternalClientHost {
           if(access.operation==='read' && within(artifacts,actual)) continue;
           if((event.toolCall.name==='Glob'||event.toolCall.name==='Grep')&&within(actual,home))
             return {veto:{isError:true,output:'Narrow the search path to a folder outside the private Kiki home.'}};
-          if(!within(record.workspace,actual) || within(home,actual))
+          if(!within(record.workspace,actual) || within(home,actual) &&
+            !(within(home,record.workspace) && !within(record.workspace,home)))
             return {veto:{isError:true,output:'File access is outside the shared workspace.'}};
         }
         return undefined;
