@@ -55,6 +55,7 @@ function createRegistry(
       updatedAt: 1_700_000_000_000,
       archived: false,
     }),
+    getAgentExecutor: async () => undefined,
   });
   ix.stub(IRequestIdentityInstallation, {
     get: async () => {

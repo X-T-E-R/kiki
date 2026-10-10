@@ -131,7 +131,7 @@ describe('AgentPermissionPolicyService chain', () => {
         });
         reg.defineInstance(ITelemetryService, recordingTelemetry([]));
         reg.definePartialInstance(IGitService, { findWorkTree: async () => null });
-        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, worktree: worktreeMeta }) });
+        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, worktree: worktreeMeta }), getAgentExecutor: async () => undefined });
         reg.defineInstance(IAgentToolExecutorService, stubToolExecutorEvents().executor);
         reg.definePartialInstance(IAgentToolApprovalService, {
           resolvePermissionResolution: async (result) => result.kind === 'approve' ? undefined
@@ -835,7 +835,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
         reg.definePartialInstance(IGitService, {
           findWorkTree: (cwd: string) => findGitWorkTree(hostFs, cwd),
         });
-        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false }) });
+        reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false }), getAgentExecutor: async () => undefined });
         reg.definePartialInstance(IWorktreeService, { list: async () => [] });
         reg.define(IAgentPermissionPolicyService, AgentPermissionPolicyService);
       },

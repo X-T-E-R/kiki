@@ -154,6 +154,7 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     failNextWrite = false;
     const metadata = {
       read: async () => ({ lastTurnReason: writes.at(-1) }) as SessionMeta,
+      getAgentExecutor: async () => undefined,
       update: async (
         patch: { lastTurnReason?: SessionMeta['lastTurnReason'] },
         uopts?: { touchUpdatedAt?: boolean },
@@ -234,6 +235,7 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     const second = host.child(LifecycleScope.Session, 'session-b', [
       stubPair(ISessionMetadata, {
         read: async () => ({ lastTurnReason: 'failed' }) as SessionMeta,
+        getAgentExecutor: async () => undefined,
         update: async (patch: { lastTurnReason?: SessionMeta['lastTurnReason'] }) => {
           writes.push(patch.lastTurnReason);
         },
@@ -323,6 +325,7 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     const stale = host.child(LifecycleScope.Session, 'session-stale', [
       stubPair(ISessionMetadata, {
         read: async () => ({ lastTurnReason: 'cancelled' }) as SessionMeta,
+        getAgentExecutor: async () => undefined,
         update: async (
           patch: { lastTurnReason?: SessionMeta['lastTurnReason'] },
           uopts?: { touchUpdatedAt?: boolean },
@@ -346,6 +349,7 @@ describe('SessionOutcomeMirror (Session scope)', () => {
     const fresh = host.child(LifecycleScope.Session, 'session-fresh', [
       stubPair(ISessionMetadata, {
         read: async () => ({ lastTurnReason: 'cancelled' }) as SessionMeta,
+        getAgentExecutor: async () => undefined,
         update: async (patch: { lastTurnReason?: SessionMeta['lastTurnReason'] }) => {
           writes.push(patch.lastTurnReason);
         },

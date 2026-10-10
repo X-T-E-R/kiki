@@ -72,6 +72,7 @@ import {
   readComposerState,
   resolveComposerModelOverrides,
   readDraft,
+  recoverSubmittedDraft,
   removeAnnotation,
   restorePromptToDraft,
   subscribeDraftAppends,
@@ -2759,11 +2760,15 @@ export function SessionView({
             completeControls();
           })
           .catch((error: unknown) => {
-            setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
-            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
-            if (recovery !== undefined) {
-              updateDraft(recovery.text);
-              updateAttachments(recovery.attachments);
+            if (composerOwnerActive.current) {
+              setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
+              const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+              if (recovery !== undefined) {
+                updateDraft(recovery.text);
+                updateAttachments(recovery.attachments);
+              }
+            } else {
+              recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
             }
             const isApi = error instanceof ApiError;
             pushToast({

@@ -7,7 +7,7 @@
 import { z } from 'zod';
 
 import { tokenUsageSchema } from '../agent/schemas.js';
-import { noResult } from '../helpers.js';
+import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
 export const negotiatedExecutorSchema = z.object({
@@ -116,6 +116,7 @@ export const sessionMetadataChangedEventSchema = z.object({
 
 export const sessionMetadataContract = {
   read: { input: z.tuple([]), output: sessionMetaSchema },
+  getAgentExecutor: { input: z.tuple([z.string().min(1)]), output: maybe(z.string()) },
   update: { input: z.tuple([sessionMetaPatchSchema]), output: noResult },
   setTitle: { input: z.tuple([z.string()]), output: noResult },
   setArchived: { input: z.tuple([z.boolean()]), output: noResult },

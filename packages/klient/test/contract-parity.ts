@@ -93,6 +93,7 @@ import type {
   SessionMetaPatch,
 } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/sessionTitle';
+import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { sessionActivityStateSchema } from '../src/contract/session/activity.js';
 import type {
@@ -293,6 +294,7 @@ import {
 } from '../src/contract/session/question.js';
 import { skillSummarySchema } from '../src/contract/session/skills.js';
 import { sessionTitleContract } from '../src/contract/session/title.js';
+import { agentCollaborationMessagingContract } from '../src/contract/session/agentMessage.js';
 
 import {
   authStatusSchema,
@@ -710,6 +712,25 @@ const _generateTitleOutput: AssertWire<
   (typeof sessionTitleContract)['generateTitle']['output'],
   Awaited<ReturnType<ISessionTitleService['generateTitle']>>
 > = true;
+
+// session/agentMessage.ts
+type AgentMessageAcceptance = Awaited<ReturnType<IAgentCollaborationMessagingService['sendUserMessage']>>;
+type AgentMessageReceipt = Awaited<ReturnType<IAgentCollaborationMessagingService['sendUserMessageReceipt']>>;
+type AgentMessageReceiptWire = z.infer<
+  (typeof agentCollaborationMessagingContract)['sendUserMessageReceipt']['output']
+>;
+const _agentMessageAcceptance: AssertWire<
+  (typeof agentCollaborationMessagingContract)['sendUserMessage']['output'],
+  AgentMessageAcceptance
+> = true;
+const _agentMessageReceipt: AssertWire<
+  (typeof agentCollaborationMessagingContract)['sendUserMessageReceipt']['output'],
+  AgentMessageReceipt
+> = true;
+// Extra wire properties stay assignable, so the receipt's content-freedom needs its own guard:
+// the compact response must never carry the stored body.
+const _agentMessageReceiptOmitsContent:
+  'content' extends keyof AgentMessageReceiptWire['message'] ? never : true = true;
 
 // agent/activity.ts
 const _turnPhase: AssertWire<typeof turnPhaseSchema, TurnPhase> = true;

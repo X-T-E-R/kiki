@@ -30,6 +30,7 @@ import {
   IAgentCollaborationMessageStore,
   IAgentCollaborationMessagingService,
   type AgentMessageAcceptance,
+  type AgentMessageReceipt,
   type QueuedAgentMessage,
 } from './messageMailbox';
 import { AgentMessageDelivered } from './messageEvents';
@@ -94,6 +95,17 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       idleWake: 'owned-child',
       waitForRunningDelivery: true,
     });
+  }
+
+  async sendUserMessageReceipt(input: {
+    readonly targetAgentId: string;
+    readonly content: string;
+    readonly idempotencyKey: string;
+  }): Promise<AgentMessageReceipt> {
+    const acceptance = await this.sendUserMessage(input);
+    const { message, ...receipt } = acceptance;
+    const { content: _content, ...accepted } = message;
+    return { ...receipt, message: accepted };
   }
 
   async send(input: {

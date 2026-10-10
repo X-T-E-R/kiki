@@ -73,7 +73,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
     ],
     [IAgentLifecycleService, { countPendingBackgroundTasks: () => 0, list: () => agentAccessor === undefined ? [] : [{ id: 'main', accessor: agentAccessor }], remove: () => { throw new Error('unload must not cancel logical work'); } }],
     [ISessionTerminalService, terminalService ?? { countLiveTerminals: () => terminals.live }],
-    [ISessionMetadata, { usage: () => undefined, update: async () => {} }],
+    [ISessionMetadata, { usage: () => undefined, getAgentExecutor: async () => undefined, update: async () => {} }],
   ]);
   const handle = {
     id: 'session-1',

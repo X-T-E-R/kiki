@@ -241,6 +241,7 @@ function buildHost(key: string): {
   host.stub(ISessionContext, createSessionContextStub());
   host.stub(ISessionMetadata, {
     read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false }),
+    getAgentExecutor: async () => undefined,
     updateAgent: async () => {},
   });
   host.stub(ISessionWorkspaceContext, stubUnused());

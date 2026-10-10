@@ -1008,6 +1008,7 @@ function createLane(
       archived: false,
       agents: metadataAgents,
     }),
+    getAgentExecutor: async (agentId: string) => metadataAgents[agentId]?.executor,
     usage: () => undefined,
     recordUsage: () => {},
     update: async () => {},

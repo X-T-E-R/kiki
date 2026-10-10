@@ -873,6 +873,30 @@ describe('session lifecycle routing', () => {
       method: 'sendUserMessage', args: [input] }]);
   });
 
+  it('routes the compact mailbox receipt without a content field', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const input = { targetAgentId: 'child', content: 'continue', idempotencyKey: 'message-1' };
+    channel.results.set('agentCollaborationMessagingService.sendUserMessageReceipt', {
+      message: { messageId: 'message-1', sessionId: 's1', sourceAgentId: 'main', sourceTaskName: 'user',
+        senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child',
+        acceptedAt: 1, targetSeq: 1 },
+      deduplicated: false, delivery: 'queued', payloadConflict: true,
+    });
+
+    const receipt = await klient.session('s1').sendUserAgentMessageReceipt(input);
+
+    expect(receipt).toEqual({
+      message: { messageId: 'message-1', sessionId: 's1', sourceAgentId: 'main', sourceTaskName: 'user',
+        senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child',
+        acceptedAt: 1, targetSeq: 1 },
+      deduplicated: false, delivery: 'queued', payloadConflict: true,
+    });
+    expect('content' in receipt.message).toBe(false);
+    expect(channel.calls).toEqual([{ scope: { sessionId: 's1' }, service: 'agentCollaborationMessagingService',
+      method: 'sendUserMessageReceipt', args: [input] }]);
+  });
+
   it('delete calls the App session manager', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);

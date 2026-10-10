@@ -240,7 +240,7 @@ function createHarness(options: HarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IWireService, wire],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
-    [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
+    [ISessionMetadata, { read: async () => ({ agents: {} }), getAgentExecutor: async () => undefined, registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
   const context: AgentExecutorContext = {
     agent: {
@@ -459,7 +459,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
       provider: { create: harness.createSession },
     }),
   } as unknown as IAgentExecutorRegistry);
-  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), getAgentExecutor: async () => undefined, registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => harness.context.binding,

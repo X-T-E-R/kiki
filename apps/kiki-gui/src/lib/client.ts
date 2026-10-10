@@ -1022,7 +1022,7 @@ export interface ListSessionsOptions extends ListSessionsQuery {
  * prompt path, which has no mailbox receipt to report.
  */
 export type AgentMessageReceipt = Awaited<
-  ReturnType<ReturnType<ReturnType<typeof createKlient>['session']>['sendUserAgentMessage']>
+  ReturnType<ReturnType<ReturnType<typeof createKlient>['session']>['sendUserAgentMessageReceipt']>
 >;
 
 export class ExternalAgentAttachmentUnsupportedError extends Error {
@@ -1044,6 +1044,11 @@ export class NativeChildPromptConflictError extends NativeChildPromptSendError {
     super(cause);
     this.name = 'NativeChildPromptConflictError';
   }
+}
+
+export function isDefinitivePromptRejection(error: unknown): boolean {
+  const cause = error instanceof NativeChildPromptSendError ? error.cause : error;
+  return cause instanceof ApiError && cause.code === 40001;
 }
 
 /** Model-switch contract types, derived from the agent facade so the wire shape has one owner. */
@@ -1466,8 +1471,8 @@ export class KikiClient {
   /** Whether `agentId` runs on kiki's own engine (steerable) or an external executor (mailbox only). */
   async isNativeAgent(sessionId: string, agentId: string): Promise<boolean> {
     if (agentId === MAIN_AGENT_ID) return true;
-    const agents = await this.run(() => this.klient.session(sessionId).agents());
-    return (agents[agentId]?.executor ?? 'native') === 'native';
+    const executor = await this.run(() => this.klient.session(sessionId).getAgentExecutor(agentId));
+    return (executor ?? 'native') === 'native';
   }
 
   async sendAgentMessage(
@@ -1479,12 +1484,12 @@ export class KikiClient {
     afterModelSwitch?: string,
   ): Promise<AgentMessageReceipt | null> {
     const session = this.klient.session(sessionId);
-    const agents = await this.run(() => session.agents());
-    if (agents[agentId] !== undefined && (agents[agentId].executor ?? 'native') !== 'native') {
+    const executor = await this.run(() => session.getAgentExecutor(agentId));
+    if ((executor ?? 'native') !== 'native') {
       if (content?.some((part) => part.type !== 'text')) {
         throw new ExternalAgentAttachmentUnsupportedError();
       }
-      return this.run(() => session.sendUserAgentMessage({
+      return this.run(() => session.sendUserAgentMessageReceipt({
         targetAgentId: agentId,
         content: text,
         idempotencyKey,

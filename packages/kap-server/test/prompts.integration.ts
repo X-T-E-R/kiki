@@ -1268,6 +1268,44 @@ describe('server-v2 /api prompts', () => {
     expect((await resumed!.accessor.get(ISessionMetadata).read()).lastPrompt).toBe('first prompt');
   });
 
+  it('sends complete long text through compact HTTP receipts and point-reads child executor without session echoes', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const metadata = session.accessor.get(ISessionMetadata);
+    const longText = '文'.repeat(1500000);
+    await metadata.update({ lastPrompt: longText });
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const responses: Array<{ path: string; bytes: number; data: Record<string, unknown> }> = [];
+    const nativeFetch = globalThis.fetch;
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!), transport: {
+      fetch: async (input, init) => {
+        const response = await nativeFetch(input, init);
+        const text = await response.clone().text();
+        const envelope = JSON.parse(text);
+        responses.push({ path: new URL(String(input)).pathname, bytes: Buffer.byteLength(text), data: envelope.data });
+        return response;
+      },
+    } });
+    try {
+      expect(await client.isNativeAgent(id, child.id)).toBe(true);
+      await expect(client.sendAgentMessage(id, child.id, longText, undefined, 'long-child-receipt')).resolves.toBeNull();
+      await expect(client.sendAgentMessage(id, child.id, longText, undefined, 'long-child-receipt')).resolves.toBeNull();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(prompt.list().active?.message.content).toEqual([{ type: 'text', text: longText }]);
+      const submissions = responses.filter((response) => response.path.endsWith('/prompts'));
+      expect(submissions).toHaveLength(2);
+      for (const response of submissions) {
+        expect(response.bytes).toBeLessThan(2048);
+        expect(response.data).not.toHaveProperty('content');
+        expect(response.data).toMatchObject({ prompt_id: 'long-child-receipt' });
+      }
+      await expect(client.sendAgentMessage(id, child.id, 'changed', undefined, 'long-child-receipt')).rejects.toThrow();
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    } finally { await client.klient.close(); }
+  });
+
   it('replays one accepted native child prompt after losing the HTTP response and rejects a changed payload', async () => {
     const id = await createSession(home as string);
     const child = await createHeldChild(id);

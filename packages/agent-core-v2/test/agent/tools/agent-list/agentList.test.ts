@@ -49,6 +49,7 @@ function makeTool(options: {
   services.stub(IAgentScopeContext, { agentId: options.callerAgentId ?? 'main' });
   services.stub(ISessionMetadata, {
     read: async () => ({ agents: options.agents ?? {} }),
+    getAgentExecutor: async (agentId: string) => options.agents?.[agentId]?.executor,
   } as ISessionMetadata);
   services.stub(IAgentTaskService, {
     list: () => (options.tasks ?? []).map((task, index) => ({

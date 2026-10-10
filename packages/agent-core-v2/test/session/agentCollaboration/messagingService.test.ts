@@ -962,6 +962,58 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('keeps one complete 4.5 MB user body in the mailbox while the compact receipt omits it', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target', { executorId: 'grok-acp' });
+    target.setRunning(true);
+    const service = messagingService(store, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({
+        'agent-target': { type: 'sub', parentAgentId: 'main', displayName: 'external', executor: 'grok-acp' },
+      }));
+    const content = '文'.repeat(1_500_000);
+    const input = { targetAgentId: 'agent-target', content, idempotencyKey: 'long-user-message' };
+
+    const first = await service.sendUserMessageReceipt(input);
+    expect(first).toMatchObject({
+      deduplicated: false,
+      delivery: 'queued',
+      payloadConflict: false,
+      message: {
+        sessionId: 'session-1',
+        sourceAgentId: 'main',
+        senderKind: 'user',
+        targetAgentId: 'agent-target',
+        targetTaskName: 'external',
+      },
+    });
+    expect('content' in first.message).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(1024);
+    expect(first.resumed).toBeUndefined();
+
+    const full = await service.sendUserMessage(input);
+    expect(full).toMatchObject({ deduplicated: true, delivery: 'queued', payloadConflict: false });
+    expect(full.message).toMatchObject({ messageId: first.message.messageId });
+    expect(full.message.content).toBe(content);
+    expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(4 * 1024 * 1024);
+
+    const conflict = await service.sendUserMessageReceipt({ ...input, content: 'changed' });
+    expect(conflict).toMatchObject({
+      deduplicated: true,
+      delivery: 'queued',
+      payloadConflict: true,
+      message: { messageId: first.message.messageId },
+    });
+    expect('content' in conflict.message).toBe(false);
+
+    target.setRunning(false);
+    await target.execution.run({ kind: 'prompt', prompt: 'ordinary resume' }, { signal });
+    expect(target.remoteRequests).toEqual([{ kind: 'prompt', prompt: `${content}\n\nordinary resume` }]);
+    expect(target.messages).toHaveLength(1);
+    expect(target.messages[0]?.content).toEqual([{ type: 'text', text: content }]);
+    expect(await store.nextQueued('session-1', 'agent-target')).toBeUndefined();
+    service.dispose();
+  });
+
   it('fails meaningfully when an idle child executor is permanently broken', async () => {
     const store = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
@@ -2047,6 +2099,7 @@ function metadataHarness(
       archived: false,
       agents: typeof agents === 'function' ? agents() : agents,
     }),
+    getAgentExecutor: async (agentId: string) => (typeof agents === 'function' ? agents() : agents)[agentId]?.executor,
     createdByLoad: () => {
       options.onCreatedByLoad?.();
       return options.createdByLoad ?? false;

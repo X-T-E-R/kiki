@@ -14,7 +14,7 @@ import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from './bounded-body.js'
 import type { TerminalFacade } from '../../core/facade/terminal.js';
 import type { HttpRestFacade } from '../../core/facade/http-rest.js';
 import { createHttpRestFacade, type HttpRestJsonOptions } from './rest.js';
-import { listTerminalsResponseSchema, getTerminalResponseSchema, closeTerminalResponseSchema, createTerminalRequestSchema } from '@kiki/protocol';
+import { listTerminalsResponseSchema, getTerminalResponseSchema, closeTerminalResponseSchema, createTerminalRequestSchema, promptSubmitReceiptSchema, type PromptSubmission } from '@kiki/protocol';
 import { confirmsTranscriptCoverage, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { sessionCommandContract, type SessionCommandChannel } from '../../contract/session/commands.js';
 import { RPCError } from '../../core/errors.js';
@@ -152,7 +152,7 @@ export class HttpChannel implements KlientChannel {
   };
 
   readonly sessionCommands: SessionCommandChannel = {
-    execute: (sessionId, command, input) => {
+    execute: async (sessionId, command, input) => {
       const spec = sessionCommandContract[command];
       const value = input as {
         target?: string;
@@ -160,9 +160,9 @@ export class HttpChannel implements KlientChannel {
         query?: { agent_id?: string };
       };
       const suffix = spec.suffix.replace('{target}', encodeURIComponent(value.target ?? ''));
-      return this.viewRequest(
+      const result = await this.viewRequest(
         `/api/sessions/${encodeURIComponent(sessionId)}${suffix}`,
-        { agent_id: value.query?.agent_id },
+        { agent_id: value.query?.agent_id, receipt: command === 'submit' ? 'true' : undefined },
         {
           method: spec.method,
           body: spec.method === 'GET' ? undefined : value.body ?? {},
@@ -170,6 +170,18 @@ export class HttpChannel implements KlientChannel {
           timeoutMs: 'timeoutMs' in spec ? spec.timeoutMs : undefined,
         },
       );
+      if (command === 'submit' && result !== null && typeof result === 'object' && !('content' in result)) {
+        const { resolved_media, ...receipt } = promptSubmitReceiptSchema.parse(result);
+        const content = [...(value.body as PromptSubmission).content];
+        for (const media of resolved_media ?? []) {
+          if (media.index >= content.length || content[media.index]?.type === 'text' || media.content.type === 'text') {
+            throw new RPCError(50001, 'Invalid prompt receipt media projection');
+          }
+          content[media.index] = media.content;
+        }
+        return { ...receipt, content };
+      }
+      return result;
     },
   };
 

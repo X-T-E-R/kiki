@@ -147,8 +147,13 @@ export interface SessionFacade {
   readonly skills: SessionSkillsFacade;
   /** Agent id → metadata for every agent registered in this session. */
   agents(): Promise<Readonly<Record<string, AgentMeta>>>;
+  getAgentExecutor(agentId: string): Promise<string | undefined>;
   sendUserAgentMessage(input: Parameters<IAgentCollaborationMessagingService['sendUserMessage']>[0]):
     ReturnType<IAgentCollaborationMessagingService['sendUserMessage']>;
+  /** Accepts the same message and reports it without echoing `message.content` back to the caller. */
+  sendUserAgentMessageReceipt(
+    input: Parameters<IAgentCollaborationMessagingService['sendUserMessageReceipt']>[0],
+  ): ReturnType<IAgentCollaborationMessagingService['sendUserMessageReceipt']>;
 }
 
 export function createSessionFacade(call: ScopedCaller, sessionId: string): SessionFacade {
@@ -263,8 +268,13 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
       const meta = await read();
       return meta.agents ?? {};
     },
+    getAgentExecutor: async (agentId) =>
+      (await call(scope, 'sessionMetadata', 'getAgentExecutor', [agentId]) as string | null | undefined) ?? undefined,
     sendUserAgentMessage: (input) =>
       call(scope, 'agentCollaborationMessagingService', 'sendUserMessage', [input], { timeoutMs: 0 }) as
         ReturnType<IAgentCollaborationMessagingService['sendUserMessage']>,
+    sendUserAgentMessageReceipt: (input) =>
+      call(scope, 'agentCollaborationMessagingService', 'sendUserMessageReceipt', [input], { timeoutMs: 0 }) as
+        ReturnType<IAgentCollaborationMessagingService['sendUserMessageReceipt']>,
   };
 }

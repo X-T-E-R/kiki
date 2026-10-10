@@ -16,6 +16,7 @@ import {
   pushInputHistory,
   readComposerState,
   readDraft,
+  recoverSubmittedDraft,
   readInputHistory,
   readNewSessionDraft,
   resetComposerMemoryForTests,
@@ -448,6 +449,49 @@ describe('appendToDraft', () => {
     unsubscribe();
     appendToDraft('s1', '@x.ts');
     expect(seen).toEqual([]);
+  });
+});
+
+describe('recoverSubmittedDraft', () => {
+  beforeEach(() => {
+    resetDraftMemoryForTests();
+    resetComposerMemoryForTests();
+  });
+
+  it('recovers only an empty draft, preserves chrome, and notifies with attachments', () => {
+    const attachment: ComposerAttachment = { kind: 'file', path: 'submitted.md', name: 'submitted.md', isDir: false };
+    const controls = emptyState({
+      permissionMode: 'auto' as PermissionMode,
+      planMode: true,
+      planGate: 'gated',
+      goalObjective: 'keep this goal',
+      modelOverride: 'fixture/model',
+      effortOverride: 'high',
+    });
+    writeComposerState('recover', controls);
+    const listener = vi.fn();
+    const unsubscribe = subscribeDraftAppends(listener);
+    try {
+      expect(recoverSubmittedDraft('recover', 'submitted prompt', [attachment])).toBe(true);
+      expect(readDraft('recover')).toBe('submitted prompt');
+      expect(readComposerState('recover')).toEqual({ ...controls, attachments: [attachment] });
+      expect(listener).toHaveBeenCalledExactlyOnceWith('recover', [attachment]);
+
+      writeDraft('recover', 'newer mounted draft');
+      expect(recoverSubmittedDraft('recover', 'stale submitted prompt', [attachment])).toBe(false);
+      expect(readDraft('recover')).toBe('newer mounted draft');
+      expect(readComposerState('recover')).toEqual({ ...controls, attachments: [attachment] });
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      const occupied = emptyState({ attachments: [attachment], permissionMode: 'manual' as PermissionMode, planMode: false });
+      writeComposerState('occupied', occupied);
+      expect(recoverSubmittedDraft('occupied', 'should not replace attachment', [])).toBe(false);
+      expect(readDraft('occupied')).toBe('');
+      expect(readComposerState('occupied')).toEqual(occupied);
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
   });
 });
 

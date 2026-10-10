@@ -371,6 +371,7 @@ function createService(
       archived: false,
       agents: { [agentId]: agentMeta },
     }),
+    getAgentExecutor: async (requestedAgentId: string) => requestedAgentId === agentId ? agentMeta.executor : undefined,
   });
   ix.stub(IAgentToolSelectService, toolSelect);
   ix.stub(IAgentMediaResolverService, options.mediaResolver ?? { resolve: async (messages) => messages });
@@ -499,6 +500,7 @@ function createRequestIdentityRegistry(): RequestIdentityRegistry {
       updatedAt: 1_700_000_000_000,
       archived: false,
     }),
+    getAgentExecutor: async () => undefined,
   });
   ix.stub(IRequestIdentityInstallation, {
     get: async () => '00000000-0000-4000-8000-000000000001',

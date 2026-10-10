@@ -40,6 +40,7 @@ class FakeSessionMetadata implements ISessionMetadata {
   readonly onDidChangeMetadata = this.emitter.event;
   meta: SessionMeta = { id: SESSION_ID, createdAt: 0, updatedAt: 0, archived: false };
   read(): Promise<SessionMeta> { return Promise.resolve(this.meta); }
+  async getAgentExecutor(agentId: string): Promise<string | undefined> { return this.meta.agents?.[agentId]?.executor; }
   usage(): SessionMeta['usage'] { return this.meta.usage; }
   recordUsage(): void {}
   update(patch: SessionMetaPatch): Promise<void> {

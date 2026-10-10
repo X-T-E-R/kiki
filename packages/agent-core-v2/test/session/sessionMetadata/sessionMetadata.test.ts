@@ -83,6 +83,23 @@ describe('SessionMetadata', () => {
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
   });
 
+  it('returns undefined for a missing executor without reading metadata', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const readSpy = vi.spyOn(meta, 'read');
+
+    await expect(meta.getAgentExecutor('missing')).resolves.toBeUndefined();
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns registered native and external executor ids', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('native-agent', { executor: 'native' });
+    await meta.registerAgent('external-agent', { executor: 'external' });
+
+    await expect(meta.getAgentExecutor('native-agent')).resolves.toBe('native');
+    await expect(meta.getAgentExecutor('external-agent')).resolves.toBe('external');
+  });
+
   it('persists creator metadata and mirrors it for session-list reads', async () => {
     const meta = ix.get(ISessionMetadata);
     const custom = {

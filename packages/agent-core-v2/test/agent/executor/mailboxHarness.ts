@@ -111,6 +111,7 @@ export function attachExternalMailboxHarness(
       archived: false,
       agents: { [agentId]: {} },
     }),
+    getAgentExecutor: async () => undefined,
     createdByLoad: () => true,
   } as unknown as ISessionMetadata);
   collaboration.stub(ISessionDispatchService, {});

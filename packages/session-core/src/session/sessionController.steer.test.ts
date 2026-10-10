@@ -264,6 +264,28 @@ describe('send now (steer) — main agent', () => {
     controller.close();
   });
 
+  it('classifies a refused steer as unknown when withdrawing the queued prompt fails', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => {
+      await deliver(controller, opsEvent('main', [queuedOp(body.prompt_id)], 2));
+      return queuedReceipt(body.prompt_id);
+    });
+    client.steerPrompt.mockRejectedValue(new ApiError({ code: 40001, msg: 'needs its own turn', data: null }));
+    const abortError = new Error('queue withdrawal unavailable');
+    client.abortPrompt.mockRejectedValue(abortError);
+    const error = await controller.sendPromptNow({ text: STEER_TEXT }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SendNowError);
+    expect((error as SendNowError).reason).toBe('unknown');
+    expect((error as SendNowError).cause).toBe(abortError);
+    const promptId = client.submitPrompt.mock.calls[0]![1].prompt_id as string;
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, 'main');
+    expect(controller.getState().queuedPromptIds).toContain(promptId);
+    expect(steerRows(controller.getState())).toEqual([]);
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
   it('keeps the prompt queued (not withdrawn) when the turn ended during the steer', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));

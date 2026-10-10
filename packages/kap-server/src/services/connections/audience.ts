@@ -32,7 +32,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['sessionCronService', new Set(['list', 'getNextFireTime', 'getNextFireForTask'])],
   ['sessionBtwService', new Set(['start'])],
   ['sessionInitService', new Set(['generateAgentsMd', 'cancelInit'])],
-  ['agentCollaborationMessagingService', new Set(['sendUserMessage'])],
+  ['agentCollaborationMessagingService', new Set(['sendUserMessage', 'sendUserMessageReceipt'])],
   ['agentLifecycleService', new Set(['countPendingBackgroundTasks', 'drainBackgroundTasks'])],
   ['agentPromptService', new Set(['submit', 'submitAndWait', 'submitSteer', 'switchModel', 'getModelSwitch', 'listModelSwitches', 'updateModelSwitch', 'cancelModelSwitch', 'recoverModelSwitch', 'resumeRecoveredQueue'])],
   ['agentSkillService', new Set(['activate', 'promptWithSkills'])],

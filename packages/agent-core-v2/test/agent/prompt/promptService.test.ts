@@ -712,6 +712,20 @@ describe('AgentPromptService', () => {
     expect(prompt.list()).toEqual({ active: undefined, pending: [] });
   });
 
+  it.each([ErrorCodes.CONFIG_INVALID, ErrorCodes.REQUEST_INVALID] as const)('preserves %s launch failures and their binding details', async (code) => {
+    const { prompt, loop } = harness();
+    const hint = 'Select a configured model and effort.';
+    const details = { requiredParameter: 'effort', hint, model: 'selected-model' };
+    vi.spyOn(loop, 'enqueue').mockImplementation(() => {
+      throw new Error2(code, 'selected binding is invalid', { details });
+    });
+    await expect(prompt.submit({ input: message('launch').content, promptId: `prompt-${code}` }))
+      .rejects.toMatchObject({
+        code,
+        details: { ...details, prompt_id: `prompt-${code}`, reason_code: code, error: expect.objectContaining({ code }) },
+      });
+  });
+
   it('does not finish draining an active prompt before its terminal event is published', async () => {
     const { prompt, loop, eventBus } = harness({ manualTurnResult: true });
     const aborted: string[] = [];

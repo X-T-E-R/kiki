@@ -68,6 +68,7 @@ import {
   promptSteerResultSchema,
   promptSubmissionSchema,
   promptSubmitResultSchema,
+  promptSubmitReceiptSchema,
   promptTimingRequestSchema,
   promptTimingResultSchema,
   promptHoldRequestSchema,
@@ -459,7 +460,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       path: '/sessions/{session_id}/prompts',
       body: promptSubmissionSchema,
       params: sessionIdParamSchema,
-      success: { data: promptSubmitResultSchema },
+      querystring: z.object({ receipt: z.literal('true').optional() }),
+      success: { data: z.union([promptSubmitResultSchema, promptSubmitReceiptSchema]) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema: validationDetailsSchema },
         [ErrorCode.SKILL_NOT_FOUND]: {},
@@ -482,6 +484,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       let reservation: PromptReservation | undefined;
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
+      const sendResult = (result: z.input<typeof promptSubmitResultSchema>) => reply.send(okEnvelope(
+        req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({
+          ...result,
+          resolved_media: result.content.flatMap((content, index) => content.type === 'text' ? [] : [{ index, content }]),
+        }) : result,
+        req.id,
+      ));
       try {
         await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
         lease = await acquireSessionOperation(core, session_id, 'operation');
@@ -508,7 +517,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
           const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
           if (receipt !== undefined) {
-            reply.send(okEnvelope({
+            sendResult({
               prompt_id: retryPromptId,
               user_message_id: retryPromptId,
               status: receipt.status,
@@ -516,7 +525,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               created_at: receipt.createdAt,
               append_timing: receipt.appendTiming,
               revision: receipt.revision,
-            }, req.id));
+            });
             return;
           }
         }
@@ -617,7 +626,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             }
             enqueued = true;
             settlement.settle(result.prompt_id, () => preparedMedia?.discard());
-            reply.send(okEnvelope({
+            sendResult({
               prompt_id: result.prompt_id,
               user_message_id: result.prompt_id,
               status: result.state,
@@ -625,7 +634,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               created_at: result.created_at,
               append_timing: result.append_timing,
               revision: result.revision,
-            }, req.id));
+            });
             return;
           }
           const handle = await admission.reservation.submit({
@@ -649,7 +658,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               revision: result.revision ?? 0,
             });
           }
-          reply.send(okEnvelope(result, req.id));
+          sendResult(result);
         } catch (error) {
           if (!enqueued) admission.fail(error);
           throw error;
@@ -1018,7 +1027,7 @@ function sendMappedError(
       case 'request.invalid':
       case 'validation.failed':
       case 'config.invalid':
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+        reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack), details: err.details });
         return;
       case 'skill.not_found':
         reply.send(errEnvelope(ErrorCode.SKILL_NOT_FOUND, err.message, requestId, err.stack));

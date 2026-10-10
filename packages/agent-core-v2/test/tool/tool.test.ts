@@ -543,6 +543,7 @@ function sessionMetadataStub(agents: Readonly<Record<string, AgentMeta>>): ISess
       archived: false,
       agents,
     }),
+    getAgentExecutor: async (agentId: string) => agents[agentId]?.executor,
     usage: () => undefined,
     recordUsage: () => {},
     update: async () => {},
@@ -1995,7 +1996,8 @@ describe('AgentRun tool execution contract', () => {
       id: 'main', kind: LifecycleScope.Agent,
       accessor: {
         get: ((serviceId: unknown) => {
-          if (serviceId === ISessionMetadata) return { read: async () => ({ agents }), registerAgent,
+          if (serviceId === ISessionMetadata) return { read: async () => ({ agents }),
+            getAgentExecutor: async (agentId: string) => agents[agentId]?.executor, registerAgent,
             updateAgent: async (agentId: string, updater: (current: AgentMeta) => AgentMeta) => {
               const current = agents[agentId];
               if (current !== undefined) await registerAgent(agentId, updater(structuredClone(current)));

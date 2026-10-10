@@ -81,6 +81,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     return this.data;
   }
 
+  async getAgentExecutor(agentId: string): Promise<string | undefined> {
+    await this.ready;
+    return this.data.agents?.[agentId]?.executor;
+  }
+
   usage(): SessionMeta['usage'] {
     return this.data.usage;
   }

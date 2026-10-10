@@ -275,6 +275,8 @@ export class SessionController {
   private readonly globalCoverage = new Map<string, AgentTranscriptSnapshot['globalCoverage']>();
   private readonly detailReads = new Map<string, Promise<boolean>>();
   private readonly olderPageCursors = new Map<string, string>();
+  private queuedTimingWriteSequence = 0;
+  private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
   private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; readers: number; blocked: boolean; ref?: ContentRef }>();
   private contentPumpRunning = false;
@@ -630,6 +632,7 @@ export class SessionController {
     this.contentBodies.clear();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.inFlightOlder.clear();
+    this.queuedTimingWrites.clear();
     if (this.state.loadingOlder || this.state.olderError !== undefined) {
       this.state = { ...this.state, loadingOlder: false, olderError: undefined };
     }
@@ -2346,22 +2349,48 @@ export class SessionController {
   /**
    * Re-time a parked prompt (`POST …:timing`). Sends the last known scheduling
    * revision as `expected_revision` so a concurrent retime (another client,
-   * the engine itself) fails with 40001 instead of silently winning; the
-   * authoritative reply (and the trailing reconcile) repaints the strip.
+   * the engine itself) fails with 40001 instead of silently winning; stale
+   * local replies likewise cannot replace a newer timing or queue-order write.
    */
   async setQueuedTiming(promptId: string, appendTiming: DeferredAppendTiming): Promise<void> {
     assertSessionWritable(this.state);
-    const expected = this.state.queuedPromptMeta[promptId]?.revision;
-    const result = await this.client.timingPrompt(this.sessionId, promptId, {
-      append_timing: appendTiming,
-      expected_revision: expected,
-    });
+    const existing = this.state.queuedPromptMeta[promptId];
+    const existingAppendTiming = existing?.appendTiming ?? 'agent_idle';
+    const existingRevision = existing?.revision;
+    const write = ++this.queuedTimingWriteSequence;
+    this.queuedTimingWrites.set(promptId, write);
+    const expected = existingRevision;
+    let result: Awaited<ReturnType<SessionTransport['timingPrompt']>>;
+    try {
+      result = await this.client.timingPrompt(this.sessionId, promptId, {
+        append_timing: appendTiming,
+        expected_revision: expected,
+      });
+    } catch (error) {
+      if (this.queuedTimingWrites.get(promptId) === write) this.queuedTimingWrites.delete(promptId);
+      throw error;
+    }
+    const current = this.state.queuedPromptMeta[promptId];
+    if (this.queuedTimingWrites.get(promptId) !== write) return;
+    if (
+      !this.state.queuedPromptIds.includes(promptId) ||
+      (current?.appendTiming ?? 'agent_idle') !== existingAppendTiming ||
+      current?.revision !== existingRevision
+    ) {
+      this.queuedTimingWrites.delete(promptId);
+      return;
+    }
+    this.queuedTimingWrites.delete(promptId);
     this.setState({
       ...this.state,
       version: this.state.version + 1,
       queuedPromptMeta: {
         ...this.state.queuedPromptMeta,
-        [promptId]: { appendTiming: result.append_timing ?? appendTiming, revision: result.revision },
+        [promptId]: {
+          ...(current ?? {}),
+          appendTiming: result.append_timing ?? appendTiming,
+          revision: result.revision,
+        },
       },
     });
   }
@@ -2430,10 +2459,10 @@ export class SessionController {
    * and the echo hands over to the real row without a remount.
    *
    * Idle agent: the submit starts its own turn and the echo retires as soon
-   * as that prompt is running. Steer refused (the turn ended meanwhile, a
-   * mode change needs its own turn): the parked prompt is withdrawn — a
-   * failed "send now" never lingers as an invisible queued prompt — and the
-   * error is rethrown for the caller to hand the text back.
+   * as that prompt is running. A steer refused for a mode change is only
+   * classified as refused after the parked prompt is confirmed withdrawn; if
+   * withdrawal fails, the outcome is unknown and the queued prompt stays the
+   * server-owned source of truth.
    */
   async sendPromptNow(input: {
     readonly agentId?: string;
@@ -2493,8 +2522,16 @@ export class SessionController {
       }
       if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
         // Refused before it left the queue (it changes a mode, which needs a
-        // turn of its own): withdraw it so the text can go back to its author.
-        await this.client.abortPrompt(this.sessionId, result.prompt_id, agentId).catch(() => undefined);
+        // turn of its own): only a confirmed withdrawal makes it safe for the
+        // caller to hand the text back. A failed withdrawal leaves the prompt
+        // queued, so its outcome is unknown and it must not be re-sent.
+        let withdrawn: Awaited<ReturnType<SessionTransport['abortPrompt']>>;
+        try {
+          withdrawn = await this.client.abortPrompt(this.sessionId, result.prompt_id, agentId);
+        } catch (abortError) {
+          throw new SendNowError('unknown', abortError);
+        }
+        if (withdrawn.aborted !== true) throw new SendNowError('unknown', error);
         throw new SendNowError('refused', error);
       }
       // Outcome unknown: it may already be in the turn. Never withdraw it.

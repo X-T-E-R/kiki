@@ -16,6 +16,7 @@ import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
+import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
@@ -2544,7 +2545,7 @@ describe('SessionController transcript authority', () => {
             userMessageId: 'm1',
             content: [{ type: 'text', text: 'parked' }],
             createdAt: '2026-01-01T00:00:00.000Z',
-            queuePosition: 0,
+            queuePosition: 2,
             appendTiming: 'agent_idle' as const,
             revision: 3,
           },
@@ -2568,7 +2569,16 @@ describe('SessionController transcript authority', () => {
       append_timing: 'tasks_done',
       expected_revision: 3,
     });
-    expect(controller.getState().queuedPromptMeta['p1']).toEqual({ appendTiming: 'tasks_done', revision: 4 });
+    const updatedMeta = controller.getState().queuedPromptMeta['p1'];
+    expect(updatedMeta).toEqual({ appendTiming: 'tasks_done', revision: 4, queuePosition: 2 });
+    expect(mergeSessionQueueRows(
+      [{ promptId: 'p1', queuePosition: updatedMeta?.queuePosition }],
+      [{ operationId: 'switch-0', queueIndex: 0 }, { operationId: 'switch-1', queueIndex: 1 }],
+    )).toEqual([
+      { kind: 'modelSwitch', operationId: 'switch-0' },
+      { kind: 'modelSwitch', operationId: 'switch-1' },
+      { kind: 'message', promptId: 'p1' },
+    ]);
     controller.close();
   });
 

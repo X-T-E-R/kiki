@@ -185,6 +185,7 @@ function stubSessionMetadata(title?: string): ISessionMetadata {
       updatedAt: 0,
       archived: false,
     }),
+    getAgentExecutor: async () => undefined,
     update: async () => {},
     setTitle: async () => {},
     setArchived: async () => {},

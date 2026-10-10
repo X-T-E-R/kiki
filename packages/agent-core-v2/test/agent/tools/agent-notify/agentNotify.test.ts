@@ -212,7 +212,10 @@ function createTool(options: {
   };
   const tool = new AgentNotifyTool(
     scope,
-    { read: async () => ({ agents: options.agents ?? {} }) } as ISessionMetadata,
+    {
+      read: async () => ({ agents: options.agents ?? {} }),
+      getAgentExecutor: async (agentId: string) => options.agents?.[agentId]?.executor,
+    } as ISessionMetadata,
     { send } as unknown as IAgentCollaborationMessagingService,
     {
       get: () => ({ notify_parent: options.notifyParent ?? true }),

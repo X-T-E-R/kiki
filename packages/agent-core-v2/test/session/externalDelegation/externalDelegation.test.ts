@@ -204,6 +204,7 @@ describe('SessionExternalDelegationService', () => {
         agents: agentMetas,
         custom: sessionCustom,
       }),
+      getAgentExecutor: async (agentId: string) => agentMetas[agentId]?.executor,
       registerAgent: async (agentId, meta) => {
         agentMetas[agentId] = meta;
       },

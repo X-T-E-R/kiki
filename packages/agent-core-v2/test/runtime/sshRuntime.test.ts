@@ -183,7 +183,7 @@ async function approvedPreparationFixture() {
       reg.definePartialInstance(IAgentScopeContext, { get agentId() { return agentId; } });
       reg.definePartialInstance(ISessionContext, { sessionId: 'session', workspaceId: 'workspace' });
       reg.define(ISessionStateService, SessionStateService);
-      reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session', createdAt: 0, updatedAt: 0, archived: false }), update: async () => {} });
+      reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session', createdAt: 0, updatedAt: 0, archived: false }), getAgentExecutor: async () => undefined, update: async () => {} });
       reg.definePartialInstance(ISessionApprovalService, {
         request: async () => ({ decision }), takeSshCredential: () => undefined, clearSshCredential: () => {},
       });

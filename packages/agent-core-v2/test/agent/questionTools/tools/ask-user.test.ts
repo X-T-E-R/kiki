@@ -99,7 +99,7 @@ describe('AskUserQuestionTool', () => {
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(ConfigId, { get: <T>() => ({ askUserQuestion: 'blocking' }) as T });
     ix.stub(ISessionDeliveryService, { effectiveMode: () => 'message' });
-    ix.stub(ISessionMetadata, { read: async () => ({ id: 'member-session', createdAt: 0, updatedAt: 0, archived: false, custom: { room_member_of: 'room-a' } }) });
+    ix.stub(ISessionMetadata, { read: async () => ({ id: 'member-session', createdAt: 0, updatedAt: 0, archived: false, custom: { room_member_of: 'room-a' } }), getAgentExecutor: async () => undefined });
     ix.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', turn, background: [] }) });
     ix.stub(IRoomService, { runQuestion: async (_room, _session, request) => request() });
     try {

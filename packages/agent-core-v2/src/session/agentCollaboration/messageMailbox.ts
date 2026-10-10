@@ -24,6 +24,19 @@ export interface AgentMessageAcceptance {
   readonly resumed?: boolean;
 }
 
+/**
+ * The same durable-mailbox acceptance with the caller's own body omitted: the
+ * stored message already holds the complete content, so echoing it back only
+ * pushes a long body through a bounded response path.
+ */
+export interface AgentMessageReceipt {
+  readonly message: Omit<AcceptedAgentMessage, 'content'>;
+  readonly deduplicated: boolean;
+  readonly delivery: 'queued' | 'delivered';
+  readonly payloadConflict: boolean;
+  readonly resumed?: boolean;
+}
+
 export interface QueuedAgentMessage {
   readonly message: AcceptedAgentMessage;
   readonly claim: ThreadDeliveryClaim;
@@ -72,6 +85,12 @@ export interface IAgentCollaborationMessagingService {
     readonly content: string;
     readonly idempotencyKey: string;
   }): Promise<AgentMessageAcceptance>;
+  /** Accepts exactly like `sendUserMessage` and reports the acceptance without `message.content`. */
+  sendUserMessageReceipt(input: {
+    readonly targetAgentId: string;
+    readonly content: string;
+    readonly idempotencyKey: string;
+  }): Promise<AgentMessageReceipt>;
   send(input: {
     readonly sourceAgentId: string;
     readonly sourceTaskName: string;

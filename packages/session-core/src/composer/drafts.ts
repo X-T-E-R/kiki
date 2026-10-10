@@ -434,6 +434,15 @@ export function appendToDraft(sessionId: string, text: string): void {
   for (const listener of appendListeners) listener(sessionId);
 }
 
+export function recoverSubmittedDraft(key: string, text: string, attachments: readonly ComposerAttachment[]): boolean {
+  const current = readComposerState(key);
+  if (readDraft(key) !== '' || (current.attachments?.length ?? 0) !== 0) return false;
+  writeDraft(key, text);
+  writeComposerState(key, { ...current, attachments });
+  for (const listener of appendListeners) listener(key, attachments);
+  return true;
+}
+
 export function restorePromptToDraft(sessionId: string, content: readonly import('@kiki/protocol').MessageContent[]): void {
   const text = content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n');
   const restored: ComposerAttachment[] = content.flatMap((part): ComposerAttachment[] => {

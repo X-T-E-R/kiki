@@ -28,6 +28,7 @@ describe('AgentCollaborationRegistry', () => {
     const registry = new AgentCollaborationRegistry({
       ready: Promise.resolve(),
       read: async () => ({ agents }),
+      getAgentExecutor: async (agentId: string) => agents[agentId]?.executor,
     } as ISessionMetadata);
     const owner = { kind: 'external' as const, delegationId: 'delegation_test' };
 

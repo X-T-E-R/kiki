@@ -308,14 +308,13 @@ describe('KikiClient.sendAgentMessage', () => {
       expect(String(url)).toBe('http://127.0.0.1:8080/api/klient/call');
       const body = JSON.parse(init?.body as string) as { procedure: { service: string; method: string }; params: unknown[] };
       calls.push({ service: body.procedure.service, method: body.procedure.method, params: body.params });
-      if (body.procedure.method === 'read') return Response.json({
-        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
-          agents: { child: { type: 'sub', executor: 'grok-acp' } } },
+      if (body.procedure.method === 'getAgentExecutor') return Response.json({
+        code: 0, msg: 'success', data: 'grok-acp',
       });
-      if (body.procedure.method === 'sendUserMessage') return Response.json({
+      if (body.procedure.method === 'sendUserMessageReceipt') return Response.json({
         code: 0, msg: 'success', data: {
           message: { messageId: 'message-1', sessionId: 's1', sourceAgentId: 'main', sourceTaskName: 'user',
-            senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child', content: 'next step',
+            senderKind: 'user', targetAgentId: 'child', targetTaskName: 'child',
             acceptedAt: 1, targetSeq: 1 },
           deduplicated: false, delivery: 'delivered', payloadConflict: false,
         },
@@ -327,7 +326,7 @@ describe('KikiClient.sendAgentMessage', () => {
     expect(receipt).toMatchObject({ delivery: 'delivered', deduplicated: false, payloadConflict: false });
     expect(receipt?.message).toMatchObject({ messageId: 'message-1', targetAgentId: 'child', senderKind: 'user' });
     expect(calls.map((call) => [call.service, call.method])).toEqual([
-      ['sessionMetadata', 'read'], ['agentCollaborationMessagingService', 'sendUserMessage'],
+      ['sessionMetadata', 'getAgentExecutor'], ['agentCollaborationMessagingService', 'sendUserMessageReceipt'],
     ]);
     expect(calls[1]?.params[0]).toEqual({ targetAgentId: 'child', content: 'next step',
       idempotencyKey: 'submission-1' });
@@ -335,7 +334,8 @@ describe('KikiClient.sendAgentMessage', () => {
       { type: 'text', text: 'next step' },
       { type: 'file', file_id: 'file-1', name: 'file.txt', media_type: 'text/plain', size: 1 },
     ], 'submission-2')).rejects.toThrow('External agent messages support text only');
-    expect(calls.map((call) => call.method)).toEqual(['read', 'sendUserMessage', 'read']);
+    expect(calls.map((call) => call.method)).toEqual(['getAgentExecutor', 'sendUserMessageReceipt', 'getAgentExecutor']);
+    expect(calls[0]?.params).toEqual(['child']);
   });
 
   it('retains the prompt route and attachments for a native child', async () => {
@@ -347,8 +347,7 @@ describe('KikiClient.sendAgentMessage', () => {
       const resumed = resumeResponse(url, init);
       if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
-        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
-          agents: { child: { type: 'sub', executor: 'native' } } },
+        code: 0, msg: 'success', data: 'native',
       });
       const body = JSON.parse(init?.body as string);
       expect(body).toMatchObject({ agent_id: 'child', content });
@@ -362,7 +361,7 @@ describe('KikiClient.sendAgentMessage', () => {
       .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
     // Attachments retain the ordinary prompt route and have no replay guarantee.
     expect(receipt).toBeNull();
-    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts']);
+    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true']);
   });
 
   it('sends one native child text key to the prompt route and treats replay as a prompt, not a mailbox delivery', async () => {
@@ -373,10 +372,9 @@ describe('KikiClient.sendAgentMessage', () => {
       const resumed = resumeResponse(url, init);
       if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
-        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
-          agents: { child: { type: 'sub', executor: 'native' } } },
+        code: 0, msg: 'success', data: 'native',
       });
-      expect(String(url)).toBe('http://127.0.0.1:8080/api/sessions/s1/prompts');
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true');
       const body = JSON.parse(init?.body as string) as Record<string, unknown>;
       requests.push(body);
       const key = body['prompt_id'] as string;
@@ -420,8 +418,7 @@ describe('KikiClient.sendAgentMessage', () => {
         const resumed = resumeResponse(url, init);
         if (resumed !== undefined) return resumed;
         if (String(url).endsWith('/api/klient/call')) return Response.json({
-          code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false,
-            agents: { child: { type: 'sub', executor: 'native' } } },
+          code: 0, msg: 'success', data: 'native',
         });
         expect(new URL(url).pathname).toBe('/api/sessions/s1/prompts');
         const body = JSON.parse(init?.body as string);
@@ -450,7 +447,7 @@ describe('KikiClient.sendAgentMessage', () => {
       const resumed = resumeResponse(url, init);
       if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
-        code: 0, msg: 'success', data: { id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} },
+        code: 0, msg: 'success', data: null,
       });
       const body = JSON.parse(init?.body as string);
       expect(body).toEqual({ agent_id: 'main', content: [{ type: 'text', text: 'main message' }] });

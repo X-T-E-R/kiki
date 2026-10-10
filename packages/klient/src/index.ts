@@ -120,6 +120,7 @@ export type {
   PromptLaunchResult,
   PromptWithSkillsInput,
   PromptWithSkillsResult,
+  SkillActivationResult,
   SetModelResult,
   ShellCommandResult,
   ThinkingLevel,
