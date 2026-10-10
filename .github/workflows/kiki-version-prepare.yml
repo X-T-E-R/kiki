@@ -326,6 +326,10 @@ jobs:
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/session/sessionController.test.ts', '-t', 'changes only user queue positions|restores an evicted history preview|settles failed and cancelled history preview', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/protocol', 'exec', 'vitest', 'run', 'src/__tests__/session.test.ts', '-t', 'sessionCreateSchema', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/NewSessionDraft.test.ts', '-t', 'buildNewSessionCreate', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/lib/client.test.ts', '-t', 'KikiClient profile file preview', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/klient', 'exec', 'vitest', 'run', 'test/session-view-detail.test.ts', '-t', 'aborts a paged canonical preview request', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/protocol', 'exec', 'vitest', 'run', 'src/__tests__/rest-session.test.ts', 'src/__tests__/events.test.ts', '-t', 'compactSessionResponseSchema|compaction progress payloads', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/settings/settings.test.ts', '-t', 'defaults reading to unlimited', '--maxWorkers=1', '--no-file-parallelism')
           $env:KIKI_BUILT_IN_CATALOG_FILE = Join-Path $env:RUNNER_TEMP 'kiki-built-in-catalog.json'
           Invoke-CandidateCommand 'node' @('apps/kimi-code/scripts/update-catalog.mjs', '--out', $env:KIKI_BUILT_IN_CATALOG_FILE)
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'build:native:release')
