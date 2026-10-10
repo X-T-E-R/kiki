@@ -7,6 +7,7 @@ export * from './request-id';
 export * from './events';
 export * from './executor-events';
 export * from './executorPrompt';
+export * from './execution';
 export * from './display';
 export * from './ws-control';
 export * from './asyncapi';

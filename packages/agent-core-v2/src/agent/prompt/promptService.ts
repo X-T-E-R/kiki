@@ -1995,7 +1995,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (execution.modelSwitchMode !== undefined && (promptId === undefined || this.switchEngine.get(`prompt:${promptId}`)?.state !== 'completed')) return true;
     if (execution.afterModelSwitch !== undefined && this.isDependencyReady(execution)) execution = this.resolveExecutionBinding(execution)!;
     const profile = this.profile.data();
-    return (execution.profile !== undefined && execution.profile !== profile.profileName) ||
+    return execution.execution !== undefined || (execution.profile !== undefined && execution.profile !== profile.profileName) ||
       (execution.model !== undefined && execution.model !== profile.modelAlias) ||
       (execution.thinking !== undefined && execution.thinking !== profile.thinkingLevel) ||
       (execution.permissionMode !== undefined && execution.permissionMode !== this.permissionMode.mode) ||

@@ -34,6 +34,8 @@
  */
 
 import { z } from 'zod';
+import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
+import { executionSelectionSchema } from '../execution';
 
 import { messageContentSchema } from '../message';
 import { isoDateTimeSchema } from '../time';
@@ -65,6 +67,7 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
+  execution: executionSelectionSchema.optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
@@ -98,6 +101,7 @@ export const promptSubmissionSchema = z.object({
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 
 export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
+  execution: true,
   profile: true,
   model: true,
   thinking: true,
@@ -113,6 +117,7 @@ export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
+  runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
   status: promptStatusSchema,

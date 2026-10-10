@@ -1,7 +1,7 @@
 import type { TranscriptFact } from './reducer';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
-import { todoNotesUpdateSchema, transcriptTaskSchema } from '../contract/schema';
+import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
 import { projectInteractionEndState, type TranscriptInteraction } from '../model/interaction';
@@ -445,8 +445,10 @@ export class TranscriptWireAdapter {
         this.#hiddenPromptIds.add(promptId);
         return [];
       }
+      const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
       const prompt: TranscriptPrompt = {
         promptId,
+        runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
         status: 'queued',
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
