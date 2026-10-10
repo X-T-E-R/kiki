@@ -161,6 +161,23 @@ describe('resolveModelAlias', () => {
 });
 
 describe('SDK config TOML', () => {
+  it('round-trips native multiline cognition and clears a former file slot without resurrecting raw references', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[models.example]\nprovider="example"\nmodel="remote-example"\nmax_context_size=8192\n[models.example.cognition]\noverlay="cognition/author.md"\nsteering="cognition/old.md"\nindependent="off"\n');
+    const model = config.models!['example']!;
+    const text = '  完整正文\nSecond line\n\n';
+    model.cognition = { overlay: { text }, anchor: { text: '' }, main: 'same', independent: 'off', overlayMode: 'prepend' };
+    await writeConfigFile(path, config);
+    const cold = readConfigFile(path);
+    expect(cold.models?.['example']?.cognition).toEqual(model.cognition);
+    expect(cold.models?.['example']?.cognition?.steering).toBeUndefined();
+    const saved = await readFile(path, 'utf8');
+    expect(saved).not.toContain('cognition/author.md');
+    expect(saved).not.toContain('cognition/old.md');
+    expect(saved).toContain('overlay_mode');
+    expect(() => parseConfigString('[models.example]\nprovider="example"\nmodel="remote"\nmax_context_size=8192\n[models.example.cognition]\noverlay={text=42}\n')).toThrow();
+  });
+
   it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('round-trips model protocol %s without changing its provider', async (protocol) => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);

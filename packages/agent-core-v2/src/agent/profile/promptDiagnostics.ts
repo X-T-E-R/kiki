@@ -4,7 +4,7 @@ import type { PromptOverrides, PromptOverrideSource } from '@kiki/agent-profiles
 import type { AgentPromptChannel } from '@kiki/protocol';
 import type { ResolvedPromptFieldOverrides } from '#/app/promptField/promptFieldRegistry';
 import type { CognitionConfig } from '#/kosong/model/model';
-import { cognitionPathRefs } from '#/agent/cognition/cognitionFiles';
+import { cognitionPathRefs, hasCognitionContent, isCognitionInline } from '#/agent/cognition/cognitionFiles';
 import { selectCognitionConfig } from '#/agent/cognition/cognitionConfig';
 import type { DelegationPosition } from './delegationContext';
 
@@ -50,7 +50,7 @@ export function promptConfigurationChannels(input: {
     }
   }
   const selectedCognition = selectCognitionConfig(input.cognition, position);
-  const cognitionReplaces = selectedCognition?.overlayMode === 'replace' && cognitionPathRefs(selectedCognition.overlay).length > 0;
+  const cognitionReplaces = selectedCognition?.overlayMode === 'replace' && hasCognitionContent(selectedCognition.overlay);
   const promptLayers = modelPromptLayers(profile);
   if (input.leaseMode === 'replace') for (const [order, layer] of (profile.modelPromptBase ?? []).entries()) {
     const entry = resolveModelProfileEntry(layer.entries, alias, input.resolveId);
@@ -82,26 +82,29 @@ export function promptConfigurationChannels(input: {
   }
   for (const slot of ['overlay', 'steering', 'anchor'] as const) {
     const branch = position === 'sub' ? undefined : input.cognition?.[position];
-    const selectedRefs = cognitionPathRefs(selectedCognition?.[slot]);
+    const hasContent = hasCognitionContent(selectedCognition?.[slot]);
+    const sources = (value: import('#/kosong/model/model').CognitionSlotContent | undefined): AgentPromptChannel['sources'] => isCognitionInline(value)
+      ? [{ surface: 'model-cognition', kind: 'inline', order: 0 }]
+      : cognitionPathRefs(value).map((path, order) => ({ surface: 'model-cognition', kind: 'file', path, order }));
     const supported = (profile.executor ?? 'native') === 'native';
     channels.push({
       id: `cognition.${slot}`, channel: `cognition_${slot}`,
-      state: !supported ? 'unsupported' : selectedRefs.length === 0 ? 'inactive' : 'effective',
+      state: !supported ? 'unsupported' : hasContent ? 'effective' : 'inactive',
       selection: branch === 'off' ? 'off' : typeof branch === 'object' ? position === 'sub' ? 'common' : position : 'common',
       reason: !supported ? 'The current executor does not support native cognition.'
         : branch === 'off' ? `Cognition is off for ${position}.`
-        : selectedRefs.length === 0 ? 'No file is configured in the selected cognition configuration.'
+        : !hasContent ? 'No content is configured in the selected cognition configuration.'
         : slot === 'anchor' ? 'Within this window, anchor replaces the complete request system prompt, including identity, delegation and shared fields.'
         : slot === 'steering' ? 'Sent as a user message after the task prompt on each new turn.'
         : selectedCognition?.overlayMode === 'replace' ? 'Replaces the role system body; delegation and shared fields are still assembled separately.' : undefined,
-      sources: selectedRefs.map((path, order) => ({ surface: 'model-cognition', kind: 'file', path, order })),
-      anchor_steps: slot === 'anchor' && selectedRefs.length > 0 ? selectedCognition?.anchorSteps ?? 1 : undefined,
-      anchor_scope: slot === 'anchor' && selectedRefs.length > 0 ? selectedCognition?.anchorScope ?? 'session' : undefined,
+      sources: sources(selectedCognition?.[slot]),
+      anchor_steps: slot === 'anchor' && hasContent ? selectedCognition?.anchorSteps ?? 1 : undefined,
+      anchor_scope: slot === 'anchor' && hasContent ? selectedCognition?.anchorScope ?? 'session' : undefined,
     });
-    if (branch !== undefined && branch !== 'same' && cognitionPathRefs(input.cognition?.[slot]).length > 0) channels.push({
+    if (branch !== undefined && branch !== 'same' && hasCognitionContent(input.cognition?.[slot])) channels.push({
       id: `cognition.${slot}:common`, channel: `cognition_${slot}`, state: 'inactive', selection: 'common',
-      reason: `The common cognition configuration is not selected for ${position} and its files were not read.`,
-      sources: cognitionPathRefs(input.cognition?.[slot]).map((path, order) => ({ surface: 'model-cognition', kind: 'file', path, order })),
+      reason: `The common cognition configuration is not selected for ${position} and was not read.`,
+      sources: sources(input.cognition?.[slot]),
     });
   }
   const recipe = input.recipe;

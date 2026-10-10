@@ -234,7 +234,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
 | `prompt_overrides` | `table` | No | Prompt field overrides for this model alias, with optional `files` and `fields`; see [`prompt`](#prompt) |
-| `cognition` | `table` | No | Per-alias prompt files that condition this model → [Model cognition](#model-cognition) |
+| `cognition` | `table` | No | Per-alias prompt bodies or file references that condition this model → [Model cognition](#model-cognition) |
 
 When an alias contains `.`, use a quoted key:
 
@@ -309,21 +309,40 @@ You can also switch models temporarily without touching the config file — by s
 
 ### Model cognition
 
-`[models."<alias>".cognition]` attaches prompt files to a single model alias, so a model that needs different conditioning (extra instructions shaping how it reasons) than the rest of your catalog gets it without touching any agent profile. File text is read and saved when the model binds; later injections reuse that snapshot rather than rereading edits on disk. No default text ships with the CLI, and nothing is injected unless you declare a file.
+`[models."<alias>".cognition]` attaches prompt text to a single model alias without changing an agent profile. Each text slot accepts `{ text = "..." }` for a complete body stored with the model, or a relative Markdown path or path array for author-managed files. Text is saved when the model binds; later injections reuse that snapshot rather than rereading edits on disk. No default body is injected when a slot is unset.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `overlay` | `string` or `array<string>` | — | File(s) merged into the bound model's system prompt. Multiple paths are joined with a blank line in declaration order |
+| `overlay` | `{text: string}`, `string` or `array<string>` | — | Body merged into the bound model's system prompt. Multiple file paths are joined with a blank line in declaration order |
 | `overlay_mode` | `string` | `append` | How `overlay` combines with the profile's prompt: `append`, `prepend`, `wrap`, `persona`, or `replace` |
-| `steering` | `string` or `array<string>` | — | File(s) injected as an ordinary user message at the enabled steering triggers |
+| `steering` | `{text: string}`, `string` or `array<string>` | — | Body injected as an ordinary user message at the enabled steering triggers |
 | `steering_on_turn` | `boolean` | `true` | Inject on every new turn and after compaction re-arms the context |
 | `steering_on_input` | `boolean` | `true` | Inject after newly accepted human input, including in-turn Send now corrections |
 | `steering_interval_steps` | `integer` | `0` | Repeat every N model steps of this agent; nonnegative, with `0` disabling periodic steering |
-| `anchor` | `string` or `array<string>` | — | File(s) used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
+| `anchor` | `{text: string}`, `string` or `array<string>` | — | Body used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
 
-Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
+Inline bodies preserve the complete text, including line breaks and surrounding whitespace. `{ text = "" }` retains an explicitly empty declaration without injecting text or replacing the prompt with an empty anchor; removing the slot clears its declaration. `main` and `independent` accept `"same"`, `"off"`, or a whole cognition object. An omitted branch or `"same"` selects common; `"off"` disables this declaration for that branch; a custom object does not fill missing slots from common. Subagents use common.
+
+For a client integration, read the model before editing and save against its revision (the version you read):
+
+```ts
+const baseline = await klient.global.kosong.readModel('example-model');
+await klient.global.kosong.updateModel(baseline.id, {
+  base_revision: baseline.revision,
+  cognition: {
+    ...baseline.cognition,
+    overlay: { text: 'Plan first.\nThen carry out the plan.' },
+  },
+});
+```
+
+Writes to `cognition` or `prompt_overrides`, including clearing them with `null`, require `base_revision`. These are whole-object writes: keep the baseline's unchanged slots, branch choices, modes, and cadence. On `model_catalog.revision_conflict`, keep the draft, reread the model, and merge your edit before retrying.
+
+`cognition_bodies` returns the saved manual bodies and their sources for common, main, and independent; it is not the final combined prompt after Recipe or profile overrides. File-backed slots include each referenced file's complete text in declaration order, plus the runtime's trimmed, blank-line-joined body. `source_read_only: true` protects the author files, not the ability to save a model-local body; if reading fails or a slot's files exceed the 2 MiB editor-read limit, the slot reports an error and `writable: false` rather than an empty body.
+
+Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset. Reading the model does not alter these files. Explicitly saving an edited file-backed slot as `{text}` stores a body in the model instead, leaving the original files unchanged; restore their original path references to use them again. Existing sessions keep their frozen text until an explicit context rebuild or model change.
 
 The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your prompt as an ordinary user message — not a `<system-reminder>`. By default it is appended on every new turn and after compaction re-arms the context. This turn trigger includes retries, peer-triggered turns, and autonomous wake-ups, not just human input; `steering_on_turn = false` disables it.
 
@@ -347,7 +366,7 @@ The text and trigger settings are saved together at binding and remain frozen on
 
 Anchoring is a per-request substitution, not a rewrite of the stored prompt. For the first `anchor_steps` requests of an anchored turn the model receives the `anchor` text as its entire system prompt; from the next step onward it receives the normal prompt, overlay included, for the rest of the session. Reach for it when a long profile prompt crowds out the conditioning you want at the moment the model plans, and the full prompt only matters once it starts calling tools. A system prompt passed explicitly by a caller is never replaced.
 
-Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through its own `model_alias`, whether pinned or dispatched — gets the same overlay, steering, and anchor. Switching aliases mid-session re-renders the overlay for the newly bound model.
+Cognition binds to the alias rather than to the main agent. A subagent that binds that alias — through its own `model_alias`, whether pinned or dispatched — uses its common cognition; main and independent agents use their selected identity branch. Switching aliases mid-session re-renders the overlay for the newly bound model.
 
 The example below conditions a DeepSeek V4 model whose default habit is to narrate execution step by step instead of planning first. It pairs a short `anchor` — a thin persona that stands in for the profile prompt while the model plans — with `steering` that asks for a plan before action:
 

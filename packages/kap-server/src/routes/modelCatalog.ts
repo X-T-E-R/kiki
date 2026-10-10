@@ -254,7 +254,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         ...revisionConflictErrors,
       },
       description:
-        'Partially update one model: only the listed fields change, every other stored field (including ones this client does not know) is preserved. `null` clears a field. Send `base_revision` from a previous read to get a structured 40941 conflict instead of overwriting a concurrent edit.',
+        'Partially update one model: only the listed fields change, every other stored field (including ones this client does not know) is preserved. `null` clears a field. Writing or clearing `cognition` or `prompt_overrides` requires `base_revision` from a previous read. A stale revision returns a structured 40941 conflict without overwriting a concurrent edit.',
       tags: ['models'],
       operationId: 'patchModel',
     },

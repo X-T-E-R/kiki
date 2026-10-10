@@ -234,7 +234,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
 | `prompt_overrides` | `table` | 否 | 该模型 alias 的提示词字段覆写，可含 `files` 与 `fields`；详见 [`prompt`](#prompt) |
-| `cognition` | `table` | 否 | 挂到该模型别名上的提示词文件 → [模型认知](#模型认知) |
+| `cognition` | `table` | 否 | 挂到该模型别名上的提示词正文或文件引用 → [模型认知](#模型认知) |
 
 别名中含 `.` 时需要加引号：
 
@@ -307,21 +307,40 @@ display_name = "Kimi for Coding (custom)"
 
 ### 模型认知
 
-`[models."<alias>".cognition]` 把提示词文件挂到单个模型别名上，这样 catalog 里某个需要不同调节（用来塑造推理方式的额外指令）的模型就能单独拿到，而不必改任何 Agent profile。文件正文在模型绑定时读取并保存，之后的注入复用这份快照，不会重新读取磁盘上的修改。CLI 不附带任何默认正文，未声明文件时也不会注入任何内容。
+`[models."<alias>".cognition]` 把提示词正文挂到单个模型别名上，不必修改 Agent profile。每个正文槽接受 `{ text = "..." }`，把完整正文与模型一起保存；也可引用相对 Markdown 路径或路径数组，由作者管理原文件。正文在模型绑定时读取并保存，之后的注入复用这份快照，不会重新读取磁盘上的修改。未设置的槽不会注入默认正文。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `overlay` | `string` 或 `array<string>` | — | 合并进所绑定模型系统提示词的文件。多条路径按声明顺序以空行拼接 |
+| `overlay` | `{text: string}`、`string` 或 `array<string>` | — | 合并进所绑定模型系统提示词的正文。多条文件路径按声明顺序以空行拼接 |
 | `overlay_mode` | `string` | `append` | `overlay` 与 profile 提示词的组合方式：`append`、`prepend`、`wrap`、`persona` 或 `replace` |
-| `steering` | `string` 或 `array<string>` | — | 在启用的 steering 触发时机作为普通 User 消息注入的文件 |
+| `steering` | `{text: string}`、`string` 或 `array<string>` | — | 在启用的 steering 触发时机作为普通 User 消息注入的正文 |
 | `steering_on_turn` | `boolean` | `true` | 在每个新轮次及压缩后重新装填上下文时注入 |
 | `steering_on_input` | `boolean` | `true` | 在新接纳的人类输入后注入，包括轮内「立即发送」的纠偏 |
 | `steering_interval_steps` | `integer` | `0` | 每隔本 Agent 的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
-| `anchor` | `string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的文件，会替换 profile 提示词以及任何 `overlay` |
+| `anchor` | `{text: string}`、`string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的正文，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
 
-路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径——写错路径会让会话停下来，而不是静默送出未经调节的提示词。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。
+内联正文保留完整文本，包括换行与首尾空白。`{ text = "" }` 保留显式空声明，但不注入文本，也不会用空 anchor 替换提示词；移除槽才清除该声明。`main` 与 `independent` 接受 `"same"`、`"off"` 或一份完整 cognition 对象。省略分支或 `"same"` 采用共享；`"off"` 关闭该分支上的这份声明；自定义对象缺失的槽不会从共享补齐。普通子 Agent 采用共享。
+
+集成客户端时，先读取模型，再带上读取时的 revision（版本）保存：
+
+```ts
+const baseline = await klient.global.kosong.readModel('example-model');
+await klient.global.kosong.updateModel(baseline.id, {
+  base_revision: baseline.revision,
+  cognition: {
+    ...baseline.cognition,
+    overlay: { text: 'Plan first.\nThen carry out the plan.' },
+  },
+});
+```
+
+写入 `cognition` 或 `prompt_overrides`（包括用 `null` 清除）必须带 `base_revision`。两者均整对象写入：保留 baseline 中未改的槽、分支选择、模式和注入节奏。遇到 `model_catalog.revision_conflict` 时保留草稿，重新读取模型，合并编辑后再试。
+
+`cognition_bodies` 返回共享、main、independent 已保存的手调正文与来源，不是 Recipe 或 profile 覆盖后的最终合成提示词。文件槽按声明顺序返回每个引用文件的完整原文，以及运行时裁去首尾空白、以空行拼接的正文。`source_read_only: true` 保护作者文件，不妨碍另存为模型正文；读取失败或该槽文件超过 2 MiB 编辑读取上限时，槽会返回错误及 `writable: false`，不会冒充空正文。
+
+路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。读取模型不改变这些文件。明确把编辑后的文件槽保存为 `{text}` 时，正文改存到模型中，原文件保持不变；要再次使用原文件，恢复原路径引用即可。已有会话保留冻结正文，直到显式重建上下文或换模。
 
 三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在你的提示词之后注入，不包装成 `<system-reminder>`。默认在每个新轮次及压缩后重新装填上下文时追加；这个轮次触发也包括重试、peer 消息触发的轮次和自主唤醒，不只限于人类输入，设置 `steering_on_turn = false` 可关闭它。
 
@@ -345,7 +364,7 @@ display_name = "Kimi for Coding (custom)"
 
 锚定是按请求替换，而不是改写已存储的提示词。被锚定的一轮里，前 `anchor_steps` 次请求会把 `anchor` 正文当作完整系统提示词发给模型；从下一步起直到会话结束，模型收到的是含 overlay 在内的常规提示词。适合用在这种场景：冗长的 profile 提示词挤掉了你希望模型在规划当下看到的调节内容，而完整提示词只在它开始工具调用之后才重要。调用方显式传入的系统提示词永远不会被替换。
 
-模型认知绑定在别名上，而不是主 Agent 上，因此绑到同一别名的子 Agent（无论该别名来自 profile pin 还是派发参数）都会拿到同一套 overlay、steering 和 anchor。会话中途切换别名会为新绑定的模型重新渲染 overlay。
+模型认知绑定在别名上，而不是主 Agent 上。绑到该别名的普通子 Agent（无论该别名来自 profile pin 还是派发参数）采用其共享 cognition；main 与 independent Agent 采用各自选中的身份分支。会话中途切换别名会为新绑定的模型重新渲染 overlay。
 
 下面的例子给一个 DeepSeek V4 模型做调节：它默认习惯逐步叙述执行过程，而不是先规划。短 `anchor` 是一层精简 persona，在模型规划时顶替 profile 提示词；再配上要求先规划再行动的 `steering`：
 

@@ -47,12 +47,13 @@ export interface ModelOverride extends ModelParameterDefaults {
   offEffort?: string;
 }
 
-export type CognitionPathRef = string | string[];
+export type CognitionPathRef = string | readonly string[];
+export type CognitionSlotContent = CognitionPathRef | { text: string };
 
 export interface CognitionContent {
-  overlay?: CognitionPathRef;
-  steering?: CognitionPathRef;
-  anchor?: CognitionPathRef;
+  overlay?: CognitionSlotContent;
+  steering?: CognitionSlotContent;
+  anchor?: CognitionSlotContent;
   overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
   anchorSteps?: number;
   anchorScope?: 'session' | 'turn';

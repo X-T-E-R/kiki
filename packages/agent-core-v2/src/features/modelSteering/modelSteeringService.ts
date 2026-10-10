@@ -4,7 +4,7 @@ import {
   type ContextInjectionContent,
   type ContextInjectionContext,
 } from '#/agent/contextInjector/contextInjector';
-import { cognitionPathRefs, readCognitionSlot } from '#/agent/cognition/cognitionFiles';
+import { readCognitionContent } from '#/agent/cognition/cognitionFiles';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -74,11 +74,11 @@ export class AgentModelSteeringService extends Disposable implements IAgentModel
     const onInput = (binding.config?.steeringOnInput ?? true) && this.hasNewHumanInput(lastInjectedAt);
     const onInterval = this.inStep && interval > 0 && this.stepOrdinal - this.lastInjectionStep >= interval;
     if (!onTurn && !onInput && !onInterval) return undefined;
-    const text = binding.slots === undefined ? await readCognitionSlot(
+    const text = binding.slots === undefined ? await readCognitionContent(
       this.fs,
       this.bootstrap.homeDir,
       'steering',
-      cognitionPathRefs(binding.config?.steering),
+      binding.config?.steering,
       this.hostEnv.pathClass,
     ) : binding.slots.steering;
     if (text === undefined || text.trim().length === 0) return undefined;

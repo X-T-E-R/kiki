@@ -302,7 +302,20 @@ export type ModelIssue = z.infer<typeof modelIssueSchema>;
  * Advanced per-model fields that already exist in `[models.<alias>]`. The wire
  * uses snake_case; `overrides` keys are the same snake_case model fields.
  */
-const cognitionPathRefSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+export const cognitionInlineTextSchema = z.object({ text: z.string().max(2_097_152) }).strict();
+const cognitionPathSchema = z.string().min(1).refine((ref) => {
+  const path = ref.trim().replaceAll('\\', '/');
+  if (path.length === 0 || path.includes('\0') || path.startsWith('/') || /^[a-z]:/iu.test(path)) return false;
+  let depth = 0;
+  for (const part of path.split('/')) {
+    if (part === '..') depth--;
+    else if (part !== '' && part !== '.') depth++;
+    if (depth < 0) return false;
+  }
+  return true;
+}, { message: 'Cognition paths must stay inside the Kiki home directory' });
+export const cognitionSlotSchema = z.union([cognitionInlineTextSchema, cognitionPathSchema, z.array(cognitionPathSchema).min(1)]);
+const cognitionPathRefSchema = cognitionSlotSchema;
 const modelCognitionContentSchema = z
   .object({
     overlay: cognitionPathRefSchema.optional(),
@@ -332,6 +345,25 @@ export const modelCognitionSchema = modelCognitionContentSchema.extend({
   }
 });
 export type ModelCognitionWire = z.infer<typeof modelCognitionSchema>;
+const modelCognitionBodySchema = z.object({
+  channel: z.enum(['cognition_overlay', 'cognition_steering', 'cognition_anchor']),
+  source: z.enum(['inline', 'files', 'unset']),
+  text: z.string().optional(),
+  files: z.array(z.object({ path: z.string(), text: z.string() })).optional(),
+  writable: z.boolean(),
+  source_read_only: z.boolean(),
+  error: z.string().optional(),
+});
+const modelCognitionBodyBranchSchema = z.object({
+  selection: z.enum(['common', 'custom', 'off']),
+  source_scope: z.enum(['common', 'main', 'independent']),
+  slots: z.object({ overlay: modelCognitionBodySchema, steering: modelCognitionBodySchema, anchor: modelCognitionBodySchema }),
+});
+export const modelCognitionBodiesSchema = z.object({
+  revision: z.string().min(1),
+  branches: z.object({ common: modelCognitionBodyBranchSchema, main: modelCognitionBodyBranchSchema, independent: modelCognitionBodyBranchSchema }),
+});
+export type ModelCognitionBodies = z.infer<typeof modelCognitionBodiesSchema>;
 const modelPromptOverrideContentSchema = z.object({
   files: z.array(z.string().trim().min(1)).optional(),
   fields: z.record(z.string(), z.string()).optional(),
@@ -393,6 +425,7 @@ export const modelEntitySchema = z.object({
   recipe: z.string().min(1).optional(),
   recipe_model_binding: recipeModelBindingSchema.optional(),
   cognition: modelCognitionSchema.optional(),
+  cognition_bodies: modelCognitionBodiesSchema.optional(),
   prompt_overrides: modelPromptOverridesSchema.optional(),
   overrides: modelOverridesSchema.optional(),
   protocol: modelProtocolSchema.optional(),
@@ -408,7 +441,8 @@ export type ModelEntity = z.infer<typeof modelEntitySchema>;
  * including fields this client version does not know about — is preserved
  * verbatim. `null` explicitly clears a field, `undefined`/absent leaves it
  * untouched, so "not sent" can never destroy stored data. `remote_id` is
- * identity, not a value to clear.
+ * identity, not a value to clear. Writing or clearing `cognition` or
+ * `prompt_overrides` requires `base_revision` from the model read.
  */
 export const patchModelRequestSchema = z
   .object({
@@ -441,7 +475,11 @@ export const patchModelRequestSchema = z
     prompt_overrides: modelPromptOverridesSchema.nullable().optional(),
     overrides: modelOverridesSchema.nullable().optional(),
   })
-  .strict();
+  .strict().superRefine((value, ctx) => {
+    if ((value.cognition !== undefined || value.prompt_overrides !== undefined) && value.base_revision === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['base_revision'], message: 'Model prompt edits require base_revision' });
+    }
+  });
 export type PatchModelRequest = z.infer<typeof patchModelRequestSchema>;
 
 /**

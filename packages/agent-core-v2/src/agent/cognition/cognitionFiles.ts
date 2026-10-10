@@ -1,6 +1,6 @@
 import { isAbsolute, join, normalize } from 'pathe';
 
-import type { CognitionConfig, CognitionPathRef } from '#/kosong/model/model';
+import type { CognitionConfig, CognitionSlotContent } from '#/kosong/model/model';
 import type { PathClass } from '#/os/interface/hostEnvironment';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { isWithinDirectory } from '#/tool/path-access';
@@ -21,9 +21,28 @@ export class CognitionFileError extends Error {
   }
 }
 
-export function cognitionPathRefs(value: CognitionPathRef | undefined): string[] {
-  if (value === undefined) return [];
+export function cognitionPathRefs(value: CognitionSlotContent | undefined): string[] {
+  if (value === undefined || isCognitionInline(value)) return [];
   return typeof value === 'string' ? [value] : [...value];
+}
+
+export function isCognitionInline(value: CognitionSlotContent | undefined): value is { text: string } {
+  return value !== undefined && typeof value === 'object' && 'text' in value;
+}
+
+export function hasCognitionContent(value: CognitionSlotContent | undefined): boolean {
+  return isCognitionInline(value) ? value.text.length > 0 : cognitionPathRefs(value).length > 0;
+}
+
+export async function readCognitionContent(
+  fs: IHostFileSystem,
+  homeDir: string,
+  slot: CognitionSlot,
+  value: CognitionSlotContent | undefined,
+  pathClass: PathClass,
+): Promise<string | undefined> {
+  if (isCognitionInline(value)) return value.text.length === 0 ? undefined : value.text;
+  return readCognitionSlot(fs, homeDir, slot, cognitionPathRefs(value), pathClass);
 }
 
 /** `cognition` helpers — resolves and loads `[models.<alias>.cognition]` files. Paths are relative to
@@ -72,8 +91,21 @@ export async function readCognitionSlot(
   refs: readonly string[],
   pathClass: PathClass,
 ): Promise<string | undefined> {
-  if (refs.length === 0) return undefined;
-  const pieces: string[] = [];
+  const files = await readCognitionFiles(fs, homeDir, slot, refs, pathClass);
+  const pieces = files.map((file) => file.text.trim()).filter((text) => text.length > 0);
+  return pieces.length === 0 ? undefined : pieces.join('\n\n');
+}
+
+export async function readCognitionFiles(
+  fs: IHostFileSystem,
+  homeDir: string,
+  slot: CognitionSlot,
+  refs: readonly string[],
+  pathClass: PathClass,
+  maxBytes?: number,
+): Promise<Array<{ path: string; text: string }>> {
+  const files: Array<{ path: string; text: string }> = [];
+  let size = 0;
   const home = normalize(homeDir);
   for (const ref of refs) {
     const lexical = resolveCognitionPath(homeDir, ref, pathClass, slot);
@@ -96,11 +128,16 @@ export async function readCognitionSlot(
         `cognition.${slot} path "${ref}" escapes the Kiki home directory`,
       );
     }
-    const text = (await fs.readText(real)).trim();
-    if (text.length > 0) pieces.push(text);
+    if (maxBytes !== undefined) {
+      const stat = await fs.stat(real);
+      if (!stat.isFile || size + stat.size > maxBytes) throw new Error(`cognition.${slot} exceeds the ${maxBytes} byte editor limit or is not a file`);
+    }
+    const text = await fs.readText(real, { errors: 'strict' });
+    size += Buffer.byteLength(text, 'utf8');
+    if (maxBytes !== undefined && size > maxBytes) throw new Error(`cognition.${slot} exceeds the ${maxBytes} byte editor limit`);
+    files.push({ path: ref, text });
   }
-  if (pieces.length === 0) return undefined;
-  return pieces.join('\n\n');
+  return files;
 }
 
 export type OverlayMode = 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
@@ -172,26 +209,8 @@ export async function loadCognitionSlots(
       `cognition.overlay_mode "${String(overlayMode)}" is not supported; use append, prepend, wrap, persona, or replace`,
     );
   }
-  const overlay = await readCognitionSlot(
-    fs,
-    homeDir,
-    'overlay',
-    cognitionPathRefs(cognition.overlay),
-    pathClass,
-  );
-  const steering = await readCognitionSlot(
-    fs,
-    homeDir,
-    'steering',
-    cognitionPathRefs(cognition.steering),
-    pathClass,
-  );
-  const anchor = await readCognitionSlot(
-    fs,
-    homeDir,
-    'anchor',
-    cognitionPathRefs(cognition.anchor),
-    pathClass,
-  );
+  const overlay = await readCognitionContent(fs, homeDir, 'overlay', cognition.overlay, pathClass);
+  const steering = await readCognitionContent(fs, homeDir, 'steering', cognition.steering, pathClass);
+  const anchor = await readCognitionContent(fs, homeDir, 'anchor', cognition.anchor, pathClass);
   return { overlay, steering, anchor };
 }

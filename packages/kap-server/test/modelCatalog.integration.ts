@@ -122,6 +122,38 @@ describe('server-v2 /api model/provider catalog', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('reads referenced complete bodies and explicitly saves inline through REST CAS without changing author files', async () => {
+    const { modelEntitySchema } = await import('@kiki/protocol');
+    const a = '  author A\n原文\n'; const b = 'author B\n';
+    await writeFile(join(home!, 'a.md'), a); await writeFile(join(home!, 'b.md'), b);
+    await boot(`${CATALOG_TOML}\n[models.k2.cognition]\noverlay=["a.md","b.md"]\nsteering={text="saved cue"}\nmain="same"\nindependent="off"\n`);
+    const path = '/api/models/k2';
+    const original = modelEntitySchema.parse((await getJson(path)).body.data);
+    expect(original.cognition_bodies?.branches.common.slots.overlay).toMatchObject({ channel: 'cognition_overlay', source: 'files', text: 'author A\n原文\n\nauthor B', files: [{ path: 'a.md', text: a }, { path: 'b.md', text: b }], writable: true, source_read_only: true });
+    const patch = async (body: unknown) => {
+      const response = await fetch(`${base}${path}`, { method: 'PATCH', headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify(body) } as never);
+      return await response.json() as Envelope<unknown>;
+    };
+    const text = '  user EDIT\n完整多行正文\n';
+    const saved = await patch({ base_revision: original.revision, cognition: { ...original.cognition, overlay: { text } } });
+    expect(saved.code).toBe(0);
+    const edited = modelEntitySchema.parse(saved.data);
+    expect(edited.cognition_bodies?.branches.main.slots.overlay).toMatchObject({ source: 'inline', text });
+    expect(edited.cognition?.steering).toEqual({ text: 'saved cue' });
+    expect(await readFile(join(home!, 'a.md'), 'utf8')).toBe(a); expect(await readFile(join(home!, 'b.md'), 'utf8')).toBe(b);
+    const committed = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect((await patch({ base_revision: original.revision, cognition: { overlay: { text: 'stale' } } })).code).not.toBe(0);
+    expect((await patch({ cognition: { overlay: { text: 'no revision' } } })).code).not.toBe(0);
+    expect((await patch({ base_revision: edited.revision, cognition: { overlay: '../outside.md' } })).code).not.toBe(0);
+    expect((await patch({ base_revision: edited.revision, cognition: { overlay: { text: 'invalid', file: '/outside' } } })).code).not.toBe(0);
+    expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(committed);
+    await server!.close(); server = undefined; await boot();
+    const reloaded = modelEntitySchema.parse((await getJson(path)).body.data);
+    expect(reloaded.cognition_bodies?.branches.common.slots.overlay.text).toBe(text);
+    expect(reloaded.cognition_bodies?.branches.independent.selection).toBe('off');
+    expect(await readFile(join(home!, 'a.md'), 'utf8')).toBe(a);
+  });
+
   it('isolates same-name and same-remote models by full entity id through read, save, runtime cache and restart', async () => {
     await boot(CATALOG_TOML);
     const firstId = 'kimi/shared-model';

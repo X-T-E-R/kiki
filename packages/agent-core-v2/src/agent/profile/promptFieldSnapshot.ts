@@ -3,7 +3,7 @@ import { modelPromptLayers, resolveModelProfileEntry } from '@kiki/agent-profile
 import { IConfigService } from '#/app/config/config';
 import { PROMPT_SECTION, type PromptConfig } from '#/app/prompt/configSection';
 import { IPromptFieldRegistry, type ResolvedPromptFieldOverrides } from '#/app/promptField/promptFieldRegistry';
-import { cognitionPathRefs } from '#/agent/cognition/cognitionFiles';
+import { hasCognitionContent } from '#/agent/cognition/cognitionFiles';
 import { selectCognitionConfig } from '#/agent/cognition/cognitionConfig';
 import { IModelService } from '#/kosong/model/model';
 import type { DelegationPosition } from './delegationContext';
@@ -49,7 +49,7 @@ export async function resolveProfilePromptFields(
   const customBody = profile.fileDefinition !== undefined || sourcePath?.endsWith('/SYSTEM.md') === true;
   const profileShadowsSystem = customBody && profile.systemPromptMode !== 'prepend' && profile.systemPromptMode !== 'append' && profile.systemPromptMode !== 'inherit';
   const cognition = recipe === undefined ? selectCognitionConfig(model?.cognition, position) : undefined;
-  const cognitionShadowsSystem = (profile.executor ?? 'native') === 'native' && cognition?.overlayMode === 'replace' && cognitionPathRefs(cognition.overlay).length > 0;
+  const cognitionShadowsSystem = (profile.executor ?? 'native') === 'native' && cognition?.overlayMode === 'replace' && hasCognitionContent(cognition.overlay);
   const intentOverride = fields.find((field) => field.id === 'system.intent_tool_use')?.value;
   const intentShadowsReplyStyle = intentOverride !== undefined && !intentOverride.includes('${reply_style_guide}');
   const projected = fields.map((field) =>

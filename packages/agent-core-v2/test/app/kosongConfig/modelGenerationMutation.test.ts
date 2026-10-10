@@ -20,6 +20,62 @@ import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
 
 describe('generation parameter entity mutations', () => {
+  it('saves complete native prompt bodies with one model CAS, cold reads, clears slots and preserves unrelated state', async () => {
+    const storage = new InMemoryStorageService();
+    const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', '[providers.edge]\ntype="openai"\n[models.fast]\nprovider="edge"\nmodel="remote-fast"\nmax_context_size=8192\n[models.fast.cognition]\noverlay="author.md"\nsteering_on_turn=false\nsteering_interval_steps=0\nmain="same"\nindependent="off"\n[models.fast.parameters]\ntemperature=0.2\n[models.sibling]\nprovider="edge"\nmodel="other"\n');
+    const host = () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog()); ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+      ix.stub(IFileSystemStorageService, storage); ix.stub(IAtomicTomlDocumentStore, store); ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry)); ix.set(IConfigService, new SyncDescriptor(ConfigService)); ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+      return ix;
+    };
+    const body = '  FIRST LINE\n第二行\n\nlast line\n';
+    let first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const original = await catalog.readModel('fast');
+      await expect(catalog.updateModel('fast', { cognition: { overlay: { text: body } } })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateModel('fast', { prompt_overrides: { fields: { 'system.shared': 'missing revision' } } })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateModel('fast', { prompt_overrides: null })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateModel('fast', { cognition: null })).rejects.toMatchObject({ code: 'config.invalid' });
+      const edited = await catalog.updateModel('fast', { base_revision: original.revision, cognition: { ...original.cognition, overlay: { text: body }, steering: { text: 'cue\nnext' }, anchor: { text: 'anchor\n正文' } }, prompt_overrides: { fields: { 'system.shared': 'shared\n正文' } } });
+      expect(edited.cognition?.overlay).toEqual({ text: body });
+      expect(edited.cognition_bodies?.revision).toBe(edited.revision);
+      expect(edited.cognition_bodies?.branches.main).toMatchObject({ selection: 'common', source_scope: 'common', slots: { overlay: { source: 'inline', text: body, writable: true, source_read_only: false } } });
+      expect(edited.cognition_bodies?.branches.independent).toMatchObject({ selection: 'off', slots: { overlay: { source: 'unset' } } });
+      expect(edited.cognition).toMatchObject({ steering_on_turn: false, steering_interval_steps: 0, main: 'same', independent: 'off' });
+      expect(edited.parameters).toEqual({ temperature: 0.2 });
+      await expect(catalog.updateModel('fast', { base_revision: original.revision, cognition: { overlay: { text: 'lost update' } } })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      await expect(catalog.updateModel('fast', { base_revision: original.revision, cognition: edited.cognition })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      await expect(catalog.updateModel('fast', { base_revision: original.revision, prompt_overrides: null })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      expect((await catalog.readModel('fast')).cognition?.overlay).toEqual({ text: body });
+      const before = await store.getText('', 'config.toml');
+      await expect(catalog.updateModel('fast', { base_revision: edited.revision, cognition: { overlay: '../outside.md' } })).rejects.toMatchObject({ code: 'config.invalid' });
+      expect(await store.getText('', 'config.toml')).toBe(before);
+      expect((await catalog.readModel('sibling')).remote_id).toBe('other');
+    } finally { await first.dispose(); }
+    first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const saved = await catalog.readModel('fast');
+      expect(saved.cognition?.overlay).toEqual({ text: body });
+      expect(saved.prompt_overrides?.fields?.['system.shared']).toBe('shared\n正文');
+      const empty = await catalog.updateModel('fast', { base_revision: saved.revision, cognition: { ...saved.cognition, overlay: { text: '' }, main: { steering: { text: 'main only' } } } });
+      expect(empty.cognition_bodies?.branches.common.slots.overlay.text).toBe('');
+      expect(empty.cognition_bodies?.branches.main).toMatchObject({ selection: 'custom', source_scope: 'main', slots: { overlay: { source: 'unset' }, steering: { text: 'main only' } } });
+      const { overlay: _removed, ...rest } = empty.cognition!;
+      const cleared = await catalog.updateModel('fast', { base_revision: empty.revision, cognition: rest });
+      expect(cleared.cognition?.overlay).toBeUndefined();
+      await first.get(IConfigService).reload();
+      expect((await catalog.readModel('fast')).cognition?.overlay).toBeUndefined();
+      const reset = await catalog.updateModel('fast', { base_revision: cleared.revision, cognition: null });
+      expect(reset.cognition).toBeUndefined();
+      expect(reset.prompt_overrides?.fields?.['system.shared']).toBe('shared\n正文');
+      expect(reset.parameters).toEqual({ temperature: 0.2 });
+    } finally { await first.dispose(); }
+  });
   it('persists model protocol overrides, clears to provider inheritance and preserves connection and usage identity', async () => {
     const storage = new InMemoryStorageService();
     const store = new TomlAtomicDocumentStore(storage);
