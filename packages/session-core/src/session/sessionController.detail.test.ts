@@ -442,3 +442,19 @@ describe('visible snapshot and attachment continuation', () => {
     controller.close();
   });
 });
+
+  it('does not append an oversized text; random visible ranges use a bounded reusable cache', async () => {
+    const source = { kind: 'task' as const, id: 'task-shell' };
+    const ref = { source, revision: 'big', path: ['outputTail'], kind: 'text' as const, offset: 3, total: 2_000_000 };
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>(async ({ ref }) => ({ ref, value: 'x'.repeat(32_766), next: { ...ref, offset: ref.offset + 32_766 }, contentRefs: [] }));
+    const { controller, deliver } = harness(undefined, content);
+    await controller.open(); deliver(resetEvent('main', emptySnapshot({ tasks: [{ ...shellTask('abc', false), contentRefs: [ref] }], items: windowed().items }), 2));
+    const lease = controller.beginContentRead('main', source, ['outputTail']);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(content).not.toHaveBeenCalled(); expect(shellOf(controller)?.output).toBe('abc');
+    expect(await controller.readContentRange('main', ref, 100_000)).toHaveLength(4096);
+    await controller.readContentRange('main', ref, 100_000);
+    expect(content).toHaveBeenCalledTimes(1);
+    expect(controller.contentMemoryReport().rangeBytes).toBe(8192);
+    lease.release(); controller.close();
+  });

@@ -280,6 +280,7 @@ export class SessionController {
   private contentPumpRunning = false;
   private readonly contentRanges = new Map<string, string>();
   private contentRangeBytes = 0;
+  private readonly rangeControllers = new Map<AbortController, string>();
   private readonly contentBodies = new Map<string, { agentId: string; source: ContentSource; base: ContentWindow; bytes: number }>();
   private readonly entityPageCursors = new Map<string, string | null>();
   private latestSnapshot: SessionSnapshotResponse | undefined;
@@ -1325,8 +1326,107 @@ export class SessionController {
     return start + index;
   }
 
+  async readContentRange(agentId: string, ref: ContentRef, offset: number, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
+    const key = JSON.stringify([agentId, ref.source, ref.path, ref.revision, offset]);
+    const cached = this.contentRanges.get(key);
+    if (cached !== undefined) { this.contentRanges.delete(key); this.contentRanges.set(key, cached); return cached; }
+    const read = this.view.transcript.content?.bind(this.view.transcript);
+    if (this.closed || read === undefined) throw new Error('Content reader unavailable');
+    const generation = this.historyGeneration.get(agentId) ?? 0;
+    const controller = new AbortController();
+    const cancel = () => { controller.abort(); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    this.snapshotControllers.add(controller);
+    this.rangeControllers.set(controller, agentId);
+    try {
+      const segment = await this.readPreparedContent(() => read.call(this.view.transcript, { agentId, ref: { ...ref, offset }, range: true }, { signal: controller.signal }), controller.signal);
+      controller.signal.throwIfAborted();
+      if (this.closed || (this.historyGeneration.get(agentId) ?? 0) !== generation || segment.ref.revision !== ref.revision || typeof segment.value !== 'string') throw new Error('Content range changed');
+      let start = offset - segment.ref.offset;
+      let end = Math.min(segment.value.length, offset + CONTENT_RANGE_CHARS - segment.ref.offset);
+      if (start > 0 && /[\uD800-\uDBFF]/u.test(segment.value[start - 1]!)) start += 1;
+      if (end < segment.value.length && /[\uD800-\uDBFF]/u.test(segment.value[end - 1]!)) end += 1;
+      const text = segment.value.slice(start, end);
+      const previous = this.contentRanges.get(key);
+      if (previous !== undefined) this.contentRangeBytes -= previous.length * 2;
+      this.contentRanges.set(key, text);
+      this.contentRangeBytes += text.length * 2;
+      while (this.contentRangeBytes > CONTENT_RANGE_CACHE_BYTES) {
+        const oldest = this.contentRanges.entries().next().value;
+        if (oldest === undefined) break;
+        this.contentRanges.delete(oldest[0]); this.contentRangeBytes -= oldest[1].length * 2;
+      }
+      return text;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      this.snapshotControllers.delete(controller);
+      this.rangeControllers.delete(controller);
+    }
+  }
+
   contentMemoryReport(): { bodies: number; bodyBytes: number; rangeBytes: number; bodyBudget: number; rangeBudget: number } {
     return { bodies: this.contentBodies.size, bodyBytes: [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0), rangeBytes: this.contentRangeBytes, bodyBudget: CONTENT_BODY_CACHE_BYTES, rangeBudget: CONTENT_RANGE_CACHE_BYTES };
+  }
+
+  incompleteTurnOrdinals(agentId: string): ReadonlySet<number> {
+    const turns = new Set<number>();
+    for (const item of this.composeAgentSnapshot(agentId).items) if (item.kind === 'turn' && (item.contentRefs?.length || item.steps.some((step) => step.frames.some((frame) => frame.contentRefs?.length)))) turns.add(item.ordinal);
+    return turns;
+  }
+
+  async completeTurnContent(agentId: string, ordinal: number, signal?: AbortSignal): Promise<void> {
+    let turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    if (turn?.kind !== 'turn') throw new Error('Search target is not loaded');
+    await this.completeContentRead(agentId, { kind: 'turn', id: turn.turnId }, ['steps', 'prompt'], signal);
+    turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    if (turn?.kind !== 'turn') return;
+    for (const step of turn.steps) for (const frame of step.frames) {
+      const roots = [...new Set((frame.contentRefs ?? []).map((ref) => String(ref.path[0])))];
+      if (roots.length) await this.completeContentRead(agentId, { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId }, roots, signal);
+    }
+  }
+
+  async findTurnContentRange(agentId: string, ordinal: number, pattern: RegExp, signal?: AbortSignal): Promise<{ ref: ContentRef; offset: number; toolCallId?: string } | undefined> {
+    await this.completeTurnContent(agentId, ordinal, signal);
+    const turn = this.composeAgentSnapshot(agentId).items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+    if (turn?.kind !== 'turn') throw new Error('Search target changed');
+    const fields = [
+      ...(turn.contentRefs ?? []).map((ref) => ({ ref, toolCallId: undefined as string | undefined })),
+      ...turn.steps.flatMap((step) => step.frames.flatMap((frame) => (frame.contentRefs ?? []).map((ref) => ({ ref, toolCallId: frame.kind === 'tool' ? frame.toolCallId : undefined })))),
+    ];
+    for (const { ref, toolCallId } of fields) {
+      if (ref.kind !== 'text') continue;
+      let tail = '';
+      for (let offset = 0; offset < ref.total;) {
+        signal?.throwIfAborted();
+        const text = await this.readContentRange(agentId, ref, offset, signal);
+        if (text.length === 0) throw new Error('Search content made no progress');
+        const window = tail + text;
+        const expression = new RegExp(pattern.source, pattern.flags);
+        for (const match of window.matchAll(expression)) {
+          if (offset > 0 && match.index === 0 || offset + text.length < ref.total && match.index + match[0].length === window.length) continue;
+          return { ref, offset: offset - tail.length + match.index, toolCallId };
+        }
+        tail = window.slice(-512);
+        offset += text.length;
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    return undefined;
+  }
+
+  async completeContentRead(agentId: string, source: ContentSource, roots: readonly string[], signal?: AbortSignal): Promise<void> {
+    const lease = this.beginContentRead(agentId, source, roots);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const ref = this.contentRefsFor(agentId, source).find((candidate) => roots.includes(String(candidate.path[0])) && !this.isContentRange(agentId, candidate));
+        if (ref === undefined) return;
+        if (!await this.loadContentSegment(agentId, ref)) throw new Error('Could not read the complete content');
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    } finally { lease.release(); }
   }
 
   private observeContentPreview(agentId: string, op: TranscriptOperation): void {
@@ -1820,6 +1920,8 @@ export class SessionController {
 
   private bumpHistoryGeneration(agentId: string): void {
     this.historyGeneration.set(agentId, (this.historyGeneration.get(agentId) ?? 0) + 1);
+    for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
+    this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.inFlightOlder.delete(agentId);
     this.catchupByAgent.delete(agentId);
     this.toolCountSpans.delete(agentId);

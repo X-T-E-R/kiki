@@ -220,6 +220,7 @@ function WorkspaceSurface({
   );
   return (
     <TranscriptDetailProvider
+      controller={controller ?? undefined}
       load={loadDetail}
       loads={timeline.state.detailLoads}
       contentRefs={timeline.state.contentRefs}
