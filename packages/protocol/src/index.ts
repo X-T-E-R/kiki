@@ -84,3 +84,4 @@ export * from './rest/connections';
 export * from './rest/connection-operations';
 export * from './rest/ssh-remote';
 export * from './rest/web-access';
+export * from './rest/cloudflare';

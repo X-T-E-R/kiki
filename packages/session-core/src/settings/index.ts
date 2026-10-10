@@ -11,3 +11,4 @@ export * from './settings';
 export * from './questionGuardSettings';
 export * from './subagentToolSettings';
 export * from './terminalPrefs';
+export * from './externalConnections';
