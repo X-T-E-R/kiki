@@ -1026,13 +1026,6 @@ export class AgentTranscriptLiveAdapter {
     const ops: TranscriptOperation[] = [
       { op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame },
     ];
-    if (!isError && frame.name === TODO_LIST_TOOL_NAME) {
-      const items = todoWriteItems(frame.input);
-      if (items !== undefined) {
-        const todo: TranscriptTodo = { todoId: TODO_ENTITY_ID, items, updatedAt: nowIso() };
-        ops.push({ op: 'todo.upsert', todo });
-      }
-    }
     return ops;
   }
 

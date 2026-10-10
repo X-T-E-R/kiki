@@ -1812,7 +1812,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(frame?.kind === 'text' && frame.text).toContain('Background process completed');
   });
 
-  it('replaces the global todo document on a confirmed TodoList write', () => {
+  it('links TodoList frames without inferring document updates from tool inputs or results', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
     const feed = (event: LiveAdapterBusEvent): void => void tx.apply(liveAdapter.map(event));
@@ -1820,41 +1820,22 @@ describe('AgentTranscriptLiveAdapter', () => {
     feed(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
     feed(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
 
-    feed(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'call_read', name: 'TodoList', args: {} }));
-    feed(ev({ type: 'tool.result', toolCallId: 'call_read', output: '2 todos' }));
-    expect(tx.getTodo('todo')).toBeUndefined();
-
-    feed(
-      ev({
-        type: 'tool.call.started',
-        turnId: 1,
-        toolCallId: 'call_write',
-        name: 'TodoList',
-        args: { todos: [{ title: 'write tests', status: 'in_progress' }, { title: 'ship', status: 'pending' }] },
-      }),
-    );
-    const writeFrame = turnOps('t1', tx.getItems()).steps[0]!.frames.find(
-      (f) => f.kind === 'tool' && f.toolCallId === 'call_write',
-    );
-    expect(writeFrame?.kind === 'tool' && writeFrame.todoId).toBe('todo');
-
-    feed(ev({ type: 'tool.result', toolCallId: 'call_write', output: 'updated' }));
-    expect(tx.getTodo('todo')?.items).toEqual([
-      { title: 'write tests', status: 'in_progress' },
-      { title: 'ship', status: 'pending' },
-    ]);
-
-    feed(
-      ev({
-        type: 'tool.call.started',
-        turnId: 1,
-        toolCallId: 'call_fail',
-        name: 'TodoList',
-        args: { todos: [] },
-      }),
-    );
-    feed(ev({ type: 'tool.result', toolCallId: 'call_fail', output: 'boom', isError: true }));
-    expect(tx.getTodo('todo')?.items).toHaveLength(2);
+    for (const [toolCallId, args, isError] of [
+      ['call_read', {}, false],
+      ['call_write', { todos: [{ title: 'write tests', status: 'in_progress' }] }, false],
+      ['call_notes', { notes: { next: 'Read the result' } }, false],
+      ['call_clear', { todos: [], notes: null }, false],
+      ['call_fail', { todos: [] }, true],
+    ] as const) {
+      feed(ev({ type: 'tool.call.started', turnId: 1, toolCallId, name: 'TodoList', args }));
+      const ops = liveAdapter.map(ev({ type: 'tool.result', toolCallId, output: isError ? 'boom' : 'updated', isError }));
+      expect(ops.some((op) => op.op === 'todo.upsert')).toBe(false);
+      tx.apply(ops);
+      expect(tx.getTodo('todo')).toBeUndefined();
+      const frame = turnOps('t1', tx.getItems()).steps[0]!.frames.find((value) => value.kind === 'tool' && value.toolCallId === toolCallId);
+      expect(frame).toMatchObject({ kind: 'tool', state: isError ? 'error' : 'done' });
+      expect(frame?.kind === 'tool' && frame.todoId).toBe('todos' in args ? 'todo' : undefined);
+    }
   });
 
   it('emits an unanchored entity when the payload has no toolCallId', () => {
