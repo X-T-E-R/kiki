@@ -18,7 +18,7 @@ import type {
 
 import { type CollectionView } from '#/_base/di/collection';
 import { createHash } from 'node:crypto';
-import { applyFileCallerCeiling, freezeBoundProfile, type BoundProfile } from './boundProfile';
+import { applyFileCallerCeiling, freezeBoundProfile, freezePromptInputs, validPromptInputs, recoverLegacyPromptFields, type BoundProfile } from './boundProfile';
 import { assertResearchExecutor, RESEARCH_READONLY_TOOLS } from './executionRestriction';
 import { assertNativeToolOverride, effectiveToolBinding, mergeToolBindingOverride } from './toolBinding';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -918,38 +918,55 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async restoreCommittedPromptProjections(): Promise<void> {
     const current = this.profileState;
     if (current.execution !== undefined && this.isExternalExecutor) return;
-    const diagnostics = current.boundProfile?.promptBase?.promptDiagnostics;
-    if (diagnostics === undefined) return;
-    const modelAlias = this.isExternalExecutor ? diagnostics.identity.model_alias ?? '' : current.modelAlias;
-    if (this.boundPromptDiagnostics?.binding_revision === diagnostics.binding_revision
-      && this.cognitionBinding?.modelAlias === modelAlias) return;
-    const profile = current.boundProfile ?? this.resolveActiveProfile();
-    if (profile === undefined || modelAlias === undefined) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, 'The committed prompt binding cannot be reconstructed from its saved profile.');
-    }
+    const base = current.boundProfile?.promptBase;
+    const diagnostics = base?.promptDiagnostics;
+    const modelAlias = this.isExternalExecutor ? diagnostics?.identity.model_alias ?? '' : current.modelAlias;
+    if (modelAlias === undefined || current.profileName === undefined) return;
+    if (this.boundPromptDiagnostics === diagnostics && this.cognitionBinding?.modelAlias === modelAlias) return;
+    const inputs = base?.inputs;
     await this.ensureDelegationPosition();
-    const fields = await this.resolvePromptFieldSnapshot(profile, modelAlias);
+    if (this.profileState !== current) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The committed agent binding changed during prompt projection recovery.');
+    if (inputs !== undefined) {
+      if (!validPromptInputs(inputs, modelAlias, diagnostics?.binding_revision)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved prompt inputs are incomplete or invalid. Rebuild the prompt context to bind current inputs.');
+      }
+      this.cognitionBinding = structuredClone(inputs.cognition);
+      this.cognitionRevision = inputs.cognition.revision;
+      this.promptFieldSnapshot = structuredClone(inputs.fields);
+      this.boundPromptDiagnostics = diagnostics;
+      return;
+    }
+    if (this.cognitionBinding?.modelAlias === modelAlias && this.boundPromptDiagnostics?.binding_revision === diagnostics?.binding_revision) return;
+    const projections = diagnostics?.channels.filter((channel) => channel.state === 'effective'
+      && (channel.channel === 'tool' || channel.id === 'system.shared' || channel.channel === 'cognition_anchor' || channel.channel === 'cognition_steering')) ?? [];
+    const savedFields = recoverLegacyPromptFields(current.boundProfile, diagnostics, modelAlias, this.isExternalExecutor ? (id) => id : (id) => this.models.resolveId(id));
+    if (savedFields !== undefined) {
+      this.cognitionBinding = { position: diagnostics?.identity.delegation_position ?? this.delegationPosition, modelAlias,
+        revision: ++this.cognitionRevision, contentRevision: diagnostics?.binding_revision ?? '', bindingRevision: diagnostics?.binding_revision, slots: {} };
+      this.promptFieldSnapshot = savedFields;
+      this.boundPromptDiagnostics = diagnostics;
+      return;
+    }
+    const profile = current.boundProfile ?? this.resolveActiveProfile();
     const oldCognition = this.cognitionBinding;
     const oldRevision = this.cognitionRevision;
-    let cognition: CognitionBinding | undefined;
-    let revision = oldRevision;
+    let fields: ResolvedPromptFieldOverrides;
+    let cognition: CognitionBinding;
     try {
+      if (profile === undefined) throw new Error('Saved profile is unavailable');
+      fields = await this.resolvePromptFieldSnapshot(profile, modelAlias);
       await this.applyCognitionOverlay('', modelAlias);
-      cognition = this.cognitionBinding;
-      revision = this.cognitionRevision;
-      const reconstructed = this.buildPromptDiagnostics(profile, modelAlias, fields);
-      if (reconstructed.binding_revision !== diagnostics.binding_revision) {
-        throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved prompt binding differs from its current configuration or files. Restore its committed inputs before retrying recovery.');
-      }
+      if (this.buildPromptDiagnostics(profile, modelAlias, fields).binding_revision !== diagnostics?.binding_revision) throw new Error('Original projection inputs are unavailable');
+      cognition = { ...this.cognitionBinding!, bindingRevision: diagnostics?.binding_revision };
+    } catch (error) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `This legacy binding did not save the original prompt inputs for ${projections.map((channel) => channel.id).join(', ')}. Rebuild the prompt context to use current inputs.`, { cause: error });
     } finally {
       this.cognitionBinding = oldCognition;
       this.cognitionRevision = oldRevision;
     }
-    if (this.profileState !== current) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The committed agent binding changed during prompt projection recovery.');
-    }
-    this.cognitionBinding = cognition === undefined ? undefined : { ...cognition, bindingRevision: diagnostics.binding_revision };
-    this.cognitionRevision = revision;
+    if (this.profileState !== current) throw new Error2(ErrorCodes.REQUEST_INVALID, 'The committed agent binding changed during prompt projection recovery.');
+    this.cognitionBinding = cognition;
+    this.cognitionRevision = cognition.revision;
     this.promptFieldSnapshot = fields;
     this.boundPromptDiagnostics = diagnostics;
   }
@@ -1266,8 +1283,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           if (diagnosticsProfile !== undefined) {
             nextFields = await this.resolvePromptFieldSnapshot(diagnosticsProfile, model);
             nextDiagnostics = this.buildPromptDiagnostics(diagnosticsProfile, model, nextFields);
-            nextPromptBase = { ...base, promptDiagnostics: nextDiagnostics };
             nextCognition = nextCognition === undefined ? undefined : { ...nextCognition, bindingRevision: nextDiagnostics.binding_revision };
+            nextPromptBase = { ...base, promptDiagnostics: nextDiagnostics,
+              inputs: freezePromptInputs(nextFields, nextCognition!, this.config.get<PromptConfig>(PROMPT_SECTION)?.variables ?? {}) };
           }
         } finally {
           this.cognitionBinding = oldCognition;
@@ -1355,8 +1373,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         if (diagnosticsProfile !== undefined) {
           nextFields = await this.resolvePromptFieldSnapshot(diagnosticsProfile, model);
           nextDiagnostics = this.buildPromptDiagnostics(diagnosticsProfile, model, nextFields);
-          config.promptBase = { ...base, promptDiagnostics: nextDiagnostics };
           nextCognition = nextCognition === undefined ? undefined : { ...nextCognition, bindingRevision: nextDiagnostics.binding_revision };
+          config.promptBase = { ...base, promptDiagnostics: nextDiagnostics,
+            inputs: freezePromptInputs(nextFields, nextCognition!, this.config.get<PromptConfig>(PROMPT_SECTION)?.variables ?? {}) };
         }
       } finally {
         this.cognitionBinding = oldCognition;
@@ -1700,14 +1719,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: true, revision: previous.revision + 1, context, content, hash }));
   }
 
-  refreshSystemPrompt(): Promise<void> {
-    const refresh = this.systemPromptRefreshTail.catch(() => undefined).then(() => this.refreshSystemPromptNow());
+  refreshSystemPrompt(adoptPromptInputs = false): Promise<void> {
+    const refresh = this.systemPromptRefreshTail.catch(() => undefined).then(() => this.refreshSystemPromptNow(adoptPromptInputs));
     this.systemPromptRefreshTail = refresh;
     return refresh;
   }
 
-  private async refreshSystemPromptNow(): Promise<void> {
+  private async refreshSystemPromptNow(adoptPromptInputs: boolean): Promise<void> {
     try {
+      if (!adoptPromptInputs && this.profileState.boundProfile !== undefined) {
+        await this.restoreCommittedPromptProjections();
+        if (this.profileState.boundProfile.promptBase?.inputs === undefined) return;
+      }
       if (this.profileState.execution !== undefined && this.isExternalExecutor) return;
       this.syncRestoredPersona();
       const profile = this.resolveActiveProfile();
@@ -1719,7 +1742,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         renderProfile,
         context,
         this.modelAlias ?? '',
-        this.profileState.boundProfile?.promptBase,
+        adoptPromptInputs ? undefined : this.profileState.boundProfile?.promptBase,
         this.currentPersona,
         this.profileState.roomPrompt,
       );
@@ -1981,8 +2004,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     persona?: PersonaSnapshot,
     roomPrompt?: string,
   ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot; readonly promptBase: import('./boundProfile').BoundPromptBase; readonly promptFields: ResolvedPromptFieldOverrides; readonly personaPositionExplicit: boolean; readonly personaBaseHasIdentity: boolean }> {
-    const promptVariables = this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
-    const promptFields = await this.resolvePromptFieldSnapshot(profile, alias);
+    const frozen = savedBase?.inputs;
+    const promptVariables = frozen?.variables ?? this.config.get<PromptConfig>(PROMPT_SECTION)?.variables;
+    const promptFields = frozen?.fields ?? await this.resolvePromptFieldSnapshot(profile, alias);
     const rendered = profile.renderSystemPrompt({
       ...context,
       persona: persona === undefined ? '' : PERSONA_PROMPT_MARKER,
@@ -2002,7 +2026,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : (id) => id,
       this.delegationPosition,
     ), rendered.text);
-    const snippetTemplate = this.delegationPosition === 'main' && savedBase?.delegationSnippet !== undefined
+    const snippetTemplate = savedBase !== undefined
       ? savedBase.delegationSnippet
       : resolveDelegationSnippet({
           position: this.delegationPosition,
@@ -2021,21 +2045,24 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           promptFields,
           withModel,
         )
-      : await this.applyCognitionOverlay(withModel, alias, false);
-    if (external) await this.applyCognitionOverlay('', alias, true);
+      : frozen === undefined ? await this.applyCognitionOverlay(withModel, alias, false)
+        : applyOverlay(withModel, frozen.cognition.slots?.overlay, frozen.cognition.config?.overlayMode);
+    if (frozen !== undefined) this.cognitionBinding = structuredClone(frozen.cognition);
+    else if (external) await this.applyCognitionOverlay('', alias, true);
     const personaPositionExplicit = body.includes(PERSONA_PROMPT_MARKER);
     const finalBody = applyPersonaPrompt(
       body,
       persona === undefined ? undefined : renderPersonaBlock(persona),
       roomPrompt,
     );
-    const promptDiagnostics = this.buildPromptDiagnostics(profile, alias, promptFields);
+    const promptDiagnostics = frozen === undefined ? this.buildPromptDiagnostics(profile, alias, promptFields) : savedBase!.promptDiagnostics!;
     this.boundPromptDiagnostics = promptDiagnostics;
     if (this.cognitionBinding !== undefined) this.cognitionBinding = { ...this.cognitionBinding, bindingRevision: promptDiagnostics.binding_revision };
     return {
       text: external ? finalBody : injectDelegationContext(finalBody, snippet),
       environment,
-      promptBase: { text: rendered.text, environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex'), promptDiagnostics },
+      promptBase: { text: rendered.text, environment, delegationSnippet: snippet, promptVariablesRevision: createHash('sha256').update(JSON.stringify(promptVariables ?? {})).digest('hex'), promptDiagnostics,
+        inputs: freezePromptInputs(promptFields, this.cognitionBinding!, promptVariables ?? {}) },
       promptFields,
       personaPositionExplicit,
       personaBaseHasIdentity: hasDefaultIdentityParagraph(body),
@@ -2176,6 +2203,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async getCognitionBinding(): Promise<CognitionBinding> {
+    await this.restoreCommittedPromptProjections();
     await this.ensureDelegationPosition();
     const alias = this.modelAlias ?? '';
     if (this.cognitionBinding?.modelAlias === alias && this.cognitionBinding.position === this.delegationPosition) return this.cognitionBinding;
@@ -2199,6 +2227,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots })).digest('hex'),
         config: config === undefined ? undefined : structuredClone(config),
         anchor: slots.anchor,
+        slots,
       };
       return applyOverlay(base, slots.overlay, config?.overlayMode ?? 'append');
     } catch (error) {
@@ -2445,7 +2474,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   getSystemPrompt(): string {
-    const variables = customPromptVariables(this.config.get<PromptConfig>(PROMPT_SECTION)?.variables);
+    const variables = customPromptVariables(this.profileState.boundProfile?.promptBase?.inputs?.variables ?? this.config.get<PromptConfig>(PROMPT_SECTION)?.variables);
     const prompt = appendSharedPromptField(this.systemPrompt, this.promptFieldSnapshot, variables);
     return this.runtime.nativeSshEnabled?.() ? `${prompt}\n\n${NATIVE_SSH_SYSTEM_PROMPT}` : prompt;
   }
@@ -2466,6 +2495,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private promptConfigurationSignature: string | undefined;
 
   async preparePromptConfiguration(): Promise<boolean> {
+    if (this.profileState.boundProfile !== undefined) {
+      await this.restoreCommittedPromptProjections();
+      return false;
+    }
     if (this.profileState.execution !== undefined && this.isExternalExecutor) return false;
     const profile = this.resolveActiveProfile();
     if (profile === undefined) {

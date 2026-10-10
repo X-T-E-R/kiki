@@ -884,7 +884,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const promptFields = anchoredPrompt === undefined
       ? turnConfig?.promptFields ?? this.profile.getPromptFieldSnapshot()
       : this.profile.getPromptFieldSnapshot({ anchor: true });
-    const promptVariables = customPromptVariables(promptConfig?.variables);
+    const promptVariables = customPromptVariables(this.profile.data().boundProfile?.promptBase?.inputs?.variables ?? promptConfig?.variables);
     return {
       requester,
       model: requester.model,
