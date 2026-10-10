@@ -17,7 +17,7 @@
  *     is never read back into this form or into browser storage.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -77,7 +77,6 @@ interface FormState {
   readonly label: string;
   readonly kind: UsageExportTarget['kind'];
   readonly endpoint: string;
-  readonly manualVibe: boolean;
   readonly authentication: 'none' | 'bearer' | 'hmac';
   readonly gzip: boolean;
   /** Write-only: empty means "keep whatever the server already holds". */
@@ -102,7 +101,7 @@ interface FormState {
 function initialForm(nowMs: number, entry: UsageExportEntry | undefined): FormState {
   const start = entry === undefined ? floorToHalfHour(nowMs) : entry.destination.scope.start_at;
   const base: FormState = {
-    id: entry?.destination.id, label: '', kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT, manualVibe: false, authentication: 'bearer', gzip: true,
+    id: entry?.destination.id, label: '', kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT, authentication: 'bearer', gzip: true,
     secret: '', storage: 'keyring', fileAck: false, command: '', timeoutSeconds: '10', outputLimitKb: '64',
     privateOpen: false, privateHost: '', privateIp: '', privatePort: '', privateProtocol: 'https:',
     scheduleMinutes: 30, historyFrom: start, historyInput: toLocalInput(start),
@@ -117,7 +116,6 @@ function initialForm(nowMs: number, entry: UsageExportEntry | undefined): FormSt
     label: destination.label,
     kind: target.kind,
     endpoint: target.kind === 'script' ? '' : target.endpoint,
-    manualVibe: target.kind === 'vibe' && (target.endpoint !== VIBE_CAFE_INGEST_ENDPOINT || target.private_grant !== undefined),
     authentication: target.kind === 'webhook' ? target.authentication : 'bearer',
     gzip: target.kind === 'webhook' ? target.gzip : true,
     storage: destination.credential_storage === 'private-file' ? 'private-file' : 'keyring',
@@ -154,7 +152,7 @@ function formSignature(built: Built): string {
  * body, so the failure is attached to the control the person has to fix.
  */
 function build(state: FormState, halfHour: number): Built | { readonly invalid: I18nKey } {
-  const officialVibe = state.kind === 'vibe' && !state.manualVibe;
+  const officialVibe = state.kind === 'vibe';
   const label = state.label.trim() || (officialVibe ? 'VibeCafe' : '');
   if (label === '') return { invalid: 'usage.export.form.invalidName' };
   const scheduled = (EXPORT_SCHEDULES as readonly number[]).includes(state.scheduleMinutes) ? state.scheduleMinutes : 30;
@@ -173,11 +171,13 @@ function build(state: FormState, halfHour: number): Built | { readonly invalid: 
     const kilobytes = Number(state.outputLimitKb);
     if (!Number.isFinite(kilobytes) || kilobytes < 1 || kilobytes > 1024) return { invalid: 'usage.export.form.outputLimitInvalid' };
     target = { kind: 'script', command, timeout_ms: Math.round(seconds * 1000), output_limit_bytes: Math.round(kilobytes * 1024) };
+  } else if (state.kind === 'vibe') {
+    target = { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT };
   } else {
-    const endpoint = officialVibe ? VIBE_CAFE_INGEST_ENDPOINT : state.endpoint.trim();
+    const endpoint = state.endpoint.trim();
     if (!/^https?:\/\/\S+$/i.test(endpoint)) return { invalid: 'usage.export.form.invalidEndpoint' };
     let grant: { host: string; ip: string; port: number; protocol: 'http:' | 'https:' } | undefined;
-    if (state.privateOpen && !officialVibe) {
+    if (state.privateOpen) {
       const host = state.privateHost.trim();
       if (host === '') return { invalid: 'usage.export.form.invalidPrivateHost' };
       const ip = state.privateIp.trim();
@@ -186,9 +186,7 @@ function build(state: FormState, halfHour: number): Built | { readonly invalid: 
       if (!Number.isInteger(port) || port < 1 || port > 65535) return { invalid: 'usage.export.form.invalidPrivatePort' };
       grant = { host, ip, port, protocol: state.privateProtocol };
     }
-    target = state.kind === 'webhook'
-      ? { kind: 'webhook', endpoint, gzip: state.gzip, authentication: state.authentication, private_grant: grant }
-      : { kind: 'vibe', endpoint, private_grant: grant };
+    target = { kind: 'webhook', endpoint, gzip: state.gzip, authentication: state.authentication, private_grant: grant };
   }
   const value = officialVibe ? '' : state.secret.trim();
   if (value !== '' && state.storage === 'private-file' && !state.fileAck) {
@@ -217,9 +215,11 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const { client, klient } = useConnection();
   const api = usageExportApi(klient);
   const nowMs = useMemo(() => Date.now(), []);
+  const destinationIdRef = useRef<string | undefined>(entry?.destination.id);
   const [state, setState] = useState<FormState>(() => initialForm(nowMs, entry));
   const [busy, setBusy] = useState<'save' | 'test' | 'preview' | 'enable' | 'auth' | null>(null);
   const [credentialStored, setCredentialStored] = useState(entry !== undefined && entry.destination.credential_storage !== 'none');
+  const [accountFingerprint, setAccountFingerprint] = useState<string | undefined>(entry?.destination.account_fingerprint ?? undefined);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [error, setError] = useState<unknown>(null);
   const [invalid, setInvalid] = useState<I18nKey | null>(null);
@@ -237,7 +237,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const stale = preview !== null && preview.signature !== signature;
   const busyNow = busy !== null;
   const seamMissing = api === undefined;
-  const officialVibe = state.kind === 'vibe' && !state.manualVibe;
+  const officialVibe = state.kind === 'vibe';
   const needsVibeConnection = officialVibe && !credentialStored;
 
   const patch = (next: Partial<FormState>) => {
@@ -257,6 +257,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const saveDraft = async (target: UsageExportApi): Promise<string | undefined> => {
     if ('invalid' in built) { setInvalid(built.invalid); return undefined; }
     const saved = await target.saveDraft(built);
+    destinationIdRef.current = saved.id;
     onUpdated();
     setState((current) => (current.id === saved.id ? current : { ...current, id: saved.id }));
     return saved.id;
@@ -264,11 +265,38 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
 
   const beginVibeAuth = async () => {
     if (api === undefined) return undefined;
-    if (state.storage === 'private-file' && !state.fileAck) { setInvalid('usage.export.form.storage.fileAckRequired'); return undefined; }
     const id = await saveDraft(api);
     if (id === undefined) return undefined;
     await api.disable(id);
-    return api.beginVibeAuth(id, { storage: state.storage, acknowledge_file_storage: state.fileAck });
+    return api.beginVibeAuth(id, {});
+  };
+
+  const onVibeConnected = async () => {
+    setPreview(null);
+    setState((current) => ({ ...current, secret: '' }));
+    const currentId = destinationIdRef.current ?? state.id;
+    if (api !== undefined && currentId) {
+      try {
+        const latest = await api.status();
+        const matched = latest.destinations.find((d) => d.destination.id === currentId)?.destination;
+        if (matched) {
+          setAccountFingerprint(matched.account_fingerprint ?? undefined);
+          setCredentialStored(matched.credential_storage !== 'none');
+          setError(null);
+        }
+      } catch (failure) {
+        setError(failure);
+      }
+    }
+    onUpdated();
+  };
+
+  const onDisconnect = async () => {
+    const currentId = destinationIdRef.current ?? state.id;
+    if (api === undefined || !currentId) return;
+    await api.disable(currentId);
+    setPreview(null);
+    onUpdated();
   };
 
   const onSave = async () => {
@@ -385,33 +413,14 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
             api={api}
             begin={beginVibeAuth}
             credentialStored={credentialStored}
+            accountFingerprint={accountFingerprint}
             disabled={busyNow && busy !== 'auth'}
             onActivity={(active) => { setBusy(active ? 'auth' : null); }}
-            onConnected={() => { setCredentialStored(true); setPreview(null); setState((current) => ({ ...current, secret: '' })); onUpdated(); }}
+            onConnected={() => { void onVibeConnected(); }}
+            onDisconnect={onDisconnect}
           />
         ) : null}
         <fieldset disabled={busyNow} className="space-y-5">
-        {state.kind === 'vibe' ? (
-          <details open={state.manualVibe || undefined} className="[&[open]>summary]:mb-2">
-            <summary className="cursor-pointer text-[12px] text-ink-soft underline decoration-dotted underline-offset-2">{t('usage.export.vibeAuth.advanced')}</summary>
-            {!state.manualVibe ? (
-              <div className="space-y-2">
-                <label className="block space-y-1">
-                  <span className={FIELD_LABEL}>{t('usage.export.form.storage')}</span>
-                  <select data-usage-export-vibe-storage value={state.storage} onChange={(event) => { patch({ storage: event.target.value as FormState['storage'] }); }} className={SELECT}>
-                    <option value="keyring">{t('usage.export.form.storage.keyring')}</option>
-                    <option value="private-file">{t('usage.export.form.storage.file')}</option>
-                  </select>
-                </label>
-                {state.storage === 'private-file' ? <Toggle label={t('usage.export.form.storage.fileAck')} checked={state.fileAck} onChange={(fileAck) => { patch({ fileAck }); }} /> : null}
-              </div>
-            ) : null}
-            <div className="mt-3 space-y-2">
-              <Toggle label={t('usage.export.vibeAuth.manual')} checked={state.manualVibe} onChange={(manualVibe) => { patch({ manualVibe }); setCredentialStored(false); setPreview(null); }} />
-              <p className={HINT}>{t('usage.export.vibeAuth.customHint')}</p>
-            </div>
-          </details>
-        ) : null}
         {state.kind === 'script' ? (
           <section className="space-y-2">
             <label className="block space-y-1">

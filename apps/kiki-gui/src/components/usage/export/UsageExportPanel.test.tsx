@@ -281,7 +281,7 @@ describe('VibeCafe connection', () => {
     await click(q('[data-usage-export-vibe-login]'));
     expect(usageExport.saveDraft.mock.calls[0]![0].draft).toMatchObject({ label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://vibecafe.ai/api/usage/ingest' } });
     expect(usageExport.saveDraft.mock.calls[0]![0].secret).toBeUndefined();
-    expect(usageExport.beginVibeAuth).toHaveBeenCalledWith(ID_A, { storage: 'keyring', acknowledge_file_storage: false });
+    expect(usageExport.beginVibeAuth).toHaveBeenCalledWith(ID_A, {});
     expect(openUrl).toHaveBeenCalledWith(authPending.verification_uri);
     expect(q('[data-usage-export-vibe-code]')!.textContent).toBe('ABCD-EFGH');
     expect(usageExport.enable).not.toHaveBeenCalled();
@@ -308,64 +308,130 @@ describe('VibeCafe connection', () => {
     expect(usageExport.enable).not.toHaveBeenCalled();
   });
 
-  it('recovers a storage failure through Advanced while keeping the official device sign-in', async () => {
+  it('recovers a storage failure directly with one-click retry, reads account fingerprint, and keeps identity on disconnect', async () => {
     expect(translate('zh', 'usage.export.vibeAuth.hint')).toBe('在 vibecafe.ai 确认验证码，登录凭据保存在当前连接的 Kiki 服务上。');
-    expect(translate('zh', 'usage.export.vibeAuth.advanced')).toBe('高级 · 保存方式与自定义连接');
-    expect(translate('zh', 'usage.export.vibeAuth.error.storage')).toBe('无法保存凭据。请展开「高级」，更换「保存方式」后重试。');
+    expect(translate('zh', 'usage.export.vibeAuth.error.storage')).toBe('无法保存凭据，请重新登录重试。');
+    expect(translate('zh', 'usage.export.vibeAuth.disconnect')).toBe('停用同步');
+    expect(translate('en', 'usage.export.vibeAuth.disconnect')).toBe('Disable sync');
     usageExport.beginVibeAuth.mockResolvedValueOnce({ ...authPending, state: 'error', error_category: 'vibe-auth-storage-failed' });
-    usageExport.cancelVibeAuth.mockResolvedValue({ ...authPending, state: 'cancelled' });
     await render();
     await click(q('[data-usage-export-add]'));
     await click(q('[data-usage-export-vibe-login]'));
+
     const card = q('[data-usage-export-vibe-connect="error"]')!;
     expect(card.textContent).toContain('Confirm the code on vibecafe.ai; the sign-in credential is saved on the Kiki server you are connected to.');
-    expect(card.textContent).toContain('Could not save the credential. Open Advanced, change “Store as”, then try again.');
+    expect(card.textContent).toContain('Could not save the credential. Try signing in again.');
     expect(card.textContent).not.toContain('vibe-auth-storage-failed');
     expect(q<HTMLButtonElement>('[data-usage-export-vibe-login]')!.disabled).toBe(false);
     expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
-    const storage = q<HTMLSelectElement>('[data-usage-export-vibe-storage]')!;
-    const advanced = storage.closest('details')!;
-    expect(advanced.open).toBe(false);
-    expect(advanced.querySelector('summary')!.textContent).toBe('Advanced · storage and custom connection');
-    await click(advanced.querySelector('summary'));
-    expect(advanced.open).toBe(true);
-    const manual = [...advanced.querySelectorAll('label')].find((label) => label.textContent?.includes('Use a custom endpoint'))!.querySelector('input')!;
-    expect(storage.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    await act(async () => { storage.value = 'private-file'; storage.dispatchEvent(new Event('change', { bubbles: true })); });
-    await flush();
-    const fileAck = [...advanced.querySelectorAll('label')].find((label) => label.textContent?.includes('without encryption at rest'))!.querySelector('input')!;
-    expect(fileAck.compareDocumentPosition(manual) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(fileAck.checked).toBe(false);
-    await click(fileAck);
-    expect(manual.checked).toBe(false);
-    expect(q('[data-usage-export-vibe-connect="error"]')).toBe(card);
-    expect(q('[data-usage-export-form-endpoint]')).toBeNull();
-    expect(q('[data-usage-export-form-secret]')).toBeNull();
-    usageExport.beginVibeAuth.mockResolvedValueOnce({ ...authPending, poll_after_ms: 60_000 });
+
+    expect(q('[data-usage-export-vibe-storage]')).toBeNull();
+    expect(card.closest('form')!.querySelector('details')).toBeNull();
+
+    usageExport.beginVibeAuth.mockResolvedValueOnce(authPending);
+    usageExport.pollVibeAuth.mockResolvedValueOnce({ ...authPending, state: 'connected', poll_after_ms: 0 });
+    usageExport.status.mockResolvedValue(status(destination({
+      id: ID_A,
+      account_fingerprint: 'a'.repeat(64),
+      credential_storage: 'keyring',
+    })));
+
     await click(q('[data-usage-export-vibe-login]'));
     expect(usageExport.beginVibeAuth).toHaveBeenCalledTimes(2);
-    expect(usageExport.beginVibeAuth).toHaveBeenLastCalledWith(ID_A, { storage: 'private-file', acknowledge_file_storage: true });
-    expect(q('[data-usage-export-vibe-connect="pending"]')).not.toBeNull();
-    expect(usageExport.enable).not.toHaveBeenCalled();
-    expect(usageExport.syncNow).not.toHaveBeenCalled();
+    expect(usageExport.beginVibeAuth).toHaveBeenLastCalledWith(ID_A, {});
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    await flush();
+
+    expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
+    const accountEl = q('[data-usage-export-vibe-account]');
+    expect(accountEl).not.toBeNull();
+    expect(accountEl!.textContent).toContain('aaaaaaaaaaaa…');
+
+    // Disconnect pauses sync via api.disable, but preserves stored credentials and identity
+    const disconnectBtn = q<HTMLButtonElement>('[data-usage-export-vibe-disconnect]');
+    expect(disconnectBtn).not.toBeNull();
+    expect(disconnectBtn!.textContent).toBe('Disable sync');
+    await click(disconnectBtn);
+    expect(usageExport.disable).toHaveBeenCalledWith(ID_A);
+
+    // Identity and credential are kept; UI does not fake a logout
+    expect(q('[data-usage-export-vibe-account]')!.textContent).toContain('aaaaaaaaaaaa…');
+    expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
   });
 
-  it('shows denial with retry, while custom servers retain manual credentials independently', async () => {
+  it('layers OAuth connection and status readback accurately without faking unverified credentials on status failure', async () => {
+    usageExport.beginVibeAuth.mockResolvedValueOnce(authPending);
+    usageExport.pollVibeAuth.mockResolvedValueOnce({ ...authPending, state: 'connected', poll_after_ms: 0 });
+
+    await render();
+    await click(q('[data-usage-export-add]'));
+    await click(q('[data-usage-export-vibe-login]'));
+    expect(q('[data-usage-export-vibe-code]')!.textContent).toBe('ABCD-EFGH');
+
+    // OAuth connected, status readback fails: does not falsely claim account fingerprint is read
+    usageExport.status.mockRejectedValueOnce(new Error('status query failed'));
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    await flush();
+
+    // Status read failed: does not falsely claim account fingerprint is read
+    expect(q('[data-usage-export-vibe-account]')).toBeNull();
+    expect(document.body.textContent).toContain('status query failed');
+    expect(q<HTMLButtonElement>('[data-usage-export-vibe-login]')!.disabled).toBe(false);
+  });
+
+  it('shows denial with retry, and preserves webhook endpoint and secret independently', async () => {
     usageExport.beginVibeAuth.mockResolvedValue({ ...authPending, state: 'denied' });
     await render();
     await click(q('[data-usage-export-add]'));
     await click(q('[data-usage-export-vibe-login]'));
     expect(q('[data-usage-export-vibe-connect="denied"]')!.textContent).toContain('declined');
     expect(q('[data-usage-export-vibe-login]')!.textContent).toContain('Try again');
-    const toggle = [...document.querySelectorAll('label')].find((label) => label.textContent?.includes('Use a custom endpoint'))!.querySelector('input')!;
-    await click(toggle);
+
+    // Switch to webhook to verify webhook still owns endpoint, secret and storage
+    await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
     expect(q('[data-usage-export-vibe-connect]')).toBeNull();
+    expect(q('[data-usage-export-form-endpoint]')).not.toBeNull();
+    expect(q('[data-usage-export-form-secret]')).not.toBeNull();
     await type(q<HTMLInputElement>('[data-usage-export-form-name]')!, 'custom receiver');
     await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/api/usage/ingest');
     await type(q<HTMLInputElement>('[data-usage-export-form-secret]')!, 'EXAMPLE_KEY');
     await click(q('[data-usage-export-form-save]'));
-    expect(usageExport.saveDraft.mock.calls.at(-1)![0]).toMatchObject({ draft: { target: { endpoint: 'https://usage.example.test/api/usage/ingest' } }, secret: { value: 'EXAMPLE_KEY' } });
+    expect(usageExport.saveDraft.mock.calls.at(-1)![0]).toMatchObject({
+      draft: { target: { kind: 'webhook', endpoint: 'https://usage.example.test/api/usage/ingest' } },
+      secret: { value: 'EXAMPLE_KEY', storage: 'keyring' },
+    });
     expect(usageExport.beginVibeAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('cold recovers a paused destination with enabled=false and credential_storage preserved without losing identity', async () => {
+    // Server has stored credential but sync is disabled (enabled: false)
+    const pausedDest = destination({
+      id: ID_B,
+      label: 'paused vibe',
+      enabled: false,
+      state: 'disabled',
+      account_fingerprint: 'b'.repeat(64),
+      credential_storage: 'keyring',
+    });
+    usageExport.status.mockResolvedValue(status(pausedDest));
+    await render();
+
+    await click(row(ID_B));
+    await click(detail(ID_B).querySelector('[data-usage-export-edit]'));
+
+    // Identity and connection must be intact even when enabled is false
+    expect(q('[data-usage-export-vibe-connect="connected"]')).not.toBeNull();
+    expect(q('[data-usage-export-vibe-account]')!.textContent).toContain('bbbbbbbbbbbb…');
+    expect(q('[data-usage-export-vibe-disconnect]')).not.toBeNull();
+    expect(q('[data-usage-export-vibe-disconnect]')!.textContent).toBe('Disable sync');
+    expect(q<HTMLButtonElement>('[data-usage-export-form-preview]')!.disabled).toBe(false);
+
+    // Disconnecting again invokes disable but preserves identity
+    await click(q('[data-usage-export-vibe-disconnect]'));
+    expect(usageExport.disable).toHaveBeenCalledWith(ID_B);
+    expect(q('[data-usage-export-vibe-account]')!.textContent).toContain('bbbbbbbbbbbb…');
   });
 });
 

@@ -14,7 +14,7 @@ import type { VibeAuthRequest } from '../src/usage/export/vibeAuth';
 import { createVibeUsageAdapter } from '../src/usage/export/vibe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import type { UsageExportAdapter } from '../src/usage/export/adapter';
 import { canonicalExportHome } from '../src/usage/export/handoffFile';
 import { IModelPricingService, type IModelPricingService as Pricing } from '../src/pricing/modelPricingService';
@@ -52,11 +52,12 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
   const reader = new UsageAggregationService(core, Date.now, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
-  const secrets = new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
+  const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
+  const secrets = secretStore();
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => storage.write(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, Buffer.from(records.map((v) => JSON.stringify(v)).join('\n') + '\n'));
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async () => { await service.close(); store = new UsageExportStore(path); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async () => { await service.close(); store = new UsageExportStore(path); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -397,7 +398,7 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     const client = createKlient({ endpoint: app.listeningOrigin }); cleanup.push(() => client.close());
     const api = client.rest!.usageExport;
     const d = await api.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
-    const flow = await api.beginVibeAuth(d.id, { storage: 'keyring' });
+    const flow = await api.beginVibeAuth(d.id, {});
     expect(JSON.stringify(flow)).not.toContain('SYNTHETIC_DEVICE_SECRET');
     now += 1000; expect((await api.pollVibeAuth(flow.flow_id)).state).toBe('pending');
     approved = true; now += 1000; const connected = await api.pollVibeAuth(flow.flow_id);
@@ -414,5 +415,96 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     expect(f.store.queue(d.id).pending).toBe(0);
     const custom = await api.saveDraft({ draft: { label: 'Custom', target: { kind: 'vibe', endpoint: 'https://custom.example.test/api/usage/ingest' }, scope: d.scope, schedule_minutes: 0 } });
     await expect(api.beginVibeAuth(custom.id, { storage: 'keyring' })).rejects.toThrow('vibe-auth-official-only');
+  });
+
+  it.each(['keyring', 'private-file'] as const)('automatically persists to %s, cold-restores and sends the recovered bearer only after consent', async (expectedStorage) => {
+    let now = T;
+    const key = 'vbu_SYNTHETIC_COLD_KEY';
+    const keys = new Map<string, string>();
+    const factory: ExportKeyring = async (account) => ({
+      setPassword: async (value) => { if (expectedStorage === 'private-file') throw new Error('fixture-keyring-write-failed'); keys.set(account, value); },
+      getPassword: async () => keys.get(account), deleteCredential: async () => keys.delete(account),
+    });
+    const send: VibeAuthRequest = async (path) => path.endsWith('/code') ? { deviceCode: 'FIXTURE_DEVICE', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', interval: 1 } : { apiKey: key };
+    const f = await fixture({}, () => now, factory, send);
+    f.add('synthetic-cold'); await f.write('synthetic-cold', 'main', [record(T + 1, 10)]);
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    if (expectedStorage === 'private-file') {
+      const failed = await f.service.vibeAuth.begin(d.id, { storage: 'keyring' }); now += 1000;
+      expect(await f.service.vibeAuth.poll(failed.flow_id)).toMatchObject({ state: 'error', error_category: 'vibe-auth-storage-failed' });
+      expect(f.store.get(d.id).credential_storage).toBe('none');
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const flow = await f.service.vibeAuth.begin(d.id, {}); now += 1000;
+      expect(await f.service.vibeAuth.poll(flow.flow_id)).toMatchObject({ state: 'connected', error_category: null });
+    }
+    expect(f.store.get(d.id)).toMatchObject({ credential_storage: expectedStorage, enabled: false, consent_fingerprint: null, state: 'draft' });
+    await f.restart();
+    const restored = f.store.get(d.id);
+    const cold = new UsageExportSecretStore(f.home, f.store.installationKey(), factory);
+    expect(await cold.read(d.id, restored.credential_storage)).toBe(key);
+    const privatePath = join(f.home, 'credentials/usage-export', `${d.id}.secret`);
+    if (expectedStorage === 'private-file') {
+      expect(await readFile(privatePath, 'utf8')).toBe(key);
+      if (process.platform !== 'win32') expect((await stat(privatePath)).mode & 0o077).toBe(0);
+      else {
+        const { stdout } = await promisify(execFile)('icacls', [privatePath], { windowsHide: true });
+        expect(stdout).toContain('(F)'); expect(stdout).not.toContain('(I)');
+      }
+    } else await expect(stat(privatePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const observed: string[] = [];
+    const sink = createServer((req, res) => {
+      observed.push(req.headers.authorization ?? '');
+      req.resume(); req.on('end', () => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ingested: 1, sessions: 0 })); });
+    });
+    await new Promise<void>((resolve) => sink.listen(0, '127.0.0.1', resolve)); cleanup.push(() => new Promise<void>((resolve) => sink.close(() => resolve())));
+    const address = sink.address(); if (address === null || typeof address === 'string') throw new Error('fixture-loopback-missing');
+    const adapter = createVibeUsageAdapter();
+    const post: Parameters<typeof adapter.send>[1]['post'] = async (request) => {
+      const destination = f.store.get(d.id);
+      const secret = await cold.read(d.id, destination.credential_storage);
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/usage/ingest`, { method: 'POST', headers: { 'content-type': request.contentType, 'content-encoding': request.contentEncoding ?? '', authorization: `Bearer ${secret}` }, body: new Uint8Array(request.body) });
+      return { status: response.status, body: await response.text() };
+    };
+    f.service.registerAdapter({ ...adapter, send: (batch, context) => adapter.send(batch, { ...context, post }) });
+    await f.service.syncNow(d.id); expect(observed).toEqual([]);
+    const preview = await enable(f.service, d.id);
+    expect(JSON.stringify(preview)).not.toContain(key);
+    await f.service.syncNow(d.id); expect(observed).toEqual([`Bearer ${key}`]);
+    f.service.disable(d.id); await f.restart();
+    expect(f.store.get(d.id).enabled).toBe(false);
+    await f.service.remove(d.id, true);
+    await expect(stat(privatePath)).rejects.toMatchObject({ code: 'ENOENT' }); expect(keys.size).toBe(0);
+  });
+
+  it('does not claim connected when both stores fail, preserves the old credential and retries after repair', async () => {
+    let now = T;
+    let unavailable = false;
+    let stored: string | undefined;
+    const factory: ExportKeyring = async () => ({ setPassword: async (value) => { if (unavailable) throw new Error('fixture-keyring-unavailable'); stored = value; }, getPassword: async () => stored, deleteCredential: async () => { if (unavailable) throw new Error('fixture-keyring-unavailable'); stored = undefined; return true; } });
+    let key = 'vbu_SYNTHETIC_OLD_KEY';
+    const send: VibeAuthRequest = async (path) => path.endsWith('/code') ? { deviceCode: 'FIXTURE_DEVICE', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device', interval: 1 } : { apiKey: key };
+    const f = await fixture({}, () => now, factory, send);
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: VIBE_CAFE_INGEST_ENDPOINT }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } }, secret: { value: key, storage: 'keyring' } });
+    unavailable = true; key = 'vbu_SYNTHETIC_NEW_KEY';
+    const blocked = join(f.home, 'credentials'); await writeFile(blocked, 'fixture-file-blocks-directory');
+    const failed = await f.service.vibeAuth.begin(d.id, {}); now += 1000;
+    expect(await f.service.vibeAuth.poll(failed.flow_id)).toMatchObject({ state: 'error', error_category: 'vibe-auth-storage-failed' });
+    expect(f.store.get(d.id)).toEqual(d); expect(stored).toBe('vbu_SYNTHETIC_OLD_KEY');
+    await rm(blocked);
+    const retry = await f.service.vibeAuth.begin(d.id, {}); now += 1000;
+    expect((await f.service.vibeAuth.poll(retry.flow_id)).state).toBe('connected');
+    expect(f.store.get(d.id).credential_storage).toBe('private-file');
+    expect(f.store.meta(`credential-cleanup:${d.id}`)).toBe('keyring');
+    await f.restart();
+    const cold = new UsageExportSecretStore(f.home, f.store.installationKey(), factory);
+    expect(await cold.read(d.id, f.store.get(d.id).credential_storage)).toBe(key);
+    unavailable = false; f.service.start(); await f.service.close();
+    expect(stored).toBeUndefined();
+    await f.restart(); expect(f.store.meta(`credential-cleanup:${d.id}`)).toBe('');
+    const recovered = await f.service.vibeAuth.begin(d.id, {}); now += 1000;
+    expect((await f.service.vibeAuth.poll(recovered.flow_id)).state).toBe('connected');
+    expect(f.store.get(d.id).credential_storage).toBe('keyring'); expect(stored).toBe(key);
+    await expect(stat(join(f.home, 'credentials/usage-export', `${d.id}.secret`))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

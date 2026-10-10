@@ -16,6 +16,14 @@ the commands below run from a Kiki install, not from an npm dependency.
 
 Both endpoints authenticate with the KAP bearer token. HTTP sends `Authorization: Bearer <token>`; a browser WebSocket sends it as the `kimi-code.bearer.<token>` subprotocol.
 
+## Usage sync credentials
+
+Official VibeCafe device sign-in accepts `{}` and defaults to automatic credential storage. See the [REST login contract](../../docs/en/server/rest-api.md#login-and-usage) for the flow and explicit-storage compatibility. `src/usage/export/secrets.ts` owns the keyring/private-file boundary; automatic saving tries the keyring write first and returns the actual backend. Private files reuse the atomic `writePrivateFile` helper with POSIX 0600/0700 or Windows user ACLs. Directory ACLs include child inheritance so the temporary file is protected before its atomic rename.
+
+`UsageExportService` persists the actual `credential_storage` together with a `credential-cleanup:{id}` metadata entry in the export SQLite store before removing the obsolete backend copy. A cleanup failure does not invalidate a saved credential: the pending entry is retried on another save or server start, including after the destination has been removed. Cold reads use only the recorded backend, never a stale alternate copy. Do not rewrite that field to `auto` or clear a pending cleanup entry to hide a storage failure.
+
+`test/usageExport.integration.ts` covers keyring success, a failing keyring write followed by a real private-file write, cold recovery, repeated sign-in, dual-store failure with an unchanged destination, obsolete-copy cleanup after recovery, and loopback bearer delivery after export consent. The auth exchange and keyring are synthetic; private-file writes and the loopback sink are real. These tests do not prove live VibeCafe approval or access to a user's OS keyring.
+
 ## Connecting an external tool to Kiki
 
 For a caller such as Cursor, Claude Code, or Codex:

@@ -4,7 +4,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { useHost } from '../../../host';
 import { openExternalUrl, reserveExternalBrowserTab, type ExternalBrowserTab } from '../../../host/external';
 import { useI18n } from '../../../i18n';
-import type { UsageExportApi } from '../../../lib/usageExport';
+import { shortId, type UsageExportApi } from '../../../lib/usageExport';
 import { InlineError } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 
@@ -18,19 +18,31 @@ const FAILURE_KEYS: Record<string, I18nKey> = {
   'identity-change-requires-new-destination': 'usage.export.vibeAuth.error.newDestination',
 };
 
-export function UsageExportVibeConnect({ api, begin, credentialStored, disabled, onActivity, onConnected }: {
+export function UsageExportVibeConnect({
+  api,
+  begin,
+  credentialStored,
+  accountFingerprint,
+  disabled,
+  onActivity,
+  onConnected,
+  onDisconnect,
+}: {
   readonly api: UsageExportApi | undefined;
   readonly begin: () => Promise<UsageExportVibeAuth | undefined>;
   readonly credentialStored: boolean;
+  readonly accountFingerprint?: string | undefined;
   readonly disabled: boolean;
   readonly onActivity: (active: boolean) => void;
   readonly onConnected: () => void;
+  readonly onDisconnect?: () => void | Promise<void>;
 }) {
   const { t } = useI18n();
   const host = useHost();
   const [flow, setFlow] = useState<UsageExportVibeAuth | null>(null);
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const active = useRef<UsageExportVibeAuth | null>(null);
   const generation = useRef(0);
@@ -112,9 +124,24 @@ export function UsageExportVibeConnect({ api, begin, credentialStored, disabled,
     catch (failure) { setError(failure); }
     finally { setCancelling(false); }
   };
+  const disconnect = async () => {
+    if (onDisconnect === undefined) return;
+    setDisconnecting(true); setError(null);
+    try {
+      await onDisconnect();
+      setFlow(null);
+    } catch (failure) {
+      setError(failure);
+    } finally {
+      setDisconnecting(false);
+    }
+  };
   const pending = flow?.state === 'pending';
+  const isConnected = flow?.state === 'connected' || (flow === null && credentialStored);
+  const isError = flow?.state === 'error' || flow?.state === 'denied' || flow?.state === 'expired';
+
   return (
-    <section data-usage-export-vibe-connect={flow?.state ?? 'idle'} className="space-y-3 rounded-xl border border-hairline bg-panel p-4">
+    <section data-usage-export-vibe-connect={flow?.state ?? (credentialStored ? 'connected' : 'idle')} className="space-y-3 rounded-xl border border-hairline bg-panel p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[13px] font-semibold text-ink">VibeCafe</p>
         <span className="text-[11.5px] text-ink-faint">vibecafe.ai</span>
@@ -131,11 +158,57 @@ export function UsageExportVibeConnect({ api, begin, credentialStored, disabled,
           </div>
           <a href={flow.verification_uri} target="_blank" rel="noopener noreferrer" className="block break-all text-[11px] text-ink-faint underline">{flow.verification_uri}</a>
         </>
+      ) : isConnected ? (
+        <div className="space-y-2.5">
+          <div className="flex items-center gap-2">
+            <span aria-hidden className="h-2 w-2 rounded-full bg-success" />
+            <p role="status" className="text-[12.5px] font-medium text-ink">
+              {t(flow?.state === 'connected' ? 'usage.export.vibeAuth.connected' : 'usage.export.vibeAuth.stored')}
+            </p>
+          </div>
+          {accountFingerprint ? (
+            <p data-usage-export-vibe-account className="font-mono text-[11.5px] text-ink-soft">
+              {t('usage.export.detail.identity', { fingerprint: shortId(accountFingerprint) })}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              data-usage-export-vibe-login
+              className={SECONDARY_BUTTON}
+              disabled={disabled || starting || disconnecting || api === undefined}
+              onClick={() => void start()}
+            >
+              {t(starting ? 'usage.export.vibeAuth.starting' : 'usage.export.vibeAuth.reconnect')}
+            </button>
+            {onDisconnect ? (
+              <button
+                type="button"
+                data-usage-export-vibe-disconnect
+                className={SECONDARY_BUTTON}
+                disabled={disabled || starting || disconnecting || api === undefined}
+                onClick={() => void disconnect()}
+              >
+                {t('usage.export.vibeAuth.disconnect')}
+              </button>
+            ) : null}
+          </div>
+        </div>
       ) : (
         <>
-          {flow !== null ? <p role="status" className="text-[12px] text-ink-soft">{t(flow.state === 'error' ? FAILURE_KEYS[flow.error_category ?? ''] ?? 'usage.export.vibeAuth.error' : `usage.export.vibeAuth.${flow.state}` as 'usage.export.vibeAuth.connected')}</p> : credentialStored ? <p role="status" className="text-[12px] text-ink-soft">{t('usage.export.vibeAuth.stored')}</p> : null}
-          <button type="button" data-usage-export-vibe-login className={PRIMARY_BUTTON} disabled={disabled || starting || api === undefined} onClick={() => void start()}>
-            {t(starting ? 'usage.export.vibeAuth.starting' : flow?.state === 'connected' || credentialStored ? 'usage.export.vibeAuth.reconnect' : flow === null ? 'usage.export.vibeAuth.login' : 'usage.export.vibeAuth.retry')}
+          {flow !== null ? (
+            <p role="status" className={`text-[12px] ${isError ? 'text-danger' : 'text-ink-soft'}`}>
+              {t(flow.state === 'error' ? FAILURE_KEYS[flow.error_category ?? ''] ?? 'usage.export.vibeAuth.error' : `usage.export.vibeAuth.${flow.state}` as 'usage.export.vibeAuth.connected')}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            data-usage-export-vibe-login
+            className={PRIMARY_BUTTON}
+            disabled={disabled || starting || api === undefined}
+            onClick={() => void start()}
+          >
+            {t(starting ? 'usage.export.vibeAuth.starting' : flow === null ? 'usage.export.vibeAuth.login' : 'usage.export.vibeAuth.retry')}
           </button>
         </>
       )}

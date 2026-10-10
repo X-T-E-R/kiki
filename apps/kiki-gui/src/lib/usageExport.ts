@@ -33,6 +33,10 @@ export const USAGE_EXPORT_FLAG = 'usage_export';
 export const USAGE_EXPORT_QUERY_KEY = 'usage-export';
 export const HALF_HOUR_MS = 1_800_000;
 
+export function shortId(value: string): string {
+  return value.length <= 12 ? value : `${value.slice(0, 12)}…`;
+}
+
 /**
  * The typed facade itself, reached through the public klient surface — the GUI
  * never re-declares the protocol or builds a private fetch path. `rest` is

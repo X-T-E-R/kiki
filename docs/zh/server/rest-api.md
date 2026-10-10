@@ -122,9 +122,11 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `POST /api/usage-export/auth/{id}/poll` | 轮询该次登录 |
 | `POST /api/usage-export/auth/{id}/cancel` | 取消该次登录 |
 
-`vibecafe.ai` 目的地的登录方式与 VibeCafe 自己一致，而且只有官方服务提供这一种。`POST /api/usage-export/destinations/{id}/auth/begin` 只接收凭据的存放方式（`keyring` 或 `private-file`）——没有地址、client id 或密钥要填，服务地址固定为 `https://vibecafe.ai`。返回里带 `flow_id`、`state`、`user_code`、`verification_uri`、`expires_at` 和 `poll_after_ms`；按它给的间隔用 `POST /api/usage-export/auth/{id}/poll` 轮询，用 `POST /api/usage-export/auth/{id}/cancel` 取消。`state` 从 `pending` 变成 `connected`、`cancelled`、`denied`、`expired` 或 `error`，不是 `connected` 时由 `error_category` 说明原因。
+官方 `vibecafe.ai` 目的地登录时，向 `POST /api/usage-export/destinations/{id}/auth/begin` 发送 `{}` 即可。省略 `storage` 默认为 `auto`：Kiki 将批准后的凭据保存到系统密钥链，密钥链写入失败时自动改存受文件权限保护的私有文件；文件并未静态加密。无需填写地址、client id 或密钥，服务地址固定为 `https://vibecafe.ai`。已有显式 `keyring` 请求仍只使用密钥链；显式 `private-file` 请求仍须提供 `acknowledge_file_storage: true`。Webhook 和脚本的凭据存储选择不变。
 
-登录完成只是把凭据存下来，并不会自动开始外送。目的地仍保持 `disabled`，要等你预览过内容再启用，和手动配置的用途地一样。指向自定义地址的目的地、或者你自己提供密钥的那种，走的是手动路径；在那里发起这种登录会得到 `vibe-auth-official-only`，表示此方式不可用。
+返回包含 `flow_id`、`state`、`user_code`、`verification_uri`、`expires_at` 和 `poll_after_ms`。按返回间隔用 `POST /api/usage-export/auth/{id}/poll` 轮询，或用 `POST /api/usage-export/auth/{id}/cancel` 取消。流程从 `pending` 变成 `connected`、`cancelled`、`denied`、`expired` 或 `error`。自动保存的两种后端都失败时，返回 `error` 和 `error_category: "vibe-auth-storage-failed"`；恢复服务器凭据目录或密钥链的访问权限后，重新发起登录。
+
+`connected` 表示凭据已保存，不代表已启用外送。目的地回到 `draft`，保持 `enabled: false`，清除外送授权；预览内容后再启用。`credential_storage` 返回实际使用的 `keyring` 或 `private-file`，重启后仍按该落点读取。自定义地址目的地使用手动凭据，在那里发起设备登录会返回 `vibe-auth-official-only`。
 
 #### 供应商与外部服务剩余额度
 

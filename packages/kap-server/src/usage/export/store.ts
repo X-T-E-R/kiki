@@ -68,6 +68,9 @@ export class UsageExportStore {
   }
   meta(key: string): string | null { return (this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as Row | undefined)?.['value'] as string | undefined ?? null; }
   setMeta(key: string, value: string): void { this.assertWriter(); this.db.prepare('INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  pendingCredentialCleanup(): string[] {
+    return (this.db.prepare("SELECT key FROM meta WHERE key GLOB 'credential-cleanup:*' AND value IN ('keyring','private-file')").all() as Row[]).map((row) => String(row['key']).slice('credential-cleanup:'.length));
+  }
   installationKey(): string { let key = this.meta('installation-key'); if (key === null) { key = randomBytes(32).toString('hex'); this.setMeta('installation-key', key); } return key; }
   list(): UsageExportDestination[] { return (this.db.prepare('SELECT data FROM destinations ORDER BY id').all() as Row[]).map((row) => usageExportDestinationSchema.parse(JSON.parse(String(row['data'])))); }
   get(id: string): UsageExportDestination { const row = this.db.prepare('SELECT data FROM destinations WHERE id=?').get(id) as Row | undefined; if (row === undefined) throw new Error('destination-not-found'); return usageExportDestinationSchema.parse(JSON.parse(String(row['data']))); }
@@ -75,6 +78,12 @@ export class UsageExportStore {
   save(destination: UsageExportDestination): void {
     this.assertWriter(); const clean = usageExportDestinationSchema.parse(destination);
     this.db.prepare('INSERT INTO destinations VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(clean.id, JSON.stringify(clean), randomBytes(32).toString('hex'));
+  }
+  saveWithMetadata(destination: UsageExportDestination, metadata: Readonly<Record<string, string>>): void {
+    this.transaction(() => {
+      this.save(destination);
+      for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
+    });
   }
   update(id: string, change: Partial<UsageExportDestination>): UsageExportDestination { const next = { ...this.get(id), ...change }; this.save(next); return next; }
   updateWithMetadata(id: string, change: Partial<UsageExportDestination>, metadata: Readonly<Record<string, string>>, refresh = false): UsageExportDestination {

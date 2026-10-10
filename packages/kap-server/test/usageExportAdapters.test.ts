@@ -255,7 +255,7 @@ describe('official VibeCafe device connection', () => {
       f.tick(); f.send.mockResolvedValue({ apiKey: 'vbu_SYNTHETIC_APPROVED_KEY', apiUrl: 'https://vibecafe.ai' });
       const approved = await f.auth.poll(flow.flow_id);
       expect(approved.state).toBe('connected');
-      expect(f.save).toHaveBeenCalledWith({ draft: { id: f.destination.id, label: 'VibeCafe', target: f.destination.target, scope: f.destination.scope, schedule_minutes: 30 }, secret: { value: 'vbu_SYNTHETIC_APPROVED_KEY', storage: 'keyring' } });
+      expect(f.save).toHaveBeenCalledWith({ draft: { id: f.destination.id, label: 'VibeCafe', target: f.destination.target, scope: f.destination.scope, schedule_minutes: 30 }, secret: { value: 'vbu_SYNTHETIC_APPROVED_KEY', storage: 'keyring', acknowledge_file_storage: undefined } }, false);
       expect(JSON.stringify(approved)).not.toMatch(/DEVICE_SECRET|vbu_/);
       await f.auth.poll(flow.flow_id); expect(f.save).toHaveBeenCalledTimes(1);
     } finally { await f.auth.close(); }
