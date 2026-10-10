@@ -97,6 +97,7 @@ export const promptSubmissionSchema = z.object({
   // bookkeeping to that turn exactly. Omit to let the engine assign one.
   prompt_id: z.string().min(1).optional(),
   persona_greeting_reply: z.boolean().optional(),
+  skills: z.array(z.object({ name: z.string().min(1), args: z.string().optional() })).min(1).optional(),
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 

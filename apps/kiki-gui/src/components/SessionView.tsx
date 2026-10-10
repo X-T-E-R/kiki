@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, Session } from '@kiki/protocol';
+import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session } from '@kiki/protocol';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -1059,6 +1059,28 @@ export function resolveProfileSwitchSubmission(input: {
     model: sendModel ? input.model : undefined,
     thinking: sendThinking ? input.thinking : undefined,
     permissionMode: sendPermission ? input.permissionMode : undefined,
+  };
+}
+
+export function resolveControlledSkillSubmission(input: Parameters<typeof resolveProfileSwitchSubmission>[0] & {
+  name: string;
+  args: string;
+  userInput: string;
+  attachments: readonly ComposerAttachment[];
+}): PromptSubmission | undefined {
+  const controls = resolveProfileSwitchSubmission(input);
+  if (!input.modelTouched && !input.effortTouched && input.permissionTouched !== true &&
+    controls.profile === undefined && controls.execution === undefined) return undefined;
+  const content = buildPromptContent(input.userInput, input.attachments);
+  if (content === null) return undefined;
+  return {
+    content,
+    skills: [{ name: input.name, args: input.args === '' ? undefined : input.args }],
+    profile: controls.profile,
+    execution: controls.execution,
+    model: controls.model,
+    thinking: controls.thinking,
+    permission_mode: controls.permissionMode,
   };
 }
 
@@ -2674,6 +2696,15 @@ export function SessionView({
           draft: userInput ?? draftRef.current,
           attachments: composerAttachments,
         };
+        const controlled = resolveControlledSkillSubmission({
+          name, args, userInput: userInput ?? `/${name} ${args}`.trim(), attachments: composerAttachments,
+          pendingProfile, boundProfile, pendingExecution, boundExecution,
+          modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
+          effortTouched: effortTouched && composerSelection.effortChoice === effortChoice,
+          model: effectiveModel, thinking: effectiveEffort,
+          permissionTouched: permissionTouchedRef.current,
+          permissionMode: permissionOverride ?? state.permissionMode,
+        });
         // Returned for the composer's send latch, same contract as `send`.
         return activateSkillWithConditionalClear({
           prepare:
@@ -2683,12 +2714,21 @@ export function SessionView({
                     agent_config: { goal_objective: goalObjectiveOverride },
                   })
               : undefined,
-          activate: () =>
-            client.activateSkill(sessionId, name, {
-              args: activation.args === '' ? undefined : activation.args,
-              user_input: userInput,
-              attachments: activation.attachments,
-            }),
+          activate: () => controlled === undefined
+            ? client.activateSkill(sessionId, name, {
+                args: activation.args === '' ? undefined : activation.args,
+                user_input: userInput,
+                attachments: activation.attachments,
+              })
+            : client.submitPrompt(sessionId, controlled).then((result) => {
+                if (controlled.profile !== undefined || controlled.execution !== undefined) {
+                  setPendingProfile(undefined);
+                  setPendingExecution(undefined);
+                  clearTouchedControls();
+                  void controller.refreshSession();
+                }
+                return result;
+              }),
           submitted,
           current: () => ({
             draft: draftRef.current,
