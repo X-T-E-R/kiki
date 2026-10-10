@@ -994,6 +994,24 @@ describe('NbSearchService', () => {
     expect(second.search).toHaveBeenCalled();
   });
 
+  it('reuses an unchanged captured runtime and rebuilds on every supported proxy environment change', async () => {
+    const env: NodeJS.ProcessEnv = {};
+    ix.get(INbSearchSourceStore).withSource = async (reuse, _config, use) => use({ env, status: { reuse_local_config: reuse, layers: ['defaults', 'environment', 'kiki'], local_config: 'ignored', availability: 'ready', issues: [] } });
+    createRuntimeMock.mockImplementation(() => stubService() as unknown as NbSearchRuntime);
+    const service = ix.get(INbSearchService);
+    await service.search('first');
+    await service.search('same environment');
+    expect(createRuntimeMock).toHaveBeenCalledTimes(1);
+    for (const [index, name] of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'].entries()) {
+      env[name] = name.toUpperCase() === 'NO_PROXY' ? 'example.com' : 'http://127.0.0.1:7890';
+      await service.search('changed environment');
+      expect(createRuntimeMock).toHaveBeenCalledTimes(index + 2);
+      expect(createRuntimeMock).toHaveBeenLastCalledWith(expect.objectContaining({ env: expect.objectContaining({ [name]: env[name] }) }));
+      await service.search('unchanged environment');
+      expect(createRuntimeMock).toHaveBeenCalledTimes(index + 2);
+    }
+  });
+
   it('reads key usage only on demand through the real donor, caches remote GETs, and returns unknown for unsupported balances without secrets', async () => {
     const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
     await mkdir(resolve('.tmp'), { recursive: true });
