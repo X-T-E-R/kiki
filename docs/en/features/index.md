@@ -12,12 +12,12 @@ New to Kiki? Start with [Installation](/en/getting-started/installation), then c
 
 | Page | What it covers |
 | --- | --- |
-| [One workbench, many lines](/en/features/workbench) | The lead session, its dispatched subagents, per-role models, and background tasks |
-| [Agent Profiles](/en/features/agents) | Profiles as reusable roles: model and effort, instructions, tools, and dispatch |
+| [One workbench, many lines](/en/features/workbench) | The lead session, its dispatched subagents, per-agent models, and background tasks |
+| [Agent Profiles](/en/features/agents) | Profiles as reusable agents: model and effort, instructions, tools, and dispatch |
 | [Every layer is yours](/en/features/freedom) | Prompt overrides, connections and OAuth, permission modes, and hooks |
 | [Work that runs long](/en/features/long-work) | Goals, the message queue, scheduled tasks, the task board, the context window, and memory |
 | [Roles you can talk to](/en/features/people) | Personas, their daily conversation entry, their memory, and rooms |
-| [The daily driver](/en/features/daily) | The timeline, annotations, the "needs you" tray, the right rail, and the usage page |
+| [The daily driver](/en/features/daily) | The timeline, annotations, the "needs you" tray, the right rail, and the usage page: cost, concurrency rules, and external sync |
 | [Your data, your machines](/en/features/spaces) | Spaces, remote connections, thread bridges, Web access, and in-session SSH |
 | [Make it yours to extend](/en/features/extend) | Plugins, skills, MCP servers, and search and retrieval |
 | [Bring your history, meet other tools](/en/features/ecosystem) | Importing another tool's history, using Kiki in an editor, and Kiki as a service |

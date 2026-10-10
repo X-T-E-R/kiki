@@ -3,9 +3,67 @@ import { useData, withBase } from 'vitepress'
 import { computed } from 'vue'
 import KimiLogo from './KimiLogo.vue'
 
-const { lang } = useData()
+const { frontmatter, lang, page } = useData()
 
 const isZh = computed(() => lang.value.startsWith('zh'))
+
+interface HeroAction {
+  theme?: 'brand' | 'alt'
+  text: string
+  link: string
+}
+
+interface HeroFrontmatter {
+  name?: string
+  text?: string
+  tagline?: string
+  actions?: HeroAction[]
+}
+
+/**
+ * The locale's `index.md` `hero` frontmatter is the only source of the hero's
+ * words and buttons. VitePress's own VPHero is hidden by HomeLayout, so this
+ * component is what a reader actually sees; keeping a second copy here is how
+ * the visible headline once drifted from the written one.
+ */
+const hero = computed<HeroFrontmatter>(() => frontmatter.value.hero ?? {})
+
+/**
+ * Frontmatter links are written relative to the page (`./getting-started/…`),
+ * the way VitePress's default hero reads them. Resolve them against the page's
+ * own directory so `en/index.md` yields `/en/getting-started/installation`,
+ * then apply the site base like every other link in this theme.
+ */
+function resolveHeroLink(link: string): string {
+  if (/^[a-z][a-z\d+.-]*:/i.test(link) || link.startsWith('//')) return link
+  if (link.startsWith('/')) return withBase(link)
+  const pageDir = page.value.relativePath.replace(/[^/]*$/, '')
+  return withBase(`/${pageDir}${link.replace(/^\.\//, '')}`)
+}
+
+/**
+ * The brand action leads with a chevron, the first alternate action ("see what
+ * it does") carries an arrow, and any later alternate stays a plain link — the
+ * same visual weight the hero has always given its three buttons.
+ */
+const actions = computed(() => {
+  let altSeen = 0
+  return (hero.value.actions ?? []).map((action) => {
+    const isBrand = action.theme !== 'alt'
+    const icon = isBrand ? 'chevron' : altSeen++ === 0 ? 'arrow' : null
+    return {
+      text: action.text,
+      href: resolveHeroLink(action.link),
+      variant: isBrand ? 'primary' : 'ghost',
+      icon,
+    }
+  })
+})
+
+/** The screenshot's description belongs to the screenshot, so it stays here. */
+const heroAlt = computed(() => isZh.value
+  ? 'Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息同屏可见。'
+  : 'The Kiki workbench: the subagents a lead session dispatched, an active goal, and a queued message, all on one screen.')
 
 /**
  * The same frame the README leads with, so a GitHub visitor and a docs visitor
@@ -26,32 +84,6 @@ const heroShot = computed(() => withBase(isZh.value
  */
 const HERO_FRAME_WIDTH = 1440
 const HERO_FRAME_HEIGHT = 900
-
-const copy = computed(() => isZh.value
-  ? {
-      titleLead: 'Kiki',
-      titleAccent: 'AI Agent',
-      tagline: '跑在你自己机器上的开源 AI 智能体工作台：一个主会话带一队子智能体，长任务它自己推进，模型、提示词、角色、空间，每一层都归你。',
-      heroAlt: 'Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息同屏可见。',
-      primaryText: '快速上手',
-      primaryHref: '/zh/getting-started/installation',
-      secondaryText: '看看它能做什么',
-      secondaryHref: '/zh/features/index',
-      changelogText: '发布说明',
-      changelogHref: '/zh/release-notes/changelog',
-    }
-  : {
-      titleLead: 'Kiki',
-      titleAccent: 'AI Agent',
-      tagline: 'An open-source AI agent workbench on your machine: one lead session with a team of subagents, long work it pushes on by itself, and every layer — model, prompt, role, space — yours to set.',
-      heroAlt: 'The Kiki workbench: the subagents a lead session dispatched, an active goal, and a queued message, all on one screen.',
-      primaryText: 'Get Started',
-      primaryHref: '/en/getting-started/installation',
-      secondaryText: 'See what it does',
-      secondaryHref: '/en/features/index',
-      changelogText: 'Release Notes',
-      changelogHref: '/en/release-notes/changelog',
-    })
 </script>
 
 <template>
@@ -62,33 +94,32 @@ const copy = computed(() => isZh.value
         <KimiLogo :size="72" />
       </div>
       <h1 class="KikiHero__title">
-        <span class="KikiHero__brand">{{ copy.titleLead }}</span>
-        <span class="KikiHero__dot" />
-        <span class="KikiHero__sub">{{ copy.titleAccent }}</span>
+        <span class="KikiHero__brand">{{ hero.name }}</span>
+        <span v-if="hero.text" class="KikiHero__dot" />
+        <span v-if="hero.text" class="KikiHero__sub">{{ hero.text }}</span>
       </h1>
-      <p class="KikiHero__tagline">{{ copy.tagline }}</p>
-      <div class="KikiHero__actions">
-        <a class="KikiBtn KikiBtn--primary" :href="withBase(copy.primaryHref)">
-          {{ copy.primaryText }}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <p v-if="hero.tagline" class="KikiHero__tagline">{{ hero.tagline }}</p>
+      <div v-if="actions.length" class="KikiHero__actions">
+        <a
+          v-for="action in actions"
+          :key="action.href"
+          :class="['KikiBtn', `KikiBtn--${action.variant}`]"
+          :href="action.href"
+        >
+          {{ action.text }}
+          <svg v-if="action.icon === 'chevron'" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-        </a>
-        <a class="KikiBtn KikiBtn--ghost" :href="withBase(copy.secondaryHref)">
-          {{ copy.secondaryText }}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <svg v-else-if="action.icon === 'arrow'" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-        </a>
-        <a class="KikiBtn KikiBtn--ghost" :href="withBase(copy.changelogHref)">
-          {{ copy.changelogText }}
         </a>
       </div>
       <figure class="KikiHero__shot">
         <img
           class="KikiHero__shotImg"
           :src="heroShot"
-          :alt="copy.heroAlt"
+          :alt="heroAlt"
           :width="HERO_FRAME_WIDTH"
           :height="HERO_FRAME_HEIGHT"
           loading="eager"
@@ -151,8 +182,14 @@ const copy = computed(() => isZh.value
 
 .KikiHero__title {
   display: inline-flex;
+  /* The accent slot is the positioning line, not a two-word label, so on a
+     phone it must be able to drop under the brand rather than push the page
+     wider than the screen. */
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: center;
+  row-gap: 0.12em;
+  max-width: 100%;
   font-family: var(--kiki-font-display);
   font-size: clamp(42px, 7vw, 82px);
   font-weight: 600;
@@ -180,6 +217,7 @@ const copy = computed(() => isZh.value
   font-weight: 500;
   font-size: 0.55em;
   letter-spacing: -0.01em;
+  line-height: 1.25;
   color: var(--vp-c-text-2);
 }
 

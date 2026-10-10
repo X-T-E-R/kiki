@@ -1,0 +1,86 @@
+{
+  "schema": "kiki-site-assets@1",
+  "deployed": false,
+  "siteBase": "/kiki/",
+  "intendedOrigin": "https://x-t-e-r.github.io/kiki",
+  "releaseState": "pending",
+  "note": "These paths are the GitHub Pages locations docs-deploy publishes from docs/public. This file does not mean they are already deployed. Dark masters stay in marketing/shots; the docs site publishes the light frames only, which is the existing docs copy rule.",
+  "assets": [
+    {
+      "id": "wl-hero-workbench.en.light",
+      "role": "master",
+      "locale": "en",
+      "theme": "light",
+      "repoPath": "marketing/shots/wl-hero-workbench.en.light.png",
+      "docsRepoPath": "docs/public/shots/index/wl-20261005-hero-workbench.en.png",
+      "sitePath": "/shots/index/wl-20261005-hero-workbench.en.png",
+      "referencedBy": [
+        "docs/.vitepress/theme/components/HomeHero.vue",
+        "docs/en/features/index.md",
+        "README.md"
+      ],
+      "bytes": 456838,
+      "width": 2880,
+      "height": 1800,
+      "sha256": "fa986bc109bd9a6bbe6171dd4c1f6e3d4086bf66b3e5d52d9e85d9ce3834148a",
+      "releaseUrl": "https://x-t-e-r.github.io/kiki/shots/index/wl-20261005-hero-workbench.en.png",
+      "releaseState": "pending"
+    },
+    {
+      "id": "wl-hero-workbench.zh.light",
+      "role": "master",
+      "locale": "zh",
+      "theme": "light",
+      "repoPath": "marketing/shots/wl-hero-workbench.zh.light.png",
+      "docsRepoPath": "docs/public/shots/index/wl-20261005-hero-workbench.zh.png",
+      "sitePath": "/shots/index/wl-20261005-hero-workbench.zh.png",
+      "referencedBy": [
+        "docs/.vitepress/theme/components/HomeHero.vue",
+        "docs/zh/features/index.md",
+        "README.zh-CN.md"
+      ],
+      "bytes": 494833,
+      "width": 2880,
+      "height": 1800,
+      "sha256": "8937ecb5b2daabadf2bf580de71c37661e2b6a10313d5996b542dd1b9ccb903c",
+      "releaseUrl": "https://x-t-e-r.github.io/kiki/shots/index/wl-20261005-hero-workbench.zh.png",
+      "releaseState": "pending"
+    },
+    {
+      "id": "wl-hero-workbench.en.dark",
+      "role": "master",
+      "locale": "en",
+      "theme": "dark",
+      "repoPath": "marketing/shots/wl-hero-workbench.en.dark.png",
+      "docsRepoPath": null,
+      "sitePath": null,
+      "referencedBy": [
+        "docs/public/site-assets.json"
+      ],
+      "bytes": 463706,
+      "width": 2880,
+      "height": 1800,
+      "sha256": "74c448ccaab6ef6f07fe3f86bfcaab941aa776ea0626bb1083ba28895b1d63ae",
+      "releaseUrl": null,
+      "releaseState": "pending"
+    },
+    {
+      "id": "wl-hero-workbench.zh.dark",
+      "role": "master",
+      "locale": "zh",
+      "theme": "dark",
+      "repoPath": "marketing/shots/wl-hero-workbench.zh.dark.png",
+      "docsRepoPath": null,
+      "sitePath": null,
+      "referencedBy": [
+        "docs/public/site-assets.json"
+      ],
+      "bytes": 499498,
+      "width": 2880,
+      "height": 1800,
+      "sha256": "7b2c081666e3833d9a9f2d68b0e5de54ea2e71214e7532fcd90085b2fe7599d2",
+      "releaseUrl": null,
+      "releaseState": "pending"
+    }
+  ]
+}
