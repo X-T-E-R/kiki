@@ -134,6 +134,12 @@ export interface SteerPayload {
   readonly input: readonly ContentPart[];
 }
 
+export interface PromptInjectOptions {
+  readonly promptId?: string;
+  readonly userMessageId?: string;
+  readonly retryFingerprint?: string;
+}
+
 export interface PromptLaunchResult {
   readonly turn_id: number;
 }
@@ -235,7 +241,7 @@ export interface IAgentPromptService {
    */
   abort(promptId: string, reason?: Error): boolean;
   drain(reason?: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
-  inject(message: ContextMessage): Promise<Turn | undefined>;
+  inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
   clear(): void;
   readonly hooks: Hooks<{ onBeforeSubmitPrompt: PromptSubmitContext }>;

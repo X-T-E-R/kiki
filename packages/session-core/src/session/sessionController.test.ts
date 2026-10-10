@@ -806,6 +806,31 @@ describe('SessionController pipeline', () => {
     } finally { controller.close(); }
   });
 
+  it('preserves captured bundled skills and controls across an unknown response retry', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<PromptSubmitResult>();
+    const content: MessageContent[] = [{ type: 'text', text: 'review this',
+      presentation: { spans: [{ start: 0, end: 6, kind: 'selection', quote: 'review' }] } },
+      { type: 'image', source: { kind: 'url', url: 'https://example.test/review.png' } }];
+    const input = { promptId: 'captured-skill', text: 'review this', content, skills: [{ name: 'review', args: '--fix' }],
+      profile: 'review-profile', execution: { executor: 'native' }, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual' as const, planGate: 'gated' as const, planMode: true };
+    client.submitPrompt.mockReturnValueOnce(held.promise).mockResolvedValue({ prompt_id: input.promptId,
+      user_message_id: input.promptId, status: 'running', content, created_at: '2026-01-01T00:00:02Z' });
+    try {
+      const first = controller.sendPrompt(input);
+      expect(client.submitPrompt.mock.calls[0]![1]).toMatchObject({ prompt_id: 'captured-skill', skills: input.skills,
+        content, profile: 'review-profile', execution: { executor: 'native' }, model: 'selected-model', thinking: 'high' });
+      const failed = expect(first).rejects.toThrow('response unavailable');
+      held.reject(new TypeError('response unavailable'));
+      await failed;
+      await controller.sendPrompt(input);
+      expect(client.submitPrompt.mock.calls[1]![1]).toEqual(client.submitPrompt.mock.calls[0]![1]);
+      await controller.sendPrompt({ text: 'new explicit action' });
+      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).not.toBe(input.promptId);
+    } finally { controller.close(); }
+  });
+
   it('forwards an explicit persona greeting reply without opting ordinary prompts in', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({

@@ -2004,6 +2004,7 @@ export class SessionController {
     afterModelSwitch?: string;
     modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     promptId?: string;
+    skills?: import('@kiki/protocol').PromptSubmission['skills'];
     personaGreetingReply?: boolean;
   }): Promise<PromptSubmitResult> {
     assertSessionWritable(this.state);
@@ -2025,6 +2026,7 @@ export class SessionController {
       after_model_switch: input.afterModelSwitch,
       model_switch_mode: input.modelSwitchMode,
       prompt_id: input.promptId,
+      skills: input.skills,
       persona_greeting_reply: input.personaGreetingReply,
     });
     const projection = projectMessageContent(result.content);

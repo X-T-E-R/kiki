@@ -278,6 +278,8 @@ Skill activation accepts an optional string `user_input` in the request body alo
 
 Older clients can omit `user_input`; the server then derives slash text from the skill name and `args`. Existing history without `userInput` keeps its previous skill-document display.
 
+To recover a lost activation response, choose an optional `prompt_id` before the first request and keep the complete skill name, `args`, `user_input`, and `attachments` unchanged on a manual retry. A matching accepted request returns the original `{ activated: true, skill_name }` response without activating the skill again or rereading attachment uploads. Changing the payload under that ID returns `40938`; a new activation needs a new ID. Omitting `prompt_id` preserves the unkeyed activation behavior and cannot identify a lost response for safe replay.
+
 ### SSH hosts
 
 These endpoints manage SSH hosts available to sessions, not a directory of remote Kiki installations. Host reads accept an optional `workspace_id` to select workspace overrides.

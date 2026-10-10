@@ -278,6 +278,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 旧客户端可省略 `user_input`；服务端会从技能名和 `args` 生成斜杠文本。已有历史中不含 `userInput` 的记录仍按原方式显示技能文档。
 
+为恢复丢失的激活响应，在首次请求前指定可选 `prompt_id`，人工重试时保持技能名、`args`、`user_input` 和 `attachments` 完整不变。匹配的已接受请求返回原 `{ activated: true, skill_name }` 响应，不会再次激活技能或重读上传附件。同一 ID 下改变内容会返回 `40938`；新的激活动作需要新 ID。省略 `prompt_id` 时保留原无身份激活行为，无法识别丢失响应并安全重放。
+
 ### SSH 主机
 
 这些接口管理会话可用的 SSH 主机，不是远端 Kiki 安装目录。主机读取接口可携带 `workspace_id`，选择对应工作区的覆盖值。

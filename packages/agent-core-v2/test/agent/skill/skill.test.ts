@@ -14,7 +14,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import type { ContextMessage } from '#/agent/contextMemory/types';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, promptRetryFor } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -574,6 +574,87 @@ describe('AgentSkillService busy delivery (harness)', () => {
 
   afterEach(async () => {
     await ctx.dispose();
+  });
+
+  it('commits managed activation receipts through inject and enqueue delivery', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
+    const gate = createControlledPromise<void>();
+    let generateCalls = 0;
+    const generate: GenerateFn = async (_chat, _systemPrompt, _tools, _history, callbacks, options) => {
+      generateCalls += 1;
+      options?.onRequestStart?.();
+      if (generateCalls === 1) await gate;
+      options?.signal?.throwIfAborted();
+      await callbacks?.onMessagePart?.({ type: 'text', text: `response-${String(generateCalls)}` });
+      options?.onStreamEnd?.();
+      return {
+        id: `managed-${String(generateCalls)}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
+        usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+        finishReason: 'completed', rawFinishReason: 'stop', traceId: null,
+      };
+    };
+    ctx = createTestAgent(skillServices(catalog), { generate, persistence: new InMemoryWireRecordPersistence() });
+    const prompt = ctx.get(IAgentPromptService);
+    const promptRetry = promptRetryFor(prompt);
+    const initial = ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+    await vi.waitFor(() => expect(generateCalls).toBe(1));
+
+    const active = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'active', userInput: '/workflow active', promptId: 'skill-active', retryFingerprint: 'fingerprint-active',
+    });
+    expect(active.turn_id).toBe(0);
+    await expect(promptRetry.lookup('skill-active', 'fingerprint-active')).resolves.toMatchObject({
+      status: 'running', userMessageId: 'skill-active',
+    });
+    await expect(ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'active', userInput: '/workflow active', promptId: 'skill-active', retryFingerprint: 'fingerprint-active',
+    })).rejects.toMatchObject({ code: ErrorCodes.INTERNAL });
+    expect(generateCalls).toBe(1);
+
+    gate.resolve();
+    await initial;
+    await ctx.untilTurnEnd();
+    const replayActive = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'active', userInput: '/workflow active', promptId: 'skill-active', retryFingerprint: 'fingerprint-active',
+    });
+    expect(replayActive.turn_id).toBe(0);
+    expect(generateCalls).toBe(2);
+
+    const idle = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'idle', promptId: 'skill-idle', retryFingerprint: 'fingerprint-idle',
+    });
+    expect(idle.turn_id).toBe(1);
+    await expect(promptRetry.lookup('skill-idle', 'fingerprint-idle')).resolves.toMatchObject({
+      status: 'running', userMessageId: 'skill-idle',
+    });
+    const replayIdle = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'idle', promptId: 'skill-idle', retryFingerprint: 'fingerprint-idle',
+    });
+    expect(replayIdle.turn_id).toBe(1);
+    expect(generateCalls).toBe(2);
+    await ctx.untilTurnEnd();
+    expect(generateCalls).toBe(3);
+  });
+
+  it('keeps the accepted managed receipt after idle launch failure for retry', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
+    const generate: GenerateFn = async () => {
+      throw new Error('fixture provider failed after admission');
+    };
+    ctx = createTestAgent(skillServices(catalog), { generate });
+    const prompt = ctx.get(IAgentPromptService);
+    const launched = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'retry-me', promptId: 'skill-launch-failure', retryFingerprint: 'fingerprint-failure',
+    });
+    expect(launched.turn_id).toBe(0);
+    await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
+    await expect(promptRetryFor(prompt).lookup('skill-launch-failure', 'fingerprint-failure')).resolves.toMatchObject({
+      status: 'running', userMessageId: 'skill-launch-failure',
+    });
   });
 
   it('steers the activation into the running turn and launches a new one when idle', async () => {

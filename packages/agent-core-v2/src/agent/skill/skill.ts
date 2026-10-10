@@ -8,6 +8,8 @@ export interface SkillActivationInput {
   readonly args?: string;
   readonly userInput?: string;
   readonly content?: readonly ContentPart[];
+  readonly promptId?: string;
+  readonly retryFingerprint?: string;
 }
 
 export interface PromptSkillActivation {
