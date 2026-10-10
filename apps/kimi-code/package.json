@@ -1,6 +1,6 @@
 {
   "name": "@kiki/cli",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Kiki local agent workspace and shared daemon",
   "license": "MIT",
   "author": "Moonshot AI",
