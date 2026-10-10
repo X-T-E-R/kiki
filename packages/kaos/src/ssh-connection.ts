@@ -422,7 +422,7 @@ export class SshConnectionManager {
         const message = error instanceof Error ? error.message : String(error);
         const fatal = error instanceof SshKnownHostVerificationError ||
           /host key changed|Host key verification failed|All configured authentication methods failed/i.test(message);
-        slot.retryAfter = fatal || slot.failures >= 8
+        slot.retryAfter = fatal
           ? Infinity
           : Date.now() + BACKOFF_MS[Math.min(slot.failures - 1, BACKOFF_MS.length - 1)]!;
         this.emit(hostId, slot, 'failed');

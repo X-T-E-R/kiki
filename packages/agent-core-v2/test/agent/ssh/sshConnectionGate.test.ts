@@ -49,6 +49,7 @@ afterEach(async () => {
 async function fixture(options: {
   mode?: 'auto' | 'yolo'; agentId?: string; decision?: 'approved' | 'rejected';
   home?: string; records?: readonly SshHostRecord[]; target?: ResolvedSshConfig;
+  restoreMembership?: Promise<void>;
 } = {}) {
   const home = options.home ?? await mkdtemp(join(tmpdir(), 'kiki-ssh-approval-'));
   if (options.home === undefined) homes.push(home);
@@ -118,18 +119,25 @@ async function fixture(options: {
     if (name === 'ssh_hosts') announcement = provider as typeof announcement;
     return register(name, provider);
   });
+  const metadata = ix.get(ISessionMetadata);
+  if (options.restoreMembership !== undefined) {
+    const read = metadata.read.bind(metadata);
+    vi.spyOn(metadata, 'read').mockImplementationOnce(async () => {
+      await options.restoreMembership;
+      return read();
+    });
+  }
   const service = ix.get(ISshConnectionGateService);
-  await service.ready;
+  if (options.restoreMembership === undefined) await service.ready;
   const state = ix.get(ISessionStateService);
   const context = ix.get(IAgentContextMemoryService);
-  const metadata = ix.get(ISessionMetadata);
   await metadata.ready;
   const documents = ix.get(IAtomicDocumentStore);
-  const call = (host: string, signal = new AbortController().signal) => {
+  const call = (host?: string, signal = new AbortController().signal, toolName = 'Read', path = '/home/tester/file') => {
     if (gate === undefined) throw new Error('gate not installed');
     return gate({
-      tool: { name: 'Read' }, toolCall: { id: 'tool-call', name: 'Read' },
-      args: { host, path: '/home/tester/file' }, signal,
+      tool: { name: toolName }, toolCall: { id: 'tool-call', name: toolName },
+      args: { host, path }, signal,
       turnId: 1, toolCalls: [],
     } as unknown as BeforeResolveToolContext);
   };
@@ -167,6 +175,74 @@ describe('SSH connection gate before tool resolution', () => {
       execution: { approvalRule: explicit } })).toBeDefined();
     expect(matchPermissionRule({ rule: { ...rule, pattern: 'Bash@dev' }, toolName: 'Bash',
       execution: { approvalRule: implicit } })).toBeDefined();
+  });
+
+  it('resolves local tools without waiting for unrelated SSH membership restoration', async () => {
+    let release!: () => void;
+    const restoreMembership = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixture({ restoreMembership });
+    try {
+      for (const toolName of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'ReadMediaFile']) {
+        for (const host of [undefined, 'local']) {
+          expect(await Promise.race([
+            f.call(host, undefined, toolName),
+            new Promise<string>((resolve) => setImmediate(() => resolve('blocked on SSH restoration'))),
+          ])).toBeUndefined();
+        }
+      }
+      vi.spyOn(f.runtime, 'inspect').mockReturnValue({ identity: { runtimeId: 'ssh:dev', workspaceId: 'workspace' } } as ReturnType<IAgentRuntimeService['inspect']>);
+      expect(await Promise.race([
+        f.call('local'),
+        new Promise<string>((resolve) => setImmediate(() => resolve('blocked on SSH restoration'))),
+      ])).toBeUndefined();
+      expect(f.hosts.list).not.toHaveBeenCalled();
+      expect(f.approvals.request).not.toHaveBeenCalled();
+      expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await f.service.ready;
+    }
+  });
+
+  it.each(['host', 'workspace', 'uri'] as const)('waits for restored membership before approving a remote %s target', async (selection) => {
+    let release!: () => void;
+    const restoreMembership = new Promise<void>((resolve) => { release = resolve; });
+    const f = await fixture({ restoreMembership, decision: 'rejected' });
+    if (selection === 'workspace') {
+      vi.spyOn(f.runtime, 'inspect').mockReturnValue({ identity: { runtimeId: 'ssh:dev', workspaceId: 'workspace' } } as ReturnType<IAgentRuntimeService['inspect']>);
+    }
+    let settled = false;
+    const pending = f.call(selection === 'host' ? 'dev' : undefined, undefined, 'Read',
+      selection === 'uri' ? 'ssh://dev/home/tester/file' : '/home/tester/file').then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(f.approvals.request).not.toHaveBeenCalled();
+      expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await f.service.ready;
+    }
+    expect(await pending).toContain('not approved');
+    expect(f.state.get(sessionSshHostsKey)).toEqual({});
+    expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
+  });
+
+  it('keeps local tools available when SSH membership restoration fails', async () => {
+    let reject!: (error: Error) => void;
+    const restoreMembership = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    const f = await fixture({ restoreMembership });
+    reject(new Error('TEST_ONLY_SSH_RESTORE_FAILURE'));
+    await expect(f.service.ready).rejects.toThrow('TEST_ONLY_SSH_RESTORE_FAILURE');
+    expect(await f.call()).toBeUndefined();
+    expect(await f.call('local')).toBeUndefined();
+    expect(await f.call('local', undefined, 'Read', 'ssh://dev/home/tester/file')).toContain('disagree');
+    await expect(f.call('dev')).rejects.toThrow('TEST_ONLY_SSH_RESTORE_FAILURE');
+    expect(f.approvals.request).not.toHaveBeenCalled();
+    expect(f.runtime.approveSshTarget).not.toHaveBeenCalled();
   });
 
   it('rejects an unapproved host before adding it to the session', async () => {

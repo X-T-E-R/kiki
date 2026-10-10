@@ -130,7 +130,6 @@ export class SshConnectionGateService extends Disposable {
 
   private async beforeResolve(context: BeforeResolveToolContext): Promise<string | undefined> {
     if (!SSH_TOOLS.has(context.tool.name) || this.runtime.nativeSshEnabled?.() !== true) return undefined;
-    await this.ready;
     const args = context.args as { host?: string; path?: string };
     let target;
     try {
@@ -141,6 +140,7 @@ export class SshConnectionGateService extends Disposable {
     const runtimeId = target.host === undefined ? this.runtime.inspect().identity.runtimeId : target.host;
     const host = runtimeId.startsWith('ssh:') ? runtimeId.slice(4) : runtimeId === 'local' ? undefined : target.host;
     if (host === undefined) return undefined;
+    await this.ready;
     const workspaceId = this.runtime.inspect().identity.workspaceId;
     let snapshot;
     let createdTransient = false;

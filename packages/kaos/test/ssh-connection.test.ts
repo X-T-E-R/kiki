@@ -240,6 +240,48 @@ describe('SSH connection receipts', () => {
     } finally { unsubscribe(); }
   });
 
+  it('recovers from eight transient failures on the next requested attempt while keeping capped backoff and single flight', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const failure = Object.assign(new Error('Example connection temporarily unavailable'), { code: 'ECONNREFUSED' });
+    const create = vi.spyOn(SSHKaos, 'create').mockRejectedValue(failure);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => host(22, path));
+    managers.push(manager);
+    for (const [attempt, delay] of [1000, 2000, 4000, 8000, 16_000, 30_000, 30_000, 30_000].entries()) {
+      await expect(manager.get('transient')).rejects.toBe(failure);
+      expect(manager.status('transient').state).toBe('failed');
+      now += delay - 1;
+      await expect(manager.get('transient')).rejects.toThrow('retrying after a connection failure');
+      expect(create).toHaveBeenCalledTimes(attempt + 1);
+      now += 1;
+    }
+    const connection = {
+      close: vi.fn(async () => {}), onDidDisconnect: vi.fn(() => () => {}), activeProcesses: 0,
+    } as unknown as SSHKaos;
+    create.mockResolvedValue(connection);
+    expect(await Promise.all([manager.get('transient'), manager.get('transient')])).toEqual([connection, connection]);
+    expect(create).toHaveBeenCalledTimes(9);
+    expect(manager.status('transient')).toMatchObject({ state: 'ready', generation: 1 });
+  });
+
+  it('requires explicit retry after an authentication failure even when the backoff time has passed', async () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const failure = new Error('All configured authentication methods failed');
+    const create = vi.spyOn(SSHKaos, 'create').mockRejectedValue(failure);
+    const { path } = await fixture();
+    const manager = new SshConnectionManager(async () => host(22, path));
+    managers.push(manager);
+    await expect(manager.get('authentication')).rejects.toBe(failure);
+    now += 60_000;
+    await expect(manager.get('authentication')).rejects.toThrow('manual intervention');
+    expect(create).toHaveBeenCalledOnce();
+    manager.retry('authentication');
+    await expect(manager.get('authentication')).rejects.toBe(failure);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it('preserves verification reason in the connection receipt and stops retrying fatal verification errors', async () => {
     const verification = new SshKnownHostVerificationError('revoked', 'SSH host key is revoked for examplehost');
     const create = vi.spyOn(SSHKaos, 'create').mockRejectedValue(verification);
