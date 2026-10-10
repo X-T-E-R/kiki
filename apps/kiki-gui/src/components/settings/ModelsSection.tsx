@@ -7,11 +7,15 @@ import type {
   ModelCatalogItem,
   ModelEntity,
   ModelGenerationMigrationPreviewResponse,
+  ModelProtocol,
+  ModelSteeringSource,
   SessionTitleTrigger,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
 import {
+  DEFAULT_MODEL_CAPABILITIES,
+  DEFAULT_MODEL_SUPPORT_EFFORTS,
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
   modelPatchBody,
@@ -21,6 +25,7 @@ import {
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
   sessionTitleSettingsPatch,
+  sortThinkingEffortsForDisplay,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
   writeSettings,
@@ -67,11 +72,26 @@ import {
   type ModelEngineDraft,
 } from './ModelEngineFields';
 import { MainUsagePolicyFields, type SharedUsageEdit, type UsagePolicyView } from './MainUsagePolicyFields';
+import { ModelEditScopeSwitch } from './ModelEditScopeSwitch';
+import { ModelProtocolField } from './ModelProtocolField';
+import { protocolChoiceFrom, protocolCreateField, protocolPatchField, type ModelProtocolChoice } from './modelProtocolDraft';
+import { ModelRecipeField } from './ModelRecipeField';
+import { ModelPromptBodies } from './ModelPromptBodies';
+import { branchSelectionFor, modelPromptsDraft, modelPromptsEqual, modelPromptsPatch, type ModelPromptsDraft } from './modelPromptsDraft';
+import { ModelSteerSources } from './ModelSteerSources';
+import {
+  modelSteerSourcesDraft, steerCadenceProblem, steerScopeFor, steerSourceDraft, steerSourcesEqual, steerSourcesPatch,
+  STEER_SCOPES, STEER_SOURCES,
+  type ModelSteerSourcesDraft, type SteerSourceDraft,
+} from './modelSteerSourceDraft';
+import { scopeDifferenceSummary, type EditScope } from './modelEditScope';
+import { cognitionSlotPatchAtScope, initialSlotText, slotView, type CognitionSlot } from './modelCognitionBodies';
 import {
   EMPTY_USAGE_BRANCH,
   USAGE_POLICY_FIELDS,
   USAGE_POSITIONS,
   usageBranchDraft,
+  countUsageDifferences,
   usageBranchProblem,
   usageEffectiveFor,
   setUsageText,
@@ -99,7 +119,7 @@ import {
   type QuestionGuardDraft,
 } from './questionGuardDraft';
 import { DisclosureChevron, Icon } from '../icons';
-import { isInSubspace } from '../../lib/spaces';
+import { selectGlobalDefaultModel } from './defaultModelSelection';
 import { OriginBadge } from './spaces/OriginBadge';
 import { SidePanel } from '../SidePanel';
 import {
@@ -301,20 +321,11 @@ export function ModelCatalogCard() {
   const selectDefaultModel = async (item: ModelCatalogItem) => {
     setBusy(true);
     setFeedback(null);
+    const selection = selectGlobalDefaultModel(client, queryClient, item);
     try {
-      const echoed = await client.setDefaultModel(item.id);
-      queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({
-        ...current,
-        default_model: echoed.default_model,
-      }));
-      writeSettings({ defaultModel: echoed.default_model });
-      if (item.provider_id !== defaultProvider) {
-        const echoedConfig = await client.patchConfig({ default_provider: item.provider_id });
-        queryClient.setQueryData(['config'], echoedConfig);
-      }
-      ping();
+      if (await selection.completed) ping();
     } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      if (selection.isCurrent()) setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setBusy(false);
     }
@@ -439,7 +450,6 @@ export function GlobalDefaultsCard() {
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const models = modelsQuery.data?.items ?? [];
   const defaultModel = configQuery.data?.default_model ?? '';
-  const defaultProvider = configQuery.data?.default_provider ?? '';
   const titleModel = configQuery.data?.session_title?.model ?? '';
   const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
   const fastModel = configQuery.data?.fast_model ?? '';
@@ -464,22 +474,14 @@ export function GlobalDefaultsCard() {
 
   const pickDefault = async (modelId: string) => {
     const item = models.find((candidate) => candidate.id === modelId);
-    if (item === undefined || modelId === defaultModel) return;
+    if (item === undefined) return;
     setBusy('model');
     setFeedback(null);
+    const selection = selectGlobalDefaultModel(client, queryClient, item);
     try {
-      const echoed = await client.setDefaultModel(item.id);
-      queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({ ...current, default_model: echoed.default_model }));
-      writeSettings({ defaultModel: echoed.default_model });
-      // Inside a space the write lands in the space's own config; re-read so
-      // the row's origin mark reads "This space".
-      if (isInSubspace()) void queryClient.invalidateQueries({ queryKey: ['config'] });
-      if (item.provider_id !== defaultProvider) {
-        queryClient.setQueryData(['config'], await client.patchConfig({ default_provider: item.provider_id }));
-      }
-      ping();
+      if (await selection.completed) ping();
     } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      if (selection.isCurrent()) setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setBusy(null);
     }
@@ -694,7 +696,7 @@ export function ThinkingCard() {
               value={effort}
               disabled={!thinkingEnabled || busy}
               onChange={(value) => void saveThinking(thinkingEnabled, value)}
-              choices={defaultItem.support_efforts.map((level) => ({ value: level, label: effortLabel(level) }))}
+              choices={sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level) }))}
             />
           ) : (
             <input
@@ -762,7 +764,29 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
   );
 }
 
-const DEFAULT_DISCOVERED_CAPABILITIES = ['thinking', 'tool_use'] as const;
+/**
+ * What a newly added model gets when discovery did not say.
+ *
+ * Discovery often reports nothing about a model's capabilities, and a model
+ * added with an empty list is one Kiki cannot use tools with. So a *new* model
+ * starts from the default pair — and only then: whatever discovery actually
+ * reported is kept, with the defaults filling only the gaps. That is the same
+ * rule the model editor applies to a model that has nothing stored, and it is
+ * why a discovery that reports a narrower set is not silently widened.
+ */
+function defaultCapabilitiesFor(discovered: readonly string[] | undefined): string[] {
+  if (discovered === undefined) return [...DEFAULT_MODEL_CAPABILITIES];
+  return [...new Set([...discovered, ...DEFAULT_MODEL_CAPABILITIES])];
+}
+
+/**
+ * Effort levels in reading order, lowest first. Applied when someone edits
+ * the set, never to a stored value that was only opened: reordering on read
+ * would turn an untouched row into a pending change.
+ */
+function sortEfforts(values: readonly string[]): string[] {
+  return [...sortThinkingEffortsForDisplay([...values])];
+}
 
 /** Explicit fetching and a separate, user-confirmed model creation flow. */
 export function CatalogRefreshCard() {
@@ -774,7 +798,11 @@ export function CatalogRefreshCard() {
   const [selected, setSelected] = useState('');
   const [alias, setAlias] = useState('');
   const [context, setContext] = useState(250000);
-  const [capabilities, setCapabilities] = useState<string[]>([...DEFAULT_DISCOVERED_CAPABILITIES]);
+  const [capabilities, setCapabilities] = useState<string[]>([...DEFAULT_MODEL_CAPABILITIES]);
+  // Efforts are seeded, never imposed: a discovery that reports its own set
+  // wins, and only a model that reports none starts from the low/high pair.
+  const [efforts, setEfforts] = useState<string[]>([...DEFAULT_MODEL_SUPPORT_EFFORTS]);
+  const [protocol, setProtocol] = useState<ModelProtocolChoice>('inherit');
   const discovered = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
   const choices = (discovered.data?.items ?? []).flatMap((group) => group.models.map((model) => ({
     value: JSON.stringify([group.provider_id, model.remote_id]),
@@ -816,7 +844,8 @@ export function CatalogRefreshCard() {
         display_name: choice.model.display_name,
         max_context_size: context,
         capabilities,
-        support_efforts: choice.model.support_efforts,
+        support_efforts: efforts,
+        ...protocolCreateField(protocol),
       });
       setSelected('');
       await Promise.all(['models', 'providers', 'discovered-models'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
@@ -841,7 +870,11 @@ export function CatalogRefreshCard() {
             const item = choices.find((candidate) => candidate.value === value);
             setAlias(item === undefined ? '' : `${item.providerId}/${item.model.remote_id}`);
             setContext(item?.model.max_context_size ?? 250000);
-            setCapabilities([...new Set([...(item?.model.capabilities ?? []), ...DEFAULT_DISCOVERED_CAPABILITIES])]);
+            setCapabilities(defaultCapabilitiesFor(item?.model.capabilities));
+            setEfforts(item?.model.support_efforts !== undefined && item.model.support_efforts.length > 0
+              ? sortEfforts(item.model.support_efforts)
+              : [...DEFAULT_MODEL_SUPPORT_EFFORTS]);
+            setProtocol('inherit');
           }}
           ariaLabel={t('st.providers.catalogGroupSuggested')}
           searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
@@ -859,6 +892,18 @@ export function CatalogRefreshCard() {
               <ContextStepper value={context} onChange={setContext} ariaLabel={t('st.models.contextAria', { model: choice.model.remote_id })} />
             </div>
             <div className="space-y-1">
+              <p className={FORM_LABEL}>{t('st.chips.efforts')}</p>
+              <ChipSelect
+                values={efforts}
+                knownOptions={KNOWN_EFFORTS}
+                onChange={(next) => { setEfforts(sortEfforts(next)); }}
+                ariaLabel={t('st.models.effortsAria', { model: choice.model.remote_id })}
+                addPlaceholder={t('st.chips.addPlaceholder')}
+                removeLabel={(value) => t('st.chips.removeAria', { value })}
+                disabled={busy}
+              />
+            </div>
+            <div className="space-y-1">
               <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
               <ChipSelect
                 values={capabilities}
@@ -870,6 +915,7 @@ export function CatalogRefreshCard() {
                 disabled={busy}
               />
             </div>
+            <ModelProtocolField model={choice.model.remote_id} value={protocol} onChange={setProtocol} disabled={busy} />
             <div className="flex flex-wrap gap-2">
               <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>{t('common.save')}</button>
               <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setSelected(''); }}>{t('common.cancel')}</button>
@@ -1230,6 +1276,7 @@ function ModelCatalogRowEditor({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const entityQuery = useQuery({
     queryKey: ['model-entity', item.id],
     queryFn: () => client.getModel(item.id),
@@ -1254,6 +1301,108 @@ function ModelCatalogRowEditor({
   const [usageBaseline, setUsageBaseline] = useState<UsagePolicyDraft | null>(null);
   const [usageIssue, setUsageIssue] = useState<{ position: UsagePosition; field: UsagePolicyField } | null>(null);
   const [usageScope, setUsageScope] = useState<'shared' | UsagePosition>('shared');
+  // One scope for the page. The two prompt groups and the usage group all have
+  // a real per-identity layer on the wire; the rest of the model does not, and
+  // stays a single set of shared values whichever tab is open.
+  const [editScope, setEditScope] = useState<EditScope>('shared');
+  // The prompt groups get their own draft rather than riding the engine draft,
+  // because they are whole objects with a branch each: rebuilding them from the
+  // entity on every render would drop an explicit `same` nobody touched.
+  const [prompts, setPrompts] = useState<ModelPromptsDraft | null>(null);
+  const [promptsBaseline, setPromptsBaseline] = useState<ModelPromptsDraft | null>(null);
+  const promptsDirty = prompts !== null && promptsBaseline !== null && !modelPromptsEqual(prompts, promptsBaseline);
+
+  useEffect(() => {
+    if (entity === undefined || promptsDirty) return;
+    const next = modelPromptsDraft(entity);
+    if (promptsBaseline === null || !modelPromptsEqual(next, promptsBaseline)) {
+      setPrompts(next);
+      setPromptsBaseline(next);
+    }
+  }, [entity, promptsDirty, promptsBaseline]);
+
+  /**
+   * The per-source steer draft.
+   *
+   * It gets its own draft rather than folding into `prompts` for one reason:
+   * a source keeps its private words while its mode is `off` or `inherit`, and a
+   * draft rebuilt from the stored object on every render would drop them the
+   * moment the row was not in `custom`. The draft therefore holds all nine
+   * sources for all three levels and only compares against the baseline when
+   * it is about to become a patch.
+   */
+  const [steerSources, setSteerSources] = useState<ModelSteerSourcesDraft | null>(null);
+  const [steerSourcesBaseline, setSteerSourcesBaseline] = useState<ModelSteerSourcesDraft | null>(null);
+  const [steerIssue, setSteerIssue] = useState<ModelSteeringSource | undefined>(undefined);
+  const steerSourcesDirty = steerSources !== null && steerSourcesBaseline !== null && !steerSourcesEqual(steerSources, steerSourcesBaseline);
+
+  useEffect(() => {
+    if (entity === undefined || steerSourcesDirty) return;
+    const next = modelSteerSourcesDraft(entity);
+    if (steerSourcesBaseline === null || !steerSourcesEqual(next, steerSourcesBaseline)) {
+      setSteerSources(next);
+      setSteerSourcesBaseline(next);
+    }
+  }, [entity, steerSourcesDirty, steerSourcesBaseline]);
+
+  /**
+   * One source changed at the level on screen.
+   *
+   * The row owns the shape of its own change — it builds the next draft from
+   * the one it is showing — so this only has to place it. Both intents arrive
+   * here: choosing a mode never rewrites words, and typing words never changes
+   * what the source currently does.
+   */
+  const setSteerSource = (source: ModelSteeringSource, next: SteerSourceDraft) => {
+    if (steerSources === null) return;
+    const scope = steerScopeFor(editScope);
+    if (steerSources[scope][source] === undefined) return;
+    setSteerSources({ ...steerSources, [scope]: { ...steerSources[scope], [source]: next } });
+  };
+
+  // Prompt prose for the scope on screen. Kept as text rather than written
+  // straight into cognition: converting a file-backed slot into model-owned
+  // text is a one-way move, so it waits for an explicit save.
+  //
+  // The draft is keyed by scope and slot together, because the same slot means
+  // a different thing per identity: `shared` is the model's own declaration and
+  // `main` is a difference that replaces the whole object for that identity.
+  // Keying by slot alone carried one identity's words into another's on save.
+  const [bodyDraft, setBodyDraft] = useState<Record<string, string>>({});
+  const [bodySaves, setBodySaves] = useState<Record<string, string>>({});
+  const bodyKey = (scope: EditScope, slot: CognitionSlot) => `${scope}:${slot}`;
+  // A draft is only pending once it differs from what the stored value was; an
+  // editor that opens on a body and is closed untouched must not dirty the page.
+  const bodySavesDirty = Object.keys(bodySaves).length > 0;
+  /**
+   * The drafts for the scope on screen, keyed by slot alone again.
+   *
+   * Switching scope must show what that identity stores, not the words typed
+   * into another one, so each scope's slots are projected out of the shared map.
+   */
+  const scopedBodyDraft: Record<string, string> = {};
+  for (const [key, text] of Object.entries(bodyDraft)) {
+    if (key.startsWith(`${editScope}:`)) scopedBodyDraft[key.slice(editScope.length + 1)] = text;
+  }
+  /**
+   * What this identity actually differs on, in words. Naming the groups beats a
+   * badge per field: the reader learns which group to go to instead of decoding
+   * a colour.
+   */
+  const scopeBranch = editScope === 'shared' ? undefined : prompts === null ? undefined : {
+    cognition: prompts.cognition[editScope],
+    fields: prompts.fields[editScope],
+  };
+  const scopeDifferences = editScope === 'shared' || scopeBranch === undefined || usage === null
+    ? 0
+    : countUsageDifferences(usage[editScope] ?? EMPTY_USAGE_BRANCH);
+  const scopeSummary = editScope === 'shared' || scopeBranch === undefined
+    ? undefined
+    : scopeDifferenceSummary({
+      usageFields: countUsageDifferences(usage?.[editScope] ?? EMPTY_USAGE_BRANCH),
+      promptsCustom: scopeBranch.cognition.kind === 'custom' || scopeBranch.fields.kind === 'custom',
+      promptsOff: scopeBranch.cognition.kind === 'off' || scopeBranch.fields.kind === 'off',
+    });
   // The shared scope of the parameter group writes the model's own generation
   // parameters, which live in `parameters` rather than on the entity root.
   const [sharedGeneration, setSharedGeneration] = useState<GenerationParametersWire>({});
@@ -1265,6 +1414,22 @@ function ModelCatalogRowEditor({
   const [behaviorBaseline, setBehaviorBaseline] = useState<QuestionGuardDraft>(EMPTY_GUARD_DRAFT);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const globalGuard = configQuery.data?.interaction?.askUserQuestionGuard;
+  // The request format rides beside the shared draft the same way. Its draft
+  // is the stored value only (`protocol`), never the resolved one: seeding it
+  // from `effective_protocol` would turn "follows the provider" into a pinned
+  // override the first time someone saved an unrelated field.
+  const [protocol, setProtocol] = useState<ModelProtocolChoice>('inherit');
+  const [protocolBaseline, setProtocolBaseline] = useState<ModelProtocolChoice>('inherit');
+  const protocolDirty = protocol !== protocolBaseline;
+  useEffect(() => {
+    if (entity === undefined || protocolDirty) return;
+    const next = protocolChoiceFrom(entity.protocol);
+    setProtocol(next);
+    setProtocolBaseline(next);
+  }, [entity, protocolDirty]);
+  // What the provider reported, for the Model ID picker. Read-only: picking
+  // one only fills the draft, and any other ID can still be typed.
+  const discoveredQuery = useQuery({ queryKey: ['discovered-models'], queryFn: () => client.listDiscoveredModels() });
 
   useEffect(() => {
     if (entity === undefined) return;
@@ -1357,8 +1522,13 @@ function ModelCatalogRowEditor({
     loopControl: configQuery.data?.loop_control,
   });
 
-  const dirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
-    || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty;
+  // A package being authored is a draft too: leaving the panel with words typed
+  // and unsaved would lose them exactly as the model's own fields would.
+  const [recipeDraftDirty, setRecipeDraftDirty] = useState(false);
+  const modelDirty = (draft !== null && baseline !== null && !providerModelDraftsEqual(draft, baseline))
+    || compactDirty || engineDirty || usageDirty || sharedGenerationDirty || behaviorDirty
+    || promptsDirty || bodySavesDirty || steerSourcesDirty || protocolDirty;
+  const dirty = modelDirty || recipeDraftDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
   // The row owns the collapse/close decision, and the draft stays dirty while
   // the editor is hidden, so the parent needs this flag either way.
@@ -1412,7 +1582,7 @@ function ModelCatalogRowEditor({
         title={compaction.trackTitle}
         reason={compaction.trackReason}
         pinned={compaction.overridden}
-        onChange={setCompactionPoint}
+        onChange={(tokens) => { if (!saving) setCompactionPoint(tokens); }}
       />
 
     </div>
@@ -1439,14 +1609,18 @@ function ModelCatalogRowEditor({
     setUsageIssue(null);
   };
 
-  const save = async () => {
+  const save = async (recipeReference?: string | null) => {
+    const refuse = (text: string) => {
+      setFeedback({ tone: 'error', text });
+      if (recipeReference !== undefined) throw new Error(text);
+    };
     if (draft.remoteId.trim() === '') {
-      setFeedback({ tone: 'error', text: issueText(locale, { key: 'val.modelIdEmpty' }) });
+      refuse(issueText(locale, { key: 'val.modelIdEmpty' }));
       return;
     }
     const imageIssue = validateImagePolicyDraft(draft, inheritedImageTypes);
     if (imageIssue !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, imageIssue) });
+      refuse(issueText(locale, imageIssue));
       return;
     }
     // The request-identity layer validates inside the patch body (and throws a
@@ -1458,7 +1632,7 @@ function ModelCatalogRowEditor({
     try {
       const identityIssue = validateRequestIdentityLayerDraft(draft);
       if (identityIssue !== null) {
-        setFeedback({ tone: 'error', text: issueText(locale, identityIssue) });
+        refuse(issueText(locale, identityIssue));
         return;
       }
       let enginePatch;
@@ -1466,7 +1640,9 @@ function ModelCatalogRowEditor({
         enginePatch = modelEnginePatch(engine, engineBaseline);
       } catch (error) {
         if (!(error instanceof ModelEngineFieldError)) throw error;
-        setEngineIssue({ field: error.field, text: t(error.key === 'count' ? 'st.modelEngine.issueCount' : error.key === 'json' ? 'st.modelEngine.issueJson' : 'st.modelEngine.issueObject') });
+        const text = t(error.key === 'count' ? 'st.modelEngine.issueCount' : error.key === 'json' ? 'st.modelEngine.issueJson' : 'st.modelEngine.issueObject');
+        setEngineIssue({ field: error.field, text });
+        if (recipeReference !== undefined) throw new Error(text, { cause: error });
         return;
       }
       setEngineIssue(null);
@@ -1477,133 +1653,301 @@ function ModelCatalogRowEditor({
         : USAGE_POSITIONS.map((position) => ({ position, field: usageBranchProblem(usage[position] ?? EMPTY_USAGE_BRANCH) }))
           .find((entry) => entry.field !== undefined);
       setUsageIssue(usageProblem?.field === undefined ? null : { position: usageProblem.position, field: usageProblem.field });
-      if (usageProblem?.field !== undefined) return;
+      if (usageProblem?.field !== undefined) {
+        if (recipeReference !== undefined) throw new Error(t('st.usagePolicy.issueCount'));
+        return;
+      }
       const usagePatch = usage === null || usageBaseline === null ? {} : usagePolicyPatch(usage, usageBaseline);
       const generationPatch = generationParametersPatch(sharedGeneration, sharedGenerationBaseline);
       // A half-typed threshold must not ride along with an otherwise valid
       // PATCH, so the guard refuses the whole save the same way the row above
       // refuses a half-typed token count.
-      if (guardDraftProblem(behavior, (field) => rangeTextFor(t, field)) !== null) return;
+      const guardProblem = guardDraftProblem(behavior, (field) => rangeTextFor(t, field));
+      if (guardProblem !== null) {
+        if (recipeReference !== undefined) throw new Error(guardProblem.text);
+        return;
+      }
       const behaviorPatch = questionGuardModelPatch(behavior, behaviorBaseline);
+      // A source's repeat count is checked before anything leaves the page, for
+      // the same reason the usage row above refuses a half-typed token count: a
+      // `NaN` that reached the model would be stored as this source's timing.
+      const steerProblem = steerSources === null || steerSourcesBaseline === null
+        ? undefined
+        : STEER_SOURCES.find((source) => STEER_SCOPES.some((scope) => {
+          const draft = steerSourceDraft(steerSources, scope, source);
+          return draft.mode === 'custom' && steerCadenceProblem(draft.custom.cadence.intervalSteps) !== undefined;
+        }));
+      setSteerIssue(steerProblem);
+      if (steerProblem !== undefined) {
+        if (recipeReference !== undefined) throw new Error(t('st.steerSource.cadenceCount'));
+        return;
+      }
       const fieldPatch = modelPatchBody(draft, baseline);
+      const protocolPatch = protocolPatchField(protocol, protocolBaseline);
       if (fieldPatch === null && !compactDirty && Object.keys(enginePatch).length === 0
-        && Object.keys(usagePatch).length === 0 && generationPatch === null && behaviorPatch === undefined) return;
+        && Object.keys(usagePatch).length === 0 && generationPatch === null
+        && behaviorPatch === undefined && !promptsDirty && !bodySavesDirty && !steerSourcesDirty
+        && !protocolDirty && recipeReference === undefined) return;
+      // A changed Advanced object is the complete target, including deletions
+      // and null clears. Otherwise the stored object is the base. The prompt
+      // editor contributes only fields changed against its own baseline.
+      const promptBase = {
+        ...entity,
+        cognition: enginePatch.cognition === undefined ? entity.cognition : enginePatch.cognition ?? undefined,
+        prompt_overrides: enginePatch.prompt_overrides === undefined ? entity.prompt_overrides : enginePatch.prompt_overrides ?? undefined,
+      };
+      const promptPatch = modelPromptsPatch(promptBase, prompts ?? modelPromptsDraft(entity), promptsBaseline ?? modelPromptsDraft(entity));
+      // Prose has the final say on its explicit scope and slot, not on an entire
+      // identity. Carry the accumulating object forward for multi-slot saves.
+      let cognition = promptPatch.cognition ?? promptBase.cognition;
+      for (const [key, text] of Object.entries(bodySaves)) {
+        const separator = key.indexOf(':');
+        const scope = key.slice(0, separator) as EditScope;
+        const slot = key.slice(separator + 1) as CognitionSlot;
+        cognition = cognitionSlotPatchAtScope({ ...entity, cognition }, scope, slot, text).cognition;
+      }
       const patch = {
         ...fieldPatch,
         ...(compactDirty ? { auto_compact: autoCompact ?? null } : {}),
         ...enginePatch,
         ...usagePatch,
+        ...promptPatch,
         ...(generationPatch === null ? {} : { parameters: generationPatch }),
         ...(behaviorPatch === undefined ? {} : { behavior: behaviorPatch }),
+        ...protocolPatch,
       };
-      await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
+      if (bodySavesDirty) patch.cognition = cognition;
+      if (recipeReference !== undefined) patch.recipe = recipeReference;
+      // The source declarations travel in the same transaction and under the
+      // same revision, as their own field rather than folded into `cognition`:
+      // the server merges a source entry field by field, so a whole-object
+      // cognition write would either drop the change or be dropped by it.
+      const steerPatch = steerSources === null || steerSourcesBaseline === null
+        ? undefined
+        : steerSourcesPatch(steerSources, steerSourcesBaseline);
+      if (steerPatch !== undefined) patch.steering_sources_patch = steerPatch;
+      const saved = await client.updateModel(entity.id, { ...patch, base_revision: entity.revision });
+      // Drafts and baselines advance together to the accepted entity before a
+      // refresh can replace them. Never restore pre-save closure values after
+      // the fresh entity has already reached the clean-draft effects.
+      const savedDraft = providerModelDraftFromCatalog(saved);
+      const savedEngine = modelEngineDraft(saved);
+      const savedPrompts = modelPromptsDraft(saved);
+      const savedUsage = Object.fromEntries(USAGE_POSITIONS.map((position) => [position, usageBranchDraft(saved, position)])) as UsagePolicyDraft;
+      const savedGeneration = saved.parameters ?? {};
+      const savedBehavior = guardDraftFromModelBehavior(saved.behavior);
+      setDraft(savedDraft);
+      setBaseline(savedDraft);
+      setAutoCompact(saved.auto_compact);
+      setAutoCompactBaseline(saved.auto_compact);
+      setEngine(savedEngine);
+      setEngineBaseline(savedEngine);
+      setPrompts(savedPrompts);
+      setPromptsBaseline(savedPrompts);
+      setUsage(savedUsage);
+      setUsageBaseline(savedUsage);
+      setSharedGeneration(savedGeneration);
+      setSharedGenerationBaseline(savedGeneration);
+      setBehavior(savedBehavior);
+      setBehaviorBaseline(savedBehavior);
+      setBodyDraft({});
+      setBodySaves({});
+      const savedSteerSources = modelSteerSourcesDraft(saved);
+      setSteerSources(savedSteerSources);
+      setSteerSourcesBaseline(savedSteerSources);
+      setSteerIssue(undefined);
+      const savedProtocol = protocolChoiceFrom(saved.protocol);
+      setProtocol(savedProtocol);
+      setProtocolBaseline(savedProtocol);
+      queryClient.setQueryData(['model-entity', item.id], saved);
       await onSaved();
       await entityQuery.refetch();
-      setBaseline(draft);
-      setAutoCompactBaseline(autoCompact);
-      setEngineBaseline(engine);
-      setUsageBaseline(usage);
-      setSharedGenerationBaseline(sharedGeneration);
-      setBehaviorBaseline(behavior);
       pingDetailSaved();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      if (recipeReference !== undefined) throw error;
     } finally {
       setSaving(false);
     }
   };
 
+  /**
+   * Discard puts every draft back on its baseline at once. It is the same
+   * "nothing pending" state a fresh open would show, so nothing half-reset can
+   * ride along with the next save. A package being authored in the Recipe
+   * section keeps its own cancel and is not touched here.
+   */
+  const discard = () => {
+    setDraft(baseline);
+    setAutoCompact(autoCompactBaseline);
+    setEngine(engineBaseline);
+    setEngineIssue(null);
+    if (usageBaseline !== null) setUsage(usageBaseline);
+    setUsageIssue(null);
+    if (promptsBaseline !== null) setPrompts(promptsBaseline);
+    setBodyDraft({});
+    setBodySaves({});
+    if (steerSourcesBaseline !== null) setSteerSources(steerSourcesBaseline);
+    setSteerIssue(undefined);
+    setSharedGeneration(sharedGenerationBaseline);
+    setBehavior(behaviorBaseline);
+    setProtocol(protocolBaseline);
+    setFeedback(null);
+  };
+
+  // The IDs this provider reported, plus whatever the draft holds now so the
+  // trigger always reads the value that will be saved.
+  const reportedModels = (discoveredQuery.data?.items ?? [])
+    .filter((group) => group.provider_id === entity.provider_id)
+    .flatMap((group) => group.models);
+  const remoteIdOptions = [
+    ...(draft.remoteId.trim() === '' || reportedModels.some((model) => model.remote_id === draft.remoteId)
+      ? []
+      : [{ value: draft.remoteId, label: draft.remoteId }]),
+    ...reportedModels.map((model) => ({
+      value: model.remote_id,
+      label: model.remote_id,
+      description: model.display_name,
+      keywords: model.display_name,
+    })),
+  ];
+  // While the stored value inherits, the server's resolved format is the
+  // provider's, and the inherit option can name it.
+  const resolvedProtocol: ModelProtocol | undefined = protocolBaseline === 'inherit' ? entity.effective_protocol : undefined;
+
+  const sectionId = (section: EditorSectionName) => `model-editor-${section}-${entity.id}`;
+  const jumpTo = (section: EditorSectionName) => {
+    const target = document.getElementById(sectionId(section));
+    // jsdom has no scrollIntoView; every browser does.
+    target?.scrollIntoView?.({ block: 'start' });
+    target?.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
+  };
+
   return (
-    <div className="space-y-4">
-      {entity.issues.length > 0 ? (
-        <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
-          {entity.issues.map((issue) => {
-            const key = MODEL_ISSUE_KEYS[issue.code];
-            return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
-          }).join(' · ')}
-        </p>
-      ) : null}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className={FORM_LABEL}>
-          {t('st.models.displayNameLabel')}
-          <input
-            className={`${INPUT} mt-1 font-normal`}
-            aria-label={t('st.models.displayNameAria', { model: entity.id })}
-            value={draft.displayName}
-            onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
-            placeholder={entity.remote_id}
-          />
-        </label>
+    <div className="min-w-0 space-y-7" data-model-editor-layout>
+      {/*
+        One bar of section names, pinned while the long form scrolls. It is a
+        table of contents, not tabs: every section stays mounted and in the
+        reading order, so search, focus order and unsaved edits work the same
+        whether or not anyone uses the bar.
+      */}
+      <nav
+        aria-label={t('st.modelEditor.navAria')}
+        className="sticky -top-4 z-10 -mx-5 -mt-4 flex gap-1 overflow-x-auto border-b border-hairline bg-panel px-5 py-2"
+      >
+        {EDITOR_SECTIONS.map((section) => (
+          <button
+            key={section}
+            type="button"
+            data-model-editor-jump={section}
+            onClick={() => { jumpTo(section); }}
+            className="h-7 shrink-0 rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          >
+            {t(EDITOR_SECTION_LABEL[section])}
+          </button>
+        ))}
+      </nav>
+      <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
+        {entity.issues.length > 0 ? (
+          <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
+            {entity.issues.map((issue) => {
+              const key = MODEL_ISSUE_KEYS[issue.code];
+              return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
+            }).join(' · ')}
+          </p>
+        ) : null}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {/*
+            The ID the provider is asked for. Searchable over what the provider
+            reported and open to any other value, the same picker the provider
+            form uses for its rows. The local alias underneath never changes here.
+          */}
+          <div className="min-w-0 space-y-1" data-model-remote-id={entity.id}>
+            <p className={FORM_LABEL}>{t('st.models.remoteIdLabel')}</p>
+            <SearchableSelect
+              options={remoteIdOptions}
+              value={draft.remoteId}
+              onChange={(remoteId) => { setDraft({ ...draft, remoteId }); }}
+              ariaLabel={t('st.models.remoteIdAria', { model: entity.id })}
+              allowCustomValue
+              customValueLabel={(id) => t('st.providers.useCustomModel', { id })}
+              searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
+              emptyText={t('st.providers.catalogEmpty')}
+              disabled={saving}
+              buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
+            />
+            <p className="truncate font-mono text-[11px] text-ink-faint" title={entity.id}>{t('st.models.aliasLine', { alias: entity.id })}</p>
+          </div>
+          <label className={`${FORM_LABEL} min-w-0`}>
+            {t('st.models.displayNameLabel')}
+            <input
+              className={`${INPUT} mt-1 font-normal`}
+              aria-label={t('st.models.displayNameAria', { model: entity.id })}
+              value={draft.displayName}
+              onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
+              placeholder={entity.remote_id}
+            />
+          </label>
+        </div>
+        {/*
+          Provider and request format side by side: the format is a property of
+          this model's requests to that provider, so reading them together is
+          what makes "follow the provider" mean something. Request identity is a
+          different question (who the request claims to be) and stays under
+          Advanced.
+        */}
+        <div className="space-y-1">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="min-w-0 space-y-1">
+              <p className={FORM_LABEL}>{t('st.modelEditor.provider')}</p>
+              <p className="flex h-8 min-w-0 items-center rounded-md bg-ink/[0.03] px-3 font-mono text-[12.5px] text-ink-soft" title={entity.provider_id}>
+                <span className="truncate">{entity.provider_id}</span>
+              </p>
+            </div>
+            <ModelProtocolField
+              model={entity.id}
+              value={protocol}
+              resolved={resolvedProtocol}
+              onChange={setProtocol}
+              disabled={saving}
+              showHint={false}
+            />
+          </div>
+          <Hint>{t('st.modelProtocol.hint')}</Hint>
+        </div>
+        <ModelContextFields
+          modelId={entity.id}
+          windowTokens={draft.maxContextSize}
+          inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
+          contextBudget={/^\d+$/.test(engine.contextBudget.trim()) ? Number(engine.contextBudget.trim()) : undefined}
+          overrides={engine.overrides}
+          onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
+          autoCompact={autoCompact}
+          onAutoCompactChange={setAutoCompact}
+          loopControl={configQuery.data?.loop_control}
+          hideCompaction
+        />
         <div className={FORM_LABEL}>
           {t('st.chips.efforts')}
           <div className="mt-1.5 font-normal">
             <ChipSelect
               values={draft.supportEfforts}
               knownOptions={KNOWN_EFFORTS}
-              onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts }); }}
+              onChange={(supportEfforts) => { setDraft({ ...draft, supportEfforts: sortEfforts(supportEfforts) }); }}
               ariaLabel={t('st.models.effortsAria', { model: entity.id })}
               addPlaceholder={t('st.chips.addPlaceholder')}
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
         </div>
-      </div>
-      <ModelContextFields
-        modelId={entity.id}
-        windowTokens={draft.maxContextSize}
-        inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
-        contextBudget={/^\d+$/.test(engine.contextBudget.trim()) ? Number(engine.contextBudget.trim()) : undefined}
-        overrides={engine.overrides}
-        onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
-        autoCompact={autoCompact}
-        onAutoCompactChange={setAutoCompact}
-        loopControl={configQuery.data?.loop_control}
-        hideCompaction
-      />
-      {usage !== null ? (
-        <MainUsagePolicyFields
-          modelId={entity.id}
-          scope={usageScope}
-          showIndependent={entity.usage?.independent !== undefined}
-          onScopeChange={setUsageScope}
-          view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
-          onSharedChange={applySharedUsageEdit}
-          onChange={(next) => { setUsage(next); setUsageIssue(null); }}
-          compaction={compactionTrack}
-          compactionControl={(
-            <CompactPointField
-              dataAttribute={`model:${entity.id}`}
-              labelClassName="sr-only"
-              label={t('st.compact.pointLabel')}
-              value={compactionPoint}
-              onChange={setCompactionPoint}
-              windowTokens={compaction.usable}
-              placeholder={compactionScope === 'shared'
-                ? compaction.inheritedLabel
-                : t('st.usagePolicy.inheritSharedPoint')}
-              presets={compaction.presets}
-              presetsLabel={compaction.presetsLabel}
-              hint={compactionHint}
-            />
-          )}
-          disabled={saving}
-        />
-      ) : null}
-      <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
-        <label className={FORM_LABEL}>
-          {t('st.models.remoteIdLabel')}
-          <input
-            className={`${INPUT} mt-1 font-mono font-normal`}
-            aria-label={t('st.models.remoteIdAria', { model: entity.id })}
-            value={draft.remoteId}
-            onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
-            placeholder="model-id"
-          />
-          <span className="mt-1 block font-mono text-[11px] font-normal text-ink-faint">{t('st.models.aliasLine', { alias: entity.id })}</span>
-        </label>
-        <div className="space-y-1">
+        {/*
+          Capabilities sit on the ordinary surface of the editor, not inside the
+          advanced fold: what this model can do is one of the two or three things
+          a person opens this panel to decide, and folding it away is what let a
+          model's real submitted capabilities go unchecked.
+        */}
+        <div className="space-y-1" data-model-capabilities={entity.id}>
           <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
-          <Hint>{t('st.models.capabilitiesHint')}</Hint>
           <ChipSelect
             values={draft.capabilities}
             knownOptions={KNOWN_CAPABILITIES}
@@ -1612,56 +1956,217 @@ function ModelCatalogRowEditor({
             addPlaceholder={t('st.chips.addPlaceholder')}
             removeLabel={(value) => t('st.chips.removeAria', { value })}
           />
+          <Hint>{t('st.models.capabilitiesHint')}</Hint>
         </div>
-        <ImagePolicyEditor
-          value={draft}
-          onChange={(images) => { setDraft({ ...draft, ...images }); }}
-          inheritLabel={t('st.images.inheritProvider')}
+      </EditorSection>
+      <EditorSection id={sectionId('identity')} title={t('st.modelEditor.nav.identity')} note={t('st.modelEditor.identityNote')}>
+        {/*
+          One scope for the section. It heads the three groups that have a real
+          per-identity layer on the wire, so switching it re-points those rows
+          instead of showing a second copy of the form.
+        */}
+        <ModelEditScopeSwitch
+          scope={editScope}
+          summary={scopeSummary}
+          differences={scopeDifferences}
+          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
         />
-        <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} />
-        <RequestIdentityLayerEditor
-          value={draft}
-          onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
-          label={t('st.models.requestIdentity')}
-          inheritLabel={t('st.requestIdentity.inheritProvider')}
-          hint={t('st.models.requestIdentityHint')}
+        {/*
+          The prompt prose, always open and right under the scope switch. What a
+          model is told is the reason to open this section. Editing a readable
+          file-backed slot saves its text onto the model without touching the file.
+        */}
+        <ModelPromptBodies
+          modelId={entity.id}
+          bodies={entity.cognition_bodies}
+          scope={editScope}
+          branchSelection={branchSelectionFor(editScope, prompts)}
+          draft={scopedBodyDraft}
+          // Typing is the decision. A slot backed by an author file converts to
+          // a body on the model when this page saves, exactly like any other
+          // field; asking again per slot made the one confirmation the page did
+          // offer easy to miss and easy to skip by accident.
+          onDraftChange={(slot, text) => {
+            const key = bodyKey(editScope, slot);
+            setBodyDraft((current) => ({ ...current, [key]: text }));
+            setBodySaves((current) => {
+              const next = { ...current };
+              if (text === initialSlotText(slotView(entity.cognition_bodies, editScope, slot))) delete next[key];
+              else next[key] = text;
+              return next;
+            });
+          }}
+          disabled={saving}
         />
-        <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
-          onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
-        <div className="border-t border-hairline pt-3" data-model-behavior={entity.id}>
-          <QuestionGuardFields
-            scope="model"
-            draft={behavior}
-            enabled={guardEffective(globalGuard, behavior).enabled}
+        {usage !== null ? (
+          <MainUsagePolicyFields
+            modelId={entity.id}
+            scope={usageScope}
+            view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
+            onSharedChange={applySharedUsageEdit}
+            onChange={(next) => { setUsage(next); setUsageIssue(null); }}
+            compaction={compactionTrack}
+            compactionControl={(
+              <CompactPointField
+                dataAttribute={`model:${entity.id}`}
+                labelClassName="sr-only"
+                label={t('st.compact.pointLabel')}
+                value={compactionPoint}
+                onChange={setCompactionPoint}
+                disabled={saving}
+                windowTokens={compaction.usable}
+                placeholder={compactionScope === 'shared'
+                  ? compaction.inheritedLabel
+                  : t('st.usagePolicy.inheritSharedPoint')}
+                presets={compaction.presets}
+                presetsLabel={compaction.presetsLabel}
+                hint={compactionHint}
+              />
+            )}
             disabled={saving}
-            inherited={(field) => guardInherited(field, globalGuard, behavior)}
-            onEnabledChange={(choice) => { setBehavior({ ...behavior, enabled: choice }); }}
-            onNumberCommit={(field: GuardNumberField, text) => { setBehavior(setGuardNumber(behavior, field, text)); }}
-            onNumberClear={(field) => { setBehavior(clearGuardNumber(behavior, field)); }}
           />
-        </div>
-      </AdvancedDisclosure>
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+        ) : null}
+        {/*
+          The sources that can start a turn without a person typing. They sit
+          under their own disclosure at the end of the identity section, because
+          for most models every one of them is simply off and an always-open
+          list of nine rows would push the configuration people do use out of
+          view. The body stays mounted so an edit survives collapsing it.
+        */}
+        <AdvancedDisclosure id={`model-steer-${entity.id}`} summary={t('st.steerSource.summary')}>
+          <div className="space-y-3">
+            <ModelSteerSources
+              bodies={entity.cognition_bodies}
+              scope={editScope}
+              draft={steerSources}
+              branchOff={branchSelectionFor(editScope, prompts) === 'off'}
+              onDraftChange={setSteerSource}
+              disabled={saving}
+            />
+            {steerIssue !== undefined ? (
+              <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
+                {t('st.steerSource.cadenceCount')}
+              </p>
+            ) : null}
+          </div>
+        </AdvancedDisclosure>
+      </EditorSection>
+      {/*
+        Which recipe a model uses is a decision about the model as a whole, so
+        it is its own section outside the identity scope: under an identity it
+        would read as "this recipe is for the main agent only".
+      */}
+      <EditorSection id={sectionId('recipe')} title={t('st.modelEditor.nav.recipe')} note={t('st.modelEditor.recipeNote')}>
+        <ModelRecipeField
+          modelId={entity.id}
+          modelName={draft.displayName.trim() === '' ? entity.id : draft.displayName.trim()}
+          onCommitRecipe={save}
+          appliedId={entity.recipe}
+          disabled={saving}
+          onDraftChange={setRecipeDraftDirty}
+        />
+      </EditorSection>
+      <EditorSection id={sectionId('advanced')} title={t('st.modelEditor.nav.advanced')} note={t('st.modelEditor.advancedNote')}>
+        <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
+          <RequestIdentityLayerEditor
+            value={draft}
+            onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
+            label={t('st.models.requestIdentity')}
+            inheritLabel={t('st.requestIdentity.inheritProvider')}
+            hint={t('st.models.requestIdentityHint')}
+          />
+          <ImagePolicyEditor
+            value={draft}
+            onChange={(images) => { setDraft({ ...draft, ...images }); }}
+            inheritLabel={t('st.images.inheritProvider')}
+          />
+          {/*
+            Effort, tier and the token cap have their one entrance in the
+            identity section's usage fields above; a second editor for the same
+            keys here was a second save entrance into the same patch field.
+            What remains is what would otherwise have no editor at all.
+          */}
+          <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} keys={['temperature', 'top_p']} />
+          <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
+            onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
+          <div className="border-t border-hairline pt-3" data-model-behavior={entity.id}>
+            <QuestionGuardFields
+              scope="model"
+              draft={behavior}
+              enabled={guardEffective(globalGuard, behavior).enabled}
+              disabled={saving}
+              inherited={(field) => guardInherited(field, globalGuard, behavior)}
+              onEnabledChange={(choice) => { setBehavior({ ...behavior, enabled: choice }); }}
+              onNumberCommit={(field: GuardNumberField, text) => { setBehavior(setGuardNumber(behavior, field, text)); }}
+              onNumberClear={(field) => { setBehavior(clearGuardNumber(behavior, field)); }}
+            />
+          </div>
+        </AdvancedDisclosure>
+      </EditorSection>
+      {/*
+        The actions stay pinned to the bottom of the panel: on a form this long
+        the save button used to be a scroll away from the field just edited.
+        A failed or conflicting save keeps every draft, and the error sits
+        right beside the button that produced it.
+      */}
+      <div
+        className="sticky -bottom-4 z-10 -mx-5 -mb-4 flex flex-wrap items-center gap-2 border-t border-hairline bg-panel px-5 py-3"
+        data-model-editor-actions
+      >
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !modelDirty} onClick={() => void save()}>
           {saving ? t('common.saving') : t('common.save')}
+        </button>
+        <button type="button" className={SECONDARY_BUTTON} disabled={saving || !modelDirty} onClick={discard} data-model-editor-discard>
+          {t('st.advanced.discard')}
         </button>
         <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={onClose}>
           {t('common.close')}
         </button>
         {dirty ? (
-          <span className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span>
+          <span role="status" className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span>
         ) : <SavedTick show={detailSaved} />}
+        <div className="basis-full empty:hidden"><FeedbackLine feedback={feedback} /></div>
       </div>
-      <FeedbackLine feedback={feedback} />
     </div>
+  );
+}
+
+type EditorSectionName = 'basics' | 'identity' | 'recipe' | 'advanced';
+const EDITOR_SECTIONS: readonly EditorSectionName[] = ['basics', 'identity', 'recipe', 'advanced'];
+const EDITOR_SECTION_LABEL: Readonly<Record<EditorSectionName, I18nKey>> = {
+  basics: 'st.modelEditor.nav.basics',
+  identity: 'st.modelEditor.nav.identity',
+  recipe: 'st.modelEditor.nav.recipe',
+  advanced: 'st.modelEditor.nav.advanced',
+};
+
+/**
+ * One section of the model editor: a quiet heading with the one fact that
+ * matters about where its values are stored (shared, per identity, whole
+ * model). The heading takes focus when the section bar jumps to it, so a
+ * keyboard user lands where a pointer user is looking.
+ */
+function EditorSection({ id, title, note, children }: {
+  id: string;
+  title: string;
+  note: string;
+  children: React.ReactNode;
+}) {
+  const headingId = `${id}-title`;
+  return (
+    <section id={id} aria-labelledby={headingId} className="min-w-0 scroll-mt-14 space-y-4" data-model-editor-section={id}>
+      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-hairline pb-1.5">
+        <h3 id={headingId} tabIndex={-1} className="text-[13px] font-semibold text-ink outline-none">{title}</h3>
+        <p className="min-w-0 text-[12px] text-ink-faint">{note}</p>
+      </header>
+      {children}
+    </section>
   );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
-
-
 
 /** A stored identity value, or undefined when it inherits. */
 function identityUsageNumber(value: string | undefined): number | undefined {

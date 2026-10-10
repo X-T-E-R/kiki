@@ -8,6 +8,7 @@ export * from './onboarding';
 export * from './sessionReadState';
 export * from './roomReadState';
 export * from './settings';
+export * from './thinkingEffort';
 export * from './questionGuardSettings';
 export * from './subagentToolSettings';
 export * from './terminalPrefs';

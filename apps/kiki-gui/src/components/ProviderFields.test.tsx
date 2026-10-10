@@ -30,7 +30,7 @@ import { NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
 import { SettingsCardMountContext } from './settings/SectionCard';
-import { optionValues, openOptions, pickValue } from './settings/testControls';
+import { optionLabels, optionValues, openOptions, openPanel, pickValue } from './settings/testControls';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -51,7 +51,7 @@ const startOAuthLogin = vi.fn();
 const cancelOAuthLogin = vi.fn(async () => ({ cancelled: true, status: 'cancelled' }));
 const listOAuthMethods = vi.fn(async (): Promise<unknown[]> => []);
 const probeOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
-const connectOriginalOAuth = vi.fn(async (): Promise<unknown> => ({}));
+const connectOriginalOAuth = vi.fn(async (_request?: Record<string, unknown>): Promise<unknown> => ({}));
 const SIGNED_IN_KIMI = [
   { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: true,
     account: { state: 'unknown' }, quota: { state: 'unknown' } },
@@ -434,6 +434,11 @@ describe('ProviderEditor save channel', () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const editor = container.querySelector<HTMLElement>('[data-generation-editor="provider:edge:gateway"]')!;
     expect(editor.textContent).toContain('models without local overrides');
+    // The provider defaults entrance keeps all five parameters; on a model row
+    // three of them move to the identity section's usage fields.
+    for (const label of ['Temperature mode', 'Top P mode', 'Max generated tokens mode', 'Thinking mode / effort mode', 'Service tier mode']) {
+      expect(editor.querySelector(`button[aria-label="${label}"]`), label).not.toBeNull();
+    }
     await pickValue(editor.querySelector('button[aria-label="Temperature mode"]')!, 'data-param-mode', 'inherit');
     await pickValue(editor.querySelector('button[aria-label="Max generated tokens mode"]')!, 'data-param-mode', 'custom');
     await act(async () => { [...editor.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save parameters')!.click(); });
@@ -959,6 +964,141 @@ describe('ProviderEditor save channel', () => {
     await act(async () => { buttonByText(container, 'Test connection & pull models').click(); });
 
     expect(container.textContent).toContain('Refresh completed. 2 added, 1 removed.');
+    expect(onSaved).toHaveBeenCalledOnce();
+  });
+});
+
+describe('ProviderEditor model protocols', () => {
+  /** Opens a model id picker's inline panel and commits its typed custom value. */
+  const typeCustomModelId = async (container: HTMLElement, triggerId: string, remoteId: string) => {
+    const trigger = container.querySelector<HTMLButtonElement>(`#${triggerId}`)!;
+    await act(async () => { trigger.click(); });
+    const panel = openPanel(trigger);
+    await act(async () => { setInputValue(panel.querySelector<HTMLInputElement>('input[type="text"]')!, remoteId); });
+    const custom = [...panel.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((option) => option.getAttribute('title') === remoteId)!;
+    await act(async () => { custom.click(); });
+  };
+
+  it('saves a per-model request format as its own sparse model patch', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    expect(field.dataset['modelProtocolField']).toBe('inherit');
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
+
+    await pickValue(field, 'data-model-protocol', 'openai_responses');
+    expect(buttonByText(container, 'Save provider').disabled).toBe(false);
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledWith('fast', { protocol: 'openai_responses', base_revision: 'fast-rev-1' });
+    expect(updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('names the resolved provider format on the inherit option without becoming a stored choice', async () => {
+    const models: ModelCatalogItem[] = [{ ...FAST_MODELS[0]!, effective_protocol: 'openai' }];
+    const container = await renderEditor(COLON_PROVIDER, models, false, async () => {});
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    expect(field.dataset['modelProtocolField']).toBe('inherit');
+    const labels = await optionLabels(field);
+    expect(labels[0]).toBe('Provider default · Chat Completions');
+    // A resolved format is display only: nothing is dirty, nothing saves.
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
+  });
+
+  it('clears a stored format override back to the provider default', async () => {
+    const models: ModelCatalogItem[] = [{ ...FAST_MODELS[0]!, protocol: 'anthropic', effective_protocol: 'anthropic' }];
+    const container = await renderEditor(COLON_PROVIDER, models, false, async () => {});
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    expect(field.dataset['modelProtocolField']).toBe('anthropic');
+    // The stored override's resolved format IS that override: the inherit
+    // option must not rename it as the provider default — neither before nor
+    // after the unsaved choice moves to inherit.
+    expect((await optionLabels(field))[0]).toBe('Provider default');
+    await pickValue(field, 'data-model-protocol', 'inherit');
+    expect((await optionLabels(field))[0]).toBe('Provider default');
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledWith('fast', { protocol: null, base_revision: 'fast-rev-1' });
+    expect(updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('retries a partially saved protocol change without resending the row that landed', async () => {
+    const twoModels: ModelCatalogItem[] = [
+      FAST_MODELS[0]!,
+      { id: 'slow', provider_id: 'edge:gateway', remote_id: 'vendor/slow:v1', display_name: 'Slow', max_context_size: 128000 },
+    ];
+    const twoProvider: ProviderCatalogItem = { ...COLON_PROVIDER, models: ['fast', 'slow'] };
+    getModel.mockImplementation(async (id: string) => {
+      const model = twoModels.find((candidate) => candidate.id === id)!;
+      return { ...model, provider_source: 'provider', revision: `${id}-rev-1`, issues: [] };
+    });
+    updateModel.mockImplementation(async (id: string) => {
+      if (id === 'slow') throw new Error('Provider changed since it was read.');
+      return { ...(await getModel(id)), revision: `${id}-rev-2` };
+    });
+    const container = await renderEditor(twoProvider, twoModels, false, async () => {});
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 2 details"]')!.click(); });
+    const fields = container.querySelectorAll<HTMLElement>('[data-model-protocol-field]');
+    expect(fields.length).toBe(2);
+    await pickValue(fields[0]!, 'data-model-protocol', 'openai_responses');
+    await pickValue(fields[1]!, 'data-model-protocol', 'google-genai');
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(container.textContent).toContain('Provider changed since it was read.');
+    expect(updateModel).toHaveBeenCalledTimes(2);
+    expect(updateModel).toHaveBeenNthCalledWith(1, 'fast', { protocol: 'openai_responses', base_revision: 'fast-rev-1' });
+
+    // The retry keys on what actually landed: fast is already saved, so only
+    // slow goes back on the wire, still against its original revision.
+    updateModel.mockImplementation(async (id: string) => ({ ...(await getModel(id)), revision: `${id}-rev-2` }));
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+    expect(updateModel).toHaveBeenCalledTimes(3);
+    expect(updateModel).toHaveBeenNthCalledWith(3, 'slow', { protocol: 'google-genai', base_revision: 'slow-rev-1' });
+    expect(updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('creates a new model row with its chosen request format', async () => {
+    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    await typeCustomModelId(container, 'provider-model-1-id', 'vendor/new-model');
+    // The stored row stays collapsed, so the only format field is the new row's.
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    await pickValue(field, 'data-model-protocol', 'google-genai');
+
+    await act(async () => { buttonByText(container, 'Save provider').click(); });
+
+    expect(createModel).toHaveBeenCalledTimes(1);
+    expect(createModel.mock.calls[0]![0]).toMatchObject({ remote_id: 'vendor/new-model', protocol: 'google-genai' });
+    expect(updateModel).not.toHaveBeenCalled();
+    expect(updateProvider).not.toHaveBeenCalled();
+  });
+
+  it('carries a wizard row’s chosen format into the create body and omits an untouched row’s', async () => {
+    const onSaved = vi.fn(async () => {});
+    const { container } = await renderSurface(<NewProviderWizard onSaved={onSaved} />);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-connection-source-choice="manual"]')!.click(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[data-provider-template="openai"]')!.click(); });
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'YOUR_API_KEY'); });
+
+    await typeCustomModelId(container, 'provider-model-0-id', 'vendor/new-model');
+    await pickValue(container.querySelector('[data-model-protocol-field]')!, 'data-model-protocol', 'openai_responses');
+    await act(async () => { buttonByText(container, 'Add model').click(); });
+    await typeCustomModelId(container, 'provider-model-1-id', 'vendor/other');
+
+    await act(async () => { buttonByText(container, 'Create provider').click(); });
+
+    expect(createProvider).toHaveBeenCalledTimes(1);
+    const body = createProvider.mock.calls[0]![0] as { models?: Array<Record<string, unknown>> };
+    expect(body.models).toHaveLength(2);
+    expect(body.models![0]).toMatchObject({ remote_id: 'vendor/new-model', protocol: 'openai_responses' });
+    expect(body.models![1]).toMatchObject({ remote_id: 'vendor/other' });
+    expect(body.models![1]).not.toHaveProperty('protocol');
     expect(onSaved).toHaveBeenCalledOnce();
   });
 });
@@ -1501,6 +1641,46 @@ describe('Connections list', () => {
       expect(listOAuthMethods.mock.calls.length).toBeGreaterThan(1);
     });
 
+    it('connects a Kimi Code slot that has no account id, and sends no invented one', async () => {
+      const method = {
+        id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai',
+        signed_in: true, connection_state: 'ready', account: { state: 'unknown' },
+        quota: { state: 'unknown' },
+      } as OAuthMethodStatus;
+      const found = {
+        provider: 'kimi-code', home_dir: '/server/.kimi-code', storage_backend: 'keyring',
+        state: 'ready', account: { state: 'unknown' }, can_connect: true,
+      };
+      probeOriginalOAuth.mockResolvedValue(found);
+      connectOriginalOAuth.mockResolvedValue(found);
+      const onChanged = vi.fn();
+      await renderSurface(<AccountConnectionPanel method={method} onChanged={onChanged} />);
+      const source = document.querySelector<HTMLElement>('[data-original-source="kimi-code"]')!;
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+
+      // Kimi Code keeps a credential slot, not an account: the panel says what
+      // was found without naming an account, and connect is still offered.
+      expect(source.querySelector<HTMLElement>('[data-original-source-result]')!.dataset['originalSourceResult']).toBe('connectable');
+      expect(source.textContent).toContain('Found the sign-in Kimi Code already has on this machine.');
+      await act(async () => { source.querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      const request = connectOriginalOAuth.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(request).toMatchObject({ provider: 'kimi-code' });
+      expect(request['expected_account_id']).toBeUndefined();
+      expect(onChanged).toHaveBeenCalled();
+    });
+
+    it('still refuses a Codex connect whose probe found no account identity', async () => {
+      const method = codexMethod() as OAuthMethodStatus;
+      probeOriginalOAuth.mockResolvedValue({
+        provider: 'openai-codex', home_dir: '/server/.codex', storage_backend: 'file',
+        state: 'ready', account: { state: 'unknown' }, can_connect: true,
+      });
+      await renderSurface(<AccountConnectionPanel method={method} onChanged={vi.fn()} />);
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-probe]')!.click(); });
+      await act(async () => { panel().querySelector<HTMLButtonElement>('[data-original-source-connect]')!.click(); });
+      expect(connectOriginalOAuth).not.toHaveBeenCalled();
+    });
+
     it('refuses a stale check rather than connecting to what the machine no longer has', async () => {
       listOAuthMethods.mockResolvedValue([codexMethod()]);
       listProviders.mockResolvedValue({ items: [CODEX_ROW] });
@@ -1695,14 +1875,14 @@ describe('Connections list', () => {
 
     it('offers no reuse for a method whose machine sign-in is not a thing', async () => {
       listOAuthMethods.mockResolvedValue([{
-        id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai',
+        id: 'octo', label: 'Octo', provider: 'managed:octo', protocol: 'openai',
         signed_in: true, connection_state: 'ready', account: { state: 'known', id: 'dev@example.test' },
         quota: { state: 'unknown' },
       }]);
-      listProviders.mockResolvedValue({ items: [MANAGED_PROVIDER] });
+      listProviders.mockResolvedValue({ items: [{ ...MANAGED_PROVIDER, id: 'managed:octo' }] });
       const { container } = await renderSurface(<ConnectionsTab />);
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+      const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:octo"]')!;
       await act(async () => { row.open = true; });
 
       expect(document.querySelector('[data-original-source]')).toBeNull();

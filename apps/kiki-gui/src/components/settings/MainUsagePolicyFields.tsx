@@ -3,10 +3,11 @@
  *
  * One model, one set of shared values. An identity may carry a difference on a
  * handful of those fields, and only those fields; everything else keeps
- * inheriting. The scope switch therefore sits *on the parameter group itself*
- * rather than beside a second copy of it: switching scopes re-points the same
- * rows at a different layer, so there is one place to read a value, one place
- * to write it, and one Save.
+ * inheriting. The scope switch lives on the model editor itself and is passed
+ * down here: switching scopes re-points the same rows at a different layer, so
+ * there is one place to read a value, one place to write it, and one Save.
+ * This component used to own a second switch; two switches for one scope is
+ * how the same value ended up editable from two directions.
  *
  * Three states a field can be in, and they stay three because the engine reads
  * them apart:
@@ -33,14 +34,13 @@ import { formatCompactTokens, parseCompactInput } from '../../lib/autoCompact';
 import { Hint } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SettingField } from './fields';
-import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
+import { SettingsSelect } from './SettingsPrimitives';
 import {
   COUNT_USAGE_FIELDS,
   EMPTY_USAGE_BRANCH,
   USAGE_POLICY_FIELDS,
   USAGE_SERVICE_TIERS,
   clearUsageField,
-  countUsageDifferences,
   setUsageText,
   usageFieldValue,
   type TierDraft,
@@ -93,13 +93,11 @@ export interface UsagePolicyView {
 export type SharedUsageEdit = Readonly<Partial<Record<UsagePolicyField, string>>>;
 
 export function MainUsagePolicyFields({
-  modelId, scope, showIndependent, onScopeChange, view, onSharedChange, onChange, compaction, compactionControl,
+  modelId, scope, view, onSharedChange, onChange, compaction, compactionControl, disabled = false,
 }: {
   modelId: string;
+  /** The page's own scope selector; this group only reads through it. */
   scope: UsageScope;
-  /** Only when the server carries an independent branch worth showing. */
-  showIndependent: boolean;
-  onScopeChange: (scope: UsageScope) => void;
   view: UsagePolicyView;
   onSharedChange: (next: SharedUsageEdit) => void;
   onChange: (next: UsagePolicyDraft) => void;
@@ -111,37 +109,9 @@ export function MainUsagePolicyFields({
 }) {
   const { t } = useI18n();
   const branch = scope === 'shared' ? undefined : (view.draft[scope] ?? EMPTY_USAGE_BRANCH);
-  const differences = countUsageDifferences(branch ?? EMPTY_USAGE_BRANCH);
   return (
     <div data-main-usage-policy={modelId} data-usage-scope={scope}
       className="min-w-0 space-y-2 border-t border-hairline pt-4 disabled:opacity-60">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-        <SettingsSegmented<UsageScope>
-          ariaLabel={t('st.usagePolicy.scopeAria')}
-          value={scope}
-          dataAttr="data-usage-scope-choice"
-          onChange={onScopeChange}
-          choices={[
-            { value: 'shared', label: t('st.usagePolicy.shared') },
-            { value: 'main', label: t('st.usagePolicy.main') },
-            // Independent appears only when the server carries a branch for it;
-            // a position nobody uses is not offered a control it has no use for.
-            ...(showIndependent ? [{ value: 'independent' as const, label: t('st.promptIdentity.independent') }] : []),
-          ]}
-        />
-        {scope === 'shared' ? null : (
-          <span className="text-[12px] text-ink-faint" data-usage-differences={String(differences)}>
-            {differences === 0 ? t('st.usagePolicy.noDifferences')
-              : differences === 1 ? t('st.usagePolicy.differencesOne')
-              : t('st.usagePolicy.differences', { count: String(differences) })}
-          </span>
-        )}
-      </div>
-      <Hint>
-        {scope === 'shared'
-          ? t('st.usagePolicy.sharedHint')
-          : t(scope === 'main' ? 'st.usagePolicy.mainHint' : 'st.usagePolicy.independentHint')}
-      </Hint>
       <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2" data-usage-fields={scope}>
         {USAGE_POLICY_FIELDS.map((field) => (
           <div
@@ -150,7 +120,7 @@ export function MainUsagePolicyFields({
             // pair up, whatever the width.
             className={USAGE_PAIRED_FIELDS.includes(field) ? undefined : 'sm:col-span-2'}
           >
-            <UsageRow field={field} scope={scope} modelId={modelId}
+            <UsageRow field={field} scope={scope} modelId={modelId} disabled={disabled}
               branch={branch ?? EMPTY_USAGE_BRANCH} shared={view.shared[field]}
               resolved={scope === 'shared' ? undefined : view.resolved[scope]?.[field]}
               draftDirty={scope !== 'shared' && view.dirty}
@@ -169,7 +139,7 @@ export function MainUsagePolicyFields({
 }
 
 function UsageRow({
-  field, scope, modelId, branch, shared, resolved, draftDirty, invalid, onSharedChange, onChange, compaction, compactionControl,
+  field, scope, modelId, branch, shared, resolved, draftDirty, invalid, onSharedChange, onChange, compaction, compactionControl, disabled = false,
 }: {
   field: UsagePolicyField;
   scope: UsageScope;
@@ -181,6 +151,7 @@ function UsageRow({
   invalid: boolean;
   onSharedChange: (next: SharedUsageEdit) => void;
   onChange: (next: UsageBranchDraft) => void;
+  disabled?: boolean;
   /** The compaction control, which only the compaction row carries. */
   compaction?: React.ReactNode;
   /** Replaces the plain input for the compaction row, which has its own. */
@@ -220,6 +191,7 @@ function UsageRow({
         {field === 'service_tier'
           ? scope === 'shared'
             ? <SettingsSelect id={fieldId} variant="form" mono dataAttr="data-usage-value" ariaLabel={label}
+              disabled={disabled}
               value={shared === '' ? 'unset' : shared}
               onChange={(next) => { onSharedChange({ [field]: next === 'unset' ? '' : next }); }}
               choices={[
@@ -227,6 +199,7 @@ function UsageRow({
                 ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
               ]} />
             : <SettingsSelect id={fieldId} variant="form" mono dataAttr="data-usage-value" ariaLabel={label}
+              disabled={disabled}
               value={branch.tier} onChange={(next) => onChange({ ...branch, tier: next as TierDraft })}
               choices={[
                 { value: 'inherit', label: t('st.usagePolicy.inherit') },
@@ -239,6 +212,7 @@ function UsageRow({
           // the lines below instead of pushing the restore off this one.
           : <div className="min-w-0 max-w-full">{compactionControl ?? <UsageTextInput
             id={fieldId} field={field} label={label}
+            disabled={disabled}
             value={current}
             invalid={problem !== null}
             placeholder={scope === 'shared' || shared === ''
@@ -255,8 +229,9 @@ function UsageRow({
           // action nearer the neighbour than its own control. The presets below
           // sit on their own line, so the control line has the room for it.
           ? <button type="button" data-usage-restore={field}
-            className="ms-auto shrink-0 self-start rounded px-1.5 py-1 text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
-            onClick={() => { onChange({ ...branch, ...clearUsageField(field) }); }}>{t('st.usagePolicy.restoreInherit')}</button>
+            disabled={disabled}
+            className="ms-auto shrink-0 self-start rounded px-1.5 py-1 text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
+            onClick={() => { if (!disabled) onChange({ ...branch, ...clearUsageField(field) }); }}>{t('st.usagePolicy.restoreInherit')}</button>
           : null}
         {problem !== null
           ? <p role="alert" className="w-full text-[12px] text-danger" data-usage-issue={field}>{problem}</p>
@@ -294,7 +269,7 @@ export function formatUsageValue(field: UsagePolicyField, value: string): string
  * rather than being rewritten here.
  */
 function UsageTextInput({
-  id, field, label, value, invalid, placeholder, onCommit,
+  id, field, label, value, invalid, placeholder, onCommit, disabled = false,
 }: {
   id: string;
   field: UsagePolicyField;
@@ -303,6 +278,7 @@ function UsageTextInput({
   invalid: boolean;
   placeholder: string | undefined;
   onCommit: (next: string) => void;
+  disabled?: boolean;
 }) {
   const isCount = COUNT_USAGE_FIELDS.has(field);
   const display = isCount && value !== '' && /^\d+$/.test(value.trim()) ? formatCompactTokens(Number(value)) : value;
@@ -318,6 +294,7 @@ function UsageTextInput({
 
   return <input
     id={id} data-usage-value={field} aria-label={label} aria-invalid={invalid}
+    disabled={disabled}
     className={`${SMALL_INPUT} ${invalid ? 'border-danger' : ''} ${isCount ? 'font-mono tabular-nums' : ''}`}
     inputMode={isCount ? 'decimal' : undefined}
     spellCheck={false} autoComplete="off"

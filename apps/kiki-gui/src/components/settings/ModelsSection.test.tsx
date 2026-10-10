@@ -21,9 +21,9 @@ import type { ServerConnection } from '@kiki/session-core/settings';
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
-import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard } from './ModelsSection';
+import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard, ThinkingCard } from './ModelsSection';
 import { ModelSwitchCard } from './ModelSwitchCard';
-import { pickValue } from './testControls';
+import { optionLabels, pickValue } from './testControls';
 
 const listDiscoveredModels = vi.fn();
 const refreshAllProviders = vi.fn();
@@ -293,6 +293,102 @@ describe('ModelCatalogCard row editor', () => {
     expect(patch).not.toHaveProperty('capabilities');
 
     expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
+  });
+
+  it('names the resolved provider format on the inherit option without writing it', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai' });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    expect(field.dataset['modelProtocolField']).toBe('inherit');
+    expect((await optionLabels(field))[0]).toBe('Provider default · Chat Completions');
+
+    const nameInput = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Display name for kimi-code/kimi-k2"]',
+    )!;
+    await act(async () => { setInputValue(nameInput, 'K2 Thinking'); });
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+
+    // The resolved format is display only: an unrelated save carries no
+    // protocol key, so inheritance is never pinned by accident.
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      display_name: 'K2 Thinking', base_revision: 'rev-7',
+    });
+  });
+
+  it('saves a chosen request format as a sparse protocol patch', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai' });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    await pickValue(container.querySelector('[data-model-protocol-field]')!, 'data-model-protocol', 'openai_responses');
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      protocol: 'openai_responses', base_revision: 'rev-7',
+    });
+  });
+
+  it('clears a stored format override back to the provider default', async () => {
+    getModel.mockResolvedValue({ ...ENTITY, protocol: 'anthropic', effective_protocol: 'anthropic' });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
+    expect(field.dataset['modelProtocolField']).toBe('anthropic');
+    await pickValue(field, 'data-model-protocol', 'inherit');
+    await act(async () => {
+      [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click();
+    });
+
+    expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
+      protocol: null, base_revision: 'rev-7',
+    });
+  });
+
+  it('saves a chosen request format for a suggested model', async () => {
+    const items = [{ provider_id: 'gateway', fetched_at: 100, attempted_at: 100, models: [{ remote_id: 'remote-suggested' }] }];
+    refreshAllProviders.mockImplementation(async () => {
+      listDiscoveredModels.mockResolvedValue({ items });
+      return { changed: [], unchanged: ['gateway'], failed: [], discovered: items };
+    });
+    const container = await renderCard();
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Get models')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Suggestions — not configured yet"]')!.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent?.includes('remote-suggested'))!;
+    await act(async () => { option.click(); });
+
+    await pickValue(container.querySelector('[data-model-protocol-field]')!, 'data-model-protocol', 'anthropic');
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'gateway/remote-suggested', protocol: 'anthropic',
+    }));
   });
 
   it('edits the remote id and image policy while leaving model inheritance explicit', async () => {
@@ -590,7 +686,7 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       const identityLabel = translate(locale as 'en' | 'zh', 'st.models.requestIdentity');
       const select = container.querySelector(`[data-model-row-editor] button[aria-label="${identityLabel}"]`)!;
       await pickValue(select, 'data-request-identity-choice', 'custom_overrides');
-      const textarea = container.querySelector<HTMLTextAreaElement>('[data-model-row-editor] textarea')!;
+      const textarea = container.querySelector<HTMLTextAreaElement>('[data-request-identity-overrides]')!;
       await act(async () => { setTextareaValue(textarea, text); });
       const saveLabel = translate(locale as 'en' | 'zh', 'common.save');
       const save = [...container.querySelectorAll('button')].find((button) => button.textContent === saveLabel)!;
@@ -606,6 +702,29 @@ describe('ModelCatalogRowEditor request identity save guard', () => {
       process.off('unhandledRejection', onError);
       localStorage.removeItem('kiki.locale');
     }
+  });
+});
+
+describe('ThinkingCard display order', () => {
+  it('sorts the default model efforts without changing the configured selection or saving', async () => {
+    const support_efforts = ['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA'];
+    listModels.mockResolvedValue({ items: [{ ...MODELS[0], support_efforts, default_effort: 'max' }] });
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', thinking: { effort: 'high' } });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={client}><I18nProvider><ThinkingCard /></I18nProvider></QueryClientProvider>);
+    });
+    for (let index = 0; index < 3; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const choices = [...container.querySelectorAll<HTMLButtonElement>('[role="group"] button')];
+    expect(choices.map((node) => node.textContent)).toEqual(['Low', 'Medium', 'High', 'Xhigh', 'Max', 'Vendor-ULTRA']);
+    expect(choices.filter((node) => node.getAttribute('aria-pressed') === 'true').map((node) => node.textContent)).toEqual(['High']);
+    expect(support_efforts).toEqual(['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA']);
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 });
 
@@ -694,7 +813,7 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     expect(container.querySelector('[data-model-row]')!.textContent).not.toContain('video_in');
   });
 
-  it('opens the detail with name, effort and context first and keeps overrides under Advanced', async () => {
+  it('opens the detail with name, effort, context and capabilities first, and keeps overrides under Advanced', async () => {
     const container = await renderCard();
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -702,12 +821,17 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     const advanced = editor.querySelector<HTMLElement>('[data-advanced="model-kimi-code/kimi-k2"]')!;
     const body = advanced.querySelector<HTMLElement>('[id^="advanced-"]')!;
     expect(body.hidden).toBe(true);
-    expect(body.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
     expect(body.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]')).not.toBeNull();
-    // Common fields sit outside the disclosure.
+    // Common fields sit outside the disclosure — capabilities included. What a
+    // model can do is one of the things a person opens this panel to decide, so
+    // it is on the ordinary surface where the value being saved can be read.
     expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);
+    const capabilities = editor.querySelector('[data-model-capabilities="kimi-code/kimi-k2"]');
+    expect(capabilities).not.toBeNull();
+    expect(advanced.contains(capabilities!)).toBe(false);
+    expect(capabilities!.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
   });
 });
 
@@ -941,8 +1065,10 @@ describe('ModelCatalogRowEditor usage policy', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   };
 
+  // The scope switch is owned by the page, not by the usage group: one switch
+  // decides which layer every overridable group on the page is editing.
   const scopeButton = (container: HTMLElement, scope: string) =>
-    container.querySelector<HTMLButtonElement>('[data-main-usage-policy] [data-usage-scope-choice="' + scope + '"]');
+    container.querySelector<HTMLButtonElement>(`[data-model-scope-choice="${scope}"]`);
 
   it('is editable on a model that has never configured a difference', async () => {
     // Absent `usage` is the ordinary case, not a missing feature: the block
@@ -958,9 +1084,10 @@ describe('ModelCatalogRowEditor usage policy', () => {
     // The shared scope writes the model's own parameters, through the same rows.
     expect(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!.value).toBe('medium');
     // The shared layer states it is the default, not that it overrides every
-    // use: an identity may still set its own value on top of it.
-    expect(block.textContent).toContain('The defaults: anywhere nothing is set separately uses these');
-    expect(block.textContent).toContain('subagents included');
+    // use: an identity may still set its own value on top of it. That sentence
+    // belongs to the page-level scope switch now, which owns the layer.
+    expect(container.querySelector('[data-model-edit-scope="shared"]')?.textContent)
+      .toContain(translate('en', 'st.modelScope.sharedHint'));
     // No difference row and no restore action while editing the shared layer.
     expect(block.querySelector('[data-usage-restore]')).toBeNull();
     setInputValue(block.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!, 'low');
@@ -968,6 +1095,51 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(updateModel).toHaveBeenCalledWith(MODEL_ID, expect.objectContaining({
       parameters: { thinking_effort: 'low' },
     }));
+  });
+
+  it('keeps effort, tier and the token cap in the usage fields, and temperature with top_p in the parameters editor', async () => {
+    const container = await openRow(usageEntity({ main: { thinking_effort: 'high' } }));
+    for (let tick = 0; tick < 6 && container.querySelector('[data-generation-editor="model:kimi-code/kimi-k2"]') === null; tick += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    // One entrance for the shared layer's own three values: here, and only here.
+    const block = container.querySelector<HTMLElement>('[data-main-usage-policy]')!;
+    expect(block.querySelector('[data-usage-row="thinking_effort"]')).not.toBeNull();
+    expect(block.querySelector('[data-usage-row="service_tier"]')).not.toBeNull();
+    expect(block.querySelector('[data-usage-row="max_completion_tokens"]')).not.toBeNull();
+    const editor = container.querySelector<HTMLElement>('[data-generation-editor="model:kimi-code/kimi-k2"]')!;
+    expect(editor.querySelector('button[aria-label="Temperature mode"]')).not.toBeNull();
+    expect(editor.querySelector('button[aria-label="Top P mode"]')).not.toBeNull();
+    expect(editor.querySelector('button[aria-label="Thinking mode / effort mode"]')).toBeNull();
+    expect(editor.querySelector('button[aria-label="Service tier mode"]')).toBeNull();
+    expect(editor.querySelector('button[aria-label="Max generated tokens mode"]')).toBeNull();
+  });
+
+  it('locks the usage controls against edits and restore while a save is in flight', async () => {
+    const entity = usageEntity({ main: { thinking_effort: 'high' } });
+    let resolveSave: ((saved: GetModelResponse) => void) | undefined;
+    updateModel.mockImplementation(() => new Promise<GetModelResponse>((resolve) => { resolveSave = resolve; }));
+    const container = await openRow(entity);
+    await act(async () => { scopeButton(container, 'main')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const effort = () => container.querySelector<HTMLInputElement>('[data-usage-value="thinking_effort"]')!;
+    setInputValue(effort(), 'low');
+    await act(async () => { effort().blur(); });
+    // The request stays in flight: updateModel settles only at the end of the test.
+    await saveModel(container);
+    const restore = container.querySelector<HTMLButtonElement>('[data-usage-restore="thinking_effort"]')!;
+    expect(effort().disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Service tier"]')!.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!.disabled).toBe(true);
+    expect(restore.disabled).toBe(true);
+    await act(async () => { restore.click(); });
+    expect(effort().value).toBe('low');
+    await act(async () => { resolveSave?.({ ...entity, revision: 'rev-8' }); });
+    for (let tick = 0; tick < 3; tick += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    expect(effort().disabled).toBe(false);
+    expect(effort().value).toBe('high');
   });
 
   it('leaves an unset shared value empty rather than writing 0', async () => {
@@ -988,7 +1160,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     const container = await openRow(usageEntity({ main: { thinking_effort: 'high', auto_compact: 160000 } }));
     await act(async () => { scopeButton(container, 'main')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('2 differences from shared');
+    expect(container.querySelector('[data-model-scope-differences]')?.textContent).toBe('2');
     expect(container.querySelector('[data-usage-value="thinking_effort"]')).not.toBeNull();
   });
 
@@ -1217,7 +1389,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(container.querySelector('[data-main-usage-policy]')).not.toBeNull();
     await act(async () => { scopeButton(container, 'main')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.querySelector('[data-usage-differences]')?.textContent).toBe('Same as shared');
+    expect(container.querySelector('[data-model-scope-differences]')).toBeNull();
     const compact = container.querySelector<HTMLInputElement>('[data-compact-point-field="model:kimi-code/kimi-k2"] input')!;
     await act(async () => { compact.focus(); setInputValue(compact, '120000'); });
     await act(async () => { compact.blur(); });
@@ -1228,10 +1400,11 @@ describe('ModelCatalogRowEditor usage policy', () => {
     }));
   });
 
-  it('offers the independent position only when the server carries it', async () => {
+  it('offers every identity, including one the server has no branch for', async () => {
     const without = await openRow(usageEntity({ main: {} }));
-    expect(scopeButton(without, 'independent')).toBeNull();
+    expect(scopeButton(without, 'independent')).not.toBeNull();
     expect(scopeButton(without, 'main')).not.toBeNull();
+    expect(scopeButton(without, 'shared')).not.toBeNull();
   });
 
   it('offers the independent position once a branch exists for it', async () => {

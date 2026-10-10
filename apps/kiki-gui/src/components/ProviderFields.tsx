@@ -25,6 +25,7 @@ import type {
   GetProviderResponse,
   ListProviderHealthResponse,
   ModelCatalogItem,
+  ModelProtocol,
   ProviderCatalogItem,
   ProviderConnectionTestResult,
 } from '@kiki/protocol';
@@ -38,6 +39,8 @@ import {
   isProviderDraftDirty,
   KNOWN_CAPABILITIES,
   KNOWN_EFFORTS,
+  DEFAULT_MODEL_CAPABILITIES,
+  DEFAULT_MODEL_SUPPORT_EFFORTS,
   KNOWN_IMAGE_MIME_TYPES,
   MS_UNIT_FACTORS,
   msUnitFor,
@@ -85,6 +88,15 @@ import { SearchableSelect, type SearchableSelectOption } from './SearchableSelec
 import { FieldIssue, FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSelect } from './settings/SettingsPrimitives';
 import { SecretField, type SecretDraft } from './settings/SecretField';
 import { ProviderConnectionExtras } from './settings/ProviderConnectionExtras';
+import { ModelProtocolField } from './settings/ModelProtocolField';
+import {
+  alignProtocolChoices,
+  protocolChoiceFrom,
+  protocolCreateField,
+  protocolPatchField,
+  withModelProtocols,
+  type ModelProtocolChoice,
+} from './settings/modelProtocolDraft';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 /**
@@ -108,6 +120,13 @@ interface ProviderModelCatalogChoice {
   readonly maxContextSize: number;
   readonly capabilities: readonly string[];
   readonly supportEfforts: readonly string[];
+  /**
+   * The stored request format and what the server resolved inheritance to.
+   * Only a configured model carries them; a suggestion has no stored format,
+   * and a merge never relabels one source's format as another's.
+   */
+  readonly protocol?: ModelProtocol;
+  readonly effectiveProtocol?: ModelProtocol;
   readonly source: ProviderModelChoiceSource;
 }
 
@@ -118,6 +137,8 @@ function configuredCatalogChoice(model: ModelCatalogItem): ProviderModelCatalogC
     maxContextSize: model.max_context_size,
     capabilities: model.capabilities ?? [],
     supportEfforts: model.support_efforts ?? [],
+    protocol: model.protocol,
+    effectiveProtocol: model.effective_protocol,
     source: 'configured',
   };
 }
@@ -210,8 +231,8 @@ function blankModel(): ProviderModelDraft {
     remoteId: '',
     maxContextSize: 250000,
     displayName: '',
-    capabilities: ['thinking', 'tool_use'],
-    supportEfforts: [],
+    capabilities: [...DEFAULT_MODEL_CAPABILITIES],
+    supportEfforts: [...DEFAULT_MODEL_SUPPORT_EFFORTS],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
     imageAcceptedTypes: null,
@@ -541,20 +562,23 @@ function ModelDraftRow({
   isDefault,
   canRemove,
   catalogModels,
+  protocol,
+  onProtocolChange,
   onChange,
   onRemove,
   onSetDefault,
-  onSaved,
 }: {
   model: ProviderModelDraft;
   index: number;
   isDefault: boolean;
   canRemove: boolean;
   catalogModels: readonly ProviderModelCatalogChoice[];
+  /** This row's request format choice; the parent keeps one per row, index-aligned. */
+  protocol: ModelProtocolChoice;
+  onProtocolChange: (next: ModelProtocolChoice) => void;
   onChange: (patch: Partial<ProviderModelDraft>) => void;
   onRemove: () => void;
   onSetDefault: () => void;
-  onSaved?: () => Promise<void>;
 }) {
   const { t } = useI18n();
   const customProfiles = useCustomIdentityChoices();
@@ -572,6 +596,14 @@ function ModelDraftRow({
   const selectedIsSuggestion = model.remoteId !== ''
     && model.id === ''
     && (selectedChoice?.source === 'discovered' || selectedChoice?.source === 'directory');
+  // The resolved format names the provider default only while the STORED model
+  // inherits (`protocol` absent): with a stored override, `effective_protocol`
+  // IS that override, so an unsaved "Provider default" choice must not be
+  // labelled with it. When the provider's format is unknown the option stays
+  // generic rather than guessing.
+  const resolvedProtocol = selectedChoice?.source === 'configured' && selectedChoice.protocol === undefined
+    ? selectedChoice.effectiveProtocol
+    : undefined;
   const catalogOptions = useMemo<readonly SearchableSelectOption[]>(() =>
     catalogModels.map((candidate) => ({
       value: candidate.remoteId,
@@ -704,6 +736,13 @@ function ModelDraftRow({
               placeholder={t('st.providers.displayNamePlaceholder')}
             />
           </div>
+          <ModelProtocolField
+            model={rowLabel || String(n)}
+            value={protocol}
+            resolved={resolvedProtocol}
+            onChange={onProtocolChange}
+            showHint={false}
+          />
           <div className="space-y-1">
             <p className={FORM_LABEL}>{t('st.compact.windowLabel')}</p>
             <ContextStepper
@@ -723,24 +762,31 @@ function ModelDraftRow({
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
+          {/*
+            Capabilities are an ordinary setting, not a rarely-needed one: they
+            decide what Kiki may send to this model, and the two that make a
+            model usable at all (thinking, tool use) start checked. Behind a
+            disclosure, the value actually submitted could not be seen or
+            corrected before saving — which is exactly the part worth checking.
+          */}
+          <div className="space-y-1" data-draft-model-capabilities={model.id}>
+            <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+            <ChipSelect
+              values={model.capabilities}
+              knownOptions={KNOWN_CAPABILITIES}
+              onChange={(capabilities) => { onChange({ capabilities }); }}
+              ariaLabel={t('st.providers.modelCapsAria', { n })}
+              addPlaceholder={t('st.chips.addPlaceholder')}
+              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+            <Hint>{t('st.models.capabilitiesHint')}</Hint>
+          </div>
           <AdvancedDisclosure id={`draft-model-${index}`} summary={t('st.models.draftAdvancedSummary')}>
-            <div className="space-y-1">
-              <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
-              <ChipSelect
-                values={model.capabilities}
-                knownOptions={KNOWN_CAPABILITIES}
-                onChange={(capabilities) => { onChange({ capabilities }); }}
-                ariaLabel={t('st.providers.modelCapsAria', { n })}
-                addPlaceholder={t('st.chips.addPlaceholder')}
-                removeLabel={(value) => t('st.chips.removeAria', { value })}
-              />
-            </div>
             <ImagePolicyEditor
               value={model}
               onChange={(images) => { onChange(images); }}
               inheritLabel={t('st.images.inheritProvider')}
             />
-            {model.id !== '' ? <SavedGenerationParametersEditor scope="model" id={model.id} onSaved={onSaved} /> : null}
             <RequestIdentityLayerEditor
               value={model}
               onChange={(identity) => { onChange(identity); }}
@@ -785,6 +831,8 @@ export function ProviderFields({
   baselineBaseUrl,
   baselineType,
   catalogModels = [],
+  modelProtocols,
+  onModelProtocolsChange,
   onRefreshed,
   fieldIssue = null,
   advancedExtra,
@@ -819,6 +867,13 @@ export function ProviderFields({
    * falls back to the rows this form already holds.
    */
   catalogModels?: readonly ProviderModelCatalogChoice[];
+  /**
+   * Per-row request format choices, index-aligned with `draft.models`. The
+   * parent owns them — the save path writes them next to the row entities —
+   * and this field set only keeps the alignment on add/remove.
+   */
+  modelProtocols: readonly ModelProtocolChoice[];
+  onModelProtocolsChange: (next: readonly ModelProtocolChoice[]) => void;
   onRefreshed?: () => Promise<void>;
   /** New connections only: the field-level problem the last create attempt found. */
   fieldIssue?: ConnectionFieldIssue | null;
@@ -1006,7 +1061,10 @@ export function ProviderFields({
             {t('st.providers.models')}
             <span className="ml-1.5 font-normal text-ink-faint">{draft.models.filter((model) => model.remoteId !== '').length}</span>
           </p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, blankModel()] }); }}>{t('st.providers.addModel')}</button>
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => {
+            onChange({ ...draft, models: [...draft.models, blankModel()] });
+            onModelProtocolsChange(alignProtocolChoices(modelProtocols, draft.models.length + 1));
+          }}>{t('st.providers.addModel')}</button>
         </div>
         {idLocked ? (
           <div className="space-y-1">
@@ -1042,6 +1100,10 @@ export function ProviderFields({
             }
             canRemove
             catalogModels={availableCatalogModels}
+            protocol={modelProtocols[index] ?? 'inherit'}
+            onProtocolChange={(next) => {
+              onModelProtocolsChange(modelProtocols.map((choice, choiceIndex) => choiceIndex === index ? next : choice));
+            }}
             onChange={(patch) => { updateModel(index, patch); }}
             onRemove={() => {
               const models = draft.models.filter((_, modelIndex) => modelIndex !== index);
@@ -1054,9 +1116,12 @@ export function ProviderFields({
                     ? (first === undefined ? '' : first.id || first.remoteId)
                     : draft.defaultModel,
               });
+              onModelProtocolsChange(alignProtocolChoices(
+                modelProtocols.filter((_, choiceIndex) => choiceIndex !== index),
+                models.length,
+              ));
             }}
             onSetDefault={() => { onChange({ ...draft, defaultModel: model.id || model.remoteId }); }}
-            onSaved={onRefreshed}
           />
         ))}
       </div>
@@ -1135,9 +1200,25 @@ export function ProviderEditor({
   const { client } = useConnection();
   const queryClient = useQueryClient();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
+  // Per-row request format choices sit next to the draft rows, index-aligned.
+  // The baseline is keyed by model id (not index): rows come and go, but a
+  // stored row's "what did the server have" only moves when a save lands.
+  const initialProtocols = useMemo(() => {
+    const rows = initial?.models ?? [];
+    const storedById = new Map(models.map((model) => [model.id, model] as const));
+    const choices: ModelProtocolChoice[] = rows.map((row) =>
+      row.id === '' ? 'inherit' : protocolChoiceFrom(storedById.get(row.id)?.protocol));
+    const baselines = new Map<string, ModelProtocolChoice>();
+    rows.forEach((row, index) => {
+      if (row.id !== '') baselines.set(row.id, choices[index] ?? 'inherit');
+    });
+    return { choices, baselines };
+  }, [initial, models]);
   const [draft, setDraft] = useState(initial);
   const [baseline, setBaseline] = useState(initial);
   const [readSnapshot, setReadSnapshot] = useState(initial);
+  const [modelProtocols, setModelProtocols] = useState<readonly ModelProtocolChoice[]>(initialProtocols.choices);
+  const [modelProtocolsBaseline, setModelProtocolsBaseline] = useState<ReadonlyMap<string, ModelProtocolChoice>>(initialProtocols.baselines);
   const [directoryModels, setDirectoryModels] = useState<readonly CatalogModelItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -1170,7 +1251,11 @@ export function ProviderEditor({
     (discovered.data?.items.find((group) => group.provider_id === provider.id)?.models ?? []).map(discoveredCatalogChoice),
     directoryModels.map(directoryCatalogChoice),
   ), [directoryModels, discovered.data, models, provider.id]);
-  const dirty = draft !== null && baseline !== null && isProviderDraftDirty(draft, baseline);
+  // Only a stored row can hold a protocol override; a new row's choice rides
+  // along with its create and is covered by the draft diff until then.
+  const protocolDirty = draft !== null && draft.models.some((row, index) =>
+    row.id !== '' && (modelProtocols[index] ?? 'inherit') !== (modelProtocolsBaseline.get(row.id) ?? 'inherit'));
+  const dirty = (draft !== null && baseline !== null && isProviderDraftDirty(draft, baseline)) || protocolDirty;
 
   // A dirty editor keeps its baseline AND revisions, even when another writer
   // refreshes the shared catalog. New reads must not bless a stale draft.
@@ -1179,7 +1264,9 @@ export function ProviderEditor({
     setDraft(initial);
     setBaseline(initial);
     setReadSnapshot(initial);
-  }, [initial, readSnapshot, dirty, saving]);
+    setModelProtocols(initialProtocols.choices);
+    setModelProtocolsBaseline(initialProtocols.baselines);
+  }, [initial, readSnapshot, dirty, saving, initialProtocols]);
   useEffect(() => {
     let current = true;
     setDirectoryModels([]);
@@ -1232,11 +1319,16 @@ export function ProviderEditor({
       let normalized = next;
       let savedBaseline = baseline;
       const revisionMap = new Map(revisions.models);
+      const savedProtocols = new Map(modelProtocolsBaseline);
       for (const [index, row] of next.models.entries()) {
         if (row.id !== '') continue;
-        const created = await client.createModel(modelCreateBody(provider.id, row));
+        const created = await client.createModel({
+          ...modelCreateBody(provider.id, row),
+          ...protocolCreateField(modelProtocols[index] ?? 'inherit'),
+        });
         mutationSucceeded = true;
         revisionMap.set(created.id, created.revision);
+        savedProtocols.set(created.id, modelProtocols[index] ?? 'inherit');
         const savedRow = { ...row, id: created.id };
         normalized = {
           ...normalized,
@@ -1246,26 +1338,34 @@ export function ProviderEditor({
         savedBaseline = { ...savedBaseline, models: [...savedBaseline.models, savedRow] };
         setDraft(normalized);
         setBaseline(savedBaseline);
+        setModelProtocolsBaseline(new Map(savedProtocols));
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
-      for (const row of normalized.models) {
+      for (const [index, row] of normalized.models.entries()) {
         const previous = savedBaseline.models.find((model) => model.id === row.id);
         if (previous === undefined) continue;
         const rowPatch = modelPatchBody(row, previous);
-        if (rowPatch === null) continue;
+        const protocolPatch = protocolPatchField(
+          modelProtocols[index] ?? 'inherit',
+          savedProtocols.get(row.id) ?? 'inherit',
+        );
+        if (rowPatch === null && !('protocol' in protocolPatch)) continue;
         const baseRevision = revisionMap.get(row.id);
         if (baseRevision === undefined) throw new Error(`Missing revision for model ${row.id}`);
         const updated = await client.updateModel(row.id, {
-          ...rowPatch,
+          ...(rowPatch ?? {}),
+          ...protocolPatch,
           base_revision: baseRevision,
         });
         mutationSucceeded = true;
         revisionMap.set(row.id, updated.revision);
+        savedProtocols.set(row.id, modelProtocols[index] ?? 'inherit');
         savedBaseline = {
           ...savedBaseline,
           models: savedBaseline.models.map((model) => model.id === row.id ? row : model),
         };
         setBaseline(savedBaseline);
+        setModelProtocolsBaseline(new Map(savedProtocols));
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
       for (const row of savedBaseline.models) {
@@ -1276,8 +1376,10 @@ export function ProviderEditor({
         await client.deleteModel(row.id, { baseRevision });
         mutationSucceeded = true;
         revisionMap.delete(row.id);
+        savedProtocols.delete(row.id);
         savedBaseline = { ...savedBaseline, models: savedBaseline.models.filter((model) => model.id !== row.id) };
         setBaseline(savedBaseline);
+        setModelProtocolsBaseline(new Map(savedProtocols));
         setRevisions({ provider: revisions.provider, models: revisionMap });
       }
       const connectionPatch = providerPatchBody(normalized, savedBaseline);
@@ -1471,6 +1573,8 @@ export function ProviderEditor({
             idLocked
             refreshProviderId={provider.id}
             catalogModels={catalogModels}
+            modelProtocols={modelProtocols}
+            onModelProtocolsChange={setModelProtocols}
             onRefreshed={onSaved}
             advancedExtra={<>
               <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
@@ -1526,12 +1630,16 @@ function parameterValue(value: GenerationParametersWire[ParameterKey], zh: boole
 }
 
 export function SavedGenerationParametersEditor({
-  scope, id, onSaved,
+  scope, id, onSaved, keys,
 }: {
   scope: 'model' | 'provider';
   id: string;
   onSaved?: () => Promise<void>;
+  // The keys this instance owns. A parameter another section owns must not get
+  // a second editor — and a second save entrance — from this one.
+  keys?: readonly ParameterKey[];
 }) {
+  const ownedKeys = keys ?? PARAMETER_KEYS;
   const { client } = useConnection();
   const { locale } = useI18n();
   const zh = locale.startsWith('zh');
@@ -1557,7 +1665,7 @@ export function SavedGenerationParametersEditor({
   const [revision, setRevision] = useState('');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const dirty = PARAMETER_KEYS.some((key) => JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]));
+  const dirty = ownedKeys.some((key) => JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]));
   useDirtyReporter(`generation:${scope}:${id}`, dirty);
 
   useEffect(() => {
@@ -1574,7 +1682,7 @@ export function SavedGenerationParametersEditor({
   };
   const save = async () => {
     const patch: Record<string, unknown> = {};
-    for (const key of PARAMETER_KEYS) {
+    for (const key of ownedKeys) {
       if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key])) patch[key] = draft[key] ?? null;
     }
     if (Object.keys(patch).length === 0) return;
@@ -1582,7 +1690,7 @@ export function SavedGenerationParametersEditor({
     setFeedback(null);
     try {
       if (scope === 'model') {
-        if (draft.thinking_effort === 'off' && alwaysThinking) {
+        if (ownedKeys.includes('thinking_effort') && draft.thinking_effort === 'off' && alwaysThinking) {
           throw new Error(zh ? '该模型声明强制思考，不能选择关闭。' : 'This model requires thinking; Off is unavailable.');
         }
         await client.updateModel(id, { base_revision: revision, parameters: patch as GenerationParametersPatch });
@@ -1614,8 +1722,8 @@ export function SavedGenerationParametersEditor({
       </p>
       <Hint>{scope === 'provider'
         ? (zh ? '影响此供应商下未覆盖的模型；已有模型及角色覆盖保持优先。' : 'Applies to models without local overrides; model and profile overrides take precedence.')
-        : (zh ? '继承值来自供应商；最大生成 token 是偏好，仍受模型和角色硬上限约束。' : 'Inherits provider defaults; generated-token preferences remain subject to model and profile caps.')}</Hint>
-      {PARAMETER_KEYS.map((key) => {
+        : (zh ? '继承值来自供应商的默认。' : 'Inherits provider defaults.')}</Hint>
+      {ownedKeys.map((key) => {
         const value = draft[key];
         const mode = value === undefined ? 'inherit' : typeof value === 'object' ? 'api_default' : 'custom';
         const label = parameterLabel(key, zh);
@@ -1702,11 +1810,14 @@ export function NewProviderWizard({
   const blank = useMemo(blankProviderDraft, []);
   const [step, setStep] = useState<'template' | 'form'>('template');
   const [draft, setDraft] = useState(blank);
+  const [modelProtocols, setModelProtocols] = useState<readonly ModelProtocolChoice[]>(() =>
+    alignProtocolChoices(undefined, blank.models.length));
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [fieldIssue, setFieldIssue] = useState<ConnectionFieldIssue | null>(null);
 
-  const dirty = step === 'form' && isProviderDraftDirty(draft, blank);
+  const dirty = step === 'form' && (isProviderDraftDirty(draft, blank)
+    || modelProtocols.some((choice) => choice !== 'inherit'));
   useDirtyReporter('new-provider', dirty);
 
   // An edit to the flagged field clears its error; the next create re-checks.
@@ -1718,8 +1829,10 @@ export function NewProviderWizard({
 
   const [preset, setPreset] = useState<ProviderPreset | null>(null);
   const chooseTemplate = (picked: ProviderPreset | null, protocol?: ProviderDraft['type']) => {
+    const nextDraft = draftForPreset(picked, protocol);
     setPreset(picked);
-    setDraft(draftForPreset(picked, protocol));
+    setDraft(nextDraft);
+    setModelProtocols(alignProtocolChoices(undefined, nextDraft.models.length));
     setFeedback(null);
     setFieldIssue(null);
     setStep('form');
@@ -1747,8 +1860,9 @@ export function NewProviderWizard({
     setSaving(true);
     setFeedback(null);
     try {
-      const created = await client.createProvider(providerCreateBody(normalized));
+      const created = await client.createProvider(withModelProtocols(providerCreateBody(normalized), modelProtocols));
       setDraft(blank);
+      setModelProtocols(alignProtocolChoices(undefined, blank.models.length));
       setStep('template');
       await onSaved();
       setFeedback({ tone: 'success', text: t('st.providers.createdEcho', { id: created.id }) });
@@ -1776,7 +1890,13 @@ export function NewProviderWizard({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <button
           type="button"
-          onClick={() => { setDraft(blank); setFeedback(null); setFieldIssue(null); setStep('template'); }}
+          onClick={() => {
+            setDraft(blank);
+            setModelProtocols(alignProtocolChoices(undefined, blank.models.length));
+            setFeedback(null);
+            setFieldIssue(null);
+            setStep('template');
+          }}
           className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors hover:text-ink"
         >
           <Icon name="arrowLeft" size={12} />
@@ -1787,7 +1907,14 @@ export function NewProviderWizard({
         </span>
       </div>
       {preset?.keyOptional === true ? <Hint>{t('st.presets.localHint')}</Hint> : null}
-      <ProviderFields draft={draft} onChange={editDraft} hasStoredKey={false} fieldIssue={fieldIssue} />
+      <ProviderFields
+        draft={draft}
+        onChange={editDraft}
+        hasStoredKey={false}
+        fieldIssue={fieldIssue}
+        modelProtocols={modelProtocols}
+        onModelProtocolsChange={setModelProtocols}
+      />
       <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>
         {saving ? t('st.providers.creating') : t('st.providers.create')}
       </button>

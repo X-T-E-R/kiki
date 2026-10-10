@@ -24,6 +24,7 @@ export function CompactPointField({
   labelClassName = 'block text-[12px] font-medium text-ink-soft',
   presets,
   presetsLabel,
+  disabled = false,
 }: {
   /** Match the surrounding form's label style. */
   labelClassName?: string;
@@ -38,6 +39,7 @@ export function CompactPointField({
   placeholder: string;
   hint?: string;
   dataAttribute?: string;
+  disabled?: boolean;
 }) {
   const { t } = useI18n();
   const id = useId();
@@ -75,6 +77,7 @@ export function CompactPointField({
         inputMode="decimal"
         spellCheck={false}
         autoComplete="off"
+        disabled={disabled}
         className={`${SMALL_INPUT} h-8 w-full max-w-[18rem] font-mono tabular-nums ${error ? 'border-danger' : ''}`}
         value={text}
         placeholder={placeholder}
@@ -91,6 +94,7 @@ export function CompactPointField({
             label={presetsLabel ?? label}
             values={presets}
             current={value}
+            disabled={disabled}
             onPick={(next) => { setError(false); onChange(next === value ? undefined : next); }}
           />
         </div>
