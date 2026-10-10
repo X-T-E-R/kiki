@@ -136,6 +136,7 @@ import {
   installTranscriptAnchoring,
   landAtEnd,
   measureTranscriptRow,
+  noteReaderDisclosure,
   reconcileMountedRows,
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
@@ -3629,6 +3630,18 @@ export function Transcript({
   // The instance field (not an option), installed before ResizeObserver delivery.
   virtualizerRef.current = virtualizer;
   useLayoutEffect(() => installTranscriptAnchoring(virtualizer), [loaded, loadError, virtualizer]);
+  /**
+   * A click on a row's own disclosure is the reader choosing to read that row,
+   * not content arriving at the end. Arm the row so the resize the disclosure
+   * causes keeps the place they clicked instead of following the end; the
+   * gesture is read before the row's own handler commits.
+   */
+  const handleDisclosureClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-activity-toggle], button[aria-expanded]') === null) return;
+    noteReaderDisclosure(virtualizer, target);
+  }, [virtualizer]);
   // Settle pass: re-read mounted rows once scrolling goes idle. A resize the
   // observer delivered mid-scroll can be skipped by virtual-core, and the
   // observer never repeats it; this is the only path that heals such a row.
@@ -4317,6 +4330,7 @@ export function Transcript({
         role="log"
         tabIndex={-1}
         className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none] outline-none"
+        onClickCapture={handleDisclosureClick}
         onClick={handleAnnotationClick}
         onKeyDown={handleAnnotationKeyDown}
         onScroll={handleAnnotationScroll}
