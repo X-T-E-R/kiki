@@ -670,17 +670,17 @@ function markerToBlock(item: {
   const executorNote = executorNoteOf(item.marker, payloadRecord);
   if (executorNote !== undefined) return { ...base, text: item.marker, executor: executorNote };
 
-  // Compaction records carry the summary itself; the marker names only how
-  // the window was renewed. The wire calls the fresh strategy `relay`, and a
-  // record without `strategy` is a plain summarize run (older records, or the
-  // default strategy, which the engine does not stamp).
   if (item.marker === 'compaction') {
-    const fallbackFrom = payloadRecord?.['fallbackFrom'];
-    const key = payloadRecord?.['strategy'] === 'relay'
+    const result = payloadRecord?.['result'];
+    const committed = typeof result === 'object' && result !== null ? result as Record<string, unknown> : payloadRecord;
+    const fallbackFrom = committed?.['fallbackFrom'];
+    const key = committed?.['strategy'] === 'relay'
       ? fallbackFrom === 'summarize' ? 'transcript.marker.compactionRescue' : 'transcript.marker.compactionFresh'
-      : fallbackFrom === 'relay' ? 'transcript.marker.compactionFallback' : 'transcript.marker.compactionSummarize';
-    const reasonCodes = Array.isArray(payloadRecord?.['reasonCodes'])
-      ? payloadRecord['reasonCodes'].filter((code): code is string => typeof code === 'string')
+      : committed?.['strategy'] === 'summarize'
+        ? fallbackFrom === 'relay' ? 'transcript.marker.compactionFallback' : 'transcript.marker.compactionSummarize'
+        : 'transcript.marker.compaction';
+    const reasonCodes = Array.isArray(committed?.['reasonCodes'])
+      ? committed['reasonCodes'].filter((code): code is string => typeof code === 'string')
       : undefined;
     const rawPhase = payloadRecord?.['phase'];
     const phase: NoticeBlock['compactionPhase'] = rawPhase === 'started' || rawPhase === 'blocked' ? 'running'

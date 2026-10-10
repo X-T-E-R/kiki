@@ -1798,14 +1798,34 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     const keys = projected.blocks.map((block) => (block.kind === 'notice' ? block.i18n?.key : undefined));
     expect(keys).toEqual([
+      'transcript.marker.compaction',
       'transcript.marker.compactionSummarize',
       'transcript.marker.compactionFresh',
       'transcript.marker.compactionFallback',
       'transcript.marker.compactionRescue',
     ]);
-    expect(projected.blocks[2]).toMatchObject({ reasonCodes: ['notes_missing'] });
-    expect(projected.blocks[0]).toMatchObject({ id: 'agent-marker-c-summarize', markerRepeatCount: 2 });
+    expect(projected.blocks[3]).toMatchObject({ reasonCodes: ['notes_missing'] });
+    expect(projected.blocks[0]).toMatchObject({ id: 'agent-marker-c-legacy' });
+    expect(projected.blocks[0]).not.toHaveProperty('markerRepeatCount');
     expect(projected.blocks[0]).not.toHaveProperty('reasonCodes', expect.any(Array));
+  });
+
+  it.each(['main', 'child'])('uses committed mode from legacy nested live results without turning failure or unknown mode into a summary (%s)', (agentId) => {
+    const marker = (markerId: string, payload: Record<string, unknown>) => ({ kind: 'marker' as const, markerId, marker: 'compaction', payload, at: FIXED_AT });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), agentId, emptySnapshot({
+      items: [
+        marker('relay-live', { phase: 'completed', result: { strategy: 'relay', summary: 'handoff', reasonCodes: ['user_input_since_notes:1'] } }),
+        marker('summary-live', { phase: 'completed', result: { strategy: 'summarize', summary: 'summary' } }),
+        marker('failed-live', { phase: 'failed', reason: 'compaction.failed', result: { strategy: 'relay' } }),
+        marker('unknown-live', { phase: 'completed', result: { summary: 'not mode evidence' } }),
+      ],
+    }));
+    expect(projected.blocks.map(block => block.kind === 'notice' ? block.i18n?.key : undefined)).toEqual([
+      'transcript.marker.compactionFresh', 'transcript.marker.compactionSummarize',
+      'transcript.marker.compactionFailed', 'transcript.marker.compaction',
+    ]);
+    expect(projected.blocks[0]).toMatchObject({ compactionPhase: 'completed', reasonCodes: ['user_input_since_notes:1'] });
+    expect(projected.blocks[2]).toMatchObject({ compactionPhase: 'failed', tone: 'danger' });
   });
 
   it('renders each compaction once, at the durable record, across live and replayed markers', () => {

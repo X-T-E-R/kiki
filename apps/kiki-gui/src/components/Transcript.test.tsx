@@ -1418,7 +1418,7 @@ describe('live and event chrome', () => {
 
   it('labels folded compactions as successful commits and expands every time and reason', async () => {
     const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
-      type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+      type: 'context.apply_compaction', strategy: 'summarize', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
     })));
     const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
@@ -1431,6 +1431,27 @@ describe('live and event chrome', () => {
     expect(entries[0]?.textContent).toContain('The agent has no working notes');
     expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
     expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
+  });
+
+  it('renders relay, summary, unknown and failed compaction labels from the committed mode', async () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'full_compaction.begin', source: 'manual', time: 1000 },
+      { type: 'context.apply_compaction', strategy: 'relay', summary: 'handoff', time: 1100 },
+      { type: 'full_compaction.complete', time: 1101 },
+      { type: 'full_compaction.begin', source: 'auto', time: 2000 },
+      { type: 'context.apply_compaction', strategy: 'summarize', summary: 'summary', time: 2100 },
+      { type: 'full_compaction.complete', time: 2101 },
+      { type: 'context.apply_compaction', summary: 'mode unknown', time: 3000 },
+      { type: 'full_compaction.begin', source: 'manual', time: 4000 },
+      { type: 'full_compaction.cancel', reason: 'compaction.failed', time: 4100 },
+    ]);
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks]);
+    const labels = [...container.querySelectorAll('[data-timeline-divider]')].map(node => node.textContent);
+    expect(labels).toEqual([
+      'Fresh-context compaction complete · handoff retained', 'Context compacted · summary generated',
+      'Context compacted', 'Compaction failed · context unchanged',
+    ]);
   });
 
   it('says why a compaction fell back and lists the reasons on request', async () => {

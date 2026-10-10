@@ -836,6 +836,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       signal.throwIfAborted();
 
       await this.hooks.onWillCompact.run(active);
+      signal.throwIfAborted();
 
       const resolvedModel = this.profile.resolveModelContext();
       thinkingEffort = resolvedModel.thinkingLevel;
@@ -863,6 +864,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.memorySnapshot.resolveReferences([notes.notes?.directives, notes.notes?.decided].filter(Boolean).join('\n')),
         this.readLinkedBoardCards(),
       ]);
+      signal.throwIfAborted();
+      if (this._compacting !== active) throw compactionCancelledReason(active);
       const memoryEntries = liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`);
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
@@ -1035,7 +1038,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         summaryOutputTokens: attempt.usage?.output,
         requestOverheadTokens: this.requestTokens([]),
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
-        ...(choice.shadow || choice.strategy !== 'summarize' || directiveBudget?.exceeded ? { strategy: 'summarize' as const, shapeVersion: 1, reasonCodes: reasons, fallbackFrom } : {}),
+        strategy: 'summarize',
+        shapeVersion: 1,
+        reasonCodes: reasons,
+        fallbackFrom,
       });
 
       const properties: CompactionFinishedEvent = {
@@ -1050,7 +1056,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         round: 1,
         thinking_effort: thinkingEffort,
         trace_id: attempt.traceId,
-        ...(choice.shadow || choice.strategy !== 'summarize' ? { strategy: 'summarize' as const, reason_codes: reasons, fallback_from: fallbackFrom } : {}),
+        strategy: 'summarize',
+        reason_codes: reasons,
+        fallback_from: fallbackFrom,
         ...usageTelemetry(attempt.usage),
       };
       this.telemetry.track2('compaction_finished', properties);

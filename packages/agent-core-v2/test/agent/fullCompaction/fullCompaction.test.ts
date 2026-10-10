@@ -1,6 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { LifecycleScope } from '#/app/scopes';
 import { join } from 'pathe';
 
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
@@ -107,6 +109,59 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  it.each(['manual', 'auto'] as const)('does not commit a %s relay cancelled while memory references are loading, and can continue afterwards', async (source) => {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const ctx = testAgent();
+    vi.spyOn(ctx.get(IAgentLifecycleService), 'get').mockImplementation((agentId) => agentId === 'main' ? {
+      id: 'main', kind: LifecycleScope.Agent, accessor: { get: (id) => ctx.get(id) }, dispose: () => {},
+    } : undefined);
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'notes-fixture', name: 'TodoList', arguments: '{}' }] });
+    ctx.context.append({ role: 'tool', content: [{ type: 'text', text: 'Notes stored.' }], toolCalls: [], toolCallId: 'notes-fixture' });
+    const todo = ctx.get(ISessionTodoService);
+    todo.setNotes({ goal: 'Finish the task', directives: 'Preserve the original request', next: 'Continue after compaction' }, { turnId: 2, step: 1, toolCallId: 'notes-fixture', reviewHandoff: true });
+    todo.setTodos([{ title: 'Finish the task', status: 'in_progress' }]);
+    const original = ctx.compactHistory();
+    const notes = todo.getNotes('main');
+    const todos = todo.getTodos('main');
+    expect(notes).toMatchObject({ notes: { goal: 'Finish the task' }, meta: { rev: 1, reviewedWindowEpoch: 0 } });
+    expect(notes.meta?.reviewedMessageId).toBeDefined();
+    const snapshot = ctx.get(IAgentMemorySnapshot);
+    const loading = vi.spyOn(snapshot, 'resolveReferences').mockImplementationOnce(async () => {
+      started.resolve();
+      await release.promise;
+      return [];
+    });
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source, strategy: 'relay' })).toBe(true);
+    const task = service.compacting!;
+    await started.promise;
+    service.cancel();
+    release.resolve();
+    await expect(task.promise).rejects.toMatchObject({ name: 'AbortError' });
+    expect(countEvents(ctx.newEvents(), 'context.apply_compaction')).toBe(0);
+    expect(ctx.compactHistory()).toEqual(original);
+    expect(todo.getNotes('main')).toEqual(notes);
+    expect(todo.getTodos('main')).toEqual(todos);
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(service.isCompacting()).toBe(false);
+    loading.mockRestore();
+    await ctx.expectResumeMatches();
+    expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    expect(await service.compacting!.promise).toMatchObject({ strategy: 'relay' });
+    expect(todo.getNotes('main')).toEqual(notes);
+    expect(todo.getTodos('main')).toEqual(todos);
+    expect(ctx.llmCalls).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Continued after cancellation and relay.' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue the task' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls).toHaveLength(1);
+    await ctx.expectResumeMatches();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   beforeEach(() => vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'false'));
 
   it('keeps an oversized trailing user message as recent', () => {
@@ -238,6 +293,19 @@ describe('FullCompaction', () => {
     expect(strategy.shouldBlock(1)).toBe(false);
     expect(strategy.shouldCompact(28_000)).toBe(true);
     expect(strategy.shouldBlock(28_000)).toBe(true);
+  });
+
+  it('stamps the actual summarize strategy even when no relay fallback was attempted', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old request', 'old answer', 20);
+    ctx.appendExchange(2, 'recent request', 'recent answer', 80);
+    ctx.mockNextResponse({ type: 'text', text: 'Model-generated task summary.' });
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    expect(await service.compacting!.promise).toMatchObject({ strategy: 'summarize', shapeVersion: 1 });
+    expect(ctx.newEvents()).toContainEqual(expect.objectContaining({ event: 'context.apply_compaction', args: expect.objectContaining({ strategy: 'summarize' }) }));
+    await ctx.expectResumeMatches();
   });
 
   it('runs manual compaction and applies the compacted context', async () => {
@@ -641,13 +709,18 @@ describe('FullCompaction', () => {
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
 
-    void ctx.rpc.beginCompaction({ instruction: undefined });
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    const task = service.compacting!;
     await vi.waitFor(() => {
       expect(preCompactSignal).toBeInstanceOf(AbortSignal);
     });
     const canceled = ctx.once('compaction.cancelled');
     void ctx.rpc.cancelCompaction({});
     await canceled;
+    await expect(task.promise).rejects.toMatchObject({ name: 'AbortError' });
+    expect(countEvents(ctx.newEvents(), 'context.apply_compaction')).toBe(0);
+    await ctx.expectResumeMatches();
 
     expect(trigger).toHaveBeenCalledWith(
       'PreCompact',
