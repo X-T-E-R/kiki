@@ -396,6 +396,38 @@ describe('a source keeps its own words whichever mode it is in', () => {
 });
 
 describe('a source belongs to one identity and one level', () => {
+  it.each([undefined, 'same'] as const)('shows the effective shared sources for inherited %s without writing on a round trip', async (selection) => {
+    const stored = structuredClone(ENTITY);
+    stored.cognition = { ...stored.cognition, main: selection, steering_sources: {
+      thread: { mode: 'inherit' },
+      cron: { mode: 'custom', custom: { steering: 'steer/cron.md', steering_on_turn: false, steering_interval_steps: 4 } },
+    } };
+    stored.cognition_bodies!.branches.common.steering_sources = { cron: {
+      channel: 'cognition_steering', source: 'files', text: 'Resolved cron words.',
+      files: [{ path: 'steer/cron.md', text: 'Resolved cron words.' }], writable: false, source_read_only: true,
+    } };
+    stored.cognition_bodies!.branches.main = { ...stored.cognition_bodies!.branches.common };
+    getModel.mockResolvedValue(stored);
+    await renderCard();
+    await openEditorWithSources();
+    await act(async () => { scopeButton('main').click(); });
+    expect(document.body.querySelector('[data-steer-identity-inherited]')!.textContent).toContain('separate copy of the full group');
+    expect(sourceModeButton('thread', 'inherit').getAttribute('aria-pressed')).toBe('true');
+    expect(sourceModeButton('cron', 'custom').getAttribute('aria-pressed')).toBe('true');
+    expect(sourceModeButton('agent', 'off').getAttribute('aria-pressed')).toBe('true');
+    expect(sourceInterval('cron')!.value).toBe('4');
+    expect(document.body.querySelector('[data-steer-body-readonly="cron"]')!.textContent).toBe('Resolved cron words.');
+    await act(async () => { sourceModeButton('cron', 'off').click(); });
+    await act(async () => { sourceModeButton('cron', 'custom').click(); });
+    await pressSave();
+    expect(updateModel, 'an untouched inherited group remains inherited').not.toHaveBeenCalled();
+    await act(async () => { sourceModeButton('thread', 'off').click(); });
+    await pressSave();
+    expect(lastPatch()['steering_sources_patch']).toEqual({ main: { thread: { mode: 'off' } } });
+    expect(lastPatch()).not.toHaveProperty('cognition');
+    expect(stored.cognition.main).toBe(selection);
+  });
+
   it('does not carry a source set on one identity into another', async () => {
     await renderCard();
     await openEditorWithSources();

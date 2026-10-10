@@ -9596,6 +9596,8 @@ export const en = {
   'st.steerSource.steps': 'steps',
   'st.steerSource.cadenceCount': 'Enter whole steps, 0 or more.',
   'st.steerSource.branchOff': 'This identity is off, so it takes no model prompts at all. Setting a source here turns it on for that source only.',
+  'st.modelPrompt.identityInherited': 'This identity follows the shared prompt group. Saving a prompt edit creates a separate copy of the full group, keeping unchanged file references and timing.',
+  'st.steerSource.identityInherited': 'These source settings come from the shared prompt group. Saving a source edit creates a separate copy of the full group; later shared changes no longer apply to this identity.',
   'st.recipe.steerSources': 'Steering by message source',
   'st.recipe.steerSourcesCount': '{count} declared',
   'st.recipe.steerSourcesHint': 'Messages that did not come from the person using this model. A source left off sends nothing; one that follows the user leaves the decision to the model.',

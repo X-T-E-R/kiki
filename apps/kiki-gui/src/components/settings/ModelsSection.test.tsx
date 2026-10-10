@@ -206,6 +206,22 @@ describe('ModelCatalogCard row editor', () => {
     expect(patchConfig).not.toHaveBeenCalled();
   });
 
+  it.each([{ reported: [] }, { reported: ['image_in'] }])('keeps the reported capability list $reported without adding defaults', async ({ reported }) => {
+    listDiscoveredModels.mockResolvedValue({ items: [{
+      provider_id: 'gateway', fetched_at: 100, attempted_at: 100,
+      models: [{ remote_id: 'remote-suggested', capabilities: reported }],
+    }] });
+    const container = await renderCard();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Suggestions — not configured yet"]')!.click(); });
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((button) => button.textContent?.includes('remote-suggested'))!;
+    await act(async () => { option.click(); });
+    const capabilities = container.querySelector('[role="group"][aria-label="Capabilities for remote-suggested"]')!;
+    expect([...capabilities.querySelectorAll('button[aria-pressed="true"]')].map((button) => button.textContent)).toEqual(reported);
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
+    expect(createModel).toHaveBeenCalledWith(expect.objectContaining({ capabilities: reported }));
+  });
+
   it('preserves discovered capabilities without duplicates and lets the user uncheck defaults', async () => {
     listDiscoveredModels.mockResolvedValue({
       items: [{

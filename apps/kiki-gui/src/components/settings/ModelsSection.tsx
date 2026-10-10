@@ -769,14 +769,11 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
  *
  * Discovery often reports nothing about a model's capabilities, and a model
  * added with an empty list is one Kiki cannot use tools with. So a *new* model
- * starts from the default pair — and only then: whatever discovery actually
- * reported is kept, with the defaults filling only the gaps. That is the same
- * rule the model editor applies to a model that has nothing stored, and it is
- * why a discovery that reports a narrower set is not silently widened.
+ * starts from the default pair only when discovery reported no list at all.
+ * An explicit list, including an empty one, is never widened.
  */
 function defaultCapabilitiesFor(discovered: readonly string[] | undefined): string[] {
-  if (discovered === undefined) return [...DEFAULT_MODEL_CAPABILITIES];
-  return [...new Set([...discovered, ...DEFAULT_MODEL_CAPABILITIES])];
+  return [...(discovered ?? DEFAULT_MODEL_CAPABILITIES)];
 }
 
 /**
@@ -2040,6 +2037,7 @@ function ModelCatalogRowEditor({
               scope={editScope}
               draft={steerSources}
               branchOff={branchSelectionFor(editScope, prompts) === 'off'}
+              identityInheritsShared={editScope !== 'shared' && branchSelectionFor(editScope, prompts) === 'common'}
               onDraftChange={setSteerSource}
               disabled={saving}
             />

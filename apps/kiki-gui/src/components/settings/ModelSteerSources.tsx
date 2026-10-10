@@ -85,6 +85,7 @@ export function ModelSteerSources({
   draft,
   onDraftChange,
   branchOff = false,
+  identityInheritsShared = false,
   disabled = false,
 }: {
   bodies: ModelCognitionBodies | undefined;
@@ -98,6 +99,7 @@ export function ModelSteerSources({
    * that source, but the reason is stated rather than left to be inferred.
    */
   branchOff?: boolean;
+  identityInheritsShared?: boolean;
   disabled?: boolean;
 }) {
   const { t } = useI18n();
@@ -108,6 +110,11 @@ export function ModelSteerSources({
       {branchOff ? (
         <p className="text-[12px] leading-5 text-ink-soft" data-steer-branch-off>
           {t('st.steerSource.branchOff')}
+        </p>
+      ) : null}
+      {identityInheritsShared ? (
+        <p className="text-[12px] leading-5 text-ink-soft" data-steer-identity-inherited>
+          {t('st.steerSource.identityInherited')}
         </p>
       ) : null}
       <ul className="min-w-0 divide-y divide-hairline" data-steer-source-rows>

@@ -36,6 +36,7 @@ import {
 } from '@kiki/protocol';
 
 import type { EditScope } from './modelEditScope';
+import { cognitionContentAtScope } from './modelCognitionBodies';
 
 /** The three levels a steer declaration can sit at. */
 export type SteerScope = 'common' | 'main' | 'independent';
@@ -155,13 +156,12 @@ function readScope(value: unknown): SteerScopeDraft {
   return draft;
 }
 
-/** Read all three levels off the model's own steer declaration. */
+/** Read the effective group at each identity without writing inherited values. */
 export function modelSteerSourcesDraft(entity: ModelEntity): ModelSteerSourcesDraft {
-  const cognition = record(entity.cognition);
   return {
-    common: readScope(cognition['steering_sources']),
-    main: readScope(record(cognition['main'])['steering_sources']),
-    independent: readScope(record(cognition['independent'])['steering_sources']),
+    common: readScope(cognitionContentAtScope(entity, 'shared')['steering_sources']),
+    main: readScope(cognitionContentAtScope(entity, 'main')['steering_sources']),
+    independent: readScope(cognitionContentAtScope(entity, 'independent')['steering_sources']),
   };
 }
 

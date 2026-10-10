@@ -87,6 +87,9 @@ export function ModelPromptBodies({
 
   return (
     <div className="min-w-0 space-y-4" data-model-prompt-bodies={scope} data-model={modelId}>
+      {scope !== 'shared' && branchSelection === 'common' ? (
+        <Hint><span data-prompt-identity-inherited>{t('st.modelPrompt.identityInherited')}</span></Hint>
+      ) : null}
       {COGNITION_SLOTS.map((slot) => {
         const view = slotView(bodies, scope, slot);
         return (

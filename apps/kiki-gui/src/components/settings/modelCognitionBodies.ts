@@ -119,16 +119,21 @@ export function cognitionSlotPatchAtScope(
     else stored[slot] = { text };
     return { cognition: stored };
   }
-  const branch = stored[scope];
-  // A branch that is absent or a bare `same`/`off` word has no slots of its own
-  // to keep, so a body written here is the branch's whole content.
-  const next: Record<string, unknown> = typeof branch === 'object' && branch !== null && !Array.isArray(branch)
-    ? { ...(branch as Record<string, unknown>) }
-    : {};
+  const next = cognitionContentAtScope(entity, scope);
   if (text === undefined) delete next[slot];
   else next[slot] = { text };
   stored[scope] = next;
   return { cognition: stored };
+}
+
+/** Raw effective group for an identity, preserving references rather than resolved prose. */
+export function cognitionContentAtScope(entity: ModelEntity, scope: EditScope): Record<string, unknown> {
+  const stored: Record<string, unknown> = entity.cognition ?? {};
+  const branch = scope === 'shared' ? undefined : stored[scope];
+  if (branch === 'off') return {};
+  if (typeof branch === 'object' && branch !== null && !Array.isArray(branch)) return { ...branch };
+  const { main: _main, independent: _independent, ...common } = stored;
+  return common;
 }
 
 /** The body text a slot should open with, preferring what the engine resolved. */

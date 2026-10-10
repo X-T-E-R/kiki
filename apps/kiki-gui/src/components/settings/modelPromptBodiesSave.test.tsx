@@ -258,6 +258,39 @@ async function pressSave(): Promise<void> {
 }
 
 describe('the model editor saves the prompt prose a person typed', () => {
+  it.each([undefined, 'same'] as const)('copies the raw shared group only on an inherited %s body edit, retaining refused drafts', async (selection) => {
+    const stored = structuredClone(ENTITY);
+    stored.cognition = {
+      ...stored.cognition, main: selection, overlay_mode: 'append',
+      steering_on_turn: false, steering_on_input: true, steering_interval_steps: 4,
+      anchor: 'cognition/anchor.md', anchor_steps: 3, anchor_scope: 'turn',
+      steering_sources: { cron: { mode: 'custom', custom: { steering: 'cognition/cron.md' } } },
+    };
+    stored.cognition_bodies!.branches.main = { ...stored.cognition_bodies!.branches.common };
+    getModel.mockResolvedValue(stored);
+    await renderCard();
+    await openEditor();
+    await act(async () => { scopeButton('main').click(); });
+    expect(document.body.querySelector('[data-prompt-identity-inherited]')).not.toBeNull();
+    expect(bodyEditor('overlay')!.value).toBe('Shared file body.');
+    await pressSave();
+    expect(updateModel, 'browsing inherited prose must not create a custom branch').not.toHaveBeenCalled();
+
+    await act(async () => { typeIn(bodyEditor('overlay')!, 'Only this slot changes.'); });
+    updateModel.mockRejectedValueOnce(new Error('model_catalog.revision_conflict'));
+    await pressSave();
+    const patch = updateModel.mock.calls[0]![1] as Record<string, unknown>;
+    const cognition = patch['cognition'] as Record<string, unknown>;
+    const { main: _main, independent: _independent, ...shared } = stored.cognition!;
+    expect(cognition['main']).toEqual({ ...shared, overlay: { text: 'Only this slot changes.' } });
+    expect(cognition['independent']).toBe('off');
+    expect(bodyEditor('overlay')!.value).toBe('Only this slot changes.');
+    expect(saveButton().disabled).toBe(false);
+    await pressSave();
+    expect(updateModel.mock.calls[1]![1]).toEqual(patch);
+    expect(stored.cognition.main).toBe(selection);
+  });
+
   it('offers Save for a body-only edit and commits it through the one model transaction', async () => {
     const inline = structuredClone(ENTITY);
     (inline.cognition as Record<string, unknown>)['overlay'] = { text: 'Stored overlay.' };

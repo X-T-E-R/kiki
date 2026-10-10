@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { modelCognitionBodiesSchema, modelEntitySchema, type ModelCognitionBodies } from '@kiki/protocol';
 
 import {
-  branchKeyFor, cognitionSlotPatch, initialSlotText, restoreHint, savesAsInlineText, slotView,
+  branchKeyFor, cognitionContentAtScope, cognitionSlotPatch, cognitionSlotPatchAtScope, initialSlotText, restoreHint, savesAsInlineText, slotView,
 } from './modelCognitionBodies';
 
 const bodies = (over: Record<string, unknown> = {}): ModelCognitionBodies => modelCognitionBodiesSchema.parse({
@@ -117,5 +117,43 @@ describe('cognitionSlotPatch', () => {
       effective_parameters: {}, parameter_sources: {}, issues: [], revision: 'r1',
     });
     expect(cognitionSlotPatch(bare, 'cognition', 'overlay', 'body')).toEqual({ cognition: { overlay: { text: 'body' } } });
+  });
+});
+describe('inherited identity prompt edits', () => {
+  const makeEntity = (main?: 'same' | 'off' | { overlay: { text: string } }) => modelEntitySchema.parse({
+    id: 'example/model', provider_id: 'example', provider_source: 'flat',
+    effective_parameters: {}, parameter_sources: {}, issues: [], revision: 'r1',
+    cognition: {
+      overlay: 'prompts/system.md', steering: ['prompts/steer.md'], anchor: { text: 'anchor' },
+      overlay_mode: 'append', steering_on_turn: false, steering_on_input: true, steering_interval_steps: 4,
+      anchor_steps: 3, anchor_scope: 'turn',
+      steering_sources: { cron: { mode: 'custom', custom: { steering: 'prompts/cron.md' } } },
+      main, independent: 'off',
+    },
+  });
+
+  it.each([undefined, 'same'] as const)('preserves the complete raw effective group on first edit from %s', (selection) => {
+    const entity = makeEntity(selection);
+    const before = structuredClone(entity);
+    const effective = cognitionContentAtScope(entity, 'main');
+    const patch = cognitionSlotPatchAtScope(entity, 'main', 'overlay', 'edited system');
+    expect(patch.cognition['main']).toEqual({ ...effective, overlay: { text: 'edited system' } });
+    expect(patch.cognition['main']).toMatchObject({
+      steering: ['prompts/steer.md'], steering_on_turn: false, steering_interval_steps: 4,
+      anchor: { text: 'anchor' }, anchor_steps: 3,
+      steering_sources: { cron: { custom: { steering: 'prompts/cron.md' } } },
+    });
+    expect(patch.cognition['main']).not.toHaveProperty('independent');
+    expect(patch.cognition['independent']).toBe('off');
+    expect(entity).toEqual(before);
+    expect(cognitionSlotPatchAtScope(modelEntitySchema.parse({ ...entity, cognition: patch.cognition }), 'main', 'anchor', 'edited anchor').cognition['main'])
+      .toEqual({ ...effective, overlay: { text: 'edited system' }, anchor: { text: 'edited anchor' } });
+  });
+
+  it('does not merge the shared group into an existing custom or off identity', () => {
+    expect(cognitionSlotPatchAtScope(makeEntity({ overlay: { text: 'custom' } }), 'main', 'anchor', 'new').cognition['main'])
+      .toEqual({ overlay: { text: 'custom' }, anchor: { text: 'new' } });
+    expect(cognitionSlotPatchAtScope(makeEntity('off'), 'main', 'anchor', 'new').cognition['main'])
+      .toEqual({ anchor: { text: 'new' } });
   });
 });

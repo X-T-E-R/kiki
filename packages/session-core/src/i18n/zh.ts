@@ -9534,6 +9534,8 @@ export const zh = {
   'st.steerSource.steps': '步',
   'st.steerSource.cadenceCount': '请填 0 或正整数步数。',
   'st.steerSource.branchOff': '该身份当前关闭，不使用任何模型提示。在这里设置某个来源，只会为这个来源把它打开。',
+  'st.modelPrompt.identityInherited': '该身份沿用共享提示组。保存正文修改会创建整组的独立副本，保留未修改的文件引用和节奏。',
+  'st.steerSource.identityInherited': '这些来源设置来自共享提示组。保存来源修改会创建整组的独立副本，此后共享组的变更不再影响该身份。',
   'st.recipe.steerSources': '按消息来源',
   'st.recipe.steerSourcesCount': '已声明 {count} 个',
   'st.recipe.steerSourcesHint': '并非使用这个模型的人发出的消息。关闭的来源不发送提醒；沿用用户的来源由模型在实际使用时决定。',

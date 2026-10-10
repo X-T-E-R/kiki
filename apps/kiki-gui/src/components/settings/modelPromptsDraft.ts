@@ -180,10 +180,9 @@ export function positionOf(scope: 'shared' | 'main' | 'independent'): 'main' | '
 /**
  * What an identity's prompt group is doing, as the editor shows it.
  *
- * `common` is the shared level rather than an inheritance decision: at the
- * shared scope the group simply is what it is, and the editor edits it in
- * place. `off` is a real switch-off and hides the prose; `custom` replaces the
- * whole object for that identity.
+ * `common` means the shared group, either edited in place at the shared scope
+ * or followed by an absent/`same` identity branch. `off` is a real switch-off
+ * and hides the prose; `custom` replaces the whole object for that identity.
  */
 export function branchSelectionFor(
   scope: 'shared' | 'main' | 'independent',
@@ -191,5 +190,5 @@ export function branchSelectionFor(
 ): 'common' | 'custom' | 'off' {
   if (scope === 'shared' || draft === null) return 'common';
   const branch = draft.cognition[scope];
-  return branch.kind === 'off' ? 'off' : 'custom';
+  return branch.kind === 'off' ? 'off' : branch.kind === 'custom' ? 'custom' : 'common';
 }
