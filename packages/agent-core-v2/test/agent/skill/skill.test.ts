@@ -15,6 +15,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentPromptService, promptRetryFor } from '#/agent/prompt/prompt';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -106,6 +107,7 @@ describe('AgentSkillService', () => {
         });
         reg.definePartialInstance(ISessionMetadata, {
           read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
+          getAgentExecutor: async () => undefined,
           update: async () => {},
         });
         reg.definePartialInstance(IEventService, { publish: () => {} });
@@ -229,6 +231,7 @@ describe('SkillTool', () => {
         });
         reg.definePartialInstance(ISessionMetadata, {
           read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
+          getAgentExecutor: async () => undefined,
           update: async () => {},
         });
         reg.definePartialInstance(IEventService, { publish: () => {} });
@@ -606,7 +609,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     });
     expect(active.turn_id).toBe(0);
     await expect(promptRetry.lookup('skill-active', 'fingerprint-active')).resolves.toMatchObject({
-      status: 'running', userMessageId: 'skill-active',
+      status: 'running',
     });
     await expect(ctx.get(IAgentSkillService).activate({
       name: 'workflow', args: 'active', userInput: '/workflow active', promptId: 'skill-active', retryFingerprint: 'fingerprint-active',
@@ -627,7 +630,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     });
     expect(idle.turn_id).toBe(1);
     await expect(promptRetry.lookup('skill-idle', 'fingerprint-idle')).resolves.toMatchObject({
-      status: 'running', userMessageId: 'skill-idle',
+      status: 'running',
     });
     const replayIdle = await ctx.get(IAgentSkillService).activate({
       name: 'workflow', args: 'idle', promptId: 'skill-idle', retryFingerprint: 'fingerprint-idle',
@@ -638,23 +641,44 @@ describe('AgentSkillService busy delivery (harness)', () => {
     expect(generateCalls).toBe(3);
   });
 
-  it('keeps the accepted managed receipt after idle launch failure for retry', async () => {
+  it('single-flights managed retry operations and rejects target fingerprint changes', async () => {
+    ctx = createTestAgent(skillServices(new InMemorySkillCatalog()));
+    const retry = promptRetryFor(ctx.get(IAgentPromptService));
+    const gate = createControlledPromise<void>();
+    let calls = 0;
+    const operation = async (): Promise<string> => {
+      calls++;
+      await gate;
+      return 'activated';
+    };
+    const first = retry.run('retry-flight', 'target-a', operation);
+    const second = retry.run('retry-flight', 'target-a', operation);
+    await expect(retry.run('retry-flight', 'target-b', operation)).rejects.toMatchObject({
+      code: ErrorCodes.PROMPT_ID_CONFLICT,
+    });
+    gate.resolve();
+    await expect(Promise.all([first, second])).resolves.toEqual(['activated', 'activated']);
+    expect(calls).toBe(1);
+  });
+
+  it('preserves a managed launch rejection on retry without launching a second turn', async () => {
     const catalog = new InMemorySkillCatalog();
     catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
-    const generate: GenerateFn = async () => {
-      throw new Error('fixture provider failed after admission');
-    };
-    ctx = createTestAgent(skillServices(catalog), { generate });
+    ctx = createTestAgent(skillServices(catalog));
     const prompt = ctx.get(IAgentPromptService);
-    const launched = await ctx.get(IAgentSkillService).activate({
-      name: 'workflow', args: 'retry-me', promptId: 'skill-launch-failure', retryFingerprint: 'fingerprint-failure',
+    const enqueue = vi.spyOn(ctx.get(IAgentLoopService), 'enqueue').mockImplementation(() => {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'model effort is unavailable', { details: { requiredParameter: 'effort' } });
     });
-    expect(launched.turn_id).toBe(0);
-    await ctx.untilTurnEnd();
-    await ctx.get(IAgentLoopService).settled();
-    await expect(promptRetryFor(prompt).lookup('skill-launch-failure', 'fingerprint-failure')).resolves.toMatchObject({
-      status: 'running', userMessageId: 'skill-launch-failure',
-    });
+    const input = { name: 'workflow', args: 'retry-me', promptId: 'skill-launch-failure', retryFingerprint: 'fingerprint-failure' };
+    try {
+      await expect(ctx.get(IAgentSkillService).activate(input)).rejects.toMatchObject({ code: ErrorCodes.CONFIG_INVALID });
+      await expect(promptRetryFor(prompt).lookup(input.promptId, input.retryFingerprint)).resolves.toMatchObject({ status: 'running' });
+      expect(prompt.lookup(input.promptId)?.terminal?.state).toBe('failed');
+      await expect(ctx.get(IAgentSkillService).activate(input)).rejects.toMatchObject({
+        code: ErrorCodes.CONFIG_INVALID, details: { requiredParameter: 'effort' },
+      });
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    } finally { enqueue.mockRestore(); }
   });
 
   it('steers the activation into the running turn and launches a new one when idle', async () => {
@@ -723,5 +747,52 @@ describe('AgentSkillService busy delivery (harness)', () => {
     expect(types.filter((type) => type === 'turn.steer')).toHaveLength(1);
     const steer = persistence.records.find((record) => record.type === 'turn.steer');
     expect(steer).toMatchObject({ origin: { kind: 'skill_activation', skillArgs: 'mission-1' } });
+  });
+
+  it('queues a skill behind the target agent model switch dependency', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
+    ctx = createTestAgent(skillServices(catalog));
+    const prompt = ctx.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue').mockResolvedValue({
+      id: 'switch-queued',
+      userMessageId: 'switch-queued',
+      createdAt: new Date().toISOString(),
+      state: 'pending',
+      message: {} as never,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      launched: Promise.resolve({ id: 7 } as unknown as Turn),
+      completion: Promise.resolve({ promptId: 'switch-queued', state: 'blocked', result: undefined }),
+    } as never);
+
+    try {
+      const launched = await ctx.get(IAgentSkillService).activate({
+        name: 'workflow',
+        afterModelSwitch: 'switch-1',
+      });
+      expect(launched).toMatchObject({ state: 'queued', prompt_id: 'switch-queued' });
+      expect(launched.turn_id).toBeUndefined();
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({
+        execution: { afterModelSwitch: 'switch-1' },
+        waitForLaunch: false,
+      }));
+    } finally {
+      enqueue.mockRestore();
+    }
+  });
+
+  it('rejects skill activation for an external executor instead of sending an ordinary prompt', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
+    ctx = createTestAgent(skillServices(catalog));
+    const profile = ctx.get(IAgentProfileService);
+    const binding = profile.data();
+    vi.spyOn(profile, 'data').mockReturnValue({ ...binding, executorId: 'external-test', executorProtocol: 'acp-v1' });
+
+    await expect(ctx.get(IAgentSkillService).activate({ name: 'workflow' })).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID,
+      message: expect.stringContaining('ordinary prompts'),
+    });
   });
 });

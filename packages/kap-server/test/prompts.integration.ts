@@ -1306,6 +1306,44 @@ describe('server-v2 /api prompts', () => {
     } finally { await client.klient.close(); }
   });
 
+  it('reconstructs an accepted compact receipt by source slots after image captions and file notices expand the content', async () => {
+    const id = await createSession(home as string);
+    const child = await createHeldChild(id);
+    const image = await uploadFile(solidPng(3600, 1800), 'image/png', 'big.png');
+    const file = await uploadFile(Buffer.from('file contents'), 'text/plain', 'notes.txt');
+    const prompt = child.accessor.get(IAgentPromptService);
+    const enqueue = vi.spyOn(prompt, 'enqueue');
+    const receipts: Array<Record<string, unknown>> = [];
+    const nativeFetch = globalThis.fetch;
+    const client = createHttpKlient({ endpoint: base, token: bearerToken(server!), fetch: async (input, init) => {
+      const response = await nativeFetch(input, init);
+      if (new URL(String(input)).pathname.endsWith('/prompts')) receipts.push((await response.clone().json()).data);
+      return response;
+    } });
+    try {
+      const accepted = await client.session(id).commands.submit({
+        agent_id: child.id, prompt_id: 'mixed-media-receipt', content: [
+          { type: 'text', text: 'before' },
+          { type: 'image', source: { kind: 'file', file_id: image.id } },
+          { type: 'file', file_id: file.id, name: 'notes.txt', media_type: 'text/plain', size: file.size },
+          { type: 'text', text: 'after' },
+        ],
+      });
+      expect(accepted.prompt_id).toBe('mixed-media-receipt');
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).not.toHaveProperty('content');
+      expect(receipts[0]?.resolved_parts).toMatchObject([{ index: 1 }, { index: 2 }]);
+      expect(accepted.content).toHaveLength(5);
+      expect(accepted.content[0]).toEqual({ type: 'text', text: 'before' });
+      expect(accepted.content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('Image compressed') });
+      expect(accepted.content[2]).toMatchObject({ type: 'image', source: { kind: 'session_media' } });
+      expect(accepted.content[3]).toMatchObject({ type: 'text', text: expect.stringContaining('Attached file "notes.txt"') });
+      expect(accepted.content[4]).toEqual({ type: 'text', text: 'after' });
+      expect(prompt.list().active?.id).toBe(accepted.prompt_id);
+    } finally { await client.close(); }
+  });
+
   it('replays one accepted native child prompt after losing the HTTP response and rejects a changed payload', async () => {
     const id = await createSession(home as string);
     const child = await createHeldChild(id);

@@ -139,6 +139,7 @@ export interface SetSessionPlanModeRpcInput extends SessionIdRpcInput {
 export interface ActivateSkillRpcInput extends SessionIdRpcInput {
   readonly name: string;
   readonly args?: string | undefined;
+  readonly afterModelSwitch?: string;
 }
 
 export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
@@ -1011,6 +1012,7 @@ export abstract class SDKRpcClientBase {
       agentId: this.interactiveAgentId,
       name: input.name,
       args: input.args,
+      afterModelSwitch: input.afterModelSwitch,
     });
   }
 

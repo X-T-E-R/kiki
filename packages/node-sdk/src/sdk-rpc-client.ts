@@ -2168,7 +2168,11 @@ export class SDKRpcClient extends SDKRpcClientBase {
   /** Activate through the shared facade; completion still arrives through the SDK event stream. */
   override async activateSkill(input: ActivateSkillRpcInput): Promise<void> {
     const agent = await this.agentFacade(input.sessionId);
-    await this.engineCall(() => agent.activateSkill({ name: input.name, args: input.args }));
+    await this.engineCall(() => agent.activateSkill({
+      name: input.name,
+      args: input.args,
+      afterModelSwitch: input.afterModelSwitch,
+    }));
   }
 
   /**

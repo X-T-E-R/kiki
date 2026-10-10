@@ -94,7 +94,7 @@ interface StopTaskPayload { readonly taskId: string; readonly reason?: string }
 interface UndoHistoryPayload { readonly count: number }
 interface UnregisterToolPayload { readonly name: string }
 import { type UsageStatus } from '#/agent/usage/usage';
-import { IAgentSkillService, type PromptWithSkillsInput, type PromptWithSkillsResult, type SkillActivationInput } from '#/agent/skill/skill';
+import { IAgentSkillService, type PromptWithSkillsInput, type PromptWithSkillsResult, type SkillActivationInput, type SkillActivationResult } from '#/agent/skill/skill';
 import { AgentSkillService } from '#/agent/skill/skillService';
 import { IAgentRuntimeBindingSeed } from '#/agent/runtimeBinding/runtimeBinding';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -357,7 +357,7 @@ interface AgentRpcPassthroughAPI {
   undoHistory: (payload: UndoHistoryPayload) => Promisable<number>;
   setPermission: (payload: SetPermissionPayload) => void;
   cancelCompaction: (payload: EmptyPayload) => void;
-  activateSkill: (payload: SkillActivationInput) => Promisable<PromptLaunchResult>;
+  activateSkill: (payload: SkillActivationInput) => Promisable<SkillActivationResult>;
   activatePluginCommand: (payload: ActivatePluginCommandPayload) => Promisable<void>;
   listCommands: (payload: EmptyPayload) => readonly AgentCommandInfo[];
   runCommand: (payload: RunCommandPayload) => Promisable<void>;

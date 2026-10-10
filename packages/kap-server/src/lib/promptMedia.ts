@@ -118,6 +118,8 @@ export interface ResolvePromptMediaOptions {
 
 export interface PromptMediaPreparation {
   readonly content: WireContent;
+  /** Output spans keyed by the original non-text input slot, including inserted captions and file notices. */
+  readonly sourceRanges: readonly { index: number; start: number; end: number }[];
   /**
    * Delete the transient daemon uploads this preparation created (the
    * compressed re-save). Call on failure, or after the engine has either
@@ -172,8 +174,10 @@ export async function resolvePromptMediaFiles(
   const telemetryFor = (source: string): ImageCompressionTelemetry | undefined =>
     options.telemetry === undefined ? undefined : { client: options.telemetry, source };
   const content: WireContent = [];
+  const sourceStarts: number[] = [];
   try {
     for (const part of input) {
+      sourceStarts.push(content.length);
       if (part.type === 'image' && part.source.kind === 'base64') {
         const effectiveMime = resolveEffectiveImageMime(
           part.source.media_type,
@@ -315,7 +319,10 @@ export async function resolvePromptMediaFiles(
       });
       changed = true;
     }
-    return { content: changed ? content : input, discard };
+    const sourceRanges = input.flatMap((part, index) => part.type === 'text' ? [] : [{
+      index, start: sourceStarts[index]!, end: sourceStarts[index + 1] ?? content.length,
+    }]);
+    return { content: changed ? content : input, sourceRanges, discard };
   } catch (error) {
     await discard();
     throw error;

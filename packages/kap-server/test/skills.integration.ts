@@ -6,6 +6,7 @@ import {
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentProfileService,
+  IAgentProfileService,
   IAgentPromptService,
   IAgentSkillService,
   IModelCatalogMutationService,
@@ -383,6 +384,128 @@ describe('server-v2 /api skills', () => {
       });
     });
 
+    it('activates a skill on the requested native child without borrowing main', async () => {
+      const id = await createSession();
+      await createMainAgent(id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.create({
+        agentId: 'skill-child',
+        binding: { profile: 'agent', model: 'stub', thinking: 'high' },
+      });
+      const main = lifecycle.get('main')!;
+      const mainActivation = vi.spyOn(main.accessor.get(IAgentSkillService), 'activate');
+      const childActivation = vi.spyOn(child.accessor.get(IAgentSkillService), 'activate');
+      const userInput = '/kiki-ops --child\nKeep this exact submission.';
+      const { body } = await postJson<{ activated: boolean; skill_name: string }>(
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
+        {
+          agent_id: child.id,
+          prompt_id: 'child-skill-activation',
+          args: '--child\nKeep this exact submission.',
+          user_input: userInput,
+        },
+      );
+      expect(body.code, body.msg).toBe(0);
+      expect(body.data).toEqual({ activated: true, skill_name: 'kiki-ops' });
+      expect(mainActivation).not.toHaveBeenCalled();
+      expect(childActivation).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'kiki-ops',
+        args: '--child\nKeep this exact submission.',
+        userInput,
+        promptId: 'child-skill-activation',
+        retryFingerprint: expect.any(String),
+      }));
+    });
+
+    it('rejects a missing child target without creating or borrowing main', async () => {
+      const id = await createSession();
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const { body } = await postJson<null>(
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
+        { agent_id: 'missing-skill-child', args: '--must-fail' },
+      );
+      expect(body.code).toBe(40401);
+      expect(body.msg).toContain('missing-skill-child');
+      expect(lifecycle.get('main')).toBeUndefined();
+    });
+
+    it('rejects skill activation for an external executor instead of sending an ordinary prompt', async () => {
+      const id = await createSession();
+      await createMainAgent(id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const child = await session.accessor.get(IAgentLifecycleService).create({
+        agentId: 'external-skill-child',
+        binding: { profile: 'agent', model: 'stub', thinking: 'high' },
+      });
+      const profile = child.accessor.get(IAgentProfileService);
+      const binding = profile.data();
+      vi.spyOn(profile, 'data').mockReturnValue({ ...binding, executorId: 'external-test' });
+      const activation = vi.spyOn(child.accessor.get(IAgentSkillService), 'activate');
+      const { body } = await postJson<null>(
+        `/api/sessions/${id}/skills/kiki-ops:activate`,
+        { agent_id: child.id, args: '--external' },
+      );
+      expect(body.code).toBe(40001);
+      expect(body.msg).toContain('external executor "external-test"');
+      expect(body.msg).toContain('ordinary prompts');
+      expect(activation).not.toHaveBeenCalled();
+    });
+
+    it('wakes a disposed child and replays the activation on that child only', async () => {
+      const id = await createSession();
+      await createMainAgent(id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.create({
+        agentId: 'cold-skill-child',
+        binding: { profile: 'agent', model: 'stub', thinking: 'high' },
+      });
+      await lifecycle.remove(child.id);
+      const main = lifecycle.get('main')!;
+      const mainActivation = vi.spyOn(main.accessor.get(IAgentSkillService), 'activate');
+      let restoredActivationCalls = 0;
+      let restoreRestoredActivation: (() => void) | undefined;
+      const created = lifecycle.onDidCreate((handle) => {
+        if (handle.id === child.id) {
+          const service = handle.accessor.get(IAgentSkillService);
+          const originalActivate = service.activate.bind(service);
+          const activation = vi.spyOn(service, 'activate').mockImplementation(async (input) => {
+            restoredActivationCalls++;
+            return originalActivate(input);
+          });
+          restoreRestoredActivation = () => activation.mockRestore();
+        }
+      });
+      try {
+        const body = {
+          agent_id: child.id,
+          prompt_id: 'cold-child-skill',
+          args: '--cold',
+          user_input: '/kiki-ops --cold',
+        };
+        const first = await postJson<{ activated: boolean; skill_name: string }>(
+          `/api/sessions/${id}/skills/kiki-ops:activate`,
+          body,
+        );
+        expect(first.body.code, first.body.msg).toBe(0);
+        expect(lifecycle.get(child.id)).toBeDefined();
+        expect(restoredActivationCalls).toBe(1);
+        expect(mainActivation).not.toHaveBeenCalled();
+        const replay = await postJson<{ activated: boolean; skill_name: string }>(
+          `/api/sessions/${id}/skills/kiki-ops:activate`,
+          body,
+        );
+        expect(replay.body.data).toEqual(first.body.data);
+        expect(restoredActivationCalls).toBe(1);
+      } finally {
+        created.dispose();
+        mainActivation.mockRestore();
+        restoreRestoredActivation?.();
+      }
+    });
+
     it('replays a client prompt_id skill activation and rejects a changed body without a second run', async () => {
       const id = await createSession();
       await createMainAgent(id);
@@ -410,12 +533,22 @@ describe('server-v2 /api skills', () => {
         expect((await deleted.json() as Envelope<{ deleted: boolean }>).data.deleted).toBe(true);
         const replay = await postJson<{ activated: boolean; skill_name: string }>(`/api/sessions/${id}/skills/kiki-ops:activate`, body);
         expect(replay.body.data).toEqual(first.body.data);
+        const explicitMainReplay = await postJson<{ activated: boolean; skill_name: string }>(
+          `/api/sessions/${id}/skills/kiki-ops:activate`,
+          { ...body, agent_id: 'main' },
+        );
+        expect(explicitMainReplay.body.data).toEqual(first.body.data);
         const changed = await postJson<null>(`/api/sessions/${id}/skills/kiki-ops:activate`, {
           ...body,
           args: '--different',
           user_input: '/kiki-ops --different',
         });
         expect(changed.body.code).toBe(40938);
+        const changedDependency = await postJson<null>(`/api/sessions/${id}/skills/kiki-ops:activate`, {
+          ...body,
+          after_model_switch: 'different-switch',
+        });
+        expect(changedDependency.body.code).toBe(40938);
         expect(activation).toHaveBeenCalledTimes(1);
       } finally {
         activation.mockRestore();

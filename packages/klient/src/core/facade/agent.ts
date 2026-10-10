@@ -42,6 +42,7 @@ import type { ScopedCaller } from './session.js';
 export type PromptLaunchResult = Awaited<ReturnType<IAgentPromptService['submit']>>;
 export type PromptWithSkillsInput = Parameters<IAgentSkillService['promptWithSkills']>[0];
 export type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
+export type SkillActivationResult = Awaited<ReturnType<IAgentSkillService['activate']>>;
 export type ShellCommandResult = Awaited<ReturnType<IAgentShellCommandService['run']>>;
 export type SetModelResult = Awaited<ReturnType<IAgentProfileService['setModel']>>;
 export type SetEffortResult = ReturnType<IAgentProfileService['setEffort']>;
@@ -90,10 +91,12 @@ export interface AgentFacade {
   /**
    * Activate a skill as a user-slash activation: the engine renders the skill
    * prompt and drives it as a normal turn (same settlement/event flow as
-   * `prompt`). Resolves with the launched turn id; rejects when the skill is
-   * unknown or the agent is busy.
+   * `prompt`). An optional model-switch dependency queues the skill until the
+   * target agent's switch completes. Resolves with an accepted activation
+   * receipt; `turn_id` is present once a turn has launched. Rejects when the
+   * skill is unknown or the agent is busy.
    */
-  activateSkill(input: { name: string; args?: string }): Promise<PromptLaunchResult>;
+  activateSkill(input: { name: string; args?: string; afterModelSwitch?: string }): Promise<SkillActivationResult>;
   activatePluginCommand(
     input: Parameters<IAgentPluginCommandService['activate']>[0],
   ): Promise<void>;
@@ -202,7 +205,7 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     resumeRecoveredPromptQueue: () =>
       call(scope, 'agentPromptService', 'resumeRecoveredQueue', []) as Promise<void>,
     activateSkill: (input) =>
-      call(scope, 'agentSkillService', 'activate', [input]) as Promise<PromptLaunchResult>,
+      call(scope, 'agentSkillService', 'activate', [input]) as Promise<SkillActivationResult>,
     activatePluginCommand: (input) =>
       call(scope, 'agentPluginCommandService', 'activate', [input]) as Promise<void>,
     refreshPluginSessionStart: () =>

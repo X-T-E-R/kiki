@@ -329,6 +329,14 @@ describe('Session skills', () => {
     } satisfies Partial<KimiError>);
     expect(activateSkill).not.toHaveBeenCalled();
 
+    await session.activateSkill(' review ', ' args ', { afterModelSwitch: 'switch-1' });
+    expect(activateSkill).toHaveBeenCalledWith({
+      sessionId: session.id,
+      name: 'review',
+      args: 'args',
+      afterModelSwitch: 'switch-1',
+    });
+
     await session.close();
     expect(closeSession).toHaveBeenCalledWith({ sessionId: session.id });
     expect(clearSessionHandlers).toHaveBeenCalledWith(session.id);

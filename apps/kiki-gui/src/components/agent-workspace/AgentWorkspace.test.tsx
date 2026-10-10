@@ -16,7 +16,7 @@ import {
 } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
-import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
+import { ApiError, ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { AgentTreeView } from '../AgentTreeView';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
@@ -42,6 +42,7 @@ const harness = vi.hoisted(() => ({
   patchConfig: vi.fn(),
   readCapabilities: vi.fn(),
   listSessionSkills: vi.fn(),
+  activateSkill: vi.fn(),
   pushToast: vi.fn(),
   mediaProviderProps: [] as Array<{ apiRef?: unknown }>,
   host: { kind: 'browser' } as {
@@ -57,6 +58,7 @@ vi.mock('../../state/connection', () => ({
       listModels: harness.listModels,
       getAgentCapabilities: harness.readCapabilities,
       listSessionSkills: harness.listSessionSkills,
+      activateSkill: harness.activateSkill,
       sendAgentMessage: harness.sendAgentMessage,
       isNativeAgent: harness.isNativeAgent,
       stopAgentTask: harness.stopAgentTask,
@@ -146,6 +148,7 @@ beforeEach(() => {
   harness.host = { kind: 'browser' };
   harness.mediaProviderProps.length = 0;
   harness.listSessionSkills.mockResolvedValue({ skills: [] });
+  harness.activateSkill.mockResolvedValue({});
   // The child workspace mounts the model-switch surface: an empty list, an
   // attachable event pair, and the config reads behind the preferences.
   harness.listAgentModelSwitches.mockResolvedValue([]);
@@ -314,6 +317,66 @@ it('hands a refused child send-now back to the composer with the reason', async 
   expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error' }));
 });
 
+it('recovers a failed child send-now into a newly mounted empty composer, including attachments', async () => {
+  let rejectSend!: (error: unknown) => void;
+  const sendPromptNow = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectSend = reject; }));
+  const controller = Object.assign(
+    controllerStub({ forest: testForest('running', true), agentStates: {} }),
+    { sendPromptNow },
+  );
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  await renderWorkspace({ controller, forest: testForest('running', true) });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'recover this turn');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  expect(sendPromptNow).toHaveBeenCalledWith(expect.objectContaining({ text: 'recover this turn' }));
+  expect(textarea.value).toBe('');
+
+  await act(async () => root.render(null));
+  await renderWorkspace({ controller: controllerStub({ forest: testForest('running', true), agentStates: {} }), forest: testForest('running', true) });
+  await settle();
+  const remounted = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  expect(remounted.value).toBe('');
+  expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
+
+  await act(async () => { rejectSend(new SendNowError('refused', new Error('turn rejected'))); });
+  await settle();
+  expect(remounted.value).toBe('recover this turn');
+  expect(dock.querySelector('[data-attachment-chips] img')).not.toBeNull();
+});
+
+it('does not overwrite a newer draft written by a remounted child before send-now fails', async () => {
+  let rejectSend!: (error: unknown) => void;
+  const sendPromptNow = vi.fn(() => new Promise<never>((_resolve, reject) => { rejectSend = reject; }));
+  const forest = testForest('running', true);
+  await renderWorkspace({
+    controller: Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow }),
+    forest,
+  });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'stale in-flight text');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  await act(async () => root.render(null));
+  await renderWorkspace({ controller: controllerStub({ forest, agentStates: {} }), forest });
+  await settle();
+  const remounted = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(remounted, 'newer mounted draft');
+  await settle();
+  await act(async () => { rejectSend(new SendNowError('refused', new Error('turn rejected'))); });
+  await settle();
+  expect(remounted.value).toBe('newer mounted draft');
+});
+
 it('keeps an external-executor child on its mailbox when sending into a busy turn', async () => {
   harness.isNativeAgent.mockResolvedValue(false);
   harness.sendAgentMessage.mockResolvedValue({});
@@ -336,7 +399,7 @@ function mailboxReceipt(overrides: {
     message: {
       messageId: 'message-1', sessionId: 'session', sourceAgentId: 'main', sourceTaskName: 'user',
       senderKind: 'user' as const, targetAgentId: 'child', targetTaskName: 'child',
-      content: 'next step', acceptedAt: 1, targetSeq: 1,
+      acceptedAt: 1, targetSeq: 1,
     },
     deduplicated: overrides.deduplicated ?? false,
     payloadConflict: overrides.payloadConflict ?? false,
@@ -441,6 +504,87 @@ it('keeps the draft and raises no receipt when the mailbox send rejects', async 
   expect(harness.pushToast).not.toHaveBeenCalled();
   // The rejected send never reached the clear step, so the draft survives.
   expect(textarea.value).toBe('next step');
+});
+
+it('throws a definitive 40001 child rejection instead of showing an unknown outcome, retaining attachments', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new NativeChildPromptSendError(new ApiError({
+    code: 40001,
+    msg: 'prompt.rejected',
+    data: null,
+  })));
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'inspect');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  await clickComposerSend();
+  expect(textarea.value).toBe('inspect');
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  expect(dock.querySelector('[role="alert"]')?.textContent).toContain('prompt.rejected (code 40001)');
+  expect(dock.textContent).not.toContain(translate('en', 'agentMessage.promptOutcomeUnknown'));
+  expect(dock.textContent).not.toContain(translate('en', 'agentMessage.attachmentOutcomeUnknown'));
+});
+
+it('keeps a 50001 child rejection in the unknown-outcome recovery path', async () => {
+  harness.sendAgentMessage.mockRejectedValue(new NativeChildPromptSendError(new ApiError({
+    code: 50001,
+    msg: 'server.internal_error',
+    data: null,
+  })));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = await sendFromComposer('next step');
+  expect(textarea.value).toBe('next step');
+  expect(dock.querySelector('[role="alert"]')?.textContent).toBe(translate('en', 'agentMessage.promptOutcomeUnknown'));
+});
+
+it('activates a child skill with its target, payload, switch dependency, and stable retry key', async () => {
+  harness.listSessionSkills.mockResolvedValue({ skills: [{
+    name: 'review', description: 'Review the current diff', path: '/skills/review/SKILL.md', source: 'project',
+  }] });
+  harness.listAgentModelSwitches.mockResolvedValue([pendingSwitch('skill-operation', 0)]);
+  harness.host = { kind: 'browser', pickFiles: async () => [{
+    name: 'shot.png', size: 1, type: 'image/png',
+    read: async () => new File(['x'], 'shot.png', { type: 'image/png' }),
+  }] };
+  harness.activateSkill.mockRejectedValueOnce(new Error('activation unavailable')).mockResolvedValueOnce({});
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, '/review --fix');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await settle();
+  expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
+  await clickComposerSend();
+
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+  expect(harness.activateSkill).toHaveBeenCalledTimes(1);
+  const firstBody = harness.activateSkill.mock.calls[0]?.[2] as Record<string, unknown>;
+  expect(harness.activateSkill.mock.calls[0]?.slice(0, 2)).toEqual(['session', 'review']);
+  expect(firstBody).toMatchObject({
+    args: '--fix',
+    agent_id: 'child',
+    user_input: '/review --fix',
+    after_model_switch: 'skill-operation',
+    prompt_id: expect.any(String),
+  });
+  expect(firstBody.attachments).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
+  expect(textarea.value).toBe('/review --fix');
+
+  await clickComposerSend();
+  expect(harness.activateSkill).toHaveBeenCalledTimes(2);
+  const secondBody = harness.activateSkill.mock.calls[1]?.[2];
+  expect(harness.activateSkill.mock.calls[1]?.slice(0, 2)).toEqual(['session', 'review']);
+  expect(secondBody).toEqual(firstBody);
+  expect(harness.activateSkill.mock.calls[1]?.[2]?.agent_id).not.toBe('main');
+  expect(textarea.value).toBe('');
+  expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
 });
 
 async function clickComposerSend() {

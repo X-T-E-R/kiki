@@ -564,9 +564,13 @@ export class AcpSession {
    */
   private driveSkillActivation(skillName: string, args: string): Promise<PromptResponse> {
     this.assertNoActiveTurn();
-    return this.driveLaunch(
-      this.agent.activateSkill({ name: skillName, args: args.length > 0 ? args : undefined }),
-    );
+    const launch = this.agent.activateSkill({ name: skillName, args: args.length > 0 ? args : undefined }).then((result) => {
+      if (result.turn_id === undefined) {
+        throw RequestError.invalidRequest({ code: TURN_AGENT_BUSY_CODE }, 'skill activation did not launch a turn');
+      }
+      return { turn_id: result.turn_id };
+    });
+    return this.driveLaunch(launch);
   }
 
   /**

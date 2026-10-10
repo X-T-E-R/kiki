@@ -14,10 +14,11 @@ import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { oAuthFlowSnapshotSchema, oAuthMethodStatusSchema } from '../src/contract/global/auth.js';
 import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagement.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
-import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
+import { activateSkillPayloadSchema, promptPayloadSchema } from '../src/contract/agent/schemas.js';
 import { agentEvents } from '../src/contract/agent/events.js';
-import { agentPromptContract } from '../src/contract/agent/services.js';
+import { agentPromptContract, agentSkillContract } from '../src/contract/agent/services.js';
 import { sessionCommandContract } from '../src/contract/session/commands.js';
+import { agentCollaborationMessagingContract } from '../src/contract/session/agentMessage.js';
 import {
   providerConfigSchema,
   requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
@@ -34,6 +35,26 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('skill activation output contract', () => {
+  it('preserves accepted queue receipts with or without a launched turn', () => {
+    const queued = { prompt_id: 'skill-prompt', created_at: '2026-10-10T00:00:00.000Z', state: 'queued', append_timing: 'agent_idle', revision: 0 };
+    expect(agentSkillContract.activate.output.parse(queued)).toEqual(queued);
+    const running = { ...queued, state: 'running', turn_id: 7 };
+    expect(agentSkillContract.activate.output.parse(running)).toEqual(running);
+    expect(agentSkillContract.activate.output.parse({ turn_id: 7 })).toEqual({ turn_id: 7 });
+  });
+});
+
+describe('user mailbox input contract', () => {
+  it('accepts complete long user text for both full and compact receipts', () => {
+    const input = [{ targetAgentId: 'child', content: '文'.repeat(1_500_000), idempotencyKey: 'submission' }];
+    for (const method of Object.values(agentCollaborationMessagingContract)) {
+      expect(method.input.parse(input)).toEqual(input);
+      expect(method.input.safeParse([{ ...input[0], content: '' }]).success).toBe(false);
+    }
+  });
+});
 
 describe('capability reason contract', () => {
   const status: CapabilityStatus = {
@@ -160,6 +181,20 @@ describe('prompt contract validation', () => {
     expect(recover.input.parse(['switch-1', 'retry'])).toEqual(['switch-1', 'retry']);
     expect(recover.input.parse(['switch-1', 'keep_original'])).toEqual(['switch-1', 'keep_original']);
     expect(recover.input.safeParse(['switch-1', 'keep_original', 'fresh']).success).toBe(false);
+  });
+});
+
+describe('skill activation contract validation', () => {
+  it('preserves the model-switch dependency in the engine-side activation payload', () => {
+    expect(activateSkillPayloadSchema.parse({
+      name: 'review',
+      args: '--fix',
+      afterModelSwitch: 'switch-1',
+    })).toEqual({ name: 'review', args: '--fix', afterModelSwitch: 'switch-1' });
+  });
+
+  it('rejects an empty model-switch dependency id', () => {
+    expect(activateSkillPayloadSchema.safeParse({ name: 'review', afterModelSwitch: '' }).success).toBe(false);
   });
 });
 

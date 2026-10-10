@@ -56,6 +56,8 @@ export interface PromptInput {
   readonly execution?: PromptExecutionBinding;
   readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
+  /** When false, enqueue returns the accepted handle without awaiting a turn launch. */
+  readonly waitForLaunch?: boolean;
   readonly historyMutationLease?: SessionHistoryMutationLease;
   readonly alreadyMaterialized?: boolean;
   /** Cancels this submission through admission, launch, and its own turn; never a later prompt. */
@@ -181,6 +183,7 @@ export const promptRetry = Symbol('promptRetry');
 export interface PromptRetryHook {
   lookup(promptId: string, fingerprint: string): Promise<import('./promptOps').PromptRetryReceipt | undefined>;
   commit(promptId: string, fingerprint: string, receipt: import('./promptOps').PromptRetryReceipt): Promise<void>;
+  run<T>(promptId: string, fingerprint: string, operation: () => Promise<T>): Promise<T>;
 }
 
 export function promptRetryFor(service: IAgentPromptService): PromptRetryHook {

@@ -1,6 +1,7 @@
 import {
   Error2,
   ErrorCodes,
+  IAgentLifecycleService,
   IAgentProfileService,
   IAgentPromptService,
   IAgentSkillService,
@@ -16,16 +17,19 @@ import {
   ISessionIndex,
   ISessionMediaStore,
   ISessionManager,
+  ISessionMetadata,
   ISessionSkillCatalog,
   ITelemetryService,
   IWorkspaceInstanceManager,
   IWorkspaceService,
+  MAIN_AGENT_ID,
   isError2,
   isUserActivatableSkillType,
   normalizeSkillName,
   promptRetryFor,
   sessionMediaOriginalsDir,
   type ContentPart,
+  type IAgentScopeHandle,
   type ISessionScopeHandle,
   type Scope,
   type SkillDefinition,
@@ -53,6 +57,7 @@ import { acquireSessionOperation, type SessionOperationLease } from '../lib/sess
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { ErrorCode } from '../protocol/error-codes';
+import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import {
   activateSkillRequestSchema,
   activateSkillResultSchema,
@@ -128,18 +133,95 @@ async function resolveActivatedSession(
 
 const HOST_SKILL_TEXT = `---\nname: kiki-as-subagent\ndescription: ${JSON.stringify(KIKI_AS_SUBAGENT_SKILL.description)}\n---\n\n${KIKI_AS_SUBAGENT_SKILL.content}\n`;
 
-function skillActivationFingerprint(name: string, input: z.infer<typeof activateSkillRequestSchema>): string {
-  const canonical = JSON.stringify({ name, args: input.args, user_input: input.user_input, attachments: input.attachments }, (_key, value: unknown) =>
+async function resolveSkillAgent(
+  core: Scope,
+  session: ISessionScopeHandle,
+  requestedAgentId: string | undefined,
+): Promise<IAgentScopeHandle> {
+  const lifecycle = session.accessor.get(IAgentLifecycleService);
+  if (requestedAgentId === undefined || requestedAgentId === MAIN_AGENT_ID) {
+    return ensureMainAgent(session);
+  }
+  const live = lifecycle.get(requestedAgentId);
+  if (live !== undefined) return live;
+
+  const metadata = session.accessor.get(ISessionMetadata);
+  const agentMeta = (await metadata.read()).agents?.[requestedAgentId];
+  if (agentMeta === undefined) {
+    throw new Error2(
+      ErrorCodes.AGENT_NOT_FOUND,
+      `agent ${requestedAgentId} does not exist`,
+      { details: { agentId: requestedAgentId } },
+    );
+  }
+  const context = session.accessor.get(ISessionContext);
+  const snapshot = await readPersistedAgentProfileSnapshot(
+    core,
+    context.workspaceId,
+    context.sessionId,
+    requestedAgentId,
+    agentMeta,
+  );
+  if (snapshot === undefined) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `Persisted binding metadata for agent "${requestedAgentId}" is unavailable`,
+      { details: { agentId: requestedAgentId } },
+    );
+  }
+  assertNativeSkillBinding(requestedAgentId, snapshot.executorId, snapshot.executorProtocol);
+  return lifecycle.create({
+    agentId: requestedAgentId,
+    restoreBinding: {
+      profileName: snapshot.profileName,
+      routeId: snapshot.routeId,
+      modelAlias: snapshot.modelAlias,
+      thinkingEffort: snapshot.thinkingLevel,
+      executorId: snapshot.executorId,
+      executorProtocol: snapshot.executorProtocol,
+    },
+  });
+}
+
+function assertNativeSkillBinding(
+  agentId: string,
+  executorId: string | undefined,
+  executorProtocol: string | undefined,
+): void {
+  const resolvedExecutorId = executorId ?? 'native';
+  const resolvedExecutorProtocol = executorProtocol ?? 'native';
+  if (resolvedExecutorId === 'native' && resolvedExecutorProtocol === 'native') return;
+  const executorLabel = resolvedExecutorId === 'native' ? resolvedExecutorProtocol : resolvedExecutorId;
+  throw new Error2(
+    ErrorCodes.REQUEST_INVALID,
+    `Skill activation is unsupported for external executor "${executorLabel}" on agent "${agentId}"; skills cannot be delivered as ordinary prompts`,
+    { details: { agentId, executorId: resolvedExecutorId, executorProtocol: resolvedExecutorProtocol, reason: 'skill_executor_unsupported' } },
+  );
+}
+
+function assertNativeSkillAgent(agent: IAgentScopeHandle): void {
+  const binding = agent.accessor.get(IAgentProfileService).data();
+  assertNativeSkillBinding(agent.id, binding.executorId, binding.executorProtocol);
+}
+
+function skillActivationFingerprint(
+  name: string,
+  input: z.infer<typeof activateSkillRequestSchema>,
+  targetAgentId: string,
+): string {
+  const canonical = JSON.stringify({
+    name,
+    agent_id: targetAgentId,
+    after_model_switch: input.after_model_switch,
+    args: input.args,
+    user_input: input.user_input,
+    attachments: input.attachments,
+  }, (_key, value: unknown) =>
     value !== null && typeof value === 'object' && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
       : value,
   );
   return createHash('sha256').update(canonical).digest('hex');
-}
-
-function activatedSkillName(receipt: import('@kiki/agent-core-v2').PromptRetryReceipt, fallback: string): string {
-  const origin = receipt.message?.origin;
-  return origin?.kind === 'skill_activation' ? origin.skillName : fallback;
 }
 
 export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
@@ -399,14 +481,27 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
 
       let preparedMedia: PromptMediaPreparation | undefined;
       try {
+        const agent = await resolveSkillAgent(core, resolved.handle, req.body.agent_id);
+        assertNativeSkillAgent(agent);
         const promptId = req.body.prompt_id;
-        const fingerprint = promptId === undefined ? undefined : skillActivationFingerprint(parsed.id, req.body);
-        const agent = await ensureMainAgent(resolved.handle);
+        const fingerprint = promptId === undefined
+          ? undefined
+          : skillActivationFingerprint(parsed.id, req.body, agent.id);
         const prompt = agent.accessor.get(IAgentPromptService);
         const runActivation = async (): Promise<string> => {
           if (promptId !== undefined && fingerprint !== undefined) {
             const receipt = await promptRetryFor(prompt).lookup(promptId, fingerprint);
-            if (receipt !== undefined) return activatedSkillName(receipt, parsed.id);
+            const terminal = prompt.lookup(promptId)?.terminal;
+            if (terminal?.state === 'failed' || terminal?.state === 'cancelled') {
+              const result = terminal.result;
+              const reason = result?.type === 'failed' ? result.error : result?.type === 'cancelled' ? result.reason : undefined;
+              throw new Error2(
+                (reason?.code ?? ErrorCodes.INTERNAL) as import('@kiki/agent-core-v2').ErrorCode,
+                reason?.message ?? `Prompt ${promptId} ended before skill activation could be recovered`,
+                { details: reason?.details },
+              );
+            }
+            if (receipt !== undefined) return parsed.id;
           }
           const attachments = req.body.attachments ?? [];
           const attachmentParts: ContentPart[] = [];
@@ -449,6 +544,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
             name: parsed.id,
             args: req.body.args,
             userInput: req.body.user_input,
+            afterModelSwitch: req.body.after_model_switch,
             content: attachmentParts,
             promptId,
             retryFingerprint: fingerprint,
@@ -542,10 +638,18 @@ function sendMappedError(
         reply.send(errEnvelope(ErrorCode.FILE_NOT_FOUND, err.message, requestId, err.stack));
         return;
       case ErrorCodes.VALIDATION_FAILED:
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+      case ErrorCodes.REQUEST_INVALID:
+      case ErrorCodes.CONFIG_INVALID:
+        reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack), details: err.details });
+        return;
+      case ErrorCodes.AGENT_NOT_FOUND:
+        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
         return;
       case ErrorCodes.PROMPT_ID_CONFLICT:
         reply.send(errEnvelope(ErrorCode.PROMPT_ID_CONFLICT, err.message, requestId, err.stack));
+        return;
+      case ErrorCodes.INTERNAL:
+        reply.send(errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack));
         return;
     }
   }

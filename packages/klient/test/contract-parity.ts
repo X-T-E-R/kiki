@@ -264,6 +264,7 @@ import {
   approvalResponseSchema,
 } from '../src/contract/session/approval.js';
 import {
+  agentSkillContract,
   fullCompactionInputSchema,
   mcpServerEntrySchema,
 } from '../src/contract/agent/services.js';
@@ -807,6 +808,9 @@ const _activateSkillPayload: AssertWire<typeof activateSkillPayloadSchema, Activ
 const _promptLaunchResult: AssertWire<typeof promptLaunchResultSchema, PromptLaunchResult> = true;
 type PromptTerminalResult = Awaited<ReturnType<IAgentPromptService['submitAndWait']>>;
 const _promptTerminalResult: AssertEngineToWire<typeof promptTerminalResultSchema, PromptTerminalResult> = true;
+type SkillActivationResult = Awaited<ReturnType<IAgentSkillService['activate']>>;
+const _skillActivationResult: AssertWire<typeof agentSkillContract.activate.output, SkillActivationResult> = true;
+const _skillActivationResultToWire: AssertEngineToWire<typeof agentSkillContract.activate.output, SkillActivationResult> = true;
 type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
 const _promptWithSkillsResult: AssertWire<
   typeof promptWithSkillsResultSchema,

@@ -302,7 +302,8 @@ describe('KikiClient.probeProviderDraft', () => {
 describe('KikiClient.sendAgentMessage', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('uses the user mailbox for a persisted external agent and refuses to silently drop attachments', async () => {
+  it('sends complete long text through the persisted external user mailbox and refuses to silently drop attachments', async () => {
+    const longText = '文'.repeat(1_500_000);
     const calls: Array<{ service: string; method: string; params: unknown[] }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe('http://127.0.0.1:8080/api/klient/call');
@@ -322,13 +323,14 @@ describe('KikiClient.sendAgentMessage', () => {
       throw new Error(`unexpected procedure: ${body.procedure.method}`);
     }));
     const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
-    const receipt = await client.sendAgentMessage('s1', 'child', 'next step', [{ type: 'text', text: 'next step' }], 'submission-1', 'tail-operation');
+    const receipt = await client.sendAgentMessage('s1', 'child', longText, [{ type: 'text', text: longText }], 'submission-1', 'tail-operation');
     expect(receipt).toMatchObject({ delivery: 'delivered', deduplicated: false, payloadConflict: false });
+    expect(receipt?.message).not.toHaveProperty('content');
     expect(receipt?.message).toMatchObject({ messageId: 'message-1', targetAgentId: 'child', senderKind: 'user' });
     expect(calls.map((call) => [call.service, call.method])).toEqual([
       ['sessionMetadata', 'getAgentExecutor'], ['agentCollaborationMessagingService', 'sendUserMessageReceipt'],
     ]);
-    expect(calls[1]?.params[0]).toEqual({ targetAgentId: 'child', content: 'next step',
+    expect(calls[1]?.params[0]).toEqual({ targetAgentId: 'child', content: longText,
       idempotencyKey: 'submission-1' });
     await expect(client.sendAgentMessage('s1', 'child', 'next step', [
       { type: 'text', text: 'next step' },

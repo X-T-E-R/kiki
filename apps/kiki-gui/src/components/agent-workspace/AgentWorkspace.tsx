@@ -19,7 +19,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@kiki/protocol';
-import { buildPromptContent, flushDrafts, readComposerState, readDraft, writeComposerState, writeDraft, type ComposerAttachment } from '@kiki/session-core/composer';
+import { buildPromptContent, buildSkillActivation, flushDrafts, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment } from '@kiki/session-core/composer';
 import {
   agentPath,
   createViewState,
@@ -44,7 +44,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import type { ContentRef } from '@kiki/transcript';
-import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, type ModelSwitchMode } from '../../lib/client';
+import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection, type ModelSwitchMode } from '../../lib/client';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from '../model-switch/ModelSwitchNotice';
 import { useModelSwitches } from '../model-switch/useModelSwitches';
@@ -569,6 +569,13 @@ function ChildAgentWorkspace({
   }, []);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  useEffect(() => subscribeDraftAppends((key) => {
+    if (key !== draftKey) return;
+    const restored = readDraft(draftKey);
+    draftRef.current = restored;
+    setDraftState(restored);
+    setAttachments(readComposerState(draftKey).attachments ?? []);
+  }), [draftKey]);
   const handleDraftChange = (next: string) => {
     if (next !== draftRef.current) {
       pendingSendRef.current = null;
@@ -713,6 +720,10 @@ function ChildAgentWorkspace({
     try {
       receipt = await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch);
     } catch (error) {
+      if (isDefinitivePromptRejection(error)) {
+        if (pendingSendRef.current === submission) setSendNotice(null);
+        throw error instanceof NativeChildPromptSendError ? error.cause : error;
+      }
       // Native attachments have no replay receipt; a failed request may have
       // been accepted already. The external path rejects attachments before send.
       if (error instanceof NativeChildPromptSendError) {
@@ -763,6 +774,27 @@ function ChildAgentWorkspace({
       text: summary,
     });
   };
+  const handleActivateSkill: NonNullable<ComponentProps<typeof Composer>['onActivateSkill']> = async (name, args, skillAttachments, userInput) => {
+    if (!agentKnown) return;
+    const activation = buildSkillActivation(args, skillAttachments);
+    const payload = JSON.stringify(['skill', name, activation, userInput]);
+    const previous = pendingSendRef.current;
+    const submission = previous?.scope === sendScope && previous.payload === payload
+      ? previous
+      : { scope: sendScope, payload, key: crypto.randomUUID(), afterModelSwitch: modelSwitches.dependency?.input.operationId };
+    pendingSendRef.current = submission;
+    await client.activateSkill(sessionId, name, {
+      ...activation, agent_id: agentId, user_input: userInput, prompt_id: submission.key,
+      after_model_switch: submission.afterModelSwitch,
+    });
+    if (pendingSendRef.current !== submission) return;
+    pendingSendRef.current = null;
+    if (!composerOwnerActive.current || draftRef.current !== userInput) return;
+    draftRef.current = '';
+    setDraft('');
+    setAttachments([]);
+    setSendNotice(null);
+  };
   // "Send now" into this child's running turn — the controller's steer path,
   // shared with the main session, so the echo, the insertion point (next
   // step boundary) and the failure fallback are identical. Only a native
@@ -792,12 +824,7 @@ function ChildAgentWorkspace({
       if (result.outcome === 'queued') pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
-      if (composerOwnerActive.current && reason !== 'unknown' && draftRef.current === '') {
-        // Nothing reached the turn: hand the text back to its author.
-        draftRef.current = text;
-        setDraft(text);
-        setAttachments(composerAttachments);
-      }
+      if (reason !== 'unknown') recoverSubmittedDraft(draftKey, text, composerAttachments);
       const cause = error instanceof SendNowError ? error.cause : error;
       pushToast({
         tone: 'error',
@@ -1161,6 +1188,7 @@ function ChildAgentWorkspace({
           onChangePlanMode={() => {}}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
           onSend={headerBusy ? handleComposerSendNow : handleComposerSend}
+          onActivateSkill={handleActivateSkill}
           onSendNow={handleComposerSendNow}
           busySendsNow
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}

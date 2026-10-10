@@ -487,7 +487,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       const sendResult = (result: z.input<typeof promptSubmitResultSchema>) => reply.send(okEnvelope(
         req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({
           ...result,
-          resolved_media: result.content.flatMap((content, index) => content.type === 'text' ? [] : [{ index, content }]),
+          resolved_parts: preparedMedia?.sourceRanges.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) })),
         }) : result,
         req.id,
       ));

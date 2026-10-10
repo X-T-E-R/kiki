@@ -899,11 +899,33 @@ export class AgentPromptService implements IAgentPromptService {
         await this.wire.flush();
         return;
       }
-      if (!this.states.get(promptAdmissionKey).has(promptId)) {
+      if (
+        !this.states.get(promptAdmissionKey).has(promptId) &&
+        this.states.get(promptIdentityKey).get(promptId) === undefined
+      ) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is not accepted`);
       }
       await this.dispatcher.dispatch(new PromptRetryCommitted({ promptId, fingerprint, receipt }));
       await this.wire.flush();
+    },
+    run: async <T>(promptId: string, fingerprint: string, operation: () => Promise<T>): Promise<T> => {
+      const existing = this.retryFlights.get(promptId);
+      if (existing !== undefined) {
+        if (existing.fingerprint !== fingerprint) {
+          throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
+        }
+        return existing.promise as Promise<T>;
+      }
+      const promise = Promise.resolve().then(async () => {
+        await this[promptRetry].lookup(promptId, fingerprint);
+        return operation();
+      });
+      this.retryFlights.set(promptId, { fingerprint, promise });
+      try {
+        return await promise;
+      } finally {
+        if (this.retryFlights.get(promptId)?.promise === promise) this.retryFlights.delete(promptId);
+      }
     },
   };
 
@@ -956,6 +978,7 @@ export class AgentPromptService implements IAgentPromptService {
 
   private readonly promptHandles = new Map<string, PromptHandle>();
   private readonly enqueueFlights = new Map<string, { fingerprint: string; promise: Promise<PromptHandle> }>();
+  private readonly retryFlights = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
 
   lookup(promptId: string, input?: PromptInput): PromptLookup | undefined {
     const persisted = this.states.get(promptIdentityKey).get(promptId);
@@ -1069,7 +1092,9 @@ export class AgentPromptService implements IAgentPromptService {
       return record.handle;
     }
     void this.startNext();
-    await Promise.race([record.launchedDeferred.promise, record.completionDeferred.promise]);
+    if (input.waitForLaunch !== false) {
+      await Promise.race([record.launchedDeferred.promise, record.completionDeferred.promise]);
+    }
     return record.handle;
   }
 
@@ -1819,8 +1844,6 @@ export class AgentPromptService implements IAgentPromptService {
         appendTiming: 'agent_idle',
         revision: 0,
         queueIndex: this.queueOrder.length,
-        retryFingerprint: options.retryFingerprint,
-        retryStatus: 'running',
       }));
       await this.wire.flush();
       await this.dispatcher.dispatch(new PromptLaunchCommitted({

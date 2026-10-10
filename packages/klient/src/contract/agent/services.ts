@@ -101,7 +101,7 @@ export const agentPromptContract = {
 } satisfies ServiceContract;
 
 export const agentSkillContract = {
-  activate: { input: z.tuple([activateSkillPayloadSchema]), output: promptLaunchResultSchema },
+  activate: { input: z.tuple([activateSkillPayloadSchema]), output: z.union([promptWithSkillsResultSchema, promptLaunchResultSchema]) },
   promptWithSkills: {
     input: z.tuple([promptWithSkillsPayloadSchema]),
     output: promptWithSkillsResultSchema,

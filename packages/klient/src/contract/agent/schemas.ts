@@ -96,6 +96,7 @@ export const steerPayloadSchema = z.object({
 export const activateSkillPayloadSchema = z.object({
   name: z.string(),
   args: z.string().optional(),
+  afterModelSwitch: z.string().min(1).optional(),
 });
 
 export const promptLaunchResultSchema = z.object({

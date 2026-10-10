@@ -656,7 +656,11 @@ export class Session {
     return this.rpc.getPluginInfo(id);
   }
 
-  async activateSkill(name: string, args?: string | undefined): Promise<void> {
+  async activateSkill(
+    name: string,
+    args?: string,
+    options?: { readonly afterModelSwitch?: string },
+  ): Promise<void> {
     this.ensureOpen();
     const skillName = normalizeRequiredString(
       name,
@@ -664,10 +668,12 @@ export class Session {
       ErrorCodes.SKILL_NAME_EMPTY,
     );
     const skillArgs = normalizeOptionalString(args);
+    const afterModelSwitch = normalizeOptionalString(options?.afterModelSwitch);
     await this.rpc.activateSkill({
       sessionId: this.id,
       name: skillName,
-      ...(skillArgs !== undefined ? { args: skillArgs } : {}),
+      args: skillArgs,
+      afterModelSwitch,
     });
   }
 

@@ -315,6 +315,7 @@ export interface SkillSummary {
 export interface ActivateSkillPayload {
   readonly name: string;
   readonly args?: string | undefined;
+  readonly afterModelSwitch?: string;
 }
 
 export interface ListWorkspaceSkillsPayload {

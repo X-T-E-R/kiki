@@ -171,14 +171,17 @@ export class HttpChannel implements KlientChannel {
         },
       );
       if (command === 'submit' && result !== null && typeof result === 'object' && !('content' in result)) {
-        const { resolved_media, ...receipt } = promptSubmitReceiptSchema.parse(result);
-        const content = [...(value.body as PromptSubmission).content];
-        for (const media of resolved_media ?? []) {
-          if (media.index >= content.length || content[media.index]?.type === 'text' || media.content.type === 'text') {
+        const { resolved_media, resolved_parts, ...receipt } = promptSubmitReceiptSchema.parse(result);
+        const submitted = (value.body as PromptSubmission).content;
+        const replacements = new Map<number, PromptSubmission['content']>();
+        const projections = resolved_parts ?? resolved_media?.map(({ index, content }) => ({ index, content: [content] })) ?? [];
+        for (const projection of projections) {
+          if (projection.index >= submitted.length || submitted[projection.index]?.type === 'text' || replacements.has(projection.index)) {
             throw new RPCError(50001, 'Invalid prompt receipt media projection');
           }
-          content[media.index] = media.content;
+          replacements.set(projection.index, projection.content);
         }
+        const content = submitted.flatMap((part, index) => replacements.get(index) ?? [part]);
         return { ...receipt, content };
       }
       return result;

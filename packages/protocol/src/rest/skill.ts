@@ -4,7 +4,7 @@
  *     Errors: 40401 session.not_found
  *
  *   POST /v1/sessions/{session_id}/skills/{skill_name}:activate
- *     Body: `{ args?: string, attachments?: (ImageContent|VideoContent|FileContent)[] }`
+ *     Body: `{ agent_id?: string, after_model_switch?: string, args?: string, attachments?: (ImageContent|VideoContent|FileContent)[] }`
  *     Response data: `{ activated: true, skill_name: string }`
  *     Errors: 40401 session.not_found, 40415 skill.not_found,
  *             40912 skill.not_activatable
@@ -39,6 +39,10 @@ export type ActivateSkillAttachment = z.infer<typeof activateSkillAttachmentSche
 
 export const activateSkillRequestSchema = z.object({
   prompt_id: z.string().min(1).optional(),
+  /** Target agent; omission and `main` preserve the historical main-agent behavior. */
+  agent_id: z.string().min(1).optional(),
+  /** Existing model-switch operation that must complete before this skill turn launches. */
+  after_model_switch: z.string().min(1).optional(),
   /** Raw argument string appended after the slash command, e.g. `/review --fix` → `--fix`. */
   args: z.string().optional(),
   /** Author's slash submission, kept separately from the expanded skill instructions. */

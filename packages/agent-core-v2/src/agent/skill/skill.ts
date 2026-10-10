@@ -7,6 +7,7 @@ export interface SkillActivationInput {
   readonly name: string;
   readonly args?: string;
   readonly userInput?: string;
+  readonly afterModelSwitch?: string;
   readonly content?: readonly ContentPart[];
   readonly promptId?: string;
   readonly retryFingerprint?: string;
@@ -34,10 +35,12 @@ export interface PromptWithSkillsResult {
   readonly revision: number;
 }
 
+export type SkillActivationResult = PromptLaunchResult | PromptWithSkillsResult;
+
 export interface IAgentSkillService {
   readonly _serviceBrand: undefined;
 
-  activate(input: SkillActivationInput): Promise<PromptLaunchResult>;
+  activate(input: SkillActivationInput): Promise<SkillActivationResult>;
   promptWithSkills(input: PromptWithSkillsInput): Promise<PromptWithSkillsResult>;
   recordModelToolActivation(origin: SkillActivationOrigin): void;
 }

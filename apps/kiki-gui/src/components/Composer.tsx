@@ -3122,7 +3122,7 @@ export function Composer({
               className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"
             >
               {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
-              {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
+              {t(skillCatalogReady && onActivateSkill !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
               {fsSearch !== undefined ? t('composer.footerFiles') : ''}
               {inputHistory.length > 0 ? t('composer.footerHistory') : ''}
             </p>
