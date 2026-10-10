@@ -66,7 +66,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { acquireDraftProfileCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
+import { acquireDraftProfileCatalog, acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
@@ -403,7 +403,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         return;
       }
 
-      const workspaceCatalog = await acquireDraftProfileCatalog(core, req.query);
+      const workspaceCatalog = await acquireDraftProfileListCatalog(core, req.query);
       if (workspaceCatalog === undefined) {
         reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
         return;

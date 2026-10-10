@@ -39,6 +39,7 @@ import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { panelSkills } from '../src/routes/agentPanelCapabilities';
 import { acquireWorkspaceProfileCatalog } from '../src/routes/agentProfileCapabilities';
+import { RuntimeSkillDiscovery } from '@kiki/agent-core-v2/workspace/workspaceSkillCatalog/runtimeSkillDiscovery';
 import {
   saveSubagentProfileToolSettings,
   searchSubagentToolCatalog,
@@ -408,6 +409,40 @@ describe('GET /api/agents', () => {
     expect(server.core.accessor.get(ISessionManager).get(manual.data.id)!.accessor.get(IAgentLifecycleService)
       .get('main')!.accessor.get(IAgentProfileService).data().profileName).toBe('project-only');
     expect((await readPreview()).items.some((item) => item.name === 'project-only')).toBe(false);
+  });
+
+  it('lists composer profiles without waiting for legacy discovery or unrelated skill discovery', async () => {
+    const cwd = join(home!, 'composer-project');
+    await mkdir(join(cwd, '.kiki', 'agents'), { recursive: true });
+    const file = join(cwd, '.kiki', 'agents', 'example-lead.md');
+    await writeFile(file, '---\nname: example-lead\ndescription: Example lead\nmain: true\ntools: [Read]\n---\nExample prompt.\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const registry = server.core.accessor.get(IWorkspaceService);
+    const listing = vi.spyOn(registry, 'list').mockImplementation(() => new Promise(() => {}));
+    const touched = vi.spyOn(registry, 'createOrTouch');
+    const skills = vi.spyOn(RuntimeSkillDiscovery.prototype, 'discover').mockImplementation(() => new Promise(() => {}));
+    const client = createKlient({ endpoint: base, token: server.localOwnerToken, timeoutMs: 1000 });
+    try {
+      const results = await Promise.all(Array.from({ length: 3 }, () => client.rest!.agents.list({ cwd, effective: true })));
+      for (const result of results) {
+        expect(result.complete).toBe(true);
+        expect(result.items.find((item) => item.name === 'example-lead')).toMatchObject({ main: true, tools: ['Read'], source: 'workspace' });
+      }
+      await writeFile(file, '---\nname: updated-lead\ndescription: Updated lead\nmain: true\ntools: [Read, Grep]\n---\nUpdated prompt.\n');
+      const updated = await client.rest!.agents.list({ cwd, effective: true });
+      expect(updated.items.some((item) => item.name === 'example-lead')).toBe(false);
+      expect(updated.items.find((item) => item.name === 'updated-lead')).toMatchObject({ tools: ['Read', 'Grep'] });
+      await expect(client.rest!.agents.list({ cwd: join(cwd, 'missing'), effective: true })).rejects.toThrow('Workspace does not exist');
+      expect(skills).not.toHaveBeenCalled();
+      expect(touched).not.toHaveBeenCalled();
+      expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
+    } finally {
+      await client.close();
+      listing.mockRestore();
+      skills.mockRestore();
+      touched.mockRestore();
+    }
   });
 
   it('probes draft directories without registration or Programs and registers once on submit', async () => {

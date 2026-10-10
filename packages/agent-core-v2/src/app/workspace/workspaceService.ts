@@ -51,6 +51,13 @@ export class WorkspaceService implements IWorkspaceService {
     });
   }
 
+  async findRegisteredByRoot(root: string): Promise<Workspace | undefined> {
+    const rootKey = workspaceRootKey(root);
+    const catalog = await this.loadCatalog();
+    return dedupeByRoot(new Map(catalog.workspaces.map((workspace) => [workspace.id, workspace])))
+      .find((workspace) => workspaceRootKey(workspace.root) === rootKey);
+  }
+
   createOrTouch(root: string, name?: string): Promise<Workspace> {
     return this.runExclusive(async () => {
       let stat;

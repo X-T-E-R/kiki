@@ -21,6 +21,8 @@ export interface IWorkspaceService {
 
   list(): Promise<readonly Workspace[]>;
   get(id: string): Promise<Workspace | undefined>;
+  /** Reads the registered catalog by normalized root without legacy discovery or session-index preparation. */
+  findRegisteredByRoot(root: string): Promise<Workspace | undefined>;
   createOrTouch(root: string, name?: string): Promise<Workspace>;
   update(id: string, patch: WorkspaceUpdate): Promise<Workspace | undefined>;
   delete(id: string): Promise<void>;

@@ -54,17 +54,29 @@ import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace
 
 export async function acquireDraftProfileCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
   if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
-  const cwd = query.cwd!;
+  const preview = await acquireDirectoryProfileCatalog(core, query.cwd!, true);
+  return preview === undefined ? undefined : {
+    workspaceId: preview.workspaceId, registry: preview.registry, catalog: preview.catalog,
+    skills: preview.skills!.catalog, dispose: preview.dispose,
+  };
+}
+
+export async function acquireDraftProfileListCatalog(core: Scope, query: { workspace_id?: string; cwd?: string }) {
+  if (query.workspace_id !== undefined) return acquireWorkspaceProfileCatalog(core, query);
+  return acquireDirectoryProfileCatalog(core, query.cwd!, false);
+}
+
+async function acquireDirectoryProfileCatalog(core: Scope, cwd: string, includeSkills: boolean) {
   try {
     if (!(await core.accessor.get(IHostFileSystem).stat(cwd)).isDirectory) return undefined;
   } catch {
     return undefined;
   }
-  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd);
+  const workspaceId = (await core.accessor.get(IWorkspaceService).findRegisteredByRoot(cwd))?.id;
+  const preview = createUnscopedAgentProfileCatalog(core.accessor.get(IInstantiationService), cwd, workspaceId, includeSkills);
   try {
-    await Promise.all([preview.catalog.ready, preview.skills!.ready]);
-    return { workspaceId: preview.workspaceId, registry: preview.registry,
-      catalog: preview.catalog, skills: preview.skills!.catalog, dispose: preview.dispose };
+    await Promise.all([preview.catalog.ready, preview.skills?.ready]);
+    return preview;
   } catch (error) {
     preview.dispose();
     throw error;

@@ -176,6 +176,7 @@ describe('kap-server cold start', () => {
       _serviceBrand: undefined,
       list,
       get: async () => undefined,
+      findRegisteredByRoot: async () => undefined,
       createOrTouch: async () => { throw new Error('unexpected workspace write'); },
       update: async () => undefined,
       delete: async () => {},

@@ -616,7 +616,9 @@ describe('WorkspaceService (file-backed)', () => {
       [canonicalId]: entry(lowerRoot),
     });
 
-    const list = await build().list();
+    const registry = build();
+    expect((await registry.findRegisteredByRoot(typedRoot))?.id).toBe(canonicalId);
+    const list = await registry.list();
     expect(list).toHaveLength(1);
     expect(list[0]?.id).toBe(canonicalId);
     expect(list[0]?.root).toBe(lowerRoot);

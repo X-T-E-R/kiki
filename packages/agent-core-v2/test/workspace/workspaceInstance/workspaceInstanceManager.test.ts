@@ -141,6 +141,7 @@ function manager(
     _serviceBrand: undefined,
     list: async () => values,
     get: vi.fn(async (id: string) => byId.get(id)),
+    findRegisteredByRoot: async (root: string) => values.find((entry) => entry.root === root),
     createOrTouch: vi.fn(async (root: string) => {
       const value = values.find((entry) => entry.root === root);
       if (value === undefined) throw new Error(`unknown root ${root}`);

@@ -43,12 +43,17 @@ class ReadOnlyWorkspaceTrustService extends WorkspaceTrustService {
 }
 
 /** With cwd, returns a disposable directory snapshot without registration, watchers, or a Program. */
-export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationService, cwd?: string) {
+export function createUnscopedAgentProfileCatalog(
+  instantiation: IInstantiationService,
+  cwd?: string,
+  workspaceId?: string,
+  includeSkills = true,
+) {
   const resources = new DisposableStore();
   try {
     const bootstrap = instantiation.invokeFunction((accessor) => accessor.get(IBootstrapService));
     const registry = resources.add(instantiation.createInstance<AgentProfileRegistryService>(new SyncDescriptor(AgentProfileRegistryService)));
-    const workspaceKey = cwd === undefined ? '__unscoped_profile_preview__' : encodeWorkDirKey(cwd);
+    const workspaceKey = workspaceId ?? (cwd === undefined ? '__unscoped_profile_preview__' : encodeWorkDirKey(cwd));
     const root = cwd ?? bootstrap.homeDir;
     const services = new ServiceCollection(
       [IAgentProfileRegistry, registry],
@@ -66,13 +71,15 @@ export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationS
       });
       services.set(IWorkspaceStateService, new SyncDescriptor(WorkspaceStateService));
       services.set(IWorkspaceTrust, new SyncDescriptor(ReadOnlyWorkspaceTrustService));
-      services.set(ISkillDiscovery, instantiation.invokeFunction((accessor) =>
-        new RuntimeSkillDiscovery(accessor.get(ILogService), accessor.get(IHostFileSystem))));
-      services.set(IUserFileSkillSource, new SyncDescriptor(UserFileSkillSource));
-      services.set(IExplicitFileSkillSource, new SyncDescriptor(ExplicitFileSkillSource));
-      services.set(IExtraFileSkillSource, new SyncDescriptor(ExtraFileSkillSource));
-      services.set(IWorkspaceRootSkillSource, new SyncDescriptor(WorkspaceRootSkillSource));
-      services.set(IPluginSkillSource, new SyncDescriptor(PluginSkillSource));
+      if (includeSkills) {
+        services.set(ISkillDiscovery, instantiation.invokeFunction((accessor) =>
+          new RuntimeSkillDiscovery(accessor.get(ILogService), accessor.get(IHostFileSystem))));
+        services.set(IUserFileSkillSource, new SyncDescriptor(UserFileSkillSource));
+        services.set(IExplicitFileSkillSource, new SyncDescriptor(ExplicitFileSkillSource));
+        services.set(IExtraFileSkillSource, new SyncDescriptor(ExtraFileSkillSource));
+        services.set(IWorkspaceRootSkillSource, new SyncDescriptor(WorkspaceRootSkillSource));
+        services.set(IPluginSkillSource, new SyncDescriptor(PluginSkillSource));
+      }
     }
     const container = resources.add(instantiation.createChild(services));
     const user = resources.add(container.createInstance(UserAgentProfileLoaderService));
@@ -88,7 +95,7 @@ export function createUnscopedAgentProfileCatalog(instantiation: IInstantiationS
       loaders.push(resources.add(container.createInstance<WorkspaceAgentProfileLoaderService>(new SyncDescriptor(WorkspaceAgentProfileLoaderService))));
     }
     resources.add(registry.registerSourceReadiness('preview', workspaceKey, Promise.all(loaders.map((loader) => loader.ready)).then(() => {})));
-    const skills = cwd === undefined ? undefined : resources.add(container.createInstance(WorkspaceSkillCatalogService));
+    const skills = cwd === undefined || !includeSkills ? undefined : resources.add(container.createInstance(WorkspaceSkillCatalogService));
     const catalog = resources.add(container.createInstance(SessionAgentProfileCatalogService));
     return { registry, catalog, skills, workspaceId: workspaceKey, dispose: () => { resources.dispose(); } };
   } catch (error) {
