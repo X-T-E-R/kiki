@@ -13,7 +13,7 @@ import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
 import { renderPrompt } from "#/_base/utils/render-prompt";
 import { buildCompactionSummaryText, buildContextCompactionShape, isRealUserInput } from '#/agent/contextMemory/compactionHandoff';
-import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentContextMemoryService, type ContextCompactionInput } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
@@ -104,6 +104,8 @@ interface ActiveCompaction extends FullCompactionTask {
   readonly originTurnId?: number;
   readonly quiescence?: IDisposable;
   trace?: LLMRequestTrace;
+  committedResult?: CompactionResult;
+  phase: 'preparing' | 'committing' | 'finalizing';
   blockedByTurn: boolean;
 }
 
@@ -279,6 +281,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       void this.dispatcher.dispatch(new CompactionCancelled({ trigger: 'manual' }));
     }
     const active = this._compacting;
+    if (active !== null && active.phase !== 'preparing') return;
     if (active !== null) {
       this.telemetry.track2('cancel', {
         from: 'compacting',
@@ -552,6 +555,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         get traceId() {
           return this.trace?.traceId;
         },
+        phase: 'preparing',
         blockedByTurn: false,
       },
       resolve,
@@ -567,8 +571,24 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     return super.dispose();
   }
 
+  private commitCompaction(active: ActiveCompaction, input: ContextCompactionInput): CompactionResult {
+    active.abortController.signal.throwIfAborted();
+    if (this._compacting !== active) throw compactionCancelledReason(active);
+    active.phase = 'committing';
+    try {
+      const result = this.context.applyCompaction(input);
+      active.committedResult = result;
+      active.phase = 'finalizing';
+      void this.dispatcher.dispatch(new FullCompactionComplete({}));
+      return result;
+    } catch (error) {
+      if (active.committedResult === undefined) active.phase = 'preparing';
+      throw error;
+    }
+  }
+
   private cancelActive(active: ActiveCompaction, reason?: string): boolean {
-    if (this._compacting !== active) return false;
+    if (this._compacting !== active || active.phase !== 'preparing') return false;
     void this.dispatcher.dispatch(new FullCompactionCancel({ reason }));
     this._compacting = null;
     if (!active.abortController.signal.aborted) {
@@ -580,7 +600,6 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   private markCompleted(active: ActiveCompaction): boolean {
     if (this._compacting !== active) return false;
-    void this.dispatcher.dispatch(new FullCompactionComplete({}));
     this._compacting = null;
     return true;
   }
@@ -761,9 +780,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       throw error;
     } finally {
       try {
-        this._onDidFinishCompaction.fire(active);
-      } finally {
-        await active.quiescence?.dispose();
+        try {
+          this._onDidFinishCompaction.fire(active);
+        } finally {
+          await active.quiescence?.dispose();
+        }
+      } catch (error) {
+        if (active.committedResult === undefined) throw error;
+        this.log.error('failed to release compaction resources after commit', { error });
       }
     }
   }
@@ -899,7 +923,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         }
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
         attemptedStrategy = 'relay';
-        const result = this.context.applyCompaction({
+        const result = this.commitCompaction(active, {
           summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
           requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
           reasonCodes: [],
@@ -937,7 +961,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       if (useRelay && relaySummary !== undefined) {
         attemptedStrategy = 'relay';
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw compactionCancelledReason(active);
-        const result = this.context.applyCompaction({
+        const result = this.commitCompaction(active, {
           summary: relaySummary, contextSummary: relaySummary, compactedCount: compactCount, tokensBefore,
           requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
           reasonCodes: reasons,
@@ -1031,7 +1055,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         if (!historySafeToCompact(this.context.get(), originalHistory)) throw error;
         const rescueReasons = [...reasons, 'summarize_failed_relay_rescue'];
         const summary = renderRelay(relayInput);
-        const result = this.context.applyCompaction({ summary, contextSummary: summary, compactedCount: relayInput.compactCount,
+        const result = this.commitCompaction(active, { summary, contextSummary: summary, compactedCount: relayInput.compactCount,
           tokensBefore, requestOverheadTokens: this.requestTokens([]), strategy: 'relay', shapeVersion: 1,
           reasonCodes: rescueReasons, fallbackFrom: 'summarize' });
         this.telemetry.track2('compaction_finished', { source: data.source, turn_id: active.originTurnId,
@@ -1059,7 +1083,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const directiveBudget = summarizedDirectives && summarizedDirectives !== '(none)' ? compactionDirectivesBudget(notes.notes, summarizedDirectives) : undefined;
       if (directiveBudget?.exceeded) reasons.push('notes_directives_budget');
       const summary = this.postProcessSummary(attempt.summary, { ...relayInput, compactCount });
-      const result = this.context.applyCompaction({
+      const result = this.commitCompaction(active, {
         summary,
         contextSummary: buildCompactionSummaryText(summary),
         compactedCount: compactCount,
@@ -1093,6 +1117,10 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       this.telemetry.track2('compaction_finished', properties);
       return result;
     } catch (error) {
+      if (active.committedResult !== undefined) {
+        this.log.error('failed to report compaction telemetry after commit', { error });
+        return active.committedResult;
+      }
       if (isAbortError(error)) throw error;
       const properties: CompactionFailedEvent = {
         turn_id: active.originTurnId,

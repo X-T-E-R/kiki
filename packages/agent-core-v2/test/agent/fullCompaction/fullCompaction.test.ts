@@ -109,6 +109,76 @@ const EXACT_COMPACTION_REFRESH_PROFILE: ResolvedAgentProfile = normalizeAgentPro
 });
 
 describe('FullCompaction', () => {
+  it.each(['relay', 'summarize'] as const)('keeps a committed %s result when cancelled during system prompt refresh', async (strategy) => {
+    const refreshing = deferred<void>();
+    const release = deferred<void>();
+    const postCompact = vi.fn<IExternalHooksRunnerService['fireAndForgetTrigger']>(async () => []);
+    const ctx = testAgent({ hookEngine: {
+      trigger: async () => [], triggerBlock: async () => undefined, fireAndForgetTrigger: postCompact,
+    } });
+    vi.spyOn(ctx.get(IAgentLifecycleService), 'get').mockImplementation((agentId) => agentId === 'main' ? {
+      id: 'main', kind: LifecycleScope.Agent, accessor: { get: (id) => ctx.get(id) }, dispose: () => {},
+    } : undefined);
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'notes-fixture', name: 'TodoList', arguments: '{}' }] });
+    ctx.context.append({ role: 'tool', content: [{ type: 'text', text: 'Notes stored.' }], toolCalls: [], toolCallId: 'notes-fixture' });
+    const todo = ctx.get(ISessionTodoService);
+    todo.setNotes({ goal: 'Finish the task', directives: 'Preserve the original request', next: 'Continue after compaction' }, { turnId: 2, step: 1, toolCallId: 'notes-fixture', reviewHandoff: true });
+    todo.setTodos([{ title: 'Finish the task', status: 'in_progress' }]);
+    const notes = todo.getNotes('main');
+    const todos = todo.getTodos('main');
+    expect(notes).toMatchObject({ notes: { goal: 'Finish the task' }, meta: { rev: 1, reviewedWindowEpoch: 0 } });
+    const profile = ctx.get(IAgentProfileService);
+    const refresh = vi.spyOn(profile, 'refreshSystemPrompt').mockImplementationOnce(async () => {
+      refreshing.resolve();
+      await release.promise;
+    });
+    const service = ctx.get(IAgentFullCompactionService);
+    const before = ctx.compactHistory();
+    ctx.newEvents();
+    if (strategy === 'summarize') ctx.mockNextResponse({ type: 'text', text: 'Committed task summary.' });
+    expect(service.begin({ source: 'manual', strategy })).toBe(true);
+    const task = service.compacting!;
+    try {
+      await refreshing.promise;
+      const committedHistory = ctx.compactHistory();
+      expect(committedHistory).not.toEqual(before);
+      expect(service.isCompacting()).toBe(true);
+      expect(service.begin({ source: 'manual', strategy })).toBe(false);
+      service.cancel();
+      const cancelledByUser = task.abortController.signal.aborted;
+      task.abortController.abort();
+      const finalizing = service.compacting;
+      release.resolve();
+      const result = await task.promise;
+      expect(cancelledByUser).toBe(false);
+      expect(finalizing).toBe(task);
+      expect(result).toMatchObject({ strategy, shapeVersion: 1 });
+      expect(service.isCompacting()).toBe(false);
+      expect(ctx.compactHistory()).toEqual(committedHistory);
+      expect(todo.getNotes('main')).toEqual(notes);
+      expect(todo.getTodos('main')).toEqual(todos);
+      expect(ctx.contextData().tokenCount).toBe(result.tokensAfter);
+      expect(ctx.llmCalls).toHaveLength(strategy === 'summarize' ? 1 : 0);
+      const wire = await ctx.persistedWireRecords();
+      expect(wire.filter(record => record.type === 'context.apply_compaction')).toHaveLength(1);
+      expect(wire.filter(record => record.type === 'full_compaction.complete')).toHaveLength(1);
+      expect(wire.some(record => record.type === 'full_compaction.cancel')).toBe(false);
+      const events = ctx.newEvents();
+      expect(events.some(event => event.event === 'full_compaction.cancel' || event.event === 'compaction.cancelled')).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.completed', args: expect.objectContaining({ result: expect.objectContaining({ strategy, tokensAfter: result.tokensAfter }) }) }));
+      expect(postCompact.mock.calls.filter(([event]) => event === 'PostCompact')).toHaveLength(1);
+      expect(postCompact).toHaveBeenCalledWith('PostCompact', expect.objectContaining({ inputData: expect.objectContaining({ estimatedTokenCount: result.tokensAfter }) }));
+      await ctx.expectResumeMatches();
+    } finally {
+      release.resolve();
+      await task.promise.catch(() => undefined);
+      refresh.mockRestore();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it.each(['manual', 'auto'] as const)('does not commit a %s relay cancelled while memory references are loading, and can continue afterwards', async (source) => {
     const started = deferred<void>();
     const release = deferred<void>();
