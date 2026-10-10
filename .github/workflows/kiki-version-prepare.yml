@@ -335,7 +335,8 @@ jobs:
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'build:native:release')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'test:native:smoke')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'package:native')
-          $tauriConfig = '{"build":{"beforeBuildCommand":"pnpm desktop:prepare"}}'
+          $tauriConfig = Join-Path $env:RUNNER_TEMP 'kiki-tauri-candidate-config.json'
+          [System.IO.File]::WriteAllText($tauriConfig, '{"build":{"beforeBuildCommand":"pnpm desktop:prepare"}}', [System.Text.UTF8Encoding]::new($false))
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'desktop:build:artifacts', '--ci', '--target', 'x86_64-pc-windows-msvc', '--config', $tauriConfig)
           if (git status --porcelain --untracked-files=no) { throw 'Build changed tracked source or lockfiles' }
           Copy-Item 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/kiki-desktop.exe' (Join-Path $candidate 'kiki-desktop.exe')
