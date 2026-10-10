@@ -79,6 +79,36 @@ describe('Codex notification mapping', () => {
       .toEqual([{ type: 'context.compacted', threadId: 'thread-1' }]);
   });
 
+  it('maps Codex lifecycle and terminal errors to runtime session facts', () => {
+    expect(mapCodexNotification('turn/started', { threadId: 'thread-1', turn: { id: 'turn-1' } }).events)
+      .toEqual([{ type: 'session.info', meta: {
+        source: 'codex-app-server', updateType: 'turn/started', status: 'running', turnId: 'turn-1',
+      } }]);
+    expect(mapCodexNotification('thread/status/changed', {
+      threadId: 'thread-1', status: { type: 'active' },
+    }).events).toEqual([{ type: 'session.info', meta: {
+      source: 'codex-app-server', updateType: 'thread/status/changed', status: 'active',
+    } }]);
+    expect(mapCodexNotification('error', {
+      threadId: 'thread-1', error: { message: 'upstream unavailable' }, willRetry: false,
+    }).events).toEqual([{ type: 'session.info', meta: {
+      source: 'codex-app-server', updateType: 'error', error: 'upstream unavailable', willRetry: false,
+    } }]);
+  });
+
+  it('uses per-turn usage from Codex token usage updates', () => {
+    expect(mapCodexNotification('thread/tokenUsage/updated', {
+      tokenUsage: {
+        total: { totalTokens: 30, inputTokens: 20, cachedInputTokens: 5, outputTokens: 10 },
+        last: { totalTokens: 12, inputTokens: 8, cachedInputTokens: 2, outputTokens: 4 },
+        modelContextWindow: 100,
+      },
+    })).toMatchObject({
+      events: [{ type: 'usage', used: 12, size: 100 }],
+      usage: { inputTokens: 8, cachedInputTokens: 2, outputTokens: 4 },
+    });
+  });
+
   it.each(['functionCallOutput', 'hookPrompt', 'imageGeneration', 'contextCompaction'])(
     'reports unsupported %s item boundaries as unknown events',
     (type) => {

@@ -96,6 +96,7 @@ export class ExecutorTurnMetadata extends Event2<ExecutorTurnMetadataPayload> {
 export interface ExecutorTurnMetadata extends ExecutorTurnMetadataPayload {}
 
 const executorSessionUpdatedSchema = z.object({
+  executionGeneration: z.number().int().positive().optional(),
   executorId: z.string().min(1),
   descriptorRevision: z.string().min(1),
   bindingFingerprint: z.string().length(64).optional(),
@@ -175,11 +176,16 @@ export interface ExternalExecutorState {
   readonly lastCumulativeUsage?: ExecutorCumulativeUsage;
 }
 
+export function externalStateForGeneration(state: ExternalExecutorState, generation: number | undefined): ExternalExecutorState {
+  return state.executionGeneration === generation ? state : { sessionEpoch: state.sessionEpoch };
+}
+
 export const externalExecutorKey = defineState(
   'externalExecutor',
   (): ExternalExecutorState => ({}),
 ).replayable({ schema: z.custom<ExternalExecutorState>() })
   .on(ExecutorSessionUpdated, (state, event) => ({
+    executionGeneration: event.executionGeneration,
     executorId: event.executorId,
     descriptorRevision: event.descriptorRevision,
     bindingFingerprint: event.bindingFingerprint,

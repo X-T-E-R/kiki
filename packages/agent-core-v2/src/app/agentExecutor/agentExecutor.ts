@@ -224,6 +224,7 @@ export interface AgentExecutorContext {
 export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot): string {
   return createHash('sha256')
     .update(JSON.stringify({
+      execution: binding.execution,
       executorId: binding.executorId,
       executorProtocol: binding.executorProtocol,
       executorOptions: binding.executorOptions,

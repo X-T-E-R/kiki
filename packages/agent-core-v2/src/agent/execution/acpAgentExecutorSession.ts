@@ -70,6 +70,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   ExecutorSessionUpdated,
   externalExecutorKey,
+  externalStateForGeneration,
   type ExecutorCumulativeUsage,
   type ExecutorLossCode,
   type ExecutorProfileDelivery,
@@ -223,8 +224,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       : request.origin ?? { kind: 'system_trigger', name: 'subagent' };
     const sessionOptions = await this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession({ ...sessionOptions, onFork: async (sessionRef) => {
-      const prior = this.#states.get(externalExecutorKey);
+      const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+        executionGeneration: this.context.binding.execution?.generation,
         executorId: this.context.descriptor.id, descriptorRevision: this.context.descriptor.revision,
         bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding), sessionRef,
         sessionEpoch: (prior.sessionEpoch ?? 0) + 1,
@@ -270,14 +272,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       this.context.descriptor.id, this.context.descriptor.version, negotiated,
     );
-    const prior = this.#states.get(externalExecutorKey);
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
     const reusablePrior = prior.bindingFingerprint === bindingFingerprint;
     const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
     const sessionEpoch = priorSessionId === configured.sessionId
       ? prior.sessionEpoch ?? 1
       : (prior.sessionEpoch ?? 0) + 1;
-    const handoff = opened.mode === 'new' && prior.sessionRef !== undefined
+    const handoff = this.context.binding.execution === undefined && opened.mode === 'new' && prior.sessionRef !== undefined
       ? buildHandoff(this.#memory.get())
       : undefined;
     if (handoff !== undefined) {
@@ -329,6 +331,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       },
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    if (this.context.descriptor.id === 'claude-acp') {
+      const actualModel = configured.configOptions.find((option) =>
+        option.category === 'model' && typeof option.currentValue === 'string')?.currentValue;
+      const agentVersion = opened.initialize.agentInfo?.version;
+      if (actualModel !== undefined || agentVersion !== undefined) {
+        await recorder.record({
+          type: 'session.info',
+          meta: {
+            source: 'claude-acp',
+            actualModel,
+            agentVersion,
+          },
+        });
+      }
+    }
 
     const controller = new AbortController();
     const relayAbort = (): void => controller.abort(options.signal.reason);
@@ -362,10 +379,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       });
       await this.#dispatcher.dispatch(
         new ExecutorSessionUpdated({
+          executionGeneration: this.context.binding.execution?.generation,
           executorId: this.context.descriptor.id,
           descriptorRevision: this.context.descriptor.revision,
           bindingFingerprint,
-          sessionRef: { ...configured.sessionRef, ref: { ...configured.sessionRef.ref, localSource: prior.sessionRef?.ref['localSource'] } },
+          sessionRef: sessionRefWithLocalSource(configured.sessionRef, prior.sessionRef?.ref['localSource']),
           sessionEpoch,
           profileDeliveredSessionId: deliverProfile
             ? configured.sessionId
@@ -394,7 +412,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       () => options.signal.removeEventListener('abort', relayAbort),
       {
         bindingFingerprint,
-        sessionRef: { ...configured.sessionRef, ref: { ...configured.sessionRef.ref, localSource: prior.sessionRef?.ref['localSource'] } },
+        sessionRef: sessionRefWithLocalSource(configured.sessionRef, prior.sessionRef?.ref['localSource']),
         sessionEpoch,
         profileDeliveredSessionId: deliverProfile
           ? configured.sessionId
@@ -515,6 +533,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         if (accounted !== undefined) {
           await this.#dispatcher.dispatch(
             new ExecutorSessionUpdated({
+              executionGeneration: this.context.binding.execution?.generation,
               executorId: this.context.descriptor.id,
               descriptorRevision: this.context.descriptor.revision,
               bindingFingerprint: accounting.bindingFingerprint,
@@ -572,15 +591,15 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   }
 
   async #sessionOptions(signal: AbortSignal): Promise<AcpOpenSessionOptions> {
-    const mcp = this.context.agent.accessor.get(ISessionMcpHandle);
-    await mcp.ready;
+    const mcp = this.context.binding.execution === undefined ? this.context.agent.accessor.get(ISessionMcpHandle) : undefined;
+    await mcp?.ready;
     signal.throwIfAborted();
     const runtime = this.#runtimeLease.runtime;
     const roots = runtime.workspace.mapRoots({
       workDir: this.#workspace.workDir,
       additionalDirs: this.#workspace.additionalDirs,
     });
-    const state = this.#states.get(externalExecutorKey);
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     if (
       state.executorId !== undefined &&
       (state.executorId !== this.context.descriptor.id ||
@@ -596,7 +615,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     const systemPrompt = this.context.binding.systemPrompt;
-    const servers = this.context.descriptor.supportsMcp === false
+    const servers = this.context.descriptor.supportsMcp === false || mcp === undefined
       ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
         (name) => process.env[name], this.context.descriptor.mcpTransports);
     if (this.context.binding.allowKikiSubagents === true || this.context.binding.kikiContext?.length) {
@@ -615,8 +634,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
         'kiki.permission': externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs) },
       sessionRef:
-        state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
-          ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
+        state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding) && state.sessionRef !== undefined
+          ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
           : undefined,
       requireResume: state.sessionRef?.ref['localSource'] !== undefined,
       systemPromptOverride:
@@ -655,12 +674,14 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       assertConfigured(configured.configOptions, model.selection, 'model');
     }
 
-    if (this.context.binding.thinkingLevel !== 'off') {
+    const thinking = this.context.binding.execution === undefined
+      ? this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel : this.context.binding.execution.effective.thinking;
+    if (thinking !== undefined) {
       const thought = selectConfigIfAvailable(
         configured.configOptions,
         this.context.descriptor.thoughtConfigId,
         this.context.descriptor.thoughtConfigCategory ?? 'thought_level',
-        this.context.binding.thinkingLevel,
+        thinking,
         'thought level',
       );
       if (thought === undefined) {
@@ -1123,7 +1144,7 @@ function buildRemotePrompt(input: {
   readonly handoff?: string;
 }): string {
   const sections: string[] = [];
-  if (input.systemPrompt !== undefined) {
+  if (input.systemPrompt !== undefined && input.systemPrompt.length > 0) {
     sections.push(`${PROFILE_PREAMBLE_BEGIN}\n${input.systemPrompt}\n${PROFILE_PREAMBLE_END}`);
   }
   if (input.handoff !== undefined) {
@@ -1228,6 +1249,13 @@ function boundedPermissionDetail(request: AcpPermissionRequest): unknown {
     },
     meta: request._meta,
   };
+}
+
+function sessionRefWithLocalSource(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {
+  const ref = { ...sessionRef.ref };
+  if (localSource === undefined) delete ref['localSource'];
+  else ref['localSource'] = localSource;
+  return { ...sessionRef, ref };
 }
 
 function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined {

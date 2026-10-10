@@ -4,22 +4,21 @@ import {
   CodexClientError,
   CodexRemoteError,
   type CodexNotification,
-  type CodexModelListResult,
   type CodexServerRequest,
   type CodexServerRequestResponder,
   type CodexThreadResult,
   type CodexTurnHandle,
   type CodexTurnCompletion,
   type HostProcessServiceLike,
+  type NormalizedExecutorEvent,
 } from '@kiki/codex-client';
 
-import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
+import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
 import { codexAttachments, externalAttachments } from './externalAttachments';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
-import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
@@ -59,6 +58,7 @@ import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
   externalExecutorKey,
+  externalStateForGeneration,
   type ExecutorLossCode,
   type ExecutorResumeMode,
 } from './externalExecutorOps';
@@ -70,10 +70,13 @@ import {
 interface CodexClientLike {
   status(): ReturnType<CodexAppServerClient['status']>;
   connect(signal?: AbortSignal): Promise<void>;
-  listModels(signal?: AbortSignal): Promise<CodexModelListResult>;
   startThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
   resumeThread(params: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<CodexThreadResult>;
-  startTurn(params: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<CodexTurnHandle>;
+  startTurn(
+    params: Readonly<Record<string, unknown>>,
+    signal: AbortSignal,
+    onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>,
+  ): Promise<CodexTurnHandle>;
   request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown>;
   shutdown(reason?: unknown): Promise<void>;
 }
@@ -92,6 +95,8 @@ interface ActiveCodexTurn {
 interface OpenedThread {
   readonly threadId: string;
   readonly mode: ExecutorResumeMode;
+  readonly actualModel?: string;
+  readonly modelProvider?: string;
   readonly handoff?: { readonly text: string; readonly truncated: boolean };
 }
 
@@ -120,7 +125,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
-  #modelValidated = false;
   #active: ActiveCodexTurn | undefined;
   #permissionContext: PermissionContext | undefined;
   #settled: Promise<void> = Promise.resolve();
@@ -219,9 +223,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     await this.#alignKikiToolApproval();
     await this.#client.connect(controller.signal);
-    await this.#validateModel(controller.signal);
+    await recordNegotiatedSnapshot(this.context, {
+      agentVersion: this.#client.status().agentVersion,
+    });
     const opened = await this.#openThread(roots, controller.signal);
-    const prior = this.#states.get(externalExecutorKey);
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const priorThreadId = threadIdFromState(prior.sessionRef);
     const sessionEpoch = priorThreadId === opened.threadId
       ? prior.sessionEpoch ?? 1
@@ -262,6 +268,16 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       },
     );
     await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    if (opened.actualModel !== undefined || opened.modelProvider !== undefined) {
+      await recorder.record({
+        type: 'session.info',
+        meta: {
+          source: 'codex-app-server',
+          actualModel: opened.actualModel,
+          modelProvider: opened.modelProvider,
+        },
+      });
+    }
 
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
@@ -286,17 +302,17 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         threadId: opened.threadId,
         input: [{ type: 'text', text: remotePrompt }, ...codexAttachments(externalAttachments(request))],
         model: this.context.binding.modelAlias,
-        effort: this.context.binding.thinkingLevel === 'off'
-          ? undefined
-          : this.context.binding.thinkingLevel,
+        effort: this.context.binding.execution !== undefined ? this.context.binding.execution.effective.thinking
+          : this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel,
         approvalPolicy: this.#approvalPolicy(),
-        sandboxPolicy: {
+        sandboxPolicy: this.context.binding.execution !== undefined ? undefined : {
           type: 'workspaceWrite',
           writableRoots: roots.additionalDirs,
           networkAccess: false,
         },
-      }, controller.signal);
+      }, controller.signal, recorder.record.bind(recorder));
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+        executionGeneration: this.context.binding.execution?.generation,
         executorId: this.context.descriptor.id,
         descriptorRevision: this.context.descriptor.revision,
         bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
@@ -357,7 +373,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
   updateBinding(binding: AgentExecutorContext['binding']): void {
     if (this.#active !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Codex binding cannot change during a turn');
-    if (this.context.binding.modelAlias !== binding.modelAlias) this.#modelValidated = false;
     this.context = { ...this.context, binding };
   }
 
@@ -417,13 +432,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     controller: AbortController,
     cleanup: () => void,
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
-    const pump = (async () => {
-      for await (const event of handle.events) await recorder.record(event);
-    })();
-    void pump.catch(() => undefined);
     try {
       const completed = await handle.completion;
-      await pump;
       const turnResult = turnResultFromCodex(completed);
       if (turnResult.type === 'completed') {
         const usage = usageFromCodex(completed);
@@ -443,7 +453,6 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       result.resolve(turnResult);
       throw toError(turnResult.error, 'Codex turn failed');
     } catch (error) {
-      await pump.catch(() => undefined);
       if (controller.signal.aborted) {
         const reason = controller.signal.reason ?? error;
         turn.state = 'cancelled';
@@ -462,67 +471,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     }
   }
 
-  async #validateModel(signal: AbortSignal): Promise<void> {
-    if (this.#modelValidated) return;
-    const model = this.context.binding.modelAlias;
-    let listed: CodexModelListResult;
-    try {
-      listed = await this.#client.listModels(signal);
-    } catch (error) {
-      throw new Error2(
-        ErrorCodes.MODEL_NOT_FOUND,
-        'Codex app-server model/list is unavailable or malformed',
-        { cause: error },
-      );
-    }
-    const negotiated: NegotiatedExecutorCapabilities = {
-      models: listed.data.map((candidate) => candidate.id),
-      thinkingLevels: [...new Set(listed.data.flatMap((candidate) =>
-        (candidate.supportedReasoningEfforts ?? []).flatMap((entry) => entry.reasoningEffort === undefined ? [] : [entry.reasoningEffort])))],
-      agentVersion: this.#client.status().agentVersion,
-      image: true,
-      audio: false,
-      fork: false,
-      nativeSteering: true,
-      questionForm: true,
-      planApproval: false,
-      resume: true,
-    };
-    await recordNegotiatedSnapshot(this.context, negotiated);
-    this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
-      this.context.descriptor.id, this.context.descriptor.version, negotiated,
-    );
-    const advertised = model === undefined ? undefined : listed.data.find((candidate) => candidate.id === model);
-    if (model !== undefined && advertised === undefined) {
-      throw new Error2(
-        ErrorCodes.MODEL_NOT_FOUND,
-        `Codex app-server model "${model}" is not advertised by model/list`,
-        { details: { model, available: listed.data.map((candidate) => candidate.id) } },
-      );
-    }
-    const effort = this.context.binding.thinkingLevel;
-    const efforts = (advertised?.supportedReasoningEfforts ?? []).flatMap((candidate) => {
-      const value = candidate.reasoningEffort;
-      return typeof value === 'string' && value.length > 0 ? [value] : [];
-    });
-    if (model === undefined && effort !== 'off') {
-      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Codex thinking effort requires a pinned model');
-    }
-    if (effort !== 'off' && efforts.length > 0 && !efforts.includes(effort)) {
-      throw new Error2(
-        ErrorCodes.MODEL_NOT_FOUND,
-        `Codex app-server thinking effort "${effort}" is not advertised for model "${model}"`,
-        { details: { model, thinkingEffort: effort, supportedReasoningEfforts: efforts } },
-      );
-    }
-    this.#modelValidated = true;
-  }
-
   async #openThread(
     roots: { readonly workDir: string; readonly additionalDirs?: readonly string[] },
     signal: AbortSignal,
   ): Promise<OpenedThread> {
-    const state = this.#states.get(externalExecutorKey);
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     if (state.sessionRef?.ref['localSource'] !== undefined &&
         state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
@@ -551,25 +504,47 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
           approvalPolicy: undefined,
-          sandbox: 'workspace-write',
+          sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
-        return { threadId: resumed.thread.id, mode: 'resume' };
+        return {
+          threadId: resumed.thread.id,
+          mode: 'resume',
+          actualModel: resumed.model,
+          modelProvider: resumed.modelProvider,
+        };
       } catch (error) {
         if (state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
-        const handoff = buildHandoff(this.#memory.get());
+        const handoff = this.context.binding.execution === undefined ? buildHandoff(this.#memory.get()) : undefined;
         const fresh = await this.#startFreshThread(roots, signal);
-        return { threadId: fresh.thread.id, mode: 'handoff', handoff };
+        return {
+          threadId: fresh.thread.id,
+          mode: handoff === undefined ? 'new' : 'handoff',
+          actualModel: fresh.model,
+          modelProvider: fresh.modelProvider,
+          handoff,
+        };
       }
     }
-    if (state.sessionRef !== undefined && !reusable) {
+    if (this.context.binding.execution === undefined && state.sessionRef !== undefined && !reusable) {
       const handoff = buildHandoff(this.#memory.get());
       const fresh = await this.#startFreshThread(roots, signal);
-      return { threadId: fresh.thread.id, mode: 'handoff', handoff };
+      return {
+        threadId: fresh.thread.id,
+        mode: 'handoff',
+        actualModel: fresh.model,
+        modelProvider: fresh.modelProvider,
+        handoff,
+      };
     }
     const fresh = await this.#startFreshThread(roots, signal);
-    return { threadId: fresh.thread.id, mode: 'new' };
+    return {
+      threadId: fresh.thread.id,
+      mode: 'new',
+      actualModel: fresh.model,
+      modelProvider: fresh.modelProvider,
+    };
   }
 
   async #startFreshThread(
@@ -580,7 +555,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
       approvalPolicy: undefined,
-      sandbox: 'workspace-write',
+      sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
@@ -937,8 +912,10 @@ function threadIdFromState(
 }
 
 function isResumeProtocolFailure(error: unknown): boolean {
-  return error instanceof CodexRemoteError ||
-    error instanceof CodexClientError && error.code === 'protocol';
+  if (error instanceof CodexClientError && error.code === 'protocol') return true;
+  if (!(error instanceof CodexRemoteError)) return false;
+  const details = `${error.message} ${JSON.stringify(error.data ?? '')}`.toLowerCase();
+  return /\b(?:unknown|missing|deleted)\s+thread\b|\bthread(?:\s+id)?\s+(?:not[ _-]?found|does[ _-]?not[ _-]?exist)\b/.test(details);
 }
 
 function turnResultFromCodex(completed: CodexTurnCompletion): TurnResult {
@@ -949,7 +926,7 @@ function turnResultFromCodex(completed: CodexTurnCompletion): TurnResult {
   return {
     type: 'failed',
     steps: 1,
-    error: completed.error ?? new Error(`Codex turn completed with status ${completed.status}`),
+    error: toError(completed.error, `Codex turn completed with status ${completed.status}`),
   };
 }
 
@@ -1012,6 +989,9 @@ function isTerminalTurnState(state: NonNullable<Turn['state']>): boolean {
 
 function toError(value: unknown, fallback: string): Error {
   if (value instanceof Error) return value;
+  if (isObject(value) && typeof value['message'] === 'string') {
+    return new CodexClientError('remote', value['message'], value);
+  }
   return new Error(typeof value === 'string' ? value : fallback);
 }
 
