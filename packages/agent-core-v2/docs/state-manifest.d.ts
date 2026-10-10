@@ -2216,6 +2216,7 @@ export interface AgentStateSnapshot {
   // src/agent/execution/externalExecutorOps.ts
   // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
+    readonly executionGeneration?: number;
     readonly executorId?: string;
     readonly descriptorRevision?: string;
     readonly bindingFingerprint?: string;
@@ -3159,6 +3160,11 @@ export interface AgentStateSnapshot {
           steering_interval_steps?: number;
         };
       }>>;
+      readonly slots?: {
+        readonly overlay?: string;
+        readonly steering?: string;
+        readonly anchor?: string;
+      };
     };
     readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
       modelSource?: 'static' | 'discover' | 'oauth-catalog';
@@ -6885,6 +6891,11 @@ export interface AgentStateSnapshot {
                 steering_interval_steps?: number;
               };
             }>>;
+            readonly slots?: {
+              readonly overlay?: string;
+              readonly steering?: string;
+              readonly anchor?: string;
+            };
           };
           readonly variables: Readonly<Record<string, string>>;
           readonly revision: string;
@@ -7445,7 +7456,7 @@ export interface AgentStateSnapshot {
         readonly id: string;
         readonly revision: string;
         readonly status: string;
-        readonly operationId: string;
+        readonly operationId?: string;
         readonly action: string;
       }[];
       readonly calls: Readonly<Record<string, string>>;
