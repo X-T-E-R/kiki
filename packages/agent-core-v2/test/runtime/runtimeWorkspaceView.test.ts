@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { FakeRuntime } from '#/runtime/fakeRuntime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 
 function runtime(generation: string, pathClass: 'posix' | 'win32'): FakeRuntime {
   return new FakeRuntime(
@@ -108,6 +108,19 @@ describe('RuntimeWorkspaceView', () => {
       'C:\\workspace\\project\\package.json',
     );
     expect(() => view.resolve('/tmp/scratch.txt')).toThrow('outside runtime workspace');
+  });
+
+  it('exports the remote permission path bridge without probing local shell mounts', () => {
+    const remote = new FakeRuntime(
+      { workspaceId: 'workspace', runtimeId: 'ssh:example', generation: 'one' },
+      { pathClass: 'win32', environment: { osKind: 'Windows', shellName: 'bash', shellPath: 'C:\\Git\\bin\\bash.exe' } },
+    );
+    const bridge = runtimeShellPathBridge(remote);
+    expect(bridge.fromShellPath('/c/workspace/project/file.txt')).toBe('C:/workspace/project/file.txt');
+    expect(bridge.fromShellPath('/usr/bin')).toBe('/usr/bin');
+    const view = new RuntimeWorkspaceView(remote, { workDir: 'C:\\workspace\\project' });
+    expect(view.resolve('/c/workspace/project/file.txt')).toBe('C:\\workspace\\project\\file.txt');
+    expect(() => view.resolve('/c/outside/file.txt')).toThrow('outside runtime workspace');
   });
 
   it('deduplicates roots and preserves generation identity', () => {
