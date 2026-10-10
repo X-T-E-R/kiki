@@ -235,7 +235,7 @@ beforeEach(() => {
 describe('UsagePage (V2)', () => {
   it('opens history by default and offers History, the combined Live tab and Export', async () => {
     const { container, root } = await renderPage('/usage');
-    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'export']);
+    expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['history', 'realtime', 'quota', 'export']);
     expect(container.querySelector('[data-usage-panel="history"]')?.getAttribute('aria-current')).toBe('page');
     expect(mainCalls().length).toBeGreaterThan(0);
     expect(container.querySelector('[data-governance-active]')).toBeNull();
@@ -912,6 +912,13 @@ describe('UsagePage manual full rescan', () => {
     const { container, root } = await renderPage('/usage?panel=realtime');
     expect(container.querySelector('[data-usage-rescan]')).toBeNull();
     expect(getUsageRescan).not.toHaveBeenCalled();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('navigates to the provider quota panel and renders quota content', async () => {
+    const { container, root } = await renderPage('/usage?panel=quota');
+    expect(container.querySelector('[data-provider-quota-panel]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-nav-item="quota"]')?.getAttribute('aria-current')).toBe('page');
     await act(async () => { root.unmount(); });
   });
 });

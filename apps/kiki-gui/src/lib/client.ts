@@ -1192,25 +1192,66 @@ export class KikiClient {
    * Replaces the request limit rules (Usage → Limits). Add, edit, toggle, and
    * delete all send the full list: the config write replaces the section's
    * rule array wholesale and the change is live on the next request.
+   * Agent execution scope travels as `roles`. All agents omits `roles`.
    */
   setRequestGovernanceRules(
-    rules: readonly import('@kiki/protocol').RequestGovernanceSnapshot['rules'][number][],
+    rules: readonly (import('@kiki/protocol').RequestGovernanceSnapshot['rules'][number] & {
+      readonly resource?: 'model_request' | 'agent_execution' | 'live_agent';
+      readonly executors?: readonly string[];
+      readonly profiles?: readonly string[];
+      readonly roles?: readonly ('main' | 'subagent' | 'independent')[];
+    })[],
   ): Promise<KikiConfigResponse> {
     return this.patchConfig({
       request_governance: {
-        rules: rules.map((rule) => ({
-          id: rule.id,
-          scope: rule.scope,
-          ...(rule.models !== undefined ? { models: [...rule.models] } : {}),
-          ...(rule.providers !== undefined ? { providers: [...rule.providers] } : {}),
-          subagents_only: rule.subagentsOnly,
-          ...(rule.maxConcurrent !== undefined ? { max_concurrent: rule.maxConcurrent } : {}),
-          overflow: rule.overflow,
-          ...(rule.maxWaitMs !== undefined ? { max_wait_ms: rule.maxWaitMs } : {}),
-          enabled: rule.enabled,
-        })),
+        rules: rules.map((rule) => {
+          const anyRule = rule as Record<string, unknown>;
+          const rawResource = anyRule.resource;
+          const resource = rawResource === 'live_agent' ? 'agent_execution' : rawResource;
+          const roles = (rule.roles ?? []).filter((role): role is 'main' | 'subagent' | 'independent' =>
+            role === 'main' || role === 'subagent' || role === 'independent');
+          return {
+            id: rule.id,
+            ...(resource !== undefined ? { resource } : {}),
+            scope: rule.scope,
+            ...(rule.models !== undefined ? { models: [...rule.models] } : {}),
+            ...(rule.providers !== undefined ? { providers: [...rule.providers] } : {}),
+            ...(Array.isArray(anyRule.executors) ? { executors: [...anyRule.executors] } : {}),
+            ...(Array.isArray(anyRule.profiles) ? { profiles: [...anyRule.profiles] } : {}),
+            ...(roles.length > 0 ? { roles } : {}),
+            subagents_only: rule.subagentsOnly !== undefined ? rule.subagentsOnly : Boolean(anyRule.subagents_only),
+            ...(rule.maxConcurrent !== undefined
+              ? { max_concurrent: rule.maxConcurrent }
+              : anyRule.max_concurrent !== undefined
+                ? { max_concurrent: anyRule.max_concurrent }
+                : {}),
+            overflow: rule.overflow,
+            ...(rule.maxWaitMs !== undefined
+              ? { max_wait_ms: rule.maxWaitMs }
+              : anyRule.max_wait_ms !== undefined
+                ? { max_wait_ms: anyRule.max_wait_ms }
+                : {}),
+            enabled: rule.enabled,
+          };
+        }),
       },
     });
+  }
+
+  getAgentActivity(): Promise<import('@kiki/protocol').AgentActivitySnapshot> {
+    return this.run(() => this.rest.agentActivity());
+  }
+
+  getProviderQuotas(): Promise<import('@kiki/protocol').ProviderQuotaSnapshot> {
+    return this.run(() => this.rest.providerQuotas.snapshot());
+  }
+
+  refreshProviderQuota(sourceId: string): Promise<import('@kiki/protocol').ProviderQuotaSnapshot> {
+    return this.run(() => this.rest.providerQuotas.refresh(sourceId));
+  }
+
+  setProviderQuotaEnabled(sourceId: string, enabled: boolean): Promise<import('@kiki/protocol').ProviderQuotaSnapshot> {
+    return this.run(() => this.rest.providerQuotas.setEnabled(sourceId, enabled));
   }
 
   getUsageRescan(): Promise<import('@kiki/protocol').UsageRescanStatus> {

@@ -37,6 +37,7 @@ import { useI18n } from '../i18n';
 import { RequestGovernanceView } from './RequestGovernanceView';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
 import { UsageExportPanel } from './usage/export/UsageExportPanel';
+import { ProviderQuotaPanel } from './usage/ProviderQuotaPanel';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { ThreadTitle } from './ThreadTitle';
 import {
@@ -876,7 +877,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
-          {panel === 'export' ? <UsageExportPanel /> : panel !== 'history' ? <RequestGovernanceView view={new URLSearchParams(location.search).get('panel') === 'limits' ? 'limits' : 'realtime'} /> : <>
+          {panel === 'export' ? (
+            <UsageExportPanel />
+          ) : panel === 'quota' ? (
+            <ProviderQuotaPanel />
+          ) : panel !== 'history' ? (
+            <RequestGovernanceView view={new URLSearchParams(location.search).get('panel') === 'limits' ? 'limits' : 'realtime'} />
+          ) : <>
           <LiveStrip />
           <FilterBar filters={filters} workspaces={workspaces} onChange={applyFilters} />
           {usageQuery.isPending ? (

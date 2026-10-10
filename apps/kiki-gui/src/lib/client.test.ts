@@ -1709,3 +1709,38 @@ describe('memory timeline rows', () => {
     expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: '' });
   });
 });
+
+
+describe('typed quota consumer', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const snapshot = { schema_version: '1', generated_at: '2026-10-10T12:00:00Z', sources: [] };
+  const actions = [
+    { method: 'GET', suffix: '', body: undefined, invoke: (client: KikiClient) => client.getProviderQuotas() },
+    { method: 'POST', suffix: '/refresh', body: { source_id: 'account-1' }, invoke: (client: KikiClient) => client.refreshProviderQuota('account-1') },
+    { method: 'PUT', suffix: '/enabled', body: { source_id: 'account-1', enabled: false }, invoke: (client: KikiClient) => client.setProviderQuotaEnabled('account-1', false) },
+  ];
+  it.each(actions)('consumes the validated envelope for $method $suffix', async ({ method, suffix, body, invoke }) => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(new URL(url).pathname).toBe(`/api/usage/provider-quotas${suffix}`);
+      expect(init?.method ?? 'GET').toBe(method);
+      expect(init?.body === undefined ? undefined : JSON.parse(String(init.body))).toEqual(body);
+      return Response.json({ code: 0, msg: 'success', data: snapshot });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { await expect(invoke(client)).resolves.toEqual(snapshot); expect(fetchMock).toHaveBeenCalledOnce(); }
+    finally { await client.klient.close(); }
+  });
+  it.each(actions)('rejects a failed $method $suffix rather than reporting cached success', async ({ invoke }) => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 40001, msg: 'Quota unavailable', data: null })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { await expect(invoke(client)).rejects.toMatchObject({ message: 'Quota unavailable' }); }
+    finally { await client.klient.close(); }
+  });
+  it('rejects an obsolete fixture shape instead of inventing source data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { items: [], fetchedAt: '2026-10-10T12:00:00Z' } })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { await expect(client.getProviderQuotas()).rejects.toThrow(); }
+    finally { await client.klient.close(); }
+  });
+});
