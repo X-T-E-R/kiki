@@ -29,6 +29,8 @@ import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type {
   AgentRunHandle,
   AgentRunRequest,
@@ -312,8 +314,9 @@ export class AgentExecutionService implements IAgentExecutionService {
       ? this.profile.getSystemPrompt() : data.systemPrompt };
     assertResearchExecutor(binding.executionRestriction, executorId);
     const descriptor = this.executors.get?.(executorId);
+    const worktree = executorId === 'native' ? undefined : (await this.agent.accessor.get(ISessionMetadata).read()).worktree;
     const modeKey = descriptor?.permission?.via === 'argv'
-      ? `:host-gate:${externalPermissionHostGate({ agent: this.agent, binding, descriptor })}` : '';
+      ? `:host-gate:${externalPermissionHostGate({ agent: this.agent, binding, descriptor, worktree })}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
@@ -340,7 +343,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       if (executorId === 'native') {
         this.session = new NativeAgentExecutorSession(this.agent, this.loop, this.prompt);
       } else {
-        this.session = await this.createExternalSession(binding, executorId);
+        this.session = await this.createExternalSession(binding, executorId, worktree);
       }
       this.sessionBindingKey = bindingKey;
       return this.session;
@@ -353,6 +356,7 @@ export class AgentExecutionService implements IAgentExecutionService {
   private async createExternalSession(
     binding: ProfileBindingSnapshot,
     executorId: string,
+    worktree: SessionWorktree | undefined,
   ): Promise<AgentExecutorSession> {
     const resolved = await this.executors.resolveExecutable(executorId, binding.executorOptions);
     if (this.shuttingDown) {
@@ -384,6 +388,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       agent: this.agent,
       descriptor: resolved.descriptor,
       binding,
+      worktree,
     });
   }
 

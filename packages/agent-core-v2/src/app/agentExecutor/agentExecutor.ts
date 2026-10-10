@@ -218,6 +218,7 @@ export interface AgentExecutorContext {
   readonly agent: AgentExecutorAgentContext;
   readonly descriptor: AgentExecutorDescriptor;
   readonly binding: ProfileBindingSnapshot;
+  readonly worktree?: import('#/app/git/worktreeModel').SessionWorktree;
 }
 
 export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot): string {

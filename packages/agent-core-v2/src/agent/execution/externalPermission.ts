@@ -41,7 +41,7 @@ export function externalPermissionMode(context: AgentExecutorContext) {
 }
 
 export function externalPermissionHostGate(context: AgentExecutorContext): boolean {
-  return externalPermissionOverride(context) !== undefined ||
+  return context.worktree !== undefined || externalPermissionOverride(context) !== undefined ||
     context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0 ||
     context.binding.executionRestriction !== undefined || (context.binding.disallowedTools?.length ?? 0) > 0 ||
     (context.binding.toolAllowPolicies?.length ?? 0) > 0;
@@ -52,7 +52,7 @@ export function externalPermissionMeta(context: AgentExecutorContext, cwd: strin
   return { version: 1, override: externalPermissionOverride(context), hostGate: externalPermissionHostGate(context),
     policyIdentity: createHash('sha256').update(JSON.stringify({ rules,
       disallowedTools: context.binding.disallowedTools, toolAllowPolicies: context.binding.toolAllowPolicies,
-      restriction: context.binding.executionRestriction })).digest('hex'),
+      restriction: context.binding.executionRestriction, worktree: context.worktree })).digest('hex'),
     workspace: { cwd, additionalDirectories: additionalDirectories ?? [] },
     restriction: context.binding.executionRestriction };
 }
@@ -68,7 +68,7 @@ export function externalToolPermission(value: unknown): ExternalToolPermission |
     list_directory: 'Glob', find_by_name: 'Glob', grep_search: 'Grep' };
   const name = names[tool['name']] ?? tool['name'];
   return { name, input: { ...input, command: input['command'] ?? input['CommandLine'],
-    cwd: input['cwd'] ?? input['Cwd'], path: input['path'] ?? input['AbsolutePath'] ?? input['TargetFile'] ?? input['DirectoryPath'] } };
+    cwd: input['cwd'] ?? input['Cwd'], path: input['path'] ?? input['file_path'] ?? input['AbsolutePath'] ?? input['TargetFile'] ?? input['DirectoryPath'] } };
 }
 
 export async function authorizeExternalTool(
@@ -110,8 +110,8 @@ async function resolveExternalExecution(context: AgentExecutorContext, tool: Ext
   if (!['Read', 'ReadMediaFile', 'Write', 'Edit', 'Glob', 'Grep'].includes(name)) {
     return { approvalRule: name, display, execute: unreachable };
   }
-  const rawPath = input['path'];
-  if (typeof rawPath !== 'string' || rawPath.length === 0) return undefined;
+  const rawPaths = input['paths'] ?? [input['path']];
+  if (!Array.isArray(rawPaths) || rawPaths.length === 0 || rawPaths.some((path) => typeof path !== 'string' || path.length === 0)) return undefined;
   const runtime = context.agent.accessor.get(IAgentRuntimeService);
   const workspace = context.agent.accessor.get(ISessionWorkspaceContext);
   const lease = runtime.acquire(['fs']);
@@ -119,13 +119,16 @@ async function resolveExternalExecution(context: AgentExecutorContext, tool: Ext
     if (lease.runtime.fs === undefined) return undefined;
     const roots = lease.runtime.workspace.mapRoots({ workDir: workspace.workDir, additionalDirs: workspace.additionalDirs });
     const env = lease.runtime.environment;
-    const access = await resolveRealPathAccess(rawPath, { env, operation,
+    const paths = await Promise.all(rawPaths.map((path) => resolveRealPathAccess(path as string, { env, operation,
       workspace: { workspaceDir: roots.workDir, additionalDirs: roots.additionalDirs ?? [] },
-      shellPathBridge: runtimeShellPathBridge(lease.runtime) }, lease.runtime.fs);
-    const accesses: ToolAccesses = [{ kind: 'file', operation, path: access.path, implicitExternal: access.implicitExternal }];
-    return { accesses, approvalRule: `${name}(${access.path})`,
-      matchesRule: (rule) => matchesPathRuleSubject(rule, access.path,
-        { cwd: roots.workDir, pathClass: env.pathClass, homeDir: env.homeDir }), display, execute: unreachable };
+      shellPathBridge: runtimeShellPathBridge(lease.runtime) }, lease.runtime.fs!)));
+    const accesses: ToolAccesses = paths.map((access) => ({ kind: 'file', operation, path: access.path, implicitExternal: access.implicitExternal }));
+    return { accesses, approvalRule: `${name}(${paths.map((access) => access.path).join(', ')})`,
+      matchesRule: (rule, mode = 'all') => {
+        const matched = paths.map((access) => matchesPathRuleSubject(rule, access.path,
+          { cwd: roots.workDir, pathClass: env.pathClass, homeDir: env.homeDir }));
+        return mode === 'any' ? matched.some(Boolean) : matched.every(Boolean);
+      }, display, execute: unreachable };
   } finally {
     lease.dispose();
   }

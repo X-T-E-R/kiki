@@ -109,6 +109,8 @@ interface FakeHarnessOptions {
   readonly permissionMode?: 'manual' | 'auto' | 'yolo';
   readonly inheritPermission?: boolean;
   readonly vendorDefaultOption?: boolean;
+  readonly permissionToolCall?: Parameters<AcpPermissionHandler>[0]['toolCall'];
+  readonly permissionGate?: IAgentPermissionGate['authorize'];
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
   readonly profileDelivery?: AgentExecutorContext['descriptor']['profileDelivery'];
   readonly modelConfigId?: string;
@@ -269,6 +271,9 @@ function createHarness(options: FakeHarnessOptions = {}) {
   const runtimeLease = {
     runtime: {
       process: processService,
+      identity: { runtimeId: 'local' },
+      environment: { pathClass: 'win32', homeDir: 'C:/home/example', osKind: 'windows', shellName: 'powershell' },
+      fs: { realpath: async (path: string) => path },
       workspace: {
         mapRoots: (roots: { workDir: string; additionalDirs?: readonly string[] }) => roots,
       },
@@ -327,7 +332,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
     [IAgentPermissionRulesService, { rules: [] }],
-    [IAgentPermissionGate, { authorize: async (context: import('#/agent/toolExecutor/toolHooks').ResolvedToolExecutionHookContext) => {
+    [IAgentPermissionGate, { authorize: options.permissionGate ?? (async (context: import('#/agent/toolExecutor/toolHooks').ResolvedToolExecutionHookContext) => {
       if (permissionMode.mode !== 'manual') return undefined;
       const response = await approval.request({ agentId: options.agentId ?? 'external-agent', turnId: context.turnId,
         toolCallId: context.toolCall.id, toolName: context.toolCall.name, action: context.toolCall.name,
@@ -337,7 +342,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       return response.decision === 'approved' && selected?.kind.startsWith('allow_') ? undefined
         : { permissionDecision: response.decision === 'rejected' && selected?.kind.startsWith('reject_') ? 'rejected' : 'cancelled',
           veto: { isError: true, output: 'Not approved' } };
-    } }],
+    }) }],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
     [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
@@ -395,7 +400,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         const decision = await permissionHandler(
           {
             sessionId: 'remote-2',
-            toolCall: {
+            toolCall: options.permissionToolCall ?? {
               toolCallId: 'permission-tool',
               title: 'Apply patch',
               status: 'pending',
@@ -1836,6 +1841,29 @@ describe('ACP external executor', () => {
     )).rejects.toThrow();
     expect(harness.starts).toHaveLength(0);
   });
+
+  it.each([['read', 'Read', 'read'], ['edit', 'Write', 'write']] as const)(
+    'projects standard ACP %s kind and locations rather than its human title without private metadata', async (kind, name, operation) => {
+      const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async (context) => {
+        expect(context.toolCall.name).toBe(name);
+        expect(context.execution.accesses).toEqual([
+          { kind: 'file', operation, path: 'C:/workspace/blocked.ts', implicitExternal: false },
+        ]);
+        expect(context.execution.matchesRule?.('C:/workspace/blocked.ts', 'any')).toBe(true);
+        return { permissionDecision: 'rejected', veto: { isError: true, output: 'Explicit path deny' } };
+      });
+      const approval = vi.fn(async () => ({ decision: 'approved' as const, selectedOptionId: 'allow-once' }));
+      const harness = createHarness({ permissionMode: 'yolo', approval, permissionGate,
+        permissionToolCall: { toolCallId: 'standard-call', kind, title: `${name} C:/workspace/blocked.ts`,
+          status: 'pending', locations: [{ path: 'C:/workspace/blocked.ts' }] } });
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(permissionGate).toHaveBeenCalledTimes(1);
+      expect(approval).not.toHaveBeenCalled();
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'reject' }]);
+      await harness.session.shutdown();
+    },
+  );
 
   it.each(['manual', 'auto', 'yolo'] as const)('inherits vendor mode without an override despite ambient %s', async (permissionMode) => {
     const approval = vi.fn(async () => ({ decision: 'approved' as const, selectedOptionId: 'allow-once' }));

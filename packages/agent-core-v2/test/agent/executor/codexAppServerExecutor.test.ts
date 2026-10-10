@@ -6,6 +6,7 @@ import {
   CodexClientError,
   CodexRemoteError,
   type CodexServerRequestHandler,
+  type CodexNotification,
   type CodexTurnCompletion,
   type CodexTurnHandle,
   type NormalizedExecutorEvent,
@@ -25,6 +26,8 @@ import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
@@ -82,6 +85,8 @@ interface HarnessOptions {
     readonly params: Readonly<Record<string, unknown>>;
   };
   readonly turnEvents?: readonly NormalizedExecutorEvent[];
+  readonly notifications?: readonly CodexNotification[];
+  readonly permissionGate?: IAgentPermissionGate['authorize'];
   readonly questionAnswer?: string;
   readonly questionAnswers?: Readonly<Record<string, string>>;
   readonly deferTurnCompletion?: boolean;
@@ -180,6 +185,9 @@ function createHarness(options: HarnessOptions = {}) {
   const runtimeLease = {
     runtime: {
       process: { spawn: vi.fn() },
+      identity: { runtimeId: 'local' },
+      environment: { pathClass: 'win32', homeDir: 'C:/home/example', osKind: 'windows', shellName: 'powershell' },
+      fs: { realpath: async (path: string) => path },
       workspace: {
         mapRoots: (roots: { workDir: string; additionalDirs?: readonly string[] }) => roots,
       },
@@ -211,7 +219,9 @@ function createHarness(options: HarnessOptions = {}) {
   } as unknown as IModelCatalog;
   const services = new Map<unknown, unknown>([
     [IAgentStateService, states],
-    [IAgentPermissionModeService, options.permissionMode ?? { mode: 'manual' }],
+    [IAgentPermissionModeService, Object.assign(options.permissionMode ?? { mode: 'manual' }, { setMode: vi.fn() })],
+    [IAgentPermissionRulesService, { rules: [] }],
+    [IAgentPermissionGate, { authorize: options.permissionGate }],
     [IBootstrapService, { platform: 'linux' }],
     [ISessionContext, { sessionId: 'session-1' }],
     [IHarnessMcpService, { acquire: async () => ({ dispose: vi.fn(), server: {
@@ -261,6 +271,7 @@ function createHarness(options: HarnessOptions = {}) {
     });
   }
   let serverHandler: CodexServerRequestHandler | undefined;
+  let notificationHandler: ((notification: CodexNotification) => void) | undefined;
   let resolveTurnCompletion: ((result: CodexTurnCompletion) => void) | undefined;
   const turnCancel = vi.fn(async () => {
     resolveTurnCompletion?.({
@@ -305,6 +316,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     startTurn: async (params: Readonly<Record<string, unknown>>): Promise<CodexTurnHandle> => {
       prompts.push(params);
+      for (const notification of options.notifications ?? []) notificationHandler?.(notification);
       if (serverHandler !== undefined && options.approvalOptionId !== undefined) {
         await serverHandler(
           {
@@ -367,9 +379,10 @@ function createHarness(options: HarnessOptions = {}) {
   const spawns: (readonly string[])[] = [];
   const createSession = (executorContext: AgentExecutorContext) => new CodexAppServerExecutorSession(
     executorContext,
-    (processes, handler) => {
-      if (options.clientFactory !== undefined) return options.clientFactory(processes, handler);
+    (processes, handler, onNotification) => {
+      if (options.clientFactory !== undefined) return options.clientFactory(processes, handler, onNotification);
       serverHandler = handler;
+      notificationHandler = onNotification;
       let state: 'cold' | 'ready' = 'cold';
       return {
         ...client,
@@ -483,6 +496,55 @@ function createExecutionHarness(options: HarnessOptions = {}) {
 }
 
 describe('Codex app-server external executor', () => {
+  it('projects Codex fileChange facts to every actual Write path before approval without private metadata', async () => {
+    const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async (context) => {
+      expect(context.toolCall.name).toBe('Write');
+      expect(context.execution.accesses).toEqual([
+        { kind: 'file', operation: 'write', path: 'C:/workspace/allowed.ts', implicitExternal: false },
+        { kind: 'file', operation: 'write', path: 'C:/workspace/blocked.ts', implicitExternal: false },
+      ]);
+      expect(context.execution.matchesRule?.('C:/workspace/blocked.ts', 'any')).toBe(true);
+      expect(context.execution.matchesRule?.('C:/workspace/allowed.ts', 'all')).toBe(false);
+      return { permissionDecision: 'rejected', veto: { isError: true, output: 'Explicit Write deny' } };
+    });
+    const harness = createHarness({ permissionGate, notifications: [{ method: 'item/started', params: {
+      threadId: 'thread-new', turnId: 'turn-1', item: { id: 'file-1', type: 'fileChange', status: 'inProgress',
+        changes: [{ path: 'C:/workspace/allowed.ts', kind: 'add', diff: 'neutral' },
+          { path: 'C:/workspace/blocked.ts', kind: 'update', diff: 'neutral' }] },
+    } }], serverRequest: { method: 'item/fileChange/requestApproval', params: {
+      threadId: 'thread-new', turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
+    } } });
+    Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(permissionGate).toHaveBeenCalledTimes(1);
+    expect(harness.serverResults).toEqual([{ decision: 'decline' }]);
+    await harness.session.shutdown();
+  });
+
+  it.each(['missing facts', 'other item', 'other turn', 'other thread', 'request other thread'] as const)(
+    'does not guess Codex fileChange paths from grantRoot with %s', async (mismatch) => {
+      const permissionGate = vi.fn<IAgentPermissionGate['authorize']>(async () => undefined);
+      const harness = createHarness({ permissionGate, notifications: mismatch === 'missing facts' ? [] : [{ method: 'item/started', params: {
+        threadId: mismatch === 'other thread' ? 'thread-other' : 'thread-new',
+        turnId: mismatch === 'other turn' ? 'turn-other' : 'turn-1', item: {
+          id: mismatch === 'other item' ? 'file-other' : 'file-1', type: 'fileChange',
+          changes: [{ path: 'C:/workspace/allowed.ts', kind: 'add', diff: 'neutral' }],
+        },
+      } }], serverRequest: { method: 'item/fileChange/requestApproval', params: {
+        threadId: mismatch === 'request other thread' ? 'thread-other' : 'thread-new',
+        turnId: 'turn-1', itemId: 'file-1', grantRoot: 'C:/workspace',
+      } } });
+      Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(permissionGate).not.toHaveBeenCalled();
+      expect(harness.serverResults).toEqual([{ error: { code: -32602,
+        message: mismatch === 'request other thread' ? 'File approval belongs to a different thread'
+          : 'File approval has no matching fileChange paths for the active item and turn' } }]);
+      await harness.session.shutdown();
+    },
+  );
   it('delivers a text steer into the active remote turn and rejects stale acknowledgments', async () => {
     const harness = createHarness({ deferTurnCompletion: true });
     await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
@@ -1061,16 +1123,18 @@ describe('Codex app-server external executor', () => {
 describe('Codex Kiki MCP approval under YOLO', () => {
   const approvalFlags = (args: readonly string[]) => args.filter((arg) => arg.includes('default_tools_approval_mode'));
 
-  it('launches Codex with only the Kiki MCP server pre-approved in YOLO, keeping never and the workspace sandbox', async () => {
+  it.each([false, true])('pre-approves only the Kiki MCP server when YOLO is explicit=%s, never from ambient mode', async (explicit) => {
     const harness = createHarness({ kikiSubagents: true, permissionMode: { mode: 'yolo' } });
+    if (explicit) Object.assign(harness.context.binding, { permissionMode: 'yolo' });
     try {
       await (await harness.session.run({ kind: 'prompt', prompt: 'delegate' }, { signal: new AbortController().signal })).completion;
       expect(harness.spawns).toHaveLength(1);
-      expect(approvalFlags(harness.spawns[0]!)).toEqual(['mcp_servers.kiki-harness.default_tools_approval_mode="approve"']);
+      expect(approvalFlags(harness.spawns[0]!)).toEqual(explicit ? ['mcp_servers.kiki-harness.default_tools_approval_mode="approve"'] : []);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/mcp_servers\.(?!kiki-harness\.)[^.=]+\.default_tools_approval_mode/);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/approval_policy|sandbox_mode|danger-full-access|bypass/);
-      expect(harness.starts[0]).toMatchObject({ approvalPolicy: 'never', sandbox: 'workspace-write' });
-      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } });
+      expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: 'workspace-write' });
+      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: explicit ? 'on-request' : undefined,
+        sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } });
     } finally { await harness.session.shutdown(); }
   });
 
@@ -1081,7 +1145,7 @@ describe('Codex Kiki MCP approval under YOLO', () => {
         await (await harness.session.run({ kind: 'prompt', prompt: 'delegate' }, { signal: new AbortController().signal })).completion;
         expect(approvalFlags(harness.spawns[0]!)).toEqual([]);
         expect(harness.spawns[0]!.join(' ')).toContain('mcp_servers.kiki-harness.command="kiki"');
-        expect(harness.prompts[0]).toMatchObject({ approvalPolicy: 'on-request' });
+        expect(harness.prompts[0]).toMatchObject({ approvalPolicy: undefined });
       } finally { await harness.session.shutdown(); }
     }
   });
@@ -1102,12 +1166,15 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       await (await harness.session.run({ kind: 'prompt', prompt: 'two' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
       expect(harness.spawns).toHaveLength(1);
       mode.mode = 'yolo';
+      Object.assign(harness.context.binding, { permissionMode: 'yolo' });
       await (await harness.session.run({ kind: 'prompt', prompt: 'three' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
       expect(harness.client.shutdown).toHaveBeenCalledOnce();
       expect(harness.spawns).toHaveLength(2);
       expect(approvalFlags(harness.spawns[1]!)).toHaveLength(1);
-      expect(harness.resumes.at(-1)).toMatchObject({ threadId: 'thread-new', approvalPolicy: 'never' });
+      expect(harness.resumes.at(-1)).toMatchObject({ threadId: 'thread-new', approvalPolicy: undefined });
+      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'on-request' });
       mode.mode = 'auto';
+      Object.assign(harness.context.binding, { permissionMode: undefined });
       await (await harness.session.run({ kind: 'prompt', prompt: 'four' }, { signal: new AbortController().signal })).completion; await harness.session.settled();
       expect(harness.spawns).toHaveLength(3);
       expect(approvalFlags(harness.spawns[2]!)).toEqual([]);

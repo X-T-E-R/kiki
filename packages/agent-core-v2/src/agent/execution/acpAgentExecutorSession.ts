@@ -799,9 +799,12 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (request.sessionId !== this.#client.status().sessionId) return { outcome: 'cancelled' };
     const toolCallId = active.recorder.toolCallId(request.toolCall.toolCallId);
     const rawInput = objectOf(request.toolCall.rawInput);
+    const kinds: Readonly<Record<string, string>> = { read: 'Read', edit: 'Write', delete: 'Write',
+      search: 'Grep', execute: 'Bash' };
     const tool = externalToolPermission(request._meta?.['kiki.tool']) ?? externalToolPermission({
-      name: rawInput?.['name'] ?? request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
-      input: rawInput ?? {},
+      name: kinds[request.toolCall.kind ?? ''] ?? rawInput?.['name'] ?? request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
+      input: { ...rawInput, paths: rawInput?.['paths'] ?? (request.toolCall.locations?.length
+        ? request.toolCall.locations.map((location) => location.path) : undefined) },
     })!;
     try {
       const result = await authorizeExternalTool(this.context, tool, active.turn.id, toolCallId, context.signal,

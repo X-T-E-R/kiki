@@ -16,6 +16,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentExecutionService } from '#/agent/execution/executionService';
@@ -87,6 +88,7 @@ function executionService(
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(IAgentContextMemoryService, { get: () => [] });
   ix.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({ notes: {} }) });
+  ix.stub(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false }) });
   ix.stub(IAgentGoalService, { getGoal: () => ({ goal: null }) });
   ix.stub(IEventDispatcher, { dispatch: async () => {} });
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
@@ -164,6 +166,34 @@ describe('AgentExecutionService', () => {
       await service.dispose();
       ix.dispose();
     }
+  });
+
+  it('projects persisted worktree isolation into the external provider context without a mode override', async () => {
+    const ix = new TestInstantiationService();
+    const session: AgentExecutorSession = {
+      run: async () => ({ agentId: 'main', completion: Promise.resolve({ summary: 'done' }), turn: {
+        id: 1, signal: new AbortController().signal, ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false,
+      } }),
+      status: () => ({ state: 'idle' }), cancel: () => false,
+      shutdown: async () => {}, settled: async () => {}, hooks: createHooks(['onWillRun']),
+    };
+    const create = vi.fn((_context: AgentExecutorContext) => session);
+    const registry = { resolveExecutable: async () => ({
+      descriptor: { id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
+      options: {}, provider: { create },
+    }) } as unknown as IAgentExecutorRegistry;
+    const service = executionService(ix, scope('main'), profile({
+      executorId: 'example-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1',
+    }), registry, states());
+    const worktree = { worktreeId: 'wt_example', branch: 'example/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    ix.stub(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, worktree }) });
+    try {
+      await service.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      expect(create).toHaveBeenCalledOnce();
+      expect(create.mock.calls[0]?.[0].worktree).toEqual(worktree);
+      expect(create.mock.calls[0]?.[0].binding.permissionMode).toBeUndefined();
+    } finally { await service.dispose(); await ix.dispose(); }
   });
 
   it('accounts for direct prompts before launch and keeps each cancellation signal through settlement', async () => {

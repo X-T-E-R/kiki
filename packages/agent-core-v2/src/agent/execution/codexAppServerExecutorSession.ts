@@ -3,6 +3,7 @@ import {
   CodexAppServerClient,
   CodexClientError,
   CodexRemoteError,
+  type CodexNotification,
   type CodexModelListResult,
   type CodexServerRequest,
   type CodexServerRequestResponder,
@@ -29,7 +30,6 @@ import {
 } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -54,7 +54,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionHostGate, externalToolPermission } from './externalPermission';
+import { authorizeExternalTool, externalPermissionHostGate, externalPermissionMode, externalToolPermission } from './externalPermission';
 import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
@@ -99,6 +99,7 @@ interface PermissionContext {
   readonly turn: MutableExternalTurn;
   readonly recorder: ExternalTurnRecorder;
   readonly signal: AbortSignal;
+  readonly fileChanges: Map<string, { readonly turnId: string; readonly paths: readonly string[] }>;
 }
 
 const HANDOFF_BEGIN = '--- BEGIN KIKI PRIOR TRANSCRIPT HANDOFF ---';
@@ -136,7 +137,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         responder: CodexServerRequestResponder,
         signal: AbortSignal,
       ) => Promise<void>,
-    ) => CodexClientLike = (processService, onServerRequest) =>
+      onNotification: (notification: CodexNotification) => void,
+    ) => CodexClientLike = (processService, onServerRequest, onNotification) =>
       new CodexAppServerClient(
         processService,
         {
@@ -148,7 +150,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',
         },
-        { onServerRequest },
+        { onServerRequest, onNotification },
       ),
   ) {
     const runtime = context.agent.accessor.get(IAgentRuntimeService);
@@ -169,13 +171,14 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const processes = codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService)), () => this.#harnessMcp, () => this.#kikiToolsApproved);
     this.#createClient = () => clientFactory(processes,
-      (request, responder, signal) => this.#handleServerRequest(request, responder, signal));
+      (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
+      (notification) => this.#observeFileChange(notification));
     this.#client = this.#createClient();
   }
 
   async #alignKikiToolApproval(): Promise<void> {
     const wanted = this.#harnessMcp !== undefined &&
-      this.context.agent.accessor.get(IAgentPermissionModeService).mode === 'yolo';
+      externalPermissionMode(this.context) === 'yolo';
     if (wanted === this.#kikiToolsApproved) return;
     const state = this.#client.status().state;
     this.#kikiToolsApproved = wanted;
@@ -275,7 +278,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         return true;
       },
     };
-    this.#permissionContext = { turn, recorder, signal: controller.signal };
+    this.#permissionContext = { turn, recorder, signal: controller.signal, fileChanges: new Map() };
 
     let handle: CodexTurnHandle;
     try {
@@ -706,18 +709,45 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     await responder.respond({ decision });
   }
 
+  #observeFileChange(notification: CodexNotification): void {
+    const active = this.#permissionContext;
+    const params = notification.params;
+    if (active === undefined || active.signal.aborted || notification.method !== 'item/started' ||
+        !isObject(params) || params['threadId'] !== this.#threadId || typeof params['turnId'] !== 'string') return;
+    const item = params['item'];
+    if (!isObject(item) || item['type'] !== 'fileChange' || typeof item['id'] !== 'string') return;
+    const changes = item['changes'];
+    if (!Array.isArray(changes) || changes.length === 0 ||
+        changes.some((change) => !isObject(change) || typeof change['path'] !== 'string' || change['path'].length === 0)) {
+      active.fileChanges.delete(item['id']);
+      return;
+    }
+    active.fileChanges.set(item['id'], { turnId: params['turnId'], paths: changes.map((change) => change['path'] as string) });
+  }
+
   async #fileApproval(
     request: CodexServerRequest,
     responder: CodexServerRequestResponder,
     active: PermissionContext,
   ): Promise<void> {
+    if (request.params['threadId'] !== this.#threadId) {
+      await responder.respondError(-32602, 'File approval belongs to a different thread');
+      return;
+    }
     const decisions = ['accept', 'acceptForSession', 'decline', 'cancel'].map((decision) => ({
       id: decision,
       raw: decision,
       label: decisionLabel(decision),
       kind: decisionKind(decision),
     }));
-    const selected = await this.#approval(request, active, 'File change', decisions);
+    const change = active.fileChanges.get(requiredItemId(request));
+    const tool = change !== undefined && change.turnId === request.params['turnId'] ? { name: 'Write', input: { paths: change.paths } }
+      : externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']);
+    if (tool === undefined && externalPermissionHostGate(this.context)) {
+      await responder.respondError(-32602, 'File approval has no matching fileChange paths for the active item and turn');
+      return;
+    }
+    const selected = await this.#approval(request, active, 'File change', decisions, tool);
     await responder.respond({ decision: decisions.find((candidate) => candidate.id === selected)?.raw ?? 'cancel' });
   }
 
@@ -796,9 +826,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       readonly label: string;
       readonly kind: string;
     }[],
+    projectedTool?: { readonly name: string; readonly input: Readonly<Record<string, unknown>> },
   ): Promise<string | undefined> {
     const command = request.params['command'];
-    const tool = externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']) ??
+    const tool = projectedTool ?? externalToolPermission((request.params['_meta'] as Record<string, unknown> | undefined)?.['kiki.tool']) ??
       (typeof command === 'string' ? { name: 'Bash', input: { command, cwd: request.params['cwd'] } }
         : { name: action, input: request.params });
     try {
