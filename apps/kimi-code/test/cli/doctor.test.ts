@@ -127,7 +127,7 @@ describe('kimi doctor', () => {
       const credentialsPath = join(dir, relativePath);
       const configText = '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\n';
       const endpoint = 'wss://example.test/cdp?token=YOUR_API_KEY';
-      const credentialsText = `[browser_control.connections.example]\nendpoint_secret = "${endpoint}"\n`;
+      const credentialsText = `[browser_control.connections.example]\nendpointSecret = "${endpoint}"\n`;
       await mkdir(dirname(credentialsPath), { recursive: true });
       await writeFile(configPath, configText);
       await writeFile(credentialsPath, credentialsText);
@@ -151,7 +151,7 @@ describe('kimi doctor', () => {
       await writeFile(join(dir, 'config.toml'), '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\n');
       if (endpoint !== undefined) {
         await mkdir(join(dir, 'credentials'));
-        await writeFile(join(dir, 'credentials/credentials.toml'), `[browser_control.connections.example]\nendpoint_secret = "${endpoint}"\n`);
+        await writeFile(join(dir, 'credentials/credentials.toml'), `[browser_control.connections.example]\nendpointSecret = "${endpoint}"\n`);
       }
       const { deps, stdout, stderr } = makeDeps();
 
@@ -166,9 +166,9 @@ describe('kimi doctor', () => {
   );
 
   it('validates the credentials override rather than a valid inline CDP endpoint', async () => {
-    await writeFile(join(dir, 'config.toml'), '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\nendpoint_secret = "wss://example.test/cdp"\n');
+    await writeFile(join(dir, 'config.toml'), '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\nendpointSecret = "wss://example.test/cdp"\n');
     await mkdir(join(dir, 'credentials'));
-    await writeFile(join(dir, 'credentials/credentials.toml'), '[browser_control.connections.example]\nendpoint_secret = "file:///YOUR_API_KEY"\n');
+    await writeFile(join(dir, 'credentials/credentials.toml'), '[browser_control.connections.example]\nendpointSecret = "file:///YOUR_API_KEY"\n');
     const { deps, stderr } = makeDeps();
 
     expect(await handleDoctor(deps, { target: 'config' })).toBe(1);
