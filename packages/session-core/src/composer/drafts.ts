@@ -146,11 +146,48 @@ export interface ComposerSessionState {
   goalObjective: string | undefined;
   modelOverride: string | undefined;
   effortOverride: string | undefined;
+  modelChoice?: ComposerModelChoice;
+  effortChoice?: ComposerModelChoice;
+}
+
+/** The committed binding visible when the user last chose this control, not the chosen override value. */
+export interface ComposerModelChoice {
+  readonly model?: string;
+  readonly thinking?: string;
 }
 
 export interface PersistedComposerScalars {
   readonly modelOverride?: string;
   readonly effortOverride?: string;
+  readonly modelChoice?: ComposerModelChoice;
+  readonly effortChoice?: ComposerModelChoice;
+}
+
+/** Restore draft choices only for their original binding; unversioned chrome must not rebind an existing conversation. */
+export function resolveComposerModelOverrides(input: PersistedComposerScalars & {
+  readonly conversationStarted: boolean;
+  readonly pendingBinding: boolean;
+  readonly binding: ComposerModelChoice;
+}): PersistedComposerScalars {
+  const keep = (choice: ComposerModelChoice | undefined) => !input.conversationStarted || input.pendingBinding
+    || choice !== undefined && choice.model === input.binding.model && choice.thinking === input.binding.thinking;
+  const modelCurrent = keep(input.modelChoice);
+  const effortCurrent = keep(input.effortChoice);
+  return {
+    modelOverride: modelCurrent ? input.modelOverride : undefined,
+    effortOverride: effortCurrent ? input.effortOverride : undefined,
+    modelChoice: modelCurrent ? input.modelChoice : undefined,
+    effortChoice: effortCurrent ? input.effortChoice : undefined,
+  };
+}
+
+function readModelChoice(value: unknown): ComposerModelChoice | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const model = record['model'];
+  const thinking = record['thinking'];
+  if (model !== undefined && typeof model !== 'string' || thinking !== undefined && typeof thinking !== 'string') return undefined;
+  return { model, thinking };
 }
 
 export interface PersistedNewSessionDraft {
@@ -179,7 +216,9 @@ function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars
       const modelOverride = typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined;
       const effortOverride = typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined;
       if (modelOverride !== undefined || effortOverride !== undefined) {
-        Object.defineProperty(result, sessionId, { value: { modelOverride, effortOverride }, enumerable: true, configurable: true, writable: true });
+        const modelChoice = readModelChoice(record['modelChoice']);
+        const effortChoice = readModelChoice(record['effortChoice']);
+        Object.defineProperty(result, sessionId, { value: { modelOverride, effortOverride, modelChoice, effortChoice }, enumerable: true, configurable: true, writable: true });
       }
     }
     return result;
@@ -281,6 +320,8 @@ export function readComposerState(
   return {
     modelOverride: typeof stored.modelOverride === 'string' ? stored.modelOverride : undefined,
     effortOverride: typeof stored.effortOverride === 'string' ? stored.effortOverride : undefined,
+    modelChoice: stored.modelChoice,
+    effortChoice: stored.effortChoice,
   };
 }
 
@@ -289,6 +330,8 @@ export function writeComposerState(sessionId: string, state: ComposerSessionStat
   persistComposerScalars(sessionId, {
     modelOverride: state.modelOverride,
     effortOverride: state.effortOverride,
+    modelChoice: state.modelChoice,
+    effortChoice: state.effortChoice,
   });
 }
 
@@ -377,6 +420,8 @@ export function restorePromptToDraft(sessionId: string, content: readonly import
     goalObjective: previous.goalObjective,
     modelOverride: previous.modelOverride,
     effortOverride: previous.effortOverride,
+    modelChoice: previous.modelChoice,
+    effortChoice: previous.effortChoice,
   });
   for (const listener of appendListeners) listener(sessionId, restored);
 }

@@ -22,6 +22,7 @@ import {
   resetDraftMemoryForTests,
   resetInputHistoryForTests,
   restorePromptToDraft,
+  resolveComposerModelOverrides,
   subscribeDraftAppends,
   writeComposerState,
   writeDraft,
@@ -44,6 +45,36 @@ function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {
 
 beforeEach(() => {
   clearStoredDrafts();
+});
+
+describe('composer model selection ownership', () => {
+  const binding = { model: 'example/new-model', thinking: 'max' };
+  const resolve = (draft: Parameters<typeof resolveComposerModelOverrides>[0]) => resolveComposerModelOverrides(draft);
+  it('retires legacy restored display values once a conversation has a durable binding', () => {
+    expect(resolve({ modelOverride: 'example/old-model', effortOverride: 'high', conversationStarted: true, pendingBinding: false, binding }))
+      .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+  });
+  it('preserves new-session and pending profile or engine choices', () => {
+    for (const state of [{ conversationStarted: false, pendingBinding: false }, { conversationStarted: true, pendingBinding: true }]) {
+      expect(resolve({ modelOverride: 'example/old-model', effortOverride: 'high', ...state, binding }))
+        .toMatchObject({ modelOverride: 'example/old-model', effortOverride: 'high' });
+    }
+  });
+  it('keeps an explicit choice after the current binding, then retires it when that binding changes', () => {
+    const draft = { modelOverride: 'example/old-model', effortOverride: 'high', modelChoice: binding, effortChoice: binding,
+      conversationStarted: true, pendingBinding: false, binding };
+    expect(resolve(draft)).toMatchObject({ modelOverride: 'example/old-model', effortOverride: 'high' });
+    expect(resolve({ ...draft, binding: { ...binding, thinking: 'high' } })).toMatchObject({ modelOverride: undefined, effortOverride: undefined });
+  });
+  it('persists per-control choice provenance across restart without persisting attachments or run controls', () => {
+    writeComposerState('model-choice', emptyState({ modelOverride: 'example/old-model', modelChoice: binding, effortOverride: 'high' }));
+    resetComposerMemoryForTests();
+    const draft = readComposerState('model-choice');
+    expect(draft.modelChoice).toEqual(binding);
+    expect(draft.effortChoice).toBeUndefined();
+    expect(resolve({ ...draft, conversationStarted: true, pendingBinding: false, binding }))
+      .toMatchObject({ modelOverride: 'example/old-model', effortOverride: undefined });
+  });
 });
 
 describe('debounced composer drafts', () => {
@@ -199,7 +230,7 @@ describe('per-session composer state (memory-only)', () => {
       previous: { modelOverride: 'fixture/model', permissionMode: 'yolo', attachments: [{ data: 'base64' }] },
     }));
     expect(readComposerState('malformed')).toEqual({});
-    expect(readComposerState('previous')).toEqual({ modelOverride: 'fixture/model', effortOverride: undefined });
+    expect(readComposerState('previous')).toEqual({ modelOverride: 'fixture/model', effortOverride: undefined, modelChoice: undefined, effortChoice: undefined });
     writeComposerState('next', emptyState({ effortOverride: 'high' }));
     expect(JSON.parse(localStorage.getItem('kiki.composerStates') ?? '{}')).toEqual({
       previous: { modelOverride: 'fixture/model' }, next: { effortOverride: 'high' },
