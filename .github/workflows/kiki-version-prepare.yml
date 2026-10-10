@@ -11,6 +11,7 @@ on:
         options:
           - version
           - generate
+          - build
       base_sha:
         description: 'Exact prepared commit SHA; the version patch applies only to this commit'
         required: true
@@ -261,5 +262,121 @@ jobs:
         with:
           name: kiki-generated-${{ inputs.expected_version }}-${{ inputs.base_sha }}
           path: ${{ runner.temp }}/kiki-generated-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    if: ${{ inputs.stage == 'build' }}
+    name: Build exact Windows x64 candidate without publishing
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      BASE_SHA: ${{ inputs.base_sha }}
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      KIKI_BUILD_SHA: ${{ inputs.base_sha }}
+      KIKI_UPDATE_CHANNEL: stable
+      KIKI_DISTRIBUTION: local
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout exact generated source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.base_sha }}
+          persist-credentials: false
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check, build and stage the normal candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BASE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'Expected an exact source SHA' }
+          if ($env:EXPECTED_VERSION -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'Expected a stable version' }
+          if ((git rev-parse HEAD).Trim() -cne $env:BASE_SHA) { throw 'Checkout identity mismatch' }
+          if (git status --porcelain) { throw 'Candidate checkout is not clean' }
+          $output = Join-Path $env:RUNNER_TEMP 'kiki-windows-output'
+          $candidate = Join-Path $output 'candidate'
+          New-Item -ItemType Directory -Force $candidate | Out-Null
+          $env:KIKI_HOME = Join-Path $env:RUNNER_TEMP 'kiki-build-home'
+          $env:KIKI_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'kiki-build-cache'
+          $script:commands = @()
+          function Invoke-CandidateCommand([string]$Executable, [string[]]$CommandArgs) {
+            & $Executable @CommandArgs
+            $code = $LASTEXITCODE
+            $script:commands += @{ command = @($Executable) + $CommandArgs; exitCode = $code }
+            ConvertTo-Json -InputObject $script:commands -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'commands.json')
+            if ($code -ne 0) { throw "Command failed ($code): $Executable $($CommandArgs -join ' ')" }
+          }
+          Invoke-CandidateCommand 'pnpm' @('install', '--frozen-lockfile')
+          Invoke-CandidateCommand 'node' @('apps/kiki-gui/scripts/desktop-version.mjs', 'check')
+          if ((node apps/kiki-gui/scripts/desktop-version.mjs check).Trim() -cne $env:EXPECTED_VERSION) { throw 'Version identity mismatch' }
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'typecheck')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'run', 'typecheck')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'exec', 'vitest', 'run', 'test/htmlPreview.test.ts', '-t', 'remote HTML refusals through the real connection manager', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/runtime/runtimeWorkspaceView.test.ts', '--maxWorkers=1', '--no-file-parallelism')
+          $env:KIKI_BUILT_IN_CATALOG_FILE = Join-Path $env:RUNNER_TEMP 'kiki-built-in-catalog.json'
+          Invoke-CandidateCommand 'node' @('apps/kimi-code/scripts/update-catalog.mjs', '--out', $env:KIKI_BUILT_IN_CATALOG_FILE)
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'build:native:release')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'test:native:smoke')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'package:native')
+          $tauriConfig = '{"build":{"beforeBuildCommand":"pnpm desktop:prepare"}}'
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'desktop:build:artifacts', '--ci', '--target', 'x86_64-pc-windows-msvc', '--config', $tauriConfig)
+          if (git status --porcelain --untracked-files=no) { throw 'Build changed tracked source or lockfiles' }
+          Copy-Item 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/kiki-desktop.exe' (Join-Path $candidate 'kiki-desktop.exe')
+          Copy-Item 'apps/kimi-code/dist-native/bin/win32-x64/kiki.exe' (Join-Path $candidate 'kiki-server.exe')
+          Copy-Item 'apps/kiki-gui/src-tauri/binaries/kiki-server-x86_64-pc-windows-msvc.exe.manifest.json' (Join-Path $candidate 'kiki-server.exe.manifest.json')
+          Copy-Item 'apps/kiki-gui/dist' (Join-Path $candidate 'gui-dist') -Recurse
+          Copy-Item 'apps/kimi-code/dist-native/artifacts/auth-native' (Join-Path $candidate 'auth-native') -Recurse
+          Copy-Item $env:KIKI_BUILT_IN_CATALOG_FILE (Join-Path $candidate 'built-in-catalog.json')
+          "gitSha: $env:BASE_SHA" | Set-Content -Encoding utf8 (Join-Path $candidate 'build-info.txt')
+          $env:KIKI_CANDIDATE_OUTPUT = $candidate
+          @'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const root = process.env.KIKI_CANDIDATE_OUTPUT;
+          const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+          const sidecar = JSON.parse(fs.readFileSync(path.join(root, 'kiki-server.exe.manifest.json'), 'utf8'));
+          const server = fs.readFileSync(path.join(root, 'kiki-server.exe'));
+          if (sidecar.schemaVersion !== 2 || sidecar.buildId !== process.env.BASE_SHA || sidecar.serverVersion !== process.env.EXPECTED_VERSION || sidecar.sha256 !== hash(server) || sidecar.bytes !== server.length) throw new Error('Sidecar provenance mismatch');
+          const info = {
+            schemaVersion: 1, sourceSha: process.env.BASE_SHA,
+            sourceTree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim(),
+            version: process.env.EXPECTED_VERSION, target: 'x86_64-pc-windows-msvc',
+            channel: process.env.KIKI_UPDATE_CHANNEL, distribution: process.env.KIKI_DISTRIBUTION,
+            runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            commands: JSON.parse(fs.readFileSync(path.join(root, '..', 'commands.json'), 'utf8')),
+          };
+          fs.writeFileSync(path.join(root, 'build-info.json'), JSON.stringify(info, null, 2) + '\n');
+          const files = [];
+          function visit(directory) {
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              const name = path.join(directory, entry.name);
+              if (entry.isSymbolicLink()) throw new Error(`Unexpected candidate link: ${name}`);
+              if (entry.isDirectory()) visit(name);
+              else {
+                const bytes = fs.readFileSync(name);
+                files.push({ path: path.relative(root, name).split(path.sep).join('/'), bytes: bytes.length, sha256: hash(bytes) });
+              }
+            }
+          }
+          visit(root);
+          fs.writeFileSync(path.join(root, 'candidate-manifest.json'), JSON.stringify({ ...info, files }, null, 2) + '\n');
+          console.log(`Staged ${files.length} candidate files from ${info.sourceSha}`);
+          '@ | node --input-type=module -
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate provenance generation failed' }
+      - name: Upload candidate and command receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-windows-x64-candidate-${{ inputs.expected_version }}-${{ inputs.base_sha }}
+          path: ${{ runner.temp }}/kiki-windows-output/
           if-no-files-found: error
           retention-days: 7
