@@ -28,6 +28,7 @@ import {
   type TranscriptGradeSpec,
   type TranscriptOperation,
   type TranscriptRead,
+  type TranscriptTurn,
 } from '@kiki/transcript';
 import type { SessionViewTranscriptDetail } from '@kiki/klient/session-view';
 
@@ -1315,6 +1316,14 @@ export class SessionController {
     return source.kind === 'meta' ? older.meta : undefined;
   }
 
+  stepCanonicalIndex(agentId: string, turnId: string, stepId: string): number | undefined {
+    const turn = this.composeAgentSnapshot(agentId).items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+    const index = turn?.steps.findIndex((step) => step.stepId === stepId) ?? -1;
+    if (index < 0) return undefined;
+    const start = turn?.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps')?.offset ?? 0;
+    return start + index;
+  }
+
   contentMemoryReport(): { bodies: number; bodyBytes: number; rangeBytes: number; bodyBudget: number; rangeBudget: number } {
     return { bodies: this.contentBodies.size, bodyBytes: [...this.contentBodies.values()].reduce((sum, entry) => sum + entry.bytes, 0), rangeBytes: this.contentRangeBytes, bodyBudget: CONTENT_BODY_CACHE_BYTES, rangeBudget: CONTENT_RANGE_CACHE_BYTES };
   }
@@ -2163,8 +2172,8 @@ export class SessionController {
       if (isModelSwitchQueueId(id)) return;
       const existing = queuedPromptMeta[id];
       queuedPromptMeta[id] = {
+        ...existing,
         appendTiming: existing?.appendTiming ?? 'agent_idle',
-        revision: existing?.revision,
         queuePosition: index,
       };
     });

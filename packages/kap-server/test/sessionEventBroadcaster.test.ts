@@ -3243,6 +3243,42 @@ describe('SessionEventBroadcaster', () => {
       expect(backfillSpy.mock.calls.map((call) => call[1])).toEqual(['main']);
     });
 
+    it('opens an explicit child while the unrelated main history is still backfilling', async () => {
+      const lc = new FakeLifecycle();
+      lc.addAgent('main');
+      lc.addAgent('visible-child');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      const read = service.readColdSnapshot.bind(service);
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      let mainFinished = false;
+      const reads = vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+        if (args[1] === 'main') {
+          await blocked;
+          const snapshot = await read(...args);
+          mainFinished = true;
+          return snapshot;
+        }
+        return read(...args);
+      });
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const view = collectingTarget();
+      const pending = bc.subscribe('s1', view.target, undefined, { '*': 'off', main: 'off', 'visible-child': 'delta' });
+      try {
+        await vi.waitFor(() => expect(transcriptEnvelopes(view.envelopes).some((frame) =>
+          (frame.payload as { agent_id: string }).agent_id === 'visible-child')).toBe(true));
+        expect(mainFinished).toBe(false);
+        expect(reads.mock.calls.map((call) => call[1])).toEqual(['main', 'visible-child']);
+        expect(transcriptEnvelopes(view.envelopes).map((frame) => (frame.payload as { agent_id: string }).agent_id)).toEqual(['visible-child']);
+      } finally {
+        release();
+        await pending;
+        await service.whenReady('s1');
+      }
+    });
+
     it.each([false, true])('delivers explicit detail before a blocked sibling backfill and preserves cancellation=%s', async (cancel) => {
       const lc = new FakeLifecycle();
       lc.addAgent('main');

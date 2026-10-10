@@ -468,6 +468,7 @@ function promptFromSnapshot(
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,
+    queuePosition: snapshot.queueIndex,
     appendTiming: scheduling.appendTiming,
     revision: scheduling.revision,
   };

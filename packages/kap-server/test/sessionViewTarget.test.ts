@@ -259,6 +259,171 @@ describe('SessionViewTarget', () => {
     connection.dispose();
   });
 
+  it('delivers child activity before any transcript history has finished', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const broadcaster = {
+      subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
+      getBufferedSince: vi.fn(async () => ({ events: [], resyncRequired: false, currentSeq: 7, epoch: 'session-epoch' })),
+      flushTranscriptSeed: vi.fn(async (_sessionId: string, target: SessionViewTarget) => {
+        target.send({ ...durable(7), type: 'agent.status.updated', volatile: true,
+          payload: { type: 'agent.status.updated', agentId: 'child', phase: { kind: 'running', turnId: 1 } } });
+        await blocked;
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { main: 'delta' } },
+    } });
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'sessionCursorAdvanced', rosterAgentId: 'child',
+      }) })));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['sessionCursorAdvanced']);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      connection.dispose();
+      release();
+    }
+  });
+
+  it('delivers a short live main baseline while sibling history is pending and stops delivery on detach', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const snapshot: AgentTranscriptSnapshot = {
+      ...new AgentTranscript('main').snapshot(), toolCallCountKnown: true,
+      items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'Short conversation', steps: [] }],
+    };
+    const broadcaster = {
+      subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
+      getBufferedSince: vi.fn(async () => ({ events: [], resyncRequired: false, currentSeq: 7, epoch: 'session-epoch' })),
+      flushTranscriptSeed: vi.fn(async (_sessionId: string, target: SessionViewTarget) => {
+        target.send({ ...durable(7), type: 'transcript.reset', payload: {
+          type: 'transcript.reset', session_id: 's1', agent_id: 'main', snapshot, grade: 'delta',
+          cursor: { seq: 0, epoch: 'main-epoch' }, coverage: { kind: 'full', hasMoreOlder: false },
+        } });
+        await target.drain?.();
+        await blocked;
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
+    connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { main: 'delta', sibling: 'turn' } },
+    } });
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'transcript', event: expect.objectContaining({ agent_id: 'main', snapshot }),
+      }) })));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
+      connection.receive({ type: 'view_detach', id: 'v1' });
+    } finally {
+      release();
+      connection.dispose();
+    }
+    await vi.waitFor(() => expect(broadcaster.unsubscribe).toHaveBeenCalled());
+    expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it('opens a newly focused live child without waiting for the superseded seed and drops its late signals', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let firstTarget: SessionViewTarget | undefined;
+    const broadcaster = {
+      subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
+      getBufferedSince: vi.fn(async () => ({ events: [], resyncRequired: false, currentSeq: 7, epoch: 'session-epoch' })),
+      flushTranscriptSeed: vi.fn(async (_sessionId: string, target: SessionViewTarget) => {
+        if (firstTarget === undefined) {
+          firstTarget = target;
+          await blocked;
+          target.send(durable(99));
+          await target.drain();
+          return;
+        }
+        target.send({ ...durable(7), type: 'transcript.reset', payload: {
+          type: 'transcript.reset', session_id: 's1', agent_id: 'visible-child',
+          snapshot: new AgentTranscript('visible-child').snapshot(), grade: 'delta',
+          cursor: { seq: 0, epoch: 'child-epoch' }, coverage: { kind: 'full', hasMoreOlder: false },
+        } });
+        await target.drain();
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
+    const attach = (agentId: string) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { [agentId]: 'delta' } },
+    } });
+    try {
+      attach('old-child');
+      await vi.waitFor(() => expect(firstTarget).toBeDefined());
+      attach('visible-child');
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) })));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript', 'ready']);
+      expect(broadcaster.unsubscribe).toHaveBeenCalledWith('s1', firstTarget);
+      release();
+      await vi.waitFor(() => expect(broadcaster.unsubscribe).toHaveBeenCalledTimes(2));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript', 'ready']);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      release();
+      connection.dispose();
+    }
+  });
+
+  it('streams child activity transitions after the first drain even at the same durable cursor', async () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    const activity = (kind: string) => ({ ...durable(12), type: 'agent.status.updated', volatile: true,
+      payload: { type: 'agent.status.updated', agentId: 'child', phase: { kind, turnId: 1 } } });
+    target.begin(1);
+    target.send(activity('running'));
+    await target.drain();
+    target.send(activity('idle'));
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toBe(true);
+    target.send(activity('idle'));
+    expect(signals).toHaveLength(2);
+    target.finish({ seq: 12, epoch: 'session-epoch' }, false);
+    expect(signals.at(-1)?.type).toBe('ready');
+  });
+
+  it('deduplicates across partial drains and resets recovery state for a new attachment', async () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(1);
+    target.replay(durable(11));
+    target.send(durable(11));
+    await target.drain();
+    expect(signals.map((signal) => signal.type)).toEqual(['sessionCursorAdvanced']);
+    target.send(durable(11));
+    target.send(durable(12));
+    target.finish({ seq: 11, epoch: 'session-epoch' }, true);
+    expect(signals).toEqual([
+      { type: 'sessionCursorAdvanced', cursor: { seq: 11, epoch: 'session-epoch' }, generation: 1 },
+      { type: 'sessionCursorAdvanced', cursor: { seq: 12, epoch: 'session-epoch' }, generation: 1 },
+      { type: 'ready', currentSessionCursor: { seq: 12, epoch: 'session-epoch' }, reconnected: true, generation: 1 },
+    ]);
+    signals.length = 0;
+    target.begin(2);
+    target.send(durable(11));
+    target.sendControl({ type: 'resync_required', payload: { reason: 'epoch_changed', current_seq: 0, epoch: 'new-epoch' } });
+    await target.drain();
+    target.finish({ seq: 0, epoch: 'new-epoch' }, true);
+    expect(signals.map((signal) => signal.type)).toEqual(['resyncRequired']);
+    target.begin(3);
+    target.send(durable(11));
+    await target.drain();
+    expect(signals.at(-1)).toMatchObject({ type: 'sessionCursorAdvanced', generation: 3 });
+  });
+
   it('publishes payload-free segmented cold attach timings only to diagnostic subscribers', async () => {
     const timing = channel('kiki.session-view.timing');
     const records: Array<Record<string, unknown>> = [];

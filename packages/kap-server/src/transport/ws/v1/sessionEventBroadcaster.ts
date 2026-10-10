@@ -533,9 +533,11 @@ export class SessionEventBroadcaster {
     let firstDetail = false;
     try {
       if (service === undefined || !this.isTranscriptGeneration(state, target, seed.generation)) return;
-      const readyAt = performance.now();
-      await service.whenReady(state.sessionId);
-      recordSessionViewTiming('main_ready', readyAt, fields);
+      if (gradeFor(seed.spec, MAIN_AGENT_ID) !== 'off') {
+        const readyAt = performance.now();
+        await service.whenReady(state.sessionId);
+        recordSessionViewTiming('main_ready', readyAt, fields);
+      }
       if (
         !this.isTranscriptGeneration(state, target, seed.generation) ||
         service.forSessionLive(state.sessionId) !== seed.store
@@ -562,13 +564,13 @@ export class SessionEventBroadcaster {
       const delivered = new Map<string, TranscriptCursor>();
       await target.drain?.();
       for (;;) {
-        const descriptors = [...seed.store.agents()].toSorted((left, right) =>
-          Number(priority.has(right.agentId)) - Number(priority.has(left.agentId)));
-        for (const descriptor of descriptors) {
+        const agents = [...new Set([...seed.store.agents().map((descriptor) => descriptor.agentId),
+          ...Object.keys(seed.spec).filter((agentId) => agentId !== '*')])]
+          .toSorted((left, right) => Number(priority.has(right)) - Number(priority.has(left)));
+        for (const agentId of agents) {
           if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
           const currentSpec = state.targets.get(target)?.transcriptGrades;
           if (currentSpec === undefined) return;
-          const agentId = descriptor.agentId;
           const grade = gradeFor(currentSpec, agentId);
           if (grade === 'off') continue;
           const transcript = priorityProjections.get(agentId) ?? await ensureHistory(agentId);

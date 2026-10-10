@@ -574,7 +574,7 @@ export class TranscriptService {
     };
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
-    await entry.ready;
+    if (agentId === MAIN_AGENT_ID) await entry.ready;
     await entry.pendingDisposals.get(agentId);
     this.assertReadableAgent(sessionId, agentId);
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);

@@ -16,7 +16,7 @@ import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@kiki/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
-import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
+import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade } from '@kiki/klient/session-view';
@@ -2432,6 +2432,67 @@ describe('SessionController transcript authority', () => {
     expect(client.movePrompt).toHaveBeenCalledWith('session_test', 'p3', { target_index: 0 });
     expect(controller.getState().queuedPromptIds).toEqual(['p3', 'p1', 'p2']);
     controller.close();
+  });
+
+  it('changes only queue positions on reorder, preserving explicit controls and scheduled origins', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ prompts: [
+      { promptId: 'plain', userMessageId: 'plain', status: 'queued', createdAt: '2026-01-01T00:00:00.000Z', queuePosition: 0,
+        content: [{ type: 'text', text: 'Plain message' }] },
+      { promptId: 'bound', userMessageId: 'bound', status: 'queued', createdAt: '2026-01-01T00:00:01.000Z', queuePosition: 1,
+        content: [{ type: 'text', text: 'Selected model' }], runtimeControls: { model: 'example/model', thinking: 'high', modelSwitchMode: 'fresh' } },
+      { promptId: 'scheduled', userMessageId: 'scheduled', status: 'queued', createdAt: '2026-01-01T00:00:02.000Z', queuePosition: 2,
+        originKind: 'cron_job', originDeliveryMode: 'queue', revision: 3,
+        content: [{ type: 'text', text: 'Scheduled message' }] },
+    ] }), 1));
+    flushAll();
+    const before = new Map(queuedPromptPreviews(controller.getState()).map((row) => [row.promptId, row]));
+    client.movePrompt.mockResolvedValueOnce({ moved: true, prompt_id: 'scheduled', target_index: 0, queued_prompt_ids: ['scheduled', 'plain', 'bound'] });
+    await controller.moveQueued('scheduled', 0);
+    const rows = queuedPromptPreviews(controller.getState());
+    expect(rows.map((row) => row.promptId)).toEqual(['scheduled', 'plain', 'bound']);
+    for (const [index, row] of rows.entries()) expect(row).toEqual({ ...before.get(row.promptId), queuePosition: index });
+    expect(rows.find((row) => row.promptId === 'plain')?.runtimeControls).toBeUndefined();
+    expect(client.movePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'scheduled', { target_index: 0 });
+    expect(client.submitPrompt).not.toHaveBeenCalled();
+    expect(client.replacePrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('recovers a nonempty queue after disconnect, remount and a fresh controller without sending again', async () => {
+    const baseline = emptySnapshot({ prompts: [
+      { promptId: 'pending-one', userMessageId: 'message-one', status: 'queued', queuePosition: 1,
+        content: [{ type: 'text', text: 'First saved message' }], createdAt: '2026-01-01T00:00:00.000Z' },
+      { promptId: 'pending-two', userMessageId: 'message-two', status: 'queued', queuePosition: 0,
+        content: [{ type: 'text', text: 'Second saved message' }], createdAt: '2026-01-01T00:00:01.000Z',
+        runtimeControls: { model: 'example/model', thinking: 'high', modelSwitchMode: 'direct' } },
+    ] });
+    const first = await openTranscriptController();
+    const deliver = (controller: SessionController, generation: number) => controller.handleSignal({ type: 'transcript', generation, event: resetEvent('main', baseline, 1) });
+    deliver(first.controller, 1);
+    first.flushAll();
+    const expected = queuedPromptPreviews(first.controller.getState());
+    expect(expected.map((row) => row.promptId)).toEqual(['pending-two', 'pending-one']);
+    first.controller.handleSignal({ type: 'status', status: 'closed', generation: 1 });
+    first.controller.suspend();
+    await first.controller.resume();
+    deliver(first.controller, 2);
+    first.controller.handleSignal({ type: 'ready', generation: 2, currentSessionCursor: { seq: 10, epoch: 'epoch-1' }, reconnected: true });
+    first.flushAll();
+    expect(queuedPromptPreviews(first.controller.getState())).toEqual(expected);
+    first.controller.close();
+    const fresh = await openTranscriptController();
+    expect(fresh.controller.getState().transcriptReady).toBe(false);
+    deliver(fresh.controller, 1);
+    fresh.flushAll();
+    expect(queuedPromptPreviews(fresh.controller.getState())).toEqual(expected);
+    expect(fresh.controller.getState().transcriptReady).toBe(true);
+    for (const client of [first.client, fresh.client]) {
+      expect(client.submitPrompt).not.toHaveBeenCalled();
+      expect(client.movePrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    }
+    fresh.controller.close();
   });
 
   it('holds and releases a queued prompt for editing over the wire', async () => {

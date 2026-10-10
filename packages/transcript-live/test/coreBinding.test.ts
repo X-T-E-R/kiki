@@ -1834,6 +1834,32 @@ describe('bindSessionTranscript', () => {
     binding.dispose();
   });
 
+  it('preserves queue order and prompt-bound intent through move and fresh attachment seeds', async () => {
+    const agents = new FakeAgents();
+    const prompts = { pending: [
+      { id: 'plain', userMessageId: 'plain', state: 'pending', queueIndex: 0,
+        createdAt: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'Plain message' }] } },
+      { id: 'bound', userMessageId: 'bound', state: 'pending', queueIndex: 1,
+        execution: { model: 'example/model', thinking: 'high', modelSwitchMode: 'fresh' },
+        createdAt: '2026-01-01T00:00:01.000Z', message: { role: 'user', content: [{ type: 'text', text: 'Selected model' }] } },
+    ] };
+    const main = agents.add('main', { prompts });
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    binding.seedPrompts('main');
+    const before = new Map(store.getAgent('main')!.snapshot().prompts.map((prompt) => [prompt.promptId, prompt]));
+    prompts.pending = [{ ...prompts.pending[1]!, queueIndex: 0 }, { ...prompts.pending[0]!, queueIndex: 1 }];
+    main.bus.emit(ev({ type: 'prompt.moved', promptId: 'bound', queuedPromptIds: ['bound', 'plain'], movedAt: '2026-01-01T00:00:02.000Z' }));
+    expect(store.getAgent('main')!.getPrompt('plain')?.runtimeControls).toBeUndefined();
+    expect(store.getAgent('main')!.getPrompt('bound')?.runtimeControls).toEqual(before.get('bound')?.runtimeControls);
+    binding.seedPrompts('main');
+    const state = projectAgentTranscriptView(createViewState('s1'), 'main', store.getAgent('main')!.snapshot());
+    expect(state.queuedPromptIds).toEqual(['bound', 'plain']);
+    expect(store.getAgent('main')!.snapshot().prompts).toHaveLength(2);
+    expect(store.getAgent('main')!.getItems()).toEqual([]);
+    await binding.dispose();
+  });
+
   it('projects live prompt queue timing through the live adapter', () => {
     const agents = new FakeAgents();
     const main = agents.add('main');
