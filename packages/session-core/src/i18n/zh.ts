@@ -9854,6 +9854,5 @@ export const zh = {
   'sv.submissionRecovery.body': '内容已保留，不会自动重发。先核对时间线和队列；如果消息已经送达，请忽略此备份。恢复到输入框后仍需手动发送。',
   'sv.submissionRecovery.restore': '恢复到输入框',
   'sv.submissionRecovery.dismiss': '忽略此备份',
-  'sv.submissionRecovery.degraded': '本地备份不可用，消息仍会提交。送达确认前内容保留在输入框；此时刷新或关闭可能丢失未确认内容。',
   'val.readingTimeoutSeconds': '请输入 0–2147483 秒的整数。',
 };

@@ -9918,6 +9918,5 @@ export const en = {
   'sv.submissionRecovery.body': 'Their content is saved and will not be resent automatically. Check the timeline and queue first; dismiss the backup if it already arrived. Restoring it to the composer does not send it.',
   'sv.submissionRecovery.restore': 'Restore to composer',
   'sv.submissionRecovery.dismiss': 'Dismiss backup',
-  'sv.submissionRecovery.degraded': 'Local backup is unavailable; the message will still be submitted. Its content stays in the composer until delivery is confirmed. Reloading or closing now may lose unconfirmed content.',
   'val.readingTimeoutSeconds': 'Enter a whole number from 0 to 2147483 seconds.',
 } as const;
