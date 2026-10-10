@@ -1967,6 +1967,41 @@ export function aiTabLabelKey(tab: AiSettingsTab): I18nKey {
 }
 
 /**
+ * The "Connection" entry is one navigation leaf with two stable tabs: the
+ * live server session stays on "current", while ways for others to reach
+ * this Kiki (external clients, tunnels) live on "external". Tab ids double
+ * as the `?tab=` deep-link parameter.
+ */
+export const CONNECTION_SETTINGS_TABS = ['current', 'external'] as const;
+export type ConnectionSettingsTab = (typeof CONNECTION_SETTINGS_TABS)[number];
+
+/** Bare `/settings/connection` opens the live server connection. */
+export const CONNECTION_SETTINGS_DEFAULT_TAB: ConnectionSettingsTab = 'current';
+
+/** Card → sub-page for the connection leaf, mirroring the page's tab mount table. */
+const CONNECTION_TAB_BY_CARD: Readonly<Record<string, ConnectionSettingsTab>> = {
+  'st-card-conn-server': 'current',
+  'st-card-conn-timeout': 'current',
+  'st-card-conn-owned': 'current',
+  'st-card-conn-disconnect': 'current',
+  'st-card-conn-log': 'current',
+  'st-card-conn-external': 'external',
+};
+
+export function connectionTabForCard(cardId: string): ConnectionSettingsTab | undefined {
+  return CONNECTION_TAB_BY_CARD[cardId];
+}
+
+/** Parse the `?tab=` query; unknown values fall through to the default tab. */
+export function normalizeConnectionTab(value: string | null | undefined): ConnectionSettingsTab | undefined {
+  return CONNECTION_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+export function connectionTabLabelKey(tab: ConnectionSettingsTab): I18nKey {
+  return `st.conn.tab.${tab}` as I18nKey;
+}
+
+/**
  * Sub-pages of the "Search & retrieval" leaf. The ids double as its `?tab=`
  * deep-link parameter and are the tabs the page itself mounts; the page maps a
  * `#st-card-search-*` anchor to its tab, so a search hit and a card hash stay
@@ -1975,8 +2010,8 @@ export function aiTabLabelKey(tab: AiSettingsTab): I18nKey {
 export const SEARCH_SETTINGS_TABS = ['overview', 'search', 'fetch', 'providers', 'advanced'] as const;
 export type SearchSettingsTab = (typeof SEARCH_SETTINGS_TABS)[number];
 
-/** Tab id inside a tabbed settings section; `ai` and `search` own tabs today. */
-export type SettingsTab = AiSettingsTab | SearchSettingsTab;
+/** Tab id inside a tabbed settings section; `ai`, `connection`, and `search` own tabs today. */
+export type SettingsTab = AiSettingsTab | ConnectionSettingsTab | SearchSettingsTab;
 
 /** Card → sub-page for the search leaf, mirroring the page's tab mount table. */
 const SEARCH_TAB_BY_CARD: Readonly<Record<string, SearchSettingsTab>> = {
@@ -1998,9 +2033,9 @@ export function searchTabForCard(cardId: string): SearchSettingsTab | undefined 
 /** Label key of a tab inside a tabbed section; the section picks the family
  *  (`providers` exists as both an ai and a search tab). */
 export function settingsTabLabelKey(section: string, tab: SettingsTab): I18nKey {
-  return section === 'ai'
-    ? aiTabLabelKey(tab as AiSettingsTab)
-    : (`st.nbSearch.tab.${tab}` as I18nKey);
+  if (section === 'ai') return aiTabLabelKey(tab as AiSettingsTab);
+  if (section === 'connection') return connectionTabLabelKey(tab as ConnectionSettingsTab);
+  return `st.nbSearch.tab.${tab}` as I18nKey;
 }
 
 // ---- settings search index ----
@@ -2009,7 +2044,7 @@ export interface SettingsSearchSpecEntry {
   readonly section: string;
   /** DOM id the SectionCard renders so a result can scroll + flash it. */
   readonly cardId: string;
-  /** Tab inside a tabbed section (`ai`, `search`); hits switch to it first so
+  /** Tab inside a tabbed section (`ai`, `connection`, `search`); hits switch to it first so
    *  the card is mounted when the scroll + flash runs. */
   readonly tab?: SettingsTab;
   readonly titleKey: I18nKey;
@@ -2279,11 +2314,12 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'defaults', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint', 'st.thinking.keep'], synonyms: ['thinking keep', '保留思考'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-auto-compact', titleKey: 'st.compact.globalTitle', keywordKeys: ['st.compact.globalLabel', 'st.compact.reserveLabel'], synonyms: ['auto compact', 'autocompact', 'compaction', '自动压缩', '压缩点', 'context window', '上下文窗口'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-loop-limits', titleKey: 'st.loopLimits.title', keywordKeys: ['st.loopLimits.maxSteps', 'st.loopLimits.maxAttempts', 'st.loopLimits.subagentStrategy'], synonyms: ['max steps', 'max_steps_per_turn', 'max_attempts_per_step', 'subagent_context_strategy', 'loop control', '步数上限', '尝试次数'] },
-  { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
-  { section: 'connection', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
-  { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
-  { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
-  { section: 'connection', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-timeout', titleKey: 'st.conn.timeoutTitle', keywordKeys: ['st.conn.timeoutLabel', 'st.conn.timeoutHint'], synonyms: ['request timeout', '请求超时'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
+  { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
+  { section: 'connection', tab: 'external', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接', 'external client', '外部客户端'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
@@ -2495,7 +2531,7 @@ export function resolveSettingsRoute(
   const cardSection = cardId === undefined
     ? undefined
     : (legacyCard?.section ?? settingsSectionForCard(cardId));
-  const cardTab = cardId === undefined ? undefined : (aiTabForCard(cardId) ?? searchTabForCard(cardId));
+  const cardTab = cardId === undefined ? undefined : (aiTabForCard(cardId) ?? searchTabForCard(cardId) ?? connectionTabForCard(cardId));
   if (sectionParam === undefined || sectionParam === '') {
     return { status: 'ok', section: cardSection ?? 'general', cardId, ...(cardTab === undefined ? {} : { tab: cardTab }) };
   }

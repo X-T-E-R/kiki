@@ -12,6 +12,8 @@ import {
   appendExtraSkillDirs,
   AI_SETTINGS_TABS,
   aiTabForCard,
+  CONNECTION_SETTINGS_TABS,
+  connectionTabForCard,
   buildSettingsSearchIndex,
   clearRestartRequirement,
   configureSpacePortableSettings,
@@ -1186,6 +1188,22 @@ describe('settings search index', () => {
     }
     expect(searchTabForCard('st-card-search-index')).toBe('advanced');
     expect(searchTabForCard('st-card-search-unknown')).toBeUndefined();
+  });
+
+  it('assigns every connection-entry card to the tab that mounts it', () => {
+    const connectionEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'connection');
+    expect(connectionEntries.length).toBeGreaterThan(0);
+    // Same rule as the ai/search tabs: a hit without its tab lands on the
+    // default sub-page and flashes a card the page keeps hidden.
+    for (const entry of connectionEntries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(connectionTabForCard(entry.cardId));
+    }
+    for (const tab of CONNECTION_SETTINGS_TABS) {
+      expect(connectionEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+    expect(connectionTabForCard('st-card-conn-external')).toBe('external');
+    expect(connectionTabForCard('st-card-conn-unknown')).toBeUndefined();
   });
 
   it('resolves every indexed target back to its own section and card anchor', () => {

@@ -3069,6 +3069,12 @@ export const en = {
   'st.conn.disconnectConfirmTitle': 'Disconnect from this server?',
   'st.conn.disconnectConfirmBody':
     'Kiki forgets the saved URL and token and goes back to the connect screen. Running turns keep going on the server.',
+  'st.conn.tab.current': 'Current connection',
+  'st.conn.tab.external': 'External connections',
+  'st.conn.ext.title': 'Cloudflare tunnel',
+  'st.conn.ext.intro':
+    'Expose this Kiki to external clients through a Cloudflare tunnel managed by the kiki-cloudflare plugin.',
+  'st.conn.ext.notInstalled': 'The kiki-cloudflare plugin is not installed on this server, so tunnel management is unavailable.',
   'st.auth.title': 'Authentication',
   'st.auth.statusReady': 'Auth service ready',
   'st.auth.statusNotReady': 'Auth service not ready',

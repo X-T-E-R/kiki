@@ -3040,6 +3040,11 @@ export const zh = {
   'st.conn.disconnectConfirmTitle': '断开与这台服务器的连接？',
   'st.conn.disconnectConfirmBody':
     'Kiki 会清除保存的地址与令牌并回到连接页。服务器上正在进行的轮次不会中断。',
+  'st.conn.tab.current': '当前连接',
+  'st.conn.tab.external': '外部连接',
+  'st.conn.ext.title': 'Cloudflare 隧道',
+  'st.conn.ext.intro': '通过 kiki-cloudflare 插件管理的 Cloudflare 隧道，让外部客户端访问这台 Kiki。',
+  'st.conn.ext.notInstalled': '这台服务器未安装 kiki-cloudflare 插件，无法管理隧道。',
   'st.auth.title': '认证',
   'st.auth.statusReady': '认证服务已就绪',
   'st.auth.statusNotReady': '认证服务未就绪',
