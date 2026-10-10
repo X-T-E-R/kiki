@@ -849,6 +849,16 @@ describe('NbSearchService', () => {
     disposables.dispose();
   });
 
+  it('lists quota source metadata without creating a runtime and never refreshes an off instance', async () => {
+    ix.get(IConfigService).get = ((domain: string) => domain === NB_SEARCH_SECTION ? { provider_instances: { 'tavily.default': { provider_id: 'tavily', enabled: false } } } : domain === NB_SEARCH_SOURCE_SECTION ? { reuse_local_config: false } : undefined) as IConfigService['get'];
+    const service = ix.get(INbSearchService);
+    const sources = await service.quotaSources();
+    expect(sources.find((source) => source.id === 'tavily.default')).toMatchObject({ provider_id: 'tavily', enabled: false, revision: expect.any(String) });
+    expect(await service.keyUsage('tavily.default', true)).toEqual({ provider_instance_id: 'tavily.default', provider_id: 'tavily', balance_supported: true, keys: [] });
+    expect(createRuntimeMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(sources)).not.toMatch(/api_key|access_token/);
+  });
+
   it.each(['exa.search', null])('executes the native GMA lane through the real donor SSE transport with default=%s', async (defaultLane) => {
     const donor = await vi.importActual<typeof import('@nb-corp/nb-search')>('@nb-corp/nb-search');
     const root = resolve('.tmp');

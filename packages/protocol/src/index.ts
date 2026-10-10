@@ -68,6 +68,7 @@ export * from './rest/thread';
 export * from './rest/thread-bridge';
 export * from './rest/usage';
 export * from './rest/usage-export';
+export * from './rest/provider-quota';
 export * from './rest/requestGovernance';
 export * from './rest/agentActivity';
 export * from './rest/autoCompact';

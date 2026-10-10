@@ -1,0 +1,23 @@
+Quota fetch request shapes and response adapters in adapters.ts/fetch.ts are adapted from CC Switch:
+https://github.com/farion1231/cc-switch
+commit 0345fad6048eed65b3423bedc8ce5711320ddfc3
+src-tauri/src/services/subscription.rs (Codex / Claude)
+src-tauri/src/services/balance.rs (DeepSeek / StepFun / SiliconFlow / Novita AI)
+src-tauri/src/services/coding_plan.rs (MiniMax / Zhipu / Z.ai)
+Copyright (c) 2025 Jason Young, MIT. See CC-SWITCH-LICENSE.
+
+The Rust units are semantically ported to TypeScript. Credential discovery, secret storage,
+login, polling and vendor error-body exposure are deliberately not copied. Kiki's approved
+provider credentials/OAuth renewal and its existing nb-search keyUsage are used instead.
+Kimi usage parsing directly reuses @kiki/oauth/managed-usage. OpenRouter key-limit adaptation
+follows https://openrouter.ai/docs/api/reference/limits and reports key caps, not account funds.
+
+vibe-usage e3f44fdf8f9695eed370665fe6b4d2ab908f2c88 (package.json declares MIT) was read:
+src/quotas/providers/kimi-code.js, zai.js; quota schema/cache/discovery lifecycle was consulted.
+No vibe-usage source bytes are copied: Kiki already has the compatible Kimi parser, and
+CC Switch provides the compatible plan fetchers without importing home-directory probing.
+
+cockpit-tools 87242087582b83d9d0760696f6d2dbd539c408e9 (CC BY-NC-SA 4.0) was behavioral evidence
+only; no source copied. CLIProxyAPI ea37d13a9eced4af835cad10bcb030d770a5ba88 (MIT) Antigravity
+credit fetcher was evaluated but deferred because Kiki has no approved Antigravity provider OAuth
+connection. CodexPro 113472c6ff0a1516b6f223a43cd355abdf2e61ae (MIT) has no applicable fetcher.

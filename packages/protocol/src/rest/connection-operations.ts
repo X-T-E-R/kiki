@@ -36,6 +36,7 @@ export const CONNECTION_OPERATIONS = {
   configRead: ['GET', '/config'], usage: ['GET', '/usage'], requestGovernance: ['GET', '/usage/realtime'],
   agentActivity: ['GET', '/usage/realtime/agents'],
   usagePricing: ['GET', '/usage/pricing'], usageRescanStatus: ['GET', '/usage/rescan'],
+  providerQuotaRead: ['GET', '/usage/provider-quotas'],
   workspaces: ['GET', '/workspaces'], workspace: ['GET', '/workspaces/{workspaceId}'], workspaceSkills: ['GET', '/workspaces/{workspaceId}/skills'],
   worktrees: ['GET', '/worktrees'], worktree: ['GET', '/worktrees/{worktreeId}'], worktreeInspect: ['POST', '/worktrees/{worktreeId}:inspect'],
   fsSearch: ['POST', '/sessions/{sessionId}/fs:search'], draftFsSearch: ['POST', '/workspace/fs:search'],

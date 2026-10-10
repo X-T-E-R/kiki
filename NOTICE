@@ -71,6 +71,14 @@ Vendored and adapted source
   packages/tree-sitter-bash reproduces grammar/node types and records scanner.c
   derivations. The development reference dependency is pinned to 0.25.0.
 
+* CC Switch — MIT
+  https://github.com/farion1231/cc-switch
+  Quota request and parser units adapted from commit
+  0345fad6048eed65b3423bedc8ce5711320ddfc3 into
+  packages/kap-server/src/usage/quota.
+  Copyright (c) 2025 Jason Young; full license and adaptation notice:
+  packages/kap-server/src/usage/quota/CC-SWITCH-LICENSE and NOTICE.
+
 * LiteLLM — MIT
   https://github.com/BerriAI/litellm
   Model price/context-window snapshot in packages/kap-server/vendor/litellm.

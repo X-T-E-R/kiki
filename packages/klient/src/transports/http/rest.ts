@@ -11,6 +11,7 @@ import { createConnectionsFacade } from './connections.js';
 import { createWebAccessFacade } from './web-access.js';
 import { createThreadBridgesFacade } from './thread-bridges.js';
 import { createUsageExportFacade } from './usage-export.js';
+import { createProviderQuotaFacade } from './provider-quota.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import type {
   ActivateSkillRequest,
@@ -73,6 +74,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     connections: createConnectionsFacade(transport),
     threadBridges: createThreadBridgesFacade(transport),
     usageExport: createUsageExportFacade(transport),
+    providerQuotas: createProviderQuotaFacade(transport),
     healthz: async (baseUrlOverride) => {
       try {
         const data = await transport.json<{ readonly ok?: boolean } | null>('/healthz', {

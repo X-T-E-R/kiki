@@ -136,6 +136,21 @@ export class NbSearchService implements INbSearchService {
     if (runtime === undefined) throw configurationError(status);
   }
 
+  async quotaSources(): Promise<readonly { id: string; provider_id: string; enabled: boolean; revision: string }[]> {
+    await this.config.ready;
+    const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
+    const reuse = this.config.get<NbSearchSourceConfig | undefined>(NB_SEARCH_SOURCE_SECTION)?.reuse_local_config ?? true;
+    return this.sources.withSource(reuse, config, (source) => {
+      if (source.status.availability === 'unavailable') return [];
+      const effective = capturedSource(source, config).config;
+      return Object.entries(effective.provider_instances).map(([id, instance]) => {
+        const slot = instance.credential_slot_id === undefined ? undefined : effective.credential_slots[instance.credential_slot_id];
+        return { id, provider_id: instance.provider_id, enabled: instance.enabled,
+          revision: stableFingerprint([instance, slot === undefined ? null : source.env[slot.env] ?? null]) };
+      });
+    });
+  }
+
   async keyUsage(instanceId: string, refresh: boolean): Promise<NbSearchKeyUsageView> {
     await this.config.ready;
     const config = this.config.get<NbSearchConfig | undefined>(NB_SEARCH_SECTION);
@@ -145,6 +160,7 @@ export class NbSearchService implements INbSearchService {
       const effective = capturedSource(source, config).config;
       const instance = effective.provider_instances[instanceId];
       if (instance === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown nb-search provider instance.');
+      if (!instance.enabled) return { provider_instance_id: instanceId, provider_id: instance.provider_id, balance_supported: instance.provider_id === 'tavily' || instance.provider_id === 'firecrawl', keys: [] };
       const runtime = await this.#sharedRuntime(source, config, this.#generation);
       if (runtime === undefined) throw configurationError(source.status);
       const local = runtime as import('@nb-corp/nb-search').LocalNbSearchRuntime;

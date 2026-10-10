@@ -126,6 +126,12 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 登录完成只是把凭据存下来，并不会自动开始外送。目的地仍保持 `disabled`，要等你预览过内容再启用，和手动配置的用途地一样。指向自定义地址的目的地、或者你自己提供密钥的那种，走的是手动路径；在那里发起这种登录会得到 `vibe-auth-official-only`，表示此方式不可用。
 
+#### 供应商与外部服务剩余额度
+
+`GET /api/usage/provider-quotas` 列出已连接来源及缓存的官方额度，不向远端服务发请求。要明确查询一个来源，由 local owner 向 `POST /api/usage/provider-quotas/refresh` 发送 `{ "source_id": "provider:example" }`。向 `PUT /api/usage/provider-quotas/enabled` 发送 `{ "source_id": "provider:example", "enabled": false }` 可关闭额度采集；开启本身不查询、不登录，刷新已关闭来源也不会自动开启。类型客户端对应方法为 `klient.rest.providerQuotas.snapshot()`、`.refresh(sourceId)` 和 `.setEnabled(sourceId, enabled)`。
+
+响应使用 schema version `1`，各来源和额度表项独立。每项提供名称、单位、作用域，以及可选的模型组和重置窗口。未知数值为 `null`，不是零；百分比额度不等于绝对 token 数，金额使用主货币单位，Key、Team 和账户余额不能直接相加。来源状态区分 `unknown`、`ready`、`stale`、`error`、`auth_required`、`off` 和 `unsupported`。旧结果应显示更新时间，需认证时按 `auth.action` 打开现有登录或凭据设置，不把凭据传给额度接口。查询由用户触发，同源并发合并，每次尝试后至少间隔 60 秒，缓存有效期为五分钟；窗口重置时间已过也会标为旧数据。后台不轮询全账户；不支持的服务与执行器自管凭据保持不支持，不拿本地消耗估算厂商余额。
+
 ### 配置
 
 | 方法与路径 | 说明 |

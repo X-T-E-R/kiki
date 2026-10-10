@@ -146,6 +146,8 @@ import {
 } from './pricing/modelPricingService';
 import { UsageExportRuntime } from './usage/export/runtime';
 import { registerUsageExportRoutes } from './routes/usageExport';
+import { registerProviderQuotaRoutes } from './routes/providerQuota';
+import { createProviderQuotaService } from './usage/quota/runtime';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -851,6 +853,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
   if (usageExport !== undefined) { registerUsageExportRoutes(app, usageExport.service); app.addHook('preClose', () => usageExport.close()); }
+  const providerQuota = createProviderQuotaService(core);
+  registerProviderQuotaRoutes(app, providerQuota);
+  app.addHook('preClose', async () => { providerQuota.close(); });
   const spaceSummary = new SpaceSummaryProjection(core);
   app.get('/api/space-summary', async (_request, reply) => reply.send({ code: 0, msg: 'OK', data: spaceSummary.read() }));
   app.addHook('onClose', () => spaceSummary.dispose());

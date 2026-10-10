@@ -126,6 +126,12 @@ A `vibecafe.ai` destination signs in the way VibeCafe itself does, and the offic
 
 A finished sign-in stores the credential; it does not turn sending on. The destination stays `disabled` until you preview the payload and enable it, exactly like one you set up by hand. A destination pointed at a custom address, or one you authenticate with a key you supply yourself, uses the manual path instead; `vibe-auth-official-only` reports the sign-in as unavailable there.
 
+#### Provider and external-service quotas
+
+`GET /api/usage/provider-quotas` lists connected sources and cached official quotas without querying remote services. To query one source explicitly, the local owner sends `POST /api/usage/provider-quotas/refresh` with `{ "source_id": "provider:example" }`. Disable quota collection with `PUT /api/usage/provider-quotas/enabled` and `{ "source_id": "provider:example", "enabled": false }`; enabling does not query or log in, and refreshing an off source never enables it. The typed client exposes these operations as `klient.rest.providerQuotas.snapshot()`, `.refresh(sourceId)` and `.setEnabled(sourceId, enabled)`.
+
+The response uses schema version `1` with independent sources and meters. Each meter supplies its label, unit, scope, optional model group and reset window. Unknown numbers are `null`, not zero; percentage quotas are not absolute token counts, money uses the main currency unit, and key/team/account balances must not be added together. Source states distinguish `unknown`, `ready`, `stale`, `error`, `auth_required`, `off` and `unsupported`. Keep stale values visibly dated and use `auth.action` to open the existing login or credential settings; no credentials belong in quota requests. Queries are manual, single-flight per source, with a 60-second retry floor and a five-minute cache lifetime; a passed reset also makes the cached result stale. There is no all-account poller. Unsupported services and executor-owned credentials remain unsupported rather than estimating a vendor balance from local consumption.
+
 ### Config
 
 | Method and path | Description |
