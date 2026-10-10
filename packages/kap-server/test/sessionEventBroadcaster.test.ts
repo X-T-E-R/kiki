@@ -1,4 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '../../agent-core-v2/src/wire/transcriptReceipt';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -3276,6 +3278,113 @@ describe('SessionEventBroadcaster', () => {
         release();
         await pending;
         await service.whenReady('s1');
+      }
+    });
+
+    it.each([
+      ['main', false],
+      ['main', true],
+      ['visible-child', false],
+    ] as const)('KR-LOAD-01 streams independently with both views at delta, blocked=%s superseded=%s', async (blockedAgent, supersede) => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      const child = lc.addAgent('visible-child');
+      sessions.set('s1', lc);
+      for (const [agentId, prompts] of Object.entries({ main: ['persisted main first', 'persisted main second'], 'visible-child': ['persisted child'] })) {
+        const folder = join(dir, 'sessions', 'wd', 's1', 'agents', agentId);
+        await mkdir(folder, { recursive: true });
+        const wire = prompts.map((text, index) => JSON.stringify({ type: 'context.append_message', time: 1000 + index,
+          message: { role: 'user', content: [{ type: 'text', text }], origin: { kind: 'user' } } })).join('\n') + '\n';
+        await writeFile(join(folder, 'wire.jsonl'), wire);
+        await writeFile(join(folder, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+          format: 1, epoch: 'verified-load-fixture', state: 'sealed', trusted: true,
+          wire: { size: Buffer.byteLength(wire), sha256: createHash('sha256').update(wire).digest('hex') },
+        }));
+      }
+      const fast = blockedAgent === 'main' ? child : main;
+      let proofRequested = false;
+      let proofVerified = false;
+      let releaseProof!: () => void;
+      const proof = new Promise<void>((resolve) => { releaseProof = resolve; });
+      fast.set(IWireService, {
+        flush: async () => {},
+        isTranscriptLiveEpochVerified: () => proofVerified,
+        verifyTranscriptLiveEpoch: async () => { proofRequested = true; await proof; proofVerified = true; return true; },
+      });
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      const read = service.readColdSnapshot.bind(service);
+      let releaseHistory!: () => void;
+      const history = new Promise<void>((resolve) => { releaseHistory = resolve; });
+      let blockedFinished = false;
+      vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+        if (args[1] !== blockedAgent) return read(...args);
+        await history;
+        const result = await read(...args);
+        blockedFinished = true;
+        return result;
+      });
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      const buffered: EventEnvelope[] = [];
+      const envelopes: EventEnvelope[] = [];
+      let streaming = false;
+      const target: BroadcastTarget = {
+        send: (envelope) => { (streaming ? envelopes : buffered).push(envelope); },
+        drain: async () => { envelopes.push(...buffered.splice(0)); streaming = true; },
+      };
+      let finished = false;
+      const pending = bc.subscribe('s1', target, undefined, { '*': 'off', main: 'delta', 'visible-child': 'delta' })
+        .then((result) => { finished = true; return result; });
+      try {
+        await vi.waitFor(() => expect(proofRequested).toBe(true));
+        expect(transcriptEnvelopes(envelopes)).toEqual([]);
+        expect(blockedFinished).toBe(false);
+        releaseProof();
+        await vi.waitFor(() => expect(transcriptEnvelopes(envelopes).some((frame) =>
+          frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === fast.id)).toBe(true));
+        expect(blockedFinished).toBe(false);
+        expect(finished).toBe(false);
+        const first = transcriptEnvelopes(envelopes)[0]!;
+        expect(first).toMatchObject({ type: 'transcript.reset', payload: { agent_id: fast.id, grade: 'delta',
+          coverage: { kind: 'full', hasMoreOlder: false } } });
+        fast.bus.emit(agentEvent('turn.started', { turnId: 7, origin: { kind: 'user' } }));
+        await vi.waitFor(() => expect(transcriptEnvelopes(envelopes).some((frame) =>
+          frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true));
+        expect(blockedFinished).toBe(false);
+        expect(finished).toBe(false);
+        if (supersede) await bc.subscribe('s1', target, undefined, { '*': 'off', [blockedAgent]: 'off', [fast.id]: 'delta' });
+        const beforeRelease = transcriptEnvelopes(envelopes).length;
+        const liveBeforeRelease = transcriptEnvelopes(envelopes).filter((frame) =>
+          frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id).length;
+        releaseHistory();
+        await pending;
+        await service.whenReady('s1');
+        expect(blockedFinished).toBe(true);
+        const mainPrompts = service.forSessionLive('s1')!.getAgent('main')!.snapshot().items
+          .filter((item) => item.kind === 'turn').map((item) => item.prompt);
+        expect(mainPrompts).toEqual(expect.arrayContaining(['persisted main first', 'persisted main second']));
+        const frames = transcriptEnvelopes(envelopes);
+        expect(frames.filter((frame) => frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toHaveLength(liveBeforeRelease);
+        if (supersede) {
+          expect(frames).toHaveLength(beforeRelease);
+          expect(frames.every((frame) => (frame.payload as { agent_id: string }).agent_id === fast.id)).toBe(true);
+        } else {
+          expect(frames.filter((frame) => frame.type === 'transcript.reset').map((frame) =>
+            (frame.payload as { agent_id: string }).agent_id).sort()).toEqual(['main', 'visible-child']);
+          expect(frames.some((frame) => frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true);
+          const mainReset = frames.find((frame) => frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === 'main')!;
+          expect(mainReset).toMatchObject({ payload: { coverage: { kind: 'full', hasMoreOlder: false }, snapshot: {
+            items: expect.arrayContaining([expect.objectContaining({ prompt: 'persisted main first' }), expect.objectContaining({ prompt: 'persisted main second' })]),
+          } } });
+        }
+        expect(buffered).toEqual([]);
+      } finally {
+        releaseProof();
+        releaseHistory();
+        await pending;
+        await service.whenReady('s1');
+        await bc.close();
+        service.dispose();
       }
     });
 
