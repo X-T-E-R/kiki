@@ -56,11 +56,16 @@ import {
   namedAgentProfileNameParamsSchema,
   namedAgentProfileSchema,
   updateNamedAgentProfileRequestSchema,
+  previewAgentProfileFileRequestSchema,
+  previewAgentProfileFileResponseSchema,
   type NamedAgentProfile,
 } from '@kiki/protocol';
 import { z } from 'zod';
 import { modelProfileToWire, modelProfileUpdateFromWire, subagentLeaseUpdateFromWire } from '@kiki/agent-core-v2/app/agentProfileCatalog/modelProfileOverlay';
 import { createUnscopedAgentProfileCatalog } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/unscopedAgentProfileCatalog';
+import { loadMainAgentProfileFile } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
+import { IBuiltinAgentProfileLoader } from '@kiki/agent-core-v2/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
@@ -531,6 +536,49 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.post(modelMenuPreviewRoute.path, modelMenuPreviewRoute.options,
     modelMenuPreviewRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const filePreviewRoute = defineRoute({
+    method: 'POST',
+    path: '/agent-profiles/file-preview',
+    body: previewAgentProfileFileRequestSchema,
+    success: { data: previewAgentProfileFileResponseSchema },
+    errors: { [ErrorCode.VALIDATION_FAILED]: { detailsSchema }, [ErrorCode.WORKSPACE_NOT_FOUND]: {} },
+    description: 'Validate a profile Markdown file on the connected host without registration or binding',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const scoped = req.body.cwd !== undefined || req.body.workspace_id !== undefined;
+    const preview = scoped ? await acquireDraftProfileListCatalog(core, req.body) : await unscopedProfileCatalog(core);
+    if (preview === undefined) {
+      reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, 'Workspace does not exist', req.id));
+      return;
+    }
+    try {
+      const bootstrap = core.accessor.get(IBootstrapService);
+      const cwd = req.body.cwd ?? (req.body.workspace_id === undefined ? bootstrap.osHomeDir
+        : (await core.accessor.get(IWorkspaceService).get(req.body.workspace_id))!.root);
+      const executors = core.accessor.get(IAgentExecutorRegistry);
+      const profile = await loadMainAgentProfileFile({
+        file: req.body.path, cwd, osHomeDir: bootstrap.osHomeDir,
+        fs: core.accessor.get(IHostFileSystem), executors,
+        defaultProfile: preview.catalog.getDefault(),
+        builtinProfile: core.accessor.get(IBuiltinAgentProfileLoader).getDefault(),
+        resolveBase: (name) => preview.catalog.get(name),
+        baseEntries: ('registry' in preview ? preview.registry : core.accessor.get(IAgentProfileRegistry)).entries()
+          .filter((entry) => entry.workspaceKey === undefined || entry.workspaceKey === preview.workspaceId),
+      });
+      reply.send(okEnvelope({ profile: { ...toNamedAgentProfile(core,
+        { sourceId: 'explicit', priority: 40, contribution: { profiles: [profile] } },
+        profile, new Set(), undefined, undefined, executors), ...projectAgentModelMenu(core, profile, 'main') } }, req.id));
+    } catch (error) {
+      if (!isError2(error) || error.code !== ErrorCodes.REQUEST_INVALID) throw error;
+      reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id),
+        details: [{ path: req.body.path, message: error.message }] });
+    } finally {
+      if (scoped) await preview.dispose();
+    }
+  });
+  app.post(filePreviewRoute.path, filePreviewRoute.options,
+    filePreviewRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const createRoute = defineRoute({
     method: 'POST',

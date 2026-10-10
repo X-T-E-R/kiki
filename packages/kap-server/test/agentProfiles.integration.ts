@@ -93,6 +93,48 @@ describe('GET /api/agents', () => {
     if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  it('creates a session with an explicit file without main curation or catalog registration', async () => {
+    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\n');
+    const path = join(home!, 'selected.md');
+    await writeFile(path, '---\nname: example-file\ndescription: Explicit fixture\nmain: false\nmodel_alias: stub\n---\nEXPLICIT_CREATE_BODY');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { execution: { executor: 'native', profile_file: path } } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code, created.msg).toBe(0);
+    const profile = server.core.accessor.get(ISessionManager).get(created.data.id)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentProfileService);
+    expect(profile.data()).toMatchObject({ profileName: 'example-file', modelAlias: 'stub',
+      execution: { selection: { executor: 'native', profile_file: expect.any(String) } } });
+    expect(profile.data().systemPrompt).toContain('EXPLICIT_CREATE_BODY');
+    expect(server.core.accessor.get(IAgentProfileRegistry).entries().flatMap((entry) => entry.contribution.profiles).some((candidate) => candidate.name === 'example-file')).toBe(false);
+  });
+
+  it('previews any explicit profile file through the typed client without registering or editing it', async () => {
+    const path = join(home!, 'selected.md');
+    const text = '---\nname: example-file\ndescription: Explicit fixture\nmain: false\nexecutor: grok-acp\nmodel_alias: grok\n---\nFILE_PROMPT';
+    await writeFile(path, text);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const klient = createKlient({ endpoint: base, token: server.localOwnerToken });
+    try {
+      const rest = klient.rest!;
+      const before = await server.core.accessor.get(IWorkspaceService).list();
+      const preview = await rest.agents.previewFile({ path: 'selected.md', cwd: home! });
+      expect(preview.profile).toMatchObject({ name: 'example-file', main: false, source: 'explicit', executor: 'grok-acp', pinned_model_alias: 'grok' });
+      expect(preview.profile.source_file?.toLowerCase()).toBe(path.replaceAll('\\', '/').toLowerCase());
+      expect((await rest.agents.list({ cwd: home!, effective: true })).items.some((profile) => profile.name === 'example-file')).toBe(false);
+      expect(await server.core.accessor.get(IWorkspaceService).list()).toEqual(before);
+      expect(await readFile(path, 'utf8')).toBe(text);
+      await expect(rest.agents.previewFile({ path: join(home!, 'missing.md') })).rejects.toThrow('Unable to load profile file');
+      await writeFile(path, '---\nname: invalid\nunknown_field: true\n---\ninvalid');
+      await expect(rest.agents.previewFile({ path })).rejects.toThrow('Unable to load profile file');
+    } finally {
+      await klient.close();
+    }
+  });
+
   it('saves and re-reads subagent tool settings without overriding global or parent restrictions', async () => {
     const configText = '[tools]\ndisabled = ["Bash"]\n';
     await writeFile(join(home!, 'config.toml'), configText);
