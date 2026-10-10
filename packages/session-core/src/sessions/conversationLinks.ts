@@ -4,6 +4,11 @@ export function roomRefLink(roomId: string): string {
   return `/rooms/${encodeURIComponent(roomId)}`;
 }
 
+/** The in-app route for a conversation object of either kind. */
+export function conversationRefLink(kind: 'session' | 'room', id: string): string {
+  return kind === 'room' ? roomRefLink(id) : `/s/${id}`;
+}
+
 /** Parse in-app paths and their kiki:// equivalents without accepting arbitrary protocols. */
 export function parseConversationLink(link: string): ConversationLink | undefined {
   let path = link;
