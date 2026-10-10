@@ -87,6 +87,8 @@ Steering cadence belongs to the selected branch: `steering_on_turn` defaults to 
 
 `global.recipes.fork` creates either an independent `copy` or an `extend` child; `saveLocal` edits the resulting local package with an `expected_revision` guard. Installed packages lock the complete dependency chain and work offline. `follow` checks updates daily; `pinned` keeps the accepted revision. Invalid updates leave the whole last accepted revision active. HTTPS ZIP sources require `sha256`; an inherited ZIP source can supply it in `extends`. Preview and install accept the same inspected snapshot, with no second source download at install time.
 
+To share a local customization, save any draft first, then call `global.recipes.export(installation_id)`. It returns `{ name, revision, files }`: a suggested ZIP filename, the accepted source revision, and a relative file map. ZIP the files client-side; inherited text, model settings and cadence are materialized without a parent installation reference, so another Kiki home can preview and install the package independently. Export does not create an installation, change a model, modify source files or upload anything. Importing the package creates its own revision; the export's `revision` identifies what was accepted in the sender's home.
+
 ## Desktop settings entry point
 
 In the desktop app, **Settings → Agents → Prompt** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.

@@ -2,10 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fetch } from 'undici';
 import { RecipeSourceReader } from '#/os/backends/node-fs/recipeSourceReader';
-
-vi.mock('undici', async (original) => ({ ...await original<typeof import('undici')>(), fetch: vi.fn() }));
 import { stringify } from 'smol-toml';
 import { createServices } from '#/_base/di/test';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -35,13 +32,13 @@ describe('Recipe accepted revisions', () => {
   let documents: IAtomicDocumentStore;
   let sources: Map<string, Record<string, string>>;
   let reads: string[];
-  beforeEach(() => {
-    disposables = new DisposableStore(); sources = new Map(); reads = [];
-    const ix = createServices(disposables, { additionalServices: (reg) => {
+  const modelWrites = vi.fn();
+  function newStore() {
+    return createServices(disposables, { additionalServices: (reg) => {
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
       reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore); reg.define(IBlobStore, BlobStoreService);
       reg.definePartialInstance(IBootstrapService, { scope: () => 'store' });
-      reg.definePartialInstance(IConfigService, { ready: new Promise<void>(() => {}), get: <T>() => ({ markets: [] }) as T });
+      reg.definePartialInstance(IConfigService, { ready: new Promise<void>(() => {}), get: <T>() => ({ markets: [] }) as T, replaceSections: modelWrites });
       reg.definePartialInstance(IFlagService, { enabled: () => true });
       reg.definePartialInstance(IModelService, { list: () => ({}) });
       reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
@@ -53,7 +50,10 @@ describe('Recipe accepted revisions', () => {
       });
       reg.define(IRecipeService, RecipeService);
     } });
-    service = ix.get(IRecipeService); documents = ix.get(IAtomicDocumentStore);
+  }
+  beforeEach(() => {
+    disposables = new DisposableStore(); sources = new Map(); reads = []; modelWrites.mockClear();
+    const ix = newStore(); service = ix.get(IRecipeService); documents = ix.get(IAtomicDocumentStore);
     sources.set(parent, { 'recipe.toml': manifest('parent', { system: [{ file: 'same.md' }, { text: 'SECOND' }], steering: { text: 'PARENT STEERING' }, main: { system: { file: 'same.md' }, steering: { text: 'PARENT MAIN STEERING' }, fields: { 'system.language': 'PARENT LANGUAGE' } }, independent: 'off' }), 'same.md': 'PARENT FILE' });
     sources.set(child, { 'recipe.toml': manifest('child', { system: [{ text: 'ARRAY REPLACED' }], main: { steering: { text: 'CHILD MAIN STEERING' }, fields: { 'system.language': false } } }, parent), 'same.md': 'CHILD FILE MUST NOT HIJACK' });
     sources.set(grandchild, { 'recipe.toml': manifest('grandchild', { independent: 'same' }, child) });
@@ -128,6 +128,30 @@ describe('Recipe accepted revisions', () => {
     expect(applied.overrides).toEqual({ requestParams: { custom: true }, autoCompact: 2048 });
     expect(saved.overrides.requestParams.temperature).toBe(0.2);
   });
+  it('exports a locally inherited accepted package without mutation and installs it in an empty home', async () => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '2.1.0', model: { parameters: { temperature: 0.2, service_tier: 'priority' }, usage: { independent: { context_budget: 4096 } } }, prompts: { system: { file: 'body.md' }, steering: { text: 'INHERITED CUE' }, steering_interval_steps: 3, independent: 'off' } }), 'body.md': 'INHERITED BODY' });
+    const installed = await install(parent);
+    const local = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'local-parent', name: 'Local parent' });
+    const child = await service.fork({ installation_id: local.summary.installation_id, mode: 'extend', id: 'portable', name: 'Portable' });
+    const edited = await service.saveLocal({ installation_id: child.summary.installation_id, expected_revision: child.summary.revision, files: { 'recipe.toml': stringify({ schema_version: 1, id: 'portable', name: 'Portable', description: 'Portable snapshot', version: '1.2.3', extends: { source: local.summary.source.locator }, model: { parameters: { temperature: 0.65 } }, prompts: { steering_on_input: false } }) } });
+    const before = await service.list(); reads.length = 0;
+    const changed = vi.fn(); disposables.add(service.onDidChange(changed));
+    const set = vi.spyOn(documents, 'set'); const update = vi.spyOn(documents, 'update');
+    const exported = await service.export(edited.summary.installation_id);
+    expect(exported).toMatchObject({ name: 'portable-1.2.3.zip', revision: edited.summary.revision });
+    expect(exported.files['recipe.toml']).not.toContain('installation:');
+    expect(exported.files['recipe.toml']).not.toContain('extends');
+    expect(await service.list()).toEqual(before); expect(await service.get(edited.summary.installation_id)).toEqual(edited);
+    expect(reads).toEqual([]); expect(changed).not.toHaveBeenCalled(); expect(modelWrites).not.toHaveBeenCalled(); expect(set).not.toHaveBeenCalled(); expect(update).not.toHaveBeenCalled();
+    set.mockRestore(); update.mockRestore();
+    const portable = 'https://example.test/portable/recipe.toml'; sources.clear(); sources.set(portable, exported.files);
+    const fresh = newStore().get(IRecipeService); expect(await fresh.list()).toEqual([]);
+    const preview = await fresh.preview({ source: { locator: portable } });
+    const imported = await fresh.install({ preview_id: preview.preview_id }); const resolved = await fresh.resolve(imported.installation_id);
+    expect(resolved.branches).toEqual(edited.resolved.branches); expect(resolved.model).toEqual(edited.resolved.model); expect(resolved.dependencies).toEqual([]);
+    expect((await fresh.get(imported.installation_id))?.summary).toMatchObject({ manifest_id: 'portable', version: '1.2.3', description: 'Portable snapshot' });
+    expect(await fresh.list()).toHaveLength(1); expect(await service.list()).toEqual(before); expect(modelWrites).not.toHaveBeenCalled();
+  });
   it('rejects a corrupt immutable revision rather than binding altered content', async () => {
     const installed = await install();
     const key = `recipes/revisions/${installed.revision.slice(7)}`;
@@ -140,8 +164,9 @@ describe('Recipe accepted revisions', () => {
 describe('Recipe package boundaries', () => {
   let root: string;
   const reader = new RecipeSourceReader();
-  beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'recipe-boundary-')); vi.mocked(fetch).mockReset(); });
-  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+  let fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
+  beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'recipe-boundary-')); fetchMock = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal('fetch', fetchMock); });
+  afterEach(async () => { vi.unstubAllGlobals(); await rm(root, { recursive: true, force: true }); });
   it('reads package files but rejects traversal and oversized text', async () => {
     await writeFile(path.join(root, 'recipe.toml'), 'schema_version = 1');
     await writeFile(path.join(root, 'prompt.md'), 'PACKAGE TEXT');
@@ -167,14 +192,35 @@ describe('Recipe package boundaries', () => {
     for (const locator of ['http://example.test/recipe.toml', 'https://user:password@example.test/recipe.toml', 'https://user:password@github.com/example/recipes', 'https://localhost/recipe.toml', 'https://127.0.0.1/recipe.toml', 'https://[::1]/recipe.toml']) {
       await expect(reader.open({ locator })).rejects.toThrow(/HTTPS|public address/u);
     }
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   it('requires a ZIP checksum and rejects mismatched content before unpacking', async () => {
-    const locator = 'https://example.test/recipe.zip';
+    const locator = 'https://93.184.216.34/recipe.zip';
     await expect(reader.open({ locator })).rejects.toThrow('requires SHA-256');
-    expect(fetch).not.toHaveBeenCalled();
-    vi.mocked(fetch).mockResolvedValueOnce(new Response('not a ZIP') as Awaited<ReturnType<typeof fetch>>);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(new Response('not a ZIP'));
     await expect(reader.open({ locator, sha256: '0'.repeat(64) })).rejects.toThrow('checksum mismatch');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('delegates redirects to guarded-fetch while retaining the Recipe subtree and credential boundaries', async () => {
+    const source = 'https://93.184.216.34/package/recipe.toml';
+    const packageReader = await reader.open({ locator: source });
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: '/package/actual.md' } })).mockResolvedValueOnce(new Response('IN PACKAGE'));
+    expect(await packageReader.read('body.md')).toBe('IN PACKAGE'); expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const location of ['/outside/body.md', 'https://8.8.8.8/package/body.md', 'https://user:password@93.184.216.34/package/body.md', 'https://127.0.0.1/package/body.md']) {
+      fetchMock.mockReset(); fetchMock.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location } }));
+      await expect(packageReader.read('body.md')).rejects.toThrow(); expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+  it('retains HTTP, strict UTF-8 and byte-budget failure behavior', async () => {
+    const packageReader = await reader.open({ locator: 'https://93.184.216.34/package/recipe.toml' });
+    fetchMock.mockResolvedValueOnce(new Response('unavailable', { status: 503 }));
+    await expect(packageReader.read('body.md')).rejects.toThrow('HTTP 503');
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([0xff])));
+    await expect(packageReader.read('body.md')).rejects.toThrow();
+    fetchMock.mockResolvedValueOnce(new Response('x'.repeat(256 * 1024 + 1)));
+    await expect(packageReader.read('body.md')).rejects.toThrow('text budget');
+    fetchMock.mockResolvedValueOnce(new Response('x'.repeat(4 * 1024 * 1024 + 1)));
+    await expect(reader.catalog('https://93.184.216.34/catalog.json')).rejects.toThrow('download exceeds budget');
   });
 });

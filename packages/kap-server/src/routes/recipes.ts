@@ -2,7 +2,7 @@ import type { FastifyInstance, HTTPMethods, RouteHandlerMethod, preHandlerHookHa
 import type { Scope } from '@kiki/agent-core-v2';
 import { IRecipeService } from '@kiki/agent-core-v2/app/recipes/recipes';
 import { z } from 'zod';
-import { recipeSummarySchema, recipeDetailSchema, recipePreviewSchema, recipeMarketSchema, recipePreviewInputSchema, recipeInstallInputSchema, recipeUpdateInputSchema, recipeForkInputSchema, recipeSaveLocalInputSchema, recipeRemoveInputSchema, recipeMarketInputSchema } from '@kiki/protocol';
+import { recipeExportSchema, recipeSummarySchema, recipeDetailSchema, recipePreviewSchema, recipeMarketSchema, recipePreviewInputSchema, recipeInstallInputSchema, recipeUpdateInputSchema, recipeForkInputSchema, recipeSaveLocalInputSchema, recipeRemoveInputSchema, recipeMarketInputSchema } from '@kiki/protocol';
 import { okEnvelope, errEnvelope } from '../envelope';
 import { defineRoute, type RouteDefinition } from '../middleware/defineRoute';
 
@@ -20,6 +20,7 @@ export function registerRecipesRoutes(app: FastifyInstance, core: Scope): void {
   };
   mount(defineRoute({ method: 'GET', path: '/recipes', success: { data: z.array(recipeSummarySchema) }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().list())));
   mount(defineRoute({ method: 'GET', path: '/recipes/{id}', params: z.object({ id: z.string() }), success: { data: recipeDetailSchema.nullable() }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().get(req.params.id))));
+  mount(defineRoute({ method: 'GET', path: '/recipes/{id}/export', params: z.object({ id: z.string() }), success: { data: recipeExportSchema }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().export(req.params.id))));
   mount(defineRoute({ method: 'POST', path: '/recipes::preview', body: recipePreviewInputSchema, success: { data: recipePreviewSchema }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().preview(req.body))));
   mount(defineRoute({ method: 'POST', path: '/recipes::install', body: recipeInstallInputSchema, success: { data: recipeSummarySchema }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().install(req.body))));
   mount(defineRoute({ method: 'POST', path: '/recipes::check-updates', success: { data: z.array(recipeSummarySchema) }, tags: ['recipes'] }, (req, reply) => run(req.id, reply, () => service().checkUpdates())));

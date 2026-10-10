@@ -77,6 +77,7 @@
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "chokidar": "^4.0.3",
+    "guarded-fetch": "0.1.5",
     "ignore": "^5.3.2",
     "immer": "^11.1.0",
     "jimp": "^1.6.1",

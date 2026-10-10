@@ -54,3 +54,26 @@ it('installs over the real API, applies with model CAS, inherits and updates ato
   const restDetail = await authedFetch(server, base, `/api/recipes/${installed.installation_id}`);
   expect((await restDetail.json() as { data: RecipeDetail }).data.summary.installation_id).toBe(installed.installation_id);
 });
+
+
+it('exports portable files over REST and klient without installing or changing the model', async () => {
+  home = await mkdtemp(join(tmpdir(), 'kiki-recipe-export-'));
+  const source = join(home, 'package'); await mkdir(source);
+  await writeFile(join(source, 'recipe.toml'), stringify({ schema_version: 1, id: 'example', name: 'Example', version: '1.0.0', model: { parameters: { temperature: 0.65 } }, prompts: { system: { text: 'PORTABLE BODY' }, steering_interval_steps: 2 } }));
+  await writeFile(join(home, 'config.toml'), stringify({ search_backend: 'minidb', search: { enabled: false }, experimental: { recipes: true, persistence_minidb_readmodel: false }, default_provider: 'example', default_model: 'sample', providers: { example: { type: 'openai', base_url: 'https://example.test/v1', api_key: 'EXAMPLE_TEST_KEY' } }, models: { sample: { provider: 'example', model: 'sample', max_context_size: 32768 } } }));
+  server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const base = `http://127.0.0.1:${server.port}`;
+  client = createKlient({ endpoint: base, token: server.localOwnerToken });
+  const preview = await client.global.recipes.preview({ source: { locator: source } });
+  const installed = await client.global.recipes.install({ preview_id: preview.preview_id });
+  const local = await client.global.recipes.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'local', name: 'Local' });
+  const custom = await client.global.recipes.fork({ installation_id: local.summary.installation_id, mode: 'extend', id: 'custom', name: 'Custom' });
+  const before = await client.global.recipes.list(); const model = await client.global.kosong.readModel('sample');
+  const exported = await client.global.recipes.export(custom.summary.installation_id);
+  const response = await authedFetch(server, base, `/api/recipes/${custom.summary.installation_id}/export`);
+  const envelope = await response.json() as { code: number; data: typeof exported };
+  expect(envelope.code).toBe(0); expect(envelope.data).toEqual(exported);
+  expect(exported.name).toBe('custom-1.0.0.zip'); expect(exported.revision).toBe(custom.summary.revision);
+  expect(exported.files['recipe.toml']).toContain('PORTABLE BODY'); expect(exported.files['recipe.toml']).not.toContain('installation:');
+  expect(await client.global.recipes.list()).toEqual(before); expect(await client.global.kosong.readModel('sample')).toEqual(model);
+});

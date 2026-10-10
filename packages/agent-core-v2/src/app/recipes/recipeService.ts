@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { stringify } from 'smol-toml';
-import type { RecipeDetail, RecipeForkInput, RecipeInstallInput, RecipeMarket, RecipeMarketInput, RecipePreview, RecipePreviewInput, RecipeRemoveInput, RecipeSaveLocalInput, RecipeSource, RecipeSummary, RecipeUpdateInput, ResolvedRecipe } from '@kiki/protocol';
+import type { RecipeExport, RecipeDetail, RecipeForkInput, RecipeInstallInput, RecipeMarket, RecipeMarketInput, RecipePreview, RecipePreviewInput, RecipeRemoveInput, RecipeSaveLocalInput, RecipeSource, RecipeSummary, RecipeUpdateInput, ResolvedRecipe } from '@kiki/protocol';
 import { recipeCatalogSchema, resolvedRecipeSchema } from '@kiki/protocol';
 import { IRecipeService, IRecipeSourceReader, type RecipePackageReader } from './recipes';
 import { mergeRecipe, parseRecipe, recipeDigest, recipeFailure, resolveRecipe, validateRecipePath, type RecipeSnapshot } from './recipeParser';
@@ -175,16 +175,22 @@ export class RecipeService extends Disposable implements IRecipeService {
     }
     this.changed.fire(); return this.list();
   }
+  async export(id: string): Promise<RecipeExport> {
+    this.enabled(); const record = await this.record(id); const snapshot = await this.snapshot(record.summary.revision);
+    return { name: `${snapshot.manifest.id}-${snapshot.manifest.version}.zip`, revision: record.summary.revision, files: this.copyFiles(snapshot, snapshot.manifest) };
+  }
+  private copyFiles(snapshot: RecipeSnapshot, identity: { id: string; name: string; version: string; description?: string }): Record<string, string> {
+    const prompts = Object.fromEntries(Object.entries(snapshot.resolved.branches).filter(([position]) => position !== 'sub').map(([position, branch]) => [position, this.branchManifest(branch)]));
+    const common = this.branchManifest(snapshot.resolved.branches.sub);
+    return { 'recipe.toml': stringify({ schema_version: 1, id: identity.id, name: identity.name, version: identity.version, description: identity.description,
+      prompts: { ...common, ...prompts }, model: (modelsToToml({ recipe: snapshot.resolved.model }, {}) as Record<string, unknown>)['recipe'] }) };
+  }
   async fork(input: RecipeForkInput): Promise<RecipeDetail> {
     this.enabled(); const old = await this.record(input.installation_id); const snapshot = await this.snapshot(old.summary.revision);
     const id = randomUUID(); const source = { locator: `installation:${id}` };
-    const prompts = Object.fromEntries(Object.entries(snapshot.resolved.branches).filter(([position]) => position !== 'sub').map(([position, branch]) => [position, this.branchManifest(branch)]));
-    const common = this.branchManifest(snapshot.resolved.branches.sub);
-    const manifest = { schema_version: 1, id: input.id, name: input.name, version: '1.0.0',
-      extends: input.mode === 'extend' ? { source: old.summary.source.locator, sha256: old.summary.source.sha256, revision: old.summary.update_mode === 'pinned' ? old.summary.revision : undefined } : undefined,
-      prompts: input.mode === 'copy' ? { ...common, ...prompts } : undefined,
-      model: input.mode === 'copy' ? (modelsToToml({ recipe: snapshot.resolved.model }, {}) as Record<string, unknown>)['recipe'] : undefined };
-    const files = { 'recipe.toml': stringify(manifest) };
+    const files = input.mode === 'copy' ? this.copyFiles(snapshot, { id: input.id, name: input.name, version: '1.0.0' })
+      : { 'recipe.toml': stringify({ schema_version: 1, id: input.id, name: input.name, version: '1.0.0',
+        extends: { source: old.summary.source.locator, sha256: old.summary.source.sha256, revision: old.summary.update_mode === 'pinned' ? old.summary.revision : undefined } }) };
     const next = await this.prepare(source, [], files); const summary = { ...this.summary(next, id, input.mode === 'extend' ? 'follow' : 'pinned'), copied_from: old.summary.source.locator };
     await this.documents.update<Record<string, Installation>>(this.scope, 'recipes/installations', (records) => ({ ...records, [id]: { summary, history: [summary.revision], editable: true } }));
     this.changed.fire(); return (await this.get(id))!;
