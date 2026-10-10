@@ -16,6 +16,7 @@ import type {
   ExecutionSelection,
   NamedAgentProfile,
 } from '@kiki/protocol';
+import { executionSelectionSchema } from '@kiki/protocol';
 
 /** One `kiki_context` group name, as the wire's list spells it. */
 export type ExecutionContextGroup = NonNullable<ExecutionOverrides['kiki_context']>[number];
@@ -40,8 +41,9 @@ export function isNativeExecutor(executor: string | undefined): boolean {
  */
 export interface ExecutionChoice {
   readonly executor: string;
-  /** Absent = run the harness with its own configuration. */
+  /** Both profile sources absent = run the harness with its own configuration. */
   readonly profile: string | undefined;
+  readonly profile_file?: string;
   /** Absent = every override inherits. */
   readonly overrides: ExecutionOverrides | undefined;
 }
@@ -50,15 +52,21 @@ export const NATIVE_CHOICE: ExecutionChoice = { executor: NATIVE_EXECUTOR, profi
 
 export function executionChoice(selection: ExecutionSelection | undefined): ExecutionChoice {
   if (selection === undefined) return NATIVE_CHOICE;
-  return { executor: selection.executor, profile: selection.profile, overrides: selection.overrides };
+  return { executor: selection.executor, profile: selection.profile, profile_file: selection.profile_file, overrides: selection.overrides };
 }
 
-/** The wire value, with the untouched fields left absent rather than `null`. */
+export function parseExecutionChoice(value: unknown): ExecutionChoice | undefined {
+  const parsed = executionSelectionSchema.safeParse(value);
+  return parsed.success ? executionChoice(parsed.data) : undefined;
+}
+
+/** The wire value; untouched fields serialize as absent rather than `null`. */
 export function executionSelectionOf(choice: ExecutionChoice): ExecutionSelection {
   return {
     executor: choice.executor,
-    ...(choice.profile === undefined ? {} : { profile: choice.profile }),
-    ...(choice.overrides === undefined ? {} : { overrides: choice.overrides }),
+    profile: choice.profile,
+    profile_file: choice.profile_file,
+    overrides: choice.overrides,
   };
 }
 
@@ -102,7 +110,7 @@ export function sendsLegacyControl(
 ): boolean {
   if (namesLegacyControl(choice, control)) return false;
   if (touched) return true;
-  return choice === undefined || isNativeExecutor(choice.executor) || choice.profile !== undefined;
+  return choice === undefined || isNativeExecutor(choice.executor) || choice.profile !== undefined || choice.profile_file !== undefined;
 }
 
 /** A selection that asks for the harness as it is: external, no profile, no overrides at all. */
@@ -110,6 +118,7 @@ export function isBareExternalChoice(choice: ExecutionChoice | undefined): boole
   return choice !== undefined
     && !isNativeExecutor(choice.executor)
     && choice.profile === undefined
+    && choice.profile_file === undefined
     && choice.overrides === undefined;
 }
 
@@ -117,6 +126,7 @@ export function isBareExternalChoice(choice: ExecutionChoice | undefined): boole
   if (left === undefined || right === undefined) return left === right;
   return left.executor === right.executor
     && left.profile === right.profile
+    && left.profile_file === right.profile_file
     && sameOverrides(left.overrides, right.overrides);
 }
 

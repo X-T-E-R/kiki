@@ -32,7 +32,10 @@ import {
 } from '@kiki/session-core/composer';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import type { AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
+import { useProfileFilePreview } from '../../lib/profileFilePreview';
 import { COMPOSER_PANEL_START, STATUS_SEGMENT_CLASS, STATUS_SEGMENT_ICON_CLASS, STATUS_SEGMENT_SET, useComposerPanelAnchor, usePopover, MENU_ROW_CLASS, MENU_ROW_SELECTED_CLASS } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
@@ -160,6 +163,7 @@ export function ExecutionSelect({
   onChange,
   catalog,
   profiles,
+  catalogMode,
   pickableProfile,
   nativeLabel,
   contextGroups,
@@ -178,6 +182,7 @@ export function ExecutionSelect({
   catalog: readonly ExecutorCatalogItem[];
   /** Main profiles the workspace offers, already filtered for availability. */
   profiles: readonly NamedAgentProfile[];
+  catalogMode: AgentProfileCatalogMode;
   /** Whether one profile is a conversation candidate (main, enabled, public). */
   pickableProfile: (profile: NamedAgentProfile) => boolean;
   nativeLabel: string;
@@ -204,9 +209,14 @@ export function ExecutionSelect({
   onCancelPending?: () => void;
   disabled?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [fileOpen, setFileOpen] = useState(false);
+  const [filePath, setFilePath] = useState('');
+  const [previewPath, setPreviewPath] = useState<string | undefined>(undefined);
+  const filePreview = useProfileFilePreview(previewPath, catalogMode);
+  const preview = filePreview.data?.profile;
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = (refocus = false) => {
@@ -264,14 +274,15 @@ export function ExecutionSelect({
   // engine's; the engine stays stated in the panel and the tooltip. A pending
   // switch is never hidden behind a persona: the user is waiting on it.
   // The default native profile reads as the product name, as it always has.
-  const profileText = choice.profile === undefined
+  const fileName = choice.profile_file?.split(/[\\/]/).pop();
+  const profileText = fileName ?? (choice.profile === undefined
     ? undefined
-    : choice.profile === 'agent' && isNativeExecutor(choice.executor) ? nativeLabel : choice.profile;
+    : choice.profile === 'agent' && isNativeExecutor(choice.executor) ? nativeLabel : choice.profile);
   const triggerText = profileText ?? engineLabel;
   const showPersona = persona !== undefined && !pending;
   const ariaEngine = t('composer.execution.aria', {
     engine: engineLabel,
-    profile: choice.profile ?? t('composer.execution.bare'),
+    profile: choice.profile_file ?? choice.profile ?? t('composer.execution.bare'),
   });
 
   return (
@@ -298,7 +309,7 @@ export function ExecutionSelect({
         onClick={() => { setOpen((value) => !value); }}
         className={showPersona === true
           ? 'flex h-7 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
-          : `${STATUS_SEGMENT_CLASS} max-w-52 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== NATIVE_EXECUTOR || choice.profile !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+          : `${STATUS_SEGMENT_CLASS} max-w-52 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== NATIVE_EXECUTOR || choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
       >
         {showPersona === true
           ? <>
@@ -350,7 +361,7 @@ export function ExecutionSelect({
               type="text"
               data-autofocus
               data-execution-filter
-              ref={(input) => { input?.focus(); }}
+              autoFocus
               value={query}
               onChange={(event) => { setQuery(event.target.value); }}
               placeholder={t('composer.execution.searchPlaceholder')}
@@ -369,11 +380,11 @@ export function ExecutionSelect({
                 id={NATIVE_EXECUTOR}
                 label={nativeLabel}
                 current={isNativeExecutor(choice.executor)}
-                bare={choice.profile === undefined}
+                bare={choice.profile === undefined && choice.profile_file === undefined}
                 profiles={nativeProfiles}
                 profile={choice.profile}
-                onBare={() => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name }); }}
+                onBare={() => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: undefined, profile_file: undefined }); }}
+                onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name, profile_file: undefined }); }}
               />
             ) : null}
             {visibleExternal.map((item) => (
@@ -383,14 +394,48 @@ export function ExecutionSelect({
                 label={item.label}
                 hint={[item.id, item.version].filter((part) => part !== undefined && part !== '').join(' · ')}
                 current={choice.executor === item.id}
-                bare={choice.profile === undefined}
+                bare={choice.profile === undefined && choice.profile_file === undefined}
                 profiles={profilesByEngine.get(item.id) ?? []}
                 profile={choice.profile}
                 unavailable={item.status === 'unavailable'}
-                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name }); }}
+                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined, profile_file: undefined }); }}
+                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name, profile_file: undefined }); }}
               />
             ))}
+            <div className="mt-1 border-t border-hairline px-2 py-2">
+              <button type="button" data-execution-file-open aria-expanded={fileOpen}
+                onClick={() => { setFileOpen((value) => !value); setFilePath(choice.profile_file ?? ''); setPreviewPath(undefined); }}
+                className="text-[12.5px] font-medium text-ink hover:underline focus-visible:outline-selected-ink">
+                {t('composer.execution.fileOpen')}
+              </button>
+              {fileOpen ? (
+                <div className="mt-2 space-y-2" data-execution-file-picker>
+                  <p className="text-[11.5px] leading-snug text-ink-faint">{t('composer.execution.fileHint')}</p>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={filePath} data-execution-file-path
+                      aria-label={t('composer.execution.filePath')}
+                      placeholder={t('composer.execution.filePath')}
+                      onChange={(event) => { setFilePath(event.target.value); setPreviewPath(undefined); }}
+                      onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); setPreviewPath(filePath.trim()); if (previewPath === filePath.trim()) void filePreview.refetch(); } }}
+                      className="min-w-0 flex-1 rounded-md border border-hairline bg-transparent px-2 py-1.5 font-mono text-[12px] text-ink outline-none focus:border-selected-ink" />
+                    <button type="button" disabled={filePath.trim() === '' || catalogMode.mode === 'disabled' || filePreview.isFetching}
+                      onClick={() => { setPreviewPath(filePath.trim()); if (previewPath === filePath.trim()) void filePreview.refetch(); }}
+                      className="shrink-0 text-[12px] font-medium text-ink disabled:opacity-50">{t('composer.execution.filePreview')}</button>
+                  </div>
+                  {filePreview.isFetching ? <p role="status" className="text-[12px] text-ink-faint">{t('selection.loading')}</p> : null}
+                  {filePreview.isError ? <p role="alert" className="break-words text-[12px] text-danger">{errorText(locale, filePreview.error)}</p> : null}
+                  {filePreview.isSuccess && preview?.source_file !== undefined ? (
+                    <div className="space-y-1">
+                      <p className="text-[12px] text-ink">{preview.name} · {profileExecutor(preview) === NATIVE_EXECUTOR ? nativeLabel : (catalog.find((item) => item.id === profileExecutor(preview))?.label ?? profileExecutor(preview))}</p>
+                      <p className="break-all font-mono text-[11px] text-ink-faint">{preview.source_file}</p>
+                      <button type="button" data-execution-file-apply disabled={filePreview.isFetching}
+                        onClick={() => { setChoice({ ...choice, executor: profileExecutor(preview), profile: undefined, profile_file: preview.source_file }); }}
+                        className="rounded-md bg-ink px-3 py-1.5 text-[12px] font-medium text-paper">{t('composer.execution.fileUse')}</button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline px-3 py-2">
             <p className="min-w-0 text-[11.5px] leading-snug text-ink-faint">{t('composer.execution.bareNote')}</p>

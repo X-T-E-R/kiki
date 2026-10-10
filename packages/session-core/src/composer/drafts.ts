@@ -2,7 +2,7 @@
 
 import type { ModelSwitchMode, PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
-import type { ExecutionChoice } from './executionSelection';
+import { parseExecutionChoice, type ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
 import { readSettings } from '../settings/settings';
@@ -223,6 +223,7 @@ export interface PersistedNewSessionDraft {
   readonly workspaceId?: string;
   readonly cwd?: string;
   readonly profile?: string;
+  readonly execution?: ExecutionChoice;
   readonly modelOverride?: string;
   readonly effortOverride?: string;
   readonly modelFromProfile?: boolean;
@@ -292,6 +293,7 @@ export function readNewSessionDraft(): PersistedNewSessionDraft {
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -309,6 +311,7 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
     const hasValues =
       (draft.workspaceId !== undefined && draft.workspaceId !== '') ||
       (draft.cwd !== undefined && draft.cwd !== '') ||
+      draft.execution !== undefined ||
       (draft.profile !== undefined && draft.profile !== '') ||
       (draft.modelOverride !== undefined && draft.modelOverride !== '') ||
       (draft.effortOverride !== undefined && draft.effortOverride !== '');
@@ -319,6 +322,7 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
         workspaceId: draft.workspaceId,
         cwd: draft.cwd,
         profile: draft.profile,
+        execution: draft.execution,
         modelOverride: draft.modelOverride,
         effortOverride: draft.effortOverride,
         modelFromProfile: draft.modelFromProfile,

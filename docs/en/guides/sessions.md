@@ -50,6 +50,8 @@ On the **New session** page in the desktop app or browser you can pick an existi
 
 When one workspace is selected in the sidebar, **New session** uses that workspace. A failed workspace list is not an empty list: your draft and choices stay in place. Use **Retry**, explicitly choose automatic creation, or enter an absolute folder path.
 
+To use a [Profile Markdown file](../customization/agent-profiles.md) directly, open the execution menu beside the composer and choose **Use a profile file…**. Enter its path on the connected host, preview it, then choose **Use this profile**. Relative paths use the selected workspace or directory; automatic workspace creation requires an absolute path. A valid file does not need to appear in the main-profile menu, and selecting it does not register or copy it. If preview fails, keep the draft and retry or choose another profile.
+
 Stopping creation keeps the draft and waits for the request's result; it does not undo a session already created on the server. Once creation is confirmed, send again with the same choices to reuse that session, or choose **Open created session** without sending. If a timeout leaves the result unconfirmed, check the session list before trying again — another attempt may create a second session.
 
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.

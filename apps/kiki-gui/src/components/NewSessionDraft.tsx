@@ -34,9 +34,11 @@ import {
   type PersistedNewSessionDraft,
   type SshHostAttachment,
   executionSelectionOf,
+  parseExecutionChoice,
   isBareExternalChoice,
   sendsLegacyControl,
   NATIVE_EXECUTOR,
+  profileExecutor,
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '@kiki/session-core/sessions';
@@ -72,6 +74,7 @@ import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
 import { sshApi } from '../lib/ssh';
 import { ApiError } from '../lib/client';
+import { useProfileFilePreview } from '../lib/profileFilePreview';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
@@ -90,6 +93,7 @@ function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -120,6 +124,7 @@ function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
+      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -379,11 +384,11 @@ export function useNewSessionDraft({
   // Which engine the new session runs. Native with the picked profile until
   // the user names an engine of their own; a bare engine sends no profile at
   // all, so the harness runs with its own configuration.
-  const [execution, setExecutionState] = useState<ExecutionChoice>(() => ({
-    executor: NATIVE_EXECUTOR,
-    profile: (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE,
-    overrides: undefined,
-  }));
+  const [execution, setExecutionState] = useState<ExecutionChoice>(() =>
+    !(applyPrefill && initialProfile !== undefined) && initialRestoredDraft.execution !== undefined
+      ? initialRestoredDraft.execution
+      : { executor: NATIVE_EXECUTOR, profile: (applyPrefill ? initialProfile : undefined) ?? initialRestoredDraft.profile ?? DEFAULT_AGENT_PROFILE, overrides: undefined },
+  );
   // The visible effort follows the catalog for ordinary drafts. A persona's
   // inherited preview is not a user override, even when it has the same value.
   const [effortOverride, setEffortOverrideState] = useState<string | undefined>(
@@ -490,7 +495,11 @@ export function useNewSessionDraft({
     liveSettings.defaultModel,
     serverDefaultModel,
   );
-  const selectedProfile = agentProfilesQuery.data?.items.find((item) => item.name === agentProfile);
+  const filePreviewQuery = useProfileFilePreview(execution.profile_file, agentProfileCatalogMode);
+  const fileProfile = filePreviewQuery.data?.profile;
+  const selectedProfile = execution.profile_file !== undefined
+    ? fileProfile
+    : agentProfilesQuery.data?.items.find((item) => item.name === agentProfile);
   const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel, 'main');
   const catalogItem = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
@@ -535,21 +544,26 @@ export function useNewSessionDraft({
   }, []);
 
   useEffect(() => {
-    if (agentProfileCatalogMode.mode !== 'disabled' && agentProfilesQuery.isPending) return;
-    const profiles = agentProfilesQuery.data?.items;
-    const selected = profiles?.find((item) =>
+    const fromFile = execution.profile_file !== undefined;
+    const query = fromFile ? filePreviewQuery : agentProfilesQuery;
+    if (agentProfileCatalogMode.mode !== 'disabled' && query.isPending) return;
+    const selected = fromFile ? fileProfile : agentProfilesQuery.data?.items.find((item) =>
       item.name === agentProfile && item.main === true && !item.disabled
     );
-    // Errors and confirmed-invalid selections are different states. Neither
-    // authorizes replacing the user's choice (or its persisted source).
-    if (!agentProfilesQuery.isError && selected !== undefined && profiles !== undefined) {
-      const defaults = composerDefaultsForProfile(profiles, agentProfile);
+    // A file preview validates the declaration itself, not its main-menu membership.
+    // Failed previews keep the draft's source and overrides intact for retry.
+    if (query.isSuccess && selected !== undefined) {
+      const defaults = composerDefaultsForProfile([selected], selected.name);
       if (modelOverrideFromProfile.current) setModelOverrideState(defaults.model);
       if (effortOverrideFromProfile.current) setEffortOverrideState(defaults.thinking);
+      if (fromFile && selected.source_file !== undefined) {
+        setExecutionState((current) => current.profile_file === selected.source_file && current.executor === profileExecutor(selected)
+          ? current : { ...current, executor: profileExecutor(selected), profile: undefined, profile_file: selected.source_file });
+      }
     }
     profileCatalogTransitionRef.current = false;
     setProfileCatalogTransitionPending(false);
-  }, [agentProfile, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isError, agentProfilesQuery.isPending]);
+  }, [agentProfile, execution.profile_file, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
 
   useEffect(() => {
     if (dailySettingsKey !== undefined) {
@@ -557,6 +571,7 @@ export function useNewSessionDraft({
         workspaceId: workspaceId || effectiveWorkspace?.id,
         cwd,
         profile: agentProfile,
+        execution,
         modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
         effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
@@ -569,13 +584,14 @@ export function useNewSessionDraft({
       workspaceId: workspaceId || effectiveWorkspace?.id,
       cwd,
       profile: agentProfile,
+      execution,
       modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
       effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
       effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
       prefillSource,
     });
-  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, modelOverride, effortOverride, selectionRevision, prefillSource]);
+  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effortOverride, selectionRevision, prefillSource]);
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
@@ -604,16 +620,20 @@ export function useNewSessionDraft({
     writeDraft(draftKey, text);
   }, [draftKey]);
 
+  const fromFile = execution.profile_file !== undefined;
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
-    || (agentProfileCatalogMode.mode !== 'disabled' && agentProfilesQuery.isPending);
+    || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending : agentProfilesQuery.isPending));
   const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
-    || agentProfilesQuery.isError
-    || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)
-    || !modelsQuery.isSuccess
-    || modelProjectionState === 'blocked' || modelProjectionState === 'unknown'
-    || (effectiveModel !== undefined && catalogItem === undefined)
-    || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride));
+    || (fromFile
+      ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined
+      : agentProfilesQuery.isError || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled))
+    || (!(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
+      !modelsQuery.isSuccess
+      || modelProjectionState === 'blocked' || modelProjectionState === 'unknown'
+      || (effectiveModel !== undefined && catalogItem === undefined)
+      || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
+    ));
 
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
@@ -891,10 +911,15 @@ export function useNewSessionDraft({
   const setExecution = useCallback((next: ExecutionChoice) => {
     setExecutionState(next);
     if (next.profile === undefined) {
+      personaSelectionRef.current += 1;
+      setPersonaState(undefined);
+      setPersonaPending(false);
       setModelOverrideState(undefined);
       setEffortOverrideState(undefined);
-      modelOverrideFromProfile.current = false;
-      effortOverrideFromProfile.current = false;
+      modelOverrideFromPersona.current = false;
+      effortOverrideFromPersona.current = false;
+      modelOverrideFromProfile.current = next.profile_file !== undefined;
+      effortOverrideFromProfile.current = next.profile_file !== undefined;
     } else {
       applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile);
     }
@@ -917,6 +942,7 @@ export function useNewSessionDraft({
     }
     const definition = snapshot.definition;
     const profile = definition.profile ?? DEFAULT_AGENT_PROFILE;
+    setExecutionState({ executor: NATIVE_EXECUTOR, profile, profile_file: undefined, overrides: undefined });
     const defaults = composerDefaultsForProfile(items, profile);
     setAgentProfileState(profile);
     // Persona pins preview the effective values without becoming explicit

@@ -90,6 +90,7 @@ import { pushToast } from '../lib/toasts';
 import { matchesShortcutAction } from '../lib/shortcuts';
 import { useRemoteConnections } from '../lib/remoteConnections';
 import { useConnection } from '../state/connection';
+import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
 import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterUsage } from './ContextMeter';
@@ -869,29 +870,43 @@ export function Composer({
     retryDelay: catalogRetryDelay,
   });
   const frozenProfile = frozenMenuQuery.data?.profile;
-  const selectedProfileName = agentProfile ?? frozenProfile?.name ?? DEFAULT_AGENT_PROFILE;
+  const fromFile = execution?.profile_file !== undefined;
+  const externalFile = fromFile && execution?.executor !== 'native';
+  const validateFile = fromFile && (sessionId === undefined || executionPending);
+  const filePreviewQuery = useProfileFilePreview(validateFile ? execution?.profile_file : undefined, agentProfileCatalogMode);
+  const selectedProfileName = fromFile
+    ? filePreviewQuery.data?.profile.name ?? frozenProfile?.name ?? execution!.profile_file!
+    : agentProfile ?? frozenProfile?.name ?? DEFAULT_AGENT_PROFILE;
   const catalogProfile = agentProfilesQuery.data?.items.find((item) => item.name === selectedProfileName);
-  // A matching live profile uses its frozen domain. A pending profile change
-  // uses the selected declaration, not the previous agent's frozen menu.
-  const modelProjection = sessionId === undefined ? catalogProfile
-    : frozenProfile?.name === selectedProfileName ? frozenProfile
-      : frozenProfile !== undefined ? catalogProfile : agentId === 'main' ? undefined : { restrict_models_to_menu: true };
+  // A pending file is its own declaration, even if a catalog profile has the same name.
+  // A bound file keeps its frozen domain until the next message rebinds it.
+  const modelProjection = fromFile
+    ? validateFile ? filePreviewQuery.data?.profile : frozenProfile
+    : sessionId === undefined ? catalogProfile
+      : frozenProfile?.name === selectedProfileName ? frozenProfile
+        : frozenProfile !== undefined ? catalogProfile : agentId === 'main' ? undefined : { restrict_models_to_menu: true };
   const modelSelectionPosition = agentId === 'main' ? 'main' : 'sub';
+  const selectionDefaultModel = validateFile ? filePreviewQuery.data?.profile.pinned_model_alias ?? serverDefaultModel : defaultModel;
   const modelOptions: readonly SearchableSelectOption[] = useMemo(() => catalogModelOptions.map((option) => {
-    const target = option.value === '' ? defaultModel ?? serverDefaultModel : option.value;
+    const target = option.value === '' ? selectionDefaultModel ?? serverDefaultModel : option.value;
+    const inheritedFileModel = validateFile && option.value === '' && target !== undefined ? resolveCatalogModel(models, target) : undefined;
+    const row = validateFile && option.value === '' ? { ...option,
+      label: t('composer.inheritSession', { model: inheritedFileModel?.display_name ?? target ?? t('composer.unknown') }),
+      hint: inheritedFileModel === undefined ? target : providerGroupLabel(inheritedFileModel.provider_id), title: target,
+    } : option;
     const state = projectedProfileModelState(modelProjection, models, target, modelSelectionPosition);
     const source = projectedProfileModelRuleSource(modelProjection, models, target, selectedProfileName);
     const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
       : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
-    return state === 'allowed' ? option : {
-      ...option, disabled: state !== 'warning', hint: state === 'unknown' ? reason : source,
-      description: reason, title: [option.title ?? option.label, reason].join('\n'),
+    return state === 'allowed' ? row : {
+      ...row, disabled: state !== 'warning', hint: state === 'unknown' ? reason : source,
+      description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
-  }), [catalogModelOptions, modelProjection, models, defaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, t]);
-  const validateProfile = agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
-  const validatingModel = model ?? defaultModel ?? serverDefaultModel;
+  }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
+  const validateProfile = !fromFile && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
+  const validatingModel = model ?? selectionDefaultModel ?? serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
-  const modelDomainState = projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const modelDomainState = externalFile ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
   const selectedModel = validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
@@ -905,16 +920,19 @@ export function Composer({
   // A transport failure says nothing about whether a preserved selection is valid.
   // During its background retry, React Query is still pending but must not hold send.
   const selectionLoading =
-    (modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
-    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason));
-  const selectionCatalogError = [modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
-    .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
+    (!externalFile && modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
+    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason)) ||
+    (validateFile && filePreviewQuery.isPending);
+  const selectionCatalogError = (validateFile ? filePreviewQuery.error : null) ??
+    [externalFile ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
+      .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
+  const invalidFile = validateFile && (!filePreviewQuery.isSuccess || filePreviewQuery.data?.profile.source_file === undefined);
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
-  const invalidModel = engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
-  const invalidEffort = engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
+  const invalidModel = !externalFile && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = !externalFile && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
-  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
+  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidFile || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -2048,7 +2066,7 @@ export function Composer({
     }
   };
 
-  const effectiveModel = model ?? defaultModel ?? serverDefaultModel;
+  const effectiveModel = validatingModel;
   // The status line names the model by its catalog display name (the inherit
   // source and provider live in the picker and the tooltip).
   const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
@@ -2183,6 +2201,7 @@ export function Composer({
           }}
           catalog={executorCatalog}
           profiles={agentProfilesQuery.data?.items ?? []}
+          catalogMode={agentProfileCatalogMode}
           pickableProfile={isConversationProfile}
           nativeLabel={t('composer.agentDefaultName')}
           contextGroups={executionGrants?.kikiContext}
@@ -2206,8 +2225,8 @@ export function Composer({
         modelOptions={modelOptions}
         // An external engine's model is its own id, set on the profile: shown
         // read-only here, with the engine named in the tooltip.
-        hasCatalog={engine === undefined && models.length > 0}
-        engineLabel={engine?.label}
+        hasCatalog={!externalFile && engine === undefined && models.length > 0}
+        engineLabel={externalFile ? executorCatalog.find((item) => item.id === execution?.executor)?.label ?? execution?.executor : engine?.label}
         openSignal={modelMenuSignal}
         model={model}
         resolvedModelKey={resolvedModelKey}
@@ -2216,7 +2235,7 @@ export function Composer({
         modelSource={modelSource}
         disabled={variant === 'subagent' && disabled}
         onChangeModel={(next) => {
-          const state = projectedProfileModelState(modelProjection, models, next ?? defaultModel ?? serverDefaultModel, modelSelectionPosition);
+          const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
           if (state === 'blocked' || state === 'unknown') return;
           return onChangeModel(next);
         }}
@@ -2335,7 +2354,7 @@ export function Composer({
             : t('selection.modelMenuBlocked', { source: modelRuleSource })}</p> : null}
           {modelDomainState === 'unknown' && frozenMenuQuery.isError ? <button type="button" className="min-h-9 underline" onClick={() => { void frozenMenuQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort ? <p>{t('selection.effortInvalid', { value: effort! })}</p> : null}
-          {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); }}>{t('common.retry')}</button> : null}
+          {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); if (validateFile) void filePreviewQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort && selectedModel?.default_effort !== undefined && catalogModelSupportsEffort(selectedModel, selectedModel.default_effort) ? <button type="button" className="underline" onClick={() => { onChangeEffort(selectedModel.default_effort); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
         {modelDomainState === 'warning' ? <p data-model-menu-warning role="status" className="mb-2 px-1 text-[11.5px] text-ink-soft">

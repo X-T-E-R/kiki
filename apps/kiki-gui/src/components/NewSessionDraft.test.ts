@@ -23,7 +23,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', label: null as string | null },
   client: {
     listWorkspaces: vi.fn(),
-    klient: { rest: { workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
+    klient: { rest: { agents: { previewFile: vi.fn() }, workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
     listNamedAgentProfiles: vi.fn(),
@@ -65,6 +65,7 @@ beforeEach(() => {
   navigate.mockReset();
   client.listWorkspaces.mockReset().mockResolvedValue({ items: [] });
   client.klient.rest.workspaces.inspect.mockReset().mockResolvedValue({ isGit: false });
+  client.klient.rest.agents.previewFile.mockReset();
   client.getConfig.mockReset().mockResolvedValue({});
   client.listModels.mockReset().mockResolvedValue({ items: [] });
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [] });
@@ -1532,5 +1533,76 @@ describe('persona model and effort choice sources', () => {
     const body = client.createSession.mock.calls[0]![0] as SessionCreate;
     expect(body.persona).toBeUndefined();
     expect(body.agent_config).toMatchObject({ profile: 'agent', model: 'fixture/model', thinking: 'high' });
+  });
+});
+
+
+describe('explicit profile file drafts', () => {
+  const profile: NamedAgentProfile = {
+    name: 'helper', source: 'file', source_file: '/workspace/profiles/helper.md',
+    main: false, disabled: false, routes: [], executor: 'native',
+    pinned_model_alias: 'fixture/model', thinking_effort: 'high',
+  };
+
+  beforeEach(() => {
+    client.listModels.mockResolvedValue({ items: [{
+      id: 'fixture/model', provider_id: 'fixture', remote_id: 'model',
+      support_efforts: ['high'], default_effort: 'high',
+    }] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    client.klient.rest.agents.previewFile.mockResolvedValue({ profile });
+  });
+
+  it('keeps an external file’s vendor model and effort outside Kiki’s model catalog', async () => {
+    client.listModels.mockResolvedValue({ items: [] });
+    client.klient.rest.agents.previewFile.mockResolvedValue({ profile: { ...profile, executor: 'example-acp', pinned_model_alias: 'vendor-model', thinking_effort: 'vendor-effort' } });
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ workspaceId: AUTO_WORKSPACE_ID,
+      execution: { executor: 'example-acp', profile_file: profile.source_file }, modelFromProfile: true, effortFromProfile: true,
+    }));
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady && value.modelOverride === 'vendor-model');
+    expect(state.effectiveEffort).toBe('vendor-effort');
+    await act(async () => { await state.send('Hello', []); });
+    expect(client.createSession.mock.calls[0]![0].agent_config).toMatchObject({
+      execution: { executor: 'example-acp', profile_file: profile.source_file }, model: 'vendor-model', thinking: 'vendor-effort',
+    });
+  });
+
+  it('restores a non-main file, previews in its workspace, and creates with its canonical source', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [{ id: 'workspace-example', root: '/workspace', sessions: 0, lastSessionTime: null }] });
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
+      workspaceId: 'workspace-example', execution: { executor: 'native', profile_file: 'profiles/helper.md' },
+      modelFromProfile: true, effortFromProfile: true,
+    }));
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady && value.modelOverride === 'fixture/model');
+    expect(client.klient.rest.agents.previewFile).toHaveBeenCalledWith({ path: 'profiles/helper.md', cwd: undefined, workspace_id: 'workspace-example' });
+    expect(state.execution.profile_file).toBe(profile.source_file);
+    expect(state.effectiveEffort).toBe('high');
+    expect(readStoredDraft()).toMatchObject({ execution: { executor: 'native', profile_file: profile.source_file } });
+    await act(async () => { await state.send('Hello', []); });
+    expect(client.createSession.mock.calls[0]![0].agent_config.execution).toMatchObject({ executor: 'native', profile_file: profile.source_file });
+    expect(client.createSession.mock.calls[0]![0].agent_config.profile).toBeUndefined();
+  });
+
+  it('preserves failed file previews and manual choices without sending or falling back to the catalog', async () => {
+    client.klient.rest.agents.previewFile.mockRejectedValue(new ApiError('Profile could not be loaded', 40001));
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
+      workspaceId: AUTO_WORKSPACE_ID,
+      execution: { executor: 'native', profile_file: '/workspace/profiles/helper.md' },
+      modelOverride: 'fixture/model', effortOverride: 'high', modelFromProfile: false, effortFromProfile: false,
+    }));
+    const queryClient = await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.updateDraft('Keep this draft'); await state.send('Keep this draft', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(latestDraftState!.selectionReady).toBe(false);
+    expect(readStoredDraft()).toMatchObject({ execution: { profile_file: profile.source_file }, modelOverride: 'fixture/model' });
+    client.klient.rest.agents.previewFile.mockResolvedValue({ profile });
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['profile-file-preview'] }); });
+    state = await settleDraft((value) => value.selectionReady);
+    expect(state.draft).toBe('Keep this draft');
+    expect(state.modelOverride).toBe('fixture/model');
+    expect(state.effectiveEffort).toBe('high');
   });
 });

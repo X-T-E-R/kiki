@@ -35,6 +35,7 @@ const listWorkspaceSkills = vi.fn();
 const listDraftSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const getAgentCapabilities = vi.fn();
+const previewFile = vi.fn();
 const uploadFile = vi.fn();
 const meta = vi.fn();
 const sshList = vi.fn();
@@ -58,7 +59,7 @@ vi.mock('../state/connection', () => ({
       getAgentCapabilities,
       uploadFile,
       meta,
-      klient: { rest: { ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } } },
+      klient: { rest: { agents: { previewFile }, ssh: { list: sshList, sessionHosts: sshSessionHosts, addSessionHost: sshAdd, removeSessionHost: sshRemove } } },
     },
   }),
   // The persona chip's face; letter avatars need no connection.
@@ -96,6 +97,7 @@ beforeEach(() => {
   });
   getAgentCapabilities.mockReset().mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true,
     profile: { name: 'agent', restrict_models_to_menu: false }, targets: [] });
+  previewFile.mockReset();
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   listDraftSkills.mockReset().mockResolvedValue({ skills: [] });
@@ -3342,5 +3344,68 @@ describe('session SSH stays resident and rides no message', () => {
     const { container } = await renderComposer();
     expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
     expect(container.querySelector('[data-model-switch-error]')).toBeNull();
+  });
+});
+
+
+describe('Composer explicit profile file recovery', () => {
+  it('previews a typed host path without stealing focus and applies only its canonical file source', async () => {
+    previewFile.mockResolvedValue({ profile: {
+      name: 'helper', source: 'file', source_file: '/workspace/profiles/helper.md',
+      main: false, disabled: false, routes: [], executor: 'example-acp',
+    } });
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      execution: { executor: 'native', profile: 'agent', overrides: undefined },
+      onChangeExecution, agentProfileCatalogMode: { mode: 'cwd', cwd: '/workspace', effective: true },
+    });
+    await click(container.querySelector('[data-execution-trigger]')!);
+    await click(container.querySelector('[data-execution-file-open]')!);
+    const input = container.querySelector<HTMLInputElement>('[data-execution-file-path]')!;
+    input.focus();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'profiles/helper.md');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(document.activeElement).toBe(input);
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    await settle();
+    await settle();
+    expect(previewFile).toHaveBeenCalledWith({ path: 'profiles/helper.md', cwd: '/workspace', workspace_id: undefined });
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    await click(container.querySelector('[data-execution-file-apply]')!);
+    expect(onChangeExecution).toHaveBeenCalledWith({ executor: 'example-acp', profile: undefined, profile_file: '/workspace/profiles/helper.md', overrides: undefined });
+  });
+  const profile: NamedAgentProfile = {
+    name: 'helper', source: 'file', source_file: '/workspace/helper.md', main: false,
+    disabled: false, routes: [], pinned_model_alias: 'fixture/kiki-pro',
+  };
+  const execution = { executor: 'native', profile: undefined, profile_file: profile.source_file, overrides: undefined };
+
+  it('validates a non-main file outside the curated catalog and clears its source when choosing bare', async () => {
+    previewFile.mockResolvedValue({ profile });
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution, agentProfile: 'helper' });
+    expect(previewFile).toHaveBeenCalledWith({ path: profile.source_file, cwd: undefined, workspace_id: undefined });
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    const trigger = container.querySelector('[data-execution-trigger]')!;
+    expect(trigger.textContent).toContain('helper.md');
+    await click(trigger);
+    const bare = container.querySelector('[data-execution-bare="native"]')!;
+    expect(bare.getAttribute('aria-selected')).toBe('false');
+    await click(bare);
+    expect(onChangeExecution).toHaveBeenCalledWith({ executor: 'native', profile: undefined, profile_file: undefined, overrides: undefined });
+  });
+
+  it('blocks a failed file preview with the original error and explicit retry', async () => {
+    previewFile.mockRejectedValue(new ApiError('Profile file is unavailable', 40001));
+    const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper' });
+    const diagnostic = container.querySelector('[data-selection-diagnostic]')!;
+    expect(diagnostic.textContent).toContain('Profile file is unavailable');
+    previewFile.mockResolvedValue({ profile });
+    await click(diagnostic.querySelector('button')!);
+    await settle();
+    await settle();
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
   });
 });

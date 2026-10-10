@@ -29,6 +29,7 @@ import {
   writeDraft,
   writeNewSessionDraft,
 } from './drafts';
+import { executionChoice, executionSelectionOf, isBareExternalChoice, sameExecutionChoice, sendsLegacyControl } from './executionSelection';
 
 function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {}) {
   return {
@@ -295,6 +296,26 @@ describe('per-session composer state (memory-only)', () => {
 });
 
 describe('persisted /new draft scalars', () => {
+  it('round-trips a file-backed execution without registering a profile or losing explicit overrides', () => {
+    const selection = { executor: 'example-acp', profile_file: '/workspace/example/profile.md', overrides: { model: 'example/model', thinking: null, allow_kiki_subagents: false } };
+    const choice = executionChoice(selection);
+    writeNewSessionDraft({ execution: choice });
+    resetComposerMemoryForTests();
+    expect(readNewSessionDraft().execution).toEqual(choice);
+    expect(executionSelectionOf(choice)).toEqual(selection);
+    expect(isBareExternalChoice(choice)).toBe(false);
+    expect(sendsLegacyControl(choice, 'permission_mode', false)).toBe(true);
+    expect(sendsLegacyControl(choice, 'thinking', false)).toBe(false);
+    expect(sameExecutionChoice(choice, { ...choice, profile_file: '/workspace/example/other.md' })).toBe(false);
+  });
+
+  it('does not restore malformed or conflicting execution sources', () => {
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ execution: { executor: 'native', profile: 'agent', profile_file: '/workspace/example/profile.md' } }));
+    expect(readNewSessionDraft().execution).toBeUndefined();
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ execution: { executor: 'example-acp', overrides: { thinking: 123 } } }));
+    expect(readNewSessionDraft().execution).toBeUndefined();
+  });
+
   const draft = {
     workspaceId: 'wd-1',
     cwd: '/workspace/example',
