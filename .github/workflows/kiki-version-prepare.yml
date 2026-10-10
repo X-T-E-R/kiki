@@ -164,7 +164,6 @@ jobs:
       BASE_SHA: ${{ inputs.base_sha }}
       EXPECTED_VERSION: ${{ inputs.expected_version }}
       WORKFLOW_CODE_SHA: ${{ github.workflow_sha }}
-      KIKI_HOME: ${{ runner.temp }}/kiki-generation-home
     steps:
       - name: Checkout exact source
         uses: actions/checkout@v6
@@ -191,6 +190,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Generate from normal project commands
         shell: bash
+        env:
+          KIKI_HOME: ${{ runner.temp }}/kiki-generation-home
         run: |
           python3 <<'PY'
           import datetime, hashlib, json, os, pathlib, subprocess, tomllib
