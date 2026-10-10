@@ -102,6 +102,12 @@ agent 文件被监听并在变更时热刷新，且热刷新不会打断进行�
 
 内置 `kimi-acp` 执行器会把已配置的 MCP 服务器转发给 Kimi Code。`0.37.0` 起、不含 `0.39.0` 的 Kimi CLI 不接受 ACP stdio MCP 服务器，预检会警告 MCP 工具将失败并建议升级；警告不阻止转发，无法探测版本时也不发这条警告。
 
+### 外部 ACP 工具时间线
+
+ACP harness 的工具调用与 Kiki 工具显示在同一条时间线中。harness 提供工具种类和结构化参数时，Kiki 使用对应的文件读写、编辑、Diff、命令、搜索或 URL 视图。工具标题仍只是供人阅读的标签：叫作 `Bash` 或 `TodoList` 不会让它变成 Kiki 原生工具，也不会赋予原生执行权限。
+
+展开工具卡片可以查看 harness 提供的参数和输出。未知工具、参数不足或涉及多个文件的 Diff 会完整保留收到的数据，不猜测命令，也不只显示第一个变更文件。图片内容可预览，同时保留原始数据；单独的终端引用不等于终端输出。失败或取消后的中间输出仍可查看，即使最后一次更新没有输出。harness 在发送前已经截断的内容，Kiki 无法补回。
+
 ### 外部 main agent 的委派
 
 外部执行器可以担任 main agent。要让它派遣 Kiki subagent，在其 profile 中添加 `allow_kiki_subagents: true` 并把该 profile 绑定为 main agent，默认是 `false`，也不会为外部子 Agent 开启委派。

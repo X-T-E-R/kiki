@@ -52,6 +52,7 @@ import {
   ExecutorHintDelivery,
   ExecutorPlanUpdate,
   ExecutorRuntimeUpdate,
+  ExecutorToolDisplay,
   ExecutorSessionUpdated,
   ExecutorTurnMetadata,
   externalExecutorKey,
@@ -1087,6 +1088,36 @@ describe('ACP external executor', () => {
     expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
+  it.each(['failed', 'cancelled'])('keeps partial ACP output and refreshed display for %s', async (status) => {
+    const content = [{ type: 'content', content: { type: 'text', text: 'partial output' } }];
+    const harness = createHarness({ events: [
+      { type: 'tool.update', toolCallId: 'stream', kind: 'execute', status: 'in_progress', rawInput: { command: 'first' }, content },
+      { type: 'tool.call', toolCallId: 'stream', title: 'Bash', kind: 'execute', rawInput: { command: 'second', cwd: '/work' } },
+      { type: 'tool.update', toolCallId: 'stream', status, content: [], rawOutput: '' },
+      { type: 'tool.update', toolCallId: 'stream', rawInput: { command: 'third' } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const snapshots = harness.events.filter((event): event is ExecutorToolDisplay => event instanceof ExecutorToolDisplay);
+    expect(harness.events.filter((event) => event.type === 'tool.call.started')).toHaveLength(1);
+    expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(1);
+    expect(new Set(snapshots.map((event) => event.toolCallId)).size).toBe(1);
+    expect(snapshots.at(-1)).toMatchObject({ name: 'Bash', state: status === 'failed' ? 'error' : 'interrupted',
+      display: { kind: 'command', command: 'third' },
+      output: { text: 'partial output', content, remoteToolCallId: 'stream', remoteSessionId: 'remote-2:e1', status },
+    });
+    await harness.session.shutdown();
+  });
+
+  it('interrupts unreported ACP calls without inventing a tool failure at a successful turn end', async () => {
+    const harness = createHarness({ events: [{ type: 'tool.call', toolCallId: 'unfinished', title: 'Read', kind: 'read', rawInput: { path: 'a.ts' }, status: 'pending' }] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(harness.events.filter((event) => event instanceof ExecutorToolDisplay).at(-1)).toMatchObject({ state: 'interrupted', output: { status: 'pending', synthetic: false, text: '' } });
+    expect(JSON.stringify(harness.loopEvents)).not.toContain('External tool did not report a terminal result');
+    await harness.session.shutdown();
+  });
+
   it('maps normalized events to live and canonical durable records with stable losses', async () => {
     const harness = createHarness({
       events: mappingEvents,
@@ -1130,11 +1161,14 @@ describe('ACP external executor', () => {
       'profile_as_user_preamble',
       'message_id_missing',
       'tool_input_partial',
-      'tool_output_summary_only',
       'usage_context_only',
       'unknown_update_dropped',
       'unstable_acp_plan',
     ]));
+    expect(metadata?.losses).not.toContain('tool_output_summary_only');
+    expect(harness.events.filter((event) => event instanceof ExecutorToolDisplay).at(-1)).toMatchObject({
+      output: { text: 'summary', content: mappingEvents[3]?.type === 'tool.update' ? mappingEvents[3].content : undefined },
+    });
     expect(harness.events.some((event) => event instanceof ExecutorPlanUpdate)).toBe(true);
     expect(harness.events.some((event) => event instanceof ExecutorRuntimeUpdate)).toBe(true);
     expect(harness.wire.flush).toHaveBeenCalled();

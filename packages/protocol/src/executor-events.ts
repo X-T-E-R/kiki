@@ -20,9 +20,11 @@ export type NormalizedExecutorEvent =
       readonly type: 'tool.call';
       readonly toolCallId: string;
       readonly title: string;
+      readonly name?: string;
       readonly kind?: string;
       readonly status?: string;
       readonly rawInput?: unknown;
+      readonly rawOutput?: unknown;
       readonly content?: readonly unknown[];
       readonly locations?: readonly unknown[];
     }
@@ -30,6 +32,7 @@ export type NormalizedExecutorEvent =
       readonly type: 'tool.update';
       readonly toolCallId: string;
       readonly title?: string;
+      readonly name?: string;
       readonly kind?: string;
       readonly status?: string;
       readonly rawInput?: unknown;

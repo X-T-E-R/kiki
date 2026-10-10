@@ -5569,3 +5569,32 @@ describe('question history answers', () => {
     expect(block?.kind === 'question' && block.outcome?.kind === 'answered' ? block.outcome.answers : 'wrong state').toBeUndefined();
   });
 });
+
+
+describe('external tool identity in timeline projection', () => {
+  it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'SendMessage', 'AgentRun', 'AgentSend'])('preserves external %s as a tool and its raw package', (name) => {
+    const output = { kind: 'external_tool_output', protocol: 'acp-v1', text: 'partial', rawOutput: { message_id: 'message-1', delivered_to: ['peer'] }, content: [{ type: 'terminal', terminalId: 'terminal-1' }] };
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-external', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{
+        kind: 'step', stepId: 's-external', turnId: 't-external', ordinal: 1, state: 'completed', frames: [{
+          kind: 'tool', frameId: 'f-external', toolCallId: 'external:session:call', name, state: 'interrupted',
+          input: { command: 'echo hi', text: 'hello', to: 'peer', resume: 'peer', target: 'peer' },
+          output, display: { kind: 'generic', summary: name },
+        }],
+      }],
+    }] });
+    expect(blocks.filter((block) => block.kind === 'shell' || block.kind === 'message' || block.kind === 'subagent-event')).toEqual([]);
+    expect(blocks.find((block) => block.kind === 'tool')).toMatchObject({ name, toolCallId: 'external:session:call', status: 'stopped', output, display: { kind: 'generic', summary: name } });
+  });
+
+  it('keeps the native Bash shell renderer', () => {
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't-native', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{
+        kind: 'step', stepId: 's-native', turnId: 't-native', ordinal: 1, state: 'completed', frames: [{
+          kind: 'tool', frameId: 'f-native', toolCallId: 'native-call', name: 'Bash', state: 'done', input: { command: 'echo hi' }, output: 'hi',
+        }],
+      }],
+    }] });
+    expect(blocks.find((block) => block.kind === 'shell')).toMatchObject({ commandId: 'native-call', command: 'echo hi', output: 'hi', done: true });
+  });
+});

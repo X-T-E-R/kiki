@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -265,7 +265,11 @@ function createProject(): Project {
     tsConfigFilePath: join(PKG, 'tsconfig.json'),
     skipAddingFilesFromTsConfig: true,
   });
-  project.addSourceFilesAtPaths(join(SRC, '**', '*.ts'));
+  for (const entry of readdirSync(SRC, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.ts')) {
+      project.addSourceFileAtPath(join(entry.parentPath, entry.name));
+    }
+  }
   return project;
 }
 

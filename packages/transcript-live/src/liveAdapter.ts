@@ -999,7 +999,7 @@ export class AgentTranscriptLiveAdapter {
       inputText: this.toolFrames.get(event.toolCallId)?.frame.inputText,
       display: event.display,
       startedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
-      todoId: event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,
+      todoId: !event.toolCallId.startsWith('external:') && event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,
     };
     this.toolFrames.set(event.toolCallId, { turnId, stepId: step.stepId, frame });
     ops.push({ op: 'frame.upsert', turnId, stepId: step.stepId, frame });

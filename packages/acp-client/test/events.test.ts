@@ -38,6 +38,15 @@ describe('ACP normalized executor event mapper', () => {
       .toEqual({ type: 'unknown', updateType: 'future_vendor_update' });
   });
 
+  it.each(['tool_call', 'tool_call_update'])('preserves %s names and complete initial or updated payloads', (sessionUpdate) => {
+    const rawInput = { source: { kind: 'url', url: 'https://example.com/spec' }, extra: 'x'.repeat(70_000) };
+    const rawOutput = { unknown: { kept: true } };
+    const content = [{ type: 'diff', path: 'a.ts', oldText: null, newText: 'new' }, { type: 'future', data: [1, 2] }];
+    const locations = [{ path: 'a.ts', line: 3 }];
+    expect(mapAcpSessionUpdate({ sessionUpdate, toolCallId: 'remote-call', title: 'FetchURL', name: 'FetchURL', kind: 'fetch', rawInput, rawOutput, content, locations }))
+      .toMatchObject({ toolCallId: 'remote-call', title: 'FetchURL', name: 'FetchURL', rawInput, rawOutput, content, locations });
+  });
+
   it('fails known malformed updates instead of silently dropping them', () => {
     expect(() =>
       mapAcpSessionUpdate({

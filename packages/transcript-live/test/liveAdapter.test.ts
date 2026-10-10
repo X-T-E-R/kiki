@@ -850,6 +850,58 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(toolFrame('c1')).toMatchObject({ state: 'done', inputText: '{"command":"ls"}\n' });
   });
 
+  it.each(['done', 'error', 'interrupted'] as const)('keeps ACP display snapshots and full raw output in live and cold %s frames', (state) => {
+    const toolCallId = 'external:remote%3Asession:tool-1';
+    const content = [{ type: 'terminal', terminalId: 'term-1' }, { type: 'future', data: 'x'.repeat(70_000) }];
+    const output = { kind: 'external_tool_output', protocol: 'acp-v1', remoteToolCallId: 'tool-1', remoteSessionId: 'remote:session', text: 'partial', rawOutput: { kept: true }, content, locations: [{ path: 'a.ts', line: 3 }], status: 'in_progress' };
+    const durable: TranscriptWireRecord[] = [
+      { type: 'context.append_loop_event', time: 1, event: { type: 'step.begin', uuid: 'step-1', turnId: '1', step: 1 } },
+      { type: 'context.append_loop_event', time: 2, event: { type: 'tool.call', stepUuid: 'step-1', toolCallId, name: 'Bash', args: {}, turnId: '1' } },
+      { type: 'executor.tool.display', time: 3, turnId: 1, stepId: 'step-1', toolCallId, name: 'Bash', state: 'running', input: { command: 'first' }, display: { kind: 'command', command: 'first' }, output },
+      { type: 'context.append_loop_event', time: 4, event: { type: 'tool.result', toolCallId, result: { output: 'partial', isError: state === 'error' } } },
+      { type: 'executor.tool.display', time: 5, turnId: 1, stepId: 'step-1', toolCallId, name: 'Bash', state, input: { command: 'second' }, display: { kind: 'command', command: 'second' }, output },
+      { type: 'turn.ended', time: 6, turnId: 1, reason: 'completed' },
+    ];
+    const live = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(live);
+    const lookup = (id: string) => {
+      for (const item of live.getItems()) {
+        if (item.kind !== 'turn') continue;
+        for (const step of item.steps) for (const frame of step.frames) {
+          if (frame.kind === 'tool' && frame.toolCallId === id) return { turnId: item.turnId, stepId: step.stepId, frame };
+        }
+      }
+      return undefined;
+    };
+    const wire = new TranscriptWireAdapter('main', { tool: lookup });
+    const adapter = new AgentTranscriptLiveAdapter('main', { toolFrame: lookup });
+    live.apply(adapter.map(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } })));
+    live.apply(adapter.map(ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1' })));
+    for (const record of durable) {
+      reducer.apply(wire.add(record));
+      if (record.time === 2) live.apply(adapter.map(ev({ type: 'tool.call.started', turnId: 1, toolCallId, name: 'Bash', args: {} })));
+      if (record.time === 4) live.apply(adapter.map(ev({ type: 'tool.result', turnId: 1, toolCallId, output: 'partial', isError: state === 'error' })));
+      if (record.time === 6) live.apply(adapter.map(ev({ type: 'turn.ended', turnId: 1, reason: 'completed' })));
+    }
+    const cold = new AgentTranscript('main');
+    const coldReducer = new TranscriptFactReducer(cold);
+    const coldWire = new TranscriptWireAdapter('main');
+    for (const record of durable) coldReducer.apply(coldWire.add(record));
+    const frame = (tx: AgentTranscript) => turnOps('t1', tx.getItems()).steps.flatMap((step) => step.frames).find((entry) => entry.kind === 'tool');
+    for (const tx of [live, cold]) expect(frame(tx)).toMatchObject({ toolCallId, state, input: { command: 'second' }, display: { kind: 'command', command: 'second' }, output });
+    expect(frame(live)?.frameId).toBe(frame(cold)?.frameId);
+  });
+
+  it('does not assign native todo writers to same-named external calls', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    tx.apply(adapter.map(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } })));
+    for (const toolCallId of ['external:session:todo', 'native-todo']) tx.apply(adapter.map(ev({ type: 'tool.call.started', turnId: 1, toolCallId, name: 'TodoList', args: { todos: [{ title: 'Work', status: 'pending' }] } })));
+    const tools = turnOps('t1', tx.getItems()).steps.flatMap((step) => step.frames).filter((frame) => frame.kind === 'tool');
+    expect(tools.find((frame) => frame.toolCallId === 'external:session:todo')?.todoId).toBeUndefined();
+    expect(tools.find((frame) => frame.toolCallId === 'native-todo')?.todoId).toBe('todo');
+  });
+
   it('overwrites tool frame progress and drops progress for unknown calls', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

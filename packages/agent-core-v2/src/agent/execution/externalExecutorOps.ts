@@ -161,6 +161,26 @@ export class ExecutorRuntimeUpdate extends Event2<z.infer<typeof executorRuntime
 }
 export interface ExecutorRuntimeUpdate extends z.infer<typeof executorRuntimeUpdateSchema> {}
 
+const executorToolDisplaySchema = z.object({
+  turnId: z.number().int().nonnegative(),
+  stepId: z.string(),
+  toolCallId: z.string(),
+  name: z.string(),
+  input: z.unknown().optional(),
+  display: z.unknown(),
+  output: z.unknown(),
+  state: z.enum(['running', 'done', 'error', 'interrupted']),
+  synthetic: z.boolean().optional(),
+});
+
+export class ExecutorToolDisplay extends Event2<z.infer<typeof executorToolDisplaySchema>> {
+  static override readonly type = 'executor.tool.display';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = executorToolDisplaySchema;
+}
+export interface ExecutorToolDisplay extends z.infer<typeof executorToolDisplaySchema> {}
+
 export interface ExternalExecutorState {
   readonly executorId?: string;
   readonly descriptorRevision?: string;
@@ -199,4 +219,5 @@ export const externalExecutorKey = defineState(
   .on(ExecutorHintDelivery, () => {})
   .on(ExecutorPlanUpdate, () => {})
   .on(ExecutorPlanRemove, () => {})
-  .on(ExecutorRuntimeUpdate, () => {});
+  .on(ExecutorRuntimeUpdate, () => {})
+  .on(ExecutorToolDisplay, () => {});

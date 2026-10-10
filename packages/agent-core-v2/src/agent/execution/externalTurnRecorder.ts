@@ -30,7 +30,10 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
+import { acpToolDisplay, acpToolOutput, mergeAcpToolState, type AcpToolState } from './acpToolDisplay';
+
 import {
+  ExecutorToolDisplay,
   ExecutorPlanRemove,
   ExecutorPlanUpdate,
   ExecutorRuntimeUpdate,
@@ -86,6 +89,7 @@ interface RecordedTool {
   kind?: string;
   status?: string;
   rawInput?: unknown;
+  acp?: AcpToolState;
   terminal: boolean;
 }
 
@@ -334,7 +338,8 @@ export class ExternalTurnRecorder {
       title: event.title,
       kind: event.kind,
       status: event.status,
-      rawInput: boundedUnknown(event.rawInput),
+      rawInput: this.metadata.protocol === 'acp-v1' ? event.rawInput : boundedUnknown(event.rawInput),
+      acp: this.metadata.protocol === 'acp-v1' ? mergeAcpToolState(undefined, event) : undefined,
       terminal: false,
     };
     if (event.rawInput === undefined) this.losses.add('tool_input_partial');
@@ -362,15 +367,16 @@ export class ExternalTurnRecorder {
         name: event.title,
         args: tool.rawInput,
         description: event.kind,
-        display: externalToolDisplay(event),
+        display: tool.acp === undefined ? externalToolDisplay(event) : acpToolDisplay(tool.acp),
       }),
     );
+    if (tool.acp !== undefined) await this.#acpToolUpdate(tool, event);
   }
 
   async #toolUpdate(event: Extract<ExternalExecutorEvent, { type: 'tool.update' }>): Promise<void> {
     this.#flushSegment();
     let tool = this.#tools.get(event.toolCallId);
-    if (tool?.terminal === true) return;
+    if (tool?.terminal === true && tool.acp === undefined) return;
     if (tool === undefined) {
       tool = {
         remoteId: event.toolCallId,
@@ -385,13 +391,24 @@ export class ExternalTurnRecorder {
         type: 'tool.call',
         toolCallId: event.toolCallId,
         title: tool.title,
+        name: event.name,
         kind: event.kind,
         status: event.status,
         rawInput: event.rawInput,
+        rawOutput: event.rawOutput,
         content: event.content,
         locations: event.locations,
       });
       tool = this.#tools.get(event.toolCallId)!;
+      if (tool.acp !== undefined) {
+        tool.acp.syntheticLabel = event.title === undefined;
+        await this.#acpToolSnapshot(tool);
+        return;
+      }
+    }
+    if (tool.acp !== undefined) {
+      await this.#acpToolUpdate(tool, event);
+      return;
     }
     if (event.title !== undefined) tool.title = event.title;
     if (event.kind !== undefined) tool.kind = event.kind;
@@ -445,6 +462,36 @@ export class ExternalTurnRecorder {
     );
   }
 
+  async #acpToolUpdate(tool: RecordedTool, event: Extract<ExternalExecutorEvent, { type: 'tool.call' | 'tool.update' }>): Promise<void> {
+    tool.acp = mergeAcpToolState(tool.acp, event);
+    tool.title = tool.acp.title;
+    tool.rawInput = tool.acp.rawInput;
+    const terminal = ['completed', 'failed', 'cancelled'].includes(tool.acp.status ?? '');
+    if (terminal && !tool.terminal) {
+      const output = tool.acp.text || (tool.acp.rawOutput === undefined ? '' : JSON.stringify(tool.acp.rawOutput) ?? '');
+      const isError = tool.acp.status === 'failed';
+      this.#context.appendLoopEvent({
+        type: 'tool.result', toolCallId: tool.namespacedId,
+        result: { output, isError, errorCode: isError && event.type === 'tool.update' ? event.errorCode : undefined },
+        parentUuid: `${this.stepId}:tool:${tool.remoteId}`,
+      });
+      await this.#dispatcher.dispatch(new ToolResultEvent({ turnId: this.turnId, toolCallId: tool.namespacedId, output, isError }));
+      tool.terminal = true;
+    }
+    await this.#acpToolSnapshot(tool);
+  }
+
+  async #acpToolSnapshot(tool: RecordedTool, state?: 'running' | 'done' | 'error' | 'interrupted', synthetic?: boolean): Promise<void> {
+    const acp = tool.acp!;
+    await this.#dispatcher.dispatch(new ExecutorToolDisplay({
+      turnId: this.turnId, stepId: this.stepId, toolCallId: tool.namespacedId,
+      name: acp.title, input: acp.rawInput, display: acpToolDisplay(acp),
+      output: { ...acpToolOutput(acp, this.remoteSessionId, tool.remoteId), synthetic },
+      state: state ?? (acp.status === 'completed' ? 'done' : acp.status === 'failed' ? 'error' : acp.status === 'cancelled' ? 'interrupted' : 'running'),
+      synthetic,
+    }));
+  }
+
   async #runtimeUpdate(
     kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown',
     value: unknown,
@@ -465,6 +512,18 @@ export class ExternalTurnRecorder {
     this.#flushSegment();
     for (const tool of this.#tools.values()) {
       if (tool.terminal) continue;
+      if (tool.acp !== undefined) {
+        const synthetic = reason === 'failed' && !tool.acp.content?.length && tool.acp.rawOutput === undefined;
+        if (synthetic) tool.acp.text = 'External tool did not report a terminal result before the turn ended.';
+        this.#context.appendLoopEvent({
+          type: 'tool.result', toolCallId: tool.namespacedId,
+          result: { output: tool.acp.text, isError: synthetic },
+          parentUuid: `${this.stepId}:tool:${tool.remoteId}`,
+        });
+        await this.#acpToolSnapshot(tool, synthetic ? 'error' : 'interrupted', synthetic);
+        tool.terminal = true;
+        continue;
+      }
       this.#context.appendLoopEvent({
         type: 'tool.result',
         toolCallId: tool.namespacedId,

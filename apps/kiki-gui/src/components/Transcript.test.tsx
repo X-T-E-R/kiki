@@ -81,7 +81,7 @@ import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimeli
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
-import { ToolCard } from './ToolCard';
+import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
 import {
   mergeSubagentRows,
   splitPrefixSegments,
@@ -1768,6 +1768,44 @@ describe('explicit unknown timing', () => {
     await renderSettled(root, <ToolCard block={block as Extract<Block, { kind: 'tool' }>} />);
     return container;
   }
+
+  it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'MemoryWrite', 'CallTool'])('keeps external %s as a human label, not native semantics or guessed icons', async (name) => {
+    const block = toolBlock({ toolCallId: `external:session:${name}`, name, args: { command: 'do not guess', name: 'Read', arguments: { path: 'a.ts' } }, display: { kind: 'generic', summary: 'External label' } }) as Extract<Block, { kind: 'tool' }>;
+    expect(toolIcon(block)).toBe('tool');
+    expect(resolvedToolName(block)).toBe(name);
+    const container = await renderToolCard(block);
+    expect(container.querySelector('[data-tool-semantic]')).toBeNull();
+    expect(container.textContent).toContain(name);
+    expect(container.textContent).toContain('External label');
+  });
+
+  it('renders ACP text, images and every raw diff without treating the package as native output', async () => {
+    const output = { kind: 'external_tool_output', protocol: 'acp-v1', text: 'partial stdout',
+      rawOutput: { kind: 'command_output', stdout: 'not a native receipt', exit_code: 9 },
+      content: [{ type: 'diff', path: 'first.ts', oldText: 'a', newText: 'b' }, { type: 'diff', path: 'second.ts', oldText: 'c', newText: 'd' }],
+      media: [{ type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }],
+      locations: [{ path: 'first.ts', line: 4 }], remoteToolCallId: 'remote-call', remoteSessionId: 'remote-session' };
+    const container = await renderToolCard(toolBlock({ toolCallId: 'external:session:call', name: 'Bash', display: { kind: 'command', command: 'npm test' }, output }));
+    await act(async () => { flushSync(() => { click(container.querySelector('button')!); }); });
+    expect(container.textContent).toContain('partial stdout');
+    const loadImage = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Load full file'));
+    expect(loadImage).toBeDefined();
+    await act(async () => { flushSync(() => { click(loadImage!); }); });
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    const preserved = container.querySelector('details');
+    expect(preserved?.textContent).toContain('first.ts');
+    expect(preserved?.textContent).toContain('second.ts');
+    expect(preserved?.textContent).toContain('remote-call');
+    expect(preserved?.textContent).toContain('not a native receipt');
+    expect(container.textContent).not.toContain('Exit code: 9');
+  });
+
+  it('does not build an external edit from raw arguments when its display declined the semantics', async () => {
+    const container = await renderToolCard(toolBlock({ toolCallId: 'external:session:edit', name: 'Write', display: { kind: 'generic', summary: 'Unknown edit' }, args: { path: 'a.ts', content: 'do not invent a hunk' }, output: {} }));
+    await act(async () => { flushSync(() => { click(container.querySelector('button')!); }); });
+    expect(container.textContent).toContain('"content"');
+    expect(container.textContent).toContain('do not invent a hunk');
+  });
 
   it('names a streaming CallTool bridge by the tool it calls, never by the bridge', async () => {
     // Mid-stream: only the bridge name and a partial argument text exist.

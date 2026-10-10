@@ -32,7 +32,7 @@ function attachments(value: unknown): MessageAttachment[] {
 
 /** Project only validated, successfully delivered speech as a sent message. */
 export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
-  if (tool.name !== 'SendMessage') return undefined;
+  if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return undefined;
   const args = record(tool.args) ?? record(tool.argsText);
   const result = record(tool.output);
   const messageId = string(result?.['message_id']);
@@ -84,9 +84,10 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
   for (const block of members) {
     if (block.kind === 'tool') {
       counts.tools += 1;
-      if (block.name === 'Read') counts.reads += 1;
-      if (block.name === 'Bash') counts.commands += 1;
-      if (block.name === 'MemoryWrite' && block.status === 'done' && block.isError !== true) counts.memories += 1;
+      const external = block.toolCallId.startsWith('external:');
+      if (external ? block.display?.kind === 'file_io' && block.display.operation === 'read' : block.name === 'Read') counts.reads += 1;
+      if (external ? block.display?.kind === 'command' : block.name === 'Bash') counts.commands += 1;
+      if (!external && block.name === 'MemoryWrite' && block.status === 'done' && block.isError !== true) counts.memories += 1;
       if (block.status === 'error' || block.isError === true) failed += 1;
       if (block.status === 'running') running = true;
       if (block.durationSource === 'frame' && block.durationMs !== undefined) durationMs = (durationMs ?? 0) + block.durationMs;

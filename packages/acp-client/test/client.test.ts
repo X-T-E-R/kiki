@@ -36,6 +36,38 @@ function oversizedProcess(dispose: ReturnType<typeof vi.fn<() => void>>): HostPr
 }
 
 describe('AcpProcessClient limits and observers', () => {
+  it('neg-v2-diff-not-delivered: rejects protocol 2 at initialize before opening a session', async () => {
+    const methods: string[] = [];
+    const client = new AcpProcessClient({ spawn: async () => {
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      let resolveExit!: (value: number) => void;
+      const exit = new Promise<number>((resolve) => { resolveExit = resolve; });
+      let buffer = '';
+      stdin.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        for (;;) {
+          const end = buffer.indexOf('\n');
+          if (end === -1) break;
+          const request = JSON.parse(buffer.slice(0, end)) as { id?: number; method: string };
+          buffer = buffer.slice(end + 1);
+          methods.push(request.method);
+          if (request.method === 'initialize') stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 2, agentCapabilities: {} } }) + '\n');
+        }
+      });
+      return { stdin, stdout, stderr, pid: 1, exitCode: null, wait: () => exit,
+        kill: async () => { resolveExit(0); }, dispose: () => {} };
+    } }, { id: 'fixture', command: 'fixture' }, { platform: 'linux', logger: { error: () => {} } });
+    try {
+      await expect(client.openSession({ cwd: 'C:/workspace' })).rejects.toThrow(/unsupported protocol version 2/);
+      expect(methods.length).toBeGreaterThan(0);
+      expect(methods.every((method) => method === 'initialize')).toBe(true);
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   it('bounds and clears event queue backlog on failure', async () => {
     const queue = new AsyncQueue<number>(1);
     queue.push(1);

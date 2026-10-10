@@ -594,6 +594,7 @@ export class TranscriptWireAdapter {
     if (record.type === 'executor.prompt.delivery') {
       return [this.marker(record, ordinal, 'executor.prompt.delivery')];
     }
+    if (record.type === 'executor.tool.display') return this.externalToolDisplay(record);
     if (record.type === 'executor.runtime.update') {
       const marker = record['kind'] === 'diff' ? 'executor.diff'
         : record['kind'] === 'compaction' ? 'executor.compaction'
@@ -1772,6 +1773,32 @@ export class TranscriptWireAdapter {
       ];
     }
     return [];
+  }
+
+  private externalToolDisplay(record: TranscriptWireRecord): TranscriptOperation[] {
+    const toolCallId = stringOf(record['toolCallId']);
+    const stepId = stringOf(record['stepId']);
+    const turnId = turnIdOf(record['turnId'], undefined);
+    const state = record['state'];
+    if (toolCallId === undefined || stepId === undefined || turnId === undefined ||
+      (state !== 'running' && state !== 'done' && state !== 'error' && state !== 'interrupted')) return [];
+    const previous = this.#tools.get(toolCallId)?.frame ?? this.lookups?.tool?.(toolCallId)?.frame;
+    const output = record['output'];
+    const text = stringOf(objectOf(output)?.['text']);
+    const frame: ToolCallFrame = {
+      ...previous,
+      kind: 'tool', frameId: previous?.frameId ?? `${stepId}.${toolCallId}`,
+      toolCallId, name: stringOf(record['name']) ?? previous?.name ?? 'External tool',
+      state, input: record['input'], display: record['display'], output,
+      error: state === 'error' ? text : undefined,
+      startedAt: previous?.startedAt ?? isoOf(record.time),
+      endedAt: state === 'running' ? undefined : previous?.endedAt ?? isoOf(record.time),
+      progress: state === 'running' ? { kind: 'status', text: stringOf(objectOf(output)?.['status']) } : previous?.progress,
+      todoId: undefined,
+    };
+    const hit = { turnId, stepId, frame };
+    this.storeTool(toolCallId, hit);
+    return [{ op: 'frame.upsert', ...hit }];
   }
 
   private toolCall(

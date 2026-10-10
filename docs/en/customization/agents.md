@@ -102,6 +102,12 @@ The override applies when a **new remote session** is created, not on `session/r
 
 The built-in `kimi-acp` executor forwards configured MCP servers to Kimi Code. Kimi CLI versions from `0.37.0` up to, but not including, `0.39.0` reject ACP stdio MCP servers, so preflight warns that MCP tools will fail and recommends upgrading to `0.39.0` or newer. The warning does not block forwarding, and an undetectable version is forwarded without it.
 
+### External ACP tool timeline
+
+Tool calls from an ACP harness appear in the same timeline as Kiki tools. When the harness supplies a tool kind and structured arguments, Kiki uses the matching file read/write, edit, diff, command, search or URL view. A tool's title remains a human-readable label: calling it `Bash` or `TodoList` does not turn it into a native Kiki tool or grant it native execution permissions.
+
+Expand a tool card to inspect the arguments and output the harness supplied. Unknown tools, insufficient arguments and multi-file diffs retain their full supplied payload rather than guessing a command or showing only the first changed file. Image content can be previewed while its original payload is preserved; a terminal reference alone does not provide terminal output. Partial output remains available after failure or cancellation, including when the final update contains no output. Kiki cannot restore content that the harness had already truncated before sending it.
+
 ### External main-agent delegation
 
 An external executor can run as the main agent. To let it dispatch Kiki subagents, add `allow_kiki_subagents: true` to its profile and bind that profile to the main agent. It defaults to `false` and does not enable delegation from external child agents.

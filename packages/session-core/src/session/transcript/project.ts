@@ -1142,7 +1142,7 @@ function subagentBlocksFromSnapshot(
     previousTurnId = item.turnId;
     for (const step of item.steps) {
       for (const frame of step.frames) {
-        if (frame.kind !== 'tool') continue;
+        if (frame.kind !== 'tool' || frame.toolCallId.startsWith('external:')) continue;
         const frameAt = frame.startedAt ?? step.startedAt ?? item.startedAt;
         const resumedTargets = new Set<string>();
         const resumeTargets = frame.name === 'AgentRun' || frame.name === 'Agent'
@@ -2494,10 +2494,10 @@ export function agentTranscriptToBlocks(
             const toolFrame = frame as typeof frame & { view?: string; taskId?: string };
             const task = toolFrame.taskId === undefined ? undefined : taskById.get(toolFrame.taskId);
             const shellTask = task?.kind === 'shell' ? task : undefined;
-            const isShell =
+            const isShell = !frame.toolCallId.startsWith('external:') && (
               toolFrame.name === 'Bash' ||
               toolFrame.view === 'shell' ||
-              (toolFrame.taskId !== undefined && toolFrame.name.toLowerCase().includes('shell'));
+              (toolFrame.taskId !== undefined && toolFrame.name.toLowerCase().includes('shell')));
             if (
               isShell &&
               (shellTask !== undefined ||

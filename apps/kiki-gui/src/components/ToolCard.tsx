@@ -51,8 +51,8 @@ const CALL_TOOL_BRIDGE = 'CallTool';
  * complete in the stream, so the row never flashes the bridge's name.
  * Undefined means the name has not streamed yet.
  */
-export function resolvedToolName(block: Pick<ToolBlock, 'name' | 'argsText' | 'args'>): string | undefined {
-  if (block.name !== CALL_TOOL_BRIDGE) return block.name;
+export function resolvedToolName(block: Pick<ToolBlock, 'name' | 'argsText' | 'args'> & Partial<Pick<ToolBlock, 'toolCallId'>>): string | undefined {
+  if (block.toolCallId?.startsWith('external:') || block.name !== CALL_TOOL_BRIDGE) return block.name;
   const fromArgs = typeof block.args === 'object' && block.args !== null
     ? (block.args as Record<string, unknown>)['name']
     : undefined;
@@ -118,6 +118,7 @@ export function toolIcon(block: ToolBlock): IconName {
         break;
     }
   }
+  if (block.toolCallId.startsWith('external:')) return 'tool';
   const name = block.name.toLowerCase();
   if (name.includes('bash') || name.includes('shell') || name.includes('cmd')) return 'terminal';
   if (name.includes('read')) return 'read';
@@ -149,7 +150,8 @@ export function toolSummary(block: ToolBlock, t: Translate, tp: TranslatePlural)
 /** The untruncated counterpart of toolErrorSummary, for hover tooltips. */
 export function toolErrorFullText(block: ToolBlock): string | undefined {
   if (block.status !== 'error') return undefined;
-  const output = block.output;
+  const external = externalOutput(block.output);
+  const output = external === undefined ? block.output : external.text || external.rawOutput;
   // Only text or structured error payloads carry a readable failure.
   if (typeof output !== 'string' && (typeof output !== 'object' || output === null)) return undefined;
   return describeError(output);
@@ -224,7 +226,7 @@ function isShellCommandName(name: string): boolean {
 
 function hasCommandSummary(block: ToolBlock, summary: string): boolean {
   if (block.display?.kind === 'command') return summary !== '';
-  if (!isShellCommandName(block.name) || typeof block.args !== 'object' || block.args === null) return false;
+  if (block.toolCallId.startsWith('external:') || !isShellCommandName(block.name) || typeof block.args !== 'object' || block.args === null) return false;
   const command = (block.args as Record<string, unknown>)['command'];
   return typeof command === 'string' && command !== '' && summary !== '';
 }
@@ -299,9 +301,30 @@ function wellClass(island: boolean, tone: 'plain' | 'danger' = 'plain'): string 
   }`;
 }
 
-function OutputView({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
-  const { t } = useI18n();
+function externalOutput(output: unknown): { text?: string; rawInput?: unknown; rawOutput?: unknown; media?: readonly unknown[] } | undefined {
+  if (typeof output !== 'object' || output === null || Array.isArray(output)) return undefined;
+  const value = output as Record<string, unknown>;
+  if (value['kind'] !== 'external_tool_output' || value['protocol'] !== 'acp-v1') return undefined;
+  return { text: typeof value['text'] === 'string' ? value['text'] : undefined, rawInput: value['rawInput'], rawOutput: value['rawOutput'], media: Array.isArray(value['media']) ? value['media'] : undefined };
+}
+
+function OutputView({ output, agentId, island = false, external = false }: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
+  const { t, locale } = useI18n();
   if (output === undefined || output === null) return null;
+  if (external) {
+    const preserved = externalOutput(output);
+    const media = extractToolOutputMedia(preserved?.media);
+    if (preserved === undefined) return typeof output === 'string' ? <pre className={wellClass(island)}>{output}</pre> : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
+    return <div className="space-y-2">
+      {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
+      {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
+      {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
+      <details>
+        <summary className="text-[12px] text-ink-faint">{toolRecordCopy('artifact', locale)}</summary>
+        <LoadedToolText text={recordText(output)} className={wellClass(island)} />
+      </details>
+    </div>;
+  }
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
   // arrays; render their images as thumbnails instead of serialized JSON.
   const mediaOutput = extractToolOutputMedia(output);
@@ -390,7 +413,8 @@ export const ToolCard = memo(function ToolCard({
   useFindReveal(sourceBlock.id, expanded, setExpanded);
   // A bridged call reads as the tool it calls, from the first streamed name
   // on; until that name has streamed the row says "Calling a tool".
-  const bridged = sourceBlock.name === CALL_TOOL_BRIDGE;
+  const external = sourceBlock.toolCallId.startsWith('external:');
+  const bridged = !external && sourceBlock.name === CALL_TOOL_BRIDGE;
   const realName = resolvedToolName(sourceBlock);
   const block: ToolBlock = bridged
     ? { ...sourceBlock, name: realName ?? sourceBlock.name, args: bridgedArgs(sourceBlock), argsText: realName === undefined ? '' : bridgedArgsText(sourceBlock.argsText) }
@@ -401,7 +425,7 @@ export const ToolCard = memo(function ToolCard({
   const frameSource = frameContentSource(block);
   // Memory stays quieter than a tool step: one line with View / Undo instead of
   // this header and its input/output wells. Routed here so every mount agrees.
-  const memoryRow = isMemoryToolName(block.name);
+  const memoryRow = !external && isMemoryToolName(block.name);
   // A failure with a known code reads in the user's words; the engine's own
   // text stays in the tooltip.
   const codedError = block.status === 'error' ? toolErrorCodeText(block, t) : undefined;
@@ -423,16 +447,16 @@ ${engineError}`;
   // Edit-style calls (Edit/MultiEdit/Write): hunks from display or args —
   // diffstat in the collapsed header, unified diff card in the detail view.
   const editSource = useMemo(
-    () => extractEditSource(block.display, block.args),
-    [block.display, block.args],
+    () => extractEditSource(block.display, external ? undefined : block.args),
+    [block.display, block.args, external],
   );
   const stat = editSource !== undefined ? diffStat(editSource.hunks) : undefined;
   // Built-in tools say what they did in their own terms (a thread, a task, a
   // history hit); the raw payload stays one disclosure away.
   const semanticContext = useSemanticContext();
   const semantics = useMemo(
-    () => (memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContext)),
-    [memoryRow, bridged, realName, block, semanticContext],
+    () => (external || memoryRow || (bridged && realName === undefined) ? undefined : describeTool(block, semanticContext)),
+    [external, memoryRow, bridged, realName, block, semanticContext],
   );
 
   if (memoryRow) return <MemoryToolRow block={block} />;
@@ -455,7 +479,7 @@ ${engineError}`;
     <span className="font-mono">
       <FilePathLink path={displayPath} />
     </span>
-  ) : block.progressText !== undefined && block.status === 'running' ? (
+  ) : block.progressText !== undefined && block.status === 'running' && (!external || summary === '') ? (
     <span className="text-ink-faint">{block.progressText}</span>
   ) : summary !== '' ? (
     <span className="font-mono">{summary}</span>
@@ -500,7 +524,7 @@ ${engineError}`;
       </div>
       {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
       {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
-        : <OutputView output={block.output} agentId={agentId} />}
+        : <OutputView output={block.output} agentId={agentId} external={external} />}
       <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} className="mt-1" />
     </div>
   );
@@ -579,7 +603,7 @@ ${engineError}`;
       tone={tone}
       // Plugin and MCP tools read by their own name; the runtime id
       // (`plugin__<id>__<tool>`) stays available on hover.
-      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{toolDisplayName(block.name)}</span>}
+      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{external ? block.name : toolDisplayName(block.name)}</span>}
       detail={target}
       expanded={expanded}
       onToggle={() => { setExpanded((value) => !value); }}
@@ -600,7 +624,7 @@ ${engineError}`;
               <CommandIsland
                 command={block.display.command}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island external={external} /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and
