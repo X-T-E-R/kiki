@@ -34,6 +34,7 @@ export class ProfileError extends Error2 {
 }
 
 export interface AgentConfigData {
+  driver?: 'external';
   modelAlias?: string;
   modelCapabilities: ModelCapability;
   profileName?: string;
@@ -91,6 +92,7 @@ export interface ProfileData extends AgentConfigData {
   readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
+  readonly execution?: import('@kiki/protocol').ExecutionBinding;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -122,6 +124,7 @@ export interface ProfileData extends AgentConfigData {
 }
 
 export type ProfileUpdateData = Partial<{
+  execution: import('@kiki/protocol').ExecutionBinding;
   personaOverrides: NonNullable<ProfileData['personaOverrides']>;
   promptBase: import('./boundProfile').BoundPromptBase;
   modelAlias: string;
@@ -139,6 +142,7 @@ export type ProfileUpdateData = Partial<{
 }>;
 
 export interface ProfileBindingSnapshot {
+  readonly driver?: 'external';
   readonly toolOverride?: ToolBindingOverride;
   readonly toolPolicyBase?: ProfileToolPolicyBase;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
@@ -151,10 +155,12 @@ export interface ProfileBindingSnapshot {
   readonly profileName?: string;
   readonly profileDefinitionId?: string;
   readonly routeId?: string;
+  readonly permissionMode?: import('@kiki/agent-profiles/agentProfile').AgentPermissionMode;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
   readonly executionRestriction?: import('./executionRestriction').ExecutionRestriction;
   readonly allowParentNotify?: boolean;
+  readonly execution?: import('@kiki/protocol').ExecutionBinding;
   readonly executorId?: string;
   readonly executorProtocol?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
@@ -248,6 +254,8 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly driver?: 'external' | 'local';
+  readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly toolOverride?: ToolBindingOverride;
   readonly memoryReadContext?: import('#/app/memory/memorySnapshot').MemoryPersonaContext;
   readonly persona?: string;

@@ -1,5 +1,8 @@
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
-import type { AgentPromptDiagnostics } from '@kiki/protocol';
+import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
+import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
+import { resolveExecutionBinding } from './executionBinding';
+import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 import { promptConfigurationChannels } from './promptDiagnostics';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
 import {
@@ -174,7 +177,7 @@ import type {
   ProfileUpdateData,
 } from './profile';
 import { IAgentProfileService, ProfileError, ProfileErrors } from './profile';
-import { renderExternalPrompt } from './externalPrompt';
+import { mergeExecutorPrompt, renderExternalPrompt } from './externalPrompt';
 import { resolveProfilePromptFields } from './promptFieldSnapshot';
 import { TOOLS_SECTION, type ToolsConfig } from '#/agent/toolPolicy/configSection';
 import { isToolActiveComposed, findInactiveToolPatterns, literalToolNames, type InactiveToolPattern } from '#/agent/toolPolicy/evaluate';
@@ -452,6 +455,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
     void this.dispatcher.dispatch(
       new ProfileBind({
+        execution: snapshot.execution,
         toolOverride: snapshot.toolOverride,
         memoryReadContext: snapshot.memoryReadContext,
         executionRestriction,
@@ -514,6 +518,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
     await this.catalog.ready;
     await this.identity.resolved();
+    if (input.execution !== undefined) {
+      await this.bindExecution(input.execution, input, assertCurrent);
+      return;
+    }
     const persona = input.personaSnapshot ?? await this.loadPersonaSnapshot(input.persona);
     const selectedProfileName = input.profile ?? persona?.definition.profile;
     const boundProfileName = this.profileName;
@@ -772,12 +780,103 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.syncBindingMetadata();
   }
 
+  private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
+    if (this.agentScope.agentId !== MAIN_AGENT_ID) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Execution selection is supported only for the main agent');
+    const selected = requested.profile === undefined ? undefined : this.catalog.resolveSelection({ profile: requested.profile }).profile;
+    const profile = selected === undefined ? undefined : captureProfileModelMenu(selected,
+      requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
+    if (profile !== undefined && (profile.executor ?? 'native') !== requested.executor) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Profile "${requested.profile}" does not use executor "${requested.executor}"`);
+    }
+    const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
+    const execution = resolveExecutionBinding({ ...requested, overrides: {
+      ...requested.overrides, model: input.model ?? requested.overrides?.model,
+      thinking: input.thinking ?? requested.overrides?.thinking,
+    } }, defaults, profile, this.profileState.execution);
+    if (execution.effective.model === INHERIT_MODEL_ALIAS) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'A main agent execution selection cannot inherit a caller model');
+    if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
+    if (requested.executor === 'native') {
+      await this.bind({ ...input, execution: undefined, profile: requested.profile,
+        model: execution.effective.model, thinking: execution.effective.thinking }, assertCurrent);
+      this.applyBindingSnapshot({ ...this.data(), execution });
+      await this.syncBindingMetadata();
+      return;
+    }
+    assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, requested.executor);
+    if (profile !== undefined && [profile, ...(profile.modelProfiles ?? [])].some((entry) =>
+      entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
+    }
+    const executor = await this.executors.resolveExecutable(requested.executor, profile?.executorOptions);
+    const validated = this.requireValidBinding(this.executors.validateBinding(requested.executor, executor.options, {
+      modelAlias: execution.effective.model, thinkingEffort: execution.effective.thinking,
+    }));
+    const bindingAdvisories = profile === undefined ? [] : this.collectBindingAdvisories({
+      profile, profileName: profile.name, model: execution.effective.model ?? '',
+      thinking: execution.effective.thinking ?? 'off',
+      modelSelection: { source: execution.sources['model'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.model },
+      thinkingSelection: { source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.thinking },
+    });
+    const executorPrompt = mergeExecutorPrompt(defaults?.executor_prompt, profile?.executorPrompt, requested.executor);
+    execution.sources['executor_prompt'] = profile?.executorPrompt !== undefined ? 'profile' : defaults?.executor_prompt !== undefined ? 'harness-settings' : 'harness-default';
+    for (const field of ['delivery', 'include', 'body', 'append'] as const) {
+      execution.sources[`executor_prompt.${field}`] = (profile?.executorPrompt?.per_engine?.[requested.executor]?.[field] ?? profile?.executorPrompt?.[field]) !== undefined ? 'profile'
+        : (defaults?.executor_prompt?.per_engine?.[requested.executor]?.[field] ?? defaults?.executor_prompt?.[field]) !== undefined ? 'harness-settings' : 'harness-default';
+    }
+    const hasPrompt = profile !== undefined || executorPrompt !== undefined;
+    const context = hasPrompt ? await this.buildSystemPromptContext(profile, undefined, null) : {};
+    const includesFields = resolveExecutorPrompt(executorPrompt, requested.executor).include.some((id) => id.startsWith('system.') || id.startsWith('delegation.'));
+    const fields = !includesFields ? { values: {}, fields: [] } : profile !== undefined
+      ? await this.resolvePromptFieldSnapshot(profile, execution.effective.model ?? '')
+      : await this.promptFields.resolve({ global: { surface: 'global', overrides: this.config.get<PromptConfig>(PROMPT_SECTION)?.overrides },
+        context: { executor: requested.executor, modelAlias: execution.effective.model, delegationPosition: 'main' } });
+    const renderContext = { ...context, persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
+    const body = profile === undefined ? '' : modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
+      layer.entries, execution.effective.model ?? '', (id) => id, 'main'), profile.renderSystemPrompt(renderContext).text);
+    const systemPrompt = hasPrompt ? renderExternalPrompt({ executor: requested.executor, executorPrompt }, renderContext,
+      fields, body) : '';
+    const previous = this.profileState.execution;
+    if (previous?.generation === execution.generation) {
+      if (this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
+          JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === profile?.definitionId) return;
+      execution.generation++;
+    }
+    assertCurrent?.();
+    this.activeProfile = profile;
+    this.activeProfileDefinitionId = profile?.definitionId;
+    this.activeToolNamesOverlay = undefined;
+    this.personaSnapshot = undefined;
+    this.cognitionBinding = undefined;
+    this.boundPromptDiagnostics = undefined;
+    this.promptFieldSnapshot = { values: {}, fields: [] };
+    this.promptConfigurationSignature = undefined;
+    this.memorySnapshot.configurePersona(undefined);
+    await this.dispatcher.dispatch(new ProfileBind({
+      execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
+      executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
+      profileName: profile?.name, profileDefinitionId: profile?.definitionId,
+      modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
+      executorPrompt, kikiContext: execution.effective.kiki_context,
+      allowKikiSubagents: execution.effective.allow_kiki_subagents,
+      systemPrompt, agentsMdPaths: [], disallowedTools: profile?.disallowedTools ?? [],
+      executionRestriction: this.profileState.executionRestriction ?? input.executionRestriction,
+      canSpawnSubagents: profile?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
+      allowedSubagents: profile?.allowedSubagents, preferredSubagents: profile?.preferredSubagents,
+      denySubagents: profile?.denySubagents, subagentLeases: profile?.subagentLeases,
+      boundProfile: profile === undefined ? undefined : freezeBoundProfile(profile),
+    }));
+    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
+    this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: profile?.name,
+      thinkingLevel: validated.thinkingEffort ?? 'off', systemPrompt });
+    await this.syncBindingMetadata();
+  }
+
   async syncBindingMetadata(): Promise<void> {
     await this.restoreCommittedPromptProjections();
     const binding = this.data();
     const executor = binding.executorId ?? 'native';
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
-      ...current, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      ...current, execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
       allowKikiSubagents: binding.allowKikiSubagents,
@@ -2116,6 +2215,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeId: this.routeId,
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,
+      execution: this.profileState.execution,
       executorId: this.profileState.executorId ?? 'native',
       executorProtocol: this.profileState.executorProtocol ?? 'native',
       executorOptions:
@@ -2133,7 +2233,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : this.profileState.thinkingEffortAdjusted ? 'adjusted' : undefined,
       routeDetached,
       profileSource: this.profileState.boundProfile?.fileSources === undefined ? 'registered' : 'profile-file',
-      permissionMode: (this.profileState.boundProfile ?? this.activeProfile)?.permissionMode,
+      permissionMode: this.profileState.execution?.effective.permission_mode ?? (this.profileState.boundProfile ?? this.activeProfile)?.permissionMode,
       bindingAdvisories: this.profileState.bindingAdvisories,
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
@@ -2286,7 +2386,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   isRunnable(): boolean {
-    return this.profileName !== undefined && (this.isExternalExecutor || this.hasModel());
+    return (this.profileName !== undefined || this.profileState.execution !== undefined) && (this.isExternalExecutor || this.hasModel());
   }
 
   hasProvider(): boolean {
@@ -2378,6 +2478,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     changed: Omit<ProfileUpdateData, 'activeToolNames'>,
   ): ConfigUpdatePayload {
     const payload: ConfigUpdatePayload = {};
+    if (changed.execution !== undefined) payload.execution = changed.execution;
+    else if (this.profileState.execution !== undefined && (changed.modelAlias !== undefined || changed.thinkingLevel !== undefined)) {
+      const previous = this.profileState.execution;
+      const overrides = { ...previous.selection.overrides };
+      const effective = { ...previous.effective };
+      const sources = { ...previous.sources };
+      if (changed.modelAlias !== undefined) { overrides.model = changed.modelAlias; effective.model = changed.modelAlias; sources['model'] = 'session'; }
+      if (changed.thinkingLevel !== undefined) { overrides.thinking = changed.thinkingLevel; effective.thinking = changed.thinkingLevel; sources['thinking'] = 'session'; }
+      payload.execution = { ...previous, selection: { ...previous.selection, overrides }, effective, sources, generation: previous.generation + 1 };
+    }
     if (changed.personaOverrides !== undefined) payload.personaOverrides = changed.personaOverrides;
     if (changed.promptBase !== undefined) payload.promptBase = changed.promptBase;
     if (changed.modelAlias !== undefined) payload.modelAlias = changed.modelAlias;
@@ -2825,7 +2935,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async buildSystemPromptContext(
-    profile: ResolvedAgentProfile,
+    profile: ResolvedAgentProfile | undefined,
     options?: ApplyProfileOptions,
     personaOverride?: PersonaSnapshot | null,
   ): Promise<SystemPromptContext> {
@@ -2878,7 +2988,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       pluginSections,
       memory,
       persona: this.currentPersona === undefined ? '' : PERSONA_PROMPT_MARKER,
-      skillActive: this.isToolActiveForProfile(profile, 'Skill'),
+      skillActive: profile !== undefined && this.isToolActiveForProfile(profile, 'Skill'),
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };

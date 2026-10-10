@@ -12,7 +12,10 @@ export const executionOverridesSchema = z.strictObject({
 export const executionSelectionSchema = z.strictObject({
   executor: z.string().min(1),
   profile: z.string().min(1).optional(),
+  profile_file: z.string().trim().min(1).optional(),
   overrides: executionOverridesSchema.optional(),
+}).refine((value) => value.profile === undefined || value.profile_file === undefined, {
+  message: 'profile and profile_file are mutually exclusive',
 });
 export type ExecutionSelection = z.infer<typeof executionSelectionSchema>;
 export type ExecutionOverrides = z.infer<typeof executionOverridesSchema>;
