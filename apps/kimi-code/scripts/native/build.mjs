@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { runBundleStep } from './01-bundle.mjs';
 import { runInjectStep } from './03-inject.mjs';
 import { runSeaBlobStep } from './02-sea-blob.mjs';
-import { runSignStep } from './04-sign.mjs';
+import { macosSigningOptions, runSignStep } from './04-sign.mjs';
 import { runVerifyStep } from './05-verify.mjs';
 import { run } from './exec.mjs';
 import { appRoot, nativeIntermediatesDir } from './paths.mjs';
@@ -13,6 +13,7 @@ import { BUILT_IN_CATALOG_ENV } from '../built-in-catalog.mjs';
 const { values } = parseArgs({
   options: {
     profile: { type: 'string', default: 'local' },
+    'sign-macos': { type: 'boolean', default: false },
   },
 });
 
@@ -45,10 +46,7 @@ await runBundleStep();
 await runSeaBlobStep({ profile });
 await runInjectStep();
 
-const identity =
-  profile === 'release' ? (process.env.APPLE_SIGNING_IDENTITY ?? '-') : '-';
-const keychainPath = profile === 'release' ? (process.env.APPLE_KEYCHAIN_PATH ?? null) : null;
-await runSignStep({ identity, keychainPath });
+await runSignStep(macosSigningOptions(values['sign-macos']));
 
 // Verify always runs (codesign -dv); spctl gatekeeper gate only after notarization
 // (CI macos-notarize composite action) — orchestrator just self-checks signing here.

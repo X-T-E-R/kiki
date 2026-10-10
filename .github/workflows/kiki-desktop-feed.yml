@@ -4,8 +4,6 @@ on:
   workflow_run:
     workflows:
       - Kiki Desktop Release
-      - Deploy Docs to GitHub Pages
-      - Release
     types:
       - completed
   workflow_dispatch:

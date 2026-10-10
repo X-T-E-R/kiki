@@ -8,6 +8,13 @@ import { nativeBinPath, targetTriple } from './paths.mjs';
 
 const ENTITLEMENTS_PATH = resolve(import.meta.dirname, 'entitlements.plist');
 
+export function macosSigningOptions(signMacos, env = process.env) {
+  return {
+    identity: signMacos ? (env.APPLE_SIGNING_IDENTITY ?? '-') : '-',
+    keychainPath: signMacos ? (env.APPLE_KEYCHAIN_PATH ?? null) : null,
+  };
+}
+
 export function buildCodesignArgs({ identity, executable, entitlementsPath, keychainPath }) {
   if (identity === '-') {
     return ['--sign', '-', executable];

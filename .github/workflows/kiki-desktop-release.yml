@@ -138,7 +138,7 @@ jobs:
       - name: Build and smoke-test native sidecar
         shell: bash
         run: |
-          pnpm --filter @kiki/cli run build:native:sea
+          pnpm --filter @kiki/cli run build:native:release
           pnpm --filter @kiki/cli run test:native:smoke
 
       - name: Generate temporary updater key (Windows)

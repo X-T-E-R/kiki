@@ -1,11 +1,6 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
-import {
-  collectNativeAssets,
-  nativeAssetManifestKey,
-  nativeAssetSummary,
-} from './assets.mjs';
 import { fail, run } from './exec.mjs';
 import {
   appRoot,
@@ -32,11 +27,19 @@ export function seaExecArgv(profile) {
   return profile === 'local' ? LOCAL_PROFILE_EXEC_ARGV : [];
 }
 
+export function seaRuntimeOptions(profile) {
+  return {
+    execArgv: seaExecArgv(profile),
+    execArgvExtension: profile === 'local' ? 'cli' : 'env',
+  };
+}
+
 export function seaCodeCacheEnabled(target, host = `${process.platform}-${process.arch}`) {
   return target === host;
 }
 
 async function writeSeaConfig(target, profile) {
+  const { collectNativeAssets, nativeAssetManifestKey, nativeAssetSummary } = await import('./assets.mjs');
   await mkdir(nativeIntermediatesDir(), { recursive: true });
   const { manifest, manifestJson, assets } = await collectNativeAssets({
     appRoot,
@@ -65,8 +68,7 @@ async function writeSeaConfig(target, profile) {
     disableExperimentalSEAWarning: true,
     useCodeCache: seaCodeCacheEnabled(target),
     useSnapshot: false,
-    execArgv: seaExecArgv(profile),
-    execArgvExtension: profile === 'local' ? 'cli' : 'env',
+    ...seaRuntimeOptions(profile),
   };
   await writeFile(nativeSeaConfigPath(), `${JSON.stringify(config, null, 2)}\n`);
 

@@ -81,6 +81,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @kiki/auth-native run build
+      - name: Test release pipeline contracts
+        run: node --test scripts/release-pipeline.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
       - name: Test auth-native with its native runner
         run: pnpm --filter @kiki/auth-native test
       - name: Fetch locked sources for the offline Cargo vendor test

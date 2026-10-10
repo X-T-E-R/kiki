@@ -112,11 +112,11 @@ jobs:
 
       - name: Build native executable (release profile, macOS signed)
         if: runner.os == 'macOS' && inputs.sign-macos
-        run: pnpm --filter @kiki/cli run build:native:release
+        run: pnpm --filter @kiki/cli run build:native:release --sign-macos
 
-      - name: Build native executable (local profile)
+      - name: Build native executable (release profile, unsigned)
         if: '!(runner.os == ''macOS'' && inputs.sign-macos)'
-        run: pnpm --filter @kiki/cli run build:native:sea
+        run: pnpm --filter @kiki/cli run build:native:release
 
       - name: Notarize macOS binary
         if: runner.os == 'macOS' && inputs.sign-macos

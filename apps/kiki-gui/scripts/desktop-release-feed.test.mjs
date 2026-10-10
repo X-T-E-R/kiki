@@ -86,6 +86,19 @@ test('ignores drafts, unrelated tags, and non-beta prereleases', () => {
   assert.equal(selected.beta.semver.version, '1.0.0');
 });
 
+test('rejects failed or invalid manifests instead of deploying a site without feeds', async () => {
+  const releases = [release('2.0.0')];
+  await assert.rejects(generateUpdaterFeeds(releases, async () => ({
+    ok: false, status: 503,
+  })), /Anonymous fetch failed.*HTTP 503/);
+  await assert.rejects(generateUpdaterFeeds(releases, async () => ({
+    ok: true, status: 200, json: async () => manifest('1.0.0'),
+  })), /version does not match/);
+  await assert.rejects(generateUpdaterFeeds(releases, async () => ({
+    ok: true, status: 200, json: async () => ({ version: '2.0.0' }),
+  })), /has no windows-x86_64 updater/);
+});
+
 test('downloads selected manifests through anonymous release asset URLs', async () => {
   const releases = [release('2.0.0'), release('2.1.0-beta.1')];
   const requested = [];

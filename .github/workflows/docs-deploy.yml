@@ -38,6 +38,15 @@ jobs:
         env:
           VITEPRESS_BASE: /${{ github.event.repository.name }}/
 
+      - name: Test updater feed selection
+        run: node --test apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+
+      - name: Build feeds from anonymously accessible Releases
+        run: node apps/kiki-gui/scripts/desktop-release-feed.mjs --repository X-T-E-R/kiki --output-dir docs/.vitepress/dist/updater
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
