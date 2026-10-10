@@ -13,7 +13,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
-import { externalPermissionHostGate } from './externalPermission';
+import { externalPermissionConstraints, externalPermissionMode } from './externalPermission';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -21,6 +21,7 @@ import {
   type AgentExecutionStatus,
   type AgentExecutorAgentContext,
   agentExecutorBindingFingerprint,
+  agentExecutorBindingMatches,
   IAgentExecutorRegistry,
   type AgentExecutorSession,
 } from '#/app/agentExecutor/agentExecutor';
@@ -38,7 +39,7 @@ import type {
 } from '#/session/subagent/subagent';
 
 import { IAgentExecutionService, type AgentExecutionRunContext } from './execution';
-import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey } from './externalExecutorOps';
+import { ExecutorHintDelivery, ExecutorSessionUpdated, externalExecutorKey, externalStateForGeneration } from './externalExecutorOps';
 import { ILocalSessionCatalog } from '#/app/agentExecutor/localSessionCatalog';
 import { localSourceFromRef, type LocalExecutorSessionSource } from '#/app/agentExecutor/localSessionRef';
 import { IFlagService } from '#/app/flag/flag';
@@ -148,7 +149,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
       const usesContextHooks = binding.kikiContext?.includes('hooks') === true && binding.executorId !== 'grok-acp';
-      if ((binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
+      if (binding.execution === undefined && (binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && !usesContextHooks) {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [
@@ -300,6 +301,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Local session source is unavailable or cannot be resumed');
     }
     await this.agent.accessor.get(IEventDispatcher).dispatch(new ExecutorSessionUpdated({
+      executionGeneration: binding.execution?.generation,
       executorId: source.executorId,
       descriptorRevision: binding.executorDescriptorRevision!,
       bindingFingerprint: agentExecutorBindingFingerprint(binding),
@@ -315,10 +317,10 @@ export class AgentExecutionService implements IAgentExecutionService {
     await this.profile.preparePromptConfiguration();
     const data = this.profile.data();
     const executorId = data.executorId ?? 'native';
-    const prior = this.agent.accessor.get(IAgentStateService).get(externalExecutorKey);
+    const prior = externalStateForGeneration(this.agent.accessor.get(IAgentStateService).get(externalExecutorKey), data.execution?.generation);
     const source = localSourceFromRef(prior.sessionRef?.ref);
     if (source !== undefined && (source.executorId !== executorId ||
-        prior.bindingFingerprint !== agentExecutorBindingFingerprint(data) ||
+        !agentExecutorBindingMatches(data, prior.bindingFingerprint) ||
         source.home !== await this.agent.accessor.get(ILocalSessionCatalog).sourceHome(executorId))) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session executor binding fingerprint or source home changed');
     }
@@ -327,8 +329,9 @@ export class AgentExecutionService implements IAgentExecutionService {
     assertResearchExecutor(binding.executionRestriction, executorId);
     const descriptor = this.executors.get?.(executorId);
     const worktree = executorId === 'native' ? undefined : (await this.agent.accessor.get(ISessionMetadata).read()).worktree;
-    const modeKey = descriptor?.permission?.via === 'argv'
-      ? `:host-gate:${externalPermissionHostGate({ agent: this.agent, binding, descriptor, worktree })}` : '';
+    const externalContext = descriptor === undefined ? undefined : { agent: this.agent, binding, descriptor, worktree };
+    const modeKey = descriptor?.permission?.via === 'argv' && externalContext !== undefined
+      ? `:permission:${externalPermissionConstraints(externalContext) ? 'manual' : externalPermissionMode(externalContext) ?? 'vendor'}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {

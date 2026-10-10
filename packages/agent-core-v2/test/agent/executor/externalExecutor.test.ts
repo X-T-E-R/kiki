@@ -28,6 +28,7 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -227,6 +228,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
   } as unknown as IWireService;
   const dispatcher = {
     _serviceBrand: undefined,
+    flush: async () => wire.flush(),
     dispatch: async (event: Event2) => {
       events.push(event);
       if (event instanceof TurnPrompt) {
@@ -643,6 +645,19 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('keeps permission overrides and clear within the same execution context', () => {
+    const first = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'yolo' } }, undefined, undefined, undefined);
+    const next = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'auto' } }, undefined, undefined, first);
+    const cleared = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: null } }, undefined, undefined, next);
+    expect([next.generation, cleared.generation]).toEqual([first.generation, first.generation]);
+    expect(cleared.effective.permission_mode).toBeUndefined();
+    expect(cleared.sources['permission_mode']).toBe('harness-default');
+    const bind = (execution: typeof first) => ({ systemPrompt: '', thinkingLevel: 'off', execution });
+    expect(agentExecutorBindingFingerprint(bind(first))).toBe(agentExecutorBindingFingerprint(bind(cleared)));
+    expect(resolveExecutionBinding({ executor: 'example-acp', overrides: { model: 'model-other' } }, undefined, undefined, cleared).generation)
+      .toBe(first.generation + 1);
+  });
+
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
       executorId: 'kimi-acp', executorVersion,
@@ -1910,23 +1925,53 @@ describe('ACP external executor', () => {
     expect(harness.starts[0]?.session?.sessionMeta?.['kiki.permission']).toMatchObject({ override: undefined, hostGate: false });
   });
 
-  it('restores vendor permission value after clearing a runtime override', async () => {
-    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true });
+  it.each([false, true])('restores vendor permission value after clearing a runtime override (cold=%s)', async (cold) => {
+    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true, mode: 'resume' });
     const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
     await first.completion;
     await harness.session.settled();
+    expect(harness.state.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({
+      sessionId: 'remote-2', config: { configId: 'auto_approve', value: false },
+    });
     Object.assign(harness.permissionMode, { externalOverride: undefined });
-    const next = await harness.session.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal });
-    await next.completion;
-    expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'allow-once' },
-      { outcome: 'selected', optionId: 'kiki.vendor_default' }]);
-    expect(harness.starts[1]?.session?.sessionMeta?.['kiki.permission']).toMatchObject({ override: undefined, hostGate: false });
+    const session = cold ? harness.createSession(harness.executorContext) : harness.session;
+    try {
+      const next = await session.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal });
+      await next.completion;
+      expect(harness.selections.filter((selection) => selection.configId === 'auto_approve')).toEqual([
+        { configId: 'auto_approve', value: true }, { configId: 'auto_approve', value: false },
+      ]);
+      expect(harness.state.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toBeUndefined();
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'allow-once' },
+        { outcome: 'selected', optionId: 'kiki.vendor_default' }]);
+      expect(harness.starts[1]?.session?.sessionMeta?.['kiki.permission']).toMatchObject({ override: undefined, hostGate: false });
+    } finally { await session.shutdown(); await harness.session.shutdown(); }
+  });
+
+  it('persists the vendor baseline before permission configuration can fail', async () => {
+    const options: FakeHarnessOptions = { permissionMode: 'yolo', vendorDefaultOption: true,
+      mode: 'resume', configureFailureId: 'auto_approve' };
+    const harness = createHarness(options);
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal })).rejects.toThrow('set_config_option failed');
+      expect(harness.state.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({
+        sessionId: 'remote-2', config: { configId: 'auto_approve', value: false },
+      });
+      Object.assign(options, { configureFailureId: undefined });
+      Object.assign(harness.permissionMode, { externalOverride: undefined });
+      const cold = harness.createSession(harness.executorContext);
+      try {
+        await (await cold.run({ kind: 'prompt', prompt: 'recover' }, { signal: new AbortController().signal })).completion;
+        expect(harness.selections).toContainEqual({ configId: 'auto_approve', value: false });
+        expect(harness.state.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toBeUndefined();
+      } finally { await cold.shutdown(); }
+    } finally { await harness.session.shutdown(); }
   });
 
   it.each([
     ['auto', false],
-    ['yolo', false],
-  ] as const)('uses the callback-safe declared %s permission mapping', async (permissionMode, value) => {
+    ['yolo', true],
+  ] as const)('applies the declared explicit %s permission mapping without artificial constraints', async (permissionMode, value) => {
     const harness = createHarness({
       permissionMode,
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
@@ -1939,11 +1984,24 @@ describe('ACP external executor', () => {
     expect(harness.selections).toContainEqual({ configId: 'auto_approve', value });
   });
 
+  it('keeps permission callbacks when an explicit deny constrains YOLO', async () => {
+    const harness = createHarness({ permissionMode: 'yolo', permissionGate: async () => ({
+      permissionDecision: 'rejected', veto: { isError: true, output: 'Explicit deny' },
+    }) });
+    Object.assign(harness.executorContext.binding, { disallowedTools: ['blocked_tool'] });
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.selections).toContainEqual({ configId: 'auto_approve', value: false });
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'reject' }]);
+    } finally { await harness.session.shutdown(); }
+  });
+
   it.each([
     ['manual', 'default'],
-    ['auto', 'default'],
-    ['yolo', 'default'],
-  ] as const)('configures Kimi ACP callbacks for explicit %s before starting the turn', async (permissionMode, value) => {
+    ['auto', 'auto'],
+    ['yolo', 'yolo'],
+  ] as const)('configures Kimi ACP for explicit %s before starting the turn', async (permissionMode, value) => {
     const harness = createHarness({
       permissionMode,
       permissionMapping: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.permissionModeMapping,
@@ -2147,29 +2205,13 @@ describe('ACP external executor', () => {
     expect(harness.selections).not.toContainEqual({ configId: 'brain-1', value: 'high' });
   });
 
-  it('runs manual and auto modes without a verified permission mapping and records the loss', async () => {
-    const manual = createHarness({ permissionMapping: null, permissionMode: 'manual' });
-    const manualRun = await manual.session.run(
-      { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
-    );
-    await manualRun.completion;
-    expect(manual.starts).toHaveLength(1);
-    expect(manual.events.find((event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata)?.losses)
-      .toContain('permission_mode_unverified');
-    await manual.session.shutdown();
-
-    const auto = createHarness({ permissionMapping: null, permissionMode: 'auto' });
-    const run = await auto.session.run(
-      { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
-    );
-    await run.completion;
-    expect(auto.starts).toHaveLength(1);
-    expect(auto.selections).not.toContainEqual({ configId: 'auto_approve', value: false });
-    const metadata = auto.events.find(
-      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
-    );
-    expect(metadata?.losses).toEqual(expect.arrayContaining(['permission_mode_unverified']));
-    await auto.session.shutdown();
+  it.each(['manual', 'auto', 'yolo'] as const)('diagnoses unsupported explicit %s without starting a turn', async (permissionMode) => {
+    const harness = createHarness({ permissionMapping: null, permissionMode });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'work' },
+        { signal: new AbortController().signal })).rejects.toThrow(`cannot verify ${permissionMode} permission mode`);
+      expect(harness.starts).toHaveLength(0);
+    } finally { await harness.session.shutdown(); }
   });
 
   it('records dropped additional directories when the harness does not declare support for them', async () => {

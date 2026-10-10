@@ -37,6 +37,7 @@ import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   agentExecutorBindingFingerprint,
+  agentExecutorBindingMatches,
   type AgentExecutionStatus,
   type AgentExecutorContext,
   type AgentExecutorPermissionModeMapping,
@@ -56,7 +57,7 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionQuestionService } from '#/session/question/question';
 import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionHostGate, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { authorizeExternalTool, externalPermissionConstraints, externalPermissionHostGate, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -139,7 +140,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
   #harnessMcp: HarnessMcpLease | undefined;
-  #permissionRestore: { readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
+  #permissionRestore: { readonly sessionId: string; readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
 
   constructor(
     private context: AgentExecutorContext,
@@ -252,6 +253,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     ) {
       losses.add('additional_directories_dropped');
     }
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const configured = await this.#configure(opened, options.signal, losses);
     const negotiated: NegotiatedExecutorCapabilities = {
       models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
@@ -272,9 +274,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       this.context.descriptor.id, this.context.descriptor.version, negotiated,
     );
-    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
-    const reusablePrior = prior.bindingFingerprint === bindingFingerprint;
+    const reusablePrior = agentExecutorBindingMatches(this.context.binding, prior.bindingFingerprint);
     const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
     const sessionEpoch = priorSessionId === configured.sessionId
       ? prior.sessionEpoch ?? 1
@@ -383,7 +384,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           executorId: this.context.descriptor.id,
           descriptorRevision: this.context.descriptor.revision,
           bindingFingerprint,
-          sessionRef: sessionRefWithLocalSource(configured.sessionRef, prior.sessionRef?.ref['localSource']),
+          sessionRef: this.#permissionSessionRef(configured.sessionRef, prior.sessionRef?.ref['localSource']),
           sessionEpoch,
           profileDeliveredSessionId: deliverProfile
             ? configured.sessionId
@@ -412,7 +413,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       () => options.signal.removeEventListener('abort', relayAbort),
       {
         bindingFingerprint,
-        sessionRef: sessionRefWithLocalSource(configured.sessionRef, prior.sessionRef?.ref['localSource']),
+        sessionRef: this.#permissionSessionRef(configured.sessionRef, prior.sessionRef?.ref['localSource']),
         sessionEpoch,
         profileDeliveredSessionId: deliverProfile
           ? configured.sessionId
@@ -611,7 +612,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       );
     }
     if (state.sessionRef?.ref['localSource'] !== undefined &&
-        state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
+        !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     const systemPrompt = this.context.binding.systemPrompt;
@@ -634,10 +635,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
         'kiki.permission': externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs) },
       sessionRef:
-        state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding) && state.sessionRef !== undefined
+        agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint) && state.sessionRef !== undefined
           ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
           : undefined,
-      requireResume: state.sessionRef?.ref['localSource'] !== undefined,
+      requireResume: state.sessionRef?.ref['localSource'] !== undefined ||
+        ((this.context.binding.execution !== undefined || this.context.descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
@@ -695,7 +697,12 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }
     }
 
-    if (!externalPermissionHostGate(this.context)) {
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    if (this.#permissionRestore?.sessionId !== configured.sessionId) this.#permissionRestore = undefined;
+    if (this.#permissionRestore === undefined && opened.mode !== 'new' && sessionIdFromState(prior.sessionRef) === configured.sessionId) {
+      this.#permissionRestore = permissionRestoreFromRef(prior.sessionRef);
+    }
+    if (externalPermissionMode(this.context) === undefined && !externalPermissionConstraints(this.context)) {
       const restore = this.#permissionRestore;
       if (restore === undefined) return configured;
       const restored = await this.#client.configureSession({ configOptions: restore.config === undefined ? undefined : [restore.config],
@@ -705,6 +712,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor did not restore its inherited permission mode');
       }
       this.#permissionRestore = undefined;
+      await this.#persistPermissionRestore(restored);
       return restored;
     }
     const declared = this.context.descriptor.permission;
@@ -713,9 +721,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
       : undefined);
     const mode = externalPermissionMode(this.context);
+    const vendorMode = externalPermissionConstraints(this.context) || mode === 'review' ? 'manual' : mode ?? 'manual';
     if (mapping !== undefined) {
-      const permission = permissionConfig(configured.configOptions, mapping, 'manual');
-      this.#permissionRestore ??= { config: { configId: permission.option.id, value: permission.option.currentValue } };
+      const permission = permissionConfig(configured.configOptions, mapping, vendorMode);
+      this.#permissionRestore ??= { sessionId: configured.sessionId, config: { configId: permission.option.id, value: permission.option.currentValue } };
+      await this.#persistPermissionRestore(configured);
       const verified = await this.#client.configureSession({ configOptions: [permission.selection], signal });
       assertConfigured(verified.configOptions, permission.selection, 'permission mode');
       return verified;
@@ -728,7 +738,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       return configured;
     }
     if (declared?.via === 'session_mode') {
-      const selected = declared.manual;
+      const selected = declared[vendorMode] ?? declared.manual;
       if (opened.availableModes !== undefined && !opened.availableModes.includes(selected)) {
         throw new Error2(ErrorCodes.CONFIG_INVALID,
           `External executor "${this.context.descriptor.id}" does not advertise ${selected} permission mode`);
@@ -737,13 +747,39 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         if (opened.currentModeId === undefined) {
           throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor does not expose its inherited permission mode for restoration');
         }
-        this.#permissionRestore = { modeId: opened.currentModeId };
+        this.#permissionRestore = { sessionId: configured.sessionId, modeId: opened.currentModeId };
       }
+      await this.#persistPermissionRestore(configured);
       configured = await this.#client.configureSession({ modeId: selected, signal });
       if (configured.currentModeId === selected) return configured;
     }
+    if (mode !== undefined) throw new Error2(ErrorCodes.CONFIG_INVALID,
+      `External executor "${this.context.descriptor.id}" cannot verify ${mode} permission mode with its declared session controls`);
     losses.add('permission_mode_unverified');
     return configured;
+  }
+
+  async #persistPermissionRestore(opened: AcpOpenSessionResult): Promise<void> {
+    const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    const sameSession = sessionIdFromState(prior.sessionRef) === opened.sessionId;
+    await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+      executionGeneration: this.context.binding.execution?.generation,
+      executorId: this.context.descriptor.id, descriptorRevision: this.context.descriptor.revision,
+      bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
+      sessionRef: this.#permissionSessionRef(opened.sessionRef, prior.sessionRef?.ref['localSource']),
+      sessionEpoch: sameSession ? prior.sessionEpoch ?? 1 : (prior.sessionEpoch ?? 0) + 1,
+      profileDeliveredSessionId: sameSession ? prior.profileDeliveredSessionId : undefined,
+      profileDelivery: sameSession ? prior.profileDelivery : undefined,
+    }));
+    await this.#dispatcher.flush();
+  }
+
+  #permissionSessionRef(sessionRef: ExecutorSessionRefEnvelope, localSource: unknown): ExecutorSessionRefEnvelope {
+    const snapshot = sessionRefWithLocalSource(sessionRef, localSource);
+    const ref = { ...snapshot.ref };
+    if (this.#permissionRestore === undefined) delete ref['kikiPermissionRestore'];
+    else ref['kikiPermissionRestore'] = this.#permissionRestore;
+    return { ...snapshot, ref };
   }
 
   #reserveTurnId(): number {
@@ -876,8 +912,10 @@ function requiredCommand(context: AgentExecutorContext): string {
 
 export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly string[] {
   const declared = context.descriptor.permission;
+  const mode = externalPermissionConstraints(context) ? 'manual' : externalPermissionMode(context);
   const permissionArgs = [...context.descriptor.launchArgs ?? [],
-    ...declared?.via !== 'argv' || declared.flag === undefined || !externalPermissionHostGate(context) ? [] : [declared.flag, declared.manual]];
+    ...declared?.via !== 'argv' || declared.flag === undefined || mode === undefined ? []
+      : [declared.flag, declared[mode === 'review' ? 'manual' : mode]]];
   if (context.descriptor.modelBinding !== 'argv') return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
   const model = context.binding.modelAlias;
   if (model === undefined) return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
@@ -1256,6 +1294,17 @@ function sessionRefWithLocalSource(sessionRef: ExecutorSessionRefEnvelope, local
   if (localSource === undefined) delete ref['localSource'];
   else ref['localSource'] = localSource;
   return { ...sessionRef, ref };
+}
+
+function permissionRestoreFromRef(ref: ExecutorSessionRefEnvelope | undefined) {
+  const saved = objectOf(ref?.ref['kikiPermissionRestore']);
+  if (typeof saved?.['sessionId'] !== 'string' || saved['sessionId'] !== sessionIdFromState(ref)) return undefined;
+  const config = objectOf(saved['config']);
+  if (config !== undefined && typeof config['configId'] === 'string' &&
+      (typeof config['value'] === 'string' || typeof config['value'] === 'boolean')) {
+    return { sessionId: saved['sessionId'], config: { configId: config['configId'], value: config['value'] } };
+  }
+  return typeof saved['modeId'] === 'string' ? { sessionId: saved['sessionId'], modeId: saved['modeId'] } : undefined;
 }
 
 function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined {

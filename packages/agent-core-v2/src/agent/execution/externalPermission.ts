@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isToolActive, type ToolActivationPolicy } from '@kiki/agent-profiles/toolPolicy';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
@@ -42,24 +43,20 @@ export function externalPermissionMode(context: AgentExecutorContext) {
 }
 
 export function externalToolPolicy(context: AgentExecutorContext): ToolActivationPolicy {
-  const profile = context.binding.boundProfile;
-  const lease = context.binding.appliedLease;
-  const tools = lease?.tools !== undefined ? lease.tools ?? undefined
-    : profile?.fileDefinition?.tools ?? profile?.tools;
-  const routeTools = lease?.tools !== undefined ? undefined : profile?.routeDefinition?.tools;
-  return { tools, toolAllowPolicies: routeTools === undefined ? undefined : [routeTools],
-    disallowedTools: context.binding.disallowedTools };
+  return declaredExternalToolPolicy(context.binding);
 }
 
 export function externalPermissionConstraints(context: AgentExecutorContext): boolean {
   const policy = externalToolPolicy(context);
-  return context.worktree !== undefined || context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0 ||
+  return context.worktree !== undefined || context.agent.accessor.get(IAgentPermissionRulesService).rules.some((rule) => rule.decision !== 'allow') ||
     context.binding.executionRestriction !== undefined || (policy.disallowedTools?.length ?? 0) > 0 ||
-    (policy.tools !== undefined && !policy.tools.includes('*'));
+    (policy.tools !== undefined && !policy.tools.includes('*')) ||
+    (policy.toolAllowPolicies?.some((tools) => !tools.includes('*')) ?? false);
 }
 
 export function externalPermissionHostGate(context: AgentExecutorContext): boolean {
-  return externalPermissionOverride(context) !== undefined || externalPermissionConstraints(context);
+  return externalPermissionOverride(context) !== undefined || externalPermissionConstraints(context) ||
+    context.agent.accessor.get(IAgentPermissionRulesService).rules.length > 0;
 }
 
 export function externalPermissionMeta(context: AgentExecutorContext, cwd: string, additionalDirectories?: readonly string[]) {

@@ -2,6 +2,7 @@ import type { ExecutionBinding, ExecutionOverrides, ExecutionSelection } from '@
 import type { AgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { resolveProfileThinkingDefault } from '@kiki/agent-profiles/modelProfileOverlay';
 import type { AgentExecutorDefaults } from '#/app/agentExecutor/executorOverrides';
+import { executionContextIdentity } from '#/app/agentExecutor/agentExecutor';
 
 export function resolveExecutionBinding(
   requested: ExecutionSelection,
@@ -35,6 +36,6 @@ export function resolveExecutionBinding(
     kiki_context: [...pick('kiki_context', profile?.kikiContext, defaults?.kiki_context) ?? []],
     allow_kiki_subagents: pick('allow_kiki_subagents', profile?.allowKikiSubagents, defaults?.allow_kiki_subagents) ?? false,
   };
-  const changed = JSON.stringify({ selection, effective }) !== JSON.stringify(previous === undefined ? undefined : { selection: previous.selection, effective: previous.effective });
+  const changed = JSON.stringify(executionContextIdentity({ selection, effective })) !== JSON.stringify(previous === undefined ? undefined : executionContextIdentity(previous));
   return { version: 1, selection, effective, sources, generation: previous === undefined ? 1 : previous.generation + (changed ? 1 : 0) };
 }

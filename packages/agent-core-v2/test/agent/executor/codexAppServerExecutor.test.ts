@@ -92,6 +92,8 @@ interface HarnessOptions {
   readonly deferTurnCompletion?: boolean;
   readonly steerResponse?: unknown;
   readonly permissionMode?: { mode: 'manual' | 'auto' | 'yolo' };
+  readonly vendorApprovalPolicy?: string | Readonly<Record<string, unknown>>;
+  readonly failTurnStart?: boolean;
   readonly kikiSubagents?: boolean;
   readonly clientFactory?: ConstructorParameters<typeof CodexAppServerExecutorSession>[1];
 }
@@ -137,6 +139,7 @@ function createHarness(options: HarnessOptions = {}) {
   } as unknown as IAgentStateService;
   const dispatcher = {
     _serviceBrand: undefined,
+    flush: async () => wire.flush(),
     dispatch: async (event: Event2) => {
       events.push(event);
       if (event instanceof TurnPrompt) {
@@ -303,7 +306,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     startThread: async (params: Readonly<Record<string, unknown>>) => {
       starts.push(params);
-      return { thread: { id: 'thread-new' } };
+      return { thread: { id: 'thread-new' }, approvalPolicy: options.vendorApprovalPolicy ?? 'untrusted' };
     },
     resumeThread: async (params: Readonly<Record<string, unknown>>) => {
       resumes.push(params);
@@ -312,10 +315,11 @@ function createHarness(options: HarnessOptions = {}) {
           ? options.resumeError
           : new Error('Configured resume failure');
       }
-      return { thread: { id: String(params['threadId']) } };
+      return { thread: { id: String(params['threadId']) }, approvalPolicy: options.vendorApprovalPolicy ?? 'untrusted' };
     },
     startTurn: async (params: Readonly<Record<string, unknown>>): Promise<CodexTurnHandle> => {
       prompts.push(params);
+      if (options.failTurnStart) throw new Error('turn start failed');
       for (const notification of options.notifications ?? []) notificationHandler?.(notification);
       if (serverHandler !== undefined && options.approvalOptionId !== undefined) {
         await serverHandler(
@@ -574,14 +578,14 @@ describe('Codex app-server external executor', () => {
     await expect(handle.completion).resolves.toMatchObject({ summary: 'done' });
     expect(harness.starts[0]).toMatchObject({
       model: 'gpt-test',
-      approvalPolicy: 'on-request',
-      sandbox: 'workspace-write',
+      approvalPolicy: undefined,
+      sandbox: undefined,
       developerInstructions: 'Frozen profile instructions',
     });
     expect(harness.prompts[0]).toMatchObject({
       effort: 'high',
-      approvalPolicy: 'on-request',
-      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+      approvalPolicy: undefined,
+      sandboxPolicy: undefined,
     });
     expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({
       protocol: 'codex-app-server',
@@ -1121,6 +1125,39 @@ describe('Codex app-server external executor', () => {
 });
 
 describe('Codex Kiki MCP approval under YOLO', () => {
+  it.each([false, true])('restores sticky vendor approval after clear on the same thread (cold=%s)', async (cold) => {
+    const vendorApprovalPolicy = { granular: { sandbox_approval: true, rules: true, skill_approval: false,
+      request_permissions: true, mcp_elicitations: false } };
+    const harness = createHarness({ vendorApprovalPolicy });
+    Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+    let session = harness.session;
+    try {
+      await (await session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(harness.prompts[0]?.['approvalPolicy']).toBe('never');
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({ threadId: 'thread-new', policy: vendorApprovalPolicy });
+      Object.assign(harness.context.binding, { permissionMode: undefined });
+      if (cold) { await session.shutdown(); session = harness.createSession(harness.context); }
+      await (await session.run({ kind: 'prompt', prompt: 'second' }, { signal: new AbortController().signal })).completion;
+      await session.settled();
+      expect(harness.prompts[1]?.['approvalPolicy']).toEqual(vendorApprovalPolicy);
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toBeUndefined();
+      expect(harness.starts).toHaveLength(1);
+      expect(harness.prompts.map((prompt) => prompt['threadId'])).toEqual(['thread-new', 'thread-new']);
+      await (await session.run({ kind: 'prompt', prompt: 'third' }, { signal: new AbortController().signal })).completion;
+      expect(harness.prompts[2]?.['approvalPolicy']).toBeUndefined();
+    } finally { await session.shutdown(); }
+  });
+
+  it('retains the vendor restoration baseline when a turn fails to start', async () => {
+    const harness = createHarness({ failTurnStart: true });
+    Object.assign(harness.context.binding, { permissionMode: 'yolo' });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('turn start failed');
+      expect(harness.states.get(externalExecutorKey).sessionRef?.ref['kikiPermissionRestore']).toEqual({ threadId: 'thread-new', policy: 'untrusted' });
+    } finally { await harness.session.shutdown(); }
+  });
+
   const approvalFlags = (args: readonly string[]) => args.filter((arg) => arg.includes('default_tools_approval_mode'));
 
   it.each([false, true])('pre-approves only the Kiki MCP server when YOLO is explicit=%s, never from ambient mode', async (explicit) => {
@@ -1132,9 +1169,9 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       expect(approvalFlags(harness.spawns[0]!)).toEqual(explicit ? ['mcp_servers.kiki-harness.default_tools_approval_mode="approve"'] : []);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/mcp_servers\.(?!kiki-harness\.)[^.=]+\.default_tools_approval_mode/);
       expect(harness.spawns[0]!.join(' ')).not.toMatch(/approval_policy|sandbox_mode|danger-full-access|bypass/);
-      expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: 'workspace-write' });
-      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: explicit ? 'on-request' : undefined,
-        sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } });
+      expect(harness.starts[0]).toMatchObject({ approvalPolicy: undefined, sandbox: undefined });
+      expect(harness.prompts[0]).toMatchObject({ approvalPolicy: explicit ? 'never' : undefined,
+        sandboxPolicy: undefined });
     } finally { await harness.session.shutdown(); }
   });
 
@@ -1172,7 +1209,7 @@ describe('Codex Kiki MCP approval under YOLO', () => {
       expect(harness.spawns).toHaveLength(2);
       expect(approvalFlags(harness.spawns[1]!)).toHaveLength(1);
       expect(harness.resumes.at(-1)).toMatchObject({ threadId: 'thread-new', approvalPolicy: undefined });
-      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'on-request' });
+      expect(harness.prompts.at(-1)).toMatchObject({ approvalPolicy: 'never' });
       mode.mode = 'auto';
       Object.assign(harness.context.binding, { permissionMode: undefined });
       await (await harness.session.run({ kind: 'prompt', prompt: 'four' }, { signal: new AbortController().signal })).completion; await harness.session.settled();

@@ -124,6 +124,7 @@ export interface CodexModelListResult {
 }
 
 export interface CodexThreadResult {
+  readonly approvalPolicy?: string | Readonly<Record<string, unknown>>;
   readonly thread: Readonly<Record<string, unknown>> & { readonly id: string };
   readonly model?: string;
   readonly modelProvider?: string;

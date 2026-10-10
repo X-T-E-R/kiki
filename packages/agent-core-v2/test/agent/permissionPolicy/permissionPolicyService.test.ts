@@ -47,6 +47,7 @@ import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { isToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
+import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { AgentPermissionGate } from '#/agent/permissionGate/permissionGateService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -256,7 +257,7 @@ describe('AgentPermissionPolicyService chain', () => {
     const base = externalContext();
     const bind = (tools: readonly string[] | undefined) => ({ ...base, binding: { ...base.binding,
       toolAllowPolicies: [['Read']], boundProfile: freezeBoundProfile(normalizeAgentProfile({
-        name: 'example', executor: 'example-acp', tools, systemPrompt: 'Example',
+        name: 'example', executor: 'example-acp', tools, systemPrompt: () => 'Example',
       })) } });
     const tool = { name: 'manage_task', input: { Action: 'status' } };
     const display = { kind: 'external_permission' as const, options: [], summary: tool.name, detail: tool.input };
@@ -265,6 +266,13 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(await authorizeExternalTool(bind(['manage_task']), tool, 1, 'included', signal, display)).toBe('allow');
     expect(await authorizeExternalTool(bind(undefined), tool, 1, 'cleared', signal, display)).toBe('allow');
     expect(await authorizeExternalTool(bind(['*']), tool, 1, 'unrestricted', signal, display)).toBe('allow');
+  });
+
+  it('distinguishes a caller native profile catalog from an explicit call-level tool declaration', () => {
+    const boundProfile = freezeBoundProfile(normalizeAgentProfile({ name: 'example-native', tools: ['Read', 'Bash'], systemPrompt: () => '' }));
+    expect(isToolActive(declaredExternalToolPolicy({ boundProfile }), 'manage_task')).toBe(true);
+    expect(isToolActive(declaredExternalToolPolicy({ boundProfile, toolOverride: { tools: ['Read'] } }), 'manage_task')).toBe(false);
+    expect(isToolActive(declaredExternalToolPolicy({ boundProfile, toolOverride: { tools: ['*'] } }), 'manage_task')).toBe(true);
   });
 
   it('keeps external vendor inheritance while enforcing persisted worktree isolation without a mode override', async () => {

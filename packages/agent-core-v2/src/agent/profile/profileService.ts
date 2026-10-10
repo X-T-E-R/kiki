@@ -2,6 +2,8 @@ import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
 import { resolveExecutionBinding } from './executionBinding';
+import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
+import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 import { promptConfigurationChannels } from './promptDiagnostics';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
@@ -854,11 +856,24 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       fields, body) : '';
     const previous = this.profileState.execution;
     if (previous?.generation === execution.generation) {
-      if (this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
-          JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === profile?.definitionId) return;
-      execution.generation++;
+      const sameContext = this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
+        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === profile?.definitionId;
+      if (sameContext && JSON.stringify(previous) === JSON.stringify(execution)) return;
+      if (!sameContext) execution.generation++;
     }
     assertCurrent?.();
+    if (previous?.generation === execution.generation) {
+      const prior = this.states.get(externalExecutorKey);
+      const binding = this.data();
+      if (prior.sessionRef !== undefined && prior.executorId !== undefined && prior.descriptorRevision !== undefined &&
+          agentExecutorBindingMatches(binding, prior.bindingFingerprint)) {
+        await this.dispatcher.dispatch(new ExecutorSessionUpdated({
+          ...prior, executionGeneration: execution.generation, executorId: prior.executorId,
+          descriptorRevision: prior.descriptorRevision, sessionRef: prior.sessionRef,
+          sessionEpoch: prior.sessionEpoch ?? 1, bindingFingerprint: agentExecutorBindingFingerprint(binding),
+        }));
+      }
+    }
     this.activeProfile = profile;
     this.activeProfileDefinitionId = profile?.definitionId;
     this.activeToolNamesOverlay = undefined;

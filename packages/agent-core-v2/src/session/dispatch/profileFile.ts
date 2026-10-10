@@ -6,6 +6,7 @@ import { agentProfilesHostFs } from '#/workspace/workspaceAgentProfileLoader/int
 import { resolvePathAccessPath } from '#/tool/path-access';
 import { Error2, ErrorCodes } from '#/errors';
 import type { ProfileData } from '#/agent/profile/profile';
+import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
 import type {
   AgentProfile,
   AgentProfileContext,
@@ -18,7 +19,9 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 
 export interface FrozenProfileFileSources {
   readonly root: AgentFileDefinition;
-  readonly callerCeiling?: Pick<ProfileData, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools'>;
+  readonly callerCeiling?: Pick<ProfileData, 'activeToolNames' | 'toolAllowPolicies' | 'disallowedTools'> & {
+    readonly externalToolAllowPolicies?: readonly (readonly string[])[];
+  };
   readonly scopedBindings: Readonly<Record<string, Readonly<Record<string, AgentFileScopedBinding>>>>;
   readonly sourceDefinitions: Readonly<Record<string, AgentFileDefinition>>;
   readonly dependencyIndex: Readonly<Record<string, readonly string[]>>;
@@ -100,11 +103,15 @@ export async function loadDispatchProfileFile(
     definitionId: agentProfileDefinitionId(realpath), contributionRoot: runtime.path.dirname(realpath),
   });
   const graph = await resolveAgentSourceGraph(guardedFs, [definition]);
+  const externalTools = declaredExternalToolPolicy(caller);
   const sources: FrozenProfileFileSources = {
     root: definition,
     callerCeiling: structuredClone({
       activeToolNames: caller.activeToolNames, toolAllowPolicies: caller.toolAllowPolicies,
       disallowedTools: caller.disallowedTools,
+      externalToolAllowPolicies: [
+        ...(externalTools.tools === undefined ? [] : [externalTools.tools]), ...(externalTools.toolAllowPolicies ?? []),
+      ],
     }),
     scopedBindings: Object.fromEntries([...graph.scopedBindings].map(([id, entries]) => [id, Object.fromEntries(entries)])),
     sourceDefinitions: Object.fromEntries(graph.sourceDefinitions), dependencyIndex: Object.fromEntries(graph.dependencyIndex), diagnostics: graph.diagnostics,

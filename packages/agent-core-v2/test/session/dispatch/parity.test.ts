@@ -376,6 +376,7 @@ class ParityProbe {
   readonly profileBinds: ProbeTuple[] = [];
   readonly resumeBindings: Parameters<IAgentProfileService['prepareResumeBinding']>[0][] = [];
   readonly permissions: ProbeTuple[] = [];
+  readonly permissionSources: Array<'runtime' | 'ambient' | undefined> = [];
   readonly names: ProbeTuple[] = [];
   readonly labels: ProbeTuple[] = [];
   readonly rawLabels: ProbeTuple[] = [];
@@ -639,7 +640,8 @@ function createLane(
             get mode() {
               return permissionModeByAgent.get(agentId)!;
             },
-            setMode: (mode: PermissionMode) => {
+            setMode: (mode: PermissionMode, source?: 'runtime' | 'ambient') => {
+              probe.permissionSources.push(source);
               const ceiling = permissionCeilingByAgent.get(agentId);
               const effective = ceiling === undefined ? mode : constrainPermissionMode(mode, ceiling);
               permissionModeByAgent.set(agentId, effective);
@@ -2408,6 +2410,7 @@ describe('AgentRun and dispatch parity golden', () => {
       thinkingEffort: 'xhigh',
     });
     expect(external.permissionMode('agent_child_1')).toBe('auto');
+    expect(external.probe.permissionSources.at(-1)).toBe('ambient');
     expect(external.lifecycleCreate).toHaveBeenCalledTimes(2);
     expect(external.probe.agentIds).toEqual(['agent_child_1']);
     await completeExternal(external, resumed.dispatchId, 1);

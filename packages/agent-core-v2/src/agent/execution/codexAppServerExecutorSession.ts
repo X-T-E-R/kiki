@@ -23,6 +23,7 @@ import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   agentExecutorBindingFingerprint,
+  agentExecutorBindingMatches,
   type AgentExecutionStatus,
   type AgentExecutorContext,
   type AgentExecutorSession,
@@ -53,7 +54,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionHostGate, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { authorizeExternalTool, externalPermissionConstraints, externalPermissionHostGate, externalPermissionMode, externalToolPermission } from './externalPermission';
 import type { AcpElicitationRequest } from '@kiki/acp-client';
 import {
   ExecutorSessionUpdated,
@@ -97,6 +98,7 @@ interface OpenedThread {
   readonly mode: ExecutorResumeMode;
   readonly actualModel?: string;
   readonly modelProvider?: string;
+  readonly approvalPolicy?: CodexThreadResult['approvalPolicy'];
   readonly handoff?: { readonly text: string; readonly truncated: boolean };
 }
 
@@ -125,6 +127,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
+  #vendorApprovalPolicy: CodexThreadResult['approvalPolicy'];
+  #approvalRestore: { readonly threadId: string; readonly policy: NonNullable<CodexThreadResult['approvalPolicy']> } | undefined;
   #active: ActiveCodexTurn | undefined;
   #permissionContext: PermissionContext | undefined;
   #settled: Promise<void> = Promise.resolve();
@@ -229,6 +233,19 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const opened = await this.#openThread(roots, controller.signal);
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     const priorThreadId = threadIdFromState(prior.sessionRef);
+    if (this.#approvalRestore?.threadId !== opened.threadId) this.#approvalRestore = undefined;
+    if (priorThreadId === opened.threadId) this.#approvalRestore ??= codexApprovalRestore(prior.sessionRef);
+    if (opened.approvalPolicy !== undefined && this.#approvalRestore === undefined) this.#vendorApprovalPolicy = opened.approvalPolicy;
+    const override = this.#approvalPolicy();
+    if (override !== undefined && this.#approvalRestore === undefined) {
+      if (this.#vendorApprovalPolicy === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID,
+        'Codex does not expose its inherited approval policy for restoration');
+      this.#approvalRestore = { threadId: opened.threadId, policy: this.#vendorApprovalPolicy };
+    }
+    const approvalPolicy = override ?? this.#approvalRestore?.policy;
+    let sessionRef = { executorId: this.context.descriptor.id, version: 1,
+      ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'],
+        kikiPermissionRestore: this.#approvalRestore } };
     const sessionEpoch = priorThreadId === opened.threadId
       ? prior.sessionEpoch ?? 1
       : (prior.sessionEpoch ?? 0) + 1;
@@ -298,29 +315,34 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
     let handle: CodexTurnHandle;
     try {
+      if (this.#approvalRestore !== undefined) {
+        await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+          executionGeneration: this.context.binding.execution?.generation, executorId: this.context.descriptor.id,
+          descriptorRevision: this.context.descriptor.revision, bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
+          sessionRef, sessionEpoch, profileDeliveredSessionId: prior.profileDeliveredSessionId,
+        }));
+        await this.#dispatcher.flush();
+      }
       handle = await this.#client.startTurn({
         threadId: opened.threadId,
         input: [{ type: 'text', text: remotePrompt }, ...codexAttachments(externalAttachments(request))],
         model: this.context.binding.modelAlias,
         effort: this.context.binding.execution !== undefined ? this.context.binding.execution.effective.thinking
           : this.context.binding.thinkingLevel === 'off' ? undefined : this.context.binding.thinkingLevel,
-        approvalPolicy: this.#approvalPolicy(),
-        sandboxPolicy: this.context.binding.execution !== undefined ? undefined : {
-          type: 'workspaceWrite',
-          writableRoots: roots.additionalDirs,
-          networkAccess: false,
-        },
+        approvalPolicy,
+        sandboxPolicy: undefined,
       }, controller.signal, recorder.record.bind(recorder));
+      if (override === undefined && this.#approvalRestore !== undefined) {
+        this.#vendorApprovalPolicy = this.#approvalRestore.policy;
+        this.#approvalRestore = undefined;
+        sessionRef = { ...sessionRef, ref: { ...sessionRef.ref, kikiPermissionRestore: undefined } };
+      }
       await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
         executionGeneration: this.context.binding.execution?.generation,
         executorId: this.context.descriptor.id,
         descriptorRevision: this.context.descriptor.revision,
         bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
-        sessionRef: {
-          executorId: this.context.descriptor.id,
-          version: 1,
-          ref: { threadId: opened.threadId, localSource: prior.sessionRef?.ref['localSource'] },
-        },
+        sessionRef,
         sessionEpoch,
         profileDeliveredSessionId: opened.threadId,
       }));
@@ -477,7 +499,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   ): Promise<OpenedThread> {
     const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
     if (state.sessionRef?.ref['localSource'] !== undefined &&
-        state.bindingFingerprint !== agentExecutorBindingFingerprint(this.context.binding)) {
+        !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     if (this.#threadId !== undefined) return { threadId: this.#threadId, mode: 'live' };
@@ -492,7 +514,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       );
     }
     const reusable =
-      state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding);
+      agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint);
     const priorThreadId = reusable ? threadIdFromState(state.sessionRef) : undefined;
     if (state.sessionRef?.ref['localSource'] !== undefined && priorThreadId === undefined) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint or thread reference changed');
@@ -504,7 +526,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           model: this.context.binding.modelAlias,
           cwd: roots.workDir,
           approvalPolicy: undefined,
-          sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
+          sandbox: undefined,
           ...this.#instructions(),
         }, signal);
         this.#threadId = resumed.thread.id;
@@ -513,9 +535,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           mode: 'resume',
           actualModel: resumed.model,
           modelProvider: resumed.modelProvider,
+          approvalPolicy: resumed.approvalPolicy,
         };
       } catch (error) {
-        if (state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
+        if (this.context.binding.execution !== undefined || state.sessionRef?.ref['localSource'] !== undefined || !isResumeProtocolFailure(error)) throw error;
         const handoff = this.context.binding.execution === undefined ? buildHandoff(this.#memory.get()) : undefined;
         const fresh = await this.#startFreshThread(roots, signal);
         return {
@@ -523,6 +546,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
           mode: handoff === undefined ? 'new' : 'handoff',
           actualModel: fresh.model,
           modelProvider: fresh.modelProvider,
+          approvalPolicy: fresh.approvalPolicy,
           handoff,
         };
       }
@@ -535,6 +559,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         mode: 'handoff',
         actualModel: fresh.model,
         modelProvider: fresh.modelProvider,
+        approvalPolicy: fresh.approvalPolicy,
         handoff,
       };
     }
@@ -544,6 +569,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       mode: 'new',
       actualModel: fresh.model,
       modelProvider: fresh.modelProvider,
+      approvalPolicy: fresh.approvalPolicy,
     };
   }
 
@@ -555,7 +581,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       model: this.context.binding.modelAlias,
       cwd: roots.workDir,
       approvalPolicy: undefined,
-      sandbox: this.context.binding.execution === undefined ? 'workspace-write' : undefined,
+      sandbox: undefined,
       ...this.#instructions(),
     }, signal);
     this.#threadId = started.thread.id;
@@ -570,7 +596,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   }
 
   #approvalPolicy(): string | undefined {
-    return externalPermissionHostGate(this.context) ? 'on-request' : undefined;
+    if (externalPermissionConstraints(this.context)) return 'on-request';
+    const mode = externalPermissionMode(this.context);
+    return mode === undefined ? undefined : mode === 'yolo' ? 'never' : 'on-request';
   }
 
   #roots(): { readonly workDir: string; readonly additionalDirs?: readonly string[] } {
@@ -909,6 +937,17 @@ function threadIdFromState(
 ): string | undefined {
   const threadId = ref?.ref['threadId'];
   return typeof threadId === 'string' ? threadId : undefined;
+}
+
+function codexApprovalRestore(ref: { readonly ref: Readonly<Record<string, unknown>> } | undefined) {
+  const value = ref?.ref['kikiPermissionRestore'];
+  if (value === null || typeof value !== 'object') return undefined;
+  const restore = value as Record<string, unknown>;
+  const threadId = restore['threadId'];
+  const policy = restore['policy'];
+  if (typeof threadId !== 'string' || threadId !== threadIdFromState(ref) ||
+      !(typeof policy === 'string' || typeof policy === 'object' && policy !== null && !Array.isArray(policy))) return undefined;
+  return { threadId, policy: policy as NonNullable<CodexThreadResult['approvalPolicy']> };
 }
 
 function isResumeProtocolFailure(error: unknown): boolean {

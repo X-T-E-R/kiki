@@ -1,5 +1,6 @@
 import type { BoundProfile } from './boundProfile';
-import type { ProfileToolPolicyBase, ToolBindingOverride } from './profile';
+import type { ProfileData, ProfileToolPolicyBase, ToolBindingOverride } from './profile';
+import type { ToolActivationPolicy } from '@kiki/agent-profiles/toolPolicy';
 import { Error2, ErrorCodes } from '#/errors';
 
 export function mergeToolBindingOverride(previous: ToolBindingOverride | undefined, input: ToolBindingOverride | undefined): ToolBindingOverride | undefined {
@@ -31,6 +32,18 @@ export function effectiveToolBinding(base: ProfileToolPolicyBase, override: Tool
     toolAllowPolicies: policies,
     disallowedTools: [...new Set([...(base.disallowedTools ?? []), ...(override?.disallowedTools ?? [])])],
   };
+}
+
+export function declaredExternalToolPolicy(binding: Pick<ProfileData, 'boundProfile' | 'appliedLease' | 'toolOverride' | 'disallowedTools'>): ToolActivationPolicy {
+  const profile = binding.boundProfile;
+  const lease = binding.appliedLease;
+  const tools = binding.toolOverride?.tools ?? (lease?.tools !== undefined ? lease.tools ?? undefined
+    : profile?.fileDefinition?.tools ?? ((profile?.executor ?? 'native') === 'native' ? undefined : profile?.tools));
+  const routeTools = lease?.tools !== undefined || binding.toolOverride?.tools !== undefined ? undefined : profile?.routeDefinition?.tools;
+  return { tools, toolAllowPolicies: [
+    ...(routeTools === undefined ? [] : [routeTools]),
+    ...(profile?.fileSources?.callerCeiling?.externalToolAllowPolicies ?? []),
+  ], disallowedTools: binding.disallowedTools };
 }
 
 function sameTools(left: readonly string[], right: readonly string[] | undefined): boolean {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { ExecutionBinding } from '@kiki/protocol';
 
 import {
   createDecorator,
@@ -221,10 +222,21 @@ export interface AgentExecutorContext {
   readonly worktree?: import('#/app/git/worktreeModel').SessionWorktree;
 }
 
-export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot): string {
+export function executionContextIdentity(binding: Pick<ExecutionBinding, 'selection' | 'effective'>) {
+  const { permission_mode: _override, ...overrides } = binding.selection.overrides ?? {};
+  const { permission_mode: _effective, ...effective } = binding.effective;
+  return { selection: { ...binding.selection, overrides: Object.keys(overrides).length === 0 ? undefined : overrides }, effective };
+}
+
+export function agentExecutorBindingMatches(binding: ProfileBindingSnapshot, fingerprint: string | undefined): boolean {
+  return fingerprint === agentExecutorBindingFingerprint(binding) || fingerprint === agentExecutorBindingFingerprint(binding, true);
+}
+
+export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot, legacy = false): string {
   return createHash('sha256')
     .update(JSON.stringify({
-      execution: binding.execution,
+      execution: legacy || binding.execution === undefined ? binding.execution
+        : { version: binding.execution.version, ...executionContextIdentity(binding.execution), generation: binding.execution.generation },
       executorId: binding.executorId,
       executorProtocol: binding.executorProtocol,
       executorOptions: binding.executorOptions,

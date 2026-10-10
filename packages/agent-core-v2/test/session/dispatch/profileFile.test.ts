@@ -13,7 +13,7 @@ import type { Runtime } from '#/runtime/runtime';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 
-it('freezes a scoped profile source graph through JSON and resolves it without rereading files or polluting names', async () => {
+it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('freezes source declarations separately from native catalogs ($tools)', async ({ tools }) => {
   const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => 'original' });
   const catalog = { get: () => original, getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
   const files = new Map([
@@ -30,10 +30,11 @@ it('freezes a scoped profile source graph through JSON and resolves it without r
     realpath: async (path: string) => path, readText,
   } as unknown as IHostFileSystem });
   const runtime: Runtime = fake;
-  const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY, allowedSubagents: ['coder', 'research'], activeToolNames: ['Read'] };
+  const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY, allowedSubagents: ['coder', 'research'], activeToolNames: ['Read'], toolOverride: tools === undefined ? undefined : { tools } };
   const loaded = await loadDispatchProfileFile('team.md', runtime, { workDir: '/workspace' }, catalog, caller);
   const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('coder')!)));
   expect(Object.keys(bound.fileSources.sourceDefinitions)).toHaveLength(1);
+  expect(bound.fileSources.callerCeiling).toMatchObject({ activeToolNames: ['Read'], externalToolAllowPolicies: tools === undefined ? [] : [tools] });
   expect(bound.sourcePath).toBe('/workspace/team.md');
   expect(catalog.get('coder')).toBe(original);
   expect(readText).toHaveBeenCalledTimes(2);

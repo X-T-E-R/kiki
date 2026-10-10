@@ -705,6 +705,9 @@ function threadResult(value: unknown, method: string): CodexThreadResult {
   const id = requiredString(thread['id'], `${method} result.thread.id`);
   return {
     thread: { ...thread, id },
+    approvalPolicy: typeof result['approvalPolicy'] === 'string' ? result['approvalPolicy']
+      : typeof result['approvalPolicy'] === 'object' && result['approvalPolicy'] !== null && !Array.isArray(result['approvalPolicy'])
+        ? result['approvalPolicy'] as Readonly<Record<string, unknown>> : undefined,
     model: optionalString(result['model']),
     modelProvider: optionalString(result['modelProvider']),
     cwd: optionalString(result['cwd']),
