@@ -102,7 +102,7 @@ describe('bindSessionTranscript', () => {
     expect(transcript.getItems()[0]).toMatchObject({ payload: { phase: 'running' } });
     main.bus.emit({ type: 'compaction.started', trigger: 'auto', phase: 'running', time: 1000 } as unknown as Event2<any>);
     main.bus.emit({ type: 'compaction.blocked', time: 1500 } as unknown as Event2<any>);
-    main.bus.emit({ type: 'context.apply_compaction', summary: 'committed summary', time: 2000 } as unknown as Event2<any>);
+    main.bus.emit({ type: 'context.apply_compaction', strategy: 'summarize', summary: 'committed summary', time: 2000 } as unknown as Event2<any>);
     main.bus.emit({ type: 'full_compaction.complete', time: 2001 } as unknown as Event2<any>);
     main.bus.emit({ type: 'compaction.completed', result: { summary: 'committed summary' }, time: 2002 } as unknown as Event2<any>);
     expect(transcript.getItems()).toHaveLength(1);
