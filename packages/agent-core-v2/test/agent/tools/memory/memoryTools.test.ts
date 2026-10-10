@@ -33,7 +33,7 @@ describe('temporary session memory tools', () => {
     const result = await execution.execute({ turnId: 1, toolCallId: 'call', signal: new AbortController().signal });
     expect(result.isError).toBe(true);
     expect(put).not.toHaveBeenCalled();
-    ix.dispose();
+    await ix.dispose();
   });
 });
 
@@ -52,33 +52,32 @@ describe('memory maintenance guidance', () => {
   });
   afterEach(() => ix.dispose());
 
-  it('describes complete revisions, active-before-retirement, and explicit original scope', () => {
+  it('describes durable ownership, complete revisions, active-before-retirement and recoverable targeting', () => {
     const write = ix.get(IMemoryWriteTool);
     for (const guidance of [
-      'Prefer `update` for a complete revision',
-      'after the retained content is active',
-      'leave an already complete rule unchanged',
-      'Write the full current rule affirmatively',
-      'change history in `reason`',
-      'A global target requires `scope: "global"`',
-      'it is never inferred from ID',
-      'MemoryRead currently omits it',
-      'confirm scope and reread the target before retrying',
-      "preserve the target's full type/title/body",
-      'it is not active memory',
+      'First choose its home', 'Leave an already complete rule unchanged', 'Prefer update on the same ID',
+      'first confirm the retained same-scope entry is active', 'Do not replace global guidance with a narrower workspace entry',
+      'Keep correction history and retired values in reason', 'distinguishing human guidance, observed evidence, and agent-derived interpretation',
+      'the ID must resolve uniquely', 'The store preserves the original content', 'Pending is not active',
+      'never create a duplicate to bypass the failure',
     ]) expect(write.description).toContain(guidance);
-    expect(ix.get(IMemorySearchTool).description).toContain('These ranked hits are not a complete inventory');
-    expect(ix.get(IMemorySearchTool).description).toContain("Retain each hit's `scope.kind`");
-    expect(ix.get(IMemoryReadTool).description).toContain('archived and superseded entries can be returned as history');
-    expect(ix.get(IMemoryReadTool).description).toContain('If the scope is unknown, recover it through search');
+    expect(ix.get(IMemorySearchTool).description).toContain('Ranked search is for recall, not proof');
+    expect(ix.get(IMemorySearchTool).description).toContain('Continue with cursor alone');
+    expect(ix.get(IMemoryReadTool).description).toContain('Archived and superseded entries are history, not current guidance');
+    expect(ix.get(IMemoryReadTool).description).toContain('owning scope, latest revision, applicability');
+    for (const tool of [write, ix.get(IMemorySearchTool), ix.get(IMemoryReadTool)]) expect(tool.description).not.toContain('MemoryRead currently omits');
   });
 
-  it.each(['pending', 'active'] as const)('returns structured %s write evidence from the store result', async (status) => {
-    ix.stub(IMemoryStore, { put: async () => ({ entry: { id: 'entry', title: 'Guidance', revision: 'rev-2', status }, operationId: 'op-2' }) } as unknown as Partial<IMemoryStore>);
-    const execution = ix.get(IMemoryWriteTool).resolveExecution({ action: 'update', scope: 'global', type: 'feedback', title: 'Guidance', body: 'Complete current rule.', reason: 'Human correction', id: 'entry', expected_revision: 'rev-1' });
+  it.each(['pending', 'active'] as const)('returns structured %s write evidence from the stored result with owning and proposed targets', async (status) => {
+    const entry = { id: status === 'pending' ? 'm_proposal' : 'm_entry', type: 'feedback' as const, title: 'Guidance', body: 'Stored normalized content.', revision: 'rev-2', status, pinned: false, created: '2026-01-01', updated: '2026-01-02', source: { writer: 'agent' as const }, reason: 'Correction', supersedes: status === 'pending' ? 'm_entry' : undefined, supersedes_revision: status === 'pending' ? 'rev-1' : undefined };
+    const outcome = status === 'pending' ? 'pending' as const : 'applied' as const;
+    ix.stub(IMemoryStore, { get: async (scope) => scope.kind === 'global' ? { ...entry, id: 'm_entry', status: 'active', revision: 'rev-1' } : undefined, put: async () => ({ entry, outcome, operationId: 'op-2' }) });
+    const execution = ix.get(IMemoryWriteTool).resolveExecution({ action: 'update', scope: 'global', type: 'feedback', title: 'Guidance', body: 'Complete current rule.', reason: 'Human correction', id: 'm_entry', expected_revision: 'rev-1' });
     if (!('execute' in execution)) throw new Error('expected write execution');
     const result = await execution.execute({ turnId: 1, toolCallId: 'write', signal: new AbortController().signal });
-    expect(result.memoryReceipt).toEqual({ action: 'update', id: 'entry', revision: 'rev-2', status, operationId: 'op-2' });
+    const proposedTarget = status === 'pending' ? { scope: 'global', id: 'm_entry', expected_revision: 'rev-1' } : undefined;
+    expect(result.memoryReceipt).toEqual({ action: 'update', outcome, id: entry.id, revision: 'rev-2', status, operationId: 'op-2', ownerScope: { kind: 'global' }, target: { scope: 'global', id: entry.id, expected_revision: 'rev-2' }, proposedTarget });
+    expect(JSON.parse(result.output as string)).toMatchObject({ entry: JSON.parse(JSON.stringify(entry)), outcome, owner_scope: { kind: 'global' } });
     expect(result.isError).not.toBe(true);
   });
 
@@ -89,37 +88,35 @@ describe('memory maintenance guidance', () => {
     const scopes = { type: 'string', enum: ['global', 'workspace', 'persona', 'persona_workspace'] };
     const types = { type: 'string', enum: ['user', 'feedback', 'project', 'reference'] };
     const expected = [
-      [write, ['action', 'type', 'title', 'body', 'reason'], {
-        action: { type: 'string', enum: ['create', 'update', 'supersede', 'archive'] },
-        scope: scopes, type: types, title: { type: 'string', minLength: 1, maxLength: 200 },
-        body: { type: 'string', minLength: 1, maxLength: 1_500 }, reason: { type: 'string', minLength: 1 },
-        id: { type: 'string' }, expected_revision: { type: 'string' },
-      }],
-      [search, ['query'], {
-        query: { type: 'string', minLength: 1, maxLength: 200 }, scope: scopes, type: types,
-        include_superseded: { type: 'boolean' },
-      }],
-      [read, undefined, {
-        id: { type: 'string' }, ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10 },
-      }],
+      [write, ['action', 'reason'], ['action', 'scope', 'id', 'expected_revision', 'type', 'title', 'body', 'reason', 'basis', 'validity', 'covered_by']],
+      [search, undefined, ['mode', 'query', 'scope', 'type', 'statuses', 'include_superseded', 'page_size', 'cursor']],
+      [read, undefined, ['id', 'ids', 'scope', 'include_pending']],
     ] as const;
     for (const [schema, required, properties] of expected) {
       expect(schema['required']).toEqual(required);
       expect(schema['additionalProperties']).toBe(false);
       const projected = schema['properties'] as Record<string, Record<string, unknown>>;
-      const constraints = Object.fromEntries(Object.entries(projected).map(([key, value]) => {
-        const { description, ...rest } = value;
-        expect(typeof description).toBe('string');
-        expect((description as string).length).toBeGreaterThan(0);
-        return [key, rest];
-      }));
-      expect(constraints).toEqual(properties);
+      expect(Object.keys(projected)).toEqual(properties);
+      for (const field of Object.values(projected)) expect((field['description'] as string).length).toBeGreaterThan(0);
     }
     const writeFields = write['properties'] as Record<string, Record<string, unknown>>;
     const searchFields = search['properties'] as Record<string, Record<string, unknown>>;
-    expect(writeFields['scope']!['description']).toContain('not inferred from id');
-    expect(searchFields['scope']!['description']).toContain('Omit to search all scopes');
-    expect(writeFields['body']!['description']).toContain("the target's full original body is preserved as history");
-    expect(writeFields['reason']!['description']).toContain('Put change history and retired values here');
+    const readFields = read['properties'] as Record<string, Record<string, unknown>>;
+    expect(writeFields['scope']).toMatchObject(scopes);
+    expect(writeFields['type']).toMatchObject(types);
+    expect(writeFields['title']).toMatchObject({ type: 'string', minLength: 1, maxLength: 200 });
+    expect(writeFields['body']).toMatchObject({ type: 'string', minLength: 1, maxLength: 1_500 });
+    expect(writeFields['basis']).toMatchObject({ type: 'object', required: ['kind', 'note'], additionalProperties: false, properties: { kind: { enum: ['human', 'observed', 'derived', 'unknown'] }, note: { minLength: 1, maxLength: 500 }, refs: { maxItems: 8, items: { minLength: 1, maxLength: 500 } } } });
+    expect(writeFields['validity']).toMatchObject({ anyOf: [{ type: 'object', required: ['check'], properties: { check: { minLength: 1, maxLength: 300 }, until: { format: 'date-time' } } }, { type: 'null' }] });
+    expect(writeFields['covered_by']).toMatchObject({ type: 'object', required: ['id', 'expected_revision'], additionalProperties: false });
+    expect(searchFields['page_size']).toMatchObject({ type: 'integer', minimum: 1, maximum: 20 });
+    expect(searchFields['query']).toMatchObject({ minLength: 1, maxLength: 200 });
+    expect(readFields['ids']).toMatchObject({ type: 'array', minItems: 1, maxItems: 10 });
+    expect(writeFields['scope']!['description']).toContain('omission resolves a unique visible, permitted ID');
+    expect(writeFields['body']!['description']).toContain('Archive preserves stored content and ignores legacy content fields');
+    expect(writeFields['reason']!['description']).toContain('do not put retired values into the active rule');
+    const incomplete = ix.get(IMemoryWriteTool).resolveExecution({ action: 'create', reason: 'Missing content' });
+    expect(incomplete).toMatchObject({ isError: true });
+    expect('output' in incomplete && JSON.parse(incomplete.output as string).code).toBe('invalid_input');
   });
 });

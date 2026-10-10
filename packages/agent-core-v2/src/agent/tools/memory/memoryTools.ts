@@ -3,8 +3,8 @@ import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation
 import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
-import { IMemoryStore, type MemoryType } from '#/app/memory/memoryStore';
-import type { MemoryPublicScopeKind, MemoryScope } from '#/app/memory/memoryScopes';
+import { IMemoryStore, MemoryDomainError, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, memoryApplicability, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
+import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -14,65 +14,79 @@ import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolCon
 
 const typeSchema = z.enum(['user', 'feedback', 'project', 'reference']);
 const scopeSchema = z.enum(['global', 'workspace', 'persona', 'persona_workspace']);
+const basisSchema = memoryBasisSchema.extend({
+  kind: memoryBasisSchema.shape.kind.describe('human: directly supported human guidance; observed: verified facts or source material; derived: agent interpretation or unverified relay; unknown: attribution is not established.'),
+  note: memoryBasisSchema.shape.note.describe("A concise faithful statement of the supporting evidence and any derived part, 1–500 characters. Preserve the source's scope and strength."),
+  refs: memoryBasisSchema.shape.refs.describe('Up to 8 original source locators, each 1–500 characters, such as a history session/turn/message or authoritative path. Omit unavailable locators instead of inventing them.'),
+});
+const validitySchema = memoryValiditySchema.extend({
+  check: memoryValiditySchema.shape.check.describe('What must be checked before relying on this content, 1–300 characters. Include task or event boundaries when relevant.'),
+  until: memoryValiditySchema.shape.until.describe('Supported hard endpoint as an RFC3339 timestamp with timezone. Do not invent a date. After it, the entry remains stored but is not a current premise.'),
+});
 const writeSchema = z.object({
-  action: z.enum(['create', 'update', 'supersede', 'archive']).describe('Prefer update for an existing rule. Use supersede for a distinct replacement record, archive for obsolete or fully covered entries, and create only for genuinely new guidance. Supersede creates a new ID; update keeps the target ID.'),
-  scope: scopeSchema.optional().describe('Target scope. For update, supersede, or archive, explicitly use the existing entry\'s original scope (MemorySearch hit.scope.kind). Global targets require global. Omitted scope resolves to the bound persona, otherwise workspace; it is not inferred from id. Persona scopes require a bound persona.'),
-  type: typeSchema.describe('feedback: how to work; user: user information; project: durable project facts absent from repository records; reference: pointers. Required for every action. Preserve the target type when archiving.'),
-  title: z.string().min(1).max(200).describe('Stable title for the rule or subject, 1–200 characters. Keep related revisions under the same topic. Required for every action; preserve the original title when archiving.'),
-  body: z.string().min(1).max(1_500).describe('Complete current rule, 1–1,500 characters: affirmative wording, applicability, action or value, necessary exceptions, and known effective date. Update replaces the full body. Required even for archive, where the target\'s full original body is preserved as history.'),
-  reason: z.string().min(1).describe('Why this change is justified, including the user instruction or current evidence and any consolidation or retirement rationale. Put change history and retired values here rather than in the active rule body. Required for every action.'),
-  id: z.string().optional().describe('Existing target ID for update, supersede, or archive; required for those actions. For supersede, this is the predecessor, not the new entry. Omit for create.'),
-  expected_revision: z.string().optional().describe('Latest target revision from MemoryRead or MemorySearch; required for update, supersede, and archive. On conflict, confirm scope, reread, and reconcile before retrying.'),
+  action: z.enum(['create', 'update', 'supersede', 'archive']).describe('Update an existing rule; create only new guidance. Supersede creates a distinct replacement ID. Archive retires an entry while preserving its content.'),
+  scope: scopeSchema.optional().describe('Explicit destination for create, or owning scope for an existing target. Create defaults to the bound persona, otherwise workspace. For other actions, omission resolves a unique visible, permitted ID; it never moves the entry.'),
+  id: z.string().optional().describe('Existing target for update, supersede, or archive; omit for create. Normally maintain the current active entry. Restore a historical entry only under explicit restoration intent, reconciling any active successor. This does not approve a pending proposal.'),
+  expected_revision: z.string().optional().describe('Latest target revision from a complete read or receipt. Required for existing targets. Refresh and reconcile after a conflict; do not repeat a stale request.'),
+  type: typeSchema.optional().describe('feedback: working guidance; user: user information; project: useful project knowledge without an authoritative home; reference: a discovery pointer. Required except for archive.'),
+  title: z.string().min(1).max(200).optional().describe('Recognizable stable subject, 1–200 characters. Include a useful applicability qualifier when needed. Required except for archive.'),
+  body: z.string().min(1).max(1_500).optional().describe('Complete current content, 1–1,500 characters, including applicability and all action-changing conditions. Update replaces it in full. Archive preserves stored content and ignores legacy content fields.'),
+  reason: z.string().min(1).describe('Why this change is justified. Include correction, retirement, or consolidation rationale; do not put retired values into the active rule merely to keep history.'),
+  basis: basisSchema.optional().describe('Content evidence, separate from the automatically recorded writer. Provide for new or substantively revised content. Do not attribute an agent interpretation to the user.'),
+  validity: validitySchema.nullable().optional().describe('Checks for a changing fact. Omit on update to preserve the existing value; use null only when evidence justifies clearing it. A missing value does not mean permanent validity.'),
+  covered_by: memoryCoveredBySchema.extend({
+    id: memoryCoveredBySchema.shape.id.describe("Retained entry that fully covers the target's current content and applicability; must not be the target itself."),
+    expected_revision: memoryCoveredBySchema.shape.expected_revision.describe('Revision of the retained active entry whose full content was checked.'),
+  }).optional().describe('For consolidation archive only: the retained same-scope active entry and its latest revision. The store checks this dependency again when applying the retirement.'),
 }).strict();
 const searchSchema = z.object({
-  query: z.string().min(1).max(200).describe('Short subject, title, or alias query, up to 200 characters and 10 whitespace-separated words. Search related wording before creating a new entry; a single empty result does not establish that no related rule exists.'),
-  scope: scopeSchema.optional().describe('Search only this visible scope. Omit to search all scopes visible to the current persona. This search default differs from MemoryWrite\'s default destination.'),
-  type: typeSchema.optional().describe('Optional memory-type filter. Omit when locating a rule whose saved type is unknown.'),
-  include_superseded: z.boolean().optional().describe('Include replaced entries for historical lookup. Defaults to active entries only. Archived and pending entries remain excluded; check each result\'s status.'),
+  mode: z.enum(['search', 'list']).optional().describe('search for ranked lexical recall; list for a paged inventory. Defaults to search. Listing is not required before ordinary writes.'),
+  query: z.string().min(1).max(200).optional().describe('Short subject, title, or alias: 1–200 characters and at most 10 whitespace-separated words. Required for search and not accepted for list.'),
+  scope: scopeSchema.optional().describe('Limit to this visible scope; omit for all visible scopes. Does not grant access to other workspaces or personas.'),
+  type: typeSchema.optional().describe('Optional type filter. Omit when the saved type is unknown.'),
+  statuses: z.array(z.enum(['active', 'pending', 'superseded', 'archived'])).min(1).max(4).optional().describe('Statuses to inspect; defaults to active. Historical and pending entries are not effective guidance.'),
+  include_superseded: z.boolean().optional().describe('Legacy option: true selects active and superseded entries. Do not combine with statuses.'),
+  page_size: z.number().int().min(1).max(20).optional().describe('Items per page, 1–20. Defaults to 8 for search and 20 for list.'),
+  cursor: z.string().optional().describe('Continue a previous page with cursor alone, preserving its scopes, filters, order, and page size.'),
 }).strict();
 const readSchema = z.object({
-  id: z.string().optional().describe('One saved entry ID. Supply id or ids. Read returns full content and revision, but not the owning scope.'),
-  ids: z.array(z.string()).min(1).max(10).optional().describe('Saved entry IDs to read together, 1–10. Use for related entries before consolidation; check each entry\'s status and preserve distinct conditions.'),
+  id: z.string().optional().describe('One entry ID. Supply exactly one of id and ids.'),
+  ids: z.array(z.string()).min(1).max(10).optional().describe('1–10 entry IDs. Read related entries together when their conditions must be compared.'),
+  scope: scopeSchema.optional().describe('Optional visible owning scope. Omit to resolve across visible scopes; ambiguous matches are not selected silently.'),
+  include_pending: z.boolean().optional().describe('Include known pending proposals for state inspection. Defaults to false; a returned proposal is still not active guidance.'),
 }).strict();
-function publicScopes(session: ISessionContext, persona: MemoryPersonaContext | undefined): readonly MemoryScope[] {
+function scopes(session: ISessionContext, persona: MemoryPersonaContext | undefined): readonly MemoryScope[] {
   const shared = persona?.shared ?? ['global', 'workspace'];
   return [
     ...(shared.includes('global') ? [{ kind: 'global' } as const] : []),
     ...(shared.includes('workspace') ? [{ kind: 'workspace', workspaceId: session.workspaceId } as const] : []),
-  ];
-}
-function scopes(session: ISessionContext, persona: MemoryPersonaContext | undefined): readonly MemoryScope[] {
-  return [
-    ...publicScopes(session, persona),
-    ...(persona === undefined ? [] : [
-      { kind: 'persona', personaId: persona.id } as const,
-      { kind: 'persona_workspace', workspaceId: session.workspaceId, personaId: persona.id } as const,
-    ]),
+    ...(persona === undefined ? [] : [{ kind: 'persona', personaId: persona.id } as const, { kind: 'persona_workspace', workspaceId: session.workspaceId, personaId: persona.id } as const]),
   ];
 }
 function resolveScope(kind: z.infer<typeof scopeSchema> | undefined, session: ISessionContext, persona: MemoryPersonaContext | undefined): MemoryScope {
-  switch (kind ?? (persona === undefined ? 'workspace' : 'persona')) {
-    case 'global': return { kind: 'global' };
-    case 'workspace': return { kind: 'workspace', workspaceId: session.workspaceId };
-    case 'persona':
-      if (persona === undefined) throw new Error('Persona memory requires a bound persona.');
-      return { kind: 'persona', personaId: persona.id };
-    case 'persona_workspace':
-      if (persona === undefined) throw new Error('Persona memory requires a bound persona.');
-      return { kind: 'persona_workspace', workspaceId: session.workspaceId, personaId: persona.id };
-  }
-}
-function assertReadable(kind: z.infer<typeof scopeSchema>, persona: MemoryPersonaContext | undefined): void {
-  if (kind === 'persona' || kind === 'persona_workspace') {
-    if (persona === undefined) throw new Error('Persona memory requires a bound persona.');
-    return;
-  }
-  if (persona !== undefined && !(persona.shared ?? ['global', 'workspace']).includes(kind as MemoryPublicScopeKind)) {
-    throw new Error(`Bound persona cannot read ${kind} memory.`);
-  }
+  const wanted = kind ?? (persona === undefined ? 'workspace' : 'persona');
+  const found = scopes(session, persona).find((scope) => scope.kind === wanted);
+  if (found === undefined) throw new MemoryDomainError('scope_mismatch', `This context cannot access ${wanted} memory`, 'Choose one of this context’s visible scopes. Scope selection does not grant access.');
+  return found;
 }
 function available(snapshot: ICapabilitySnapshotService, session: ISessionContext, tool = 'MemoryWrite'): boolean {
   return snapshot.toolAvailable(tool, session.workspaceId, session.sessionId);
+}
+function target(scope: MemoryScope, entry: MemoryEntry): MemoryTarget {
+  return { scope: scope.kind, id: entry.id, expected_revision: entry.revision };
+}
+function failure(error: unknown, defaultCode = 'storage_unavailable'): { isError: true; output: string } {
+  return { isError: true, output: JSON.stringify(error instanceof MemoryDomainError
+    ? { code: error.code, message: error.message, recovery: error.recovery }
+    : { code: defaultCode, message: error instanceof Error ? error.message : String(error), recovery: 'Inspect current state and storage before one corrected retry; do not create a duplicate.' }) };
+}
+async function matches(store: IMemoryStore, visible: readonly MemoryScope[], id: string): Promise<{ entry: MemoryEntry; scope: MemoryScope }[]> {
+  const found = await Promise.all(visible.map(async (scope) => ({ entry: await store.get(scope, id), scope })));
+  return found.flatMap(({ entry, scope }) => entry === undefined ? [] : [{ entry, scope }]);
+}
+function lookupFailure(code: 'not_found' | 'ambiguous_target' | 'scope_mismatch', found: readonly { entry: MemoryEntry; scope: MemoryScope }[]): { isError: true; output: string } {
+  return { isError: true, output: JSON.stringify({ code, message: code === 'ambiguous_target' ? 'The ID exists in multiple visible scopes' : code === 'scope_mismatch' ? 'The target belongs to another visible scope' : 'Memory not found',
+    recovery: 'Read the visible target in its owning scope and copy its target fields; do not create a duplicate.', visible_targets: found.map(({ entry, scope }) => ({ ...target(scope, entry), owner_scope: scope, title: entry.title, status: entry.status })) }) };
 }
 
 export interface IMemoryWriteTool extends AgentTool<z.infer<typeof writeSchema>> { readonly _serviceBrand: undefined }
@@ -80,7 +94,15 @@ export const IMemoryWriteTool = createDecorator<IMemoryWriteTool>('memoryWriteTo
 export class MemoryWriteTool implements IMemoryWriteTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryWrite';
-  readonly description = 'Maintain durable memory for scoped recall. When the user establishes or changes guidance useful across tasks, reconcile existing entries in the same turn. Search by subject before creating; read related entries in full before modifying them. Reuse a full, current read already in view.\n\nPrefer `update` for a complete revision of an existing rule. Consolidate overlapping entries with the same scope and applicability into one retained entry, then `archive` fully covered entries after the retained content is active. Use `supersede` when a separate replacement record is useful; it creates a new ID and, when active, marks the specified predecessor superseded. Archive revoked or obsolete guidance. Create only genuinely new guidance; leave an already complete rule unchanged.\n\nWrite the full current rule affirmatively, including its conditions and known effective date. Keep the rule and its qualifications together, with change history in `reason`. For `update`, `supersede`, and `archive`, provide the target\'s original `scope`, `id`, and latest `expected_revision`. A global target requires `scope: "global"`. Omitted scope defaults to the bound persona, otherwise workspace; it is never inferred from ID. Take the scope string from MemorySearch\'s `scope.kind` or a known write receipt; MemoryRead currently omits it. On lookup or revision errors, confirm scope and reread the target before retrying.\n\nEvery action requires `type`, `title`, `body`, and `reason`. Update replaces the full content. For archive, preserve the target\'s full type/title/body and put the retirement or consolidation rationale in reason. Respect the user\'s scope: workspace for project-specific guidance, global for guidance across workspaces, and the bound persona scope for persona-specific guidance. Types: feedback for how to work, user for who the user is, project for durable project facts absent from repository records, reference for pointers. Keep secrets out, task progress in task notes, and repository-owned facts in their authoritative files. A pending receipt awaits review; it is not active memory. Direct user instructions still govern the current task.';
+  readonly description = `Maintain durable guidance for future relevant tasks. First choose its home: lasting preferences and working rules belong in memory; current progress, schedules, one-off exceptions, and temporary experiments belong in task records. When an authoritative file already contains the guidance, prefer a useful pointer over a second copy. Apply direct user instructions to the current task independently of storage.
+
+Reuse a complete, current entry already in view; otherwise search for the subject and read related entries in full. Leave an already complete rule unchanged. Prefer update on the same ID, preserving valid conditions and exceptions. Create only genuinely new guidance. Supersede creates a distinct replacement ID and retires its predecessor only when the replacement is active. Archive revoked or fully covered entries; for consolidation, first confirm the retained same-scope entry is active and pass its id and revision in covered_by. Do not replace global guidance with a narrower workspace entry or erase an intentional local exception.
+
+For create, update, and supersede, provide type, title, the complete body, and reason. Name a stable subject and state the current guidance faithfully, with the source-backed conditions that change its application. Make the body immediately understandable; omit generic permission, safety, or honesty disclaimers added by the agent. Preserve explicit limits and exceptions, not imagined ones. Keep correction history and retired values in reason. Provide basis for new or substantively revised content, distinguishing human guidance, observed evidence, and agent-derived interpretation. A changing fact needs a validity check; add until only for a supported hard endpoint. Omitted validity is preserved on update; null explicitly clears it. Do not store secrets or pretend that a write's turn is the original human source.
+
+For update, supersede, and archive, provide id and expected_revision. Copy the fields from a returned target when available. An explicit scope limits the target; when omitted for these actions, the ID must resolve uniquely within the caller's visible, permitted scopes. Create alone defaults to the bound persona, otherwise workspace. Scope resolution never moves an entry or grants access to another workspace or persona.
+
+Archive is a state change: provide the target and reason, not a replacement body. The store preserves the original content. Exact no-change updates return unchanged without a new revision or journal operation. The receipt contains the stored or proposed full entry; verify it there instead of routinely rereading. Pending is not active, and unchanged is not a new write. On a lookup, coverage, or revision error, follow the recovery details, reread as needed, and make one corrected retry; never create a duplicate to bypass the failure. If it still fails, preserve the unsaved change in the task handoff and continue unrelated work.`;
   readonly parameters = toInputJsonSchema(writeSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -91,24 +113,49 @@ export class MemoryWriteTool implements IMemoryWriteTool {
   ) {}
   resolveExecution(args: z.infer<typeof writeSchema>): ToolExecution {
     const parsed = writeSchema.safeParse(args);
-    if (!parsed.success) return { isError: true, output: parsed.error.message };
-    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${parsed.data.title.slice(0, 70)}`, execute: async ({ turnId }) => {
-      if (this.session.ephemeral === true || !available(this.capabilities, this.session)) return { isError: true, output: 'Memory is disabled.' };
+    if (!parsed.success) return failure(parsed.error, 'invalid_input');
+    const input = parsed.data;
+    if (input.action !== 'archive' && (input.type === undefined || input.title === undefined || input.body === undefined)) return failure(new MemoryDomainError('invalid_input', 'type, title and body are required for this action', 'Provide the complete current content; archive alone preserves stored content.'));
+    if (input.action === 'create' ? input.id !== undefined || input.expected_revision !== undefined : input.id === undefined) return failure(new MemoryDomainError('invalid_input', 'Invalid action target', 'Omit id and expected_revision for create; provide id for existing targets.'));
+    if (input.action !== 'create' && !input.expected_revision) return failure(new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.'));
+    if (input.action !== 'archive' && input.covered_by !== undefined) return failure(new MemoryDomainError('invalid_input', 'covered_by is only accepted for archive', 'Remove covered_by from this action.'));
+    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId }) => {
+      if (this.session.ephemeral === true || !available(this.capabilities, this.session)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
       try {
         const persona = this.memorySnapshot.getPersona();
-        const scope = resolveScope(parsed.data.scope, this.session, persona);
-        const result = await this.store.put({
-          action: parsed.data.action, scope, type: parsed.data.type,
-          title: parsed.data.title, body: parsed.data.body, reason: parsed.data.reason,
-          id: parsed.data.id, expectedRevision: parsed.data.expected_revision,
-          source: { writer: 'agent', session: this.session.sessionId, turn: turnId },
-          pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review',
-        });
-        return { memoryReceipt: { action: parsed.data.action, id: result.entry.id, revision: result.entry.revision,
-          status: result.entry.status, operationId: result.operationId }, output: JSON.stringify({ id: result.entry.id, title: result.entry.title, scope: scope.kind, status: result.entry.status, revision: result.entry.revision, operation_id: result.operationId, reference_hint: result.entry.status === 'pending'
-          ? 'Awaiting review; not active memory. Do not cite this pending entry as an effective standing rule. Follow direct user instructions for the current task independently of storage review.'
-          : `Reference it in TodoList notes.directives as [${result.entry.id}] if it constrains the current task.` }) };
-      } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
+        const visible = scopes(this.session, persona);
+        let scope: MemoryScope;
+        if (input.action === 'create') scope = resolveScope(input.scope, this.session, persona);
+        else {
+          if (input.scope !== undefined) resolveScope(input.scope, this.session, persona);
+          const found = await matches(this.store, visible, input.id!);
+          const selected = input.scope === undefined ? found : found.filter((item) => item.scope.kind === input.scope);
+          if (selected.length !== 1) return lookupFailure(selected.length > 1 ? 'ambiguous_target' : found.length > 0 ? 'scope_mismatch' : 'not_found', found);
+          scope = selected[0]!.scope;
+        }
+        const result = await this.store.put({ action: input.action, scope, type: input.type, title: input.title, body: input.body, reason: input.reason,
+          id: input.id, expectedRevision: input.expected_revision, basis: input.basis, validity: input.validity, covered_by: input.covered_by,
+          source: { writer: 'agent', session: this.session.sessionId, turn: turnId }, pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review' });
+        const outcome = result.outcome;
+        const entry = result.entry;
+        const owningTarget = target(scope, entry);
+        const proposedTarget = outcome === 'pending' && entry.supersedes !== undefined && entry.supersedes_revision !== undefined
+          ? { scope: scope.kind, id: entry.supersedes, expected_revision: entry.supersedes_revision } : undefined;
+        const hint = outcome === 'unchanged' ? 'The stored content already matches. No revision, journal operation, or projection refresh was created.'
+          : outcome === 'pending' ? `This is a pending proposal, not active guidance.${proposedTarget === undefined ? '' : input.action === 'supersede' ? ' The predecessor is unchanged.' : ' The existing active entry is unchanged.'} Apply direct human instructions to the current task independently; do not retire entries that still depend on this proposal.`
+          : 'The returned entry is the stored result. Reuse it as the current read; do not verify with another read unless something is incomplete or has changed.';
+        return { spillExempt: true, memoryReceipt: { action: input.action, outcome, id: entry.id, revision: entry.revision, status: entry.status,
+          operationId: result.operationId ?? undefined, ownerScope: scope, target: owningTarget, proposedTarget },
+          output: JSON.stringify({ action: input.action, outcome, id: entry.id, title: entry.title, scope: scope.kind, owner_scope: scope, target: owningTarget,
+            status: entry.status, revision: entry.revision, operation_id: result.operationId, entry, proposed_target: proposedTarget, covered_by: entry.covered_by, warnings: result.warnings, reference_hint: hint }) };
+      } catch (error) {
+        if (error instanceof MemoryDomainError && error.code === 'duplicate_title') {
+          const scope = resolveScope(input.scope, this.session, this.memorySnapshot.getPersona());
+          const found = (await this.store.list(scope, true)).filter((entry) => entry.status === 'active' && entry.title.toLowerCase() === input.title?.trim().toLowerCase()).map((entry) => ({ entry, scope }));
+          return { isError: true, output: JSON.stringify({ code: error.code, message: error.message, recovery: error.recovery, visible_targets: found.map(({ entry, scope }) => ({ ...target(scope, entry), owner_scope: scope, title: entry.title, status: entry.status })) }) };
+        }
+        return failure(error);
+      }
     } };
   }
 }
@@ -118,7 +165,13 @@ export const IMemorySearchTool = createDecorator<IMemorySearchTool>('memorySearc
 export class MemorySearchTool implements IMemorySearchTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemorySearch';
-  readonly description = 'Find saved guidance visible to this persona when relevant details are missing, and find existing entries to maintain before creating memory. Search by subject and likely aliases, including related rules with different wording. Reuse entries already complete and current in view. Omitted scope searches all visible scopes; an explicit scope narrows the search.\n\nReturns up to 8 active hits with id, revision, scope, status, and a body snippet of up to 200 characters. Read related entries with MemoryRead before merging, replacing, or relying on omitted conditions. Retain each hit\'s `scope.kind` for MemoryWrite; MemoryRead currently omits scope. These ranked hits are not a complete inventory: narrow or rephrase a query when a known entry is missing. Use short queries of at most 10 whitespace-separated words. `include_superseded` also returns replaced entries for historical lookup; archived and pending entries are excluded. Historical hits are not current rules.';
+  readonly description = `Find saved guidance in scopes visible to this context. Use mode=search, the default, for a short subject, title, or alias query when relevant details are missing. Reuse complete current entries already in view. Ranked search is for recall, not proof that no related rule exists. Use mode=list for a browsable inventory when a known entry is missing or scoped maintenance requires coverage; do not scan the whole inventory before ordinary work.
+
+Search requires query: 1–200 characters and at most 10 whitespace-separated words. List accepts no query. Omitted scope searches all visible scopes; type and statuses narrow the result. Statuses default to active only. Explicit historical or pending results are not current guidance. The legacy include_superseded option means active plus superseded and cannot be combined with statuses.
+
+Returns an object with items, next_cursor, and coverage. Search defaults to 8 results and list to 20; page_size is 1–20. Continue with cursor alone, including an empty preparation page with exhausted=false. Source scan budgets limit each call, not the retrievable inventory; ranking is local to each bounded source chunk. Coverage identifies the exact scopes and filters, whether more pages remain, and whether input was skipped or unavailable. Exhausted complete search covers that lexical query, not every possible wording. If a cursor is invalidated by changes, restart the query and reconcile IDs rather than claiming a complete inventory.
+
+Each item has its complete title, status, owning scope, revision, and a target whose fields can be copied into MemoryWrite. Search snippets are at most 200 characters; they omit conditions. Read relevant entries in full before relying on omitted details, replacing, or merging them. An expired item is a historical lead; a recheck item requires current evidence. Query errors are reported as errors, not empty search results.`;
   readonly parameters = toInputJsonSchema(searchSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -128,16 +181,23 @@ export class MemorySearchTool implements IMemorySearchTool {
   ) {}
   resolveExecution(args: z.infer<typeof searchSchema>): ToolExecution {
     const parsed = searchSchema.safeParse(args);
-    if (!parsed.success) return { isError: true, output: parsed.error.message };
+    if (!parsed.success) return failure(parsed.error, 'invalid_query');
+    const input = parsed.data;
+    if (input.statuses !== undefined && input.include_superseded !== undefined) return failure(new MemoryDomainError('invalid_query', 'statuses cannot be combined with include_superseded', 'Use statuses alone for explicit state filters.'));
+    if (input.cursor !== undefined && Object.keys(input).some((key) => key !== 'cursor')) return failure(new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the query if its filters need changing.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.capabilities, this.session, this.name)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {
         const persona = this.memorySnapshot.getPersona();
-        if (parsed.data.scope !== undefined) assertReadable(parsed.data.scope, persona);
-        const targets = parsed.data.scope === undefined ? scopes(this.session, persona) : [resolveScope(parsed.data.scope, this.session, persona)];
-        const hits = await this.store.search(targets, parsed.data.query, parsed.data.type as MemoryType | undefined, parsed.data.include_superseded);
-        return { output: JSON.stringify(hits.filter((hit) => hit.status === 'active' || (parsed.data.include_superseded === true && hit.status === 'superseded')).slice(0, 8).map(({ id, title, body, type, source, scope, score, revision, status }) => ({ id, title, type, status, revision, snippet: body.slice(0, 200), source, scope, score }))) };
-      } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
+        if (input.scope !== undefined) resolveScope(input.scope, this.session, persona);
+        const page = await this.store.query(scopes(this.session, persona), input.cursor !== undefined ? { cursor: input.cursor } : {
+          mode: input.mode, query: input.query, scope: input.scope, type: input.type, page_size: input.page_size,
+          statuses: input.statuses ?? (input.include_superseded === true ? ['active', 'superseded'] : undefined),
+        });
+        return { output: JSON.stringify({ ...page, items: page.items.map((entry) => ({ id: entry.id, title: entry.title, type: entry.type, status: entry.status,
+          revision: entry.revision, scope: entry.scope, target: target(entry.scope, entry), basis_kind: entry.basis?.kind ?? 'unknown', applicability: memoryApplicability(entry),
+          snippet: page.mode === 'search' ? entry.body.slice(0, 200) : undefined, score: page.mode === 'search' ? entry.score : undefined })) }) };
+      } catch (error) { return failure(error); }
     } };
   }
 }
@@ -147,7 +207,11 @@ export const IMemoryReadTool = createDecorator<IMemoryReadTool>('memoryReadTool'
 export class MemoryReadTool implements IMemoryReadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'MemoryRead';
-  readonly description = 'Read full saved memory by `id` or `ids` (up to 10) across scopes visible to this persona. Use it to recover omitted conditions and inspect existing entries before an update, replacement, merge, or archive; reuse a full, current read already in view. Returns the entry\'s revision for `expected_revision`.\n\nCheck status: archived and superseded entries can be returned as history, while pending entries are excluded. Read does not return scope; retain the original scope from MemorySearch\'s `scope.kind` or a known write receipt and pass it explicitly to MemoryWrite. If the scope is unknown, recover it through search before modifying the entry. An unavailable entry is returned with `missing: true`.';
+  readonly description = `Read full saved memory by id or ids, up to 10 entries. Supply exactly one of id and ids. Omitted scope resolves IDs across scopes visible to this context; an explicit scope limits the lookup. Ambiguous IDs return visible candidates rather than choosing a scope silently.
+
+Use this to recover missing conditions or inspect an entry before changing or combining it. Reuse a complete current read already in view. Each result includes the full entry, owning scope, latest revision, applicability, and target fields ready to copy into MemoryWrite. If output is incomplete, it is marked incomplete and must not be used as a full replacement source.
+
+Check status and validity. Archived and superseded entries are history, not current guidance. Pending entries are excluded unless include_pending=true; reading a proposal does not activate it. Expired entries are historical leads. A validity check describes what must be verified before relying on a changing fact; missing validity metadata is not proof of permanence. Missing and ambiguous results include recovery information where it can be disclosed. A successful write receipt already containing the full stored entry does not need a routine verification read.`;
   readonly parameters = toInputJsonSchema(readSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -158,26 +222,27 @@ export class MemoryReadTool implements IMemoryReadTool {
   ) {}
   resolveExecution(args: z.infer<typeof readSchema>): ToolExecution {
     const parsed = readSchema.safeParse(args);
-    if (!parsed.success || (parsed.data?.id === undefined && parsed.data?.ids === undefined)) return { isError: true, output: 'Provide id or ids (up to 10).' };
+    if (!parsed.success || (parsed.data.id === undefined) === (parsed.data.ids === undefined)) return failure(new MemoryDomainError('invalid_input', 'Provide exactly one of id or ids (up to 10).', 'Use id for one entry or ids for a related batch.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async () => {
-      if (!available(this.capabilities, this.session, this.name)) return { isError: true, output: 'Memory is disabled.' };
+      if (!available(this.capabilities, this.session, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {
-        const visible = scopes(this.session, this.memorySnapshot.getPersona());
+        const persona = this.memorySnapshot.getPersona();
+        const visible = parsed.data.scope === undefined ? scopes(this.session, persona) : [resolveScope(parsed.data.scope, this.session, persona)];
         const items = await Promise.all((parsed.data.ids ?? [parsed.data.id!]).map(async (id) => {
-          for (const scope of visible) {
-            const found = await this.store.get(scope, id);
-            if (found !== undefined && found.status !== 'pending') return found;
-          }
-          return { id, missing: true };
+          const found = await matches(this.store, visible, id);
+          if (found.length > 1) return { id, missing: true, ...JSON.parse(lookupFailure('ambiguous_target', found).output) };
+          const item = found[0];
+          if (item === undefined) return { id, missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' };
+          if (item.entry.status === 'pending' && !parsed.data.include_pending) return { id, missing: true, reason: 'pending_excluded', recovery: 'Use include_pending=true to inspect the proposal; it is not active guidance.' };
+          return { ...item.entry, scope: item.scope, target: target(item.scope, item.entry), applicability: memoryApplicability(item.entry), basis_kind: item.entry.basis?.kind ?? 'unknown', complete: true };
         }));
-        return { output: JSON.stringify(items) };
-      } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
+        return { spillExempt: true, output: JSON.stringify(items) };
+      } catch (error) { return failure(error); }
     } };
   }
 }
 
-const when = (accessor: ServicesAccessor): boolean =>
-  accessor.get(IAgentScopeContext).agentId === 'main';
+const when = (accessor: ServicesAccessor): boolean => accessor.get(IAgentScopeContext).agentId === 'main';
 registerAgentToolService(IMemoryWriteTool, MemoryWriteTool, { name: 'MemoryWrite', domain: 'memory', when: (accessor) => !accessor.get(ISessionContext).ephemeral && when(accessor) });
 registerAgentToolService(IMemorySearchTool, MemorySearchTool, { name: 'MemorySearch', domain: 'memory' });
 registerAgentToolService(IMemoryReadTool, MemoryReadTool, { name: 'MemoryRead', domain: 'memory' });

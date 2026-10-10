@@ -76,6 +76,7 @@ export * from './rest/plugin';
 export * from './rest/plugin-import';
 export * from '@kiki/plugin-sdk/media';
 export * from './rest/persona';
+export * from './rest/memory';
 export * from './shortcuts';
 export * from './rest/agentHooks';
 export * from './rest/connections';
