@@ -18,6 +18,33 @@ const connection = vi.hoisted(() => ({
   },
 }));
 vi.mock('../state/connection', () => ({ useConnection: () => connection }));
+const mockLiveAgent = vi.fn().mockReturnValue({
+  snapshot: {
+    domainId: 'this-service',
+    asOf: '2026-01-01T12:00:00Z',
+    mainActive: 1,
+    subActive: 2,
+    independentActive: 1,
+    totalActive: 4,
+    queued: 0,
+    dimensions: [
+      { dimension: 'executor', id: 'kiki', mainActive: 1, subActive: 1, independentActive: 0, totalActive: 2 },
+      { dimension: 'executor', id: 'claude-code', mainActive: 0, subActive: 1, independentActive: 1, totalActive: 2 },
+      { dimension: 'profile', id: 'dev', mainActive: 1, subActive: 2, independentActive: 1, totalActive: 4 },
+    ],
+  },
+  stale: false,
+  loading: false,
+  error: null,
+  refresh: vi.fn(),
+});
+vi.mock('../lib/liveAgentGovernance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/liveAgentGovernance')>();
+  return {
+    ...actual,
+    useLiveAgentGovernance: () => mockLiveAgent(),
+  };
+});
 const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 const disposals: Array<() => void> = [];
 afterEach(() => { for (const dispose of disposals.splice(0)) act(dispose); vi.useRealTimers(); vi.clearAllMocks(); });
@@ -271,5 +298,368 @@ describe('limit rules editor', () => {
     expect(dialog.textContent).toContain('provider-cap');
     await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
     expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([]);
+  });
+
+  it('switches between request view and live agent view with single-dimension breakdown', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    const { container, render } = mount('realtime');
+    await settle(render);
+
+    // Initial view is requests
+    expect(container.querySelector('[data-governance-live]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-live-agents]')).toBeNull();
+
+    // Switch to live agents
+    const liveModeSwitcher = container.querySelector('[data-axis="governance-live-mode"]')!;
+    expect(liveModeSwitcher).not.toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis-value="agents"]')!.click();
+    });
+
+    // Requests panel is hidden; live agents panel is displayed and open by default
+    expect(container.querySelector('[data-governance-live]')).toBeNull();
+    const agentPanel = container.querySelector<HTMLDetailsElement>('[data-governance-live-agents]')!;
+    expect(agentPanel).not.toBeNull();
+    expect(agentPanel.open).toBe(true);
+
+    // Headline counts: main, sub, independent, total
+    expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-governance-sub-agents]')?.textContent).toBe('2');
+    expect(container.querySelector('[data-governance-independent-agents]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-governance-total-agents]')?.textContent).toBe('4');
+
+    // Single dimension breakdown (default: executor)
+    const dimTable = container.querySelector('[data-governance-agent-dimensions]')!;
+    expect(dimTable.getAttribute('data-governance-agent-dimension')).toBe('executor');
+    // Executor display: builtin kiki mapped to Kiki (Built-in), external harness displayed truthfully
+    expect(dimTable.textContent).toContain('Kiki (Built-in)');
+    expect(dimTable.textContent).toContain('claude-code');
+
+    // Switch to profile dimension
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis-value="profile"]')!.click();
+    });
+    expect(dimTable.getAttribute('data-governance-agent-dimension')).toBe('profile');
+    expect(dimTable.textContent).toContain('dev');
+    expect(dimTable.textContent).not.toContain('claude-code');
+  });
+
+  it('supports adding and saving a live agent concurrency limit rule', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-add]')!.click();
+    });
+
+    const editor = container.querySelector('[data-governance-editor]')!;
+    expect(editor).not.toBeNull();
+
+    // Switch resource to agent_execution
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-axis-value="agent_execution"]')!.click();
+    });
+
+    // Check executor, profile, and role-scope inputs are present
+    const execInput = editor.querySelector<HTMLInputElement>('[data-governance-executors-input]')!;
+    const profInput = editor.querySelector<HTMLInputElement>('[data-governance-profiles-input]')!;
+    expect(execInput).not.toBeNull();
+    expect(profInput).not.toBeNull();
+
+    // Fill in executor and profile
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(execInput, 'kiki, acp');
+      execInput.dispatchEvent(new Event('input', { bubbles: true }));
+      setter.call(profInput, 'dev');
+      profInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Select main_only role scope
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-axis-value="main_only"]')!.click();
+    });
+
+    // Submit form
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([
+      RULE,
+      expect.objectContaining({
+        resource: 'agent_execution',
+        executors: ['kiki', 'acp'],
+        profiles: ['dev'],
+        roles: ['main'],
+        maxConcurrent: 2,
+        overflow: 'queue',
+        enabled: true,
+      }),
+    ]);
+    const saved = connection.client.setRequestGovernanceRules.mock.calls[0]?.[0]?.[1];
+    expect(saved).not.toHaveProperty('role_scope');
+  });
+
+  it('omits roles when an agent execution rule applies to every role', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-add]')!.click();
+    });
+    const editor = container.querySelector('[data-governance-editor]')!;
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-axis-value="agent_execution"]')!.click();
+    });
+    const execInput = editor.querySelector<HTMLInputElement>('[data-governance-executors-input]')!;
+    const profInput = editor.querySelector<HTMLInputElement>('[data-governance-profiles-input]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(execInput, 'kiki');
+      execInput.dispatchEvent(new Event('input', { bubbles: true }));
+      setter.call(profInput, 'dev');
+      profInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(editor.querySelector('[data-governance-role-preset]')?.getAttribute('data-governance-role-preset')).toBe('all');
+    expect(editor.querySelector('[data-axis-value="all"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    const saved = connection.client.setRequestGovernanceRules.mock.calls[0]?.[0]?.[1];
+    expect(saved).toEqual(expect.objectContaining({
+      resource: 'agent_execution',
+      executors: ['kiki'],
+      profiles: ['dev'],
+    }));
+    expect(saved).not.toHaveProperty('roles');
+    expect(saved).not.toHaveProperty('role_scope');
+    expect(connection.client.setRequestGovernanceRules.mock.calls[0]?.[0]?.[0]).toEqual(expect.objectContaining({
+      id: 'provider-cap',
+      resource: 'model_request',
+    }));
+  });
+
+  it('displays ancestor limit explanation when save fails with request.agent_ancestor_limit', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    connection.client.setRequestGovernanceRules.mockRejectedValueOnce(
+      new Error('request.agent_ancestor_limit: parent agent execution slot occupied')
+    );
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-add]')!.click();
+    });
+
+    const editor = container.querySelector('[data-governance-editor]')!;
+    // Submit form
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    expect(editor.textContent).toContain('Parent agent is occupying the execution slot');
+  });
+
+  it('supports multi-select roles when configuring agent_execution rule', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-add]')!.click();
+    });
+
+    const editor = container.querySelector('[data-governance-editor]')!;
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('[data-axis-value="agent_execution"]')!.click();
+    });
+
+    const execInput = editor.querySelector<HTMLInputElement>('[data-governance-executors-input]')!;
+    const profInput = editor.querySelector<HTMLInputElement>('[data-governance-profiles-input]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(execInput, 'kiki, acp');
+      execInput.dispatchEvent(new Event('input', { bubbles: true }));
+      setter.call(profInput, 'dev');
+      profInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Check both main and subagent checkboxes
+    const mainBox = editor.querySelector<HTMLInputElement>('[data-governance-role-checkbox="main"]')!;
+    const subBox = editor.querySelector<HTMLInputElement>('[data-governance-role-checkbox="subagent"]')!;
+    expect(mainBox).not.toBeNull();
+    expect(subBox).not.toBeNull();
+
+    await act(async () => {
+      mainBox.click();
+      subBox.click();
+    });
+
+    expect(editor.querySelector('[data-governance-role-preset]')?.getAttribute('data-governance-role-preset')).toBe('custom');
+    expect(editor.querySelector('[data-axis-value="all"]')?.getAttribute('aria-pressed')).toBe('false');
+    expect(editor.querySelector('[data-governance-role-selection]')?.textContent).toBe('Main agent, Subagents');
+    expect(mainBox.checked).toBe(true);
+    expect(subBox.checked).toBe(true);
+    expect(editor.querySelector<HTMLInputElement>('[data-governance-role-checkbox="independent"]')?.checked).toBe(false);
+
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([
+      RULE,
+      expect.objectContaining({
+        resource: 'agent_execution',
+        executors: ['kiki', 'acp'],
+        profiles: ['dev'],
+        roles: expect.arrayContaining(['main', 'subagent']),
+        enabled: true,
+      }),
+    ]);
+    const saved = connection.client.setRequestGovernanceRules.mock.calls[0]?.[0]?.[1];
+    expect(saved.roles).toEqual(['main', 'subagent']);
+    expect(saved).not.toHaveProperty('role_scope');
+  });
+
+  it('reopens a two-role agent rule on the saved roles without dropping executor, profile, or resource', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    const agentRule = {
+      id: 'agent-cap',
+      resource: 'agent_execution' as const,
+      scope: 'global' as const,
+      executors: ['kiki', 'acp'],
+      profiles: ['dev'],
+      roles: ['main', 'subagent'] as const,
+      subagentsOnly: false,
+      maxConcurrent: 2,
+      overflow: 'queue' as const,
+      enabled: true,
+    };
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      rules: [RULE, agentRule],
+    });
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-governance-rule="agent-cap"] button')!.click();
+    });
+    const editor = container.querySelector('[data-governance-editor]')!;
+    expect(editor.querySelector<HTMLInputElement>('[data-governance-executors-input]')?.value).toBe('kiki, acp');
+    expect(editor.querySelector<HTMLInputElement>('[data-governance-profiles-input]')?.value).toBe('dev');
+    expect(editor.querySelector('[data-axis-value="agent_execution"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(editor.querySelector('[data-governance-role-preset]')?.getAttribute('data-governance-role-preset')).toBe('custom');
+    expect(editor.querySelector('[data-axis-value="all"]')?.getAttribute('aria-pressed')).toBe('false');
+    expect(editor.querySelector('[data-governance-role-selection]')?.textContent).toBe('Main agent, Subagents');
+
+    await act(async () => {
+      editor.querySelector<HTMLButtonElement>('button[type="submit"]')!.click();
+    });
+
+    const savedRules = connection.client.setRequestGovernanceRules.mock.calls[0]?.[0];
+    expect(savedRules[0]).toEqual(expect.objectContaining({ id: 'provider-cap', resource: 'model_request' }));
+    expect(savedRules[1]).toEqual(expect.objectContaining({
+      resource: 'agent_execution',
+      executors: ['kiki', 'acp'],
+      profiles: ['dev'],
+      roles: ['main', 'subagent'],
+    }));
+    expect(savedRules[1]).not.toHaveProperty('role_scope');
+  });
+
+  it('displays unknown model as determined by executor without ambient default', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    mockLiveAgent.mockReturnValueOnce({
+      snapshot: {
+        domainId: 'this-service',
+        asOf: '2026-01-01T12:00:00Z',
+        mainActive: 0,
+        subActive: 1,
+        independentActive: 0,
+        totalActive: 1,
+        queued: 0,
+        dimensions: [
+          { dimension: 'model', id: 'unknown', mainActive: 0, subActive: 1, independentActive: 0, totalActive: 1 },
+        ],
+      },
+      stale: false,
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+
+    const { container, render } = mount('realtime');
+    await settle(render);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis-value="agents"]')!.click();
+    });
+
+    const dimTable = container.querySelector('[data-governance-agent-dimensions]')!;
+    expect(dimTable).not.toBeNull();
+    expect(dimTable.textContent).toContain('Unknown / determined by executor');
+    expect(dimTable.textContent).not.toContain('gemini');
+    expect(dimTable.textContent).not.toContain('gpt');
+  });
+
+  it('filters rules by resource in limits panel and preserves other resource rules', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem('kiki.locale', 'en');
+    const agentRule = {
+      id: 'agent-cap',
+      resource: 'agent_execution' as const,
+      scope: 'global' as const,
+      executors: ['kiki'],
+      maxConcurrent: 2,
+      overflow: 'queue' as const,
+      enabled: true,
+    };
+    connection.client.getRequestGovernance.mockResolvedValue({
+      ...snapshot,
+      rules: [RULE, agentRule],
+    });
+
+    const { container, render } = mount('limits');
+    await settle(render);
+
+    // Initial shows all 2 rules
+    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(2);
+
+    // Filter by agent_execution
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis-value="agent_execution"]')!.click();
+    });
+    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
+    expect(container.querySelector('[data-governance-rule="agent-cap"]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-rule="provider-cap"]')).toBeNull();
+
+    // Filter by model_request
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-axis-value="model_request"]')!.click();
+    });
+    expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
+    expect(container.querySelector('[data-governance-rule="provider-cap"]')).not.toBeNull();
+    expect(container.querySelector('[data-governance-rule="agent-cap"]')).toBeNull();
   });
 });
