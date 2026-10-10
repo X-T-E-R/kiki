@@ -29,6 +29,14 @@ test('bare launch preserves AGY model, effort, permissions and context settings'
     ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'gemini-3.8-flash-medium', '--effort', 'medium']);
 });
 
+test('explicit frozen host yolo reaches the native process without changing other permission modes', () => {
+  const base = { model: 'engine-default', effort: 'engine-default', additionalDirectories: [] };
+  const ordinary = launchArgs(base);
+  assert.deepEqual(launchArgs({ ...base, hostGate: true, permission: { override: { mode: 'yolo' } } }), [...ordinary, '--dangerously-skip-permissions']);
+  for (const mode of ['auto', 'manual', 'review', undefined]) assert.deepEqual(launchArgs({ ...base, hostGate: true, permission: { override: { mode } } }), ordinary);
+  assert.deepEqual(launchArgs({ ...base, hostGate: false, permission: { override: { mode: 'yolo' } } }), ordinary);
+});
+
 test('text-only boundary rejects rich content instead of dropping it', () => {
   assert.equal(promptText([{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }]), 'one\ntwo');
   assert.throws(() => promptText([{ type: 'image', data: 'x' }]), /text prompts only/);
@@ -182,7 +190,7 @@ test('official permission hook preserves raw command, cwd and identity; only the
   assert.deepEqual(captured.request.options.map(value => value.optionId), ['allow_once', 'reject_once', 'kiki.vendor_default']);
   delete s.permission.override;
   s.active.client.request = async () => ({ outcome: { outcome: 'selected', optionId: 'kiki.vendor_default' } });
-  assert.deepEqual(await b.requestPermission(s, input), {});
+  assert.deepEqual(await b.requestPermission(s, input), { decision: 'ask' });
   s.active.client.request = async () => ({ outcome: { outcome: 'selected', optionId: 'reject_once' } });
   assert.equal((await b.requestPermission(s, input)).decision, 'deny');
   assert.equal((await b.requestPermission(s, { ...input, conversationId: 'other-session' })).decision, 'deny');
@@ -192,7 +200,7 @@ test('official permission hook preserves raw command, cwd and identity; only the
 
 test('owned permission channel rejects bad nonce and disconnects, unrelated AGY keeps default policy', async () => {
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
-  assert.deepEqual(await requestHookPermission({}, {}), {});
+  assert.deepEqual(await requestHookPermission({}, {}), { decision: 'ask' });
   let calls = 0;
   const channel = await openPermissionChannel(async input => { calls++; return { decision: input.allow ? 'allow' : 'deny' }; });
   try {
@@ -302,7 +310,7 @@ test('inherit starts without host hook, even with legacy ambient mode; clearing 
       const id = (await b.newSession({ cwd: root, mcpServers: [], _meta: { 'kiki.permission': permission } })).sessionId;
       assert.equal((await turn(b, id, 'hello', [])).stopReason, 'end_turn');
       assert.equal(b.session(id).permissionRegistration, undefined);
-      assert.deepEqual(await b.requestPermission(b.session(id), {}), {});
+      assert.deepEqual(await b.requestPermission(b.session(id), {}), { decision: 'ask' });
       assert.equal(launches.at(-1).env.KIKI_AGY_PERMISSION_ENDPOINT, b.session(id).permissionIdentity.KIKI_AGY_PERMISSION_ENDPOINT);
       assert.deepEqual(launches.at(-1).args.slice(1), ['--input-format', 'stream-json', '--output-format', 'stream-json', '--model', 'claude-opus-5-5-high']);
       await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
@@ -310,7 +318,7 @@ test('inherit starts without host hook, even with legacy ambient mode; clearing 
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('vendor-default host outcome crosses owned channel as empty default, never as allow', async () => {
+test('vendor-default host outcome crosses owned channel as native ask, never as allow', async () => {
   const { openPermissionChannel, requestHookPermission } = await import('./agy-permission-hook.mjs');
   const b = new AgyBridge({ cliPath: process.execPath });
   const permission = { version: 1, hostGate: true, policyIdentity: 'explicit-rules-only', workspace: { cwd, additionalDirectories: [] } };
@@ -322,7 +330,7 @@ test('vendor-default host outcome crosses owned channel as empty default, never 
   const channel = await openPermissionChannel(input => b.requestPermission(s, input));
   const input = { conversationId: 'fixture-rules-only', stepIdx: 1, toolCall: { name: 'view_file', args: { AbsolutePath: 'C:/example/source.txt' } } };
   try {
-    assert.deepEqual(await requestHookPermission(input, channel.env), {});
+    assert.deepEqual(await requestHookPermission(input, channel.env), { decision: 'ask' });
     optionId = 'reject_once';
     assert.equal((await requestHookPermission(input, channel.env)).decision, 'deny');
   } finally { s.active = undefined; await channel.close(); }
@@ -423,12 +431,12 @@ test('turn snapshot switches inherit to explicit and back without replacing nati
     assert.ok(JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'))['kiki-agy-permission-bridge']);
     const other = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
     await b.prompt({ sessionId: other, prompt: [{ type: 'text', text: 'hello' }] }, client);
-    assert.deepEqual(await requestHookPermission({}, b.session(other).permissionIdentity), {});
+    assert.deepEqual(await requestHookPermission({}, b.session(other).permissionIdentity), { decision: 'ask' });
     assert.equal(requests, 1);
     const inherited = { version: 1, hostGate: false, policyIdentity: 'fixture-cleared', workspace: { cwd: root, additionalDirectories: [] } };
     assert.equal((await b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'again' }], _meta: { 'kiki.permission': inherited } }, client)).stopReason, 'end_turn');
     await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
-    assert.deepEqual(await requestHookPermission({}, b.session(id).permissionIdentity), {});
+    assert.deepEqual(await requestHookPermission({}, b.session(id).permissionIdentity), { decision: 'ask' });
     assert.equal(b.session(id).child.pid, pid);
     assert.equal(b.session(id).init.conversation_id, conversation);
     assert.equal(b.session(id).init.init.model, 'gemini-3.8-flash-medium');
@@ -738,6 +746,29 @@ test('native load uses only exact audited conversation and binding, owns a lease
   } finally { await first.close(); await loaded.close(); await competitor.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('missing file during native permission declaration stays a failed read, not a vendor denial', async () => {
+  const b = bridge(); const id = await session(b); const s = b.session(id);
+  b.permissionSnapshot(s, { version: 1, hostGate: true, override: { mode: 'yolo', source: 'profile' },
+    policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } });
+  s.init = { conversation_id: 'fixture-missing-file' };
+  const messages = []; let resolved;
+  s.active = { client: { notify: async (_method, event) => messages.push(event),
+    request: async () => ({ outcome: { outcome: 'selected', optionId: 'allow_once' } }) },
+    text: '', reject: error => { throw error; }, resolve: value => { resolved = value; } };
+  const args = { AbsolutePath: 'C:/example/product/missing.ts' };
+  assert.equal((await b.requestPermission(s, { conversationId: s.init.conversation_id, stepIdx: 2,
+    toolCall: { name: 'view_file', args } })).decision, 'allow');
+  const error = 'declaring permissions: cortex tool view_file: convert tool call for permissions: model output error: invalid tool call error (invalid_args) failed to read file: GetFileAttributesEx C:/example/product/missing.ts: The system cannot find the file specified.';
+  await b.event(s, { event: 'step_update', conversation_id: s.init.conversation_id,
+    step_update: { step_type: 'tool', step_index: 2, tool_name: 'view_file', state: 'ERROR', tool_info: { parameters: args, error } } });
+  assert.equal(s.active.vendorRejected, undefined);
+  assert.equal(messages.at(-1).update.status, 'failed');
+  assert.equal(messages.at(-1).update.rawOutput, error);
+  await b.event(s, { event: 'result', result: { status: 'SUCCESS', response: 'Missing file reported accurately.' } });
+  assert.equal(resolved.stopReason, 'end_turn');
+  await b.close();
+});
+
 test('native denial after exact host approval retains failed tool receipt and names the vendor layer', async () => {
   const b = bridge(); const id = await session(b); const s = b.session(id);
   const permission = { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' }, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
@@ -787,7 +818,7 @@ test('pre-tool hook denial cannot become successful work when native result omit
   }
 });
 
-test('shared Windows hook calls inherited channel with empty decision before any host admission', { skip: process.platform !== 'win32', timeout: 10000 }, async () => {
+test('shared Windows hook delegates inherited and vendor-default permission to native settings', { skip: process.platform !== 'win32', timeout: 10000 }, async () => {
   const { hookCommand } = await import('./agy-hook-registration.mjs');
   const { openPermissionChannel } = await import('./agy-permission-hook.mjs');
   const b = bridge(); const id = await session(b); const s = b.session(id);
@@ -813,7 +844,7 @@ test('shared Windows hook calls inherited channel with empty decision before any
   };
   try {
     assert.equal(s.hostGate, false);
-    assert.deepEqual(await run(), {});
+    assert.deepEqual(await run(), { decision: 'ask' });
     assert.equal(calls, 0);
     b.permissionSnapshot(s, { version: 1, hostGate: true, policyIdentity: 'fixture-only',
       workspace: { cwd, additionalDirectories: [] } });
@@ -825,7 +856,9 @@ test('shared Windows hook calls inherited channel with empty decision before any
     assert.deepEqual(approvedWrite.permissionOverrides, ['write_file(C:/example/reports/01.md)']);
     optionId = 'reject_once';
     assert.equal((await run()).decision, 'deny');
-    assert.equal(calls, 3);
+    optionId = 'kiki.vendor_default';
+    assert.deepEqual(await run(), { decision: 'ask' });
+    assert.equal(calls, 4);
   } finally { s.active = undefined; await channel.close(); await b.close(); }
 });
 

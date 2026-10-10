@@ -81,7 +81,7 @@ export async function openPermissionChannel(handle, identity = permissionChannel
 export async function requestHookPermission(input, env = process.env, timeoutMs) {
   const endpoint = env.KIKI_AGY_PERMISSION_ENDPOINT;
   const token = env.KIKI_AGY_PERMISSION_TOKEN;
-  if (!endpoint && !token) return {};
+  if (!endpoint && !token) return { decision: 'ask' };
   if (!endpoint || !token) return denied('Incomplete Kiki AGY permission channel');
   const frame = JSON.stringify(input) + '\n';
   return new Promise(done => {
@@ -102,7 +102,7 @@ export async function requestHookPermission(input, env = process.env, timeoutMs)
       try {
         const parsed = JSON.parse(response.slice(0, end));
         const vendorDefault = parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length === 0;
-        if (!vendorDefault && !['allow', 'deny'].includes(parsed.decision)) throw Error('Invalid permission decision');
+        if (!vendorDefault && !['allow', 'deny', 'ask'].includes(parsed.decision)) throw Error('Invalid permission decision');
         finish(parsed);
       } catch { finish(denied('Invalid Kiki AGY permission response')); }
     });
@@ -120,7 +120,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     for await (const chunk of process.stdin) {
       if (owned) input += chunk;
     }
-    const output = owned ? await requestHookPermission(JSON.parse(input)) : {};
+    const output = owned ? await requestHookPermission(JSON.parse(input)) : { decision: 'ask' };
     process.stdout.write(JSON.stringify(output) + '\n');
   } catch (error) { process.stdout.write(JSON.stringify(denied(error instanceof Error ? error.message : 'Invalid AGY hook input')) + '\n'); }
 }

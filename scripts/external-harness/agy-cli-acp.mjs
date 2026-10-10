@@ -23,6 +23,7 @@ export function launchArgs(session) {
   if (session.conversationId) args.push('--conversation', session.conversationId);
   if (session.model !== DEFAULT) args.push('--model', session.model);
   if (session.effort !== DEFAULT) args.push('--effort', session.effort);
+  if (session.hostGate && session.permission?.override?.mode === 'yolo') args.push('--dangerously-skip-permissions');
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
   return args;
 }
@@ -115,7 +116,7 @@ export class AgyBridge {
   }
 
   async requestPermission(session, input) {
-    if (!session.hostGate) return {};
+    if (!session.hostGate) return { decision: 'ask' };
     const active = session.active;
     const reject = reason => ({ decision: 'deny', reason });
     if (!active || session.broken || typeof active.client.request !== 'function') return reject('Kiki AGY permission gate is unavailable for this turn');
@@ -145,7 +146,7 @@ export class AgyBridge {
     if (session.active !== active || session.broken) return reject('Kiki AGY turn ended while awaiting permission');
     if (response?.outcome?.outcome === 'selected' && response.outcome.optionId === 'kiki.vendor_default') {
       await this.audit(session, 'permission_decision', { toolCallId: id, decision: 'vendor_default' });
-      return {};
+      return { decision: 'ask' };
     }
     const allow = response?.outcome?.outcome === 'selected' && ['allow_once', 'allow_always'].includes(response.outcome.optionId);
     const permissionOverrides = allow ? toolPermissionResources(name, args) : undefined;
@@ -374,7 +375,7 @@ export class AgyBridge {
             (active.preToolDenied ??= new Set()).add(id);
             await this.audit(session, 'pre_tool_hook_denied', { toolCallId: id, error: errorText ?? output });
           }
-          if (failed && active.hostApproved?.has(id) && /permission.*(?:denied|failed)|vendor resource permission denied/i.test(errorText ?? output ?? '')) {
+          if (failed && active.hostApproved?.has(id) && /\bpermissions?\s+(?:check\s+)?(?:denied|failed)\b|\b(?:user|resource)\s+denied\s+permission\b/i.test(errorText ?? output ?? '')) {
             (active.vendorRejected ??= new Set()).add(id);
             await this.audit(session, 'vendor_denied_after_host_allow', { toolCallId: id, error: errorText ?? output });
           }
