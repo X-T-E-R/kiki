@@ -255,6 +255,10 @@ class FakeLoopService implements IAgentLoopService {
     return toDisposable(() => {});
   }
 
+  atStepBoundary(run: (boundary: import('#/agent/loop/loop').StepBoundary | undefined) => Promise<void>): Promise<void> {
+    return run(undefined);
+  }
+
   hasPendingRequests(): boolean {
     return false;
   }

@@ -9,6 +9,7 @@ import { defineState } from '#/state/state';
 import { extractImageCompressionCaptions } from '#/agent/media/image-compress';
 import { abortable, abortError, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorPayload, type ErrorPayload } from '#/_base/errors/serialize';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
@@ -17,6 +18,7 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService, TurnPersistenceError, type EnqueueReceipt, type Turn, type TurnResult } from '#/agent/loop/loop';
+import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { TurnPrompt, TurnSteer } from '#/agent/loop/turnOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -645,6 +647,9 @@ export class AgentPromptService implements IAgentPromptService {
 
   private switchFlight?: { operationId: string; controller: AbortController; receipt: ModelSwitchReceipt; promise?: Promise<ModelSwitchReceipt> };
   private readonly immediateModelSwitchIds = new Set<string>();
+  private readonly boundaryPromptIds = new Set<string>();
+  private readonly acceptedBoundaryPromptIds = new Set<string>();
+  private readonly boundarySteeringIds = new Set<string>();
 
   private get switchEngine(): IAgentModelSwitchService {
     return this.instantiation.invokeFunction((accessor) => accessor.get(IAgentModelSwitchService));
@@ -778,12 +783,17 @@ export class AgentPromptService implements IAgentPromptService {
       if (action === 'keep_original') void this.startNext();
       return retained;
     }
+    const accepted = this.pending.filter(item => item.execution?.afterModelSwitch === operationId && this.acceptedBoundaryPromptIds.has(item.id));
+    if (accepted.length > 0 && this.switchFlight?.promise === undefined) {
+      await this.scheduleSwitchBoundary(accepted);
+      return this.getModelSwitch(operationId)!;
+    }
     if (joinFlight) return this.runModelSwitch(operationId);
     await this.startNext();
     return this.getModelSwitch(operationId)!;
   }
 
-  private async runModelSwitch(operationId: string): Promise<ModelSwitchReceipt> {
+  private async runModelSwitch(operationId: string, boundary?: import('#/agent/loop/loop').StepBoundary): Promise<ModelSwitchReceipt> {
     if (this.switchFlight?.promise !== undefined) return this.switchFlight.promise;
     const entry = this.requireModelSwitch(operationId);
     const flight = this.switchFlight ?? { operationId, controller: new AbortController(), receipt: { ...entry.receipt, state: 'preparing' as const } };
@@ -797,7 +807,7 @@ export class AgentPromptService implements IAgentPromptService {
       try {
         const executor = this.profile.data().executorId ?? 'native';
         receipt = executor === 'native'
-          ? await this.switchEngine.execute(entry.input, { signal: flight.controller.signal })
+          ? await this.switchEngine.execute(entry.input, { signal: flight.controller.signal, boundary })
           : { ...preparing, state: 'failed', error: { code: ErrorCodes.REQUEST_INVALID,
             message: `Model switching for executor "${executor}" requires a verified remote model/context adapter; the current executor has none.` } };
       } catch (error) {
@@ -1416,6 +1426,55 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptMoved({ promptId: id, targetIndex, queuedPromptIds: order, movedAt: new Date().toISOString() }));
   }
 
+  private scheduleSwitchBoundary(selected: readonly Record[]): Promise<void> {
+    const fresh = selected.filter(item => !this.boundaryPromptIds.has(item.id));
+    if (fresh.length === 0) return Promise.resolve();
+    for (const item of fresh) this.boundaryPromptIds.add(item.id);
+    return this.loop.atStepBoundary(async boundary => {
+      try {
+        for (const item of fresh) {
+          if (!this.pending.includes(item)) continue;
+          const operationId = item.execution?.afterModelSwitch;
+          const index = operationId === undefined ? -1 : this.queueOrder.indexOf(modelSwitchQueueId(operationId));
+          const operations = operationId === undefined ? [] : index < 0 ? [operationId] : this.queueOrder.slice(0, index + 1)
+            .filter(id => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)).map(id => id.slice(MODEL_SWITCH_QUEUE_PREFIX.length));
+          for (const id of operations) {
+            const receipt = this.getModelSwitch(id);
+            if (receipt?.state === 'cancelled') return;
+            if (receipt?.state !== 'completed' && (await this.runModelSwitch(id, boundary)).state !== 'completed') return;
+          }
+          if (!this.isDependencyReady(item.execution)) return;
+          const execution = this.resolveExecutionBinding(item.execution);
+          if (execution !== undefined && (operationId === undefined ? this.hasExecutionBindingChange(execution) :
+            this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined }))) {
+            this.immediatePromptIds.add(item.id);
+            void this.startNext();
+            continue;
+          }
+          if (this.hasExecutionBindingChange(execution)) {
+            const lease = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary });
+            if (lease === undefined) return;
+            try {
+              await this.applyExecutionBinding(execution);
+              this.instantiation.invokeFunction(accessor => accessor.get(IAgentLLMRequesterService)).invalidatePromptSnapshots();
+            } finally { await lease.dispose(); }
+          }
+          const pending = fresh.filter(candidate => this.pending.includes(candidate) &&
+            candidate.execution?.afterModelSwitch === operationId && !this.hasExecutionBindingChange(candidate.execution));
+          for (const candidate of pending) this.boundarySteeringIds.add(candidate.id);
+          try { if (pending.length > 0) await this.steer(pending.map(candidate => candidate.id)); }
+          finally { for (const candidate of pending) this.boundarySteeringIds.delete(candidate.id); }
+          const remaining = fresh.filter(candidate => this.pending.includes(candidate) && !pending.includes(candidate));
+          queueMicrotask(() => this.scheduleSwitchBoundary(remaining));
+          return;
+        }
+      } finally { for (const item of fresh) this.boundaryPromptIds.delete(item.id); }
+    }).catch(error => {
+      for (const item of fresh) this.boundaryPromptIds.delete(item.id);
+      onUnexpectedError(error);
+    });
+  }
+
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
     if ((this.profile.data().executorId ?? 'native') !== 'native') return this.steerExternal(promptIds);
     this.assertNativePromptExecutor();
@@ -1426,8 +1485,10 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
-    if (selected.some((item) => item.execution?.afterModelSwitch !== undefined)) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model-switch dependent prompts must run as their own turn after the referenced switch completes.');
+    if (selected.some(item => item.execution?.afterModelSwitch !== undefined && !this.boundarySteeringIds.has(item.id))) {
+      for (const item of selected) this.acceptedBoundaryPromptIds.add(item.id);
+      void this.scheduleSwitchBoundary(selected);
+      return selected.map(item => item.handle);
     }
     if (targetTurnId === undefined) {
       for (const item of selected) this.immediatePromptIds.add(item.id);
@@ -1848,6 +1909,7 @@ export class AgentPromptService implements IAgentPromptService {
 
   private hasExecutionBindingChange(execution: PromptExecutionBinding | undefined): boolean {
     if (execution === undefined) return false;
+    if (execution.afterModelSwitch !== undefined && this.isDependencyReady(execution)) execution = this.resolveExecutionBinding(execution)!;
     const profile = this.profile.data();
     return (execution.profile !== undefined && execution.profile !== profile.profileName) ||
       (execution.model !== undefined && execution.model !== profile.modelAlias) ||
@@ -1946,6 +2008,7 @@ export class AgentPromptService implements IAgentPromptService {
     if (delivery.kind === 'steer') await this.inject(delivery.message as ContextMessage);
   }
   private publishCompleted(record: Record, reason: 'completed' | 'failed' | 'blocked'): void {
+    this.acceptedBoundaryPromptIds.delete(record.id);
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptCompleted({ promptId: record.id, finishedAt: new Date().toISOString(), reason, error: record.error }));
   }
@@ -1980,6 +2043,7 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptQueueHoldChanged({ hold: this.queueHold() ?? null }));
   }
   private publishAborted(record: Record, beforeStart: boolean): void {
+    this.acceptedBoundaryPromptIds.delete(record.id);
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptAborted({ promptId: record.id, abortedAt: new Date().toISOString(), beforeStart }));
   }

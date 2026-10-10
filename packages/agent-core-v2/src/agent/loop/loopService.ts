@@ -119,6 +119,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private lastTurnResult: TurnResult['type'] | undefined;
   private readonly settleWaiters: Array<() => void> = [];
   private quiescenceDepth = 0;
+  private activeBoundary?: import('./loop').StepBoundary;
+  private boundaryWake?: ReturnType<typeof createControlledPromise<void>>;
+  private readonly boundaryRequests: Array<{
+    readonly turnId: number;
+    readonly run: (boundary: import('./loop').StepBoundary | undefined) => Promise<void>;
+    readonly result: ReturnType<typeof createControlledPromise<void>>;
+  }> = [];
   private activeRequestTrace: LLMRequestTrace | undefined;
   private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; error?: unknown } | undefined;
 
@@ -279,19 +286,57 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.cancel(turnId);
   }
 
-  tryAcquireQuiescence(options?: { readonly pendingSteps: 'preserve' }): IDisposable | undefined {
+  tryAcquireQuiescence(options?: { readonly pendingSteps?: 'preserve'; readonly boundary?: import('./loop').StepBoundary }): IDisposable | undefined {
     if (this.disposing) throw abortError('Agent loop disposed');
+    const boundary = options?.boundary !== undefined && options.boundary === this.activeBoundary &&
+      options.boundary.turnId === this.activeTurnJob?.turn.id && this.activeTurnJob?.controller.signal.aborted === false;
     if (
       this.quiescenceDepth > 0 ||
-      this.activeTurnJob !== undefined ||
-      this.pendingTurns.length > 0 ||
-      this.heldAdmissions.some(({ request }) => !request.aborted) ||
-      (options?.pendingSteps !== 'preserve' && this.standaloneStepQueue.hasPendingRequests())
+      (!boundary && (this.activeTurnJob !== undefined || this.pendingTurns.length > 0 ||
+        this.heldAdmissions.some(({ request }) => !request.aborted) ||
+        (options?.pendingSteps !== 'preserve' && this.standaloneStepQueue.hasPendingRequests())))
     ) {
       return undefined;
     }
     this.quiescenceDepth += 1;
     return toDisposable(() => this.releaseQuiescence());
+  }
+
+  atStepBoundary(run: (boundary: import('./loop').StepBoundary | undefined) => Promise<void>): Promise<void> {
+    if (this.disposing) return Promise.reject(abortError('Agent loop disposed'));
+    const job = this.activeTurnJob;
+    if (job === undefined) return run(undefined);
+    const result = createControlledPromise<void>();
+    this.boundaryRequests.push({ turnId: job.turn.id, run, result });
+    job.steerController.abort(abortError('New input awaiting a model boundary'));
+    this.boundaryWake?.resolve();
+    return result;
+  }
+
+  private async runBoundaryRequests(turnId: number, signal: AbortSignal): Promise<void> {
+    if (!this.boundaryRequests.some(request => request.turnId === turnId)) return;
+    const boundary = { turnId };
+    this.activeBoundary = boundary;
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        const index = this.boundaryRequests.findIndex(request => request.turnId === turnId);
+        if (index >= 0) {
+          const [request] = this.boundaryRequests.splice(index, 1);
+          try { await request!.run(boundary); request!.result.resolve(); }
+          catch (error) { request!.result.reject(error); }
+          if (this.quiescenceDepth === 0) return;
+          continue;
+        }
+        if (this.quiescenceDepth === 0) return;
+        const wake = createControlledPromise<void>();
+        this.boundaryWake = wake;
+        const aborted = () => wake.reject(signal.reason);
+        signal.addEventListener('abort', aborted, { once: true });
+        try { await wake; }
+        finally { signal.removeEventListener('abort', aborted); this.boundaryWake = undefined; }
+      }
+    } finally { this.activeBoundary = undefined; }
   }
 
   private releaseQuiescence(): void {
@@ -311,6 +356,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
     }
     this.quiescenceDepth = 0;
+    this.boundaryWake?.resolve();
     this.pumpTurns();
   }
 
@@ -649,6 +695,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     for (const step of job.steps.values()) {
       if (step.state === 'queued' || step.state === 'running') step.cancel(reason);
     }
+    for (let index = this.boundaryRequests.length - 1; index >= 0; index--) {
+      if (this.boundaryRequests[index]!.turnId === turn.id) this.boundaryRequests.splice(index, 1)[0]!.result.reject(reason);
+    }
     this.lastTurnResult = result?.type ?? 'failed';
     this.activeTurnJob = undefined;
     this.maybeSettle();
@@ -972,6 +1021,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         finishReason,
         stepIdentity,
       );
+      await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
       if (!stepEndAppended) {

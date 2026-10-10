@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { testAgent, agentServices, type TestAgentContext } from '../../harness';
+import { testAgent, agentServices, createScriptedGenerate, type TestAgentContext, type TestAgentOptions } from '../../harness';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { AgentPromptService, promptQueueKey } from '#/agent/prompt/promptService';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { AgentModelSwitchService } from '#/agent/modelSwitch/modelSwitchService';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import type { ExecutableTool } from '#/tool/toolContract';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -16,12 +19,13 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { deferred } from '../../deferred';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { ContinuationStepRequest } from '#/agent/loop/stepRequests';
 
 const OLD = 'example/old-model';
 const NEW = 'example/new-model';
 const hosts: TestAgentContext[] = [];
-async function host() {
-  const ctx = testAgent({ autoConfigure: false, initialConfig: {
+async function host(generate?: TestAgentOptions['generate']) {
+  const ctx = testAgent({ autoConfigure: false, generate, initialConfig: {
     providers: { example: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
     models: { [OLD]: { provider: 'example', model: 'old-model', maxContextSize: 200_000 },
       [NEW]: { provider: 'example', model: 'new-model', maxContextSize: 100_000 } },
@@ -47,6 +51,269 @@ afterEach(async () => {
 });
 
 describe('model switch control queue with real engine', () => {
+  it('safe Send now retains a failed original delivery until an explicit normal retry', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    ctx.get(IAgentLoopService).hooks.onDidFinishStep.register('failed-switch-boundary', async (step, next) => {
+      if (step.step === 1) { entered.resolve(); await release.promise; }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Current work finished.' });
+    const active = await svc.enqueue({ id: 'failed-active', message: { role: 'user', content: [{ type: 'text', text: 'Current work.' }], toolCalls: [] } });
+    await entered.promise;
+    await svc.switchModel({ operationId: 'failed-safe-choice', model: NEW, mode: 'direct' });
+    const original = await svc.enqueue({ id: 'failed-safe-original', message: { role: 'user', content: [{ type: 'text', text: 'Preserve this exact question if switching fails.' }], toolCalls: [] }, execution: { afterModelSwitch: 'failed-safe-choice' } });
+    const prepare = vi.spyOn(ctx.get(IAgentProfileService), 'prepareModelSwitchBinding').mockRejectedValueOnce(new Error('target unavailable'));
+    expect(await svc.steer([original.id])).toEqual([original]);
+    release.resolve();
+    await active.completion;
+    expect(svc.getModelSwitch('failed-safe-choice')).toMatchObject({ state: 'failed', error: { message: 'target unavailable' } });
+    expect(original.state).toBe('pending');
+    expect(svc.list().pending[0]?.message.content).toEqual(original.message.content);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(prepare).toHaveBeenCalledTimes(1);
+    ctx.mockNextResponse({ type: 'text', text: 'Original recovered question answered.' });
+    expect(await svc.recoverModelSwitch('failed-safe-choice', 'retry')).toMatchObject({ state: 'completed' });
+    expect((await original.completion).state).toBe('completed');
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'turn.prompt' && record['promptId'] === original.id)).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+  });
+
+  it('safe model delivery retains an unrelated permission change for its own turn', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const resumed = deferred<void>();
+    const finish = deferred<void>();
+    ctx.get(IAgentLoopService).hooks.onDidFinishStep.register('unrelated-settings-boundary', async (step, next) => {
+      if (step.step === 1) { entered.resolve(); await release.promise; }
+      if (step.step === 2 && step.turnId === 0) { resumed.resolve(); await finish.promise; }
+      await next();
+    });
+    for (const text of ['Initial response.', 'Existing continuation.', 'Own-turn answer.']) ctx.mockNextResponse({ type: 'text', text });
+    const active = await svc.enqueue({ id: 'permission-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing work.' }], toolCalls: [] } });
+    await entered.promise;
+    ctx.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
+    await svc.switchModel({ operationId: 'permission-model-choice', model: NEW, mode: 'direct' });
+    const dependent = await svc.enqueue({ id: 'permission-original', message: { role: 'user', content: [{ type: 'text', text: 'Use the selected model in my changed permission mode.' }], toolCalls: [] }, execution: { afterModelSwitch: 'permission-model-choice', permissionMode: 'yolo' } });
+    await svc.steer([dependent.id]);
+    release.resolve();
+    await resumed.promise;
+    expect(ctx.get(IAgentPermissionModeService).mode).not.toBe('yolo');
+    expect(dependent.state).toBe('pending');
+    finish.resolve();
+    await active.completion;
+    expect((await dependent.completion).state).toBe('completed');
+    expect(ctx.get(IAgentPermissionModeService).mode).toBe('yolo');
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'turn.prompt' && record['promptId'] === dependent.id)).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === dependent.id)).toHaveLength(0);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }, { modelAlias: NEW }]);
+  });
+
+  it('safe Send now restores a historical completed dependency binding without replaying its context operation', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    await svc.switchModel({ operationId: 'historical-binding', model: NEW, mode: 'fresh' });
+    await svc.switchModel({ operationId: 'later-current-binding', model: OLD, mode: 'direct' });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    ctx.get(IAgentLoopService).hooks.onDidFinishStep.register('historical-boundary', async (step, next) => {
+      if (step.step === 1) { entered.resolve(); await release.promise; }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Current model response.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Captured model answer.' });
+    const active = await svc.enqueue({ id: 'historical-active', message: { role: 'user', content: [{ type: 'text', text: 'Continue current work.' }], toolCalls: [] } });
+    await entered.promise;
+    const dependent = await svc.enqueue({ id: 'historical-original', message: { role: 'user', content: [{ type: 'text', text: 'Use the binding captured for this message.' }], toolCalls: [] }, execution: { afterModelSwitch: 'historical-binding' } });
+    await svc.steer([dependent.id]);
+    release.resolve();
+    expect((await dependent.completion).state).toBe('completed');
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+    expect(journal.filter(record => record.type === 'agent.model_switch' && record['operationId'] === 'historical-binding')).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === dependent.id)).toHaveLength(1);
+  });
+
+  it('safe Send now consumes different captured switch bindings at separate request boundaries', async () => {
+    const scripted = createScriptedGenerate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const ctx = await host(async (...args) => {
+      if (scripted.calls.length === 0) { entered.resolve(); await release.promise; }
+      return scripted.generate(...args);
+    });
+    const svc = ctx.get(IAgentPromptService);
+    for (const text of ['Initial response.', 'First selected answer.', 'Second selected answer.']) scripted.mockNextResponse({ type: 'text', text });
+    const active = await svc.enqueue({ id: 'multi-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing work.' }], toolCalls: [] } });
+    await entered.promise;
+    await svc.switchModel({ operationId: 'multi-first', model: NEW, mode: 'direct' });
+    const first = await svc.enqueue({ id: 'multi-question-first', message: { role: 'user', content: [{ type: 'text', text: 'Question for the first selected binding.' }], toolCalls: [] }, execution: { afterModelSwitch: 'multi-first' } });
+    await svc.switchModel({ operationId: 'multi-second', model: OLD, mode: 'direct' });
+    const second = await svc.enqueue({ id: 'multi-question-second', message: { role: 'user', content: [{ type: 'text', text: 'Question for the second selected binding.' }], toolCalls: [] }, execution: { afterModelSwitch: 'multi-second' } });
+    expect(await svc.steer([first.id, second.id])).toEqual([first, second]);
+    release.resolve();
+    expect((await first.completion).state).toBe('completed');
+    expect((await second.completion).state).toBe('completed');
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }, { modelAlias: OLD }]);
+    expect(JSON.stringify(scripted.calls[1])).toContain('Question for the first selected binding.');
+    expect(JSON.stringify(scripted.calls[1])).not.toContain('Question for the second selected binding.');
+    expect(JSON.stringify(scripted.calls[2])).toContain('Question for the second selected binding.');
+    for (const item of [first, second]) expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === item.id)).toHaveLength(1);
+  });
+
+  it('safe Send now holds the boundary on uncertain completion and normal retry consumes the accepted message once', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const loop = ctx.get(IAgentLoopService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    loop.hooks.onDidFinishStep.register('uncertain-boundary', async (step, next) => {
+      if (step.step === 1) { entered.resolve(); await release.promise; }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Current request finished.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Recovered original message.' });
+    const active = await svc.enqueue({ id: 'uncertain-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing work.' }], toolCalls: [] } });
+    await entered.promise;
+    loop.enqueue(new ContinuationStepRequest());
+    await svc.switchModel({ operationId: 'uncertain-safe-switch', model: NEW, mode: 'fresh' });
+    const dependent = await svc.enqueue({ id: 'uncertain-original', message: { role: 'user', content: [{ type: 'text', text: 'My original recoverable question.' }], toolCalls: [] }, execution: { afterModelSwitch: 'uncertain-safe-switch' } });
+    vi.spyOn(ctx.get(ISessionMetadata), 'updateAgent').mockRejectedValueOnce(new Error('metadata unavailable'));
+    await svc.steer([dependent.id]);
+    release.resolve();
+    await vi.waitFor(() => expect(svc.getModelSwitch('uncertain-safe-switch')).toMatchObject({ state: 'preparing', error: { message: 'metadata unavailable' } }));
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(dependent.state).toBe('pending');
+    expect(await svc.recoverModelSwitch('uncertain-safe-switch', 'retry')).toMatchObject({ state: 'completed' });
+    expect((await dependent.completion).state).toBe('completed');
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === dependent.id)).toHaveLength(1);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+    expect(JSON.stringify(ctx.llmCalls[1])).toContain('My original recoverable question.');
+  });
+
+  it('safe Send now waits for the tool result and preserves it in the next request', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const tool: ExecutableTool<{ query: string }> = {
+      name: 'Lookup', description: 'Look up a test value.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      resolveExecution: () => ({ approvalRule: 'Lookup', execute: async () => {
+        entered.resolve(); await release.promise; return { output: 'complete-original-tool-result' };
+      } }),
+    };
+    ctx.get(IAgentPermissionModeService).setMode('yolo');
+    ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+    ctx.get(IAgentToolRegistryService).register(tool);
+    ctx.mockNextResponse({ type: 'text', text: 'Look up the original value.' }, { type: 'function', id: 'original-lookup', name: 'Lookup', arguments: '{"query":"moon"}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Selected model received the complete result.' });
+    const active = await svc.enqueue({ id: 'tool-active', message: { role: 'user', content: [{ type: 'text', text: 'Start the lookup.' }], toolCalls: [] } });
+    await entered.promise;
+    expect(await svc.switchModel({ operationId: 'tool-pending', model: NEW, mode: 'direct' })).toMatchObject({ state: 'pending' });
+    const dependent = await svc.enqueue({ id: 'tool-dependent', message: { role: 'user', content: [{ type: 'text', text: 'Use the complete lookup result on my selected model.' }], toolCalls: [] }, execution: { afterModelSwitch: 'tool-pending' } });
+    await svc.steer([dependent.id]);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(ctx.llmCalls).toHaveLength(1);
+    release.resolve();
+    expect((await dependent.completion).state).toBe('completed');
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+    const switched = journal.findIndex(record => record.type === 'agent.model_switch');
+    const result = journal.findIndex(record => record.type === 'context.append_loop_event' && JSON.stringify(record).includes('complete-original-tool-result'));
+    expect(result).toBeGreaterThan(-1);
+    expect(switched).toBeGreaterThan(result);
+    expect(JSON.stringify(ctx.llmCalls[1])).toContain('complete-original-tool-result');
+    expect(JSON.stringify(ctx.llmCalls[1])).toContain('Use the complete lookup result on my selected model.');
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === dependent.id)).toHaveLength(1);
+  });
+
+  it.each(['direct', 'fresh', 'compact'] as const)('safe Send now preserves an in-flight provider request and applies %s before the next request', async mode => {
+    const scripted = createScriptedGenerate();
+    const streaming = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) { streaming.resolve(); await release.promise; }
+      return scripted.generate(...args);
+    });
+    const svc = ctx.get(IAgentPromptService);
+    const loop = ctx.get(IAgentLoopService);
+    scripted.mockNextResponse({ type: 'text', text: 'Old request finished intact.' });
+    if (mode === 'compact') scripted.mockNextResponse({ type: 'text', text: 'Portable summary of the completed original work.' });
+    scripted.mockNextResponse({ type: 'text', text: 'New request sees the original question.' });
+    const active = await svc.enqueue({ id: 'streaming-before-switch', message: { role: 'user', content: [{ type: 'text', text: 'Work already underway.' }], toolCalls: [] } });
+    await streaming.promise;
+    loop.enqueue(new ContinuationStepRequest());
+    expect(await svc.switchModel({ operationId: 'streaming-pending', model: NEW, mode })).toMatchObject({ state: 'pending' });
+    const input = { id: 'streaming-selected', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Unique original question after model selection.' }], toolCalls: [] }, execution: { afterModelSwitch: 'streaming-pending' } };
+    const dependent = await svc.enqueue(input);
+    expect(await svc.steer([dependent.id])).toEqual([dependent]);
+    expect(await svc.steer([dependent.id])).toEqual([dependent]);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(calls).toBe(1);
+    release.resolve();
+    expect((await dependent.completion).state).toBe('completed');
+    expect((await active.completion).state).toBe('completed');
+    const journal = await records(ctx);
+    const selectedRequest = mode === 'compact' ? 2 : 1;
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject(mode === 'compact' ? [{ modelAlias: OLD }, { modelAlias: OLD }, { modelAlias: NEW }] : [{ modelAlias: OLD }, { modelAlias: NEW }]);
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === input.id)).toHaveLength(1);
+    expect(scripted.calls).toHaveLength(selectedRequest + 1);
+    expect(JSON.stringify(scripted.calls[selectedRequest])).toContain('Unique original question after model selection.');
+    expect(svc.getModelSwitch('streaming-pending')).toMatchObject({ state: 'completed', mode });
+  });
+
+  it('safe Send now accepts a pending switch and consumes the original message before an old-binding continuation', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const loop = ctx.get(IAgentLoopService);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const hook = loop.hooks.onDidFinishStep.register('hold-first-safe-boundary', async (step, next) => {
+      if (step.step === 1) { entered.resolve(); await release.promise; }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Current request completed safely.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Original message answered on the selected model.' });
+    const active = await svc.enqueue({ id: 'active-before-switch', message: { role: 'user', content: [{ type: 'text', text: 'Continue existing work.' }], toolCalls: [] } });
+    await entered.promise;
+    loop.enqueue(new ContinuationStepRequest());
+    expect(await svc.switchModel({ operationId: 'pending-at-boundary', model: NEW, mode: 'direct' })).toMatchObject({ state: 'pending' });
+    const input = { id: 'send-pending-switch', message: { role: 'user' as const, content: [{ type: 'text' as const, text: 'Apply my selected model and answer this original message.' }], toolCalls: [] }, execution: { afterModelSwitch: 'pending-at-boundary' } };
+    const dependent = await svc.enqueue(input);
+    try {
+      const [accepted] = await svc.steer([dependent.id]);
+      expect(accepted).toBe(dependent);
+      expect(svc.getModelSwitch('pending-at-boundary')?.state).toBe('pending');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    } finally { release.resolve(); await hook.dispose(); }
+    expect((await dependent.completion).state).toBe('completed');
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+    expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === input.id)).toHaveLength(1);
+    expect(svc.getModelSwitch('pending-at-boundary')?.state).toBe('completed');
+    expect(svc.list().pending).toEqual([]);
+    expect((await svc.enqueue(input)).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+  });
+
   it.each(['direct', 'fresh', 'compact'] as const)('runs %s without a chat turn and replays one operation', async (mode) => {
     const ctx = await host();
     const svc = ctx.get(IAgentPromptService);

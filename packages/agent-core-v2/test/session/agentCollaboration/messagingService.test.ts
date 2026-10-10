@@ -2262,6 +2262,7 @@ function agentHandle(
     cancel: () => false,
     cancelFromUser: () => {},
     tryAcquireQuiescence: () => undefined,
+    atStepBoundary: (run: (boundary: import('#/agent/loop/loop').StepBoundary | undefined) => Promise<void>) => run(undefined),
     settled: () => Promise.resolve(),
     recoverPersistence: async () => true,
     hasPendingRequests: () => false,
