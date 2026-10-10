@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';

@@ -125,9 +125,9 @@ export class HttpChannel implements KlientChannel {
 
   readonly sessionView: SessionViewChannel = {
     snapshot: (sessionId, options) => this.viewRequest(`/api/klient/session-view/${encodeURIComponent(sessionId)}/snapshot`, {}, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
-    transcriptPage: (sessionId, input) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
+    transcriptPage: (sessionId, input, options) => this.transcriptRequest('page', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript`, {
       agent_id: input.agentId, before_turn: input.beforeTurn, before_item: input.beforeItem, after_turn: input.afterTurn, after_item: input.afterItem, page_size: input.pageSize,
-    }),
+    }, options),
     transcriptCatchUp: (sessionId, input) => this.transcriptRequest('catchUp', `/api/klient/session-view/${encodeURIComponent(sessionId)}/transcript/catch-up`, {
       agent_id: input.agentId, epoch: input.since.epoch, since_seq: input.since.seq, grade: input.grade ?? 'delta',
     }),
@@ -202,8 +202,8 @@ export class HttpChannel implements KlientChannel {
     return this.requestJson(path, { ...options, query });
   }
 
-  private async transcriptRequest(kind: 'page' | 'catchUp', path: string, query: Record<string, string | number | undefined>): Promise<unknown> {
-    const data = await this.viewRequest(path, { ...query, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION });
+  private async transcriptRequest(kind: 'page' | 'catchUp', path: string, query: Record<string, string | number | undefined>, options?: CallOptions): Promise<unknown> {
+    const data = await this.viewRequest(path, { ...query, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }, options);
     if (confirmsTranscriptCoverage(data)) return data;
     return kind === 'page' ? degradeUnconfirmedTranscriptPage(data) : degradeUnconfirmedTranscriptCatchUp(data);
   }

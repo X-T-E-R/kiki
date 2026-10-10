@@ -20,30 +20,30 @@ function fixture() {
 describe('provider quotas', () => {
   it('does not fetch on reads, enable, off refresh, unsupported or disconnected targets', async () => {
     const f = fixture();
-    expect((await f.service.snapshot()).sources[0].status).toBe('unknown');
+    expect((await f.service.snapshot()).sources[0]!.status).toBe('unknown');
     await f.service.setEnabled(f.target.id, false);
-    expect((await f.service.refresh(f.target.id)).sources[0].status).toBe('off');
+    expect((await f.service.refresh(f.target.id)).sources[0]!.status).toBe('off');
     await f.service.setEnabled(f.target.id, true);
     f.target.supported = false;
-    expect((await f.service.refresh(f.target.id)).sources[0].status).toBe('unsupported');
+    expect((await f.service.refresh(f.target.id)).sources[0]!.status).toBe('unsupported');
     f.target.supported = true; f.target.active = false;
     await f.service.refresh(f.target.id);
     expect(f.fetchQuota).not.toHaveBeenCalled();
   });
   it('keeps zero distinct, serves stale after TTL/reset and retains last good only on same account errors', async () => {
     const f = fixture();
-    const ready = (await f.service.refresh(f.target.id)).sources[0];
-    expect(ready.status).toBe('ready'); expect(ready.meters[0].remaining).toBe(0);
+    const ready = (await f.service.refresh(f.target.id)).sources[0]!;
+    expect(ready.status).toBe('ready'); expect(ready.meters[0]!.remaining).toBe(0);
     await f.service.refresh(f.target.id); expect(f.fetchQuota).toHaveBeenCalledTimes(1);
     f.advance(300001);
-    expect((await f.service.snapshot()).sources[0].status).toBe('stale');
+    expect((await f.service.snapshot()).sources[0]!.status).toBe('stale');
     f.fetchQuota.mockRejectedValueOnce(new QuotaFailure('request_failed'));
-    const stale = (await f.service.refresh(f.target.id)).sources[0];
-    expect(stale.status).toBe('stale'); expect(stale.meters[0].remaining).toBe(0); expect(stale.data_as_of).toBe(ready.data_as_of);
+    const stale = (await f.service.refresh(f.target.id)).sources[0]!;
+    expect(stale.status).toBe('stale'); expect(stale.meters[0]!.remaining).toBe(0); expect(stale.data_as_of).toBe(ready.data_as_of);
     f.target.revision = 'account-b';
-    expect((await f.service.snapshot()).sources[0].meters).toEqual([]);
+    expect((await f.service.snapshot()).sources[0]!.meters).toEqual([]);
     f.fetchQuota.mockRejectedValueOnce(new QuotaFailure('auth_required'));
-    const auth = (await f.service.refresh(f.target.id)).sources[0];
+    const auth = (await f.service.refresh(f.target.id)).sources[0]!;
     expect(auth.status).toBe('auth_required'); expect(auth.meters).toEqual([]);
   });
   it('single-flights refresh, drops late results after disable or account replacement', async () => {
@@ -53,20 +53,20 @@ describe('provider quotas', () => {
     await vi.waitFor(() => expect(f.fetchQuota).toHaveBeenCalledTimes(1));
     const second = f.service.refresh(f.target.id);
     await f.service.setEnabled(f.target.id, false); finish(); await Promise.all([first, second]);
-    expect((await f.service.snapshot()).sources[0].status).toBe('off');
+    expect((await f.service.snapshot()).sources[0]!.status).toBe('off');
     await f.service.setEnabled(f.target.id, true);
-    expect((await f.service.snapshot()).sources[0].checked_at).toBeUndefined();
+    expect((await f.service.snapshot()).sources[0]!.checked_at).toBeUndefined();
   });
   it('does not add independent accounts and rejects missing source identifiers', async () => {
     const f = fixture(); f.sources.push({ ...f.target, id: 'provider:second', revision: 'second-account' });
     const data = await f.service.refresh(f.target.id);
-    expect(data.sources).toHaveLength(2); expect(data.sources[1].meters).toEqual([]);
+    expect(data.sources).toHaveLength(2); expect(data.sources[1]!.meters).toEqual([]);
     await expect(f.service.refresh('provider:missing')).rejects.toThrow('quota_source_not_found');
   });
   it('ports Codex and Claude percent windows with timezone instants and model groups', () => {
     const codex = parseQuota('codex', { rate_limit: { primary_window: { used_percent: 25, limit_window_seconds: 18000, reset_at: time / 1000 + 3600 }, secondary_window: { used_percent: 10, limit_window_seconds: 2592000 } }, credits: { balance: '0' } }, time);
     expect(codex[0]).toMatchObject({ remaining: 75, unit: 'percent', window: { duration_seconds: 18000, reset_at: '2026-10-10T05:00:00.000Z', reset_timezone: 'UTC' } });
-    expect(codex[1].window?.label).toBe('30天'); expect(codex[2].remaining).toBe(0);
+    expect(codex[1]!.window?.label).toBe('30天'); expect(codex[2]!.remaining).toBe(0);
     const claude = parseQuota('claude', { seven_day_opus: { utilization: 40, resets_at: reset }, five_hour: { utilization: null } }, time);
     expect(claude).toHaveLength(1); expect(claude[0]).toMatchObject({ model_group: 'Opus', remaining: 60, window: { reset_at: '2026-10-09T21:00:00.000Z' } });
   });
@@ -80,8 +80,8 @@ describe('provider quotas', () => {
   });
   it('adapts ZAI units without inventing absolute tokens or an implausible 5h reset', () => {
     const meters = parseQuota('zai', { success: true, code: 200, data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 20, usage: 100000, nextResetTime: time + 604800000 }, { type: 'CREDIT_LIMIT', unit: 6, number: 1, percentage: 0, nextResetTime: time + 3600000 }] } }, time);
-    expect(meters[0]).toMatchObject({ unit: 'percent', limit: 100, remaining: 80 }); expect(meters[0].window?.reset_at).toBeUndefined();
-    expect(meters[1].window?.duration_seconds).toBe(604800);
+    expect(meters[0]).toMatchObject({ unit: 'percent', limit: 100, remaining: 80 }); expect(meters[0]!.window?.reset_at).toBeUndefined();
+    expect(meters[1]!.window?.duration_seconds).toBe(604800);
   });
   it('reuses Kimi typed parser and does not conflate OpenRouter key cap with account balance', () => {
     const kimi = parseQuota('kimi', { usages: { limit_5h: { used_ratio: 0 }, limit_7d: { used_ratio: 0.4 } } }, time);
@@ -95,7 +95,7 @@ describe('provider quotas', () => {
     for (const url of ['http://api.deepseek.com', 'https://api.deepseek.com.evil.test', 'https://proxy.example.test', 'https://secret@api.deepseek.com', 'https://api.deepseek.com:444', 'https://api.deepseek.com?x=1']) expect(selectQuotaAdapter(url, false)).toBeUndefined();
     expect(selectQuotaAdapter('https://api.deepseek.com', true)).toBeUndefined();
     const zai = selectQuotaAdapter('https://api.z.ai/api/paas/v4', false)!;
-    expect(quotaHeaders(zai, 'YOUR_API_KEY').Authorization).toBe('YOUR_API_KEY');
+    expect(quotaHeaders(zai, 'YOUR_API_KEY')['Authorization']).toBe('YOUR_API_KEY');
   });
   it('uses bounded read-only requests, rejects redirects/auth/oversized or malformed data without leaking secrets', async () => {
     const adapter = selectQuotaAdapter('https://api.deepseek.com', false)!;
@@ -104,7 +104,7 @@ describe('provider quotas', () => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer YOUR_API_KEY');
       return new Response(JSON.stringify({ balance_infos: [{ currency: 'USD', total_balance: '0' }] }));
     });
-    expect((await fetchOfficialQuota(adapter, 'YOUR_API_KEY', request))[0].remaining).toBe(0);
+    expect((await fetchOfficialQuota(adapter, 'YOUR_API_KEY', request))[0]!.remaining).toBe(0);
     for (const [status, reason] of [[401, 'auth_required'], [403, 'auth_required'], [429, 'rate_limited'], [500, 'request_failed']] as const) {
       await expect(fetchOfficialQuota(adapter, 'YOUR_API_KEY', async () => new Response('secret body YOUR_API_KEY', { status }))).rejects.toMatchObject({ reason, message: reason });
     }
@@ -113,14 +113,21 @@ describe('provider quotas', () => {
   });
   it('runs real route and typed-helper flow with isolated targets, validates inputs and returns no credentials', async () => {
     const f = fixture(); const app = Fastify(); registerProviderQuotaRoutes(app, f.service);
-    const client = createProviderQuotaFacade({ json: async <T>(path: string, options?: { method?: string; body?: unknown }) => {
-      const response = await app.inject({ method: (options?.method ?? 'GET') as 'GET' | 'POST' | 'PUT', url: '/api' + path, payload: options?.body });
-      const envelope = response.json(); if (envelope.code !== 0) throw new Error(envelope.msg); return envelope.data as T;
-    } });
+    const client = createProviderQuotaFacade({
+      raw: async () => { throw new Error('Quota facade must not request raw responses'); },
+      json: async <T>(path: string, options?: { method?: string; body?: unknown }) => {
+        const response = await app.inject({
+          method: (options?.method ?? 'GET') as 'GET' | 'POST' | 'PUT', url: '/api' + path,
+          payload: options?.body === undefined ? undefined : JSON.stringify(options.body),
+          headers: { 'content-type': 'application/json' },
+        });
+        const envelope = response.json(); if (envelope.code !== 0) throw new Error(envelope.msg); return envelope.data as T;
+      },
+    });
     try {
-      expect(providerQuotaSnapshotSchema.parse(await client.snapshot()).sources[0].status).toBe('unknown');
-      expect((await client.refresh(f.target.id)).sources[0].status).toBe('ready');
-      expect((await client.setEnabled(f.target.id, false)).sources[0].status).toBe('off');
+      expect(providerQuotaSnapshotSchema.parse(await client.snapshot()).sources[0]!.status).toBe('unknown');
+      expect((await client.refresh(f.target.id)).sources[0]!.status).toBe('ready');
+      expect((await client.setEnabled(f.target.id, false)).sources[0]!.status).toBe('off');
       const invalid = await app.inject({ method: 'POST', url: '/api/usage/provider-quotas/refresh', payload: { source_id: f.target.id, api_key: 'YOUR_API_KEY' } });
       expect(invalid.json().code).toBe(40001); expect(invalid.headers['cache-control']).toBe('no-store');
       expect(JSON.stringify(await client.snapshot())).not.toContain('YOUR_API_KEY');

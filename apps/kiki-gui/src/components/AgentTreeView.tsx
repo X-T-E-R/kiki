@@ -20,6 +20,8 @@ import { executorDisplayName } from './timeline/ExecutorNotes';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
   unknown: 'subagent.status.unknown',
+  idle: 'subagent.status.idle',
+  lost: 'subagent.status.lost',
   running: 'subagent.status.running',
   suspended: 'subagent.status.suspended',
   completed: 'subagent.status.completed',
@@ -36,8 +38,10 @@ function statusDot(status: AgentStatus): string {
     case 'completed':
       return 'bg-success';
     case 'failed':
+    case 'lost':
       return 'bg-danger';
     case 'cancelled':
+    case 'idle':
     case 'unknown':
       return 'bg-ink-faint';
     case 'suspended':

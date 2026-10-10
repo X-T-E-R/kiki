@@ -90,13 +90,14 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   ): Promise<HookResult[]> {
     await this.ready;
     if (!this.hasSuccessfulSnapshot) throw this.loadFailure;
+    let byEvent = this.byEvent;
     if (args.additionalHooks !== undefined) {
       const additional = indexHooks(await args.additionalHooks());
       byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
     }
     return runMatchedHooks(
       this.hostProcess,
-      this.byEvent,
+      byEvent,
       event,
       {
         cwd: args.cwd ?? this.bootstrap.cwd,

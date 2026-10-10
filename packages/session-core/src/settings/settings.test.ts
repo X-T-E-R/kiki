@@ -222,6 +222,18 @@ describe('settings persistence and validation', () => {
     expect(readDesktopPrefs().closeToTray).toBe(true);
   });
 
+  it('defaults reading to unlimited and applies device-only reading timeout edits independently of ordinary requests', () => {
+    expect(readSettings().readingTimeoutSeconds).toBe(0);
+    writeSettings({ readingTimeoutSeconds: 3600 });
+    expect(readSettings()).toMatchObject({ readingTimeoutSeconds: 3600, requestTimeoutSeconds: 30 });
+    writeSettings({ readingTimeoutSeconds: 0 });
+    expect(readSettings().readingTimeoutSeconds).toBe(0);
+    for (const readingTimeoutSeconds of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_484]) {
+      localStorage.setItem('kiki.settings', JSON.stringify({ readingTimeoutSeconds }));
+      expect(readSettings().readingTimeoutSeconds).toBe(0);
+    }
+  });
+
   it('persists request timeout seconds only within the supported range', () => {
     expect(validateRequestTimeoutSeconds(5)).toBeNull();
     expect(validateRequestTimeoutSeconds(600)).toBeNull();

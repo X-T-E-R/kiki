@@ -1293,6 +1293,7 @@ describe('server-v2 /api prompts', () => {
     const responses: Array<{ path: string; bytes: number; data: Record<string, unknown> }> = [];
     const nativeFetch = globalThis.fetch;
     const client = new KikiClient({ baseUrl: base, token: bearerToken(server!), transport: {
+      eventsUrl: new URL('/api/ws', base).href.replace(/^http/, 'ws'),
       fetch: async (input, init) => {
         const response = await nativeFetch(input, init);
         const text = await response.clone().text();
@@ -1346,7 +1347,7 @@ describe('server-v2 /api prompts', () => {
       expect(enqueue).toHaveBeenCalledTimes(1);
       expect(receipts).toHaveLength(1);
       expect(receipts[0]).not.toHaveProperty('content');
-      expect(receipts[0]?.resolved_parts).toMatchObject([{ index: 1 }, { index: 2 }]);
+      expect(receipts[0]?.['resolved_parts']).toMatchObject([{ index: 1 }, { index: 2 }]);
       expect(accepted.content).toHaveLength(5);
       expect(accepted.content[0]).toEqual({ type: 'text', text: 'before' });
       expect(accepted.content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('Image compressed') });

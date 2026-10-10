@@ -6,7 +6,6 @@ import {
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentProfileService,
-  IAgentProfileService,
   IAgentPromptService,
   IAgentSkillService,
   IModelCatalogMutationService,

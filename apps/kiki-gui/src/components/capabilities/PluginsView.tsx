@@ -67,10 +67,10 @@ export function PluginsView({
   readonly sessionId?: string;
 }) {
   const { t, tp, locale, time } = useI18n();
-  const { client } = useConnection();
+  const { client, scopeId } = useConnection();
   // The entry exists only where the server offers the import routes, so a build
   // without them shows no dead control.
-  const importAvailable = useImportHistoryEnabled(client).enabled === true;
+  const importAvailable = useImportHistoryEnabled(client, scopeId).enabled === true;
   const installedQuery = useInstalledPlugins();
   const marketQuery = usePluginMarketplace();
   const recommendQuery = usePluginRecommendations(workspaceRoot);

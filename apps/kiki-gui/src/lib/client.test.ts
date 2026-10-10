@@ -1743,3 +1743,19 @@ describe('typed quota consumer', () => {
     finally { await client.klient.close(); }
   });
 });
+
+describe('KikiClient profile file preview', () => {
+  it('forwards the selected draft scope through the public preview method', async () => {
+    const body = { path: 'profiles/example.md', cwd: '/workspace/example' };
+    const result = { profile: { name: 'example', description: 'Example profile', source: 'file', main: false, disabled: false, routes: [] } };
+    const fetchMock: typeof fetch = async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe('/api/agent-profiles/file-preview');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual(body);
+      return Response.json({ code: 0, msg: 'success', data: result });
+    };
+    const client = new KikiClient({ baseUrl: 'http://example.test', transport: { fetch: fetchMock, eventsUrl: 'ws://example.test/api/ws' } });
+    try { await expect(client.previewAgentProfileFile(body)).resolves.toEqual(result); }
+    finally { await client.klient.close(); }
+  });
+});

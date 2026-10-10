@@ -21,8 +21,8 @@ describe('toProtocolMessage', () => {
     const message: ContextMessage = { role: 'user', content: [{ type: 'text', text, presentation }], toolCalls: [] };
     expect(toProtocolMessage(SESSION_ID, 0, message, CREATED_AT).content).toEqual([{ type: 'text', text, presentation }]);
     expect(message.content).toEqual([{ type: 'text', text, presentation }]);
-    message.content = [{ type: 'text', text, presentation: { spans: [{ start: -1, end: 4, kind: 'context' }] } }];
-    expect(toProtocolMessage(SESSION_ID, 0, message, CREATED_AT).content).toEqual([{ type: 'text', text }]);
+    const invalid: ContextMessage = { ...message, content: [{ type: 'text', text, presentation: { spans: [{ start: -1, end: 4, kind: 'context' }] } }] };
+    expect(toProtocolMessage(SESSION_ID, 0, invalid, CREATED_AT).content).toEqual([{ type: 'text', text }]);
   });
 
   it('maps text/think/image/audio/video content parts', () => {

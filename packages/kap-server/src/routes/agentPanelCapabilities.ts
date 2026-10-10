@@ -45,7 +45,7 @@ type BindingAdvisory = NonNullable<ProfileData['bindingAdvisories']>[number];
 type PanelBindingData = Partial<Pick<ProfileData,
   'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'thinkingLevel' |
-  'effectiveThinkingLevel' | 'thinkingEffortSource' | 'routeDetached' |
+  'effectiveThinkingLevel' | 'thinkingEffortSource' | 'thinkingEffortExplicit' | 'routeDetached' |
   'profileSource' | 'bindingAdvisories' | 'executorId' | 'serviceTier' | 'activeToolNames' |
   'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
   'canSpawnSubagents' | 'allowedSubagents' | 'preferredSubagents' | 'denySubagents' | 'executionRestriction' |

@@ -67,7 +67,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
-    @IConfigService private readonly config: IConfigService,
+    @IConfigService private readonly configService: IConfigService,
   ) {
     super();
     this.states.contributeState(mcpDiscoveryKey);
@@ -308,7 +308,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
               this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
             providerType: () => this.profile.getModelProviderType(),
             computerControl: isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName)),
-            computerUsagePreference: () => this.config.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
+            computerUsagePreference: () => this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
               this.mcpHandle.connectionManager.get(serverName)?.status === 'removed',

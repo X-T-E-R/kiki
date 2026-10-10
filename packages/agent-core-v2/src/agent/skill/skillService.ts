@@ -348,7 +348,6 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     }
     const handle = await this.prompt.enqueue({
       id: activation?.promptId,
-      userMessageId: activation?.promptId,
       waitForLaunch: execution === undefined,
       message,
       execution,

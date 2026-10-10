@@ -336,7 +336,13 @@ function publicExecutorContent(content: NormalizedExecutorContent): NormalizedEx
     case 'text':
       return { type: content.type, text: content.text };
     case 'image':
+      return { type: content.type, mimeType: content.mimeType, data: content.data, uri: content.uri };
+    case 'audio':
       return { type: content.type, mimeType: content.mimeType, data: content.data };
+    case 'resource':
+      return { type: content.type, resource: content.resource.type === 'text'
+        ? { type: 'text', uri: content.resource.uri, text: content.resource.text, mimeType: content.resource.mimeType }
+        : { type: 'blob', uri: content.resource.uri, blob: content.resource.blob, mimeType: content.resource.mimeType } };
     case 'resource_link':
       return { type: content.type, uri: content.uri, name: content.name };
     case 'opaque':

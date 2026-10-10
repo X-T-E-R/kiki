@@ -182,6 +182,7 @@ export class ExecutorToolDisplay extends Event2<z.infer<typeof executorToolDispl
 export interface ExecutorToolDisplay extends z.infer<typeof executorToolDisplaySchema> {}
 
 export interface ExternalExecutorState {
+  readonly executionGeneration?: number;
   readonly executorId?: string;
   readonly descriptorRevision?: string;
   readonly bindingFingerprint?: string;

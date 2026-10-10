@@ -41,7 +41,7 @@ interface FileCheckEvent {
 let workspace: string;
 let home: string;
 let host: ExternalClientHost;
-let create: ReturnType<typeof vi.fn>;
+let create: ReturnType<typeof vi.fn<(input: { sessionId: string; workDir: string; mainAgentBinding: { driver: string } }) => Promise<unknown>>>;
 let mode: { setMode: ReturnType<typeof vi.fn>; setModeCeiling: ReturnType<typeof vi.fn> };
 let seeds: Record<string, unknown>;
 let metadata: Record<string, unknown>;
@@ -66,7 +66,7 @@ beforeEach(async () => {
   mode = { setMode: vi.fn(), setModeCeiling: vi.fn() };
   seeds = {};
   metadata = {};
-  create = vi.fn(async (input: { sessionId: string; workDir: string }) => {
+  create = vi.fn<(input: { sessionId: string; workDir: string; mainAgentBinding: { driver: string } }) => Promise<unknown>>(async (input) => {
     const context = { workspaceId: 'wd_example', cwd: input.workDir };
     for (const listener of will) listener({ sessionId: input.sessionId, readSeed: () => context,
       contributeSeed: (id: string, value: unknown) => { seeds[id] = value; } });

@@ -72,6 +72,7 @@ export interface DesktopSettings {
   closeToTray: boolean;
   theme: ThemePreference;
   requestTimeoutSeconds: number;
+  readingTimeoutSeconds: number;
   subagentPanelOpenMode: SubagentPanelOpenMode;
   defaultAppendTiming: DefaultAppendTiming;
   /** Fold runs of ≥3 consecutive pure reads into one summary line (off by default). */
@@ -391,6 +392,7 @@ const DEFAULTS: DesktopSettings = {
   closeToTray: true,
   theme: 'system',
   requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  readingTimeoutSeconds: 0,
   subagentPanelOpenMode: 'tab',
   defaultAppendTiming: 'agent_idle',
   foldSteps: false,
@@ -440,6 +442,11 @@ export function validateRequestTimeoutSeconds(value: number): ValidationIssue | 
     : { key: 'val.requestTimeoutSeconds' };
 }
 
+export function validateReadingTimeoutSeconds(value: number): ValidationIssue | null {
+  return Number.isSafeInteger(value) && value >= 0 && value * 1000 <= 2_147_483_647
+    ? null : { key: 'val.readingTimeoutSeconds' };
+}
+
 export function readDeviceSettings(): DesktopSettings {
   return normalizeSettings(readObject(STORAGE_KEY));
 }
@@ -482,6 +489,8 @@ function normalizeSettings(stored: Partial<DesktopSettings>): DesktopSettings {
       && validateRequestTimeoutSeconds(requestTimeoutSeconds) === null
         ? requestTimeoutSeconds
         : DEFAULTS.requestTimeoutSeconds,
+    readingTimeoutSeconds: stored.readingTimeoutSeconds !== undefined && validateReadingTimeoutSeconds(stored.readingTimeoutSeconds) === null
+      ? stored.readingTimeoutSeconds : DEFAULTS.readingTimeoutSeconds,
     subagentPanelOpenMode:
       stored.subagentPanelOpenMode === 'fullscreen' ? 'fullscreen' : 'tab',
     defaultAppendTiming: isDefaultAppendTiming(stored.defaultAppendTiming)

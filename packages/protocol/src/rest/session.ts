@@ -206,7 +206,11 @@ export const compactSessionRequestSchema = z.preprocess(
 );
 export type CompactSessionRequest = z.infer<typeof compactSessionRequestSchema>;
 
-export const compactSessionResponseSchema = z.object({});
+export const compactSessionResponseSchema = z.object({
+  accepted: z.boolean().optional(),
+  status: z.enum(['queued', 'running']).optional(),
+  source: z.literal('manual').optional(),
+});
 export type CompactSessionResponse = z.infer<typeof compactSessionResponseSchema>;
 
 export const undoSessionRequestSchema = z.preprocess(

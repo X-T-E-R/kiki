@@ -1,7 +1,7 @@
 import { channel } from 'node:diagnostics_channel';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
-import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
+import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION, type AgentTranscriptSnapshot } from '@kiki/transcript';
 import { SessionViewTarget } from '../src/transport/klient/sessionViewTarget';
 import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
 import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';

@@ -563,8 +563,16 @@ describe('compactSessionRequestSchema', () => {
 });
 
 describe('compactSessionResponseSchema', () => {
-  it('accepts the empty success payload', () => {
+  it('accepts the empty success payload from older hosts', () => {
     expect(compactSessionResponseSchema.parse({})).toEqual({});
+  });
+  it('preserves queued and running admission receipts and rejects invalid progress', () => {
+    for (const status of ['queued', 'running'] as const) {
+      const receipt = { accepted: true, status, source: 'manual' };
+      expect(compactSessionResponseSchema.parse(receipt)).toEqual(receipt);
+    }
+    expect(compactSessionResponseSchema.safeParse({ status: 'completed' }).success).toBe(false);
+    expect(compactSessionResponseSchema.safeParse({ source: 'auto' }).success).toBe(false);
   });
 });
 

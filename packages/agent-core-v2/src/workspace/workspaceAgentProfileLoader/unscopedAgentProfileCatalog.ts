@@ -100,8 +100,7 @@ export function createUnscopedAgentProfileCatalog(
     const catalog = resources.add(container.createInstance(SessionAgentProfileCatalogService));
     return { registry, catalog, skills, workspaceId: workspaceKey, dispose: () => resources.dispose() };
   } catch (error) {
-    const cleanup = resources.dispose();
-    if (cleanup instanceof Promise) cleanup.catch(onUnexpectedError);
+    Promise.resolve(resources.dispose()).catch(onUnexpectedError);
     throw error;
   }
 }

@@ -2242,6 +2242,10 @@ export class KikiClient {
     return this.memoryRequest('POST', '/executors/antigravity-acp/logout', { body: {} });
   }
 
+  previewAgentProfileFile(body: import('@kiki/protocol').PreviewAgentProfileFileRequest): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse> {
+    return this.run(this.rest.agents.previewFile(body));
+  }
+
   previewExecutorPrompt(name: string, workspace: string, executor: string): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse> {
     return this.memoryRequest('POST', `/agents/${encodeURIComponent(name)}/executor-prompt:preview`,
       { body: { workspace, executor } });

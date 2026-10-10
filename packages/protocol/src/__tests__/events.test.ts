@@ -540,3 +540,15 @@ describe('agent message delivery receipt', () => {
     expect(eventSchema.parse(receipt)).toMatchSnapshot();
   });
 });
+
+describe('compaction progress payloads', () => {
+  it('preserves queued phase and cancellation cause from the engine while accepting older hosts', () => {
+    const started = { type: 'compaction.started', trigger: 'manual', phase: 'queued' };
+    const cancelled = { type: 'compaction.cancelled', trigger: 'manual', reason: 'cancelled by user' };
+    expect(agentEventSchema.parse(started)).toEqual(started);
+    expect(agentEventSchema.parse(cancelled)).toEqual(cancelled);
+    expect(agentEventSchema.parse({ type: 'compaction.cancelled' })).toEqual({ type: 'compaction.cancelled' });
+    expect(agentEventSchema.safeParse({ ...started, phase: 'finished' }).success).toBe(false);
+    expect(agentEventSchema.safeParse({ ...cancelled, trigger: 'unexpected' }).success).toBe(false);
+  });
+});

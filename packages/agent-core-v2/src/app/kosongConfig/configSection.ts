@@ -318,7 +318,7 @@ const CognitionPathSchema = z.string().min(1).refine((ref) => {
 const CognitionPathRefSchema = z.union([
   z.object({ text: z.string().max(2_097_152) }).strict(),
   CognitionPathSchema,
-  z.array(CognitionPathSchema).min(1),
+  z.array(CognitionPathSchema).min(1).readonly(),
 ]);
 
 const CognitionContentSchema = z.object({

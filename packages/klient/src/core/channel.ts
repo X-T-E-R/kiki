@@ -32,7 +32,7 @@ export interface SessionViewChannelSubscription {
 
 export interface SessionViewChannel {
   snapshot(sessionId: string, options?: CallOptions): Promise<unknown>;
-  transcriptPage(sessionId: string, input: SessionViewTranscriptPageInput): Promise<unknown>;
+  transcriptPage(sessionId: string, input: SessionViewTranscriptPageInput, options?: CallOptions): Promise<unknown>;
   transcriptCatchUp(sessionId: string, input: SessionViewTranscriptCatchUpInput): Promise<unknown>;
   /** Optional: transports without the detail route leave it out. */
   transcriptDetail?(sessionId: string, input: SessionViewTranscriptDetailInput, options?: CallOptions): Promise<unknown>;

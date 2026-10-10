@@ -271,6 +271,9 @@ export const tauriHost: TauriHostAdapter = {
   async readClipboardFiles() {
     const copied = await invoke<string[] | null>('read_clipboard_file_paths');
     if (copied === null) return null;
+    return tauriHost.readDroppedFiles(copied);
+  },
+  async readDroppedFiles(copied: readonly string[]) {
     const paths: string[] = [];
     const media: HostSelectedFile[] = [];
     const { stat, readFile } = await import('@tauri-apps/plugin-fs');

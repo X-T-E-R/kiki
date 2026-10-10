@@ -42,7 +42,7 @@ export interface SessionViewSubscription {
 }
 
 export interface SessionViewTranscriptFacade {
-  page(input: SessionViewTranscriptPageInput): Promise<TranscriptResponse>;
+  page(input: SessionViewTranscriptPageInput, options?: CallOptions): Promise<TranscriptResponse>;
   catchUp(input: SessionViewTranscriptCatchUpInput): Promise<TranscriptOpsCatchupResponse>;
   /**
    * Read the canonical body of one task, attachment, or prompt that a
@@ -94,11 +94,11 @@ export function createSessionViewFacade(
         : (output as SessionSnapshotResponse);
     },
     transcript: {
-      async page(input) {
+      async page(input, options) {
         const wireInput = validate
           ? parse('input', 'session.view.transcript.page', sessionViewTranscriptPageInputSchema, input)
           : input;
-        const output = await requireChannel().transcriptPage(sessionId, wireInput);
+        const output = await requireChannel().transcriptPage(sessionId, wireInput, options);
         return validate
           ? parse('output', 'session.view.transcript.page', sessionViewTranscriptPageOutputSchema, output)
           : (output as TranscriptResponse);

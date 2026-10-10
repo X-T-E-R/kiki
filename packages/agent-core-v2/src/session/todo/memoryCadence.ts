@@ -15,7 +15,7 @@ export interface MemoryMaintenanceState {
   readonly periodicEpoch?: number;
   readonly inputIds: readonly string[];
   readonly renewalEpoch?: number;
-  readonly receipts: readonly { readonly source: string; readonly id: string; readonly revision: string; readonly status: string; readonly operationId: string; readonly action: string }[];
+  readonly receipts: readonly { readonly source: string; readonly id: string; readonly revision: string; readonly status: string; readonly operationId?: string; readonly action: string }[];
   readonly calls: Readonly<Record<string, string>>;
 }
 export function initialMemoryMaintenance(): MemoryMaintenanceState {

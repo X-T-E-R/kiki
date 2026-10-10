@@ -480,7 +480,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const tokenCount = this.validateCompactionStart(data.source);
       if (!this.reserveCompactionSlot(data.source)) {
         const cleanup = quiescence?.dispose();
-        if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
+        if (isPromiseLike(cleanup)) Promise.resolve(cleanup).catch(onUnexpectedError);
         return false;
       }
       void this.dispatcher.dispatch(new FullCompactionBegin(data));
@@ -502,7 +502,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       return true;
     } catch (error) {
       const cleanup = quiescence?.dispose();
-      if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
+      if (isPromiseLike(cleanup)) Promise.resolve(cleanup).catch(onUnexpectedError);
       throw error;
     }
   }

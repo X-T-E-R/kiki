@@ -131,7 +131,7 @@ it('uses a unique document origin with no API surface, rejects its API origin an
   const request = (url: URL, host: string) => new Promise<{ status: number | undefined; csp: string | undefined; body: string }>((resolve, reject) => {
     get(url, { headers: { host } }, (response) => {
       let body = ''; response.setEncoding('utf8'); response.on('data', (chunk: string) => { body += chunk; });
-      response.on('end', () => resolve({ status: response.statusCode, csp: response.headers['content-security-policy'], body }));
+      response.on('end', () => resolve({ status: response.statusCode, csp: Array.isArray(response.headers['content-security-policy']) ? response.headers['content-security-policy'].join('; ') : response.headers['content-security-policy'], body }));
       response.on('error', reject);
     }).on('error', reject);
   });

@@ -12,6 +12,29 @@ const task = {
 };
 
 describe('session view transcript detail', () => {
+  it('aborts a paged canonical preview request without serializing cancellation metadata', async () => {
+    const controller = new AbortController();
+    let observed: AbortSignal | null | undefined;
+    let requested: URL | undefined;
+    const fetchMock: typeof fetch = async (input, init) => {
+      requested = new URL(String(input));
+      observed = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        observed?.addEventListener('abort', () => reject(observed?.reason), { once: true });
+      });
+    };
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock });
+    try {
+      const pending = klient.session('s1').view.transcript.page({ agentId: 'main', beforeItem: 'turn:t10', pageSize: 20 }, { signal: controller.signal });
+      const rejected = expect(pending).rejects.toBeDefined();
+      await vi.waitFor(() => expect(observed).toBeInstanceOf(AbortSignal));
+      expect(requested?.searchParams.get('signal')).toBeNull();
+      expect(requested?.searchParams.get('page_size')).toBe('20');
+      controller.abort(new Error('preview closed'));
+      await rejected;
+      expect(observed?.aborted).toBe(true);
+    } finally { await klient.close(); }
+  });
   it('reads one entity through the authenticated session detail route', async () => {
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));

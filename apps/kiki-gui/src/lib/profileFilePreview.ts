@@ -10,7 +10,7 @@ export function useProfileFilePreview(path: string | undefined, catalog: AgentPr
   const workspace_id = catalog.mode === 'workspace' ? catalog.workspaceId : undefined;
   return useQuery({
     queryKey: ['profile-file-preview', scopeId, meta?.server_id, catalog.mode, cwd, workspace_id, path],
-    queryFn: () => client.rest.agents.previewFile({ path: path!, cwd, workspace_id }),
+    queryFn: () => client.previewAgentProfileFile({ path: path!, cwd, workspace_id }),
     enabled: path !== undefined && path.trim() !== '' && catalog.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,

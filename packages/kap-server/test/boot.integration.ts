@@ -95,6 +95,7 @@ function stubWorkspaceService(list: IWorkspaceService['list']): IWorkspaceServic
   return {
     _serviceBrand: undefined,
     list,
+    findRegisteredByRoot: async () => undefined,
     get: async () => undefined,
     createOrTouch: async () => {
       throw new Error('not used by boot test');

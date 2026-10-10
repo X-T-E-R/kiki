@@ -12,6 +12,7 @@ export interface CognitionBinding {
   readonly recipe?: { readonly installation_id: string; readonly resolved: import('#/state/state').DeepReadonly<import('@kiki/protocol').ResolvedRecipe>; readonly anchorSystem?: string };
   readonly anchor?: string;
   readonly steeringSources?: import('@kiki/protocol').ModelSteeringSources<string>;
+  readonly slots?: { readonly overlay?: string; readonly steering?: string; readonly anchor?: string };
 }
 
 export function selectCognitionConfig(

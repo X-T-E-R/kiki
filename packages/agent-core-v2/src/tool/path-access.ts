@@ -217,6 +217,7 @@ export interface ResolvePathAccessPathOptions {
   readonly workspace: WorkspaceConfig;
   readonly operation: PathAccessOperation;
   readonly expandHome?: boolean;
+  readonly shellPathBridge?: ShellPathBridge;
 }
 
 function relativeOutsideMessage(path: string, target: string): string {
@@ -256,7 +257,7 @@ export function resolvePathAccessPath(
     operation,
     pathClass: env.pathClass,
     homeDir: expandHome ? env.homeDir : undefined,
-    shellPathBridge: env.pathClass === 'win32' ? getShellPathBridge(env) : undefined,
+    shellPathBridge: options.shellPathBridge ?? (env.pathClass === 'win32' ? getShellPathBridge(env) : undefined),
   }).path;
 }
 

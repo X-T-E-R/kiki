@@ -99,6 +99,12 @@ export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 export const promptSubmitResultSchema = promptItemSchema;
 export type PromptSubmitResult = z.infer<typeof promptSubmitResultSchema>;
 
+export const promptSubmitReceiptSchema = promptItemSchema.omit({ content: true }).extend({
+  resolved_media: z.array(z.object({ index: z.number().int().nonnegative(), content: messageContentSchema })).optional(),
+  resolved_parts: z.array(z.object({ index: z.number().int().nonnegative(), content: z.array(messageContentSchema) })).optional(),
+});
+export type PromptSubmitReceipt = z.infer<typeof promptSubmitReceiptSchema>;
+
 export const promptReplaceRequestSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   replace_attachments: z.boolean().optional(),
