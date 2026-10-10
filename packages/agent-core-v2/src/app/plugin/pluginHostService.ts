@@ -33,7 +33,7 @@ import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinH
 import { IPluginService } from './plugin';
 import { IPluginSettingsService } from './pluginSettingsService';
 import type { PluginTool } from './contributions';
-import type { PluginInfo, PluginSummary } from './types';
+import type { PluginInfo } from './types';
 
 export interface PluginToolRegistration {
   readonly pluginId: string;
@@ -164,25 +164,30 @@ export class PluginHostService extends Service implements IPluginHostService {
     if (this.closing) return;
     const installed = await this.plugins.listPlugins();
     if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
-    const lifecycle = this.activateInstalled(installed, affected, reconfigure);
+    const matched = installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
+      (affected === undefined || affected.includes(plugin.id)));
+    const prepared = (await Promise.all(matched.map(async (plugin) => {
+      if (this.closing) return undefined;
+      const info = await this.plugins.getPluginInfo({ id: plugin.id });
+      if (info.manifest?.kiki?.activation !== 'app' || this.closing) return undefined;
+      const settings = await this.settings.forExecution(info.id);
+      return { info, settings };
+    }))).filter((item): item is { info: PluginInfo; settings: Record<string, string | number | boolean> } => item !== undefined);
+    if (this.closing || prepared.length === 0) return;
+    const lifecycle = this.activatePrepared(prepared, reconfigure);
     this.residentLifecycle.add(lifecycle);
     try { await lifecycle; }
     finally { this.residentLifecycle.delete(lifecycle); }
   }
 
-  private async activateInstalled(installed: readonly PluginSummary[], affected: readonly string[] | undefined, reconfigure: boolean): Promise<void> {
-    const matched = installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
-      (affected === undefined || affected.includes(plugin.id)));
-    const results = await Promise.allSettled(matched.map((plugin) => this.chainResident(plugin.id, async () => {
+  private async activatePrepared(prepared: readonly { readonly info: PluginInfo; readonly settings: Record<string, string | number | boolean> }[], reconfigure: boolean): Promise<void> {
+    const results = await Promise.allSettled(prepared.map((item) => this.chainResident(item.info.id, async () => {
       if (this.closing) return;
-      const info = await this.plugins.getPluginInfo({ id: plugin.id });
-      if (info.manifest?.kiki?.activation !== 'app' || this.closing) return;
-      const host = this.getHost(info);
+      const host = this.getHost(item.info);
       if (!reconfigure && this.activated.has(host) && host.running) return;
-      const settings = await this.settings.forExecution(info.id);
-      if (this.closing || this.hosts.get(info.id) !== host) return;
-      await host.activate(settings, this.bootstrap.osHomeDir, path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id));
-      if (this.hosts.get(info.id) === host) this.activated.set(host, JSON.stringify(settings));
+      if (this.closing || this.hosts.get(item.info.id) !== host) return;
+      await host.activate(item.settings, this.bootstrap.osHomeDir, path.join(this.bootstrap.homeDir, 'plugins', 'data', item.info.id));
+      if (this.hosts.get(item.info.id) === host) this.activated.set(host, JSON.stringify(item.settings));
     })));
     const rejected = results.find((result) => result.status === 'rejected');
     if (rejected?.status === 'rejected') throw rejected.reason;
