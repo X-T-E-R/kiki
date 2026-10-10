@@ -29,6 +29,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
+import type { ContentRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -4062,7 +4063,7 @@ export function Transcript({
 
   // The current match, re-resolved against the DOM on every paint: rows
   // remount as the virtualizer scrolls, so a stored Range would go stale.
-  const findCurrentRef = useRef<{ match: FindMatch; pattern: RegExp } | null>(null);
+  const findCurrentRef = useRef<{ match: FindMatch; pattern: RegExp; rangeKey?: string } | null>(null);
   const findLandTokenRef = useRef(0);
   const findScope = useCallback((match: FindMatch): HTMLElement | null => {
     const scroll = scrollRef.current;
@@ -4079,7 +4080,8 @@ export function Transcript({
       clearFindPaint();
       return undefined;
     }
-    const scope = findScope(current.match);
+    const row = findScope(current.match);
+    const scope = current.rangeKey === undefined ? row : [...(row?.querySelectorAll<HTMLElement>('[data-content-range-key]') ?? [])].find((element) => element.dataset['contentRangeKey'] === current.rangeKey) ?? null;
     const all = scope === null ? [] : findRanges(scope, current.pattern);
     // An opened row repeats its first line in the summary above the body;
     // the current match is the one in the body the model text came from.
@@ -4095,10 +4097,10 @@ export function Transcript({
     paintFindHighlights(findOwner, others, range);
     return range;
   }, [clearFindPaint, findOwner, findScope]);
-  const landFind = useCallback(async (match: FindMatch, pattern: RegExp): Promise<boolean> => {
+  const landFind = useCallback(async (match: FindMatch, pattern: RegExp, contentRange?: { ref: ContentRef; offset: number }): Promise<boolean> => {
     const token = findLandTokenRef.current + 1;
     findLandTokenRef.current = token;
-    findCurrentRef.current = { match, pattern };
+    findCurrentRef.current = { match: contentRange === undefined ? match : { ...match, occurrence: 0 }, pattern, rangeKey: contentRange === undefined ? undefined : JSON.stringify([contentRange.ref.source, contentRange.ref.path, contentRange.ref.revision]) };
     findReveal.set(match.item.reveal);
     const outcome = await locate({ kind: 'block', blockId: match.item.blockId }, { quiet: true });
     if (findLandTokenRef.current !== token) return false;
@@ -4108,7 +4110,9 @@ export function Transcript({
     }
     // The row's own disclosure opens on the next commit; wait for its text.
     let range: Range | undefined;
-    for (let frame = 0; frame < 12; frame += 1) {
+    for (let frame = 0; frame < (contentRange === undefined ? 12 : 60); frame += 1) {
+      if (contentRange === undefined) findScope(match)?.querySelectorAll('[data-virtual-tool-text]').forEach((element) => { element.dispatchEvent(new CustomEvent('kiki:reveal-tool-match', { detail: { pattern, occurrence: match.occurrence } })); });
+      else findScope(match)?.querySelectorAll('[data-content-range-text] > div').forEach((element) => { element.dispatchEvent(new CustomEvent('kiki:reveal-content-match', { detail: { key: JSON.stringify([contentRange.ref.source, contentRange.ref.path, contentRange.ref.revision]), offset: contentRange.offset } })); });
       range = paintFind();
       if (range !== undefined) break;
       await nextFrame();
@@ -4127,7 +4131,7 @@ export function Transcript({
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     paintFind();
     return true;
-  }, [findReveal, locate, paintFind, virtualizer]);
+  }, [findReveal, locate, findScope, paintFind, virtualizer]);
   const handleFindClear = useCallback(() => {
     findLandTokenRef.current += 1;
     findCurrentRef.current = null;
