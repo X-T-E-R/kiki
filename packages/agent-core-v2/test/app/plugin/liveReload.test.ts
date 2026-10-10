@@ -8,6 +8,7 @@ import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } 
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
 import { IOAuthService } from '#/app/auth/auth';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
@@ -36,6 +37,7 @@ const scratch = fileURLToPath(new URL('../../../../../.tmp/plugin-live-reload/',
 let root: string;
 let host: ScopedTestHost;
 const cleanups: (() => Promise<void>)[] = [];
+const pluginSettingsListeners: Array<(event: { domain: string; value?: unknown; previousValue?: unknown }) => void> = [];
 
 async function daemonCommands(plugins: IPluginService) {
   const modulePath = fileURLToPath(new URL('../../../../../apps/kimi-code/src/tui/daemon/daemon-tui.ts', import.meta.url));
@@ -79,16 +81,20 @@ function definition(version: number): PluginTool {
   };
 }
 
-async function writePlugin(source: string, id: string, version: number, mediaInputs?: true) {
+async function writePlugin(source: string, id: string, version: number, mediaInputs?: true, activation?: 'app') {
   await mkdir(source, { recursive: true });
   const tool = { ...definition(version), mediaInputs };
   await writeFile(path.join(source, 'kimi.plugin.json'), JSON.stringify({
     name: id, version: `${version}.0.0`,
-    'x-kiki': { engines: { kiki: '^0.4.0' }, permissions: {}, entry: './entry.mjs', tools: [tool] },
+    'x-kiki': {
+      engines: { kiki: '^0.4.0' }, permissions: {}, entry: './entry.mjs', tools: [tool],
+      ...activation === 'app' ? { activation: 'app' } : {},
+    },
   }));
   await writeFile(path.join(source, 'asset.txt'), `asset-v${version}`);
   await writeFile(path.join(source, 'entry.mjs'), `
 import { access, readFile } from 'node:fs/promises';
+export async function activate() {}
 export function register(api) {
   api.registerTool(${JSON.stringify(tool)}, async (args, ctx) => {
     ctx.progress({ kind: 'progress', text: 'started' });
@@ -137,6 +143,7 @@ function deferred() {
 }
 
 beforeEach(async () => {
+  pluginSettingsListeners.length = 0;
   _clearScopedRegistryForTests();
   registerScopedService(LifecycleScope.App, IPluginService, PluginService, ScopeActivation.OnDemand, 'plugin');
   registerScopedService(LifecycleScope.App, IPluginSettingsService, PluginSettingsService, ScopeActivation.OnDemand, 'plugin');
@@ -154,7 +161,14 @@ beforeEach(async () => {
     stubPair(IOAuthService, {} as IOAuthService),
     stubPair(IRequestIdentityCatalog, {} as IRequestIdentityCatalog),
     stubPair(IAgentPluginMediaService, { api: () => undefined } as unknown as IAgentPluginMediaService),
-    stubPair(IConfigService, { _serviceBrand: undefined, ready: Promise.resolve(), get: () => ({}), replace: async () => {} } as unknown as IConfigService),
+    stubPair(IConfigService, {
+      _serviceBrand: undefined, ready: Promise.resolve(), get: () => ({}), replace: async () => {},
+      onDidSectionChange: (listener: (event: { domain: string; value?: unknown; previousValue?: unknown }) => void) => {
+        pluginSettingsListeners.push(listener);
+        return { dispose() { const index = pluginSettingsListeners.indexOf(listener); if (index >= 0) pluginSettingsListeners.splice(index, 1); } };
+      },
+    } as unknown as IConfigService),
+    stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
     stubPair(ISkillDiscovery, { _serviceBrand: undefined, discover: async () => ({ skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }) } satisfies ISkillDiscovery),
     stubPair(IAgentRuntimeService, { inspect: () => runtime, acquire: () => ({ runtime, dispose() {} }) } as unknown as IAgentRuntimeService),
     stubPair(ISessionWorkspaceContext, { workDir: root, additionalDirs: [] } as unknown as ISessionWorkspaceContext),
@@ -326,5 +340,32 @@ describe('plugin changes in an existing live agent', () => {
     expect((await plugins.getPluginInfo({ id: 'live-tool' })).version).toBe('1.0.0');
     expect(registry.list()[0]?.parameters).toEqual(definition(1).parameters);
     expect(JSON.parse(textOutput((await invoke(registry, 'live-tool', { value: 'restored' })).output))).toMatchObject({ version: 1, value: 'restored', asset: 'asset-v1' });
+  });
+
+  it('settles a settings reconcile that overlaps a plugin reload', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    await hosts.ready;
+    const listed = vi.spyOn(plugins, 'listPlugins');
+    for (const listener of pluginSettingsListeners) listener({ domain: 'pluginSettings', value: { example: { enabled: true } }, previousValue: {} });
+    await plugins.reloadPlugins();
+    await vi.waitFor(() => expect(listed.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await expect(plugins.listPlugins()).resolves.toEqual([]);
+  });
+
+  it('restarts the restored app resident after an install persistence failure without another tool call', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    await hosts.ready;
+    const source = path.join(root, 'resident-source');
+    await writePlugin(source, 'resident-tool', 1, undefined, 'app');
+    await install(plugins, source, true);
+    await plugins.setPluginEnabled({ id: 'resident-tool', enabled: true });
+    expect(hosts.running('resident-tool')).toBe(true);
+    await writePlugin(source, 'resident-tool', 2, undefined, 'app');
+    const plan = await plugins.previewPlugin({ source });
+    vi.spyOn(pluginStore, 'writeInstalled').mockRejectedValueOnce(new Error('fixture persistence failed'));
+    await expect(plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('fixture persistence failed');
+    await vi.waitFor(() => expect(hosts.running('resident-tool')).toBe(true), { timeout: 15_000 });
   });
 });

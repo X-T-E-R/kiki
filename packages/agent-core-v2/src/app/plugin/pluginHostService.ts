@@ -33,7 +33,7 @@ import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinH
 import { IPluginService } from './plugin';
 import { IPluginSettingsService } from './pluginSettingsService';
 import type { PluginTool } from './contributions';
-import type { PluginInfo } from './types';
+import type { PluginInfo, PluginSummary } from './types';
 
 export interface PluginToolRegistration {
   readonly pluginId: string;
@@ -91,6 +91,8 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly ownSettingsWrites = new Set<string>();
   private readonly activated = new WeakMap<PluginHost, string>();
   private readonly residentWork = new Set<Promise<void>>();
+  private readonly residentLifecycle = new Set<Promise<void>>();
+  private readonly residentChains = new Map<string, Promise<void>>();
   private navigationRequest?: { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number };
   private nextNavigationId = 0;
 
@@ -109,8 +111,15 @@ export class PluginHostService extends Service implements IPluginHostService {
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
+      let reloaded = false;
+      const reloadedSubscription = this.plugins.onDidReload(() => { reloaded = true; });
+      void event.finished.then(() => {
+        reloadedSubscription.dispose();
+        if (reloaded || this.closing) return;
+        void this.reconcileResidents(event.affected).catch(() => {});
+      });
       event.waitUntil((async () => {
-        await Promise.allSettled([...this.residentWork]);
+        await Promise.allSettled([...this.residentLifecycle]);
         const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
         await Promise.all(ids.map(async (id) => {
           await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
@@ -152,18 +161,38 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   private async applyResidents(affected?: readonly string[], reconfigure = false): Promise<void> {
     await this.configService?.ready;
+    if (this.closing) return;
     const installed = await this.plugins.listPlugins();
     if (this.closing || this.flags?.enabled(pluginAppLifecycleFlag.id) !== true) return;
-    await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
-      (affected === undefined || affected.includes(plugin.id))).map(async (plugin) => {
+    const lifecycle = this.activateInstalled(installed, affected, reconfigure);
+    this.residentLifecycle.add(lifecycle);
+    try { await lifecycle; }
+    finally { this.residentLifecycle.delete(lifecycle); }
+  }
+
+  private async activateInstalled(installed: readonly PluginSummary[], affected: readonly string[] | undefined, reconfigure: boolean): Promise<void> {
+    const matched = installed.filter((plugin) => plugin.enabled && plugin.state === 'ok' &&
+      (affected === undefined || affected.includes(plugin.id)));
+    const results = await Promise.allSettled(matched.map((plugin) => this.chainResident(plugin.id, async () => {
+      if (this.closing) return;
       const info = await this.plugins.getPluginInfo({ id: plugin.id });
       if (info.manifest?.kiki?.activation !== 'app' || this.closing) return;
       const host = this.getHost(info);
       if (!reconfigure && this.activated.has(host) && host.running) return;
       const settings = await this.settings.forExecution(info.id);
+      if (this.closing || this.hosts.get(info.id) !== host) return;
       await host.activate(settings, this.bootstrap.osHomeDir, path.join(this.bootstrap.homeDir, 'plugins', 'data', info.id));
-      this.activated.set(host, JSON.stringify(settings));
-    }));
+      if (this.hosts.get(info.id) === host) this.activated.set(host, JSON.stringify(settings));
+    })));
+    const rejected = results.find((result) => result.status === 'rejected');
+    if (rejected?.status === 'rejected') throw rejected.reason;
+  }
+
+  private chainResident(id: string, operation: () => Promise<void>): Promise<void> {
+    const previous = this.residentChains.get(id) ?? Promise.resolve();
+    const run = previous.then(operation, operation);
+    this.residentChains.set(id, run.then(() => undefined, () => undefined));
+    return run;
   }
 
   async list(): Promise<readonly PluginToolRegistration[]> {
