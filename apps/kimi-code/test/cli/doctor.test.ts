@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -119,6 +119,92 @@ describe('kimi doctor', () => {
     expect(out).toContain('built-in defaults will apply');
   });
 
+
+  it.each(['credentials/credentials.toml', 'credentials.toml'])(
+    'validates split CDP credentials from %s without changing files or printing secrets',
+    async (relativePath) => {
+      const configPath = join(dir, 'config.toml');
+      const credentialsPath = join(dir, relativePath);
+      const configText = '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\n';
+      const endpoint = 'wss://example.test/cdp?token=YOUR_API_KEY';
+      const credentialsText = `[browser_control.connections.example]\nendpoint_secret = "${endpoint}"\n`;
+      await mkdir(dirname(credentialsPath), { recursive: true });
+      await writeFile(configPath, configText);
+      await writeFile(credentialsPath, credentialsText);
+      const { deps, stdout, stderr } = makeDeps();
+
+      const code = await handleDoctor(deps, { target: 'config' });
+
+      expect(code).toBe(0);
+      expect(stderr.join('')).toBe('');
+      expect(stdout.join('')).toContain('OK config.toml');
+      expect(stdout.join('')).not.toContain(endpoint);
+      expect(stdout.join('')).not.toContain('YOUR_API_KEY');
+      expect(await readFile(configPath, 'utf-8')).toBe(configText);
+      expect(await readFile(credentialsPath, 'utf-8')).toBe(credentialsText);
+    },
+  );
+
+  it.each([undefined, 'file:///YOUR_API_KEY'])(
+    'still diagnoses a missing or invalid split CDP endpoint (%s)',
+    async (endpoint) => {
+      await writeFile(join(dir, 'config.toml'), '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\n');
+      if (endpoint !== undefined) {
+        await mkdir(join(dir, 'credentials'));
+        await writeFile(join(dir, 'credentials/credentials.toml'), `[browser_control.connections.example]\nendpoint_secret = "${endpoint}"\n`);
+      }
+      const { deps, stdout, stderr } = makeDeps();
+
+      const code = await handleDoctor(deps, { target: 'config' });
+
+      expect(code).toBe(1);
+      expect(stdout.join('')).toBe('');
+      expect(stderr.join('')).toContain('browser_control.connections.example.endpoint_secret:');
+      if (endpoint !== undefined) expect(stderr.join('')).toContain('Expected a CDP HTTP or WebSocket endpoint');
+      expect(stderr.join('')).not.toContain('YOUR_API_KEY');
+    },
+  );
+
+  it('validates the credentials override rather than a valid inline CDP endpoint', async () => {
+    await writeFile(join(dir, 'config.toml'), '[browser_control.connections.example]\nname = "Example browser"\ntype = "agent-browser-cdp"\nendpoint_secret = "wss://example.test/cdp"\n');
+    await mkdir(join(dir, 'credentials'));
+    await writeFile(join(dir, 'credentials/credentials.toml'), '[browser_control.connections.example]\nendpoint_secret = "file:///YOUR_API_KEY"\n');
+    const { deps, stderr } = makeDeps();
+
+    expect(await handleDoctor(deps, { target: 'config' })).toBe(1);
+
+    expect(stderr.join('')).toContain('browser_control.connections.example.endpoint_secret:');
+    expect(stderr.join('')).toContain('Expected a CDP HTTP or WebSocket endpoint');
+    expect(stderr.join('')).not.toContain('YOUR_API_KEY');
+  });
+
+  it('rejects malformed credentials without printing their source text', async () => {
+    await writeValidConfig();
+    await mkdir(join(dir, 'credentials'));
+    await writeFile(join(dir, 'credentials/credentials.toml'), '[providers.example]\napi_key = "YOUR_API_KEY" trailing\n');
+    const { deps, stderr } = makeDeps();
+
+    expect(await handleDoctor(deps, { target: 'config' })).toBe(1);
+
+    expect(stderr.join('')).toContain('Invalid TOML in');
+    expect(stderr.join('')).toContain('credentials.toml');
+    expect(stderr.join('')).toContain('line 2');
+    expect(stderr.join('')).not.toContain('YOUR_API_KEY');
+  });
+
+  it('rejects conflicting old and new credentials without printing either value', async () => {
+    await writeValidConfig();
+    await mkdir(join(dir, 'credentials'));
+    await writeFile(join(dir, 'credentials/credentials.toml'), '[providers.example]\napi_key = "YOUR_NEW_API_KEY"\n');
+    await writeFile(join(dir, 'credentials.toml'), '[providers.example]\napi_key = "YOUR_OLD_API_KEY"\n');
+    const { deps, stderr } = makeDeps();
+
+    expect(await handleDoctor(deps, { target: 'config' })).toBe(1);
+
+    expect(stderr.join('')).toContain('Old and new credentials.toml differ');
+    expect(stderr.join('')).not.toContain('YOUR_NEW_API_KEY');
+    expect(stderr.join('')).not.toContain('YOUR_OLD_API_KEY');
+  });
 
   it('checks only config.toml when the config target is selected', async () => {
     const { deps, stdout, stderr } = makeDeps();

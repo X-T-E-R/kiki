@@ -310,7 +310,9 @@ kiki mcp --workspace <目录>
 
 ### `kiki doctor`
 
-诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表和每个席位的权限模式。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告默认即以 JSON 输出（`--json` 为保留的显式写法，输出相同），也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。需要校验 `config.toml`、`tui.toml` 与 Agent profile 时，改用 `kiki doctor --agents`（或子命令形式 `kiki doctor agents`），它以可读文本输出结果。
+诊断本地 Kiki 连接，不会启动 TUI，也不会修改文件。它会检查 daemon 是否可达、当前 home 的 token 路径与权限、服务端身份以及外部调用方席位列表和每个席位的权限模式。默认使用 `KIKI_HOME` 或 `~/.kiki`；如需检查其他 home，可传入 `--home`。报告默认即以 JSON 输出（`--json` 为保留的显式写法，输出相同），也不会启动服务；需要先创建服务时，先运行 `kiki serve` 或 `kiki serve --ensure`。
+
+需要校验 `config.toml`、`tui.toml` 与 Agent profile 时，改用 `kiki doctor --agents`（或子命令形式 `kiki doctor agents`），它以可读文本输出结果。配置校验与正常加载一样，会合并同目录下的 `credentials/credentials.toml`（兼容旧的 `credentials.toml`），但不输出凭据值。凭据保留在独立文件中即可，无需复制到 `config.toml`。
 
 ```sh
 kiki doctor

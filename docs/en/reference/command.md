@@ -310,7 +310,9 @@ The external MCP caller cannot change the bound workspace, permission mode, mode
 
 ### `kiki doctor`
 
-Diagnose the local Kiki connection without starting the TUI or modifying files. It checks daemon reachability, token file paths and permissions, server identity, the external-caller seat list, and each seat's permission mode. Defaults to `KIKI_HOME` or `~/.kiki`; pass `--home` to inspect a different home. The report is printed as JSON by default (`--json` is kept as an explicit form with identical output) and never starts a server; run `kiki serve` or `kiki serve --ensure` first if a daemon is needed. To validate `config.toml`, `tui.toml`, and agent profiles instead, use `kiki doctor --agents` (or the subcommand form `kiki doctor agents`), which reports in human-readable text.
+Diagnose the local Kiki connection without starting the TUI or modifying files. It checks daemon reachability, token file paths and permissions, server identity, the external-caller seat list, and each seat's permission mode. Defaults to `KIKI_HOME` or `~/.kiki`; pass `--home` to inspect a different home. The report is printed as JSON by default (`--json` is kept as an explicit form with identical output) and never starts a server; run `kiki serve` or `kiki serve --ensure` first if a daemon is needed.
+
+To validate `config.toml`, `tui.toml`, and agent profiles instead, use `kiki doctor --agents` (or the subcommand form `kiki doctor agents`), which reports in human-readable text. Configuration validation merges the adjacent `credentials/credentials.toml` (or legacy `credentials.toml`) just like normal loading, without printing credential values. Keep credentials in their separate file; there is no need to copy them into `config.toml`.
 
 ```sh
 kiki doctor

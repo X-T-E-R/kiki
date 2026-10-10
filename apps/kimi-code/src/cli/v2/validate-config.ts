@@ -7,7 +7,8 @@
  * whole-document strict schema:
  * importing the package root runs every built-in section's side-effect
  * registration ("import = register"), and `ConfigRegistry` is then
- * constructed directly — no DI container, no `ConfigService`, no file IO.
+ * constructed directly — no DI container or `ConfigService`. The SDK's
+ * normal raw config reader overlays the adjacent credentials document.
  *
  * Semantics deliberately mirror the v2 engine rather than v1:
  *  - a registered section that fails schema validation is an error (the
@@ -20,13 +21,12 @@
  *    engine's treatment of unregistered sections.
  */
 
-import { parse as parseToml } from 'smol-toml';
+import { readMergedConfigData } from '@kiki/node-sdk';
 import { z } from 'zod';
 
 import { ConfigRegistry } from '@kiki/agent-core-v2';
 import {
   camelToSnake,
-  describeTomlSyntaxError,
   transformTomlData,
 } from '@kiki/agent-core-v2/app/config/toml';
 
@@ -68,16 +68,7 @@ class V2ConfigValidationError extends Error {
  * keys.
  */
 export function validateConfigTomlV2(text: string, filePath: string): string | undefined {
-  let data: Record<string, unknown> = {};
-  if (text.trim().length > 0) {
-    try {
-      data = parseToml(text) as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(`Invalid TOML in ${filePath}: ${describeTomlSyntaxError(error)}`, {
-        cause: error,
-      });
-    }
-  }
+  const data = readMergedConfigData(filePath, text) ?? {};
 
   const registry = new ConfigRegistry();
   const transformed = transformTomlData(data, registry);

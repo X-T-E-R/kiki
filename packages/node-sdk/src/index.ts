@@ -85,7 +85,7 @@ export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleS
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
 // config without spinning up a full engine.
-export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '#/config';
+export { effectiveModelAlias, loadRuntimeConfigSafe, readMergedConfigData, resolveConfigPath } from '#/config';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
 export { parseAgentFileText } from '@kiki/agent-core-v2';

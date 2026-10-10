@@ -102,26 +102,29 @@ function credentialsTextFor(filePath: string): { path: string; text: string | un
   return currentText === undefined ? { path: legacy, text: legacyText } : { path: current, text: currentText };
 }
 
-function readMergedConfigData(filePath: string): Record<string, unknown> | undefined {
-  const configData = readTomlData(filePath);
+/** Read the raw effective TOML document, optionally using already-read config text. */
+export function readMergedConfigData(filePath: string, configText?: string): Record<string, unknown> | undefined {
+  const configData = readTomlData(filePath, configText);
   const { path, text } = credentialsTextFor(filePath);
-  const credentialsData = text === undefined ? undefined : readTomlData(path);
+  const credentialsData = text === undefined ? undefined : readTomlData(path, text);
   if (configData === undefined && credentialsData === undefined) return undefined;
   return mergeConfigCredentials(configData ?? {}, credentialsData ?? {});
 }
 
 /** Parse one TOML file to its snake_case document; `undefined` when absent. */
-function readTomlData(filePath: string): Record<string, unknown> | undefined {
-  let text: string;
-  try {
-    if (!existsSync(filePath)) return undefined;
-    text = readFileSync(filePath, 'utf-8');
-  } catch (error) {
-    throw new KimiError(
-      ErrorCodes.CONFIG_INVALID,
-      `Failed to read ${filePath}: ${describeUnknownError(error)}`,
-      { cause: error },
-    );
+function readTomlData(filePath: string, suppliedText?: string): Record<string, unknown> | undefined {
+  let text = suppliedText;
+  if (text === undefined) {
+    try {
+      if (!existsSync(filePath)) return undefined;
+      text = readFileSync(filePath, 'utf-8');
+    } catch (error) {
+      throw new KimiError(
+        ErrorCodes.CONFIG_INVALID,
+        `Failed to read ${filePath}: ${describeUnknownError(error)}`,
+        { cause: error },
+      );
+    }
   }
   if (text.trim().length === 0) return {};
   try {
@@ -129,7 +132,7 @@ function readTomlData(filePath: string): Record<string, unknown> | undefined {
   } catch (error) {
     throw new KimiError(
       ErrorCodes.CONFIG_INVALID,
-      `Invalid TOML in ${filePath}: ${describeUnknownError(error)}`,
+      `Invalid TOML in ${filePath}: ${describeTomlSyntaxError(error)}`,
       { cause: error },
     );
   }
