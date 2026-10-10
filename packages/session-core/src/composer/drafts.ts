@@ -1,6 +1,6 @@
 /** Per-session composer drafts: in-memory for this app run, optionally mirrored to `kiki.drafts`. */
 
-import type { PermissionMode, PromptPlanGate } from '@kiki/protocol';
+import type { ModelSwitchMode, PermissionMode, PromptPlanGate } from '@kiki/protocol';
 
 import type { ComposerAttachment } from './attachments';
 import type { SelectionAnnotation } from './selectionQuote';
@@ -148,6 +148,7 @@ export interface ComposerSessionState {
   effortOverride: string | undefined;
   modelChoice?: ComposerModelChoice;
   effortChoice?: ComposerModelChoice;
+  modelSwitchMode?: ModelSwitchMode;
 }
 
 /** The committed binding visible when the user last chose this control, not the chosen override value. */
@@ -161,6 +162,7 @@ export interface PersistedComposerScalars {
   readonly effortOverride?: string;
   readonly modelChoice?: ComposerModelChoice;
   readonly effortChoice?: ComposerModelChoice;
+  readonly modelSwitchMode?: ModelSwitchMode;
 }
 
 /** A locally accepted binding change; this refresh allowance is never persisted with draft choices. */
@@ -189,12 +191,14 @@ export function resolveComposerModelOverrides(input: PersistedComposerScalars & 
   const modelChoice = resolveChoice(input.modelChoice);
   const effortChoice = resolveChoice(input.effortChoice);
   const keep = (choice: ComposerModelChoice | undefined) => !input.conversationStarted || input.pendingBinding
+    || (input.modelSwitchMode !== undefined && input.modelOverride !== undefined && input.modelChoice !== undefined)
     || sameComposerModelBinding(choice, input.binding);
   return {
     modelOverride: keep(modelChoice) ? input.modelOverride : undefined,
     effortOverride: keep(effortChoice) ? input.effortOverride : undefined,
     modelChoice: keep(modelChoice) ? modelChoice : undefined,
     effortChoice: keep(effortChoice) ? effortChoice : undefined,
+    modelSwitchMode: keep(modelChoice) && input.modelOverride !== undefined ? input.modelSwitchMode : undefined,
   };
 }
 
@@ -235,7 +239,9 @@ function readAllStoredComposerScalars(): Record<string, PersistedComposerScalars
       if (modelOverride !== undefined || effortOverride !== undefined) {
         const modelChoice = readModelChoice(record['modelChoice']);
         const effortChoice = readModelChoice(record['effortChoice']);
-        Object.defineProperty(result, sessionId, { value: { modelOverride, effortOverride, modelChoice, effortChoice }, enumerable: true, configurable: true, writable: true });
+        const mode = record['modelSwitchMode'];
+        const modelSwitchMode = modelOverride !== undefined && (mode === 'direct' || mode === 'compact' || mode === 'fresh') ? mode : undefined;
+        Object.defineProperty(result, sessionId, { value: { modelOverride, effortOverride, modelChoice, effortChoice, modelSwitchMode }, enumerable: true, configurable: true, writable: true });
       }
     }
     return result;
@@ -339,6 +345,7 @@ export function readComposerState(
     effortOverride: typeof stored.effortOverride === 'string' ? stored.effortOverride : undefined,
     modelChoice: stored.modelChoice,
     effortChoice: stored.effortChoice,
+    modelSwitchMode: stored.modelSwitchMode,
   };
 }
 
@@ -349,6 +356,7 @@ export function writeComposerState(sessionId: string, state: ComposerSessionStat
     effortOverride: state.effortOverride,
     modelChoice: state.modelChoice,
     effortChoice: state.effortChoice,
+    modelSwitchMode: state.modelSwitchMode,
   });
 }
 

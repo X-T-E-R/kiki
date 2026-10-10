@@ -73,7 +73,7 @@ describe('composer model selection ownership', () => {
       conversationStarted: true, pendingBinding: false, acceptedBindingChange: { previous, next } };
     expect(resolve({ ...draft, binding: previous })).toMatchObject({ modelChoice: previous, effortChoice: previous });
     const rebased = resolve({ ...draft, binding: next });
-    expect(rebased).toEqual({ modelOverride: 'example/newer-pick', effortOverride: 'max', modelChoice: next, effortChoice: next });
+    expect(rebased).toEqual({ modelOverride: 'example/newer-pick', effortOverride: 'max', modelChoice: next, effortChoice: next, modelSwitchMode: undefined });
     expect(resolve({ ...draft, binding: next, modelChoice: undefined, effortChoice: { model: 'example/unrelated' } }))
       .toMatchObject({ modelOverride: undefined, effortOverride: undefined });
     expect(resolve({ ...draft, binding: { model: 'example/foreign', thinking: 'high' } }))
@@ -95,6 +95,21 @@ describe('composer model selection ownership', () => {
     expect(draft.effortChoice).toBeUndefined();
     expect(resolve({ ...draft, conversationStarted: true, pendingBinding: false, binding }))
       .toMatchObject({ modelOverride: 'example/old-model', effortOverride: undefined });
+  });
+  it.each(['direct', 'compact', 'fresh'] as const)('keeps confirmed %s selection through binding refresh and cold draft restore', (modelSwitchMode) => {
+    const draft = { modelOverride: 'example/target', effortOverride: 'high', modelChoice: binding, effortChoice: binding, modelSwitchMode };
+    const refreshed = { model: 'example/still-running', thinking: 'low' };
+    expect(resolve({ ...draft, conversationStarted: true, pendingBinding: false, binding: refreshed })).toEqual(draft);
+    writeComposerState('confirmed-choice', emptyState(draft));
+    resetComposerMemoryForTests();
+    const restored = readComposerState('confirmed-choice');
+    expect(resolve({ ...restored, conversationStarted: true, pendingBinding: false, binding: refreshed })).toEqual(draft);
+    clearComposerState('confirmed-choice');
+    expect(readComposerState('confirmed-choice')).toEqual({});
+  });
+  it('does not turn a mode without choice provenance into an accepted selection', () => {
+    expect(resolve({ modelOverride: 'example/target', modelSwitchMode: 'compact', conversationStarted: true, pendingBinding: false, binding }))
+      .toMatchObject({ modelOverride: undefined, modelSwitchMode: undefined });
   });
 });
 
@@ -251,7 +266,7 @@ describe('per-session composer state (memory-only)', () => {
       previous: { modelOverride: 'fixture/model', permissionMode: 'yolo', attachments: [{ data: 'base64' }] },
     }));
     expect(readComposerState('malformed')).toEqual({});
-    expect(readComposerState('previous')).toEqual({ modelOverride: 'fixture/model', effortOverride: undefined, modelChoice: undefined, effortChoice: undefined });
+    expect(readComposerState('previous')).toEqual({ modelOverride: 'fixture/model', effortOverride: undefined, modelChoice: undefined, effortChoice: undefined, modelSwitchMode: undefined });
     writeComposerState('next', emptyState({ effortOverride: 'high' }));
     expect(JSON.parse(localStorage.getItem('kiki.composerStates') ?? '{}')).toEqual({
       previous: { modelOverride: 'fixture/model' }, next: { effortOverride: 'high' },
