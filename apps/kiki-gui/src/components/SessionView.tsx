@@ -70,6 +70,7 @@ import {
   flushDrafts,
   parseSelectionCarryovers,
   readComposerState,
+  resolveComposerModelOverrides,
   readDraft,
   removeAnnotation,
   restorePromptToDraft,
@@ -1551,8 +1552,8 @@ export function SessionView({
     restoredComposer.modelOverride ??
     resolveSessionModelOverride(initialOptionsRef.current.model),
   );
-  // The effort visible in Composer is the value sent with the next prompt.
-  // A restored or /new hand-off choice still wins over the catalog default.
+  // New-session choices use the catalog default only when no effort was picked.
+  // Existing conversations reconcile restored choices with their committed binding below.
   const [effortOverride, setEffortOverride] = useState(
     restoredComposer.effortOverride ?? initialOptionsRef.current.thinking,
   );
@@ -1564,8 +1565,10 @@ export function SessionView({
   // a session override the engine would inherit (see resolveProfileSwitchSubmission).
   const [pendingProfile, setPendingProfile] = useState<string | undefined>(undefined);
   const [profileSwitchConfirm, setProfileSwitchConfirm] = useState<string | undefined>(undefined);
-  const [modelTouched, setModelTouched] = useState(false);
-  const [effortTouched, setEffortTouched] = useState(false);
+  const [modelChoice, setModelChoice] = useState(restoredComposer.modelChoice);
+  const [effortChoice, setEffortChoice] = useState(restoredComposer.effortChoice);
+  const [modelTouched, setModelTouched] = useState(restoredComposer.modelChoice !== undefined);
+  const [effortTouched, setEffortTouched] = useState(restoredComposer.effortChoice !== undefined);
   // Mid-session engine switch, same two-step contract as the profile one: the
   // confirmed pick waits as `pendingExecution` and the next prompt carries it,
   // which starts a fresh remote generation instead of steering the running
@@ -1844,6 +1847,8 @@ export function SessionView({
       goalObjective: '',
       modelOverride,
       effortOverride,
+      modelChoice,
+      effortChoice,
       execution: pendingExecution,
     });
   }, [
@@ -1857,6 +1862,8 @@ export function SessionView({
     planGateOverride,
     modelOverride,
     effortOverride,
+    modelChoice,
+    effortChoice,
     pendingExecution,
   ]);
 
@@ -2044,11 +2051,22 @@ export function SessionView({
   const harness = useSessionHarness(boundProfile, agentProfilesQuery.data?.items ?? [], state.session);
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
-  const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
+  const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
+  const composerSelection = resolveComposerModelOverrides({ modelOverride, effortOverride, modelChoice, effortChoice,
+    conversationStarted, pendingBinding: pendingProfile !== undefined || executionPending,
+    binding: { model: sessionModel, thinking: state.thinkingEffort } });
+  useEffect(() => {
+    if (composerSelection.modelOverride !== modelOverride) setModelOverride(composerSelection.modelOverride);
+    if (composerSelection.effortOverride !== effortOverride) setEffortOverride(composerSelection.effortOverride);
+    if (composerSelection.modelChoice !== modelChoice) { setModelChoice(composerSelection.modelChoice); setModelTouched(false); }
+    if (composerSelection.effortChoice !== effortChoice) { setEffortChoice(composerSelection.effortChoice); setEffortTouched(false); }
+  }, [composerSelection.modelOverride, composerSelection.effortOverride, composerSelection.modelChoice, composerSelection.effortChoice,
+    modelOverride, effortOverride, modelChoice, effortChoice]);
+  const effectiveModel = resolveEffectiveModel(composerSelection.modelOverride, sessionModel, inheritedDefault);
   const catalogItem = harness === undefined
     ? (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel) : undefined;
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = effortOverride ?? (harness === undefined ? resolveSelectedEffort(
+  const effectiveEffort = composerSelection.effortOverride ?? (harness === undefined ? resolveSelectedEffort(
     supportedEfforts,
     effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
@@ -2078,7 +2096,6 @@ export function SessionView({
   } | undefined>(undefined);
   const [modelSwitchSubmitting, setModelSwitchSubmitting] = useState(false);
   const [modelSwitchActionPending, setModelSwitchActionPending] = useState<string | undefined>(undefined);
-  const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
   // Canonical ids on both sides: a bare alias lands on its provider row, so
   // "same model" reads as the same model and the panel names what it shows.
   const canonicalModel = useCallback(
@@ -2167,18 +2184,21 @@ export function SessionView({
   const handleModelChange = useCallback((model: string | undefined) => {
     // An empty conversation has nothing to hand over: the pick rides the next
     // prompt as before, exactly like a pick made while a profile is pending.
-    if (pendingProfile !== undefined || !conversationStarted) {
+    if (pendingProfile !== undefined || executionPending || !conversationStarted) {
       setModelOverride(model);
+      setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
       setModelTouched(true);
       return;
     }
     // A live conversation switches the bound model instead: the pick is a
     // queue control item, so the model on screen stays the actual one.
     setModelOverride(undefined);
+    setModelChoice(undefined);
+    setModelTouched(false);
     const target = canonicalModel(model ?? inheritedDefault);
     if (target === undefined || target === currentBoundModel) return;
     openModelSwitchPanel(target);
-  }, [canonicalModel, conversationStarted, currentBoundModel, inheritedDefault, openModelSwitchPanel, pendingProfile]);
+  }, [canonicalModel, conversationStarted, currentBoundModel, inheritedDefault, openModelSwitchPanel, pendingProfile, executionPending, sessionModel, state.thinkingEffort]);
 
   const runModelSwitchAction = useCallback((
     operationId: string,
@@ -2252,17 +2272,20 @@ export function SessionView({
   }, []);
   const handleEffortChange = useCallback((effort: string | undefined) => {
     setEffortOverride(effort);
+    setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
     // Only the effort was moved. Marking the model as touched here is what
     // promoted the untouched model id into an override, so a pick in one
     // control must never speak for the other.
     setEffortTouched(true);
-  }, []);
+  }, [sessionModel, state.thinkingEffort]);
   // Applying an incoming binding's pins is that binding taking ownership, not
   // the user moving a control, so both flags drop together. Kept as one helper
   // because the two flags are only ever cleared as a pair.
   const clearTouchedControls = useCallback(() => {
     setModelTouched(false);
     setEffortTouched(false);
+    setModelChoice(undefined);
+    setEffortChoice(undefined);
   }, []);
 
   const applyPendingProfile = useCallback((name: string) => {
@@ -2461,8 +2484,8 @@ export function SessionView({
         const profileSwitch = resolveProfileSwitchSubmission({
           pendingProfile,
           boundProfile,
-          modelTouched,
-          effortTouched,
+          modelTouched: modelTouched && composerSelection.modelChoice === modelChoice,
+          effortTouched: effortTouched && composerSelection.effortChoice === effortChoice,
           model: effectiveModel,
           thinking: effectiveEffort,
           permissionTouched: permissionTouchedRef.current,
@@ -2796,6 +2819,10 @@ export function SessionView({
     boundProfile,
     modelTouched,
     effortTouched,
+    modelChoice,
+    effortChoice,
+    composerSelection.modelChoice,
+    composerSelection.effortChoice,
 pendingExecution,
 boundExecution,
     permissionOverride,
@@ -3498,7 +3525,7 @@ boundExecution,
     state.resyncing ||
     state.resyncFailed;
   const modelSource: ModelSource = resolveModelSource(
-    modelOverride,
+    composerSelection.modelOverride,
     sessionModel,
     liveSettings.defaultModel,
     serverDefaultModel,
@@ -3780,7 +3807,7 @@ boundExecution,
             busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             value={draft}
             onChange={updateDraft}
-            model={modelOverride}
+            model={composerSelection.modelOverride}
             defaultModel={sessionModel}
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
