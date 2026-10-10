@@ -445,6 +445,9 @@ export interface HttpRestFacade {
     setPinned(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').Workspace>;
     remove(workspaceId: string): Promise<{ readonly deleted: true }>;
     listSkills(workspaceId: string): Promise<ListSkillsResponse>;
+    getTrust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
+    trust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
+    untrust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
   };
 
   readonly homes: {

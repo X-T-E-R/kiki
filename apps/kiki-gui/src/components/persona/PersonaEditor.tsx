@@ -86,9 +86,9 @@ export function PersonaEditor({
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const creating = personaId === undefined;
+  const creating = personaId === undefined || personaId.trim() === '';
   const snapshotQuery = useQuery({
-    queryKey: personaQueryKey(personaId ?? ''),
+    queryKey: personaQueryKey(creating ? '' : personaId),
     queryFn: () => client.getPersona(personaId!),
     enabled: !creating,
     staleTime: 5_000,
@@ -109,7 +109,7 @@ export function PersonaEditor({
   }
   return (
     <PersonaForm
-      key={personaId ?? 'new'}
+      key={creating ? 'new' : personaId}
       snapshot={snapshot}
       summary={summary}
       takenIds={takenIds}

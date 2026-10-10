@@ -5,7 +5,7 @@
  * ConversationShell composer seat across /new → /s/:id.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
@@ -1503,7 +1503,7 @@ function focusAgentTabWhenMounted(agentId: string, framesLeft = 10): void {
 export function PreviewFocusBridge({ onFocusedAgent }: { onFocusedAgent: (agentId: string | undefined) => void }) {
   const preview = useMediaPreview();
   const focused = preview?.activeAgentPanelId;
-  useEffect(() => {
+  useLayoutEffect(() => {
     onFocusedAgent(focused);
   }, [focused, onFocusedAgent]);
   return null;

@@ -1824,6 +1824,21 @@ export class KikiClient {
     return this.run(this.rest.workspaces.remove(workspaceId));
   }
 
+  /** `GET /api/workspaces/{id}/trust` — read workspace trust state. */
+  getWorkspaceTrust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse> {
+    return this.run(this.rest.workspaces.getTrust(workspaceId));
+  }
+
+  /** `POST /api/workspaces/{id}/trust` — mark workspace trusted (loads project-level configs and MCP). */
+  trustWorkspace(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse> {
+    return this.run(this.rest.workspaces.trust(workspaceId));
+  }
+
+  /** `POST /api/workspaces/{id}/untrust` — revoke workspace trust (unloads project-level configs and MCP). */
+  untrustWorkspace(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse> {
+    return this.run(this.rest.workspaces.untrust(workspaceId));
+  }
+
   getAuth(): Promise<AuthSummary> {
     return this.run(this.rest.auth.summary());
   }

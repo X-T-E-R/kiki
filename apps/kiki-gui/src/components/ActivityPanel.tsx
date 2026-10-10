@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useQueries } from '@tanstack/react-query';
 
 import type { Session } from '@kiki/protocol';
+import type { SessionController } from '@kiki/session-core/session';
 
 import { buildActivityModel, type ActivityEntry, type ActivityModel } from '@kiki/session-core/sessions';
 import { useI18n } from '../i18n';
@@ -37,27 +38,59 @@ export function useSessionActivity(sessions: readonly Session[]): {
   const registry = useOptionalControllerRegistry();
   const { t } = useI18n();
   const untitled = t('sidebar.untitled');
-  const [liveQueuedRevision, setLiveQueuedRevision] = useState(0);
-  const subscribeRegistry = useCallback(
-    (listener: () => void) => (registry === null ? noopSubscribe() : registry.subscribe(listener)),
+  const subscribeLiveState = useCallback(
+    (listener: () => void) => {
+      if (registry === null) return noopSubscribe();
+      const controllerUnsubs = new Map<SessionController, () => void>();
+
+      const syncControllerSubscriptions = () => {
+        const currentControllers = new Set<SessionController>();
+        for (const controller of registry) {
+          currentControllers.add(controller);
+          if (!controllerUnsubs.has(controller)) {
+            controllerUnsubs.set(controller, controller.subscribe(listener));
+          }
+        }
+        for (const [controller, unsub] of controllerUnsubs) {
+          if (!currentControllers.has(controller)) {
+            unsub();
+            controllerUnsubs.delete(controller);
+          }
+        }
+      };
+
+      syncControllerSubscriptions();
+
+      const unsubRegistry = registry.subscribe(() => {
+        syncControllerSubscriptions();
+        listener();
+      });
+
+      return () => {
+        unsubRegistry();
+        for (const unsub of controllerUnsubs.values()) {
+          unsub();
+        }
+        controllerUnsubs.clear();
+      };
+    },
     [registry],
   );
-  const registryGeneration = useSyncExternalStore(
-    subscribeRegistry,
-    () => registry?.snapshot() ?? 0,
-    () => 0,
+
+  const getLiveSnapshot = useCallback(() => {
+    if (registry === null) return '';
+    let snap = `${registry.snapshot()}:`;
+    for (const controller of registry) {
+      snap += `${controller.sessionId}=${controller.getState().queuedPromptIds.length};`;
+    }
+    return snap;
+  }, [registry]);
+
+  const liveSnapshot = useSyncExternalStore(
+    subscribeLiveState,
+    getLiveSnapshot,
+    () => '',
   );
-  useEffect(() => {
-    if (registry === null) return;
-    const bump = () => {
-      setLiveQueuedRevision((value) => value + 1);
-    };
-    const unsubscribers: Array<() => void> = [];
-    for (const controller of registry) unsubscribers.push(controller.subscribe(bump));
-    return () => {
-      for (const unsubscribe of unsubscribers) unsubscribe();
-    };
-  }, [registry, registryGeneration]);
 
   const busyIds = useMemo(
     () => sessions.filter((session) => session.busy).map((session) => session.id),
@@ -94,7 +127,7 @@ export function useSessionActivity(sessions: readonly Session[]): {
       ]),
     );
     return buildActivityModel({ sessions, prompts, tasks, untitled, liveQueuedCounts });
-  }, [sessions, busyIds, promptQueries, taskQueries, untitled, registry, liveQueuedRevision, registryGeneration]);
+  }, [sessions, busyIds, promptQueries, taskQueries, untitled, registry, liveSnapshot]);
 
   // First-seen-busy anchors: the timer's fallback when the active prompt (and
   // its created_at) has not been fetched yet.

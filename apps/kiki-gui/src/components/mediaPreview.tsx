@@ -40,8 +40,8 @@ import type { AgentWorkspaceNavigation } from './agent-workspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useRailMode } from './rail-variants/shell';
 import { locateInTimeline } from '../lib/timelineLocate';
-import { previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
-import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
+import { getReadingSnapshot, previewSnapshotKey, type PreviewReadingSnapshot } from '../lib/navViewState';
+import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
@@ -155,11 +155,17 @@ export function MediaPreviewProvider({
   const [image, setImage] = useState<{ src: string; name?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
   const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string } | null>(null);
   useEffect(() => { setImage(null); setAttachment(null); }, [clientIdentity, sessionId, snapshotAgentId]);
-  const [tabsState, setTabsState] = useState<PreviewTabsState>(EMPTY_PREVIEW_TABS);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
+  const visitId = useNavVisitId();
+  const initialSnapshot = useMemo(
+    () => (visitId === null ? undefined : getReadingSnapshot<PreviewReadingSnapshot>(visitId, previewKey)),
+    [visitId, previewKey],
+  );
+  const [tabsState, setTabsState] = useState<PreviewTabsState>(() => initialSnapshot?.tabsState ?? EMPTY_PREVIEW_TABS);
+  const [panelOpen, setPanelOpen] = useState(() => Boolean(initialSnapshot?.panelOpen && initialSnapshot.tabsState.tabs.length > 0));
   const [width, setWidth] = useState(readStoredWidth);
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
-  const [positions, setPositions] = useState<Readonly<Record<string, { top: number; left?: number }>>>({});
+  const [positions, setPositions] = useState<Readonly<Record<string, { top: number; left?: number }>>>(() => initialSnapshot?.positions ?? {});
   const [confirmClose, setConfirmClose] = useState<{
     dirty: readonly string[];
     action: CloseAction;
@@ -177,7 +183,6 @@ export function MediaPreviewProvider({
   // instance. Returning to a visit reopens that visit's panel even when the
   // provider stayed mounted across a same-URL visit change. Restoring never
   // closes a buffer that is dirty right now.
-  const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
   useNavSnapshotAdapter<PreviewReadingSnapshot>(previewKey, {
     ready: sessionId !== undefined,
     capture: () => ({ tabsState, panelOpen, positions }),

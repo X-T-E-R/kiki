@@ -257,7 +257,8 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
   // `?session=<id>` (the rail's "manage" entry) narrows the list to one
   // conversation at the server, so it pages that conversation's own tasks.
   const [params, setParams] = useSearchParams();
-  const sessionScope = params.get('session') ?? undefined;
+  const rawSession = params.get('session');
+  const sessionScope = rawSession !== null && rawSession.trim() !== '' ? rawSession.trim() : undefined;
   const tasksQueryKey = useMemo(
     () => [...CRON_TASKS_QUERY_KEY, 'filter', sessionScope ?? null] as const,
     [sessionScope],

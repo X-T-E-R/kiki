@@ -169,7 +169,7 @@ function CronRow({
  */
 export function SessionCronSection({ sessionId }: { readonly sessionId: string }) {
   const connection = useOptionalConnection();
-  if (connection === null) return null;
+  if (connection === null || !sessionId || sessionId.trim() === '') return null;
   return <SessionCronList sessionId={sessionId} client={connection.client} />;
 }
 
@@ -181,6 +181,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
   const [showAll, setShowAll] = useState(false);
   const [failed, setFailed] = useState<{ readonly id: string; readonly resume: boolean } | null>(null);
   const queryKey = useMemo(() => sessionCronQueryKey(sessionId), [sessionId]);
+  const hasValidSession = Boolean(sessionId && sessionId.trim() !== '');
 
   const read = useInfiniteQuery({
     queryKey,
@@ -189,6 +190,7 @@ function SessionCronList({ sessionId, client }: { readonly sessionId: string; re
     getNextPageParam: (lastPage) => lastPage.next_offset,
     staleTime: 30_000,
     retry: false,
+    enabled: hasValidSession,
   });
 
   const toggle = useMutation({

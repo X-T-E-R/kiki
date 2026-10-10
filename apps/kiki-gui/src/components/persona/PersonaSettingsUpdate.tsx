@@ -89,11 +89,13 @@ function usePersonaSettings(sessionId: string): PersonaSettingsController {
   const [confirmRestore, setConfirmRestore] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [saved, markSaved] = useSavedTick();
+  const hasValidSession = Boolean(sessionId && sessionId.trim() !== '');
 
   const settingsQuery = useQuery({
     queryKey: settingsQueryKey(sessionId),
     queryFn: () => client.getPersonaSettings(sessionId),
     staleTime: 15_000,
+    enabled: hasValidSession,
   });
 
   const applyMutation: UseMutationResult<SessionPersonaSettings, unknown, boolean> = useMutation({
@@ -118,12 +120,13 @@ function usePersonaSettings(sessionId: string): PersonaSettingsController {
     settings.overrides?.model === undefined ? undefined : t('persona.model'),
     settings.overrides?.thinking === undefined ? undefined : t('persona.effort'),
   ].filter((label) => label !== undefined);
+
   const state: PersonaState | undefined = settings === undefined
     ? undefined
     : settings.hasUpdate ? 'update' : overrideLabels.length > 0 ? 'overrides' : 'current';
 
   return {
-    status: settingsQuery.isPending ? 'loading' : settingsQuery.isError ? 'error' : settings?.personaId === undefined ? 'absent' : 'ready',
+    status: !hasValidSession ? 'absent' : settingsQuery.isPending ? 'loading' : settingsQuery.isError ? 'error' : settings?.personaId === undefined ? 'absent' : 'ready',
     readError: settingsQuery.error,
     settings,
     state,

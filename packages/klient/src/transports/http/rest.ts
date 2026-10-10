@@ -422,6 +422,17 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       listSkills: (workspaceId: string) => transport.json<ListSkillsResponse>(
         `/workspaces/${encodeURIComponent(workspaceId)}/skills`,
       ),
+      getTrust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/trust`,
+      ),
+      trust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/trust`,
+        { method: 'POST' },
+      ),
+      untrust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/untrust`,
+        { method: 'POST' },
+      ),
     },
 
     homes: {

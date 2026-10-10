@@ -55,3 +55,8 @@ export const deleteWorkspaceResponseSchema = z.object({
   deleted: z.literal(true),
 });
 export type DeleteWorkspaceResponse = z.infer<typeof deleteWorkspaceResponseSchema>;
+
+export const workspaceTrustResponseSchema = z.object({
+  trusted: z.boolean(),
+});
+export type WorkspaceTrustResponse = z.infer<typeof workspaceTrustResponseSchema>;
