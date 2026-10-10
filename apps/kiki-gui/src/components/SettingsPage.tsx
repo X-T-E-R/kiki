@@ -20,6 +20,7 @@ import { AppearanceSection } from './settings/AppearanceSection';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
+import { ExternalClientsSection } from './settings/ExternalClientsSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
@@ -342,6 +343,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
+    : active === 'connection-services' ? <ExternalClientsSection />
     : active === 'identity' ? <IdentitySection />
     : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
     : active === 'subagents' ? <SubagentsSection />

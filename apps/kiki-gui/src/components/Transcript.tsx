@@ -140,6 +140,7 @@ import {
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
+import { ExternalTextRow } from './timeline/ExternalTextRow';
 import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
 import { FindBar } from './timeline/FindBar';
 import { buildFindItems } from './timeline/findItems';
@@ -1945,11 +1946,13 @@ const BlockView = memo(function BlockView({
     case 'notice':
       return block.executor !== undefined
         ? <ExecutorNoteRow note={block.executor} createdAt={block.createdAt} />
-        : block.earlierPromptOutcomes !== undefined
-          ? <EarlierPromptOutcomesRow block={block} />
-          : block.modelSwitch !== undefined
-            ? <ModelSwitchNotice block={block} />
-            : <Notice block={block} />;
+        : block.externalText !== undefined
+          ? <ExternalTextRow note={block.externalText} createdAt={block.createdAt} />
+          : block.earlierPromptOutcomes !== undefined
+            ? <EarlierPromptOutcomesRow block={block} />
+            : block.modelSwitch !== undefined
+              ? <ModelSwitchNotice block={block} />
+              : <Notice block={block} />;
     case 'approval':
       // Terminal facts stay inline as one compact history line (readOnly or
       // not); only a PENDING approval keeps the full interactive card.
@@ -2049,7 +2052,7 @@ type TimelineNode = DisplayNode | ActivitySummary;
  */
 function isMessageViewOwnRow(node: TimelineNode): node is MessageBlock | ActivitySummary | NoticeBlock | UserBlock {
   if (node.kind === 'message' || node.kind === 'activity-summary') return true;
-  if (node.kind === 'notice') return node.executor === undefined;
+  if (node.kind === 'notice') return node.executor === undefined && node.externalText === undefined;
   if (node.kind === 'user') return isInboundHandoff(node);
   return false;
 }
@@ -2120,11 +2123,14 @@ const MessageViewRow = memo(function MessageViewRow({
     );
   } else if (node.kind === 'notice') {
     // A switch never claims success before it has: its row carries the real
-    // state and its own actions in both views.
-    body = node.modelSwitch !== undefined
-      ? <ModelSwitchNotice block={node} />
-      : node.compactionPhase !== undefined ? <Notice block={node} />
-      : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
+    // state and its own actions in both views. A saved record shows its own
+    // body in both views, so neither one can be mistaken for a status line.
+    body = node.externalText !== undefined
+      ? <ExternalTextRow note={node.externalText} createdAt={node.createdAt} />
+      : node.modelSwitch !== undefined
+        ? <ModelSwitchNotice block={node} />
+        : node.compactionPhase !== undefined ? <Notice block={node} />
+        : <OutcomeLine notice={node} onOpenProcess={() => { onOpenProcess(turnId, node.id); }} />;
   } else {
     body = (
       <ActivitySummaryRow
@@ -2205,7 +2211,7 @@ function rowSpacing(previous: TranscriptVirtualNode, node: TranscriptVirtualNode
 /** Message-view rows that are a single status line rather than speech. */
 function isMessageViewStatusRow(node: TimelineNode): boolean {
   if (node.kind === 'activity-summary') return true;
-  if (node.kind === 'notice') return node.executor === undefined;
+  if (node.kind === 'notice') return node.executor === undefined && node.externalText === undefined;
   return node.kind === 'message' && (node.status === 'failed' || node.status === 'cancelled');
 }
 
@@ -2285,6 +2291,9 @@ function timelineLane(node: TimelineNode): 'conversation' | 'activity' | 'divide
       return node.outcome === undefined ? 'conversation' : 'activity';
     case 'notice':
       // An engine compaction is a boundary; other engine notes happened in the turn.
+      // A saved external record is a thing that happened, never a divider: a
+      // rule above the record would read as the record having no content.
+      if (node.externalText !== undefined) return 'activity';
       return node.executor === undefined || node.executor.kind === 'compaction' ? 'divider' : 'activity';
     case 'system':
       // A compaction summary is a boundary; the rest are things that happened.

@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   clearRestartRequirement,
+  CONNECTION_SETTINGS_DEFAULT_TAB,
+  CONNECTION_SETTINGS_TABS,
+  connectionTabLabelKey,
   MAX_REQUEST_TIMEOUT_SECONDS,
   MIN_REQUEST_TIMEOUT_SECONDS,
+  normalizeConnectionTab,
   readSettings,
   validateRequestTimeoutSeconds,
   writeSettings,
+  type ConnectionSettingsTab,
 } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
@@ -18,14 +24,58 @@ import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../.
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
+import { useGuardedNavigate } from '../dirtyGuard';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { CommitInput, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
+import { ExternalConnectionSection } from './ExternalConnectionSection';
 
 export function ConnectionSection() {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const { search } = useLocation();
+  const tab = normalizeConnectionTab(new URLSearchParams(search).get('tab')) ?? CONNECTION_SETTINGS_DEFAULT_TAB;
+
+  const selectTab = (next: ConnectionSettingsTab) => {
+    if (next === tab) return;
+    const params = new URLSearchParams(search);
+    params.set('tab', next);
+    navigate(`/settings/connection?${params.toString()}`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div role="tablist" aria-label={t('st.section.connection')} className="flex gap-1 border-b border-hairline">
+        {CONNECTION_SETTINGS_TABS.map((candidate) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-connection-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              className={`-mb-px min-h-8 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(connectionTabLabelKey(candidate))}
+            </button>
+          );
+        })}
+      </div>
+      {tab === 'external' ? <ExternalConnectionSection /> : <CurrentConnectionContent />}
+    </div>
+  );
+}
+
+function CurrentConnectionContent() {
   const host = useHost();
   const { config, meta, wsStatus, socket, scopeId, sshLabel, activateLocal, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();

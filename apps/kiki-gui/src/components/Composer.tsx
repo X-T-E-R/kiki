@@ -932,7 +932,8 @@ export function Composer({
   const invalidModel = !externalFile && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
   const invalidEffort = !externalFile && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
-  const selectionBlocked = selectionLoading || selectionCatalogError !== null || invalidFile || invalidProfile || invalidModel || invalidEffort || invalidModelDomain;
+  const isExternalClient = execution?.external_connection_id !== undefined;
+  const selectionBlocked = !isExternalClient && (selectionLoading || selectionCatalogError !== null || invalidFile || invalidProfile || invalidModel || invalidEffort || invalidModelDomain);
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -2218,33 +2219,35 @@ export function Composer({
       ),
     });
   }
-  statusSegments.push({
-    key: 'model',
-    node: (
-      <ModelChip
-        modelOptions={modelOptions}
-        // An external engine's model is its own id, set on the profile: shown
-        // read-only here, with the engine named in the tooltip.
-        hasCatalog={!externalFile && engine === undefined && models.length > 0}
-        engineLabel={externalFile ? executorCatalog.find((item) => item.id === execution?.executor)?.label ?? execution?.executor : engine?.label}
-        openSignal={modelMenuSignal}
-        model={model}
-        resolvedModelKey={resolvedModelKey}
-        effectiveModel={effectiveModel}
-        shortLabel={modelShortLabel}
-        modelSource={modelSource}
-        disabled={variant === 'subagent' && disabled}
-        onChangeModel={(next) => {
-          const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
-          if (state === 'blocked' || state === 'unknown') return;
-          return onChangeModel(next);
-        }}
-        efforts={efforts}
-        effort={effort}
-        onChangeEffort={onChangeEffort}
-      />
-    ),
-  });
+  if (!isExternalClient) {
+    statusSegments.push({
+      key: 'model',
+      node: (
+        <ModelChip
+          modelOptions={modelOptions}
+          // An external engine's model is its own id, set on the profile: shown
+          // read-only here, with the engine named in the tooltip.
+          hasCatalog={!externalFile && engine === undefined && models.length > 0}
+          engineLabel={externalFile ? executorCatalog.find((item) => item.id === execution?.executor)?.label ?? execution?.executor : engine?.label}
+          openSignal={modelMenuSignal}
+          model={model}
+          resolvedModelKey={resolvedModelKey}
+          effectiveModel={effectiveModel}
+          shortLabel={modelShortLabel}
+          modelSource={modelSource}
+          disabled={variant === 'subagent' && disabled}
+          onChangeModel={(next) => {
+            const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
+            if (state === 'blocked' || state === 'unknown') return;
+            return onChangeModel(next);
+          }}
+          efforts={efforts}
+          effort={effort}
+          onChangeEffort={onChangeEffort}
+        />
+      ),
+    });
+  }
   if (pendingModelSwitch !== undefined) {
     statusSegments.push({
       key: 'model-switch',

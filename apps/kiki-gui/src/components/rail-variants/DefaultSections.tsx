@@ -211,13 +211,19 @@ export const NeedsYouList = memo(function NeedsYouList({
  * name opens the profile drawer. Capabilities live in their own block below.
  * Reads the same agent-panel answer as the other slices (same query key).
  */
-export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd }: {
+export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {
   sessionId: string;
   agentId: string;
   label: string;
   fallbackModel?: string;
   workspaceId?: string;
   cwd?: string;
+  /**
+   * The client driving this session, when one is. A driven main has no Kiki
+   * model, so the model line names the driver instead of printing a model
+   * alias that cannot answer anything.
+   */
+  externalDriver?: string;
 }) {
   const { t } = useI18n();
   const { klient } = useConnection();
@@ -235,9 +241,13 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
   const model = profile?.model ?? fallbackModel;
-  const modelLine = [model, profile?.thinking_effort !== undefined ? t('subagent.effort', { effort: String(profile.thinking_effort) }) : undefined]
-    .filter((part): part is string => part !== undefined && part !== '')
-    .join(' · ');
+  // A driven main has no model of its own. A sub agent under it still does, and
+  // keeps its real model and effort, because that model did run.
+  const modelLine = externalDriver !== undefined
+    ? t('rail.external.driver', { client: externalDriver })
+    : [model, profile?.thinking_effort !== undefined ? t('subagent.effort', { effort: String(profile.thinking_effort) }) : undefined]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
   const identity: AgentIdentity = {
     id: agentId, sessionId, profile: profileName ?? '', label, model,
@@ -263,7 +273,16 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
         ) : null}
       </div>
       {modelLine !== '' ? (
-        <p data-rail-profile-model className="truncate text-[12.5px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
+        <p data-rail-profile-model data-rail-driver={externalDriver === undefined ? undefined : 'external'}
+          className="truncate text-[12.5px] leading-5 text-ink-faint" title={modelLine}>{modelLine}</p>
+      ) : null}
+      {/* The usage below is Kiki's own: what its sub agents really cost. It is
+          labelled here so a driven session's figures are never read as the
+          external client's, which Kiki cannot see and does not report. */}
+      {externalDriver !== undefined && agentId === MAIN_AGENT_ID ? (
+        <p data-rail-usage-scope className="mt-0.5 text-[11.5px] leading-4 text-ink-faint">
+          {t('rail.external.usageScope')}
+        </p>
       ) : null}
       <AgentDetailDrawer
         target={drawer}

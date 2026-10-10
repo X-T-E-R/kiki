@@ -21,6 +21,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 import {
@@ -36,6 +37,8 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import type { AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useProfileFilePreview } from '../../lib/profileFilePreview';
+import { externalClientsFacade } from '../../lib/externalClients';
+import { useConnection } from '../../state/connection';
 import { COMPOSER_PANEL_START, STATUS_SEGMENT_CLASS, STATUS_SEGMENT_ICON_CLASS, STATUS_SEGMENT_SET, useComposerPanelAnchor, usePopover, MENU_ROW_CLASS, MENU_ROW_SELECTED_CLASS } from '../ComposerControls';
 import { POPOVER_SURFACE_CLASS } from '../SearchableSelect';
 import { Icon } from '../icons';
@@ -210,6 +213,7 @@ export function ExecutionSelect({
   disabled?: boolean;
 }) {
   const { t, locale } = useI18n();
+  const { client } = useConnection();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [fileOpen, setFileOpen] = useState(false);
@@ -226,6 +230,16 @@ export function ExecutionSelect({
   };
   const onKeyDown = usePopover(open, close, rootRef, 'composer-execution');
   useComposerPanelAnchor(rootRef, open);
+
+  const extFacade = useMemo(() => externalClientsFacade(client?.klient), [client]);
+  const extClientsQuery = useQuery({
+    queryKey: ['external-clients'],
+    queryFn: () => extFacade!.list(),
+    staleTime: 15_000,
+    retry: false,
+    enabled: extFacade !== undefined,
+  });
+  const externalConnections = extClientsQuery.data?.connections ?? [];
 
   const engineItem = catalog.find((item) => item.id === choice.executor);
   const engineLabel = isNativeExecutor(choice.executor) ? nativeLabel : (engineItem?.label ?? choice.executor);
@@ -259,7 +273,12 @@ export function ExecutionSelect({
   const nativeProfiles = profilesByEngine.get(NATIVE_EXECUTOR) ?? [];
   const visibleExternal = externalEngines.filter((item) => matches(item, profilesByEngine.get(item.id) ?? []));
   const nativeVisible = matches({ id: NATIVE_EXECUTOR, label: nativeLabel }, nativeProfiles);
-  const nothingMatches = !nativeVisible && visibleExternal.length === 0;
+  const visibleExtConnections = externalConnections.filter((conn) => {
+    const needle = query.trim().toLowerCase();
+    if (needle === '') return true;
+    return conn.name.toLowerCase().includes(needle);
+  });
+  const nothingMatches = !nativeVisible && visibleExternal.length === 0 && visibleExtConnections.length === 0;
   // Opening the panel can push the trigger out of view, so bring it back.
   useEffect(() => {
     if (open) triggerRef.current?.scrollIntoView?.({ block: 'nearest' });
@@ -278,7 +297,8 @@ export function ExecutionSelect({
   const profileText = fileName ?? (choice.profile === undefined
     ? undefined
     : choice.profile === 'agent' && isNativeExecutor(choice.executor) ? nativeLabel : choice.profile);
-  const triggerText = profileText ?? engineLabel;
+  const isExternalClient = choice.external_connection_id !== undefined;
+  const triggerText = isExternalClient ? (choice.external_connection_name ?? t('st.section.connectionServices')) : (profileText ?? engineLabel);
   const showPersona = persona !== undefined && !pending;
   const ariaEngine = t('composer.execution.aria', {
     engine: engineLabel,
@@ -309,7 +329,7 @@ export function ExecutionSelect({
         onClick={() => { setOpen((value) => !value); }}
         className={showPersona === true
           ? 'flex h-7 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'
-          : `${STATUS_SEGMENT_CLASS} max-w-52 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== NATIVE_EXECUTOR || choice.profile !== undefined || choice.profile_file !== undefined ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+          : `${STATUS_SEGMENT_CLASS} max-w-52 ${pending ? 'pr-5 font-medium text-accent-ink hover:text-accent-ink' : choice.executor !== NATIVE_EXECUTOR || choice.profile !== undefined || choice.profile_file !== undefined || isExternalClient ? STATUS_SEGMENT_SET : ''} disabled:cursor-not-allowed disabled:opacity-60`}
       >
         {showPersona === true
           ? <>
@@ -317,7 +337,7 @@ export function ExecutionSelect({
             <span className="min-w-0 truncate">{persona.name}</span>
           </>
           : <>
-            <Icon name={isNativeExecutor(choice.executor) ? 'agent' : 'terminal'} size={14} className={STATUS_SEGMENT_ICON_CLASS} />
+            <Icon name={isExternalClient ? 'external' : isNativeExecutor(choice.executor) ? 'agent' : 'terminal'} size={14} className={STATUS_SEGMENT_ICON_CLASS} />
             <span className="min-w-0 truncate @max-[24rem]/toolbar:sr-only">
               {pending ? t('composer.execution.pendingSuffix', { name: triggerText }) : triggerText}
             </span>
@@ -379,12 +399,12 @@ export function ExecutionSelect({
               <EngineRow
                 id={NATIVE_EXECUTOR}
                 label={nativeLabel}
-                current={isNativeExecutor(choice.executor)}
+                current={isNativeExecutor(choice.executor) && !isExternalClient}
                 bare={choice.profile === undefined && choice.profile_file === undefined}
                 profiles={nativeProfiles}
                 profile={choice.profile}
-                onBare={() => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: undefined, profile_file: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name, profile_file: undefined }); }}
+                onBare={() => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: undefined, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
+                onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
               />
             ) : null}
             {visibleExternal.map((item) => (
@@ -393,13 +413,13 @@ export function ExecutionSelect({
                 id={item.id}
                 label={item.label}
                 hint={[item.id, item.version].filter((part) => part !== undefined && part !== '').join(' · ')}
-                current={choice.executor === item.id}
+                current={choice.executor === item.id && !isExternalClient}
                 bare={choice.profile === undefined && choice.profile_file === undefined}
                 profiles={profilesByEngine.get(item.id) ?? []}
                 profile={choice.profile}
                 unavailable={item.status === 'unavailable'}
-                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined, profile_file: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name, profile_file: undefined }); }}
+                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
+                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
               />
             ))}
             <div className="mt-1 border-t border-hairline px-2 py-2">
@@ -429,13 +449,56 @@ export function ExecutionSelect({
                       <p className="text-[12px] text-ink">{preview.name} · {profileExecutor(preview) === NATIVE_EXECUTOR ? nativeLabel : (catalog.find((item) => item.id === profileExecutor(preview))?.label ?? profileExecutor(preview))}</p>
                       <p className="break-all font-mono text-[11px] text-ink-faint">{preview.source_file}</p>
                       <button type="button" data-execution-file-apply disabled={filePreview.isFetching}
-                        onClick={() => { setChoice({ ...choice, executor: profileExecutor(preview), profile: undefined, profile_file: preview.source_file }); }}
+                        onClick={() => { setChoice({ ...choice, executor: profileExecutor(preview), profile: undefined, profile_file: preview.source_file, external_connection_id: undefined, external_connection_name: undefined }); }}
                         className="rounded-md bg-ink px-3 py-1.5 text-[12px] font-medium text-paper">{t('composer.execution.fileUse')}</button>
                     </div>
                   ) : null}
                 </div>
               ) : null}
             </div>
+            {/* Independent group for inbound external client connections */}
+            {visibleExtConnections.length > 0 ? (
+              <div data-execution-external-clients className="mt-1 border-t border-hairline pt-2 pb-1">
+                <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                  {t('st.section.connectionServices')}
+                </div>
+                {visibleExtConnections.map((conn) => {
+                  const selected = choice.external_connection_id === conn.id;
+                  return (
+                    <button
+                      key={conn.id}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      data-menu-row
+                      data-execution-external-connection={conn.id}
+                      onClick={() => {
+                        setChoice({
+                          executor: 'external-client',
+                          profile: undefined,
+                          profile_file: undefined,
+                          external_connection_id: conn.id,
+                          external_connection_name: conn.name,
+                          overrides: undefined,
+                        });
+                      }}
+                      className={`${MENU_ROW_CLASS} items-start ${selected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                    >
+                      <Check on={selected} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <Icon name="external" size={12} className="shrink-0 text-ink-soft" />
+                          <span className="min-w-0 truncate font-medium text-ink">{conn.name}</span>
+                        </span>
+                        <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
+                          {conn.status === 'active' ? t('st.xc.statusActive') : t('st.xc.statusPaused')} · {conn.tools.length} {t('st.xc.tools')}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline px-3 py-2">
             <p className="min-w-0 text-[11.5px] leading-snug text-ink-faint">{t('composer.execution.bareNote')}</p>

@@ -75,6 +75,7 @@ import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../lib/botRooms';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { useLayoutPreferences, useMediaQuery, usePaneResize } from '../lib/layoutHooks';
 import { clampOverlayPosition } from '../lib/overlayPosition';
+import { readExternalClientMark } from '../lib/externalClients';
 import { useSessionSearch, type SessionSearchState } from '../lib/sessionSearch';
 import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
@@ -1830,6 +1831,11 @@ function SessionRow({
           : location !== undefined
             ? { kind: 'location', text: location }
             : undefined;
+  // Which client drives an externally driven session. It sits in the title
+  // row rather than the fact line below: it names the row permanently, while
+  // that line belongs to whatever needs attention right now, and a location
+  // path is the right thing to drop before a source.
+  const externalSource = readExternalClientMark(session.metadata)?.clientName;
   // Nested rows carry the relation in their accessible name and tooltip,
   // since on screen it is only the indent (plus the branch glyph).
   const nestedName = nested && relation !== undefined
@@ -1912,8 +1918,20 @@ function SessionRow({
               <RelativeTime at={session.updated_at} />
             </span>
           </span>
-          {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 ? (
+          {fact !== undefined || archived || session.worktree !== undefined || backgroundTasks.length > 0 || externalSource !== undefined ? (
             <span className="mt-px flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
+              {/* The source tag leads this line: which client drove the work is
+                  a fact about the row, while everything after it is about right
+                  now and can change under the reader. */}
+              {externalSource !== undefined ? (
+                <span data-session-external-source={externalSource}
+                  title={t('st.xs.sourceTitle', { client: externalSource })}
+                  className="inline-flex shrink-0 items-center gap-1 text-ink-faint">
+                  <Icon name="external" size={12} className="shrink-0" />
+                  <span className="max-w-[9rem] truncate">{t('st.xs.source')} · {externalSource}</span>
+                </span>
+              ) : null}
+              {fact === undefined || externalSource === undefined ? null : <span aria-hidden>·</span>}
               {fact === undefined ? null : fact.kind === 'needs-you' ? (
                 <span data-session-needs-you className="min-w-0 truncate font-medium text-attention">{fact.text}</span>
               ) : fact.kind === 'failed' ? (

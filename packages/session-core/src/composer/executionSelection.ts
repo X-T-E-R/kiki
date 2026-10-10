@@ -44,6 +44,8 @@ export interface ExecutionChoice {
   /** Both profile sources absent = run the harness with its own configuration. */
   readonly profile: string | undefined;
   readonly profile_file?: string;
+  readonly external_connection_id?: string;
+  readonly external_connection_name?: string;
   /** Absent = every override inherits. */
   readonly overrides: ExecutionOverrides | undefined;
 }
@@ -56,6 +58,19 @@ export function executionChoice(selection: ExecutionSelection | undefined): Exec
 }
 
 export function parseExecutionChoice(value: unknown): ExecutionChoice | undefined {
+  if (typeof value === 'object' && value !== null && 'external_connection_id' in value) {
+    const rec = value as Record<string, unknown>;
+    if (typeof rec['external_connection_id'] === 'string') {
+      return {
+        executor: typeof rec['executor'] === 'string' ? rec['executor'] : 'external-client',
+        profile: undefined,
+        external_connection_id: rec['external_connection_id'],
+        external_connection_name: typeof rec['external_connection_name'] === 'string' ? rec['external_connection_name'] : undefined,
+        overrides: undefined,
+      };
+    }
+  }
+
   const parsed = executionSelectionSchema.safeParse(value);
   return parsed.success ? executionChoice(parsed.data) : undefined;
 }
@@ -119,6 +134,7 @@ export function isBareExternalChoice(choice: ExecutionChoice | undefined): boole
     && !isNativeExecutor(choice.executor)
     && choice.profile === undefined
     && choice.profile_file === undefined
+    && choice.external_connection_id === undefined
     && choice.overrides === undefined;
 }
 
@@ -127,6 +143,7 @@ export function isBareExternalChoice(choice: ExecutionChoice | undefined): boole
   return left.executor === right.executor
     && left.profile === right.profile
     && left.profile_file === right.profile_file
+    && left.external_connection_id === right.external_connection_id
     && sameOverrides(left.overrides, right.overrides);
 }
 

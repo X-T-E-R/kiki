@@ -1239,7 +1239,7 @@ describe('settings nav groups (IA v2)', () => {
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
     // Spaces sit with the ways of reaching a server: where Kiki runs.
     expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'identity', 'agents', 'subagents']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
     // Workspaces sit with the sessions that run in them: where work happens.
     expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);

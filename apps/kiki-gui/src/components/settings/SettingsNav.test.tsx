@@ -82,7 +82,7 @@ describe('SettingsNav grouped tree', () => {
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
     expect(leaves(1)).toEqual(['connection', 'ssh']);
-    expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
+    expect(leaves(2)).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
     expect(leaves(3)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
     expect(leaves(5)).toEqual(['workspaces', 'spaces']);

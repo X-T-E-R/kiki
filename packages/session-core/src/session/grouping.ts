@@ -183,6 +183,10 @@ function foldable(node: Row): boolean {
     case 'system':
       return node.variant !== 'compaction_summary';
     case 'notice':
+      // Text an external client saved stays in view: its body is the reason
+      // the row exists, and folding it away would hide a record the session
+      // was asked to keep.
+      if (node.externalText !== undefined) return false;
       return node.tone === 'neutral' && node.executor !== undefined && node.executor.kind !== 'compaction';
     case 'approval':
       return node.resolution !== undefined;

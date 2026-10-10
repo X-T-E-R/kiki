@@ -258,10 +258,23 @@ export function buildNewSessionCreate(input: {
     plan_mode: input.planMode,
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
+  const externalClient = input.execution?.external_connection_id !== undefined ? {
+    driver: 'external' as const,
+    connectionId: input.execution.external_connection_id,
+    clientName: input.execution.external_connection_name ?? 'External Client',
+    sessionRef: `kiki-session-${Date.now()}`,
+  } : undefined;
+  const metadata = {
+    ...(input.cwd !== '' ? { cwd: input.cwd } : {}),
+    ...(externalClient !== undefined ? { externalClient } : {}),
+  };
+  const hasMetadata = Object.keys(metadata).length > 0;
   return input.cwd !== ''
-    ? { metadata: { cwd: input.cwd }, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral }
-    : { workspace_id: input.workspaceId, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral };
+    ? { metadata, ...persona, agent_config, ...isolation, ephemeral: input.ephemeral }
+    : { ...(hasMetadata ? { metadata } : {}), ...(input.workspaceId !== undefined ? { workspace_id: input.workspaceId } : {}), ...persona, agent_config, ...isolation, ephemeral: input.ephemeral };
 }
+
+export const createSessionInputOf = buildNewSessionCreate;
 
 /** Whether a bound persona shows a greeting the first message would answer. */
 export function hasGreeting(persona: PersonaSnapshot | undefined): boolean {

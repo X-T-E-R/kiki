@@ -653,6 +653,43 @@ function objectRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Project a durable `external.text` record: the client's own saved text. */
+function externalTextNoteOf(
+  markerId: string,
+  payload: Record<string, unknown> | undefined,
+): NoticeBlock['externalText'] {
+  if (payload === undefined) return undefined;
+  const recordId = payload['recordId'];
+  const text = payload['text'];
+  const kind = payload['kind'];
+  const source = payload['source'];
+  if (typeof recordId !== 'string' || typeof text !== 'string' || text.trim() === '') return undefined;
+  if (kind !== 'note' && kind !== 'user_excerpt' && kind !== 'assistant_excerpt' && kind !== 'handoff') return undefined;
+  if (typeof source !== 'object' || source === null) return undefined;
+  const sourceRecord = source as Record<string, unknown>;
+  const driver = sourceRecord['driver'];
+  const connectionId = sourceRecord['connectionId'];
+  const clientName = sourceRecord['clientName'];
+  const sessionRef = sourceRecord['sessionRef'];
+  if (driver !== 'external' || typeof connectionId !== 'string'
+    || typeof clientName !== 'string' || typeof sessionRef !== 'string') return undefined;
+  const title = payload['title'];
+  const sourceUrl = payload['sourceUrl'];
+  const clientTime = payload['clientTime'];
+  const turn = payload['turnId'];
+  return {
+    recordId,
+    markerId,
+    kind,
+    text,
+    title: typeof title === 'string' ? title : undefined,
+    sourceUrl: typeof sourceUrl === 'string' ? sourceUrl : undefined,
+    clientTime: typeof clientTime === 'string' ? clientTime : undefined,
+    source: { driver, connectionId, clientName, sessionRef },
+    turn: typeof turn === 'number' ? turn : undefined,
+  };
+}
+
 function markerToBlock(item: {
   markerId: string;
   marker: string;
@@ -712,6 +749,13 @@ function markerToBlock(item: {
   // `executor.degradation`): a quiet line in the engine's turn, never a banner.
   const executorNote = executorNoteOf(item.marker, payloadRecord);
   if (executorNote !== undefined) return { ...base, text: item.marker, executor: executorNote };
+
+  // Text the client saved on purpose. It carries its own body, kind and
+  // source, so the row can show the record instead of the marker's name.
+  if (item.marker === 'external.text') {
+    const externalText = externalTextNoteOf(item.markerId, payloadRecord);
+    if (externalText !== undefined) return { ...base, text: externalText.text, externalText };
+  }
   // Engine state that repeats (a context reading, a title echo) states nothing
   // the first time round, so it states nothing here either: the row would only
   // be its own marker name.

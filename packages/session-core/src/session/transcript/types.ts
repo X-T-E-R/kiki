@@ -396,12 +396,28 @@ export interface NoticeBlock {
   readonly markerRepeatCount?: number;
   /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
   readonly executor?: ExecutorNote;
+  /** Text saved into the session by an external client. */
+  readonly externalText?: ExternalTextNote;
   /**
    * Set on the single `notice-prompt-outcomes-earlier` row: settled prompts
    * whose messages sit in history pages that are not loaded yet.
    */
   readonly earlierPromptOutcomes?: readonly EarlierPromptOutcome[];
 }
+
+export type ExternalTextNote = {
+  readonly recordId: string;
+  readonly markerId: string;
+  readonly kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+  readonly title?: string;
+  readonly text: string;
+  readonly source: {
+    readonly connectionId: string;
+    readonly clientName: string;
+    readonly sessionRef: string;
+  };
+  readonly sourceUrl?: string;
+};
 
 /**
  * External-engine records carried by a notice: a prompt-delivery status

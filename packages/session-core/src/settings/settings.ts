@@ -2066,6 +2066,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'ssh', labelKey: 'st.section.ssh' },
   { id: 'ai', labelKey: 'st.section.ai' },
+  { id: 'connection-services', labelKey: 'st.section.connectionServices' },
   { id: 'identity', labelKey: 'st.section.identity' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'subagents', labelKey: 'st.section.subagents' },
@@ -2121,7 +2122,7 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts'] },
   { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'ssh', 'spaces'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'identity', 'agents', 'subagents'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'connection-services', 'identity', 'agents', 'subagents'] },
   { kind: 'group', id: 'work', labelKey: 'st.group.work', sections: ['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks'] },
   { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks'] },
   { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'labs', 'about'] },
@@ -2158,6 +2159,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   shortcuts: { scopes: ['app', 'server'], purposeKey: 'st.purpose.shortcuts' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
+  'connection-services': { scopes: ['server'], purposeKey: 'st.purpose.connectionServices' },
   identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
@@ -2319,7 +2321,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
-  { section: 'connection', tab: 'external', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接', 'external client', '外部客户端'] },
+  { section: 'connection', tab: 'external', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
+  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.connectionServices', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
@@ -2469,6 +2472,8 @@ export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> =
   runtime: 'tasks',
   theme: 'appearance',
   skins: 'appearance',
+  'external-clients': 'connection-services',
+  'external_clients': 'connection-services',
 };
 
 /** Dissolved cards keep a bookmark to their nearest active control. */
