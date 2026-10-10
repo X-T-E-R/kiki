@@ -28,6 +28,9 @@ import { NewSessionPage } from './NewSessionPage';
 
 const firstRun = vi.hoisted(() => ({
   needsProviderSetup: false,
+  selectionReady: true,
+  creationPending: false,
+  seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   client: {
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
@@ -52,7 +55,7 @@ vi.mock('./ConversationShell', () => {
   const slots = { header: null, dock: null, heroFooter, rail: null, footer: null, preview: null };
   return {
     useConversationShell: () => ({ slots }),
-    useRegisterSeat: () => {},
+    useRegisterSeat: (seat: import('./ConversationShell').ConversationSeat) => { firstRun.seat = seat; },
   };
 });
 
@@ -66,6 +69,14 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       draft: '',
       attachments: [],
       busy: false,
+      creationPending: firstRun.creationPending,
+      creationNotice: null,
+      createdSessionId: undefined,
+      openCreatedSession: () => {},
+      selectionReady: firstRun.selectionReady,
+      targetReady: true,
+      workspacesError: null,
+      retryWorkspaces: () => {},
       cancelCreation: () => {},
       error: null,
       workspaceId: '',
@@ -118,6 +129,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   firstRun.needsProviderSetup = false;
+  firstRun.selectionReady = true;
+  firstRun.creationPending = false;
+  firstRun.seat = undefined;
   localStorage.setItem('kiki.locale', 'en');
   vi.clearAllMocks();
 });
@@ -138,6 +152,9 @@ function draftState(overrides: Partial<NewSessionDraftState> = {}): NewSessionDr
   return {
     workspaces: [],
     workspacesLoading: false,
+    workspacesError: null,
+    retryWorkspaces: () => {},
+    sshLabel: null,
     effectiveWorkspace: undefined,
     autoWorkspace: true,
     workspaceId: '',
@@ -167,6 +184,18 @@ async function mount(state: NewSessionDraftState): Promise<HTMLDivElement> {
 }
 
 describe('WorkspacePickerFields first-run affordances', () => {
+  it('shows workspace failures with an explicit retry instead of first-run automatic creation', async () => {
+    const retryWorkspaces = vi.fn();
+    const container = await mount(draftState({ autoWorkspace: false, workspacesError: 'Read failed (code 50001)', retryWorkspaces }));
+    expect(container.textContent).toContain('Read failed (code 50001)');
+    expect(container.textContent).not.toContain('Choose a project folder, or send now');
+    expect(container.querySelector('#new-workspace-select')?.textContent).toContain('Choose workspace');
+    const retry = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Retry');
+    await act(async () => { retry?.click(); });
+    expect(retryWorkspaces).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('input[type="text"]')).not.toBeNull();
+  });
+
   it('offers the native folder picker on desktop and hides it in the browser', async () => {
     const desktop = await mount(draftState({ canBrowseForWorkspace: true }));
     expect(desktop.querySelector('[data-new-browse]')).not.toBeNull();
@@ -304,6 +333,15 @@ async function mountNewSessionPage(): Promise<HTMLDivElement> {
 }
 
 describe('the /new page', () => {
+  it.each([[false, false], [true, true]] as const)('publishes send gating for selectionReady=%s and creationPending=%s without locking typing', async (selectionReady, creationPending) => {
+    firstRun.selectionReady = selectionReady;
+    firstRun.creationPending = creationPending;
+    await mountNewSessionPage();
+    const provider = firstRun.seat?.composer as import('react').ReactElement<{ children: import('react').ReactElement<{ disabled: boolean; sendDisabled: boolean }> }>;
+    expect(provider.props.children.props.sendDisabled).toBe(true);
+    expect(provider.props.children.props.disabled).toBe(false);
+  });
+
   it('shows automatic workspace creation without a workspace-required warning', async () => {
     const container = await mountNewSessionPage();
     expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');

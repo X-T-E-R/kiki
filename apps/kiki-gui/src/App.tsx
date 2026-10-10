@@ -216,6 +216,7 @@ export function App() {
   const listFilters = layoutPrefs.filters;
   const showArchived = listFilters.archived !== 'hide';
   const workspaceFilter = listFilters.workspaces.length === 1 ? listFilters.workspaces[0] : undefined;
+  const newSessionPath = workspaceFilter === undefined ? '/new' : `/new?workspace=${encodeURIComponent(workspaceFilter)}`;
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -293,8 +294,8 @@ export function App() {
     void host.readDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return host.onTrayNewSession(() => navigate('/new'));
-  }, [host, navigate]);
+    return host.onTrayNewSession(() => navigate(newSessionPath));
+  }, [host, navigate, newSessionPath]);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -458,7 +459,7 @@ export function App() {
         if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
-        navigate('/new');
+        navigate(newSessionPath);
       } else if (matchesShortcutAction(event, 'switcher')) {
         event.preventDefault();
         setQuickSwitcherOpen((open) => !open);
@@ -475,7 +476,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [navigate, desktop]);
+  }, [navigate, desktop, newSessionPath]);
 
   // ⌘F / Ctrl+F: find in the conversation on screen (the composer included —
   // a selection there seeds the query); F3 / Shift+F3 step through it. On
@@ -600,7 +601,7 @@ export function App() {
         onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
         sortBy={layoutPrefs.sortBy}
         onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
-        onNewSession={() => { navigate('/new'); }}
+        onNewSession={() => { navigate(newSessionPath); }}
       />
 
       {/* Stage: the canvas-side frame; the routed page floats on it as one

@@ -26,7 +26,7 @@ import { Icon } from './icons';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
-import { AUTO_WORKSPACE_ID, isAbsoluteCwdPath, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
+import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
@@ -266,10 +266,8 @@ function NewSessionPageContent({
   // sending while keeping the draft and selection controls editable.
   const composerDisabled = state.busy;
   const cwd = state.cwd.trim();
-  const sendDisabled = cwd !== ''
-    ? !isAbsoluteCwdPath(cwd)
-    : state.effectiveWorkspace === undefined && !state.autoWorkspace;
-  const showTargetHint = sendDisabled && !state.workspacesLoading;
+  const sendDisabled = !state.selectionReady || state.creationPending;
+  const showTargetHint = !state.targetReady && !state.workspacesLoading && state.workspacesError === null;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
   const starters = useMemo(() => heroStarters(workspaceChipLabel(state)), [state]);
 
@@ -491,8 +489,22 @@ function NewSessionPageContent({
           {showTargetHint ? (
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}
-          {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.effectiveWorkspace === undefined ? (
+          {state.workspacesError !== null && cwd === '' ? (
+            <div role="alert" className="mt-2 text-[12px] text-danger">
+              <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
+              <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+            </div>
+          ) : null}
+          {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
             <p role="alert" className="mt-2 text-[12px] text-danger">{t('selection.workspaceInvalid', { value: state.workspaceId })}</p>
+          ) : null}
+          {state.creationNotice !== null ? (
+            <div role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">
+              <p>{state.creationNotice}</p>
+              {state.createdSessionId !== undefined && !state.creationPending ? (
+                <button type="button" onClick={state.openCreatedSession} className="mt-1 rounded px-1 py-0.5 font-medium text-ink underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('new.openCreatedSession')}</button>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </div>

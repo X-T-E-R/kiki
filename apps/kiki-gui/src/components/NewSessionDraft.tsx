@@ -71,6 +71,7 @@ import { pushToast } from '../lib/toasts';
 import { useWorktreeAvailability, workspaceGitState } from '../lib/worktrees';
 import { useConnection } from '../state/connection';
 import { sshApi } from '../lib/ssh';
+import { ApiError } from '../lib/client';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
@@ -344,6 +345,8 @@ export function useNewSessionDraft({
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creationPending, setCreationPending] = useState(false);
+  const [creationNotice, setCreationNotice] = useState<string | null>(null);
 
   const [workspaceId, setWorkspaceId] = useState(
     (applyPrefill ? initialWorkspaceId : undefined) ?? initialRestoredDraft.workspaceId ?? '',
@@ -409,19 +412,26 @@ export function useNewSessionDraft({
     queryKey: ['workspaces'],
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
+    retry: false,
   });
   const workspaces = workspacesQuery.data?.items ?? [];
-  const workspacesLoading = workspacesQuery.isLoading;
+  const workspacesLoading = workspacesQuery.isPending;
+  const workspacesReady = workspacesQuery.isSuccess;
+  const workspacesError = workspacesQuery.isError ? errorText(locale, workspacesQuery.error) : null;
+  const retryWorkspaces = useCallback(() => { void workspacesQuery.refetch(); }, [workspacesQuery.refetch]);
 
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
-      workspaceId === '' ? (dailyPersonaId === undefined ? sortWorkspacesByRecency(workspaces)[0] : undefined)
+      workspaceId === '' ? (dailyPersonaId === undefined && workspacesReady ? sortWorkspacesByRecency(workspaces)[0] : undefined)
         : workspaceId === AUTO_WORKSPACE_ID ? undefined
         : workspaces.find((w) => w.id === workspaceId),
-    [dailyPersonaId, workspaces, workspaceId],
+    [dailyPersonaId, workspaces, workspaceId, workspacesReady],
   );
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
-    && (workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID);
+    && (workspaceId === AUTO_WORKSPACE_ID || (workspaceId === '' && workspacesReady));
+  const targetReady = cwd.trim() !== ''
+    ? (sshLabel === null ? isAbsoluteCwdPath(cwd.trim()) : isAbsoluteRemoteCwdPath(cwd.trim()))
+    : autoWorkspace || (workspacesReady && effectiveWorkspace !== undefined);
   const worktreeRoot = cwd.trim() !== ''
     ? (isAbsoluteCwdPath(cwd.trim()) ? cwd.trim() : undefined)
     : effectiveWorkspace?.root;
@@ -445,17 +455,14 @@ export function useNewSessionDraft({
     staleTime: 60_000,
   });
   const agentProfileCatalogMode = useMemo<AgentProfileCatalogMode>(() => {
+    if (!targetReady) return { mode: 'disabled' };
     const directory = cwd.trim();
-    if (directory !== '') return isAbsoluteCwdPath(directory)
-      ? { mode: 'cwd', cwd: directory, effective: true }
-      : { mode: 'disabled' };
+    if (directory !== '') return { mode: 'cwd', cwd: directory, effective: true };
     if (effectiveWorkspace !== undefined) {
       return { mode: 'workspace', workspaceId: effectiveWorkspace.id, effective: true };
     }
-    return workspaceId === '' || workspaceId === AUTO_WORKSPACE_ID
-      ? { mode: 'unscoped' }
-      : { mode: 'disabled' };
-  }, [cwd, effectiveWorkspace, workspaceId]);
+    return { mode: 'unscoped' };
+  }, [cwd, effectiveWorkspace, targetReady]);
   const agentProfilesQuery = useQuery({
     queryKey: agentProfileCatalogQueryKey(agentProfileCatalogMode),
     queryFn: () => loadAgentProfileCatalog(client, agentProfileCatalogMode),
@@ -578,7 +585,7 @@ export function useNewSessionDraft({
     if (dailyPersonaId === undefined || persona === undefined) return;
     if (persona.definition.id !== dailyPersonaId) return;
     if (dailyDefaultApplied.current === dailyPersonaId) return;
-    if (workspacesQuery.isPending) return;
+    if (!workspacesReady) return;
     dailyDefaultApplied.current = dailyPersonaId;
     if (workspaceId !== '' || cwd.trim() !== '') return;
     const home = persona.definition.homeWorkspace;
@@ -590,7 +597,7 @@ export function useNewSessionDraft({
       return;
     }
     if (isAbsoluteCwdPath(home)) setCwd(home);
-  }, [cwd, dailyPersonaId, persona, workspaceId, workspaces, workspacesQuery.isPending]);
+  }, [cwd, dailyPersonaId, persona, workspaceId, workspaces, workspacesReady]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
@@ -598,9 +605,9 @@ export function useNewSessionDraft({
   }, [draftKey]);
 
   const agentProfileCatalogPending = profileCatalogTransitionPending
-    || (cwd.trim() === '' && workspacesQuery.isPending)
+    || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
     || (agentProfileCatalogMode.mode !== 'disabled' && agentProfilesQuery.isPending);
-  const selectionBlocked = agentProfileCatalogMode.mode === 'disabled'
+  const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
     || agentProfilesQuery.isError
     || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)
     || !modelsQuery.isSuccess
@@ -644,7 +651,9 @@ export function useNewSessionDraft({
     persona,
   };
 
+  const selectionReady = !selectionBlocked && !agentProfileCatalogPending && !personaPending;
   const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
+  const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(undefined);
   const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -652,7 +661,14 @@ export function useNewSessionDraft({
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
     setBusy(false);
-  }, []);
+    setCreationNotice(t('new.creationWaiting'));
+  }, [t]);
+  const openCreatedSession = useCallback(() => {
+    const accepted = createdForRetry.current;
+    if (accepted === undefined || creationIntent.current !== undefined) return;
+    queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
+    void navigate(`/s/${accepted.sessionId}`);
+  }, [navigate, queryClient, scopeId]);
   useEffect(() => () => {
     if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
   }, [scopeId]);
@@ -674,9 +690,7 @@ export function useNewSessionDraft({
     goalObjectiveOverride?: string;
   }) => {
     const context = sendContextRef.current;
-    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current || creationIntent.current !== undefined) {
-      return;
-    }
+    if (creationIntent.current !== undefined) return;
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
@@ -684,12 +698,7 @@ export function useNewSessionDraft({
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
-    const intent = { cancelled: false };
-    creationIntent.current = intent;
-    const submittedDraft = draftRef.current;
-    setBusy(true);
-    setError(null);
-
+    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) return;
     const body = buildNewSessionCreate({
       cwd: trimmedCwd,
       workspaceId: context.effectiveWorkspace?.id,
@@ -713,12 +722,29 @@ export function useNewSessionDraft({
     // releases the latch for retry.
     const bodyKey = JSON.stringify([draftScopeId, body]);
     const retry = createdForRetry.current;
-    const creation = retry?.body === bodyKey ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
+    if (retry !== undefined && retry.body !== bodyKey) {
+      setCreationNotice(t('new.creationAccepted'));
+      return;
+    }
+    const intent = { cancelled: false };
+    creationIntent.current = intent;
+    const submittedDraft = draftRef.current;
+    if (trimmedCwd === '') setWorkspaceId(context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
+    setBusy(true);
+    setCreationPending(true);
+    setCreationNotice(null);
+    setError(null);
+    const creation = retry !== undefined ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
     return creation
       .then(async (session) => {
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
         createdForRetry.current = { body: bodyKey, sessionId: session.id };
-        if (intent.cancelled) return;
+        setCreatedSessionId(session.id);
+        if (intent.cancelled) {
+          setCreationNotice(t('new.creationAccepted'));
+          return;
+        }
         // Hosts preselected on /new become session resources before anything
         // is sent: the real PUT lands first, and a failure here aborts the
         // navigation instead of delivering a first message that believes it
@@ -772,13 +798,18 @@ export function useNewSessionDraft({
           }),
         });
       })
-      .catch((error: unknown) => {
-        if (intent.cancelled) return;
+      .catch((cause: unknown) => {
         setBusy(false);
-        setError(error instanceof Error ? error.message : String(error));
+        setError(errorText(locale, cause));
+        setCreationNotice(createdForRetry.current !== undefined
+          ? t('new.creationAccepted')
+          : cause instanceof ApiError && cause.code < 0 ? t('new.creationUnknown') : null);
       })
       .finally(() => {
-        if (creationIntent.current === intent) creationIntent.current = undefined;
+        if (creationIntent.current !== intent) return;
+        creationIntent.current = undefined;
+        setCreationPending(false);
+        if (intent.cancelled && createdForRetry.current !== undefined) setCreationNotice(t('new.creationAccepted'));
       });
   }, [client, draftKey, draftScopeId, locale, scopeId, sshLabel, navigate, queryClient, t]);
 
@@ -937,7 +968,15 @@ export function useNewSessionDraft({
     draft,
     attachments,
     busy,
+    creationPending,
+    creationNotice,
+    createdSessionId,
+    openCreatedSession,
     cancelCreation,
+    selectionReady,
+    targetReady,
+    workspacesError,
+    retryWorkspaces,
     error,
     workspaceId,
     cwd,
@@ -1012,7 +1051,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   );
 
   // First run has no registered folders, but automatic allocation remains available.
-  const firstRun = !state.workspacesLoading && state.workspaces.length === 0;
+  const firstRun = !state.workspacesLoading && state.workspacesError === null && state.workspaces.length === 0;
 
   return (
     <div className="flex flex-col gap-2">
@@ -1028,7 +1067,8 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
         <SearchableSelect
           id="new-workspace-select"
           options={workspaceOptions}
-          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID)}
+          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? (state.autoWorkspace ? AUTO_WORKSPACE_ID : ''))}
+          emptyText={t('hero.chooseWorkspace')}
           onChange={(nextId) => { state.selectWorkspace(nextId); }}
           disabled={state.workspacesLoading}
           ariaLabel={t('new.workspace')}
@@ -1073,6 +1113,12 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
           ) : null}
         </div>
       </div>
+      {state.workspacesError !== null ? (
+        <div role="alert" className="text-[12px] text-danger">
+          <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
+          <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+        </div>
+      ) : null}
       {state.autoWorkspace ? (
         <p className="text-[11px] leading-relaxed text-ink-faint">{t('new.autoWorkspaceHint')}</p>
       ) : null}

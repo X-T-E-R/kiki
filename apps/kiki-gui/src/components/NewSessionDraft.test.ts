@@ -17,6 +17,7 @@ import {
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
+import { ApiError } from '../lib/client';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', label: null as string | null },
@@ -302,6 +303,116 @@ describe('useNewSessionDraft agent profile scope', () => {
     await settleDraft(() => client.createSession.mock.calls.length > 0);
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
+
+  it.each([40001, 50001])('does not infer automatic creation from workspace error %s and retries without losing the draft', async (code) => {
+    client.listWorkspaces.mockRejectedValue(new ApiError({ code, msg: 'Workspace read failed', data: null }));
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    await renderDraft();
+    let state = await settleDraft((value) => value.workspacesError !== null);
+    await act(async () => { state.updateDraft('Keep this prompt'); state.setAttachments([{ kind: 'file', path: '/workspace/input.txt', name: 'input.txt', isDir: false }]); });
+    state = latestDraftState!;
+    expect(state.autoWorkspace).toBe(false);
+    expect(state.targetReady).toBe(false);
+    expect(state.selectionReady).toBe(false);
+    expect(state.workspacesError).toContain(`code ${code}`);
+    await act(async () => { await state.send(state.draft, state.attachments); });
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
+    await act(async () => { state.retryWorkspaces(); });
+    state = await settleDraft((value) => value.selectionReady);
+    expect(state.workspacesError).toBeNull();
+    expect(state.effectiveWorkspace?.id).toBe('wd_selected');
+    expect(state.draft).toBe('Keep this prompt');
+    expect(state.attachments).toHaveLength(1);
+    await act(async () => { await state.send(state.draft, state.attachments); });
+    expect(client.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ workspace_id: 'wd_selected' }));
+  });
+
+  it('keeps a selected workspace blocked during its pending or failed read instead of falling back to automatic creation', async () => {
+    const listing = deferred<{ items: ReturnType<typeof workspace>[] }>();
+    client.listWorkspaces.mockReturnValue(listing.promise);
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    await renderDraft({ initialWorkspaceId: 'wd_selected' });
+    let state = latestDraftState!;
+    expect(state.selectionReady).toBe(false);
+    expect(state.autoWorkspace).toBe(false);
+    await act(async () => { await state.send('No guessed target', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
+    await act(async () => { listing.reject(new Error('offline')); });
+    state = await settleDraft((value) => value.workspacesError !== null);
+    expect(state.workspaceId).toBe('wd_selected');
+    expect(state.selectionReady).toBe(false);
+    await act(async () => { state.selectWorkspace(AUTO_WORKSPACE_ID); });
+    state = await settleDraft((value) => value.selectionReady);
+    expect(state.autoWorkspace).toBe(true);
+    await act(async () => { await state.send('Explicit automatic target', []); });
+    expect(client.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ workspace_id: undefined }));
+  });
+
+  it('allows an explicit directory to recover from a failed workspace list without clearing its error or draft', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list offline'));
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    await renderDraft();
+    let state = await settleDraft((value) => value.workspacesError !== null);
+    await act(async () => { state.setCwd('/workspace/selected'); state.updateDraft('Use my folder'); });
+    state = await settleDraft((value) => value.selectionReady);
+    expect(state.workspacesError).toBe('workspace list offline');
+    expect(state.autoWorkspace).toBe(false);
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadata: { cwd: '/workspace/selected' } }));
+  });
+
+  it.each([40001, 50001, -2])('shows create error %s without navigation or automatic resubmission and retains prompt, attachments and choices', async (code) => {
+    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    client.createSession.mockRejectedValue(new ApiError({ code, msg: 'Create failed', data: null }));
+    await renderDraft({ initialWorkspaceId: 'wd_selected' });
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Preserve me'); state.setAttachments([{ kind: 'file', path: '/workspace/input.txt', name: 'input.txt', isDir: false }]); });
+    state = latestDraftState!;
+    await act(async () => { await state.send(state.draft, state.attachments); });
+    state = latestDraftState!;
+    expect(state.error).toContain(`code ${code}`);
+    expect(state.creationNotice).toBe(code < 0 ? 'Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.' : null);
+    expect(state.busy).toBe(false);
+    expect(state.creationPending).toBe(false);
+    expect(state.workspaceId).toBe('wd_selected');
+    expect(state.draft).toBe('Preserve me');
+    expect(state.attachments).toHaveLength(1);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('makes cancellation visible until late acceptance and opens the accepted session even after choices change without a second create', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    const creation = deferred<{ id: string }>();
+    client.createSession.mockReturnValue(creation.promise);
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Preserve me'); });
+    state = latestDraftState!;
+    let submission: Promise<unknown> | undefined;
+    await act(async () => { submission = state.send(state.draft, []); });
+    state = latestDraftState!;
+    await act(async () => { state.cancelCreation(); state.setCwd('/workspace/other'); });
+    state = latestDraftState!;
+    expect(state.creationPending).toBe(true);
+    expect(state.busy).toBe(false);
+    expect(state.creationNotice).toContain('Waiting for the creation result');
+    await act(async () => { await state.send('Must not re-create while waiting', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    await act(async () => { creation.resolve({ id: 'session-accepted' }); await submission; });
+    state = await settleDraft((value) => value.selectionReady && !value.creationPending);
+    expect(state.createdSessionId).toBe('session-accepted');
+    expect(state.creationNotice).toContain('The session was created');
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { state.openCreatedSession(); });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/s/session-accepted');
+    expect(latestDraftState?.draft).toBe('Preserve me');
+  });
 
   it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the real created session on retry', async (kind) => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
