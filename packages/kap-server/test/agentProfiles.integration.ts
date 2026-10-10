@@ -536,26 +536,36 @@ describe('GET /api/agents', () => {
     }, { timeout: 5000 });
   });
 
-  it('lists discovered bare engines without exhaustive source diagnostics or login mutation', async () => {
+  it('lists registered engines while every discovery is pending and updates only the explicitly checked id', async () => {
+    await writeFile(join(home!, 'config.toml'), '[search]\nenabled = false\n[agent_executors.example]\nprotocol = "acp-v1"\nargs = []\nsource = "pinned"\nsources = [{ id = "first", kind = "explicit-path", path = "/fixture/first" }, { id = "pinned", kind = "explicit-path", path = "/fixture/pinned" }]\ndiagnostics = [{ kind = "message", severity = "warning", message = "Fixture warning" }]\n');
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     const registry = server.core.accessor.get(IAgentExecutorRegistry);
-    const discovery = vi.spyOn(registry, 'discover').mockImplementation(async (id, exhaustive = true): ReturnType<IAgentExecutorRegistry['discover']> => {
-      if (exhaustive) return new Promise<never>(() => {});
-      return ['codex-app-server', 'claude-acp'].includes(id)
-        ? [{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/example', version: '1.0' }]
-        : [];
-    });
+    const discovery = vi.spyOn(registry, 'discover').mockImplementation(() => new Promise<never>(() => {}));
     const client = createKlient({ endpoint: base, token: server.localOwnerToken, timeoutMs: 1000 });
     try {
       const catalog = await client.rest!.executors.list();
-      expect(catalog.items).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: 'native', status: 'ready' }),
-        expect.objectContaining({ id: 'codex-app-server', status: 'ready', connection: expect.objectContaining({ login_status: 'unknown', source: 'fixture' }) }),
-        expect.objectContaining({ id: 'claude-acp', status: 'ready', connection: expect.objectContaining({ login_status: 'unknown', source: 'fixture' }) }),
-      ]));
-      expect(discovery.mock.calls.every(([, exhaustive]) => exhaustive === false)).toBe(true);
+      expect(catalog.items.map((item) => item.id)).toEqual(registry.list().map((item) => item.id));
+      expect(catalog.items.find((item) => item.id === 'native')?.status).toBe('ready');
+      expect(catalog.items.filter((item) => item.id !== 'native').every((item) => item.status === 'unknown' && item.connection?.login_status === 'unknown')).toBe(true);
+      const detail = await (await authedFetch(server, base, '/api/executors/example', { signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
+      expect(detail.data).toMatchObject({ id: 'example', status: 'unknown', connection: { login_status: 'unknown' } });
+      expect(discovery).not.toHaveBeenCalled();
+      discovery.mockResolvedValueOnce([
+        { id: 'first', kind: 'explicit-path', available: true, command: '/fixture/first', version: '1.0' },
+        { id: 'pinned', kind: 'explicit-path', available: true, command: '/fixture/pinned', version: '2.0' },
+      ]);
+      const checked = await (await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
+      expect(checked.data).toMatchObject({ id: 'example', status: 'warning', selected_source: 'pinned', version: '2.0', login_status: 'unknown' });
+      const updated = await client.rest!.executors.list();
+      expect(updated.items.find((item) => item.id === 'example')).toMatchObject({ status: 'ready', version: '2.0', connection: { command: '/fixture/pinned', source: 'pinned', login_status: 'unknown' } });
+      expect(updated.items.filter((item) => !['native', 'example'].includes(item.id)).every((item) => item.status === 'unknown')).toBe(true);
+      expect(discovery.mock.calls).toEqual([['example']]);
+      discovery.mockResolvedValueOnce([]);
+      await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) });
+      expect((await client.rest!.executors.list()).items.find((item) => item.id === 'example')?.status).toBe('unavailable');
       expect(server.core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
+      expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
     } finally {
       await client.close();
       discovery.mockRestore();

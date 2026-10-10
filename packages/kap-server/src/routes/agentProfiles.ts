@@ -192,8 +192,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     await config.ready;
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const preflight = core.accessor.get(IAgentExecutorPreflightService);
-    const items = await Promise.all(registry.list().map((descriptor) =>
-      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id), core.accessor.get(IBootstrapService))));
+    const items = registry.list().map((descriptor) =>
+      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id), core.accessor.get(IBootstrapService)));
 
     reply.send(okEnvelope({ items }, req.id));
   });
@@ -215,7 +215,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       return;
     }
     const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
-    reply.send(okEnvelope(await projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
+    reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
   });
   app.get(executorDetailRoute.path, executorDetailRoute.options,
     executorDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
@@ -1157,18 +1157,20 @@ function executorOverrideProjection(descriptor: AgentExecutorDescriptor) {
   };
 }
 
-async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
+function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
   check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
-  const probes = descriptor.id === 'native' ? [] : await registry.discover(descriptor.id, false).catch(() => undefined);
-  const selected = probes?.find((probe) => probe.available);
+  const selected = check?.sources?.find((probe) => probe.id === check.selectedSource && probe.available);
+  const program = check?.requirements.find((requirement) => requirement.role === 'program');
+  const status = descriptor.protocol === 'native' ? 'ready' as const
+    : check?.status === 'unavailable' || program?.status === 'missing' || program?.status === 'failed' ? 'unavailable' as const
+      : check?.status === 'ready' || program?.status === 'ok' ? 'ready' as const : 'unknown' as const;
   const capabilities = executorCapabilities(descriptor);
   return {
     id: descriptor.id,
     label: descriptor.label ?? (descriptor.id === 'native' ? 'Kiki' : descriptor.id),
     protocol: descriptor.protocol,
-    status: descriptor.id === 'native' || selected !== undefined ? 'ready' as const
-      : probes === undefined ? 'unknown' as const : 'unavailable' as const,
-    version: selected?.version,
+    status,
+    version: check?.version,
     model_binding: descriptor.protocol === 'native' || capabilities.modelBinding !== undefined
       ? 'mapped' as const : 'unavailable' as const,
     thinking_binding: descriptor.protocol === 'native' || capabilities.thinkingBinding
@@ -1180,8 +1182,8 @@ async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IA
         trust_engine_settings: capabilities.permission?.trustEngineSettings === true },
       model_binding: capabilities.modelBinding,
       thinking_binding: capabilities.thinkingBinding,
-      negotiated: registry.negotiated?.(descriptor.id, selected?.version) === undefined ? undefined : (() => {
-        const observed = registry.negotiated!(descriptor.id, selected?.version)!;
+      negotiated: registry.negotiated?.(descriptor.id, check?.version) === undefined ? undefined : (() => {
+        const observed = registry.negotiated!(descriptor.id, check?.version)!;
         return { models: observed.models, thinking_levels: observed.thinkingLevels,
           auth_methods: observed.authMethods, resume: observed.resume, load: observed.load,
           permission_modes: observed.permissionModes, agent_version: observed.agentVersion,
@@ -1191,8 +1193,8 @@ async function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IA
       })(),
     },
     connection: {
-      command: selected?.launchArgs?.[0] ?? selected?.command ?? descriptor.command,
-      source: selected?.id,
+      command: selected?.launchArgs?.[0] ?? check?.command ?? descriptor.command,
+      source: check?.selectedSource,
       install_hint: descriptor.installHint === undefined ? undefined : expandExecutorText(descriptor.installHint, bootstrap),
       login_command: descriptor.loginCommand,
       api_key_env: descriptor.apiKeyEnv,

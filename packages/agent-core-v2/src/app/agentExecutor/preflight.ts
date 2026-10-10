@@ -81,7 +81,8 @@ interface CredentialResolution {
 
 export class AgentExecutorPreflightService implements IAgentExecutorPreflightService {
   declare readonly _serviceBrand: undefined;
-  readonly #lastChecks = new Map<string, { readonly result: AgentExecutorPreflightResult; readonly checkedAt: number }>();
+  readonly #lastChecks = new Map<string, { readonly result: AgentExecutorPreflightResult; readonly checkedAt: number; readonly revision: string }>();
+  readonly #pendingChecks = new Map<string, symbol>();
 
   constructor(
     @IHostProcessService private readonly processService: IHostProcessService,
@@ -92,15 +93,25 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
 
   async run(ids: readonly string[] = this.registry.list().filter((descriptor) => descriptor.protocol !== 'native').map((descriptor) => descriptor.id)): Promise<readonly AgentExecutorPreflightResult[]> {
     return Promise.all(ids.map(async (id) => {
-      const result = await this.#runOne(id);
-      if (this.registry.get(id) !== undefined) this.#lastChecks.set(id, { result, checkedAt: Date.now() });
-      return result;
+      const revision = this.registry.get(id)?.revision;
+      const request = Symbol(id);
+      this.#pendingChecks.set(id, request);
+      try {
+        const result = await this.#runOne(id);
+        if (revision !== undefined && this.registry.get(id)?.revision === revision && this.#pendingChecks.get(id) === request) {
+          this.#lastChecks.set(id, { result, checkedAt: Date.now(), revision });
+        }
+        return result;
+      } finally {
+        if (this.#pendingChecks.get(id) === request) this.#pendingChecks.delete(id);
+      }
     }));
   }
 
   lastCheck(id: string): AgentExecutorPreflightResult | undefined {
     const check = this.#lastChecks.get(id);
-    return check !== undefined && Date.now() - check.checkedAt < 60_000 ? check.result : undefined;
+    return check !== undefined && check.revision === this.registry.get(id)?.revision && Date.now() - check.checkedAt < 60_000
+      ? check.result : undefined;
   }
 
   async #runOne(id: string): Promise<AgentExecutorPreflightResult> {

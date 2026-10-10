@@ -154,6 +154,45 @@ describe('AgentExecutorPreflightService', () => {
 
   afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
 
+  it('invalidates cached and pending checks when the executor descriptor revision changes', async () => {
+    let command = '/fixture/first';
+    services.set(IConfigService, { _serviceBrand: undefined, get: (domain: string) => domain === AGENT_EXECUTORS_SECTION
+      ? { example: { protocol: 'acp-v1', args: [], sources: [{ id: 'fixture', kind: 'explicit-path', path: command }] } } : undefined } as IConfigService);
+    const registry = services.get(IAgentExecutorRegistry);
+    const discovery = vi.spyOn(registry, 'discover').mockResolvedValue([{ id: 'fixture', kind: 'explicit-path', available: true, command, version: '1.0' }]);
+    const preflight = services.get(IAgentExecutorPreflightService);
+    await preflight.run(['example']);
+    expect(preflight.lastCheck('example')?.version).toBe('1.0');
+    command = '/fixture/second';
+    expect(preflight.lastCheck('example')).toBeUndefined();
+    let release!: (sources: Awaited<ReturnType<IAgentExecutorRegistry['discover']>>) => void;
+    discovery.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const pending = preflight.run(['example']);
+    command = '/fixture/third';
+    release([{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/second', version: '2.0' }]);
+    expect((await pending)[0]?.version).toBe('2.0');
+    expect(preflight.lastCheck('example')).toBeUndefined();
+    expect(processService.calls).toEqual([]);
+  });
+
+  it('keeps the latest check when an older check completes late and expires the cached result', async () => {
+    services.set(IConfigService, { _serviceBrand: undefined, get: (domain: string) => domain === AGENT_EXECUTORS_SECTION
+      ? { example: { protocol: 'acp-v1', args: [], sources: [{ id: 'fixture', kind: 'explicit-path', path: '/fixture/example' }] } } : undefined } as IConfigService);
+    const registry = services.get(IAgentExecutorRegistry);
+    let release!: (sources: Awaited<ReturnType<IAgentExecutorRegistry['discover']>>) => void;
+    vi.spyOn(registry, 'discover').mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }))
+      .mockResolvedValue([{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/example', version: '2.0' }]);
+    const preflight = services.get(IAgentExecutorPreflightService);
+    const older = preflight.run(['example']);
+    await preflight.run(['example']);
+    release([{ id: 'fixture', kind: 'explicit-path', available: true, command: '/fixture/example', version: '1.0' }]);
+    await older;
+    expect(preflight.lastCheck('example')?.version).toBe('2.0');
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+    expect(preflight.lastCheck('example')).toBeUndefined();
+    expect(processService.calls).toEqual([]);
+  });
+
   it('reports just the IDE/ACP distinction when only Antigravity IDE is installed', async () => {
     services.set(IHostFileSystem, fsWith(['C:/tools/antigravity.EXE']));
     const result = await services.get(IAgentExecutorPreflightService).run(['antigravity-acp']);

@@ -160,6 +160,20 @@ Model creation accepts an optional `protocol`: `openai`, `openai_responses`, `an
 
 Model reads expose the saved `protocol` and resolved `effective_protocol` separately. An absent saved value inherits the provider's default format; an absent effective value in the list means no usable requester was materialized. Changing a model's protocol does not write the provider connection, credentials, request identity, or default pointers. See [model request format overrides](../configuration/providers.md#model-request-format-overrides) for configuration examples and endpoint compatibility.
 
+### Executor catalog and checks
+
+The executor catalog lists registered engines without waiting for executable discovery or authentication checks. Reading it does not launch an engine or sign in.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/executors` | Registered engines with their latest valid check results |
+| `GET /api/executors/{id}` | One engine's capabilities, connection settings and latest check result |
+| `POST /api/executors/{id}/check` | Discover executable sources and check the declared authentication hints for this engine |
+
+Catalog `status` is `ready`, `unavailable` or `unknown`. Native is always `ready`; an external engine without a valid check is `unknown`, not missing. Checks remain valid for 60 seconds while the engine's launch configuration is unchanged. A successful explicit check updates only that engine; unrelated entries do not wait for it. The check response also includes diagnostics, requirements and `selected_source`, preserving any configured source pin.
+
+Binary readiness and authentication are separate facts. `connection.login_status: "unknown"` does not mean `logged_out`, and `status: "ready"` does not prove a login. Pickers retain unchecked engines while honoring explicit hide/off choices and known unavailable states; a checked logged-out engine remains hidden unless its declared API-key environment is configured. To inspect an engine, call its check endpoint explicitly; sending a prompt still uses the real executable, source and authentication checks rather than trusting the display catalog.
+
 ### Local executor sessions
 
 Claude ACP, Codex ACP, and Codex app-server expose a separate local-history catalog. Source IDs are not Kiki session IDs; the GET routes never import them into the Kiki session index.

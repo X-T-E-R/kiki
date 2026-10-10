@@ -5,13 +5,14 @@
  * choice that decides it.
  *
  * Two rules are load-bearing and easy to break independently:
- * - an external engine the machine was never set up for is not a choice, so it
- *   stays out of the list;
+ * - a checked unavailable engine stays out; pending discovery remains visible
+ *   without claiming the engine is ready;
  * - the choice is *display only* — it never removes an engine from the catalog
  *   the server launches, and never stops a session already bound to one.
  */
 
 import { describe, expect, it } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 
@@ -22,6 +23,7 @@ import {
   engineOverridesOf,
   engineVisibilityOf,
   engineVisibilityPatch,
+  executorCatalogQueryKey,
   isConfiguredEngine,
   visibleEngines,
 } from './engines';
@@ -42,6 +44,26 @@ function profile(name: string, executor?: string): NamedAgentProfile {
 }
 
 const CATALOG = [engine('native'), engine('claude-acp'), engine('codex-app-server'), engine('grok-acp')];
+
+describe('executorCatalogQueryKey', () => {
+  it('isolates a late catalog response from another scope or server incarnation', async () => {
+    const cache = new QueryClient();
+    const oldKey = executorCatalogQueryKey('example-scope', 'old-server');
+    const newKey = executorCatalogQueryKey('example-scope', 'new-server');
+    const otherKey = executorCatalogQueryKey('other-scope', 'new-server');
+    let release!: (value: { items: ExecutorCatalogItem[] }) => void;
+    const old = cache.fetchQuery({ queryKey: oldKey, queryFn: () => new Promise<{ items: ExecutorCatalogItem[] }>((resolve) => { release = resolve; }) });
+    cache.setQueryData(newKey, { items: [engine('native')] });
+    cache.setQueryData(otherKey, { items: [engine('grok-acp')] });
+    release({ items: [engine('claude-acp')] });
+    await old;
+    expect(cache.getQueryData(newKey)).toEqual({ items: [engine('native')] });
+    expect(cache.getQueryData(otherKey)).toEqual({ items: [engine('grok-acp')] });
+    await cache.invalidateQueries({ queryKey: ['executors'] });
+    expect(cache.getQueryState(newKey)?.isInvalidated).toBe(true);
+    cache.clear();
+  });
+});
 
 describe('isConfiguredEngine', () => {
   it('treats native as always configured', () => {
@@ -167,6 +189,18 @@ describe('visibleEngines', () => {
     expect(visibleEngines([engine('native'), codex, claude], [], undefined).map(item => item.id))
       .toEqual(['native', 'codex-app-server', 'claude-acp']);
     expect(claude.connection.login_status).toBe('unknown');
+  });
+  it('lists pending registered engines without treating unknown as ready or overriding explicit off', () => {
+    const pending: ExecutorCatalogItem = { ...engine('claude-acp'), status: 'unknown', connection: { login_status: 'unknown', default_args: [] } };
+    const catalog = [engine('native'), pending];
+    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'claude-acp']);
+    expect(pending.status).toBe('unknown');
+    expect(pending.connection?.login_status).toBe('unknown');
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], undefined, { externals_visible: false }).map(item => item.id)).toEqual(['native']);
+    const loggedOut = { ...pending, connection: { login_status: 'logged_out' as const, default_args: [] } };
+    expect(visibleEngines([loggedOut], [], undefined)).toEqual([]);
+    expect(visibleEngines([{ ...pending, status: 'unavailable' }], [], undefined)).toEqual([]);
   });
   it('does not mistake a profile or launch override for a checked vendor login', () => {
     const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [] } }];

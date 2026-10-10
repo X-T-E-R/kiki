@@ -8,10 +8,15 @@ import { useConnection } from '../../../state/connection';
 
 export const EXECUTORS_QUERY_KEY = ['executors'] as const;
 
+/** Catalog checks belong to a connection scope and server incarnation; prefix invalidation still refreshes them. */
+export function executorCatalogQueryKey(scopeId: string, serverId?: string) {
+  return [...EXECUTORS_QUERY_KEY, scopeId, serverId] as const;
+}
+
 /**
- * The engine catalog (`GET /executors`): registered executors and whether each
- * one's binary was found. Empty while loading or on a server without the route;
- * callers then show raw ids.
+ * The engine catalog (`GET /executors`): registered executors with their latest
+ * checks, or unknown while unchecked. Empty while loading or on a server without
+ * the route; callers then show raw ids.
  */
 export function useExecutorCatalog(): readonly ExecutorCatalogItem[] {
   return useExecutorCatalogQuery().data?.items ?? [];
@@ -19,9 +24,9 @@ export function useExecutorCatalog(): readonly ExecutorCatalogItem[] {
 
 /** The same catalog query with its loading / error state (Settings › Connections). */
 export function useExecutorCatalogQuery() {
-  const { client } = useConnection();
+  const { client, scopeId, meta } = useConnection();
   return useQuery({
-    queryKey: EXECUTORS_QUERY_KEY,
+    queryKey: executorCatalogQueryKey(scopeId, meta?.server_id),
     queryFn: () => client.listExecutors(),
     enabled: typeof client.listExecutors === 'function',
     staleTime: 60_000,
@@ -183,14 +188,14 @@ export function isConfiguredEngine(
   return Object.keys(entry).some((key) => key !== 'show_in_profile_list');
 }
 
-/** Picker eligibility, not authentication proof: an unchecked login does not hide a discovered binary. */
+/** Picker eligibility, not launch proof: pending discovery or login checks do not hide a registered engine. */
 export function isRunnableEngine(
   item: ExecutorCatalogItem,
   overrides: Readonly<Record<string, unknown>> | undefined,
   descriptors?: Readonly<Record<string, unknown>> | undefined,
 ): boolean {
   if (isNativeExecutor(item.id)) return true;
-  if (item.status !== 'ready') return false;
+  if (item.status === 'unavailable') return false;
   if (item.connection?.login_status === 'logged_in') return true;
   const descriptor = asConfigRecord(descriptors?.[item.id]);
   const apiKeyEnv = item.connection?.api_key_env;
