@@ -67,6 +67,10 @@ export class AgentPermissionPolicyService
   async evaluate(
     context: ResolvedToolExecutionHookContext,
   ): Promise<PermissionPolicyEvaluation | undefined> {
+    if (context.permissionAuthority === 'external-inherit') {
+      return evaluatePolicies([...this.adjudicationPolicies, ...this.allowlistPolicies].filter((policy) =>
+        ['user-configured-deny', 'worktree-isolation-deny', 'user-configured-ask', 'user-configured-allow'].includes(policy.name)), context);
+    }
     const adjudication = await evaluatePolicies(this.adjudicationPolicies, context);
     if (adjudication !== undefined) {
       return adjudication.policyName === 'session-approval-history' || adjudication.policyName === 'yolo-mode-approve'

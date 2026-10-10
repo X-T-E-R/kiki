@@ -141,6 +141,18 @@ function spliceReminderOut(): void {
 }
 
 describe('AgentPermissionModeService (wire-backed)', () => {
+  it('distinguishes ambient inheritance from an explicit runtime override and clears at binding boundaries', async () => {
+    svc.setMode('yolo', 'ambient');
+    expect(svc.externalOverride).toBeUndefined();
+    svc.setMode('yolo');
+    expect(svc.externalOverride).toBe('yolo');
+    svc.setMode('auto', 'binding');
+    expect(svc.externalOverride).toBeUndefined();
+    expect((await readRecords()).map((record) => ({ mode: record['mode'], source: record['source'] }))).toEqual([
+      { mode: 'yolo', source: 'ambient' }, { mode: 'yolo', source: 'runtime' }, { mode: 'auto', source: 'binding' },
+    ]);
+  });
+
   it('setMode updates mode and fires onDidChangeMode with mode/previousMode', () => {
     const changes: { mode: PermissionMode; previousMode: PermissionMode }[] = [];
     disposables.add(

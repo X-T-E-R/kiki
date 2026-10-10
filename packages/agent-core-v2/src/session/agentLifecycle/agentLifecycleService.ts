@@ -516,11 +516,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       .get(permissionModeConfiguredKey);
     const permissionModeService = handle.accessor.get(IAgentPermissionModeService);
     if (permissionMode !== undefined && !hasRestoredPermissionMode) {
-      permissionModeService.setMode(permissionMode);
+      permissionModeService.setMode(permissionMode, 'ambient');
     }
     const profilePermissionMode = profile.data().permissionMode;
     if (profilePermissionMode !== undefined && !hasRestoredPermissionMode) {
-      permissionModeService.setMode(profilePermissionMode);
+      permissionModeService.setMode(profilePermissionMode, 'ambient');
     }
     return restoreFellBack;
   }
@@ -655,7 +655,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   broadcastPermissionMode(mode: PermissionMode): void {
     for (const handle of this.liveHandles()) {
-      handle.accessor.get(IAgentPermissionModeService).setMode(mode);
+      handle.accessor.get(IAgentPermissionModeService).setMode(mode, 'ambient');
     }
   }
 

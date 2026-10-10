@@ -32,6 +32,8 @@ import { IAgentGoalService } from '#/agent/goal/goal';
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
@@ -105,6 +107,8 @@ interface FakeHarnessOptions {
   readonly configureFailureId?: string;
   readonly configureReadbackFailureId?: string;
   readonly permissionMode?: 'manual' | 'auto' | 'yolo';
+  readonly inheritPermission?: boolean;
+  readonly vendorDefaultOption?: boolean;
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
   readonly profileDelivery?: AgentExecutorContext['descriptor']['profileDelivery'];
   readonly modelConfigId?: string;
@@ -283,6 +287,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
   const permissionMode = {
     _serviceBrand: undefined,
     mode: options.permissionMode ?? 'manual',
+    externalOverride: options.inheritPermission === true ? undefined : options.permissionMode,
+    setMode: vi.fn(),
   } as unknown as IAgentPermissionModeService;
   const usageRecords: Parameters<IAgentUsageService['record']>[] = [];
   const usage = {
@@ -320,6 +326,18 @@ function createHarness(options: FakeHarnessOptions = {}) {
     [IAgentRuntimeService, runtime],
     [ISessionWorkspaceContext, workspace],
     [IAgentPermissionModeService, permissionMode],
+    [IAgentPermissionRulesService, { rules: [] }],
+    [IAgentPermissionGate, { authorize: async (context: import('#/agent/toolExecutor/toolHooks').ResolvedToolExecutionHookContext) => {
+      if (permissionMode.mode !== 'manual') return undefined;
+      const response = await approval.request({ agentId: options.agentId ?? 'external-agent', turnId: context.turnId,
+        toolCallId: context.toolCall.id, toolName: context.toolCall.name, action: context.toolCall.name,
+        display: context.execution.display ?? { kind: 'external_permission', summary: context.toolCall.name, options: [] } });
+      const selected = context.execution.display?.kind === 'external_permission'
+        ? context.execution.display.options.find((option) => option.id === response.selectedOptionId) : undefined;
+      return response.decision === 'approved' && selected?.kind.startsWith('allow_') ? undefined
+        : { permissionDecision: response.decision === 'rejected' && selected?.kind.startsWith('reject_') ? 'rejected' : 'cancelled',
+          veto: { isError: true, output: 'Not approved' } };
+    } }],
     [IAgentExecutorRegistry, { recordNegotiated: vi.fn() }],
     [ISessionMetadata, { read: async () => ({ agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) }],
   ]);
@@ -384,6 +402,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
               rawInput: { path: 'src/a.ts' },
             },
             options: [
+              ...options.vendorDefaultOption === true ? [{ optionId: 'kiki.vendor_default', name: 'Use vendor permissions', kind: 'allow_once' as const }] : [],
               { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
               { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
               { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
@@ -392,6 +411,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
           {
             signal,
             options: [
+              ...options.vendorDefaultOption === true ? [{ optionId: 'kiki.vendor_default', name: 'Use vendor permissions', kind: 'allow_once' as const }] : [],
               { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
               { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
               { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
@@ -543,6 +563,7 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
   } as unknown as IAgentExecutorRegistry);
   ix.stub(ISessionMetadata, { read: async () => ({ id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} }), registerAgent: vi.fn(), updateAgent: vi.fn(async () => {}) });
   ix.set(IAgentPermissionModeService, harness.permissionMode);
+  ix.stub(IAgentPermissionRulesService, { rules: [] });
   ix.set(IAgentProfileService, {
     _serviceBrand: undefined,
     data: () => harness.executorContext.binding,
@@ -1806,7 +1827,7 @@ describe('ACP external executor', () => {
     ],
   ])('fails manual permission mode closed for %s', async (_name, options) => {
     const harness = createHarness({
-      ...options,
+      ...options, permissionMode: 'manual',
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
     await expect(harness.session.run(
@@ -1816,10 +1837,34 @@ describe('ACP external executor', () => {
     expect(harness.starts).toHaveLength(0);
   });
 
+  it.each(['manual', 'auto', 'yolo'] as const)('inherits vendor mode without an override despite ambient %s', async (permissionMode) => {
+    const approval = vi.fn(async () => ({ decision: 'approved' as const, selectedOptionId: 'allow-once' }));
+    const harness = createHarness({ permissionMode, inheritPermission: true, vendorDefaultOption: true, approval });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(harness.selections.some((selection) => selection.configId === 'auto_approve')).toBe(false);
+    expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'kiki.vendor_default' }]);
+    expect(approval).not.toHaveBeenCalled();
+    expect(harness.starts[0]?.session?.sessionMeta?.['kiki.permission']).toMatchObject({ override: undefined, hostGate: false });
+  });
+
+  it('restores vendor permission value after clearing a runtime override', async () => {
+    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true });
+    const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
+    await first.completion;
+    await harness.session.settled();
+    Object.assign(harness.permissionMode, { externalOverride: undefined });
+    const next = await harness.session.run({ kind: 'prompt', prompt: 'next' }, { signal: new AbortController().signal });
+    await next.completion;
+    expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'allow-once' },
+      { outcome: 'selected', optionId: 'kiki.vendor_default' }]);
+    expect(harness.starts[1]?.session?.sessionMeta?.['kiki.permission']).toMatchObject({ override: undefined, hostGate: false });
+  });
+
   it.each([
     ['auto', false],
-    ['yolo', true],
-  ] as const)('uses the declared %s permission mapping', async (permissionMode, value) => {
+    ['yolo', false],
+  ] as const)('uses the callback-safe declared %s permission mapping', async (permissionMode, value) => {
     const harness = createHarness({
       permissionMode,
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
@@ -1834,9 +1879,9 @@ describe('ACP external executor', () => {
 
   it.each([
     ['manual', 'default'],
-    ['auto', 'auto'],
-    ['yolo', 'yolo'],
-  ] as const)('configures Kimi ACP mode for %s before starting the turn', async (permissionMode, value) => {
+    ['auto', 'default'],
+    ['yolo', 'default'],
+  ] as const)('configures Kimi ACP callbacks for explicit %s before starting the turn', async (permissionMode, value) => {
     const harness = createHarness({
       permissionMode,
       permissionMapping: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.permissionModeMapping,
@@ -2041,7 +2086,7 @@ describe('ACP external executor', () => {
   });
 
   it('runs manual and auto modes without a verified permission mapping and records the loss', async () => {
-    const manual = createHarness({ permissionMapping: null });
+    const manual = createHarness({ permissionMapping: null, permissionMode: 'manual' });
     const manualRun = await manual.session.run(
       { kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal },
     );

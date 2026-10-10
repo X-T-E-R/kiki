@@ -526,6 +526,7 @@ export class AcpProcessClient {
           {
             sessionId: session.sessionId,
             prompt: [{ type: 'text', text: request.prompt }, ...request.attachments ?? []],
+            _meta: request.session?.sessionMeta,
           },
           { cancellationSignal: requestController.signal },
         );

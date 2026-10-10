@@ -42,6 +42,13 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { ToolAccesses, type ToolAccesses as ToolAccessList } from '#/tool/toolContract';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { authorizeExternalTool, externalPermissionMeta } from '#/agent/execution/externalPermission';
+import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
+import { AgentPermissionGate } from '#/agent/permissionGate/permissionGateService';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { stubToolExecutorEvents } from '../toolExecutor/stubs';
 
 import { stubPermissionModeService } from '../permissionMode/stubs';
 import { recordingTelemetry } from '../../app/telemetry/stubs';
@@ -101,7 +108,8 @@ describe('AgentPermissionPolicyService chain', () => {
               status: 'ready',
               onDidChangeStatus: () => ({ dispose: () => {} }),
               dispose: () => {},
-              environment: { pathClass: 'posix' } as never,
+              environment: { pathClass: 'posix', homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
+              fs: { realpath: async (path: string) => path } as never,
               path: {
                 separator: '/',
                 delimiter: ':',
@@ -120,6 +128,12 @@ describe('AgentPermissionPolicyService chain', () => {
         reg.defineInstance(ITelemetryService, recordingTelemetry([]));
         reg.definePartialInstance(IGitService, { findWorkTree: async () => null });
         reg.definePartialInstance(ISessionMetadata, { read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, worktree: worktreeMeta }) });
+        reg.defineInstance(IAgentToolExecutorService, stubToolExecutorEvents().executor);
+        reg.definePartialInstance(IAgentToolApprovalService, {
+          resolvePermissionResolution: async (result) => result.kind === 'approve' ? undefined
+            : { permissionDecision: result.kind === 'ask' ? 'cancelled' : 'rejected', veto: { isError: true, output: 'Not approved' } },
+        });
+        reg.define(IAgentPermissionGate, AgentPermissionGate);
         reg.definePartialInstance(IWorktreeService, { list: async () => [] });
         reg.define(IAgentPermissionPolicyService, AgentPermissionPolicyService);
       },
@@ -141,6 +155,71 @@ describe('AgentPermissionPolicyService chain', () => {
     const svc = service();
     return svc.evaluate(policyContext(input));
   }
+
+  function externalContext(inherit = false): AgentExecutorContext {
+    return { agent: { id: 'main', accessor: ix }, descriptor: { id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
+      binding: { systemPrompt: '', thinkingLevel: 'off', permissionMode: inherit ? undefined : mode } };
+  }
+
+  it.each([
+    ['Read', { path: '/workspace/notes.md' }],
+    ['Glob', { path: '/workspace' }],
+    ['Bash', { command: 'Get-ChildItem /workspace', cwd: '/workspace' }],
+  ] as const)('authorizes external %s with the real yolo gate and preserves explicit deny', async (name, input) => {
+    mode = 'yolo';
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: name, detail: input };
+    expect(await authorizeExternalTool(context, { name, input }, 1, 'external-call', signal, display)).toBe('allow');
+    rules.push({ decision: 'deny', scope: 'user', pattern: name });
+    expect(await authorizeExternalTool(context, { name, input }, 1, 'external-call', signal, display)).toBe('deny');
+    const meta = externalPermissionMeta(context, '/workspace');
+    expect(meta.override).toEqual({ mode: 'yolo', source: 'profile' });
+    expect(meta.policyIdentity).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(meta)).not.toContain('"pattern"');
+  });
+
+  it.each(['manual', 'auto', 'review', 'yolo'] as const)('keeps an external unknown tool on the existing %s policy path', async (permissionMode) => {
+    mode = permissionMode;
+    const tool = { name: 'VendorNewTool', input: { query: 'neutral fixture' } };
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: tool.name, detail: tool.input };
+    expect(await authorizeExternalTool(context, tool, 1, 'new-tool', signal, display))
+      .toBe(permissionMode === 'manual' ? 'cancelled' : 'allow');
+    rules.push({ decision: 'deny', scope: 'user', pattern: tool.name });
+    expect(await authorizeExternalTool(context, tool, 1, 'new-tool', signal, display)).toBe('deny');
+  });
+
+  it('preserves old explicit external binding sources but does not infer an override from ambient state', () => {
+    mode = 'yolo';
+    const context = externalContext(true);
+    expect(externalPermissionMeta(context, '/workspace').override).toBeUndefined();
+    for (const source of ['session', 'profile', 'harness-settings'] as const) {
+      const execution = { version: 1 as const, generation: 1, selection: { executor: 'example-acp' },
+        sources: { permission_mode: source }, effective: { permission_mode: 'manual' as const, kiki_context: [], allow_kiki_subagents: false } };
+      expect(externalPermissionMeta({ ...context, binding: { ...context.binding, execution } }, '/workspace').override)
+        .toEqual({ mode: 'manual', source });
+    }
+  });
+
+  it.each(['manual', 'auto', 'review', 'yolo'] as const)('inherits external vendor permissions despite ambient %s and only intercepts explicit rules', async (permissionMode) => {
+    mode = permissionMode;
+    const context = externalContext(true);
+    const tool = { name: 'VendorNewTool', input: {} };
+    const display = { kind: 'external_permission' as const, options: [], summary: tool.name, detail: {} };
+    expect(externalPermissionMeta(context, '/workspace')).toMatchObject({ override: undefined, hostGate: false });
+    expect(await authorizeExternalTool(context, tool, 1, 'inherit', signal, display)).toBe('inherit');
+    rules.push({ decision: 'deny', scope: 'user', pattern: 'Read' });
+    expect(await authorizeExternalTool(context, tool, 1, 'inherit', signal, display)).toBe('inherit');
+    expect(await authorizeExternalTool(context, { name: 'Read', input: { path: '/workspace/notes.md' } }, 1, 'deny', signal, display)).toBe('deny');
+  });
+
+  it('preserves external auto sensitive-file approval and malformed command rejection', async () => {
+    mode = 'auto';
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: 'read', detail: {} };
+    expect(await authorizeExternalTool(context, { name: 'Read', input: { path: '/workspace/.env' } }, 1, 'sensitive', signal, display)).toBe('cancelled');
+    expect(await authorizeExternalTool(context, { name: 'Bash', input: {} }, 1, 'missing-command', signal, display)).toBe('deny');
+  });
 
   it.each(['manual', 'auto', 'review', 'yolo'] as const)(
     'allows AskUserQuestion in %s mode',
@@ -655,7 +734,8 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
               status: 'ready',
               onDidChangeStatus: () => ({ dispose: () => {} }),
               dispose: () => {},
-              environment: { pathClass: 'posix' } as never,
+              environment: { pathClass: 'posix', homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
+              fs: { realpath: async (path: string) => path } as never,
               path: {
                 separator: '/',
                 delimiter: ':',

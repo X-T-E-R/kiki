@@ -13,7 +13,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { externalPermissionHostGate } from './externalPermission';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { assertResearchExecutor } from '#/agent/profile/executionRestriction';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -311,8 +311,9 @@ export class AgentExecutionService implements IAgentExecutionService {
     const binding = { ...data, systemPrompt: executorId === 'native'
       ? this.profile.getSystemPrompt() : data.systemPrompt };
     assertResearchExecutor(binding.executionRestriction, executorId);
-    const modeKey = this.executors.get?.(executorId)?.permission?.via === 'argv'
-      ? `:${this.agent.accessor.get(IAgentPermissionModeService).mode}` : '';
+    const descriptor = this.executors.get?.(executorId);
+    const modeKey = descriptor?.permission?.via === 'argv'
+      ? `:host-gate:${externalPermissionHostGate({ agent: this.agent, binding, descriptor })}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {

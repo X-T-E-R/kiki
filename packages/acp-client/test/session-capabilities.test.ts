@@ -82,6 +82,24 @@ async function openWithScriptedAgent(
 }
 
 describe('AcpProcessClient session capability negotiation', () => {
+  it('forwards current permission context on every prompt without reopening the session', async () => {
+    const { client, history } = await openWithScriptedAgent({}, {});
+    try {
+      for (const permission of [{ version: 1, hostGate: false },
+        { version: 1, hostGate: true, override: { mode: 'yolo', source: 'runtime' } }]) {
+        const turn = await client.startTurn({ prompt: 'neutral fixture', signal: new AbortController().signal,
+          session: { cwd: 'C:/workspace', sessionMeta: { 'kiki.permission': permission } } });
+        for await (const _event of turn.events) { }
+        await turn.completion;
+      }
+      expect(history.sessionNewParams).toHaveLength(1);
+      expect(history.promptParams).toMatchObject([
+        { _meta: { 'kiki.permission': { hostGate: false } } },
+        { _meta: { 'kiki.permission': { hostGate: true, override: { mode: 'yolo', source: 'runtime' } } } },
+      ]);
+    } finally { await client.shutdown(); }
+  });
+
   it('declares the boolean session config option capability it uses', async () => {
     const { client, history } = await openWithScriptedAgent({}, {});
     try {

@@ -268,6 +268,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       }
       permissionMode.setMode(
         input.permissionMode ?? requester.accessor.get(IAgentPermissionModeService).mode,
+        input.permissionMode === undefined || input.permissionModeSource === 'ambient' ? 'ambient' : 'runtime',
       );
       if (!researchReadonly) {
         child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);

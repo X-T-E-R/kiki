@@ -22,6 +22,7 @@ import {
 } from './permissionMode';
 import {
   permissionModeConfiguredKey,
+  permissionModeExternalOverrideKey,
   permissionModeKey,
   PermissionSetMode,
 } from './permissionModeOps';
@@ -49,6 +50,7 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     this.interactive = bootstrap.interactive ?? true;
     this.agentState.contributeState(permissionModeKey);
     this.agentState.contributeState(permissionModeConfiguredKey);
+    this.agentState.contributeState(permissionModeExternalOverrideKey);
     if (parseBooleanEnv(bootstrap.getEnv(PERMISSION_MODE_REMINDER_ENV)) !== false) {
       this._register(instantiation.createInstance(PermissionModeInjection, this));
     }
@@ -58,18 +60,27 @@ export class AgentPermissionModeService extends Service implements IAgentPermiss
     return this.agentState.get(permissionModeKey);
   }
 
-  setMode(mode: PermissionMode): void {
+  get externalOverride(): PermissionMode | undefined {
+    return this.agentState.get(permissionModeExternalOverrideKey) ?? undefined;
+  }
+
+  get modeCeiling(): PermissionMode | undefined {
+    return this.ceiling;
+  }
+
+  setMode(mode: PermissionMode, source: 'runtime' | 'ambient' | 'binding' = 'runtime'): void {
     const effective = this.ceiling === undefined ? mode : constrainPermissionMode(mode, this.ceiling);
     const previousMode = this.mode;
     const changed = effective !== previousMode;
-    if (!changed && this.agentState.get(permissionModeConfiguredKey)) return;
-    void this.dispatcher.dispatch(new PermissionSetMode({ mode: effective }));
+    const override = source === 'runtime' ? effective : source === 'binding' ? undefined : this.externalOverride;
+    if (!changed && this.agentState.get(permissionModeConfiguredKey) && override === this.externalOverride) return;
+    void this.dispatcher.dispatch(new PermissionSetMode({ mode: effective, source }));
     if (changed) this._onDidChangeMode.fire({ mode: effective, previousMode });
   }
 
   setModeCeiling(mode: PermissionMode): void {
     this.ceiling = mode;
-    this.setMode(this.mode);
+    this.setMode(this.mode, this.externalOverride === undefined ? 'ambient' : 'runtime');
   }
 
   setModeAndBroadcast(mode: PermissionMode): void {

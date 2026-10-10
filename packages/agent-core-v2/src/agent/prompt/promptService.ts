@@ -2088,7 +2088,7 @@ export class AgentPromptService implements IAgentPromptService {
         permission_mode: execution.permissionMode ?? execution.execution.overrides?.permission_mode,
       } }, model: execution.model, thinking: execution.thinking }, assertCurrent);
       const permission = this.profile.data().execution?.effective.permission_mode;
-      if (permission !== undefined) this.permissionMode.setMode(permission);
+      this.permissionMode.setMode(permission ?? this.permissionMode.mode, 'binding');
       await this.syncProfileBindingMetadata();
       return;
     }

@@ -56,6 +56,7 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionQuestionService } from '#/session/question/question';
 import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
+import { authorizeExternalTool, externalPermissionHostGate, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -129,8 +130,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #workspace: ISessionWorkspaceContext;
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
-  readonly #permissionMode: IAgentPermissionModeService;
-  readonly #spawnPermissionMode: IAgentPermissionModeService['mode'];
   #active: ActiveExternalTurn | undefined;
   #permissionContext:
     | { readonly turn: MutableExternalTurn; readonly recorder: ExternalTurnRecorder }
@@ -139,6 +138,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
   #harnessMcp: HarnessMcpLease | undefined;
+  #permissionRestore: { readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
 
   constructor(
     private context: AgentExecutorContext,
@@ -184,8 +184,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
-    this.#permissionMode = context.agent.accessor.get(IAgentPermissionModeService);
-    this.#spawnPermissionMode = this.#permissionMode.mode;
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService));
     this.#client = clientFactory(
@@ -614,7 +612,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
-      sessionMeta: this.#harnessMcp?.sessionMeta,
+      sessionMeta: { ...this.#harnessMcp?.sessionMeta,
+        'kiki.permission': externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs) },
       sessionRef:
         state.bindingFingerprint === agentExecutorBindingFingerprint(this.context.binding)
           ? state.sessionRef as ExecutorSessionRefEnvelope | undefined
@@ -675,30 +674,49 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       }
     }
 
+    if (!externalPermissionHostGate(this.context)) {
+      const restore = this.#permissionRestore;
+      if (restore === undefined) return configured;
+      const restored = await this.#client.configureSession({ configOptions: restore.config === undefined ? undefined : [restore.config],
+        modeId: restore.modeId, signal });
+      if (restore.config !== undefined) assertConfigured(restored.configOptions, restore.config, 'inherited permission mode');
+      if (restore.modeId !== undefined && restored.currentModeId !== restore.modeId) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor did not restore its inherited permission mode');
+      }
+      this.#permissionRestore = undefined;
+      return restored;
+    }
     const declared = this.context.descriptor.permission;
     const mapping = this.context.descriptor.permissionModeMapping ?? (declared?.via === 'config_option'
       ? { configId: declared.configId, configCategory: declared.configCategory,
           manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
       : undefined);
-    const mode = this.#permissionMode.mode;
+    const mode = externalPermissionMode(this.context);
     if (mapping !== undefined) {
-      const permission = permissionConfig(configured.configOptions, mapping, mode);
+      const permission = permissionConfig(configured.configOptions, mapping, 'manual');
+      this.#permissionRestore ??= { config: { configId: permission.option.id, value: permission.option.currentValue } };
       const verified = await this.#client.configureSession({ configOptions: [permission.selection], signal });
       assertConfigured(verified.configOptions, permission.selection, 'permission mode');
       return verified;
     }
     if (declared?.via === 'argv') {
-      if (mode !== this.#spawnPermissionMode || declared.flag === undefined) {
+      if (declared.flag === undefined) {
         throw new Error2(ErrorCodes.CONFIG_INVALID,
           `External executor "${this.context.descriptor.id}" requires a fresh process for ${mode} permission mode`);
       }
       return configured;
     }
     if (declared?.via === 'session_mode') {
-      const selected = declared[mode === 'review' ? 'review' : mode] ?? declared.manual;
+      const selected = declared.manual;
       if (opened.availableModes !== undefined && !opened.availableModes.includes(selected)) {
         throw new Error2(ErrorCodes.CONFIG_INVALID,
           `External executor "${this.context.descriptor.id}" does not advertise ${selected} permission mode`);
+      }
+      if (this.#permissionRestore === undefined) {
+        if (opened.currentModeId === undefined) {
+          throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor does not expose its inherited permission mode for restoration');
+        }
+        this.#permissionRestore = { modeId: opened.currentModeId };
       }
       configured = await this.#client.configureSession({ modeId: selected, signal });
       if (configured.currentModeId === selected) return configured;
@@ -778,42 +796,41 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   ): Promise<{ readonly outcome: 'selected' | 'cancelled'; readonly optionId?: string }> {
     const active = this.#permissionContext;
     if (active === undefined || context.signal.aborted) return { outcome: 'cancelled' };
+    if (request.sessionId !== this.#client.status().sessionId) return { outcome: 'cancelled' };
     const toolCallId = active.recorder.toolCallId(request.toolCall.toolCallId);
-    let approval: Promise<Awaited<ReturnType<ISessionApprovalService['request']>>>;
+    const rawInput = objectOf(request.toolCall.rawInput);
+    const tool = externalToolPermission(request._meta?.['kiki.tool']) ?? externalToolPermission({
+      name: rawInput?.['name'] ?? request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
+      input: rawInput ?? {},
+    })!;
     try {
-      approval = this.context.agent.accessor.get(ISessionApprovalService).request({
-        agentId: this.context.agent.id,
-        turnId: active.turn.id,
-        toolCallId,
-        toolName: request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
-        action: request.toolCall.title ?? 'Run external tool',
-        display: {
-          kind: 'external_permission',
-          summary: request.toolCall.title ?? 'External tool permission',
-          detail: boundedPermissionDetail(request),
-          options: context.options.map((option) => ({
-            id: option.optionId,
-            label: option.name,
-            kind: option.kind,
-            changes: optionChanges(option),
-          })),
-        },
-      });
+      const result = await authorizeExternalTool(this.context, tool, active.turn.id, toolCallId, context.signal,
+        { kind: 'external_permission', summary: request.toolCall.title ?? tool.name, detail: boundedPermissionDetail(request),
+          options: context.options.filter((option) => option.optionId !== 'kiki.vendor_default')
+            .map((option) => ({ id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) });
+      if (result === 'inherit') {
+        const vendorDefault = context.options.find((candidate) => candidate.optionId === 'kiki.vendor_default');
+        if (vendorDefault !== undefined) return { outcome: 'selected', optionId: vendorDefault.optionId };
+        const response = await raceApproval(this.context.agent.accessor.get(ISessionApprovalService).request({
+          agentId: this.context.agent.id, turnId: active.turn.id, toolCallId,
+          toolName: request.toolCall.title ?? request.toolCall.kind ?? 'External tool',
+          action: request.toolCall.title ?? 'Run external tool',
+          display: { kind: 'external_permission', summary: request.toolCall.title ?? 'External tool permission',
+            detail: boundedPermissionDetail(request), options: context.options.map((option) => ({
+              id: option.optionId, label: option.name, kind: option.kind, changes: optionChanges(option) })) },
+        }), context.signal);
+        const selected = context.options.find((option) => option.optionId === response?.selectedOptionId);
+        return response === undefined || response.decision === 'cancelled' || selected === undefined ||
+          (response.decision === 'approved') !== selected.kind.startsWith('allow_')
+          ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: selected.optionId };
+      }
+      const option = context.options.find((candidate) => candidate.optionId !== 'kiki.vendor_default' &&
+        candidate.kind === (result === 'allow' ? 'allow_once' : 'reject_once'));
+      return result === 'cancelled' || option === undefined ? { outcome: 'cancelled' }
+        : { outcome: 'selected', optionId: option.optionId };
     } catch {
       return { outcome: 'cancelled' };
     }
-    const response = await raceApproval(approval, context.signal);
-    if (response === undefined || response.decision === 'cancelled') {
-      return { outcome: 'cancelled' };
-    }
-    const selectedOptionId = response.selectedOptionId;
-    if (
-      selectedOptionId === undefined ||
-      !context.options.some((option) => option.optionId === selectedOptionId)
-    ) {
-      return { outcome: 'cancelled' };
-    }
-    return { outcome: 'selected', optionId: selectedOptionId };
   }
 }
 
@@ -835,11 +852,8 @@ function requiredCommand(context: AgentExecutorContext): string {
 
 export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly string[] {
   const declared = context.descriptor.permission;
-  const mode = declared?.via === 'argv'
-    ? context.agent.accessor.get(IAgentPermissionModeService).mode : undefined;
   const permissionArgs = [...context.descriptor.launchArgs ?? [],
-    ...mode === undefined || declared?.flag === undefined ? []
-      : [declared.flag, declared[mode === 'review' ? 'review' : mode] ?? declared.manual]];
+    ...declared?.via !== 'argv' || declared.flag === undefined || !externalPermissionHostGate(context) ? [] : [declared.flag, declared.manual]];
   if (context.descriptor.modelBinding !== 'argv') return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
   const model = context.binding.modelAlias;
   if (model === undefined) return executorLaunchArgs(context.descriptor, [...permissionArgs, ...context.descriptor.args]);
