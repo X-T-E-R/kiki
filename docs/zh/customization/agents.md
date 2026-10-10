@@ -94,6 +94,18 @@ GUI 的 main agent 选择器列出当前工作区或工作目录下生效的 pro
 
 agent 文件被监听并在变更时热刷新，且热刷新不会打断进行中的会话：已在运行或恢复的 agent 继续使用绑定时的提示词与约束快照，哪怕 profile 被编辑、设为 `private`、删除或失效。因此改动只对**新的**派遣生效，向私有或已删除的 profile 派遣会得到明确报错；冻结的派遣列表会跳过失效目标，而不是让整段对话失败。恢复一个 profile 已不存在的旧记录时会降级到默认 profile 并给出警告，模型、effort 与执行器仍会校验。
 
+### 外部直连执行
+
+harness 决定实际运行程序，profile 是可选定制，模型则是在该 harness 内选择。main agent 使用 [REST execution 选择](../server/rest-api.md#会话) 时，省略 `profile` 就直接运行外部程序。没有会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 时，Kiki 不发送 profile 提示词、cognition、共享字段、记忆、hooks 或 MCP 工具，也不指定模型、档位、审批模式或 Codex 沙箱策略。原生执行不选 profile 时保持既有 Kiki 默认行为。
+
+直连保留配置的启动环境、home 和工作目录，但实际程序必须解析到你预期的 CLI 同一可执行文件及设置来源。ACP adapter 可能启动 SDK 自带 binary 或显式覆盖，而不是 PATH 上的 CLI；不选 profile 不会让两者自动变成同一个程序。仅登录观测未知并不阻止启动。
+
+权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，才应用到引擎。显式 deny 或 ask 规则、有限工具声明与会话已绑定的 worktree 隔离限制仍生效。Kiki 原生可见工具目录不会成为引擎自有工具的白名单。
+
+只改变权限模式会保留远端对话。清除覆盖后回到剩余的 profile 或 harness 设置；都未设置时，ACP 与 Codex 恢复覆盖前保存的引擎策略，重新打开 Kiki 会话后也能恢复。Adapter 无法应用所选模式或恢复已保存策略时会报错，不会悄悄另建对话。
+
+审批怎样送达与采用哪种策略是两件事。Adapter 支持时，ACP 与 Codex 发出的审批请求进入 Kiki 审批交互。无界面的 CLI 如果要求审批，却没有受支持的回复通道，这次请求就无法完成：使用带审批桥的 adapter，或为该任务明确选择受支持的权限模式，不必修改引擎全局默认值。
+
 ### 外部 ACP profile 的投递
 
 对于对外使用的 ACP（Agent Client Protocol）执行器，只有 harness 接受 `session/new` 的 `_meta.systemPromptOverride` 扩展时，Kiki 才把冻结的 profile 作为系统提示词发送。内置 `grok-acp` 执行器启用，其他 ACP 执行器把 profile 放在第一条 User 消息的前言里。自定义 harness 支持该扩展时，可在 `config.toml` 的 `[agent_executors.<id>]` 中设 `profile_delivery = "system_prompt_override"`；会忽略该扩展的 harness 不要启用，因为 Kiki 随后就不再附加 User 消息前言作为后备。
@@ -116,7 +128,9 @@ Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，�
 
 子 Agent 的完成回执非阻塞地排回同一个 main agent：它忙碌时等当前轮次结束，空闲时直接唤醒它。父级通知使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
 
-Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 把它映射为持久化审批交互，manual 或 auto 模式（`on-request`）下由你回答。Full access（YOLO）只在 Codex 层预批准附加的 `kiki-harness` MCP server，其调用仍受 Kiki 自身的能力和执行策略约束；其他 MCP server 保留原审批策略，workspace-write 沙箱不变宽。
+Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 把它映射为持久化审批交互。明确设置 Kiki Full access（YOLO），且没有 deny 或 ask 规则、有限工具声明、执行限制或 worktree 隔离时，Codex 的 `approvalPolicy` 使用 `never`，不强制保留审批回调。其他显式模式或存在这些约束时使用 `on-request`，让 Kiki 应用工具权限检查。Kiki 不会放宽 Codex 沙箱。
+
+明确设置 YOLO 还会只为附加的 `kiki-harness` MCP server 增加逐 server 工具预批准；其调用仍受 Kiki 原生能力与执行策略约束。父 Agent 继承的 YOLO 模式不会开启上述任一覆盖。清除显式模式时，遵循[上文的权限恢复行为](#外部直连执行)。
 
 外部交互取决于 harness 协商出的能力。ACP 历史 fork 在支持时使用 `session/fork`；要精确定位到 Assistant 消息，还需要 Claude、Codex 或 DeepSeek adapter 支持的 AIR fork 定点扩展，无法表达的位置会新建远端会话并附上有长度限制的对话交接，而不会继续源远端会话。Codex 与 DeepSeek 的 ACP 表单问题映射到 Kiki 持久化问题交互，不支持的复杂表单和 URL 模式请求会被拒绝；Grok 的计划审批映射到持久化计划审阅交互。
 
@@ -141,7 +155,7 @@ kiki_context: [memory, board, cron, threads, history, hooks]
 | `history` | `kiki_history_search`、`kiki_history_read` |
 | `hooks` | 消息上下文注入，不增加模型可调用的工具 |
 
-这些工具沿用 Kiki 原生参数和执行策略，包括审批、persona 可见性、工作区访问、记忆审核和 Plan 模式限制。调用归属到已有 main agent，既不是用户写入也不新建 seat 会话；桥的 token 无法访问普通 REST 端点或选择别的调用方会话，原生读取工具则声明 MCP 只读标记。厂商审批与 Kiki 审批是两层，上面提到的 Codex Full access 预批准是唯一的例外。
+这些工具沿用 Kiki 原生参数和执行策略，包括审批、persona 可见性、工作区访问、记忆审核和 Plan 模式限制。调用归属到已有 main agent，既不是用户写入也不新建 seat 会话；桥的 token 无法访问普通 REST 端点或选择别的调用方会话，原生读取工具则声明 MCP 只读标记。通过上面的 Codex Full access 映射关闭厂商审批提示，不会授予额外的 Kiki 能力。
 
 `hooks` 以消息形式发送记忆摘要和未送达的提醒、工作笔记，不改写系统提示词或工具 schema；桥存活期间相同内容只注入一次，hook 内容在 Kiki 时间线中以 `hook_result` 来源记录。Kiki 只写临时的进程或会话配置，不修改 harness 的全局 hook 设置。
 
