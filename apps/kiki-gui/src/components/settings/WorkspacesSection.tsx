@@ -300,8 +300,37 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   onRemove: () => void;
   onNewSession: () => void;
 }) {
-  const { t, tp, time } = useI18n();
+  const { client } = useConnection();
+  const queryClient = useQueryClient();
+  const { t, tp, time, locale } = useI18n();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [trustBusy, setTrustBusy] = useState(false);
+  const [trustFeedback, setTrustFeedback] = useState<Feedback>(null);
+
+  const trustQuery = useQuery({
+    queryKey: ['workspace-trust', workspace.id],
+    queryFn: () => client.getWorkspaceTrust(workspace.id),
+    staleTime: 30_000,
+  });
+
+  const isTrusted = trustQuery.data?.trusted ?? false;
+
+  const toggleTrust = async () => {
+    if (trustBusy || trustQuery.data === undefined || trustQuery.isError) return;
+    setTrustBusy(true);
+    setTrustFeedback(null);
+    try {
+      const res = isTrusted
+        ? await client.untrustWorkspace(workspace.id)
+        : await client.trustWorkspace(workspace.id);
+      queryClient.setQueryData(['workspace-trust', workspace.id], res);
+    } catch (error) {
+      setTrustFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setTrustBusy(false);
+    }
+  };
+
   const compact = density === 'compact';
   const facts = `${tp('st.workspaces.sessionCount', workspace.session_count)} · ${t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) })}`;
   return (
@@ -312,6 +341,19 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
       <div className="min-w-0 flex-1 py-1">
         <div className="flex min-w-0 items-baseline gap-2">
           <p className="min-w-0 shrink truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p>
+          {trustQuery.data !== undefined ? (
+            <span
+              data-workspace-trust-badge={workspace.id}
+              className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10.5px] font-medium leading-none ${
+                isTrusted
+                  ? 'bg-ink/[0.08] text-ink'
+                  : 'border border-hairline text-ink-faint'
+              }`}
+              title={t('st.workspaces.trustHint')}
+            >
+              {isTrusted ? t('st.workspaces.trusted') : t('st.workspaces.untrusted')}
+            </span>
+          ) : null}
           {compact ? (
             <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={workspace.root}>{workspace.root}</p>
           ) : null}
@@ -323,6 +365,8 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
             <span className="shrink-0">{facts}</span>
           </p>
         )}
+        {trustQuery.isError ? <InlineError error={trustQuery.error} /> : null}
+        <FeedbackLine feedback={trustFeedback} />
       </div>
       {compact ? <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">{time.relativeTime(workspace.last_opened_at)}</span> : null}
       <button
@@ -342,6 +386,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
         {t('st.workspaces.newSession')}
       </button>
       <button type="button" data-workspace-more={workspace.id} aria-haspopup="menu" aria-expanded={menu !== null}
+        disabled={trustBusy}
         aria-label={t('st.workspaces.more', { name: workspace.name })} title={t('st.workspaces.more', { name: workspace.name })}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
@@ -356,6 +401,11 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           onClose={() => { setMenu(null); }}
           entries={[
             { key: 'rename', label: t('st.workspaces.rename'), run: onRename },
+            ...(trustQuery.data !== undefined && !trustQuery.isError && !trustBusy ? [{
+              key: 'trust',
+              label: isTrusted ? t('st.workspaces.untrust') : t('st.workspaces.trust'),
+              run: toggleTrust,
+            }] : []),
             { separator: true },
             { key: 'remove', label: `${t('st.workspaces.remove')}…`, danger: true, run: onRemove },
           ]} />
