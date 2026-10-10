@@ -1282,7 +1282,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       parameters.maxCompletionTokens ?? record.maxOutputSize ?? 0) };
   }
 
-  async setModel(alias: string): Promise<ProfileSetModelResult> {
+  async setModel(alias: string, assertCurrent?: () => void): Promise<ProfileSetModelResult> {
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       const validated = this.requireValidBinding(this.validateBinding({ modelAlias: alias }));
@@ -1293,6 +1293,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (changed) {
         const profile = this.resolveActiveProfile();
         if (profile !== undefined) await this.resolvePromptFieldSnapshot(profile, externalAlias);
+        assertCurrent?.();
         this.update({ modelAlias: externalAlias });
         this.telemetry.track2('model_switch', { model: externalAlias });
         await this.refreshSystemPrompt();
@@ -1317,17 +1318,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profile: DEFAULT_AGENT_PROFILE_NAME,
         model: canonicalAlias,
         bindingSelection: { model: { source: 'runtime-explicit', requestedValue: alias } },
-      });
+      }, assertCurrent);
       this.telemetry.track2('model_switch', { model: canonicalAlias });
     } else if (changed) {
-      const previousCognition = this.cognitionBinding;
-      await this.applyCognitionOverlay('', canonicalAlias);
-      this.cognitionBinding = previousCognition;
-      const profile = this.resolveActiveProfile();
-      if (profile !== undefined) await this.resolvePromptFieldSnapshot(profile, canonicalAlias);
-      this.update({ modelAlias: canonicalAlias });
+      const prepared = await this.prepareModelSwitchBinding(canonicalAlias);
+      prepared.assertCurrent();
+      assertCurrent?.();
+      await this.dispatcher.dispatch(new ConfigUpdate(prepared.config));
+      await prepared.syncMetadata();
       this.telemetry.track2('model_switch', { model: canonicalAlias });
-      await this.refreshSystemPrompt();
     }
     this.refreshCurrentBindingAdvisories(
       { source: 'runtime-explicit', requestedValue: alias },
