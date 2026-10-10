@@ -775,7 +775,7 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
     setBusy(true);
     setFeedback(null);
     try {
-      await api.create({ ...draftToPatch(draft, undefined), name: draft.name.trim(), workspace: '' });
+      await api.create({ ...draftToPatch(draft, undefined), name: draft.name.trim() });
       setDraft(draftOf(undefined));
       onCreated();
     } catch (error) {
@@ -808,11 +808,6 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
         <input id="xc-new-name" data-xc-new-name className={INPUT} value={draft.name} disabled={busy}
           placeholder={t('st.xc.namePlaceholder')}
           onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
-      </Field>
-      <Field label={t('st.xc.workspace')} hint={t('st.xc.workspaceHint')} htmlFor="xc-new-workspace">
-        <input id="xc-new-workspace" data-xc-new-workspace className={`${INPUT} font-mono text-[11.5px]`}
-          value={draft.workspace} disabled={busy} placeholder="C:/Users/you/Projects"
-          onChange={(event) => { setDraft({ ...draft, workspace: event.target.value }); }} />
       </Field>
       <AccessEditor idPrefix="xc-new" draft={draft} disabled={busy} onChange={setDraft} />
       <button type="button" data-xc-create-submit className={SECONDARY_BUTTON} disabled={busy} aria-busy={busy}

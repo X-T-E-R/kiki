@@ -175,6 +175,24 @@ describe('isAbsoluteCwdPath', () => {
 });
 
 describe('buildNewSessionCreate', () => {
+  it.each([undefined, 'profiles/example.md'])('keeps inbound workspace and permission on the session (%s)', (profileFile) => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/example/project', profile: 'agent', permissionMode: 'review', planMode: false,
+      model: 'example/model', thinking: 'high',
+      execution: { executor: 'external-client', profile: undefined, overrides: undefined,
+        external_connection_id: 'conn_example', external_connection_name: 'Untrusted display name', profile_file: profileFile },
+    });
+    expect(body.metadata).toEqual({ cwd: 'C:/example/project', externalClient: { driver: 'external', connectionId: 'conn_example' } });
+    expect(body.agent_config).toEqual({ permission_mode: 'review', plan_mode: false,
+      ...(profileFile === undefined ? {} : { execution: { executor: 'native', profile_file: profileFile } }) });
+    const registered = buildNewSessionCreate({
+      cwd: '', workspaceId: 'wd_example', profile: 'agent', permissionMode: 'manual', planMode: false,
+      execution: { executor: 'external-client', profile: undefined, overrides: undefined, external_connection_id: 'conn_example' },
+    });
+    expect(registered.workspace_id).toBe('wd_example');
+    expect(registered.metadata).not.toHaveProperty('cwd');
+  });
+
   it('applies every create-supported execution control before a skill handoff can run', () => {
     expect(
       buildNewSessionCreate({

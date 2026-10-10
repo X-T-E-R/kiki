@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -261,29 +261,28 @@ describe('external clients settings panel', () => {
     expect(container.querySelector('[data-xc-empty]')).toBeNull();
   });
 
-  it('creates the one authorization object whichever way the client connects', async () => {
+  it.each(['local', 'remote'])('creates only access settings for a %s client', async (access) => {
     facade.list.mockResolvedValue({ connections: [], listener: stopped });
     await render();
     (container.querySelector('[data-xc-add]') as HTMLElement).click();
     await settle();
-    (container.querySelector('[data-xc-access="remote"]') as HTMLElement).click();
+    (container.querySelector(`[data-xc-access="${access}"]`) as HTMLElement).click();
     await settle();
     const name = container.querySelector('[data-xc-new-name]') as HTMLInputElement;
-    const workspace = container.querySelector('[data-xc-new-workspace]') as HTMLInputElement;
+    expect(container.querySelector('[data-xc-new-workspace]')).toBeNull();
     const set = async (el: HTMLInputElement, value: string) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
       await act(async () => { setter.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); });
       await settle();
     };
-    await set(name, 'ChatGPT');
-    await set(workspace, 'C:/Users/you/Projects/kiki');
+    await set(name, '  ChatGPT  ');
     (container.querySelector('[data-xc-create-submit]') as HTMLElement).click();
     await settle();
     expect(facade.create).toHaveBeenCalledTimes(1);
     const body = facade.create.mock.calls[0]?.[0] as Record<string, unknown>;
-    // The form opens on the server's own default, so the value sent is the one
-    // that will actually be in effect.
-    expect(body).toMatchObject({ name: 'ChatGPT', workspace: 'C:/Users/you/Projects/kiki', mode: 'manual' });
+    expect(body).toMatchObject({ name: 'ChatGPT', mode: 'manual' });
+    expect(body).not.toHaveProperty('workspace');
+    expect(body).not.toHaveProperty('cwd');
     // A create has nothing saved to compare against, so the whole grant
     // travels; the delta rule only applies once there is something to keep.
     expect(body['tools']).toEqual(['Read', 'Glob', 'Grep', 'Write', 'Edit', 'ReadMedia', 'AgentRun',

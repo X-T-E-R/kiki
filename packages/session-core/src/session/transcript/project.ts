@@ -675,8 +675,6 @@ function externalTextNoteOf(
     || typeof clientName !== 'string' || typeof sessionRef !== 'string') return undefined;
   const title = payload['title'];
   const sourceUrl = payload['sourceUrl'];
-  const clientTime = payload['clientTime'];
-  const turn = payload['turnId'];
   return {
     recordId,
     markerId,
@@ -684,9 +682,7 @@ function externalTextNoteOf(
     text,
     title: typeof title === 'string' ? title : undefined,
     sourceUrl: typeof sourceUrl === 'string' ? sourceUrl : undefined,
-    clientTime: typeof clientTime === 'string' ? clientTime : undefined,
-    source: { driver, connectionId, clientName, sessionRef },
-    turn: typeof turn === 'number' ? turn : undefined,
+    source: { connectionId, clientName, sessionRef },
   };
 }
 

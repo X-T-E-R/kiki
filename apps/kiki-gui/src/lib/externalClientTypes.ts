@@ -6,7 +6,7 @@
 export interface ExternalClientConnection {
   readonly id: string;
   readonly name: string;
-  readonly workspace: string;
+  readonly workspace?: string;
   readonly mode: 'manual' | 'auto' | 'review' | 'yolo';
   readonly tools: string[];
   readonly allowCommands: boolean;
@@ -19,7 +19,7 @@ export interface ExternalClientConnection {
 
 export interface ExternalClientConnectionInput {
   readonly name: string;
-  readonly workspace: string;
+  readonly workspace?: string;
   readonly mode?: ExternalClientConnection['mode'];
   readonly tools?: string[];
   readonly allowCommands?: boolean;

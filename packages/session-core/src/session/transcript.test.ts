@@ -1707,6 +1707,30 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(withTool.filter((block) => block.kind === 'notice').every((block) => block.markerRepeatCount === undefined)).toBe(true);
   });
 
+  it.each(['external', 'native'])('projects saved text only for the external driver (%s)', (driver) => {
+    const source = { driver, connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' };
+    const payload = {
+      recordId: 'text_example', kind: 'handoff', text: '  Saved **body**\n', title: 'Shared notes',
+      source, sourceUrl: 'https://example.test/notes', clientTime: FIXED_AT_1, turnId: 3,
+    };
+    const snapshot = emptySnapshot({ items: [
+      { kind: 'marker', markerId: 'marker_example', marker: 'external.text', at: FIXED_AT, payload },
+    ] });
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot).blocks;
+    const note = blocks[0]?.kind === 'notice' ? blocks[0].externalText : undefined;
+    if (driver === 'external') {
+      expect(note).toEqual({
+        recordId: 'text_example', markerId: 'marker_example', kind: 'handoff', text: payload.text,
+        title: 'Shared notes', sourceUrl: 'https://example.test/notes',
+        source: { connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' },
+      });
+      expect(blocks[0]).toMatchObject({ kind: 'notice', createdAt: FIXED_AT, turnId: 't3' });
+    } else {
+      expect(note).toBeUndefined();
+    }
+    expect(snapshot.items[0]).toMatchObject({ payload });
+  });
+
   it('retains distinct marker labels and the latest compaction details', () => {
     const blocks = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [
       { kind: 'marker', markerId: 'm1', marker: 'model.switch', payload: { from: 'example/a', to: 'example/b' } },

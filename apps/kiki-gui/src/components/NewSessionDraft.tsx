@@ -249,20 +249,22 @@ export function buildNewSessionCreate(input: {
   // A withheld control is omitted from the key, not set to `undefined`: the
   // request body then says the same thing the object does, with no reliance on
   // how a given transport treats an explicit undefined.
+  const externalConnectionId = input.execution?.external_connection_id;
+  const external = externalConnectionId !== undefined;
   const agent_config = {
     ...(input.persona === undefined && !named ? { profile: input.profile } : {}),
-    ...(named ? { execution: executionSelectionOf(input.execution!) } : {}),
-    ...(keep('model', input.modelTouched) && input.model !== undefined ? { model: input.model } : {}),
-    ...(keep('thinking', input.effortTouched) && input.thinking !== undefined ? { thinking: input.thinking } : {}),
-    ...(keep('permission_mode', input.permissionTouched) ? { permission_mode: input.permissionMode } : {}),
+    ...(external
+      ? input.execution?.profile_file === undefined ? {} : { execution: { executor: NATIVE_EXECUTOR, profile_file: input.execution.profile_file } }
+      : named ? { execution: executionSelectionOf(input.execution!) } : {}),
+    ...(!external && keep('model', input.modelTouched) && input.model !== undefined ? { model: input.model } : {}),
+    ...(!external && keep('thinking', input.effortTouched) && input.thinking !== undefined ? { thinking: input.thinking } : {}),
+    ...(external || keep('permission_mode', input.permissionTouched) ? { permission_mode: input.permissionMode } : {}),
     plan_mode: input.planMode,
   };
   const isolation = input.worktree === true ? { isolation: { kind: 'worktree' as const } } : {};
-  const externalClient = input.execution?.external_connection_id !== undefined ? {
+  const externalClient = external ? {
     driver: 'external' as const,
-    connectionId: input.execution.external_connection_id,
-    clientName: input.execution.external_connection_name ?? 'External Client',
-    sessionRef: `kiki-session-${Date.now()}`,
+    connectionId: externalConnectionId,
   } : undefined;
   const metadata = {
     ...(input.cwd !== '' ? { cwd: input.cwd } : {}),
