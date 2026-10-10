@@ -17,6 +17,7 @@ import {
 import {
   TranscriptFactReducer,
   TranscriptWireAdapter,
+  type TranscriptWireAdapterCheckpoint,
   type AgentDescriptor,
   type TranscriptChangeEvent,
   type TranscriptFact,
@@ -42,12 +43,18 @@ export interface TranscriptBindingLogger {
   warn(obj: unknown, msg: string): void;
 }
 
+/** In-memory durable replay state captured before cold finalization. */
+export interface TranscriptReplayState {
+  readonly adapter: TranscriptWireAdapterCheckpoint;
+  readonly acceptedDurableFacts: readonly string[];
+}
+
 /** The live binding plus its deferred seeding hook. */
 export interface TranscriptBinding extends IDisposable {
   seedPendingInteractions(agentId?: string): void;
   seedRunningTasks(agentId?: string): void;
   seedPrompts(agentId?: string): void;
-  finishReplay(agentId: string): void;
+  finishReplay(agentId: string, state?: TranscriptReplayState): void;
   releaseDurableTurns(agentId: string, turnIds: readonly string[], promptIds: readonly string[]): void;
 }
 
@@ -268,7 +275,11 @@ export function bindSessionTranscript(
     applyOps(agentId, wireEndedTurn ? liveOps.filter((op) => op.op !== 'turn.upsert') : liveOps);
   };
 
-  const finishReplay = (agentId: string): void => {
+  const finishReplay = (agentId: string, state?: TranscriptReplayState): void => {
+    if (state !== undefined) {
+      wireAdapterFor(agentId).restore(state.adapter);
+      reducerFor(agentId).restore(state.acceptedDurableFacts);
+    }
     replayingAgents.delete(agentId);
     const buffered = bufferedEvents.get(agentId) ?? [];
     bufferedEvents.delete(agentId);
