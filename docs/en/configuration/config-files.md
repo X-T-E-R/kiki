@@ -315,14 +315,23 @@ You can also switch models temporarily without touching the config file — by s
 | --- | --- | --- | --- |
 | `overlay` | `string` or `array<string>` | — | File(s) merged into the bound model's system prompt. Multiple paths are joined with a blank line in declaration order |
 | `overlay_mode` | `string` | `append` | How `overlay` combines with the profile's prompt: `append`, `prepend`, `wrap`, `persona`, or `replace` |
-| `steering` | `string` or `array<string>` | — | File(s) injected as a user message after your prompt at each turn start and after accepted in-turn corrections |
+| `steering` | `string` or `array<string>` | — | File(s) injected as an ordinary user message at the enabled steering triggers |
+| `steering_on_turn` | `boolean` | `true` | Inject on every new turn and after compaction re-arms the context |
+| `steering_on_input` | `boolean` | `true` | Inject after newly accepted human input, including in-turn Send now corrections |
+| `steering_interval_steps` | `integer` | `0` | Repeat every N model steps of this agent; nonnegative, with `0` disabling periodic steering |
 | `anchor` | `string` or `array<string>` | — | File(s) used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
 
 Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
 
-The three fields differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your prompt as an ordinary user message — not a `<system-reminder>` — on every new turn and after compaction re-arms the context. If you send a correction into a running turn with **Send now**, the next safe model request includes the accepted correction followed by one copy of the bound steering text. Several corrections delivered together share that copy; tool-only continuation does not append it again. User-slash skills and plugin commands count as human input, but peer messages and background notifications do not trigger this extra in-turn injection.
+The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your prompt as an ordinary user message — not a `<system-reminder>`. By default it is appended on every new turn and after compaction re-arms the context. This turn trigger includes retries, peer-triggered turns, and autonomous wake-ups, not just human input; `steering_on_turn = false` disables it.
+
+With `steering_on_input = true`, a correction sent into a running turn with **Send now** appears in the next safe model request followed by one copy of the bound steering text. Several corrections delivered together share that copy; the request already streaming is never changed. User-slash skills and plugin commands count as human input, but peer messages and background notifications do not trigger this extra in-turn injection. With the default interval of `0`, tool-only continuation does not append another copy.
+
+Set `steering_interval_steps = N` to repeat after N further model steps, counted across turns for this agent alone. Any steering injection restarts the interval; coinciding turn, input, and interval triggers produce one copy. For example, with N = 2 and an initial injection at step 1, uninterrupted continuation injects again at steps 3 and 5. Tool results, idle reconciliation, and other agents' steps do not count. Set both booleans to `false` for interval-only steering (the first copy arrives at step N); also set the interval to `0` to disable steering entirely.
+
+The text and trigger settings are saved together at binding and remain frozen on recovery, even if configuration or files change. A new binding or cold recovery starts a fresh interval counter. Subagents use the common cognition settings; `main` and `independent` use the common settings when omitted or set to `"same"`, disable cognition with `"off"`, or replace the entire cognition object with their own table. A replacement does not inherit missing common fields, so include its `steering` path as well as any nondefault trigger settings.
 
 `overlay_mode` decides how much of the profile's prompt survives:
 

@@ -16,6 +16,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { ProfileErrors } from '#/agent/profile/errors';
 import { CognitionConfigSchema, modelsFromToml, modelsToToml } from '#/app/kosongConfig/configSection';
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
+import { selectCognitionConfig } from '#/agent/cognition/cognitionConfig';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -195,6 +196,65 @@ describe('per-model cognition overlay', () => {
     expect(profile.getSystemPrompt()).toBe(promptBefore);
     expect(await profile.getCognitionBinding()).toEqual(before);
     expect((await profile.getPromptDiagnostics()).binding_revision).toBe(before.bindingRevision);
+  });
+
+  it('steering cadence validates and round-trips model and identity policy fields', () => {
+    for (const steeringIntervalSteps of [-1, 1.5, '2']) expect(CognitionConfigSchema.safeParse({ steeringIntervalSteps }).success).toBe(false);
+    expect(CognitionConfigSchema.safeParse({ steeringOnInput: 'false' }).success).toBe(false);
+    expect(CognitionConfigSchema.safeParse({ steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 0 }).success).toBe(true);
+    expect(CognitionConfigSchema.safeParse({ steeringIntervalSteps: 1_000_000 }).success).toBe(true);
+    const raw = { example: { model: 'example', cognition: {
+      steering: 'common.md', steering_on_turn: false, steering_on_input: false, steering_interval_steps: 4,
+      main: { steering: 'main.md', steering_on_input: true, steering_interval_steps: 2 }, independent: 'same',
+    } } };
+    const parsed = modelsFromToml(raw);
+    expect(parsed).toMatchObject({ example: { cognition: { steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 4,
+      main: { steeringOnInput: true, steeringIntervalSteps: 2 }, independent: 'same' } } });
+    expect(modelsToToml(parsed, {})).toEqual(raw);
+  });
+
+  it('steering cadence uses the existing common, same, off and whole-object identity selection', () => {
+    const common: CognitionConfig = { steering: 'common.md', steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: 4 };
+    expect(selectCognitionConfig(common, 'sub')).toMatchObject(common);
+    expect(selectCognitionConfig({ ...common, main: 'same' }, 'main')).toMatchObject(common);
+    expect(selectCognitionConfig({ ...common, independent: 'same' }, 'independent')).toMatchObject(common);
+    expect(selectCognitionConfig({ ...common, independent: 'off' }, 'independent')).toBeUndefined();
+    expect(selectCognitionConfig({ ...common, main: { steering: 'main.md', steeringIntervalSteps: 2 } }, 'main')).toEqual({ steering: 'main.md', steeringIntervalSteps: 2 });
+  });
+
+  it('steering cadence cold-recovers frozen policy and text despite changed current model configuration', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let interval = 3;
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir));
+      ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: {
+        ...ctx.kimiConfig.models![MOCK_MODEL]!, cognition: { steering: 'cognition/steering.md', steeringOnTurn: false, steeringOnInput: false, steeringIntervalSteps: interval },
+      } } };
+      return ctx;
+    };
+    let agent = create();
+    await agent.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const binding = await agent.get(IAgentProfileService).getCognitionBinding();
+    expect(binding.config?.steeringIntervalSteps).toBe(3);
+    await agent.get(IWireService).flush();
+    await agent.dispose();
+    interval = 1;
+    await writeFile(join(homeDir, 'cognition/steering.md'), 'CHANGED STEERING');
+    agent = create();
+    await agent.restorePersisted();
+    const profile = agent.get(IAgentProfileService);
+    await profile.syncBindingMetadata();
+    expect(await profile.getCognitionBinding()).toEqual(binding);
+    agent.get(IAgentModelSteeringService);
+    const loop = agent.get(IAgentLoopService);
+    const memory = agent.get(IAgentContextMemoryService);
+    const cues = () => memory.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'model_steering');
+    await runWillBeginStepHooks(loop, true);
+    await runWillBeginStepHooks(loop, false);
+    expect(cues()).toHaveLength(0);
+    await runWillBeginStepHooks(loop, false);
+    expect(cues()).toHaveLength(1);
+    expect(cues()[0]!.content).toEqual([{ type: 'text', text: 'FLASH STEERING' }]);
   });
 
   it('validates every branch structure and path without requiring unselected files', () => {
