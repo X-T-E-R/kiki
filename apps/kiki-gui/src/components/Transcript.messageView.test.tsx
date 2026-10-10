@@ -248,6 +248,18 @@ describe('message view (Bot mode)', () => {
     expect(received?.textContent).not.toContain('来自');
   });
 
+  it('shows only the body of a peer-thread bubble in the message view too', async () => {
+    const blocks: Block[] = [
+      user('u9', 'Message from thread "Design review" (sess-source):\n\nping', 't1', {
+        peerThread: { sessionId: 'sess-source', messageId: 'm9' },
+      }),
+    ];
+    const { container } = await render(timeline(blocks, 'message'));
+    expect(container.querySelector('[data-source-block-id="u9"]')?.textContent).toBe('ping');
+    expect(container.textContent).not.toContain('Message from thread');
+    expect(container.textContent).toContain('来自线程 sess-source');
+  });
+
   it('says who is working while the turn runs, without the process spinner', async () => {
     const blocks: Block[] = [user('u1', '查一下', 't1'), tool('r1', 'Read', 't1', { status: 'running', output: undefined })];
     const { container } = await render(timeline(blocks, 'message', { busy: true, turnStartedAt: Date.now() }));

@@ -6,6 +6,8 @@ The desktop app and the browser UI are the same interface, and a session in eith
 
 This is the session timeline: assistant messages, tool calls, approvals, questions, and background-task notices.
 
+Messages from another agent or conversation state their source above the body. Copying or quoting one uses the body without repeating that source label; editing keeps the original source prefix. A source label you type yourself stays literal.
+
 Anything that has been resolved — a question you answered, an approval you granted, a marker — collapses into a compact one-line entry that stays where it happened. Several in a row fold into an **Activity history** row you can expand. Failed and cancelled entries always stay visible on their own. Repeating markers such as goal updates show the latest one with a count ("Goal updated ×12") when nothing else separates them.
 
 File references can be previewed, opened, or revealed in their folder. Reopening a session, or loading an agent's saved history, shows each model change as a divider naming the old and new model; a thinking-effort change on its own does not add one.

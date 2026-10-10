@@ -186,6 +186,7 @@ import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
+import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 import { buildMessageNodes, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
 import { writeTimelineView, type TimelineView } from './message/messageViewMode';
 import { useMessageViewContext } from './message/messageViewContext';
@@ -389,13 +390,25 @@ const UserMessage = memo(function UserMessage({
           model: senderIdentity?.model ?? unknownDetail,
           task: block.agentMessage?.senderTaskName ?? unknownDetail,
         });
-  const carry = useMemo(() => parseSelectionCarryovers(block.text, block.presentation), [block.text, block.presentation]);
+  // The bubble reads the body only: a message from another agent or thread
+  // states its source in the meta line above, while the durable text keeps
+  // the producer's envelope for the model to read.
+  const display = useMemo(() => displayUserMessageText(block), [block]);
+  const carry = useMemo(() => parseSelectionCarryovers(display.text, display.presentation), [display.text, display.presentation]);
   const bodyText = carry.body;
   const typedText = [
     ...carry.annotations.map((annotation) => `${buildQuotePrefix(annotation.quote)}${annotation.comment}\n\n`),
     carry.quote === null ? '' : buildQuotePrefix(carry.quote),
     bodyText,
   ].join('');
+  // Editing rewrites the durable message, so it opens the text the message
+  // actually carries: the envelope stays (only the bubble hides it) while the
+  // generated spans around it are still projected out.
+  const editInitialText = useMemo(() => {
+    if (!editing) return '';
+    if (display.text === block.text) return bodyText;
+    return editableUserMessageText(block);
+  }, [editing, display.text, block, bodyText]);
   const threadRefDirectory = useThreadRefDirectory(
     useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
   );
@@ -465,7 +478,7 @@ const UserMessage = memo(function UserMessage({
       ) : null}
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
-          initialText={bodyText}
+          initialText={editInitialText}
           loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : () => rowActions.loadEditAttachments!(block)}
           onSubmit={async (text, attachments, editedPresentation) => {
             const prepared = editedPresentation === undefined
@@ -2084,7 +2097,7 @@ const MessageViewRow = memo(function MessageViewRow({
       const quoted = node.replyTo === undefined ? undefined : blockById.get(node.replyTo) ?? [...blockById.values()].find(
         (block) => (block.kind === 'user' && block.userMessageId === node.replyTo) || (block.kind === 'message' && block.messageId === node.replyTo),
       );
-      const replyToText = quoted?.kind === 'user' || quoted?.kind === 'message' ? quoted.text : undefined;
+      const replyToText = quoted?.kind === 'user' ? displayUserMessageText(quoted).text : quoted?.kind === 'message' ? quoted.text : undefined;
       body = (
         <MessageRow
           block={node}

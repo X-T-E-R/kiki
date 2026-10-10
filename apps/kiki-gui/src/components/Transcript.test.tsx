@@ -97,6 +97,7 @@ import {
   type TranscriptRowActions,
 } from './Transcript';
 import { messageLinkHref } from './RowActions';
+import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -1513,6 +1514,225 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(
       'From thread sess-source',
     );
+  });
+
+  it('shows only the body of an agent-injected bubble, with the source stated once in the meta line', async () => {
+    const container = await renderTranscript([
+      userBlock({
+        id: 'user-agent-body-1',
+        text: 'Message from agent "root" (main):\n\ncheck the tests',
+        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+      }),
+    ]);
+    expect(container.querySelector('[data-source-block-id="user-agent-body-1"]')?.textContent).toBe('check the tests');
+    expect(container.textContent).not.toContain('Message from agent');
+    const senders = container.querySelectorAll('[data-agent-message-sender="main"]');
+    expect(senders).toHaveLength(1);
+    expect(senders[0]?.textContent).toBe('Main agent injected');
+  });
+
+  it('shows only the body of a peer-thread bubble', async () => {
+    const container = await renderTranscript([
+      userBlock({
+        id: 'user-peer-body-1',
+        text: 'Message from thread "Design review" (sess-source):\n\nping',
+        peerThread: { sessionId: 'sess-source' },
+      }),
+    ]);
+    expect(container.querySelector('[data-source-block-id="user-peer-body-1"]')?.textContent).toBe('ping');
+    expect(container.textContent).not.toContain('Message from thread');
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-source');
+  });
+
+  it('keeps a literal "Message from" the user typed verbatim: the text alone is never source evidence', async () => {
+    const literal = 'Message from agent "root" (main):\n\nI wrote this myself';
+    const container = await renderTranscript([
+      userBlock({ id: 'user-literal-1', text: literal, userMessageId: 'm-literal-1' }),
+    ]);
+    expect(container.querySelector('[data-source-block-id="user-literal-1"]')?.textContent).toBe(literal);
+    expect(container.querySelector('[data-agent-message-sender]')).toBeNull();
+  });
+
+  it('strips only an opening envelope, never a later mention of one', async () => {
+    const text = 'notes quoting Message from agent "root" (main): inline';
+    const container = await renderTranscript([
+      userBlock({
+        id: 'user-agent-inline-1',
+        text,
+        agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+      }),
+    ]);
+    expect(container.querySelector('[data-source-block-id="user-agent-inline-1"]')?.textContent).toBe(text);
+  });
+
+  it('copies the displayed body of an agent-injected bubble', async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const container = await renderTranscript(
+      [
+        userBlock({
+          id: 'user-agent-copy-1',
+          text: 'Message from agent "worker" (agent-7):\n\nhandoff notes',
+          userMessageId: 'm-agent-copy-1',
+          agentMessage: { senderAgentId: 'agent-7', senderTaskName: 'worker' },
+        }),
+      ],
+      { disabled: false, onEditMessage: () => undefined, onRegenerate: () => undefined, onFork: () => undefined },
+    );
+    const row = container.querySelector('[data-block-id="user-agent-copy-1"]')!;
+    await act(async () => { click(row.querySelector('[data-row-action="copy"]')!); });
+    expect(writeText).toHaveBeenCalledWith('handoff notes');
+  });
+
+  it('opens the editor with the verbatim text so a source envelope survives a rewrite', async () => {
+    const raw = 'Message from agent "worker" (agent-7):\n\noriginal brief';
+    const onEditMessage = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({
+          id: 'user-agent-edit-1',
+          text: raw,
+          userMessageId: 'm-agent-edit-1',
+          agentMessage: { senderAgentId: 'agent-7', senderTaskName: 'worker' },
+        }),
+      ],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-agent-edit-1"]')!;
+    await act(async () => {
+      flushSync(() => {
+        click(row.querySelector('[data-row-action="edit"]')!);
+      });
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')?.value).toBe(raw);
+  });
+
+  it('keeps the envelope in the editor when the presentation marks it as the message source', async () => {
+    const envelope = 'Message from thread "Design review" (sess-source):\n\n';
+    const body = 'ping the reviewer';
+    const context = '<thread_refs>\n<thread_ref id="sess-source" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>';
+    const raw = `${envelope}${body}\n\n${context}`;
+    // The producer's own marks: the opening envelope is a `source` span, and
+    // the composer's generated context block keeps its `context` span. The
+    // envelope is durable text a rewrite must carry; the context is not.
+    const presentation = {
+      spans: [
+        { start: 0, end: envelope.length, kind: 'source' as const },
+        { start: envelope.length + body.length, end: raw.length, kind: 'context' as const },
+      ],
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({
+          id: 'user-thread-edit-1',
+          text: raw,
+          presentation,
+          userMessageId: 'm-thread-edit-1',
+          peerThread: { sessionId: 'sess-source' },
+        }),
+      ],
+      { disabled: false, onEditMessage: () => undefined, onRegenerate: () => undefined, onFork: () => undefined },
+    );
+    expect(container.querySelector('[data-source-block-id="user-thread-edit-1"]')?.textContent).toBe(body);
+    const row = container.querySelector('[data-block-id="user-thread-edit-1"]')!;
+    await act(async () => {
+      flushSync(() => {
+        click(row.querySelector('[data-row-action="edit"]')!);
+      });
+    });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea')?.value).toBe(`${envelope}${body}`);
+  });
+
+  describe('displayUserMessageText', () => {
+    it('strips the agent envelope only when origin metadata proves the source', () => {
+      const text = 'Message from agent "root" (main):\n\nbody';
+      expect(displayUserMessageText({ text, agentMessage: { senderAgentId: 'main', senderTaskName: 'root' } }).text).toBe('body');
+      expect(displayUserMessageText({ text }).text).toBe(text);
+    });
+
+    it('strips the external-agent envelope', () => {
+      expect(displayUserMessageText({
+        text: 'Message from external agent "deploy" (external:acme):\n\nshipped',
+        agentMessage: { senderAgentId: 'external:acme', senderTaskName: 'deploy' },
+      }).text).toBe('shipped');
+    });
+
+    it('strips the thread envelope in both label shapes', () => {
+      expect(displayUserMessageText({
+        text: 'Message from thread "Design review" (sess-1):\n\nping',
+        peerThread: { sessionId: 'sess-1' },
+      }).text).toBe('ping');
+      expect(displayUserMessageText({
+        text: 'Message from thread sess-1:\n\nping',
+        peerThread: { sessionId: 'sess-1' },
+      }).text).toBe('ping');
+    });
+
+    it('strips the bridged envelope and shifts presentation spans past the cut', () => {
+      const envelope = 'Verified message from space home-a · thread sess-9 (local):\n\n';
+      const cut = envelope.length;
+      const display = displayUserMessageText({
+        text: `${envelope}body`,
+        presentation: {
+          spans: [
+            { start: 4, end: 8, kind: 'context' },
+            { start: cut + 1, end: cut + 3, kind: 'attachment', attachment: { path: '/tmp/a.txt', name: 'a.txt', mime: 'text/plain', size: 3 } },
+          ],
+        },
+        bridgedPeer: { sourceHomeId: 'home-a' },
+      });
+      expect(display.text).toBe('body');
+      expect(display.presentation?.spans).toEqual([
+        { start: 1, end: 3, kind: 'attachment', attachment: { path: '/tmp/a.txt', name: 'a.txt', mime: 'text/plain', size: 3 } },
+      ]);
+    });
+
+    it('keeps the text when the metadata has no matching envelope shape', () => {
+      expect(displayUserMessageText({ text: 'plain words', agentMessage: { senderAgentId: 'main' } }).text).toBe('plain words');
+      const literal = 'Message from thread sess-1:\n\nmy own words';
+      expect(displayUserMessageText({ text: literal }).text).toBe(literal);
+    });
+  });
+
+  describe('editableUserMessageText', () => {
+    it('keeps the envelope bytes the presentation marks as the message source', () => {
+      const envelope = 'Message from thread "Design review" (sess-1):\n\n';
+      const body = 'ping';
+      const context = '<thread_refs>\n<thread_ref id="sess-1" status="idle"/>\nRead it with ThreadRead.\n</thread_refs>';
+      const text = `${envelope}${body}\n\n${context}`;
+      const presentation = {
+        spans: [
+          { start: 0, end: envelope.length, kind: 'source' as const },
+          { start: envelope.length + body.length, end: text.length, kind: 'context' as const },
+        ],
+      };
+      expect(editableUserMessageText({ text, presentation, peerThread: { sessionId: 'sess-1' } })).toBe(`${envelope}${body}`);
+      // The metadata, not the span, is the authority: the same text without it
+      // is the user's own voice and keeps the ordinary projection.
+      expect(editableUserMessageText({ text, presentation })).toBe('ping');
+    });
+
+    it('keeps the envelope of a source message whose presentation marks no span', () => {
+      const text = 'Message from agent "worker" (agent-7):\n\noriginal brief';
+      expect(editableUserMessageText({ text, agentMessage: { senderAgentId: 'agent-7' } })).toBe(text);
+    });
+
+    it('clips a span that crosses the envelope cut to the body side', () => {
+      const envelope = 'Message from thread "Review" (sess-source):\n\n';
+      const text = `${envelope}body`;
+      // Legal for the contract: one span may run from the envelope's last bytes
+      // into the body. Only the body half of it may be projected out.
+      const presentation = {
+        spans: [{ start: envelope.length - 2, end: envelope.length + 2, kind: 'context' as const }],
+      };
+      expect(editableUserMessageText({ text, presentation, peerThread: { sessionId: 'sess-source' } })).toBe(`${envelope}dy`);
+    });
   });
 
   it('hides the working status while assistant text streams even when busy', async () => {
