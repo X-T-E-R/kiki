@@ -911,7 +911,7 @@ export const transcriptPlanResponseSchema = z.object({
 export const transcriptDetailQuerySchema = z
   .object({
     agent_id: agentIdSchema,
-    kind: z.enum(['task', 'attachment', 'prompt']),
+    kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
     id: z.string().min(1),
   })
   .superRefine((value, ctx) => {
@@ -944,6 +944,17 @@ export const transcriptDetailResponseSchema = z.discriminatedUnion('kind', [
     agent_id: agentIdSchema,
     kind: z.literal('prompt'),
     prompt: transcriptPromptSchema,
+    read: transcriptReadSchema.optional(),
+  }),
+  z.object({
+    session_id: z.string().min(1),
+    agent_id: agentIdSchema,
+    kind: z.literal('tool'),
+    lookup: z.discriminatedUnion('status', [
+      z.object({ status: z.literal('found'), turnId: z.string(), stepId: z.string(), frame: toolCallFrameSchema.extend({ agentRefs: z.array(agentRefSchema).readonly().optional() }) }),
+      z.object({ status: z.literal('preparing') }),
+      z.object({ status: z.literal('not_found') }),
+    ]),
     read: transcriptReadSchema.optional(),
   }),
 ]);

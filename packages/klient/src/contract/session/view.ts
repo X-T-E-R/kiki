@@ -54,7 +54,7 @@ export const sessionViewTranscriptCatchUpInputSchema = z
 export const sessionViewTranscriptDetailInputSchema = z
   .object({
     agentId: z.string().min(1),
-    kind: z.enum(['task', 'attachment', 'prompt']),
+    kind: z.enum(['task', 'attachment', 'prompt', 'tool']),
     id: z.string().min(1),
   })
   .refine((value) => isPlainAgentId(value.agentId), {

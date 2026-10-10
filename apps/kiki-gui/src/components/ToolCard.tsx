@@ -17,7 +17,7 @@ import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
 import { toolDisplayName } from '../lib/pluginCatalog';
-import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, INPUT_ROOTS, INPUT_TEXT_ROOTS, OUTPUT_ROOTS } from './ContentContinuation';
+import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
 import { MediaJobView, readMediaJobFromToolResult } from './media/MediaJobView';
@@ -34,8 +34,8 @@ import {
 } from './timeline/ToolSemanticParts';
 import { describeTool, toolPayloadIncomplete } from './toolSemantics';
 import { toolRecordCopy } from './toolRecordCopy';
-import { LoadedToolText, recordText } from './timeline/LoadedToolText';
-import { CopyButton } from './timeline/SubagentInvocationView';
+import { LoadedToolText, ReadableToolText, recordText } from './timeline/LoadedToolText';
+import { ToolRecordField } from './timeline/ToolRecordField';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -352,13 +352,7 @@ function OutputContent({ output, agentId, island = false, external = false }: { 
   if (mediaJob !== undefined) {
     return <MediaJobView job={mediaJob} agentId={agentId} />;
   }
-  if (typeof output === 'string') {
-    return (
-      <pre className={wellClass(island)}>
-        {output}
-      </pre>
-    );
-  }
+  if (typeof output === 'string') return <ReadableToolText text={output} className={wellClass(island)} />;
   if (typeof output === 'object') {
     const candidate = output as { kind?: unknown };
     if (candidate.kind === 'command_output') {
@@ -394,7 +388,7 @@ function OutputContent({ output, agentId, island = false, external = false }: { 
       );
     }
   }
-  return <LoadedToolText text={recordText(output)} className={wellClass(island)} copy={island} />;
+  return <LoadedToolText copyLabel={t('tc.output')} text={recordText(output)} className={wellClass(island)} copy={island} />;
 }
 
 export const ToolCard = memo(function ToolCard({
@@ -463,7 +457,7 @@ ${engineError}`;
     [external, memoryRow, bridged, realName, block, semanticContext],
   );
 
-  if (memoryRow) return <MemoryToolRow block={block} />;
+  if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
 
   const target = keepCommandSummary ? (
     <span className="font-mono">{summary}</span>
@@ -506,32 +500,8 @@ ${engineError}`;
       : block.status === 'done' && frameDuration < DURATION_WORTH_SHOWING_MS
         ? undefined
         : time.formatDuration(frameDuration);
-  const inputWell = (
-    <div>
-      <p className={label}>{t('tc.input')}</p>
-      <LoadedToolText text={block.args !== undefined ? recordText(block.args) : block.argsText || t('tc.noInput')} />
-      {/* The well shows the parsed args when they exist and the streamed text
-          otherwise, so it continues whichever of the two it is showing. */}
-      <ContentContinuation
-        source={frameSource}
-        roots={block.args === undefined ? INPUT_TEXT_ROOTS : INPUT_ROOTS}
-        label={t('tc.input')}
-        className="mt-1"
-      />
-    </div>
-  );
-  const outputWell = (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[12px] font-medium text-ink-faint">
-        <span>{t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}</span>
-        {block.output === undefined ? null : <CopyButton text={recordText(block.output)} />}
-      </div>
-      {toolPayloadIncomplete(block.output) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', semanticContext.locale)}</p> : null}
-      {block.output === undefined ? <p className="text-[12px] text-ink-faint">{toolRecordCopy('notLoaded', semanticContext.locale)}</p>
-        : <OutputView output={block.output} agentId={agentId} external={external} />}
-      <ContentContinuation source={frameSource} roots={OUTPUT_ROOTS} label={t('tc.output')} className="mt-1" />
-    </div>
-  );
+  const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputContent output={block.output} agentId={agentId} external={external} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the

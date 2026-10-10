@@ -27,7 +27,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigationType } from 'react-router-dom';
 import { clearNavHistory, getCurrentVisit, recordNavigation } from '../lib/navHistory';
 import { getReadingSnapshot, saveReadingSnapshot, timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navViewState';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
 import { projectPresentedText, type AgentTranscriptSnapshot } from '@kiki/transcript';
@@ -76,6 +76,9 @@ import {
   userTurnSnapshot,
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
+import { ConnectionProvider } from '../state/connection';
+import { writeStoredConfig } from '../state/connectionConfig';
+import { browserHost, HostProvider } from '../host';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
@@ -178,16 +181,46 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
  * `await act(...)` drains React's act queue recursively until everything —
  * transitions included — has landed, so both sides are compared settled.
  */
-async function renderSettled(root: Root, node: ReactNode): Promise<void> {
+let editFixture: import('node:child_process').ChildProcess | undefined;
+let editFixturePort: number;
+async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
+  if (connected) {
+    if (editFixture === undefined) {
+      const { spawn } = await import('node:child_process');
+      editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+      await new Promise<void>((resolve, reject) => {
+        let output = '';
+        editFixture!.stdout!.on('data', (chunk) => {
+          output += String(chunk);
+          const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
+          if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
+        });
+        editFixture!.once('error', reject);
+        editFixture!.once('exit', (code) => { if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}`)); });
+      });
+    }
+    writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
+  }
+  let ready = false;
+  function ConnectedSurface() {
+    useLayoutEffect(() => { ready = true; }, []);
+    return node;
+  }
   await act(async () => {
     flushSync(() => {
       root.render(
         <MemoryRouter>
-          <I18nProvider>{node}</I18nProvider>
+          <I18nProvider>{connected ? <HostProvider host={browserHost}><ConnectionProvider><ConnectedSurface /></ConnectionProvider></HostProvider> : node}</I18nProvider>
         </MemoryRouter>,
       );
     });
   });
+  if (connected) {
+    for (let attempt = 0; !ready && attempt < 100; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    }
+    expect(ready).toBe(true);
+  }
 }
 
 /**
@@ -276,6 +309,7 @@ function repeatTo(unit: string, minLength: number): string {
 
 beforeAll(() => {
   localStorage.setItem('kiki.locale', 'en');
+  vi.stubGlobal('__KIKI_PROXY_TARGET__', 'http://127.0.0.1:58627');
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   installElementProperty('offsetHeight', {
     get(this: HTMLElement) {
@@ -332,15 +366,23 @@ beforeAll(() => {
   vi.stubGlobal('ResizeObserver', TestResizeObserver);
 });
 
-afterAll(async () => {
-  for (const root of roots) {
+afterEach(async () => {
+  for (const root of roots.splice(0)) {
     await act(async () => {
       flushSync(() => {
         root.unmount();
       });
     });
   }
-  for (const container of containers) container.remove();
+  for (const container of containers.splice(0)) container.remove();
+});
+
+afterAll(async () => {
+  if (editFixture !== undefined) {
+    const exited = new Promise<void>((resolve) => { editFixture!.once('exit', () => resolve()); });
+    editFixture.kill();
+    await exited;
+  }
   restoreElementProperties();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
   vi.unstubAllGlobals();
@@ -537,9 +579,10 @@ describe('media preview wiring', () => {
         />
       </MediaPreviewProvider>,
     );
-    expect(probe.container.querySelector('img')).toBeNull();
-    await act(async () => { probe.container.querySelector<HTMLButtonElement>('button')!.click(); });
     const thumb = probe.container.querySelector('img');
+    expect(thumb).not.toBeNull();
+    expect(probe.container.textContent).not.toContain('Load full file');
+    expect(probe.container.querySelector('a[download]')).toBeNull();
     expect(thumb?.getAttribute('src')).toBe('data:image/png;base64,AA');
     await act(async () => {
       thumb!.closest('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -563,8 +606,9 @@ describe('media preview wiring', () => {
         media: [{ kind: 'image', url: 'data:image/png;base64,AA', mime: 'image/png' }],
       }),
     ]);
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-user-media] button')!.click(); });
     const img = container.querySelector('img');
+    expect(container.querySelector('[data-user-media]')?.textContent).not.toContain('Load full file');
+    expect(container.querySelector('[data-user-media] a[download]')).toBeNull();
     const bubble = [...container.querySelectorAll('div')].find(
       (div) => div.textContent === 'look at this',
     );
@@ -694,6 +738,7 @@ async function renderTranscript(
       rowActions={rowActions}
       {...transcriptProps}
     />,
+    rowActions !== undefined,
   );
   return container;
 }
@@ -2227,7 +2272,7 @@ describe('message row actions', () => {
     expect(textarea?.value).toBe('original text');
     // The attachment note explains the full-replacement semantics.
     expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
-      'attachments are not carried over',
+      'Keep or change attachments',
     );
     await act(async () => {
       flushSync(() => {
@@ -3054,7 +3099,7 @@ describe('virtualized transcript scrolling', () => {
     });
     const state = transcriptState([...virtualBlocks(100, 'edit-history'), edited]);
     const { root, container } = makeRoot();
-    await renderSettled(root, interactiveVirtualTranscript(state, { rowActions }));
+    await renderSettled(root, interactiveVirtualTranscript(state, { rowActions }), true);
     const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
     const row = container.querySelector<HTMLElement>('[data-block-id="user-edit-pinned"]')!;
 
@@ -3977,12 +4022,64 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(details.querySelectorAll('[data-binding-advisories] pre')).toHaveLength(2);
     expect(details.textContent).toContain('"futureField": 42');
     expect(details.querySelector('[data-invocation-output]')?.textContent).toBe(output);
-    const disclosure = details.querySelector<HTMLDetailsElement>('details')!;
-    expect(disclosure.open).toBe(false);
-    expect(disclosure.querySelector('pre')?.textContent).toBe(prompt);
+    // The prompt is the input this invocation exists to show, so one expand
+    // puts it on screen verbatim; the advisory list is a separate child object
+    // and keeps its own grouping.
+    expect(details.querySelector('[data-invocation-text="prompt"] pre')?.textContent).toBe(prompt);
+    expect(details.querySelector('details')).toBeNull();
+    expect(details.querySelector('[data-binding-advisories] summary')).toBeNull();
     expect(opened).toEqual([]);
     await act(async () => { click(container.querySelector('[data-agent-open="agent-1"]')!); });
     expect(opened).toEqual(['agent-1']);
+  });
+
+  it('reads the invocation input body in one expand, with no second collapse', async () => {
+    // The one reading purpose of this region is the input that produced the
+    // call. An outer expand that leaves the message behind its own summary
+    // made the reader press twice for one thing, so the text itself is the
+    // body's first content — the well and the target parameters beside it.
+    const message = 'M'.repeat(229);
+    const send: ToolBlock = { ...toolDefaults, kind: 'tool', id: 'tool-send', toolCallId: 'send', name: 'AgentSend', argsText: '', args: { target: 'agent-1', message }, status: 'done', output: '{"status":"queued"}' };
+    const sent: Block = { ...eventBlock('agent-1', 'sent'), kind: 'subagent-event', anchorToolCallId: 'send' } as Block;
+    const container = await renderWithAgents([send, sent], []);
+    // Closed: nothing of the body is on screen at all.
+    expect(container.querySelector('[data-invocation-tool]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="send"]')!); });
+    const body = container.querySelector('[data-invocation-tool="send"]')!;
+    // No inner disclosure stands between the expand and the text.
+    expect(body.querySelector('details')).toBeNull();
+    expect(body.querySelector('summary')).toBeNull();
+    const wells = [...body.querySelectorAll('pre')].map((well) => well.textContent);
+    expect(wells).toContain(message);
+    // The other arguments stay readable in the same body, not behind a toggle.
+    expect(wells.join('\n')).toContain('"target": "agent-1"');
+    // One press, whole body: nothing about the text is left to a second click.
+    expect(body.textContent).not.toContain('229');
+    expect(body.textContent).not.toMatch(/Show (message|prompt)/);
+    // Closing and reopening reads the same way.
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="send"]')!); });
+    expect(container.querySelector('[data-invocation-tool]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="send"]')!); });
+    expect([...container.querySelectorAll('[data-invocation-tool="send"] pre')].map((well) => well.textContent)).toContain(message);
+  });
+
+  it('labels the input body and keeps each field copyable in one expand', async () => {
+    const prompt = '  Complete prompt\nwith trailing whitespace  ';
+    const call: ToolBlock = {
+      ...toolDefaults, kind: 'tool', id: 'tool-call-agent-1', toolCallId: 'call-agent-1', name: 'AgentRun', argsText: '',
+      args: { profile: 'explore', name: 'research', prompt }, status: 'done', output: 'task_id: task-example',
+    };
+    const container = await renderWithAgents([call, lifecycleSubagentBlock('agent-1')], []);
+    await act(async () => { click(container.querySelector('[data-invocation-toggle="call-agent-1"]')!); });
+    const body = container.querySelector('[data-invocation-tool="call-agent-1"]')!;
+    // The body names the field it is: two text fields in one invocation would
+    // otherwise be two anonymous wells.
+    const field = body.querySelector('[data-invocation-text="prompt"]')!;
+    expect(field.querySelector('pre')?.textContent).toBe(prompt);
+    // Verbatim copy stays available for both the body and the named field.
+    const fieldCopy = field.querySelector('[data-copy-state]');
+    expect(fieldCopy?.getAttribute('aria-label')).toBe('Copy Prompt');
+    expect(body.querySelector('[data-copy-state]')?.getAttribute('aria-label')).toBe('Copy Input');
   });
 
   it('matches AgentSend and resume by invocation anchor, not child identity', async () => {
@@ -3999,16 +4096,26 @@ describe('subagent timeline dual form (G-4)', () => {
   });
 
   it('fetches a missing invocation from older parent pages and does not fabricate input', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { controller } = await openLiveTranscript();
     const { root, container } = makeRoot();
-    const call: ToolBlock = { ...toolDefaults, kind: 'tool', id: 'tool-call-agent-1', toolCallId: 'call-agent-1', name: 'AgentRun', argsText: '', args: { prompt: 'Earlier prompt' }, status: 'done', output: 'task_id: old-task' };
-    let loads = 0;
-    const render = (blocks: Block[], more: boolean) => renderSettled(root, <Transcript state={{ ...transcriptState(blocks), hasMoreHistory: more }} onLoadOlder={async () => { loads += 1; return false; }} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
-    await render([lifecycleSubagentBlock('agent-1')], true);
-    await act(async () => { click(container.querySelector('[data-invocation-toggle="call-agent-1"]')!); });
-    expect(loads).toBe(1);
-    expect(container.querySelector('[data-invocation-tool]')).toBeNull();
-    await render([call, lifecycleSubagentBlock('agent-1')], false);
-    expect(container.querySelector('[data-invocation-tool="call-agent-1"]')?.textContent).toContain('Earlier prompt');
+    let resolveLookup!: (value: Awaited<ReturnType<SessionController['lookupToolCall']>>) => void;
+    const lookup = vi.spyOn(controller, 'lookupToolCall').mockReturnValue(new Promise((resolve) => { resolveLookup = resolve; }));
+    const loadOlder = vi.fn(async () => false);
+    try {
+      await renderSettled(root, <TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="session_test" agentId="main"><Transcript state={{ ...transcriptState([lifecycleSubagentBlock('agent-1')]), hasMoreHistory: true }} onLoadOlder={loadOlder} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} /></TranscriptDetailProvider>);
+      await act(async () => { click(container.querySelector('[data-invocation-toggle="call-agent-1"]')!); });
+      expect(lookup).toHaveBeenCalledWith('main', 'call-agent-1', expect.any(AbortSignal));
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(loadOlder).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-invocation-tool]')).toBeNull();
+      await act(async () => { resolveLookup({ status: 'found', turnId: 'older-turn', stepId: 'older-step', frame: { kind: 'tool', frameId: 'older-frame', toolCallId: 'call-agent-1', name: 'AgentRun', input: { prompt: 'Earlier prompt' }, state: 'done', output: 'task_id: old-task' } }); });
+      expect(container.querySelector('[data-invocation-tool="call-agent-1"]')?.textContent).toContain('Earlier prompt');
+      expect(container.querySelector('[data-invocation-output]')?.textContent).toBe('task_id: old-task');
+    } finally {
+      lookup.mockRestore();
+      controller.close();
+    }
   });
 
   it('keeps a failed dispatch call visible next to its card', () => {
@@ -4103,7 +4210,7 @@ describe('subagent timeline dual form (G-4)', () => {
     const expandButton = card()!.querySelector('[data-card-expand]')!;
     const detailsButton = card()!.querySelector('[data-invocation-toggle]')!;
     expect(expandButton.querySelector('[data-icon="expand"]')).not.toBeNull();
-    expect(detailsButton.querySelector('[data-icon="file"]')).not.toBeNull();
+    expect(detailsButton.querySelector('[data-icon="chevron"]')).not.toBeNull();
     const asideOrder = [...card()!.querySelectorAll('[data-card-expand], [data-invocation-toggle]')];
     expect(asideOrder).toEqual([expandButton, detailsButton]);
     await act(async () => {
@@ -4111,6 +4218,39 @@ describe('subagent timeline dual form (G-4)', () => {
     });
     expect(card()?.getAttribute('data-card-form')).toBe('full');
     expect(card()?.textContent).toContain('the task brief');
+  });
+
+  it('carries invocation details as an icon alone, with the name in its tooltip', async () => {
+    const container = await renderWithAgents(
+      [lifecycleSubagentBlock('agent-done', { description: 'the task brief' })],
+      [],
+    );
+    const card = () => container.querySelector('[data-subagent-id="agent-done"]');
+    const details = () => card()!.querySelector('[data-invocation-toggle]')!;
+    // No word beside the glyph: the compact card's right edge is a row of
+    // controls, and a pill reading "Invocation Details" read as a second label.
+    expect(details().textContent).toBe('');
+    expect(details().getAttribute('title')).toBe('Expand invocation details');
+    expect(details().getAttribute('aria-label')).toBe('Expand invocation details');
+    expect(details().getAttribute('aria-expanded')).toBe('false');
+    // The name still reaches assistive tech and the expanded region.
+    expect(card()!.textContent).not.toContain('Invocation Details');
+    await act(async () => {
+      flushSync(() => { click(details()); });
+    });
+    expect(details().getAttribute('aria-expanded')).toBe('true');
+    expect(details().getAttribute('title')).toBe('Collapse invocation details');
+    expect(details().getAttribute('aria-label')).toBe('Collapse invocation details');
+    expect(details().querySelector('[data-icon="chevron"]')?.getAttribute('class')).toContain('rotate-90');
+    // The region it opens is named for screen readers, so the visible text can
+    // go without the name going with it.
+    const region = card()!.querySelector('[role="region"]');
+    expect(region?.getAttribute('aria-label')).toBe('Invocation Details');
+    await act(async () => {
+      flushSync(() => { click(details()); });
+    });
+    expect(details().getAttribute('aria-expanded')).toBe('false');
+    expect(card()!.querySelector('[role="region"]')).toBeNull();
   });
 
   it('auto form: only running/background go full; suspended, completed and unknown stay compact', () => {
@@ -4183,7 +4323,7 @@ describe('subagent timeline dual form (G-4)', () => {
       expect(card(container, 'worker')).toBeNull();
       await render('completed');
       await act(async () => { click(container.querySelector('[data-card-expand="lead"]')!); });
-      await act(async () => { click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Show child agents')!); });
+      await act(async () => { click([...container.querySelectorAll('button')].find((button) => button.getAttribute('data-subagent-children') === 'lead')!); });
       expect(card(container, 'worker')?.getAttribute('data-card-form')).toBe('full');
     });
 
@@ -5582,6 +5722,56 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-tool-count]')?.textContent).toBe('2 turns');
   });
 
+  it('shows a room send as a room, reads its delivery honestly, and links the room', async () => {
+    const { container, path } = await renderCard(semanticTool(
+      'ThreadSend',
+      { room: 'release-contract', content: 'status?', mentions: ['session_peer'] },
+      JSON.stringify({ roomId: 'release-contract', messageId: 'msg_room', delivery: 'delivered' }),
+    ));
+    const row = container.querySelector('[data-tool-semantic="ThreadSend"]')!;
+    expect(row.textContent).toContain('Post to room');
+    expect(row.textContent).not.toContain('Send to');
+    // A room send is never drawn as a peer thread.
+    expect(row.textContent).not.toContain('session_peer');
+    expect(row.querySelector('[data-tool-state]')?.textContent).toContain('Logged');
+    await expand(container);
+    // The receipt proves the line was recorded, not that anyone was woken.
+    expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Asked');
+    await act(async () => { click(row.querySelector('[data-tool-jump="route"]')!); });
+    expect(path()).toBe('/rooms/release-contract');
+  });
+
+  it('expands a room send to its whole body without a second expand inside it', async () => {
+    const content = Array.from({ length: 60 }, (_, index) => `line ${index}: the full room message body`).join('\n');
+    const { container } = await renderCard(semanticTool(
+      'ThreadSend',
+      { room: 'release-contract', content },
+      JSON.stringify({ roomId: 'release-contract', messageId: 'msg_room', delivery: 'delivered' }),
+    ));
+    await expand(container);
+    const preview = container.querySelector('[data-tool-semantic-preview]')!;
+    expect(preview.textContent).toContain('line 0: the full room message body');
+    // The complete body is one click away; it never nests a second expander.
+    const full = container.querySelector<HTMLButtonElement>('[data-tool-preview-full]')!;
+    expect(full).not.toBeNull();
+    expect(container.querySelectorAll('[data-tool-semantic-preview]')).toHaveLength(1);
+    await act(async () => { click(full); });
+    expect(container.querySelector('[data-tool-semantic-preview]')?.textContent).toContain('line 59: the full room message body');
+    expect(container.querySelectorAll('[data-tool-semantic-preview]')).toHaveLength(1);
+  });
+
+  it('marks an undeliverable room send as a failure and keeps the room readable', async () => {
+    const { container } = await renderCard(semanticTool(
+      'ThreadSend',
+      { room: 'release-contract', content: 'status?' },
+      JSON.stringify({ roomId: 'release-contract', messageId: undefined, delivery: 'undeliverable' }),
+    ));
+    const state = container.querySelector('[data-tool-state]');
+    expect(state?.textContent).toBe('Not delivered');
+    expect(state?.className).toContain('text-danger');
+    expect(container.textContent).toContain('release-contract');
+  });
+
   it('keeps failure, stop and running states identical to any other step', async () => {
     const failed = await renderCard(semanticTool(
       'ThreadSend',
@@ -5669,13 +5859,10 @@ describe('semantic tool cards', () => {
       const output = JSON.stringify([{ title: 'Memory title', body: 'context '.repeat(400) + 'memory result tail' }]);
       const { container } = await renderCard(semanticTool(name, { query: 'memory query', scope: 'global' }, output));
       await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
-      expect(container.querySelector('[data-tool-display-status]')?.textContent).toContain('显示已截断');
-      expect(container.querySelector('pre')?.textContent).not.toContain('memory result tail');
-      await act(async () => { click(container.querySelector('[data-tool-show-full]')!); });
-      expect(container.querySelector('pre')?.textContent).toBe(output);
-      await openRaw(container);
-      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"query": "memory query"');
-      expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('memory result tail');
+      expect(container.querySelector('[data-tool-show-full]')).toBeNull();
+      expect(container.querySelector('[data-tool-record-field="output"] pre')?.textContent).toBe(output);
+      expect(container.querySelector('[data-tool-record-field="input"]')?.textContent).toContain('"query": "memory query"');
+      expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
     } finally { localStorage.removeItem('kiki.locale'); }
   });
 
@@ -5686,9 +5873,69 @@ describe('semantic tool cards', () => {
     expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
     await act(async () => { click(container.querySelector('[data-memory-tool-toggle]')!); });
     expect(container.textContent).toContain('User preference');
-    await openRaw(container);
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('operation-example');
-    expect(container.querySelector('[data-tool-raw]')?.textContent).toContain('"body": "Remember this"');
+    expect(container.querySelector('[data-tool-record-field="output"]')?.textContent).toContain('operation-example');
+    expect(container.querySelector('[data-tool-record-field="input"]')?.textContent).toContain('"body": "Remember this"');
+    expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
+  });
+
+  it('tells a stored write, a proposal and a no-op apart, and only offers Undo for a real operation', async () => {
+    const receipt = (fields: Record<string, unknown>) => JSON.stringify({
+      action: 'update', outcome: 'applied', id: 'memory-example', title: 'Preference',
+      scope: 'global', owner_scope: { kind: 'global' },
+      target: { scope: 'global', id: 'memory-example', expected_revision: '1' },
+      status: 'active', revision: '1', operation_id: 'operation-example', ...fields,
+    });
+    const stored = await renderCard(semanticTool('MemoryWrite', { action: 'update', reason: 'User preference' }, receipt({})));
+    expect(stored.container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+    expect(stored.container.textContent).toContain('Updated memory');
+
+    const proposal = await renderCard(semanticTool('MemoryWrite', { action: 'update', reason: 'Learned from review' }, receipt({
+      outcome: 'pending', status: 'pending', operation_id: 'operation-pending',
+      proposed_target: { scope: 'global', id: 'memory-old', expected_revision: '0' },
+    })));
+    expect(proposal.container.textContent).toContain('Sent to the memory inbox');
+    // A proposal is journal-backed, so it can still be taken back.
+    expect(proposal.container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+    await act(async () => { click(proposal.container.querySelector('[data-memory-tool-toggle]')!); });
+    expect(proposal.container.querySelector('[data-memory-tool-pending]')?.textContent).toContain('original entry is unchanged');
+
+    const duplicate = await renderCard(semanticTool('MemoryWrite', { action: 'create' }, receipt({ outcome: 'pending', status: 'pending', operation_id: null })));
+    expect(duplicate.container.querySelector('[data-memory-tool-undo]')).toBeNull();
+    await act(async () => { click(duplicate.container.querySelector('[data-memory-tool-toggle]')!); });
+    expect(duplicate.container.querySelector('[data-memory-tool-pending]')?.textContent).toBe('This is a pending proposal and is not in effect yet.');
+
+    const noop = await renderCard(semanticTool('MemoryWrite', { action: 'update', reason: 'Re-checking' }, receipt({
+      outcome: 'unchanged', operation_id: null,
+    })));
+    expect(noop.container.textContent).toContain('No change');
+    // No operation was created, so there is nothing to replay.
+    expect(noop.container.querySelector('[data-memory-tool-undo]')).toBeNull();
+    await act(async () => { click(noop.container.querySelector('[data-memory-tool-toggle]')!); });
+    expect(noop.container.querySelector('[data-memory-tool-unchanged]')?.textContent).toContain('no new version');
+  });
+
+  it('locates a persona-owned write in its own namespace instead of the session workspace', async () => {
+    const { container } = await renderCard(semanticTool('MemoryWrite', { reason: 'Role agreement' }, JSON.stringify({
+      action: 'create', outcome: 'applied', id: 'm_persona', title: 'Publish confirmation',
+      scope: 'persona', owner_scope: { kind: 'persona', personaId: 'lin-lan' },
+      target: { scope: 'persona', id: 'm_persona', expected_revision: '1' },
+      status: 'active', revision: '1', operation_id: 'op_persona',
+    })));
+    expect(container.querySelector('[data-memory-tool-scope]')?.getAttribute('data-memory-scope-kind')).toBe('persona');
+    expect(container.querySelector('[data-memory-tool-scope]')?.textContent).toContain('Persona');
+  });
+
+  it('reads a search envelope and a short page as partial rather than as a complete result', async () => {
+    const envelope = await renderCard(semanticTool('MemorySearch', { query: 'report' }, JSON.stringify({
+      items: [{ id: 'm_1', title: 'One' }, { id: 'm_2', title: 'Two' }],
+      mode: 'search', next_cursor: 'next-page',
+      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: false, warnings: ['1 unreadable'] },
+    })));
+    expect(envelope.container.textContent).toContain('2 results, maybe more');
+
+    // A pre-envelope session recorded a plain array, and it still reads.
+    const legacy = await renderCard(semanticTool('MemorySearch', { query: 'report' }, JSON.stringify([{ id: 'm_1' }])));
+    expect(legacy.container.textContent).toContain('1 match');
   });
 
   it('reads and copies loaded input and generic JSON beyond 6000 characters without conflating display and payload cuts', async () => {
@@ -5702,13 +5949,20 @@ describe('semantic tool cards', () => {
       await expand(container);
       const wells = container.querySelectorAll('[data-loaded-tool-text]');
       expect(wells).toHaveLength(2);
-      expect(wells[0]!.textContent).toContain('Display truncated');
-      expect(wells[1]!.textContent).toContain('Display truncated');
-      expect(container.textContent).not.toContain('input record tail');
-      expect(container.textContent).not.toContain('output record tail');
+      expect(container.querySelector('[data-tool-show-full]')).toBeNull();
+      expect(container.textContent).toContain('input record tail');
+      expect(container.textContent).toContain('output record tail');
       expect(container.querySelector('[data-tool-payload-status]')?.textContent).toContain('payload is truncated or incomplete');
-      const copies = container.querySelectorAll('button[aria-label="copy"]');
-      expect(copies).toHaveLength(2);
+      // Each well's copy tile is named after the body it takes, so a column of
+      // identical glyphs still says which one a press acts on. The input well
+      // also keeps the "loaded record only" caveat in its name: this input
+      // arrived cut, and a bare "Copy" would overstate what lands.
+      const copies = [...container.querySelectorAll('[data-copy-state]')];
+      expect(copies.map((button) => button.getAttribute('aria-label'))).toEqual([
+        'Copy Input · Copies the loaded record only',
+        'Copy Output',
+      ]);
+      expect(copies.every((button) => button.textContent === '')).toBe(true);
       await act(async () => { click(copies[0]!); click(copies[1]!); });
       expect(writeText.mock.calls.map((call) => call[0])).toEqual([JSON.stringify(args, null, 2), JSON.stringify(output, null, 2)]);
       for (const button of container.querySelectorAll('[data-tool-show-full]')) await act(async () => { click(button); });
@@ -5879,7 +6133,7 @@ describe('ordinary bounded message reading', () => {
     const actions: TranscriptRowActions = { disabled: false, onEditMessage: vi.fn(), onRegenerate: vi.fn(), onFork: vi.fn() };
     const blocks: Block[] = [userBlock({ id: 'user-m0', text: 'prefix', userMessageId: 'm0', turnId: 't0', contentSource: source }), { ...assistantBlock('agent-frame-f0', 'prefix'), frameId: 'f0', stepId: 's0', turnId: 't0' }, { kind: 'thinking', id: 'agent-frame-think0', text: 'prefix', frameId: 'think0', stepId: 's0', turnId: 't0', streaming: false, createdAt: undefined }];
     const { root, container } = makeRoot();
-    const show = async (pending: typeof refs, values: Block[]) => renderSettled(root, <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={pending} loadContent={loadContent}><Transcript state={transcriptState(values)} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} rowActions={actions} /></TranscriptDetailProvider>);
+    const show = async (pending: typeof refs, values: Block[]) => renderSettled(root, <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={pending} loadContent={loadContent}><Transcript state={transcriptState(values)} onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} rowActions={actions} /></TranscriptDetailProvider>, true);
     await show(refs, blocks);
     const user = container.querySelector('[data-block-id="user-m0"]')!;
     const answer = container.querySelector('[data-block-id="agent-frame-f0"]')!;

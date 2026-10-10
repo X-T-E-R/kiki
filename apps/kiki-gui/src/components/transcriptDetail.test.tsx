@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState, type ReactNode } from 'react';
+import { act, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   transcriptDetailKey,
+  SessionController,
   type Block,
   type TranscriptDetailStatus,
 } from '@kiki/session-core/session';
@@ -15,6 +16,8 @@ import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { ContentRef } from '@kiki/transcript';
 
 import { I18nProvider } from '../i18n';
+import * as clipboard from '../lib/clipboard';
+import { CopyButton } from './timeline/ContentCopyButton';
 import { ContentContinuation } from './ContentContinuation';
 import { MediaPartList } from './mediaPreview';
 import { ShellMessage } from './Transcript';
@@ -486,6 +489,18 @@ describe('session remainder', () => {
     }
   });
 
+  it('reports automatic roster array progress without requiring a continuation click', async () => {
+    const roster = boundedRef({ kind: 'snapshot', id: '' }, ['subagents'], 'array', 4, 706);
+    const read = vi.fn(async (_ref: ContentRef): Promise<ReadResult> => ({}));
+    const container = await render(
+      <ContentHarness refs={[roster]} read={read}><SessionRemainder /></ContentHarness>,
+    );
+    await click(container.querySelector('[data-session-remainder-toggle]'));
+    expect(container.querySelector('[data-roster-reading]')?.textContent).toContain('Reading the agent roster automatically');
+    expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('reads the session title and a roster entry one segment at a time', async () => {
     const title = boundedRef({ kind: 'snapshot', id: '' }, ['session', 'title'], 'text', 12, 40);
     const roster = boundedRef({ kind: 'roster', id: 'child-1' }, ['label'], 'text', 2, 8);
@@ -714,4 +729,172 @@ describe('real snapshot subagent remainder', () => {
     await click(container.querySelector('[data-content-continuation-action]'));
     expect(loadContent).toHaveBeenCalledWith(ref);
   });
+});
+
+it('a real controller-backed open tool automatically finishes both fields without a continuation click', async () => {
+  const inputRef = boundedRef(FRAME_SOURCE, ['input', 'prompt'], 'text', 3, 9);
+  const outputRef = boundedRef(FRAME_SOURCE, ['output'], 'text', 3, 9);
+  const read = vi.fn(async ({ ref }: { ref: ContentRef }) => ({ ref, value: ref.offset === 3 ? 'def' : 'ghi', next: ref.offset === 3 ? { ...ref, offset: 6 } : undefined, contentRefs: [] }));
+  const view = { snapshot: async () => ({ session: { id: 'test', title: 'Reading' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'main', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 't1.1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: FRAME_SOURCE.id, toolCallId: 'call-1', name: 'ExampleTool', state: 'done', input: { prompt: 'abc' }, output: 'abc', contentRefs: [inputRef, outputRef] }] }] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+  function AutomaticHarness() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    const tool = state.blocks.find((block): block is Tool => block.kind === 'tool')!;
+    return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="main"><ToolCard block={tool} /></TranscriptDetailProvider>;
+  }
+  const container = await render(<AutomaticHarness />);
+  expect(read).not.toHaveBeenCalled();
+  await click(container.querySelector('[data-tool] button'));
+  expect(container.textContent).toContain('abc');
+  await act(async () => { await vi.waitFor(() => expect(controller.getState().contentRefs).toEqual([])); });
+  expect(read).toHaveBeenCalledTimes(4);
+  expect(container.textContent).toContain('abcdefghi');
+  expect(container.querySelector('[data-content-continuation]')).toBeNull();
+  await click(container.querySelector('[data-tool] button'));
+  await click(container.querySelector('[data-tool] button'));
+  expect(read).toHaveBeenCalledTimes(4);
+  controller.close();
+});
+
+
+it('cancels copy preparation without writing a late prefix or claiming success', async () => {
+  const write = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(undefined);
+  let finish!: (value: string) => void;
+  let signal: AbortSignal | undefined;
+  try {
+    const container = await render(<CopyButton text="prefix" prepare={(input) => { signal = input; return new Promise((resolve) => { finish = resolve; }); }} />);
+    const button = container.querySelector('button')!;
+    // The control is the glyph: it carries the state in its accessible name,
+    // never as a word beside the icon.
+    expect(button.querySelector('svg')).not.toBeNull();
+    expect(button.textContent).toBe('');
+    expect(button.getAttribute('aria-label')).toBe('copy');
+    await click(button);
+    expect(button.getAttribute('aria-label')).toBe('Preparing to copy…');
+    expect(button.getAttribute('data-copy-state')).toBe('reading');
+    await click(container.querySelector('[data-copy-cancel]')!);
+    await act(async () => { finish('late prefix'); });
+    expect(signal?.aborted).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+    expect(button.getAttribute('data-copy-state')).toBe('idle');
+    expect(button.disabled).toBe(false);
+  } finally { write.mockRestore(); }
+});
+
+it('offers a working retry after a real copy read failure without inventing a download', async () => {
+  const write = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(undefined);
+  const prepare = vi.fn().mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce('complete');
+  try {
+    const container = await render(<CopyButton text="prefix" prepare={prepare} />);
+    const button = container.querySelector('button')!;
+    await click(button);
+    // The failure is the one thing that must still be read: it is spoken, and
+    // the tile stays pressable so the retry is the same gesture.
+    expect(container.querySelector('[data-copy-failed]')?.textContent).toBe('Could not copy the full content. Try again.');
+    expect(container.textContent).not.toMatch(/download/i);
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(write).toHaveBeenCalledWith('complete');
+    expect(button.getAttribute('data-copy-state')).toBe('copied');
+    expect(container.querySelector('[data-copy-failed]')).toBeNull();
+  } finally { write.mockRestore(); }
+});
+
+it('names the body it copies in the tooltip, so a column of tiles stays distinguishable', async () => {
+  const write = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(undefined);
+  try {
+    const container = await render(<section><CopyButton label="Output" text="a" /><CopyButton label="Input" text="b" /></section>);
+    const tiles = [...container.querySelectorAll('button')];
+    expect(tiles.map((tile) => tile.getAttribute('title'))).toEqual(['Copy Output', 'Copy Input']);
+    expect(tiles.map((tile) => tile.getAttribute('aria-label'))).toEqual(['Copy Output', 'Copy Input']);
+    await click(tiles[0]!);
+    expect(tiles[0]!.getAttribute('data-copy-state')).toBe('copied');
+    expect(tiles[0]!.querySelector('[data-icon="check"]')).not.toBeNull();
+    expect(tiles[1]!.getAttribute('data-copy-state')).toBe('idle');
+  } finally { write.mockRestore(); }
+});
+
+
+it('omits a range heading only when its caller already labels the field, keeping the standalone label and aria', async () => {
+  const ref: ContentRef = { source: { kind: 'frame', id: 'f', turnId: 't1', stepId: 's1' }, path: ['output'], revision: 'heading', kind: 'text', offset: 3, total: 600_000 };
+  const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead: () => ({ release() {}, retry() {} }), readContentRange: async () => 'body' } as unknown as SessionController;
+  const container = await render(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="s" agentId="main"><section data-headed><p>Output</p><ContentContinuation source={ref.source} roots={['output']} label="Output" headingPresent /></section><section data-standalone><ContentContinuation source={ref.source} roots={['output']} label="Output" /></section></TranscriptDetailProvider>);
+  expect(container.querySelectorAll('[data-headed] p')).toHaveLength(1);
+  expect(container.querySelector('[data-standalone] p')?.textContent).toBe('Output');
+  expect(container.querySelector('[data-headed] [aria-label="Output"]')).not.toBeNull();
+});
+
+
+it.each(['MemoryRead', 'MemoryWrite', 'MemorySearch', 'ExampleTool'])('%s reads structured historical fields on first expansion and retries the original ref', async (name) => {
+  const reason = 'Historical reason '.repeat(80) + 'REASON_TAIL';
+  const output = { items: Array.from({ length: 10 }, (_, i) => ({ id: `entry-${i}`, body: 'Recorded body '.repeat(100) + `BODY_TAIL_${i}`, status: 'archived', revision: 'old-revision' })), next_cursor: 'actual-next-page', coverage: { exhausted: false, complete: true } };
+  const inputRef = boundedRef(FRAME_SOURCE, ['input', 'reason'], 'text', 3, reason.length);
+  const outputRef = boundedRef(FRAME_SOURCE, ['output', 'items'], 'array', 0, 10);
+  let fail = true;
+  const read = vi.fn(async ({ ref }: { ref: ContentRef }) => {
+    if (ref.path[0] === 'input') {
+      if (fail) { fail = false; throw new Error('fixture refused'); }
+      return { ref, value: reason.slice(ref.offset), contentRefs: [] };
+    }
+    return { ref, value: output.items.slice(ref.offset, ref.offset + 2), next: ref.offset + 2 < 10 ? { ...ref, offset: ref.offset + 2 } : undefined, contentRefs: [] };
+  });
+  const view = { snapshot: async () => ({ session: { id: 'test', title: 'Historical receipt' }, as_of_seq: 1, epoch: 'e', in_flight_turn: null }), transcript: { content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  const copied = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(undefined);
+  try {
+    await controller.open();
+    controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'reader', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 't1.1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: FRAME_SOURCE.id, toolCallId: 'call-1', name, state: 'done', input: { reason: reason.slice(0, 3) }, output: { ...output, items: [] }, contentRefs: [inputRef, outputRef] }] }] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+    const subscribe = controller.subscribeAgent.bind(controller, 'reader');
+    const snapshot = controller.getAgentState.bind(controller, 'reader');
+    function HistoricalTool() {
+      const state = useSyncExternalStore(subscribe, snapshot);
+      const tool = state.blocks.find((block): block is Tool => block.kind === 'tool')!;
+      return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="reader"><ToolCard block={tool} agentId="reader" /></TranscriptDetailProvider>;
+    }
+    const container = await render(<HistoricalTool />);
+    expect(read).not.toHaveBeenCalled();
+    if (name === 'MemorySearch') expect(container.textContent).not.toContain('0 matches');
+    await click(container.querySelector('[data-tool] button'));
+    if (name === 'ExampleTool') expect(container.querySelector('[data-tool-raw-toggle]')).toBeNull();
+    await act(async () => { await vi.waitFor(() => expect(container.querySelector('[data-content-continuation="error"]')).not.toBeNull()); });
+    await click(container.querySelector('[data-content-continuation="error"] button'));
+    await act(async () => { await vi.waitFor(() => expect(controller.getAgentState('reader').contentRefs).toEqual([])); });
+    expect(container.textContent).toContain('REASON_TAIL');
+    expect(container.textContent).toContain('BODY_TAIL_9');
+    expect(container.textContent).toContain('actual-next-page');
+    expect(container.textContent).toContain('old-revision');
+    expect(read.mock.calls.every(([request]) => request.ref.revision === inputRef.revision)).toBe(true);
+    await click(container.querySelector('[data-tool-record-field="output"] [data-copy-state]'));
+    expect(copied).toHaveBeenCalledWith(JSON.stringify(output, null, 2));
+    const calls = read.mock.calls.length;
+    await click(container.querySelector('[data-tool] button'));
+    await click(container.querySelector('[data-tool] button'));
+    expect(container.textContent).toContain('BODY_TAIL_9');
+    expect(read).toHaveBeenCalledTimes(calls);
+  } finally { copied.mockRestore(); controller.close(); }
+});
+
+
+it('restores a range-backed write receipt action metadata from the original, retaining scope and revision', async () => {
+  const output = { id: 'memory-example', title: 'Original title', scope: 'persona_workspace', owner_scope: { kind: 'persona_workspace', personaId: 'persona-example', workspaceId: 'workspace-example' }, target: { scope: 'persona_workspace', id: 'memory-example', expected_revision: 'original-revision' }, revision: 'original-revision', status: 'pending', outcome: 'pending', operation_id: 'original-operation', proposed_target: { scope: 'persona_workspace', id: 'target-example', expected_revision: 'older-revision' } };
+  const ref = boundedRef(FRAME_SOURCE, ['output'], 'text', 3, 600_000);
+  const copy = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(JSON.stringify(output));
+  const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead: () => ({ release() {}, retry() {} }), copyToolCallField: copy, readContentRange: async () => 'original receipt range' } as unknown as SessionController;
+  const block = { kind: 'tool', id: 'range-write', frameId: FRAME_SOURCE.id, turnId: FRAME_SOURCE.turnId, stepId: FRAME_SOURCE.stepId, toolCallId: 'range-write', name: 'MemoryWrite', status: 'done', argsText: '', args: { action: 'update' }, output: '{"i' } as Tool;
+  const container = await render(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}} sessionId="test" agentId="reader"><ToolCard block={block} agentId="reader" /></TranscriptDetailProvider>);
+  expect(copy).not.toHaveBeenCalled();
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  expect(container.querySelector('[data-memory-receipt-error]')).not.toBeNull();
+  await click(container.querySelector('[data-memory-receipt-error] button'));
+  expect(copy).toHaveBeenCalledWith('reader', 'range-write', 'output', expect.any(AbortSignal));
+  expect(container.querySelector('[data-memory-tool-view]')).not.toBeNull();
+  expect(container.querySelector('[data-memory-tool-undo]')).not.toBeNull();
+  expect(container.querySelector('[data-memory-tool-scope]')?.getAttribute('data-memory-scope-kind')).toBe('persona_workspace');
+  expect(container.textContent).toContain('Sent to the memory inbox');
+  expect(container.textContent).toContain('original entry is unchanged');
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  await click(container.querySelector('[data-memory-tool-toggle]'));
+  expect(copy).toHaveBeenCalledTimes(2);
 });
