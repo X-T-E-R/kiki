@@ -21,6 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkPresetMutationResponse } from '@kiki/protocol';
 
 import { ConversationShell } from './ConversationShell';
 import { WorkModeMenu } from './WorkModeMenu';
@@ -119,7 +120,8 @@ const fixture = vi.hoisted(() => ({
   listWorkPresets: async (): Promise<{ home_id: string; items: unknown[] }> => ({ home_id: 'main', items: fixture.items }),
   enableWorkPreset: async (id: string, prerequisites: boolean) => {
     fixture.enableCalls.push({ id, prerequisites });
-    return { preset: {}, completed: ['kiki-office'], failures: [] };
+    const failures: WorkPresetMutationResponse['failures'] = [];
+    return { preset: {}, completed: ['kiki-office'], failures };
   },
 }));
 
