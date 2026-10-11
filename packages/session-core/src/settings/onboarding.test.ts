@@ -6,7 +6,6 @@ import {
   isOnboardingCompleted,
   markOnboardingCompleted,
   readOnboardingState,
-  rememberOnboardingReplyPreference,
 } from './onboarding';
 
 class MemoryStorage implements Storage {
@@ -44,19 +43,10 @@ describe('onboarding completion flag', () => {
     expect(ls().getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('preserves the reply memory identity when setup is closed and reopened', () => {
-    rememberOnboardingReplyPreference('https://example.test', 'm_reply');
-    expect(isOnboardingCompleted()).toBe(false);
-    markOnboardingCompleted();
-    expect(readOnboardingState().replyPreference).toEqual({ connectionUrl: 'https://example.test', memoryId: 'm_reply' });
-    rememberOnboardingReplyPreference('https://other.example.test', 'm_other');
-    expect(isOnboardingCompleted()).toBe(true);
-    expect(readOnboardingState().replyPreference).toEqual({ connectionUrl: 'https://other.example.test', memoryId: 'm_other' });
-  });
-
-  it('does not trust a malformed reply memory pointer', () => {
-    ls().setItem('kiki.onboarding', JSON.stringify({ replyPreference: { connectionUrl: 'https://example.test', memoryId: 42 } }));
-    expect(readOnboardingState().replyPreference).toBeUndefined();
+  it('stores only completion rather than a reply preference or memory pointer', () => {
+    const state = markOnboardingCompleted();
+    expect(readOnboardingState()).toEqual(state);
+    expect(JSON.parse(ls().getItem('kiki.onboarding')!)).toEqual({ completedAt: state.completedAt });
   });
 
   it('treats corrupt or shapeless stored values as incomplete', () => {

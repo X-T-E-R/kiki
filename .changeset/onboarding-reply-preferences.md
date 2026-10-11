@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Preserve onboarding reply preferences when setup is reopened.
+Store onboarding reply preferences in the system prompt instead of memory.

@@ -16,14 +16,12 @@
  *    away notifications, written the moment it flips. Failures, questions and
  *    approval requests always notify; the copy says so instead of offering a
  *    switch that does not exist.
- * 3. How it should talk to you: there is no setting for this, so the choice is
- *    kept as a `user` memory in the global scope — the honest mechanism,
- *    visible and editable later under Settings › Memory, and the copy says so
- *    in one line. A second choice updates the same entry rather than adding
- *    another. A failed write shows a line and never blocks the step.
+ * 3. Reply style edits the shared system.reply_style prompt paragraph.
+ *    Untouched custom text and separate identity/model/profile settings stay
+ *    unchanged. The existing prompt editor remains its settings home.
  */
 
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PermissionMode } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -37,7 +35,7 @@ import {
 
 import { useI18n } from '../i18n';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
-import { onboardingVoiceFromMemory, readOnboardingVoiceMemory, saveOnboardingVoiceMemory, type OnboardingVoice } from '../lib/onboardingVoiceMemory';
+import { onboardingReplyParagraph, onboardingVoiceFromParagraph, readReplyParagraph, REPLY_STYLE_GUIDE, saveOnboardingReplyParagraph, type OnboardingVoice } from '../lib/onboardingReplyStyle';
 import { useConnection } from '../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from './controls';
 import { DisclosureChevron, Icon } from './icons';
@@ -113,7 +111,7 @@ function PermissionOption({
   );
 }
 
-export type { OnboardingVoice } from '../lib/onboardingVoiceMemory';
+export type { OnboardingVoice } from '../lib/onboardingReplyStyle';
 const VOICES: readonly OnboardingVoice[] = ['concise', 'detailed'];
 
 export function OnboardingAgreementStep({
@@ -128,38 +126,66 @@ export function OnboardingAgreementStep({
   readonly permissionFeedback: Feedback;
 }) {
   const { t, locale } = useI18n();
-  const { client, config } = useConnection();
-  const connectionUrl = config.url || window.location.origin;
+  const { client, config, scopeId, spaceKey } = useConnection();
+  const scope = useMemo(() => ({ client, url: config.url, scopeId, spaceKey }), [client, config.url, scopeId, spaceKey]);
+  const activeScope = useRef(scope);
+  activeScope.current = scope;
+  const alive = useRef(false);
+  const draftVersion = useRef(0);
+  const saving = useRef(false);
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
 
   const firstRunModes = PERMISSION_MODES.filter((mode) => FIRST_RUN_MODES.includes(mode.id));
   const moreModes = PERMISSION_MODES.filter((mode) => !FIRST_RUN_MODES.includes(mode.id));
   const [moreOpen, setMoreOpen] = useState(() => moreModes.some((mode) => mode.id === permissionMode));
   const [voice, setVoice] = useState<OnboardingVoice | null>(null);
+  const [paragraph, setParagraph] = useState(REPLY_STYLE_GUIDE);
+  const [paragraphOpen, setParagraphOpen] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceFeedback, setVoiceFeedback] = useState<Feedback>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void readOnboardingVoiceMemory(client, connectionUrl).then((entry) => {
-      if (!cancelled) setVoice((chosen) => chosen ?? onboardingVoiceFromMemory(entry));
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [client, connectionUrl]);
+    alive.current = true;
+    draftVersion.current = 0;
+    saving.current = false;
+    setVoice(null);
+    setParagraph(REPLY_STYLE_GUIDE);
+    setVoiceBusy(false);
+    setVoiceFeedback(null);
+    void client.getConfig().then((current) => {
+      if (cancelled || activeScope.current !== scope || draftVersion.current !== 0) return;
+      const value = readReplyParagraph(current);
+      setParagraph(value);
+      setVoice(onboardingVoiceFromParagraph(value));
+    }).catch((error: unknown) => {
+      if (!cancelled && activeScope.current === scope && draftVersion.current === 0) {
+        setVoiceFeedback({ tone: 'error', text: t('onboarding.agreement.voice.readFailed', { detail: errorText(locale, error) }) });
+      }
+    });
+    return () => { cancelled = true; alive.current = false; };
+  }, [client, scope]);
 
-  const chooseVoice = async (choice: OnboardingVoice) => {
-    setVoice(choice);
+  const saveParagraph = async (value: string) => {
+    if (saving.current) return;
+    saving.current = true;
+    draftVersion.current += 1;
+    setParagraph(value);
+    setVoice(onboardingVoiceFromParagraph(value));
     setVoiceBusy(true);
     setVoiceFeedback(null);
+    const isCurrent = () => alive.current && activeScope.current === scope;
     try {
-      await saveOnboardingVoiceMemory(client, connectionUrl, locale, choice);
-      setVoiceFeedback({ tone: 'success', text: t('onboarding.agreement.voice.saved') });
+      const result = await saveOnboardingReplyParagraph(client, value, isCurrent);
+      if (result !== undefined && isCurrent()) setVoiceFeedback({ tone: 'success', text: t('onboarding.agreement.voice.saved') });
     } catch (error) {
-      setVoiceFeedback({ tone: 'error', text: t('onboarding.agreement.voice.failed', { detail: errorText(locale, error) }) });
+      if (isCurrent()) setVoiceFeedback({ tone: 'error', text: t('onboarding.agreement.voice.failed', { detail: errorText(locale, error) }) });
     } finally {
-      setVoiceBusy(false);
+      if (isCurrent()) { saving.current = false; setVoiceBusy(false); }
     }
   };
+
+  const chooseVoice = (choice: OnboardingVoice) => saveParagraph(onboardingReplyParagraph(locale, choice));
 
   return (
     <div className="mt-3" data-onboarding-agreement>
@@ -246,6 +272,20 @@ export function OnboardingAgreementStep({
           })}
         </div>
         <p className="mt-1.5 text-[12px] leading-relaxed text-ink-faint">{t('onboarding.agreement.voice.note')}</p>
+        {voice === null && paragraph !== REPLY_STYLE_GUIDE ? <p className="mt-1 text-[12px] text-ink-soft">{t('onboarding.agreement.voice.custom')}</p> : null}
+        <button type="button" data-onboarding-paragraph-open aria-expanded={paragraphOpen}
+          onClick={() => { setParagraphOpen((open) => !open); }}
+          className="mt-1 inline-flex min-h-7 items-center gap-1 rounded-md px-1 text-[12px] text-ink-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none">
+          <DisclosureChevron open={paragraphOpen} />{t('onboarding.agreement.voice.edit')}
+        </button>
+        {paragraphOpen ? <div className="mt-2 space-y-2">
+          <label htmlFor="onboarding-reply-paragraph" className="block text-[12px] text-ink-soft">system.reply_style</label>
+          <textarea id="onboarding-reply-paragraph" rows={4} value={paragraph} disabled={voiceBusy}
+            onChange={(event) => { draftVersion.current += 1; setParagraph(event.target.value); setVoice(onboardingVoiceFromParagraph(event.target.value)); setVoiceFeedback(null); }}
+            className="w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[12px] leading-relaxed text-ink focus:outline-none focus:ring-2 focus:ring-selected-ink/40" />
+          <button type="button" data-onboarding-paragraph-save disabled={voiceBusy} onClick={() => { void saveParagraph(paragraph); }}
+            className="rounded-md bg-selected-ink px-3 py-1.5 text-[12px] text-paper disabled:opacity-60">{t('onboarding.agreement.voice.save')}</button>
+        </div> : null}
         <FeedbackLine feedback={voiceFeedback} />
       </OnboardingRow>
     </div>

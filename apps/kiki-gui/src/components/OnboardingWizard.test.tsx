@@ -5,7 +5,7 @@
  * (shouldOfferOnboarding), the three-step walk (welcome → agreement → depart;
  * nothing here configures a model, each exit is explicit), the save semantics
  * of every advance (Next on the agreement step persists the permission
- * default; the notify switch and the voice memory write on the spot), the
+ * default; notifications and reply prompt choices save on the spot), the
  * depart page's three ways out (a model hand-off, the kiki-ops install, and
  * the folded discovery routes), and exit state.
  */
@@ -52,36 +52,22 @@ const installHostSkill = vi.fn();
 const putMemory = vi.fn();
 const getMemory = vi.fn();
 const listMemory = vi.fn();
-const memoryEntries = new Map<string, import('../lib/client').MemoryEntry>();
+let serverConfig: Record<string, unknown>;
 const navigate = vi.fn();
 
 /** Mutable connection surface, so one test can take the socket away. */
-const connectionState = vi.hoisted(() => ({ wsStatus: undefined as 'open' | 'closed' | undefined }));
+const connectionState = vi.hoisted(() => ({ wsStatus: undefined as 'open' | 'closed' | undefined, scopeId: 'local', spaceKey: 'main' }));
+const connectionClient = { getAuth, listProviders, listModels, getConfig, getOAuthStatus, listOAuthMethods, startOAuthLogin,
+  cancelOAuthLogin: vi.fn(), patchConfig, listWorkspaces, createSession, createProvider, probeProviderDraft,
+  previewHostSkillInstall, installHostSkill, putMemory, getMemory, listMemory };
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
     config: { url: 'http://127.0.0.1:1', token: 'test-token' },
     get wsStatus() { return connectionState.wsStatus; },
-    client: {
-      getAuth,
-      listProviders,
-      listModels,
-      getConfig,
-      getOAuthStatus,
-      listOAuthMethods,
-      startOAuthLogin,
-      cancelOAuthLogin: vi.fn(),
-      patchConfig,
-      listWorkspaces,
-      createSession,
-      createProvider,
-      probeProviderDraft,
-      previewHostSkillInstall,
-      installHostSkill,
-      putMemory,
-      getMemory,
-      listMemory,
-    },
+    scopeId: connectionState.scopeId,
+    spaceKey: connectionState.spaceKey,
+    client: connectionClient,
   }),
 }));
 vi.mock('../host', () => ({
@@ -130,7 +116,10 @@ beforeEach(() => {
   getAuth.mockReset().mockResolvedValue(AUTH_EMPTY);
   listProviders.mockReset().mockResolvedValue({ items: [] });
   listModels.mockReset().mockResolvedValue({ items: [] });
-  getConfig.mockReset().mockResolvedValue({ default_permission_mode: 'manual' });
+  serverConfig = { default_permission_mode: 'manual' };
+  connectionState.scopeId = 'local';
+  connectionState.spaceKey = 'main';
+  getConfig.mockReset().mockImplementation(async () => serverConfig);
   getOAuthStatus.mockReset().mockResolvedValue(null);
   listOAuthMethods.mockReset().mockResolvedValue([
     { id: 'kimi-code', label: 'Kimi Code', provider: 'managed:kimi-code', protocol: 'openai', signed_in: false },
@@ -138,9 +127,11 @@ beforeEach(() => {
     { id: 'openai-codex', label: 'ChatGPT', provider: 'managed:openai-codex', protocol: 'openai_responses', signed_in: false },
   ]);
   startOAuthLogin.mockReset().mockResolvedValue({ flow_id: 'f1', provider: 'managed:github-copilot', status: 'authenticated' });
-  patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => ({
-    default_permission_mode: patch['default_permission_mode'] ?? 'manual',
-  }));
+  patchConfig.mockReset().mockImplementation(async (patch: Record<string, unknown>) => {
+    const { replace_domains: _replaceDomains, ...values } = patch;
+    serverConfig = { ...serverConfig, ...values };
+    return serverConfig;
+  });
   listWorkspaces.mockReset().mockResolvedValue({ items: [] });
   createSession.mockReset().mockResolvedValue({ id: 's_onboarding_1' });
   createProvider.mockReset().mockResolvedValue({ id: 'kimi', revision: 'r1' });
@@ -151,25 +142,9 @@ beforeEach(() => {
   installHostSkill.mockReset().mockResolvedValue({
     skill: 'kiki-ops', host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-ops/SKILL.md', overwrites: false, revision: 'rev-2',
   });
-  memoryEntries.clear();
-  listMemory.mockReset().mockImplementation(async () => ({ items: [...memoryEntries.values()], next_cursor: null, coverage: { complete: true, exhausted: true } }));
-  getMemory.mockReset().mockImplementation(async (_target: unknown, id: string) => {
-    const entry = memoryEntries.get(id);
-    if (entry === undefined) throw new Error('Memory not found');
-    return entry;
-  });
-  putMemory.mockReset().mockImplementation(async (_target: unknown, id: string, body: import('../lib/client').MemoryPutBody) => {
-    const previous = id === 'new' ? undefined : memoryEntries.get(id);
-    if (id !== 'new' && previous?.revision !== body.expected_revision) throw new Error('Memory revision conflict');
-    const entry: import('../lib/client').MemoryEntry = {
-      id: previous?.id ?? `mem_${memoryEntries.size + 1}`, type: body.type, title: body.title, body: body.body,
-      reason: body.reason, status: 'active', pinned: previous?.pinned ?? false,
-      created: previous?.created ?? '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z',
-      source: { writer: 'user' }, revision: `mrev_${Number(previous?.revision.slice(5) ?? 0) + 1}`,
-    };
-    memoryEntries.set(entry.id, entry);
-    return { entry, operationId: 'op1', outcome: 'applied' };
-  });
+  listMemory.mockReset().mockRejectedValue(new Error('Onboarding must not read memory'));
+  getMemory.mockReset().mockRejectedValue(new Error('Onboarding must not read memory'));
+  putMemory.mockReset().mockRejectedValue(new Error('Onboarding must not write memory'));
 });
 
 afterEach(async () => {
@@ -513,37 +488,34 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('Step 2 of 3');
   });
 
-  it('the voice choice is kept as a user memory, not a setting', async () => {
+  it('stores the reply paragraph in the prompt domain and never touches memory', async () => {
+    const { onboardingReplyParagraph } = await import('../lib/onboardingReplyStyle');
+    const original = { variables: { example: 'kept' }, overrides: { files: ['shared.toml'], fields: { 'system.environment': 'ENV' }, main: { files: ['main.toml'], fields: { 'system.task_execution': 'MAIN' } }, independent: 'off' as const } };
+    serverConfig['prompt'] = original;
     await mount();
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    await flush();
-    expect(putMemory).toHaveBeenCalledTimes(1);
-    const [target, id, body] = putMemory.mock.calls[0]!;
-    expect(target).toEqual({ scope: 'global' });
-    expect(id).toBe('new');
-    expect(body).toMatchObject({ type: 'user' });
-    expect(String(body.title)).toContain('Reply style');
-    expect(String(body.body)).toContain('conclusion');
-    expect(body.reason).toBeTruthy();
-    expect(dialog().textContent).toContain('Saved as a memory');
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(patchConfig).toHaveBeenCalledWith({ prompt: { ...original, overrides: { ...original.overrides,
+      fields: { ...original.overrides.fields, 'system.reply_style': onboardingReplyParagraph('en', 'concise') } } }, replace_domains: ['prompt'] });
+    expect(listMemory).not.toHaveBeenCalled();
+    expect(getMemory).not.toHaveBeenCalled();
+    expect(putMemory).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Saved the shared system prompt paragraph');
   });
 
-  it('a second voice choice updates the same memory instead of adding another', async () => {
+  it('a second choice replaces only the same reply field', async () => {
+    const { onboardingReplyParagraph } = await import('../lib/onboardingReplyStyle');
     await mount();
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    await flush();
     await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
-    await flush();
-    expect(putMemory).toHaveBeenCalledTimes(2);
-    const [target, id, body] = putMemory.mock.calls[1]!;
-    expect(target).toEqual({ scope: 'global' });
-    expect(id).toBe('mem_1');
-    expect(body).toMatchObject({ action: 'update', expected_revision: 'mrev_1' });
+    expect(patchConfig).toHaveBeenCalledTimes(2);
+    expect(serverConfig['prompt']).toEqual({ overrides: { fields: { 'system.reply_style': onboardingReplyParagraph('en', 'detailed') } } });
+    expect(putMemory).not.toHaveBeenCalled();
   });
 
-  it('R040-ONBOARD-VOICE-DUP reuses the same topic after changing steps and reopening setup with a fresh revision', async () => {
+  it('reads the server paragraph after changing steps and fully reopening setup', async () => {
     await mount();
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
@@ -551,72 +523,69 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Back'));
     expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('true');
     await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
-    expect(memoryEntries.size).toBe(1);
     await act(async () => { roots.pop()!.unmount(); });
     containers.pop()!.remove();
     await mount();
     await toAgreementStep();
     expect(dialog().querySelector('[data-onboarding-voice="detailed"]')?.getAttribute('aria-checked')).toBe('true');
-    const existing = memoryEntries.get('mem_1')!;
-    memoryEntries.set('mem_1', { ...existing, title: 'My reply preferences', revision: 'mrev_7' });
-    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    expect(memoryEntries.size).toBe(1);
-    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1', 'mem_1']);
-    expect(putMemory.mock.calls[2]?.[2]).toMatchObject({ title: 'My reply preferences', action: 'update', expected_revision: 'mrev_7' });
+    expect(putMemory).not.toHaveBeenCalled();
   });
 
-  it('R040-ONBOARD-VOICE-DUP recovers a committed create whose acknowledgement was lost instead of creating again', async () => {
-    const commit = putMemory.getMockImplementation()!;
-    putMemory.mockImplementationOnce(async (...args) => {
-      await commit(...args);
-      throw new Error('acknowledgement lost');
-    });
+  it('keeps a saved paragraph after a lost acknowledgement without creating memory', async () => {
+    const commit = patchConfig.getMockImplementation()!;
+    patchConfig.mockImplementationOnce(async (...args) => { await commit(...args); throw new Error('acknowledgement lost'); });
     await mount();
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    expect(memoryEntries.size).toBe(1);
     expect(dialog().textContent).toContain('acknowledgement lost');
     await act(async () => { roots.pop()!.unmount(); });
     containers.pop()!.remove();
     await mount();
     await toAgreementStep();
+    expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('true');
     await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
-    expect(memoryEntries.size).toBe(1);
-    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1']);
-    expect(putMemory.mock.calls[1]?.[2]).toMatchObject({ action: 'update', expected_revision: 'mrev_1' });
-  });
-
-  it('R040-ONBOARD-VOICE-DUP recovers a legacy setup entry but leaves an unrelated same-title user memory untouched', async () => {
-    const { translate } = await import('@kiki/session-core/i18n');
-    const common = { type: 'user' as const, status: 'active' as const, pinned: false, created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', source: { writer: 'user' as const }, revision: 'mrev_3' };
-    const title = translate('zh', 'onboarding.agreement.voice.concise.title');
-    const unrelated = { ...common, id: 'other', title, body: 'A separate preference with a similar title.', reason: 'Written by the user in Settings.' };
-    memoryEntries.set('other', unrelated);
-    memoryEntries.set('legacy', { ...common, id: 'legacy', title, body: translate('zh', 'onboarding.agreement.voice.concise.body'), reason: translate('zh', 'onboarding.agreement.voice.reason') });
-    await mount();
-    await toAgreementStep();
-    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
-    expect(memoryEntries.size).toBe(2);
-    expect(memoryEntries.get('other')).toEqual(unrelated);
-    expect(putMemory.mock.calls[0]?.[1]).toBe('legacy');
-    expect(putMemory.mock.calls[0]?.[2]).toMatchObject({ expected_revision: 'mrev_3', action: 'update' });
-  });
-
-  it('R040-ONBOARD-VOICE-DUP never creates from incomplete memory reads or hides a CAS conflict', async () => {
-    listMemory.mockResolvedValue({ items: [], next_cursor: null, coverage: { complete: false, exhausted: true } });
-    await mount();
-    await toAgreementStep();
-    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    expect(patchConfig).toHaveBeenCalledTimes(2);
     expect(putMemory).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Could not save');
-    listMemory.mockResolvedValue({ items: [], next_cursor: null, coverage: { complete: true, exhausted: true } });
+  });
+
+  it('preserves custom prompt text on browse and skip and exposes its editable paragraph', async () => {
+    const custom = '${reply_style_guide}\n\nMy own reply instructions.';
+    serverConfig['prompt'] = { overrides: { fields: { 'system.reply_style': custom } } };
+    await mount();
+    await toAgreementStep();
+    expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(dialog().textContent).toContain('Your custom paragraph is kept');
+    await click(dialog().querySelector('[data-onboarding-paragraph-open]')!);
+    expect(dialog().querySelector<HTMLTextAreaElement>('#onboarding-reply-paragraph')?.value).toBe(custom);
+    await click(buttonByText('Set up later'));
+    expect(serverConfig['prompt']).toEqual({ overrides: { fields: { 'system.reply_style': custom } } });
+    expect(patchConfig.mock.calls.every(([patch]) => patch.prompt === undefined)).toBe(true);
+  });
+
+  it('does not patch from a failed baseline read and keeps the chosen draft for retry', async () => {
+    await mount();
+    await toAgreementStep();
+    getConfig.mockRejectedValueOnce(new Error('config unavailable'));
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    putMemory.mockRejectedValueOnce(new Error('Memory revision conflict'));
-    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
-    expect(memoryEntries.size).toBe(1);
-    expect(memoryEntries.get('mem_1')?.body).toContain('conclusion');
-    expect(dialog().textContent).toContain('Memory revision conflict');
-    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1']);
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(dialog().textContent).toContain('config unavailable');
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('never writes an old pending choice after the active space or connection changes', async () => {
+    await mount();
+    await toAgreementStep();
+    let resolve!: (value: Record<string, unknown>) => void;
+    getConfig.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    connectionState.scopeId = 'remote-example';
+    connectionState.spaceKey = 'another-space';
+    await click(dialog().querySelector('[data-permission-choice="yolo"]')!);
+    await act(async () => { resolve({ prompt: { overrides: { fields: { 'system.reply_style': 'OLD' } } } }); });
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('false');
   });
 
   it.each(['yolo', 'review'] as const)('R040 pending config preserves %s when untouched Next or Set up later is used', async (mode) => {
@@ -645,17 +614,31 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('Step 3 of 3');
   });
 
-  it('a failed memory write says so in place and never blocks the step', async () => {
-    putMemory.mockRejectedValueOnce(new Error('memory store unavailable'));
+  it('saves an editable paragraph and rejects removing the default reply guide before any request', async () => {
+    const { saveOnboardingReplyParagraph } = await import('../lib/onboardingReplyStyle');
+    await expect(saveOnboardingReplyParagraph(connectionClient, 'Missing guide', () => true)).rejects.toBeInstanceOf(Error);
+    expect(getConfig).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+    const custom = '${reply_style_guide}\n\nCustom user instructions.';
+    serverConfig['prompt'] = { overrides: { fields: { 'system.reply_style': custom } } };
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-paragraph-open]')!);
+    expect(dialog().querySelector<HTMLTextAreaElement>('#onboarding-reply-paragraph')?.value).toBe(custom);
+    await click(dialog().querySelector('[data-onboarding-paragraph-save]')!);
+    expect(patchConfig).toHaveBeenCalledWith({ prompt: { overrides: { fields: { 'system.reply_style': custom } } }, replace_domains: ['prompt'] });
+    expect(putMemory).not.toHaveBeenCalled();
+  });
+
+  it('a failed prompt save stays visible and never blocks the step', async () => {
+    patchConfig.mockRejectedValueOnce(new Error('config write unavailable'));
     await mount();
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
-    await flush();
-    expect(dialog().textContent).toContain('memory store unavailable');
-    // The step is unchanged and its advance still works.
+    expect(dialog().textContent).toContain('config write unavailable');
     await click(buttonByText('Next'));
-    await flush();
     expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(putMemory).not.toHaveBeenCalled();
   });
 
   it('the first step asks nothing, so it offers only Next and keeps the run open', async () => {
