@@ -321,7 +321,7 @@ describe('OnboardingWizard', () => {
 
   it('shows the full masthead once, then a compact header on later steps', async () => {
     await mount();
-    await toPermissionsStep();
+    await toAgreementStep();
     expect(dialog().querySelector('[data-onboarding-header="compact"]')).not.toBeNull();
     expect(dialog().querySelector('[data-onboarding-header="full"]')).toBeNull();
     // The step keeps one title; the close and the progress stay reachable.

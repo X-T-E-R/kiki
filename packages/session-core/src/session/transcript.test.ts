@@ -2476,7 +2476,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
     expect(project()[0]).toMatchObject({ id: firstId, streaming: false, fragments: [{ streaming: false }, { streaming: false }, { streaming: false }] });
     expect(coldBlocks[0]).toMatchObject({ id: firstId, streaming: false });
-    const folded = foldHistory([...coldBlocks, { kind: 'shell', id: 'quiet-shell', commandId: 'quiet-shell', turnId: 't0', output: '', done: true, isError: false }], undefined);
+    const folded = foldHistory([...coldBlocks, { kind: 'shell', id: 'quiet-shell', commandId: 'quiet-shell', turnId: 't0', command: 'true', output: '', done: true, isError: false }], undefined);
     expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
   });
 
