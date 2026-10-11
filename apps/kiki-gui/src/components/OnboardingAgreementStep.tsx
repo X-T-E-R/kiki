@@ -23,7 +23,7 @@
  *    another. A failed write shows a line and never blocks the step.
  */
 
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { PermissionMode } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
@@ -37,6 +37,7 @@ import {
 
 import { useI18n } from '../i18n';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
+import { onboardingVoiceFromMemory, readOnboardingVoiceMemory, saveOnboardingVoiceMemory, type OnboardingVoice } from '../lib/onboardingVoiceMemory';
 import { useConnection } from '../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from './controls';
 import { DisclosureChevron, Icon } from './icons';
@@ -112,7 +113,7 @@ function PermissionOption({
   );
 }
 
-export type OnboardingVoice = 'concise' | 'detailed';
+export type { OnboardingVoice } from '../lib/onboardingVoiceMemory';
 const VOICES: readonly OnboardingVoice[] = ['concise', 'detailed'];
 
 export function OnboardingAgreementStep({
@@ -127,36 +128,31 @@ export function OnboardingAgreementStep({
   readonly permissionFeedback: Feedback;
 }) {
   const { t, locale } = useI18n();
-  const { client } = useConnection();
+  const { client, config } = useConnection();
+  const connectionUrl = config.url || window.location.origin;
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
 
   const firstRunModes = PERMISSION_MODES.filter((mode) => FIRST_RUN_MODES.includes(mode.id));
   const moreModes = PERMISSION_MODES.filter((mode) => !FIRST_RUN_MODES.includes(mode.id));
-  // A choice that lives behind the disclosure (a replay of a server that says
-  // review) opens it, so the current selection is never hidden.
   const [moreOpen, setMoreOpen] = useState(() => moreModes.some((mode) => mode.id === permissionMode));
-
   const [voice, setVoice] = useState<OnboardingVoice | null>(null);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceFeedback, setVoiceFeedback] = useState<Feedback>(null);
-  // The one memory this page writes; a later choice updates it in place.
-  const [voiceEntry, setVoiceEntry] = useState<{ readonly id: string; readonly revision: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readOnboardingVoiceMemory(client, connectionUrl).then((entry) => {
+      if (!cancelled) setVoice((chosen) => chosen ?? onboardingVoiceFromMemory(entry));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [client, connectionUrl]);
 
   const chooseVoice = async (choice: OnboardingVoice) => {
     setVoice(choice);
     setVoiceBusy(true);
     setVoiceFeedback(null);
-    const body = {
-      type: 'user' as const,
-      title: t(`onboarding.agreement.voice.${choice}.title`),
-      body: t(`onboarding.agreement.voice.${choice}.body`),
-      reason: t('onboarding.agreement.voice.reason'),
-    };
     try {
-      const result = voiceEntry === null
-        ? await client.putMemory({ scope: 'global' }, 'new', body)
-        : await client.putMemory({ scope: 'global' }, voiceEntry.id, { ...body, action: 'update', expected_revision: voiceEntry.revision });
-      setVoiceEntry({ id: result.entry.id, revision: result.entry.revision });
+      await saveOnboardingVoiceMemory(client, connectionUrl, locale, choice);
       setVoiceFeedback({ tone: 'success', text: t('onboarding.agreement.voice.saved') });
     } catch (error) {
       setVoiceFeedback({ tone: 'error', text: t('onboarding.agreement.voice.failed', { detail: errorText(locale, error) }) });

@@ -5512,6 +5512,9 @@ export const zh = {
   'onboarding.agreement.voice.detailed.title': '说话方式：讲清来龙去脉',
   'onboarding.agreement.voice.detailed.body': '把背景、依据和权衡讲清楚；宁可详细一点，也不要过于简略。',
   'onboarding.agreement.voice.reason': '首次引导「说话方式」里的选择。',
+  'onboarding.agreement.voice.inactive': '这条回复偏好已停用。请先在「设置」›「记忆」里查看，再重新选择。',
+  'onboarding.agreement.voice.readFailed': '回复偏好没能完整读出。请重试，或在「设置」›「记忆」里查看。',
+  'onboarding.agreement.voice.ambiguous': '已有多条引导设置的回复偏好。请在「设置」›「记忆」里保留想用的一条，再重试。',
   // 出发页：三条路，先把模型交接出去。
   'onboarding.step.depart': '出发',
   'onboarding.depart.model.title': '① 配好模型再出发',

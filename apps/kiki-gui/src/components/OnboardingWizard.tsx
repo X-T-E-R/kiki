@@ -278,6 +278,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
 
   /** The agreement step's save: the permission default lands in the server config. */
   const savePermissionMode = async (): Promise<boolean> => {
+    // Advancing without a choice is not permission to overwrite a server value
+    // that has not arrived yet. An explicit choice still saves immediately.
+    if (!permissionTouched.current && configQuery.data === undefined) return true;
     setPermissionBusy(true);
     setPermissionFeedback(null);
     try {

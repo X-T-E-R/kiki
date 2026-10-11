@@ -5582,6 +5582,9 @@ export const en = {
   'onboarding.agreement.voice.detailed.title': 'Reply style: the full picture',
   'onboarding.agreement.voice.detailed.body': 'Explain the background, the reasoning and the trade-offs. A fuller answer is preferred over a terse one.',
   'onboarding.agreement.voice.reason': 'Chosen on the first-run agreement page.',
+  'onboarding.agreement.voice.inactive': 'This reply preference is inactive. Review it under Settings › Memory before choosing again.',
+  'onboarding.agreement.voice.readFailed': 'Could not read all reply preferences. Retry, or review them under Settings › Memory.',
+  'onboarding.agreement.voice.ambiguous': 'More than one setup reply preference exists. Keep the one you want under Settings › Memory, then retry.',
   // The depart page: three ways out, the model hand-off first.
   'onboarding.step.depart': 'Go',
   'onboarding.depart.model.title': '① Connect a model, then go',

@@ -50,6 +50,9 @@ const probeProviderDraft = vi.fn();
 const previewHostSkillInstall = vi.fn();
 const installHostSkill = vi.fn();
 const putMemory = vi.fn();
+const getMemory = vi.fn();
+const listMemory = vi.fn();
+const memoryEntries = new Map<string, import('../lib/client').MemoryEntry>();
 const navigate = vi.fn();
 
 /** Mutable connection surface, so one test can take the socket away. */
@@ -76,6 +79,8 @@ vi.mock('../state/connection', () => ({
       previewHostSkillInstall,
       installHostSkill,
       putMemory,
+      getMemory,
+      listMemory,
     },
   }),
 }));
@@ -146,7 +151,25 @@ beforeEach(() => {
   installHostSkill.mockReset().mockResolvedValue({
     skill: 'kiki-ops', host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-ops/SKILL.md', overwrites: false, revision: 'rev-2',
   });
-  putMemory.mockReset().mockResolvedValue({ entry: { id: 'mem_1', revision: 'mrev_1' }, operationId: 'op1', outcome: 'applied' });
+  memoryEntries.clear();
+  listMemory.mockReset().mockImplementation(async () => ({ items: [...memoryEntries.values()], next_cursor: null, coverage: { complete: true, exhausted: true } }));
+  getMemory.mockReset().mockImplementation(async (_target: unknown, id: string) => {
+    const entry = memoryEntries.get(id);
+    if (entry === undefined) throw new Error('Memory not found');
+    return entry;
+  });
+  putMemory.mockReset().mockImplementation(async (_target: unknown, id: string, body: import('../lib/client').MemoryPutBody) => {
+    const previous = id === 'new' ? undefined : memoryEntries.get(id);
+    if (id !== 'new' && previous?.revision !== body.expected_revision) throw new Error('Memory revision conflict');
+    const entry: import('../lib/client').MemoryEntry = {
+      id: previous?.id ?? `mem_${memoryEntries.size + 1}`, type: body.type, title: body.title, body: body.body,
+      reason: body.reason, status: 'active', pinned: previous?.pinned ?? false,
+      created: previous?.created ?? '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z',
+      source: { writer: 'user' }, revision: `mrev_${Number(previous?.revision.slice(5) ?? 0) + 1}`,
+    };
+    memoryEntries.set(entry.id, entry);
+    return { entry, operationId: 'op1', outcome: 'applied' };
+  });
 });
 
 afterEach(async () => {
@@ -500,7 +523,8 @@ describe('OnboardingWizard', () => {
     expect(target).toEqual({ scope: 'global' });
     expect(id).toBe('new');
     expect(body).toMatchObject({ type: 'user' });
-    expect(String(body.title)).toContain('conclusion first');
+    expect(String(body.title)).toContain('Reply style');
+    expect(String(body.body)).toContain('conclusion');
     expect(body.reason).toBeTruthy();
     expect(dialog().textContent).toContain('Saved as a memory');
   });
@@ -517,6 +541,108 @@ describe('OnboardingWizard', () => {
     expect(target).toEqual({ scope: 'global' });
     expect(id).toBe('mem_1');
     expect(body).toMatchObject({ action: 'update', expected_revision: 'mrev_1' });
+  });
+
+  it('R040-ONBOARD-VOICE-DUP reuses the same topic after changing steps and reopening setup with a fresh revision', async () => {
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    await click(buttonByText('Next'));
+    await click(buttonByText('Back'));
+    expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('true');
+    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
+    expect(memoryEntries.size).toBe(1);
+    await act(async () => { roots.pop()!.unmount(); });
+    containers.pop()!.remove();
+    await mount();
+    await toAgreementStep();
+    expect(dialog().querySelector('[data-onboarding-voice="detailed"]')?.getAttribute('aria-checked')).toBe('true');
+    const existing = memoryEntries.get('mem_1')!;
+    memoryEntries.set('mem_1', { ...existing, title: 'My reply preferences', revision: 'mrev_7' });
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    expect(memoryEntries.size).toBe(1);
+    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1', 'mem_1']);
+    expect(putMemory.mock.calls[2]?.[2]).toMatchObject({ title: 'My reply preferences', action: 'update', expected_revision: 'mrev_7' });
+  });
+
+  it('R040-ONBOARD-VOICE-DUP recovers a committed create whose acknowledgement was lost instead of creating again', async () => {
+    const commit = putMemory.getMockImplementation()!;
+    putMemory.mockImplementationOnce(async (...args) => {
+      await commit(...args);
+      throw new Error('acknowledgement lost');
+    });
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    expect(memoryEntries.size).toBe(1);
+    expect(dialog().textContent).toContain('acknowledgement lost');
+    await act(async () => { roots.pop()!.unmount(); });
+    containers.pop()!.remove();
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
+    expect(memoryEntries.size).toBe(1);
+    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1']);
+    expect(putMemory.mock.calls[1]?.[2]).toMatchObject({ action: 'update', expected_revision: 'mrev_1' });
+  });
+
+  it('R040-ONBOARD-VOICE-DUP recovers a legacy setup entry but leaves an unrelated same-title user memory untouched', async () => {
+    const { translate } = await import('@kiki/session-core/i18n');
+    const common = { type: 'user' as const, status: 'active' as const, pinned: false, created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', source: { writer: 'user' as const }, revision: 'mrev_3' };
+    const title = translate('zh', 'onboarding.agreement.voice.concise.title');
+    const unrelated = { ...common, id: 'other', title, body: 'A separate preference with a similar title.', reason: 'Written by the user in Settings.' };
+    memoryEntries.set('other', unrelated);
+    memoryEntries.set('legacy', { ...common, id: 'legacy', title, body: translate('zh', 'onboarding.agreement.voice.concise.body'), reason: translate('zh', 'onboarding.agreement.voice.reason') });
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
+    expect(memoryEntries.size).toBe(2);
+    expect(memoryEntries.get('other')).toEqual(unrelated);
+    expect(putMemory.mock.calls[0]?.[1]).toBe('legacy');
+    expect(putMemory.mock.calls[0]?.[2]).toMatchObject({ expected_revision: 'mrev_3', action: 'update' });
+  });
+
+  it('R040-ONBOARD-VOICE-DUP never creates from incomplete memory reads or hides a CAS conflict', async () => {
+    listMemory.mockResolvedValue({ items: [], next_cursor: null, coverage: { complete: false, exhausted: true } });
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    expect(putMemory).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Could not save');
+    listMemory.mockResolvedValue({ items: [], next_cursor: null, coverage: { complete: true, exhausted: true } });
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    putMemory.mockRejectedValueOnce(new Error('Memory revision conflict'));
+    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
+    expect(memoryEntries.size).toBe(1);
+    expect(memoryEntries.get('mem_1')?.body).toContain('conclusion');
+    expect(dialog().textContent).toContain('Memory revision conflict');
+    expect(putMemory.mock.calls.map((call) => call[1])).toEqual(['new', 'mem_1']);
+  });
+
+  it.each(['yolo', 'review'] as const)('R040 pending config preserves %s when untouched Next or Set up later is used', async (mode) => {
+    for (const action of ['Next', 'Set up later']) {
+      let resolve!: (value: { default_permission_mode: typeof mode }) => void;
+      getConfig.mockImplementation(() => new Promise((done) => { resolve = done; }));
+      await mount();
+      await toAgreementStep();
+      await click(buttonByText(action));
+      expect(dialog().textContent).toContain('Step 3 of 3');
+      expect(patchConfig).not.toHaveBeenCalled();
+      await act(async () => { resolve({ default_permission_mode: mode }); });
+      expect(patchConfig).not.toHaveBeenCalled();
+      await act(async () => { roots.pop()!.unmount(); });
+      containers.pop()!.remove();
+    }
+  });
+
+  it('R040 pending config still saves an explicit permission choice without blocking setup', async () => {
+    getConfig.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-permission-choice="manual"]')!);
+    await click(buttonByText('Next'));
+    expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'manual' });
+    expect(dialog().textContent).toContain('Step 3 of 3');
   });
 
   it('a failed memory write says so in place and never blocks the step', async () => {
