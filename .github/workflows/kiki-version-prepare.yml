@@ -323,18 +323,40 @@ jobs:
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/OnboardingWizard.test.tsx', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/settings/onboarding.test.ts', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/kosong/model/modelRequester.test.ts', '-t', 'assigns one response instance per actual attempt', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript-live', 'exec', 'vitest', 'run', 'test/liveAdapter.test.ts', '-t', 'preserves response instance boundaries', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript', 'exec', 'vitest', 'run', 'test/layers.test.ts', '-t', 'retains response instance and provider response metadata', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/session/transcript.test.ts', '-t', 'combines thinking by proven response instance|recovers only explicit successful response associations', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/Transcript.test.tsx', '-t', 'shows one thinking row and thought count', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript-live', 'exec', 'vitest', 'run', 'test/liveAdapter.test.ts', '-t', 'retracts an actual 401 retry through the loop, live projection and durable cold replay', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript', 'exec', 'vitest', 'run', 'test/layers.test.ts', '-t', 'retracts discarded streaming frames idempotently in stores and subscriber grades', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/agent/loop/loop.test.ts', '-t', 'discards the interrupted attempt fragments|preserves partial thinking on user cancel', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-profiles', 'exec', 'vitest', 'run', 'test/profileShared.test.ts', '-t', 'replaces registered system sections before rendering variables', '--maxWorkers=1', '--no-file-parallelism')
           $env:KIKI_BUILT_IN_CATALOG_FILE = Join-Path $env:RUNNER_TEMP 'kiki-built-in-catalog.json'
           Invoke-CandidateCommand 'node' @('apps/kimi-code/scripts/update-catalog.mjs', '--out', $env:KIKI_BUILT_IN_CATALOG_FILE)
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'build:native:release')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'test:native:smoke')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/cli', 'run', 'package:native')
           $tauriConfig = Join-Path $env:RUNNER_TEMP 'kiki-tauri-candidate-config.json'
-          [System.IO.File]::WriteAllText($tauriConfig, '{"build":{"beforeBuildCommand":"pnpm desktop:prepare"}}', [System.Text.UTF8Encoding]::new($false))
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'desktop:build:artifacts', '--ci', '--target', 'x86_64-pc-windows-msvc', '--config', $tauriConfig)
+          $bundleInfo = Join-Path $env:RUNNER_TEMP 'kiki-installer-build-info.json'
+          $provenance = @{ sourceSha = $env:BASE_SHA; sourceTree = (git rev-parse 'HEAD^{tree}').Trim(); version = $env:EXPECTED_VERSION; target = 'x86_64-pc-windows-msvc' }
+          [System.IO.File]::WriteAllText($bundleInfo, ($provenance | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
+          $resources = @{ '../THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'; $bundleInfo = 'build-info.json' }
+          $config = @{ build = @{ beforeBuildCommand = 'pnpm desktop:prepare' }; bundle = @{ createUpdaterArtifacts = $false; resources = $resources } }
+          [System.IO.File]::WriteAllText($tauriConfig, ($config | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'desktop:build', '--ci', '--target', 'x86_64-pc-windows-msvc', '--config', $tauriConfig)
+          $installers = @(Get-ChildItem 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS Windows x64 installer' }
+          $installerRoot = Join-Path $output 'installer'
+          New-Item -ItemType Directory -Force $installerRoot | Out-Null
+          Copy-Item $installers[0].FullName (Join-Path $installerRoot $installers[0].Name)
+          $audit = Join-Path $env:RUNNER_TEMP 'kiki-installer-audit'
+          Invoke-CandidateCommand '7z' @('x', $installers[0].FullName, "-o$audit", '-y')
+          $payload = @()
+          foreach ($item in @(@{ name = 'kiki-desktop.exe'; source = 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/kiki-desktop.exe' }, @{ name = 'kiki-server.exe'; source = 'apps/kimi-code/dist-native/bin/win32-x64/kiki.exe' }, @{ name = 'THIRD_PARTY_NOTICES.md'; source = 'apps/kiki-gui/THIRD_PARTY_NOTICES.md' }, @{ name = 'build-info.json'; source = $bundleInfo })) {
+            $matches = @(Get-ChildItem $audit -Recurse -File -Filter $item.name)
+            $expected = (Get-FileHash $item.source -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($matches.Count -ne 1 -or (Get-FileHash $matches[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw "Installer payload mismatch: $($item.name)" }
+            $payload += @{ name = $item.name; bytes = $matches[0].Length; sha256 = $expected }
+          }
+          $signature = Get-AuthenticodeSignature $installers[0].FullName
+          $installerReceipt = @{ schemaVersion = 1; provenance = $provenance; originalName = $installers[0].Name; bytes = $installers[0].Length; sha256 = (Get-FileHash $installers[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant(); authenticodeStatus = $signature.Status.ToString(); updaterSigned = $false; payload = $payload }
+          $installerReceipt | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $installerRoot 'installer-receipt.json')
           if (git status --porcelain --untracked-files=no) { throw 'Build changed tracked source or lockfiles' }
           Copy-Item 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/kiki-desktop.exe' (Join-Path $candidate 'kiki-desktop.exe')
           Copy-Item 'apps/kimi-code/dist-native/bin/win32-x64/kiki.exe' (Join-Path $candidate 'kiki-server.exe')
