@@ -7,6 +7,7 @@
 import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchKeyUsageView, type NbSearchManagedCredentialView } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
+import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
 import type {
@@ -315,7 +316,8 @@ export interface RuntimeConfigProjection {
   readonly thinking?: { readonly enabled?: boolean; readonly effort?: string; readonly keep?: string };
 }
 
-export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfigProjection & {
+export type KikiConfigResponse = Omit<ConfigResponse, 'subagent' | 'prompt'> & RuntimeConfigProjection & {
+  readonly prompt?: PromptConfig;
   readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
     readonly denyModels?: string[];
   };
@@ -440,8 +442,9 @@ export interface RuntimeConfigPatch {
 
 export type KikiConfigPatch = Omit<
   PatchConfigRequest,
-  'subagent' | 'replace_domains' | 'request_identity'
+  'subagent' | 'replace_domains' | 'request_identity' | 'prompt'
 > & RuntimeConfigPatch & {
+  readonly prompt?: PromptConfig;
   readonly request_identity?: RequestIdentityPolicyWire | null;
   /** Full-domain nb_search replace body; always paired with replace_domains. */
   readonly nb_search?: Record<string, unknown>;
