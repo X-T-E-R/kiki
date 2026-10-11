@@ -27,7 +27,7 @@ describe('KikiClient onboarding prompt preservation', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       requests.push({ url: String(url), method: init?.method ?? 'GET' });
       expect(String(url)).toBe('http://example.test/api/config');
-      if (init?.method === 'PATCH') {
+      if (init?.method === 'POST') {
         expect(JSON.parse(init.body as string)).toEqual({ prompt: { ...prompt, overrides: { ...prompt.overrides, fields: { ...prompt.overrides.fields, 'system.reply_style': paragraph } } }, replace_domains: ['prompt'] });
         return Response.json({ code: 0, msg: 'success', data: { prompt: { ...prompt, overrides: { ...prompt.overrides, fields: { ...prompt.overrides.fields, 'system.reply_style': paragraph } } } } });
       }
@@ -38,7 +38,7 @@ describe('KikiClient onboarding prompt preservation', () => {
       const result = await saveOnboardingReplyParagraph(client, paragraph, () => true);
       expect(result?.prompt?.overrides?.fields?.['system.reply_style']).toBe(paragraph);
       expect(result?.prompt?.overrides?.main).toEqual(prompt.overrides.main);
-      expect(requests).toEqual([{ url: 'http://example.test/api/config', method: 'GET' }, { url: 'http://example.test/api/config', method: 'PATCH' }]);
+      expect(requests).toEqual([{ url: 'http://example.test/api/config', method: 'GET' }, { url: 'http://example.test/api/config', method: 'POST' }]);
     } finally { await client.klient.close(); }
   });
 });
