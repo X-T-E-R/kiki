@@ -12,6 +12,7 @@ on:
           - version
           - generate
           - build
+          - recover
       base_sha:
         description: 'Exact prepared commit SHA; the version patch applies only to this commit'
         required: true
@@ -24,6 +25,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   pull-requests: read
 
 concurrency:
@@ -419,6 +421,97 @@ jobs:
       - name: Upload candidate and command receipts
         if: always()
         uses: actions/upload-artifact@v7
+        with:
+          name: kiki-windows-x64-candidate-${{ inputs.expected_version }}-${{ inputs.base_sha }}
+          path: ${{ runner.temp }}/kiki-windows-output/
+          if-no-files-found: error
+          retention-days: 7
+
+  recover:
+    if: ${{ inputs.stage == 'recover' }}
+    name: Recover exact already-built NSIS candidate without rebuilding native binaries
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      BASE_SHA: ${{ inputs.base_sha }}
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      KIKI_BUILD_SHA: ${{ inputs.base_sha }}
+      KIKI_UPDATE_CHANNEL: stable
+      KIKI_DISTRIBUTION: local
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.base_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Download the exact already-built installer
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 38110263704
+          name: kiki-windows-x64-candidate-0.4.0-3610187a33f86c6364525bbae0e416a83d3cc61c
+          path: ${{ runner.temp }}/kiki-prior-output
+      - name: Recover and verify installer-owned executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BASE_SHA -cne '3610187a33f86c6364525bbae0e416a83d3cc61c' -or $env:EXPECTED_VERSION -cne '0.4.0') { throw 'Only the verified prior installer source is admitted' }
+          if ((git rev-parse HEAD).Trim() -cne $env:BASE_SHA -or (git status --porcelain)) { throw 'Exact clean checkout required' }
+          $output = Join-Path $env:RUNNER_TEMP 'kiki-windows-output'
+          $candidate = Join-Path $output 'candidate'
+          $installerRoot = Join-Path $output 'installer'
+          New-Item -ItemType Directory -Force $candidate, $installerRoot | Out-Null
+          $env:KIKI_HOME = Join-Path $env:RUNNER_TEMP 'kiki-build-home'
+          $env:KIKI_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'kiki-build-cache'
+          $installer = Join-Path $env:RUNNER_TEMP 'kiki-prior-output/installer/Kiki_0.4.0_x64-setup.exe'
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'aaf84d4224c7b25dbbe336920ca528c39d541c032ea5f1781c339562cddfce33') { throw 'Prior installer bytes changed' }
+          $audit = Join-Path $env:RUNNER_TEMP 'kiki-installer-audit'
+          & 7z x $installer "-o$audit" -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS extraction failed' }
+          $files = @(Get-ChildItem $audit -Recurse -File)
+          $payload = @()
+          foreach ($name in @('kiki-desktop.exe', 'kiki-server.exe', 'THIRD_PARTY_NOTICES.md', 'build-info.json')) {
+            $matches = @($files | Where-Object Name -CEQ $name)
+            if ($matches.Count -ne 1) { throw "Expected one installer payload: $name" }
+            $payload += @{ name = $name; bytes = $matches[0].Length; sha256 = (Get-FileHash $matches[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+            if ($name -in @('kiki-desktop.exe', 'kiki-server.exe')) { Copy-Item $matches[0].FullName (Join-Path $candidate $name) }
+          }
+          $provenance = Get-Content (@($files | Where-Object Name -CEQ 'build-info.json')[0].FullName) -Raw | ConvertFrom-Json
+          if ($provenance.sourceSha -cne $env:BASE_SHA -or $provenance.sourceTree -cne (git rev-parse 'HEAD^{tree}').Trim() -or $provenance.version -cne $env:EXPECTED_VERSION -or $provenance.target -cne 'x86_64-pc-windows-msvc') { throw 'Installer provenance mismatch' }
+          $notices = @($files | Where-Object Name -CEQ 'THIRD_PARTY_NOTICES.md')[0]
+          if ((Get-FileHash $notices.FullName).Hash -cne (Get-FileHash 'apps/kiki-gui/THIRD_PARTY_NOTICES.md').Hash) { throw 'Installer notices mismatch' }
+          $server = @($payload | Where-Object name -CEQ 'kiki-server.exe')[0]
+          if ($server.bytes -ne 204236288) { throw 'Prior successfully built sidecar length changed' }
+          $env:KIKI_SIDECAR_SOURCE = Join-Path $candidate 'kiki-server.exe'
+          $script:commands = @()
+          function Invoke-RecoveryCommand([string]$Executable, [string[]]$CommandArgs) {
+            & $Executable @CommandArgs
+            $code = $LASTEXITCODE
+            $script:commands += @{ command = @($Executable) + $CommandArgs; exitCode = $code }
+            if ($code -ne 0) { throw "Recovery command failed: $Executable" }
+          }
+          Invoke-RecoveryCommand 'pnpm' @('install', '--frozen-lockfile')
+          Invoke-RecoveryCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'build')
+          Invoke-RecoveryCommand 'node' @('apps/kiki-gui/scripts/prepare-sidecar.mjs', '--target', 'x86_64-pc-windows-msvc')
+          Copy-Item 'apps/kiki-gui/dist' (Join-Path $candidate 'gui-dist') -Recurse
+          Copy-Item 'apps/kiki-gui/src-tauri/binaries/kiki-server-x86_64-pc-windows-msvc.exe.manifest.json' (Join-Path $candidate 'kiki-server.exe.manifest.json')
+          Copy-Item $installer (Join-Path $installerRoot 'Kiki_0.4.0_x64-setup.exe')
+          $signature = Get-AuthenticodeSignature $installer
+          $receipt = @{ schemaVersion = 1; provenance = $provenance; originalName = 'Kiki_0.4.0_x64-setup.exe'; bytes = (Get-Item $installer).Length; sha256 = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant(); authenticodeStatus = $signature.Status.ToString(); updaterSigned = $false; payload = $payload; priorBuildRun = 'https://github.com/X-T-E-R/kiki/actions/runs/38110263704'; binarySource = 'installer payload; Tauri NSIS bundle metadata is preserved' }
+          $receipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $installerRoot 'installer-receipt.json')
+          $info = @{ schemaVersion = 1; sourceSha = $env:BASE_SHA; sourceTree = $provenance.sourceTree; version = $env:EXPECTED_VERSION; target = $provenance.target; channel = 'stable'; distribution = 'local'; runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; commands = $script:commands; reusedChecks = @(@{ sourceSha = $env:BASE_SHA; runUrl = 'https://github.com/X-T-E-R/kiki/actions/runs/38110263704'; checks = @('loop retry and user cancel 2 tests', 'system paragraph rendering', 'native release build', 'native smoke', 'native package', 'Tauri NSIS bundle'); allListedChecksPassed = $true }, @{ sourceSha = 'f863bc701da6985e0afc1b559b0e9651006ecbf7'; runUrl = 'https://github.com/X-T-E-R/kiki/actions/runs/38109665987'; checks = @('GUI types', 'KAP types', 'OnboardingWizard 50 tests', 'HTTP prompt roundtrip', 'onboarding storage 4 tests', 'requester attempt identity', 'actual 401 loop/live/cold', 'idempotent frame removal'); allListedChecksPassed = $true }); artifactRecovery = $receipt.priorBuildRun }
+          $info | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $candidate 'build-info.json')
+          "gitSha: $env:BASE_SHA" | Set-Content -Encoding utf8 (Join-Path $candidate 'build-info.txt')
+          $inventory = @(Get-ChildItem $candidate -Recurse -File | ForEach-Object { @{ path = $_.FullName.Substring($candidate.Length + 1).Replace('\', '/'); bytes = $_.Length; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
+          $manifest = $info.Clone()
+          $manifest.files = $inventory
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 (Join-Path $candidate 'candidate-manifest.json')
+          if (git status --porcelain --untracked-files=no) { throw 'Recovery changed tracked source' }
+      - uses: actions/upload-artifact@v7
         with:
           name: kiki-windows-x64-candidate-${{ inputs.expected_version }}-${{ inputs.base_sha }}
           path: ${{ runner.temp }}/kiki-windows-output/
