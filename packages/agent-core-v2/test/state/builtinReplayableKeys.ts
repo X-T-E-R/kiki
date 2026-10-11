@@ -15,6 +15,7 @@ import { turnKey } from '#/agent/loop/turnOps';
 import { mcpDiscoveryKey } from '#/agent/mcp/mcpDiscoveryOps';
 import {
   permissionModeConfiguredKey,
+  permissionModeExternalOverrideKey,
   permissionModeKey,
 } from '#/agent/permissionMode/permissionModeOps';
 import { permissionRulesKey } from '#/agent/permissionRules/permissionRulesOps';
@@ -58,6 +59,7 @@ export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] =
   mcpDiscoveryKey,
   permissionModeKey,
   permissionModeConfiguredKey,
+  permissionModeExternalOverrideKey,
   permissionRulesKey,
   pluginSessionStartSnapshotKey,
   promptAdmissionKey,
