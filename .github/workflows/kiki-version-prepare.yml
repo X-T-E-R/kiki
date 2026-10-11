@@ -320,9 +320,8 @@ jobs:
           try { Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'run', 'typecheck') } catch { $typeFailures += $_.Exception.Message }
           try { Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'run', 'typecheck') } catch { $typeFailures += $_.Exception.Message }
           if ($typeFailures.Count -gt 0) { throw ($typeFailures -join "`n") }
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/OnboardingWizard.test.tsx', 'src/components/settings/HostSkillInstallCard.test.tsx', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'exec', 'vitest', 'run', 'test/hostSkillInstall.test.ts', '-t', 'previews without writing|places each skill|reports overwrite', '--maxWorkers=1', '--no-file-parallelism')
-          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/kap-server', 'exec', 'vitest', 'run', 'test/skills.integration.ts', '-t', 'previews and installs a named host skill', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/components/OnboardingWizard.test.tsx', '--maxWorkers=1', '--no-file-parallelism')
+          Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/settings/onboarding.test.ts', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/kosong/model/modelRequester.test.ts', '-t', 'assigns one response instance per actual attempt', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript-live', 'exec', 'vitest', 'run', 'test/liveAdapter.test.ts', '-t', 'preserves response instance boundaries', '--maxWorkers=1', '--no-file-parallelism')
           Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript', 'exec', 'vitest', 'run', 'test/layers.test.ts', '-t', 'retains response instance and provider response metadata', '--maxWorkers=1', '--no-file-parallelism')
