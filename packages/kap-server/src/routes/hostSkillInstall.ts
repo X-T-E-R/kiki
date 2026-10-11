@@ -5,7 +5,10 @@ import { dirname, join } from 'node:path';
 
 export type HostSkillTarget = 'claude' | 'codex' | 'grok' | 'agents';
 
+export type HostSkillName = 'kiki-as-subagent' | 'kiki-ops';
+
 export interface HostSkillPreview {
+  readonly skill: HostSkillName;
   readonly host: HostSkillTarget;
   readonly directory: string;
   readonly path: string;
@@ -39,28 +42,29 @@ async function checkPath(path: string, kind: 'directory' | 'file'): Promise<bool
   }
 }
 
-export async function previewHostSkill(host: HostSkillTarget, content: string, home = homedir()): Promise<HostSkillPreview> {
+export async function previewHostSkill(host: HostSkillTarget, skill: HostSkillName, content: string, home = homedir()): Promise<HostSkillPreview> {
   const [hostDir, skillsDir] = TARGETS[host];
   const root = join(home, hostDir!);
   const directory = join(root, skillsDir!);
-  const skillDir = join(directory, 'kiki-as-subagent');
+  const skillDir = join(directory, skill);
   const path = join(skillDir, 'SKILL.md');
   for (const dir of [home, root, directory, skillDir]) await checkPath(dir, 'directory');
   const overwrites = await checkPath(path, 'file');
   const previous = overwrites ? hash(await readFile(path, 'utf8')) : '';
-  return { host, directory, path, overwrites, revision: hash(`${host}\0${path}\0${hash(content)}\0${previous}`) };
+  return { skill, host, directory, path, overwrites, revision: hash(`${host}\0${path}\0${hash(content)}\0${previous}`) };
 }
 
 export async function installHostSkill(
   host: HostSkillTarget,
+  skill: HostSkillName,
   content: string,
   revision: string,
   home = homedir(),
 ): Promise<HostSkillPreview> {
-  const preview = await previewHostSkill(host, content, home);
+  const preview = await previewHostSkill(host, skill, content, home);
   if (preview.revision !== revision) throw new HostSkillInstallConflict('Skill target changed; preview again before installing.');
   await mkdir(dirname(preview.path), { recursive: true });
-  const checked = await previewHostSkill(host, content, home);
+  const checked = await previewHostSkill(host, skill, content, home);
   if (checked.revision !== revision) throw new HostSkillInstallConflict('Skill target changed; preview again before installing.');
   const temp = `${preview.path}.tmp-${process.pid}-${randomUUID()}`;
   try {

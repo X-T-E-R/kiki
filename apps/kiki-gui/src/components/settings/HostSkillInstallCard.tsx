@@ -1,9 +1,13 @@
 /**
- * "Use Kiki from other agents": installs the builtin `kiki-as-subagent` skill
- * into another agent host's user skills folder. Two steps, never one: the
- * preview names the exact file and whether it already exists; only the
- * confirm writes, pinned to the previewed `revision`. A target that changed
- * in between comes back as 40001 and the dialog asks for a fresh preview.
+ * "Use Kiki from other agents": installs a builtin Kiki skill into another
+ * agent host's user skills folder. Two steps, never one: the preview names the
+ * exact file and whether it already exists; only the confirm writes, pinned to
+ * the previewed `revision`. A target that changed in between comes back as
+ * 40001 and the dialog asks for a fresh preview.
+ *
+ * The Settings card installs `kiki-as-subagent` (delegate work to Kiki). The
+ * same dialog serves the first-run depart page with `kiki-ops` (let the agent
+ * the user already has set Kiki up), so there is one install flow, not two.
  */
 
 import { useEffect, useState } from 'react';
@@ -11,7 +15,7 @@ import { useEffect, useState } from 'react';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { API_CODES, ApiError, type HostSkillInstallPreview, type HostSkillTarget } from '../../lib/client';
+import { API_CODES, ApiError, type HostSkillInstallPreview, type HostSkillName, type HostSkillTarget } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { Hint } from '../controls';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
@@ -20,12 +24,18 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
 
-/** Agent hosts the skill installs into, with the folder each one reads. */
+/** Agent hosts the skill installs into, with the folder each one reads. Listed neutrally; none is a default. */
 export const HOST_SKILL_HOSTS: readonly { readonly id: HostSkillTarget; readonly name: I18nKey; readonly folder: string }[] = [
   { id: 'claude', name: 'st.hostSkill.host.claude', folder: '~/.claude/skills' },
   { id: 'codex', name: 'st.hostSkill.host.codex', folder: '~/.codex/skills' },
   { id: 'grok', name: 'st.hostSkill.host.grok', folder: '~/.grok/skills' },
   { id: 'agents', name: 'st.hostSkill.host.agents', folder: '~/.agents/skills' },
+];
+
+/** The skills the server will write into a host, with what each one is for. */
+export const HOST_SKILL_NAMES: readonly { readonly id: HostSkillName; readonly nameKey: I18nKey; readonly purposeKey: I18nKey }[] = [
+  { id: 'kiki-as-subagent', nameKey: 'onboarding.skill.kikiAsSubagent.name', purposeKey: 'onboarding.skill.kikiAsSubagent.purpose' },
+  { id: 'kiki-ops', nameKey: 'onboarding.skill.kikiOps.name', purposeKey: 'onboarding.skill.kikiOps.purpose' },
 ];
 
 type Phase =
@@ -35,7 +45,7 @@ type Phase =
   /** `stale`: the target changed after the preview; only a new preview can continue. */
   | { readonly kind: 'failed'; readonly message: string; readonly stale: boolean; readonly preview?: HostSkillInstallPreview };
 
-export function HostSkillInstallCard() {
+export function HostSkillInstallCard({ skill = 'kiki-as-subagent' }: { readonly skill?: HostSkillName } = {}) {
   const { t } = useI18n();
   const [open, setOpen] = useState<HostSkillTarget | null>(null);
   const [installed, setInstalled] = useState<Partial<Record<HostSkillTarget, string>>>({});
@@ -71,6 +81,7 @@ export function HostSkillInstallCard() {
       {open !== null ? (
         <HostSkillInstallDialog
           host={open}
+          skill={skill}
           hostName={t(HOST_SKILL_HOSTS.find((host) => host.id === open)!.name)}
           onClose={() => { setOpen(null); }}
           onInstalled={(result) => {
@@ -82,9 +93,10 @@ export function HostSkillInstallCard() {
     </SectionCard>
   );
 }
-/** Preview → confirm install dialog; also opened from the onboarding capabilities page. */
-export function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }: {
+/** Preview → confirm install dialog; also opened from the onboarding depart page. */
+export function HostSkillInstallDialog({ host, skill = 'kiki-as-subagent', hostName, onClose, onInstalled }: {
   readonly host: HostSkillTarget;
+  readonly skill?: HostSkillName;
   readonly hostName: string;
   readonly onClose: () => void;
   readonly onInstalled: (result: HostSkillInstallPreview) => void;
@@ -96,7 +108,7 @@ export function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }:
   const preview = async () => {
     setPhase({ kind: 'previewing' });
     try {
-      setPhase({ kind: 'ready', preview: await client.previewHostSkillInstall(host) });
+      setPhase({ kind: 'ready', preview: await client.previewHostSkillInstall(host, skill) });
     } catch (error) {
       setPhase({ kind: 'failed', message: errorText(locale, error), stale: false });
     }
@@ -110,7 +122,7 @@ export function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }:
   const install = async (target: HostSkillInstallPreview) => {
     setPhase({ kind: 'installing', preview: target });
     try {
-      onInstalled(await client.installHostSkill(host, target.revision));
+      onInstalled(await client.installHostSkill(host, skill, target.revision));
     } catch (error) {
       const stale = error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID;
       setPhase({ kind: 'failed', message: stale ? t('st.hostSkill.stale') : errorText(locale, error), stale, preview: target });
@@ -153,7 +165,7 @@ export function HostSkillInstallDialog({ host, hostName, onClose, onInstalled }:
                 data-host-skill-overwrites={shown.overwrites ? 'true' : 'false'}
               >
                 {shown.overwrites ? <Icon name="warning" size={12} className="mt-[4px] shrink-0" /> : null}
-                {shown.overwrites ? t('st.hostSkill.overwrites') : t('st.hostSkill.creates')}
+                {shown.overwrites ? t('st.hostSkill.overwrites', { skill }) : t('st.hostSkill.creates')}
               </dd>
             </div> : null}
           </dl>

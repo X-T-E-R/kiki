@@ -431,8 +431,8 @@ export interface HttpRestFacade {
     /** Read global skills, or a disposable directory snapshot for an absolute cwd, without registering a workspace or creating a session. */
     list(cwd?: string): Promise<ListSkillsResponse>;
     readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
-    previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents'): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
-    installHost(host: 'claude' | 'codex' | 'grok' | 'agents', revision: string): Promise<{ readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
+    previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents', skill: 'kiki-as-subagent' | 'kiki-ops'): Promise<{ readonly skill: string; readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
+    installHost(host: 'claude' | 'codex' | 'grok' | 'agents', skill: 'kiki-as-subagent' | 'kiki-ops', revision: string): Promise<{ readonly skill: string; readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
   };
 
   /** GUI skin files in the server's Kiki themes directory. Read-only by design. */

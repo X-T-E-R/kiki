@@ -6,9 +6,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import { I18nProvider } from '../../i18n';
 import { ApiError } from '../../lib/client';
-import { HostSkillInstallCard } from './HostSkillInstallCard';
+import { HostSkillInstallCard, HostSkillInstallDialog } from './HostSkillInstallCard';
 
 const preview = (overwrites: boolean, revision = 'rev-1') => ({
+  skill: 'kiki-as-subagent',
   host: 'claude',
   directory: '/home/example/.claude/skills',
   path: '/home/example/.claude/skills/kiki-as-subagent/SKILL.md',
@@ -72,7 +73,8 @@ describe('HostSkillInstallCard', () => {
     expect(hosts).toEqual(['claude', 'codex', 'grok', 'agents']);
 
     await click('[data-host-skill-preview="claude"]');
-    expect(previewHostSkillInstall).toHaveBeenCalledWith('claude');
+    // The Settings card keeps installing the delegation skill; the name travels with every call.
+    expect(previewHostSkillInstall).toHaveBeenCalledWith('claude', 'kiki-as-subagent');
     expect(installHostSkill).not.toHaveBeenCalled();
     expect(document.querySelector('[data-host-skill-path]')?.textContent).toBe(preview(false).path);
     expect(document.querySelector('[data-host-skill-overwrites]')?.getAttribute('data-host-skill-overwrites')).toBe('false');
@@ -80,7 +82,7 @@ describe('HostSkillInstallCard', () => {
 
     installHostSkill.mockResolvedValue(preview(false));
     await click('[data-host-skill-confirm]');
-    expect(installHostSkill).toHaveBeenCalledWith('claude', 'rev-1');
+    expect(installHostSkill).toHaveBeenCalledWith('claude', 'kiki-as-subagent', 'rev-1');
     expect(document.querySelector('[data-host-skill-dialog]')).toBeNull();
     expect(document.querySelector('[data-host-skill-installed="claude"]')?.textContent).toContain('kiki-as-subagent/SKILL.md');
   });
@@ -108,6 +110,29 @@ describe('HostSkillInstallCard', () => {
     expect(previewHostSkillInstall).toHaveBeenCalledTimes(2);
     expect(document.querySelector('[data-host-skill-overwrites]')?.getAttribute('data-host-skill-overwrites')).toBe('true');
     await click('[data-host-skill-confirm]');
-    expect(installHostSkill).toHaveBeenLastCalledWith('grok', 'rev-2');
+    expect(installHostSkill).toHaveBeenLastCalledWith('grok', 'kiki-as-subagent', 'rev-2');
+  });
+
+  it('names the replaced skill rather than assuming the delegation skill', async () => {
+    // The depart page opens the same dialog for `kiki-ops`; the overwrite line
+    // and both server calls must carry that name, not the card's default.
+    previewHostSkillInstall.mockResolvedValue({ ...preview(true), skill: 'kiki-ops', path: '/home/example/.codex/skills/kiki-ops/SKILL.md' });
+    installHostSkill.mockResolvedValue({ ...preview(false), skill: 'kiki-ops' });
+    const onInstalled = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(<I18nProvider><HostSkillInstallDialog host="codex" skill="kiki-ops" hostName="Codex" onClose={() => {}} onInstalled={onInstalled} /></I18nProvider>);
+    });
+    await flush();
+    expect(previewHostSkillInstall).toHaveBeenCalledWith('codex', 'kiki-ops');
+    expect(document.querySelector('[data-host-skill-overwrites]')?.textContent).toContain('kiki-ops');
+    expect(document.querySelector('[data-host-skill-overwrites]')?.textContent).not.toContain('kiki-as-subagent');
+    await click('[data-host-skill-confirm]');
+    expect(installHostSkill).toHaveBeenCalledWith('codex', 'kiki-ops', 'rev-1');
+    expect(onInstalled).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,56 +1,58 @@
 /**
- * OnboardingWizard — the first-run dialog, three steps that each say one thing:
- * what Kiki can help you do (the same four uses the discovery routes are named
- * after, with language as one small control and the existing appearance
- * choices folded behind one row, still applied live), how much it may do on
- * its own (default permission mode), and where to look around first. There is
+ * OnboardingWizard — the first-run dialog: welcome explains what Kiki can
+ * help with and folds live appearance choices behind one row; the agreement
+ * sets autonomy, notifications and reply style; departure hands off model
+ * setup, installing kiki-ops into another agent, or a discovery route. There is
  * no workspace question: /new already defaults to the most recent workspace,
  * else a fresh folder in Kiki Home.
  *
- * The last step lists the five discovery routes themselves, one quiet row
- * each, straight from the shared catalog. A row starts that route through the
- * same DiscoveryContext the /discover hub and the sidebar entry use, so the
+ * Models come last on purpose. The wizard appears only for a user with no
+ * usable model, and the user walks the guide first and then configures a
+ * connection calmly — that is where Kiki has many paths and shows its value.
+ * So the last step hands off instead of configuring: a primary button into
+ * the existing Connections card, a second path that installs the `kiki-ops`
+ * skill into an agent the user already has so that agent can set Kiki up,
+ * and the five discovery routes folded behind a disclosure for whoever would
+ * rather look around first. A route row starts that route through the same
+ * DiscoveryContext the /discover hub and the sidebar entry use, so the
  * welcome invents no second flow, progress store, or resume state — and the
  * run ends only once the guarded navigation commits: a cancelled dirty-draft
  * prompt leaves both the wizard and the tour untouched, while a route that
  * genuinely cannot start (offline with no local example) says so in place
  * instead of failing silent. The hub still owns the resume banner and the
- * model connection — read from the server's own `auth` and provider probes —
- * so the welcome grows no second copy of either. Connecting a model happens
- * where it is needed, in the existing Connections card that already owns
- * account sign-in and the API-key form; nothing in this run writes a
- * provider, and the current model and settings stay untouched.
+ * model connection row; nothing in this run writes a provider.
  *
  * Every primary advance button persists the current step before moving on, so
- * leaving the wizard after any Next loses nothing. Nothing here holds an
- * unsubmitted form any more, so no exit path can discard one: the dialog is
- * deliberately not dismissible, and leaves on the header's close button or on
- * an explicit action inside it.
+ * leaving the wizard after any Next loses nothing. The agreement's switch and
+ * memory write land the moment they are chosen; only the permission default
+ * waits for Next, because that is a server config patch with a failure the
+ * step must be able to show. Nothing here holds an unsubmitted form, so no
+ * exit path can discard one: the dialog is deliberately not dismissible, and
+ * leaves on the header's close button or on an explicit action inside it.
  *
  * "Set up later" is about the current step, not the run: it steps past that
  * step to the next one and keeps walking, because that is what "later" says.
  * The first step asks nothing, so it carries only Next. On the last step,
- * where there is no next step, the same slot reads "Not now" and closes.
+ * where there is no next step, the same slot reads "Close setup" and closes.
  *
  * Two entries: the App shell auto-opens it when the auth/models probes report
  * a server with nothing to answer with (`shouldOfferOnboarding`), and the
  * settings About page re-opens it through `requestOnboardingOpen`. Every exit
- * path — a started route, X, or Not now — marks the run completed
+ * path — a started route, X, or Close setup — marks the run completed
  * (`kiki.onboarding` in localStorage), so the auto-popup fires at most once.
- * Stepping past a step is not an exit: the run stays unfinished until one of
- * those paths is taken, so a half-walked wizard can still be completed.
+ * The hand-off to model settings is not an exit: it closes the dialog so the
+ * Connections card is reachable but leaves the run unmarked, because a model
+ * connected there is what keeps the popup closed from then on, and a user who
+ * comes back without one is offered the walk again. Stepping past a step is
+ * not an exit either: the run stays unfinished until one of those paths is
+ * taken, so a half-walked wizard can still be completed.
  */
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
-import {
-  DISCOVERY_ROUTES,
-  discoveryRoute,
-  discoveryRouteProgress,
-  type DiscoveryRouteId,
-} from '@kiki/session-core/discovery';
+import { discoveryRoute, type DiscoveryRouteId } from '@kiki/session-core/discovery';
 import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
@@ -62,14 +64,16 @@ import type { KikiConfigResponse } from '@kiki/session-core/transport';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
-import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE } from '../lib/permissionModes';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
-import { DiscoveryRouteRow, useDiscovery } from './discovery';
+import { useDiscovery } from './discovery';
+import { MODEL_SETTINGS_HREF } from './discovery/ModelConnectionEntry';
+import { OnboardingAgreementStep } from './OnboardingAgreementStep';
 import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
+import { OnboardingDepartStep } from './OnboardingDepartStep';
 import { needsProviderSetup } from './NewSessionDraft';
-import { FeedbackLine, type Feedback } from './controls';
-import { DirtyGuardContext } from './dirtyGuard';
+import type { Feedback } from './controls';
+import { DirtyGuardContext, useGuardedNavigate } from './dirtyGuard';
 import { mergeConfigEcho } from './settings/configEcho';
 import { SettingsSegmented } from './settings/SettingsPrimitives';
 import { PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
@@ -78,14 +82,21 @@ import { Wordmark } from './Wordmark';
 // On the dark accent white text falls below AA; the on-accent ink holds it.
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
-const STEPS = ['welcome', 'permissions', 'discover'] as const;
+// Named by what each step asks, not by position, so a later `import` step can
+// land after `welcome` without renumbering anything.
+const STEPS = ['welcome', 'agreement', 'depart'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
   welcome: 'onboarding.intro.title',
-  permissions: 'onboarding.step.permissions',
-  discover: 'onboarding.step.discover',
+  agreement: 'onboarding.step.agreement',
+  depart: 'onboarding.step.depart',
 } as const;
+
+/** The modes the local settings store accepts; the wire may carry the same four. */
+function isStoredPermissionMode(value: unknown): value is 'manual' | 'auto' | 'review' | 'yolo' {
+  return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
+}
 
 /**
  * The first step's four uses. Each one borrows its name from the discovery
@@ -159,79 +170,12 @@ function StepDots({ step }: { step: OnboardingStep }) {
   );
 }
 
-/**
- * Selection mark shared by the radio cards: an empty ring at rest, an
- * ink-blue check once chosen — "this is the current choice", never the accent.
- */
-function ChoiceMark({ selected }: { readonly selected: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors ${
-        selected ? 'bg-selected-ink text-paper' : 'ring-1 ring-inset ring-hairline-strong'
-      }`}
-    >
-      {selected ? <Icon name="check" size={12} /> : null}
-    </span>
-  );
-}
-
-const CHOICE_CARD =
-  'flex w-full items-start gap-2 rounded-[10px] px-3 py-2 text-left transition-[background-color,box-shadow] duration-[var(--kiki-motion-quick)] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60';
-const CHOICE_CARD_SELECTED = 'bg-paper shadow-[var(--kiki-sheet-shadow)]';
-const CHOICE_CARD_IDLE = 'hover:bg-ink/[0.04]';
-
-/** One permission-mode radio row: the mode label plus its one-line meaning. */
-function PermissionOption({
-  mode,
-  selected,
-  recommended,
-  disabled,
-  onSelect,
-}: {
-  readonly mode: PermissionMode;
-  readonly selected: boolean;
-  readonly recommended: boolean;
-  readonly disabled?: boolean;
-  readonly onSelect: () => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      disabled={disabled}
-      onClick={onSelect}
-      data-permission-choice={mode}
-      className={`${CHOICE_CARD} ${selected ? CHOICE_CARD_SELECTED : CHOICE_CARD_IDLE}`}
-    >
-      <ChoiceMark selected={selected} />
-      <span className="min-w-0">
-        <span className="flex flex-wrap items-baseline gap-x-2">
-          <span className={`text-[13px] text-ink ${selected ? 'font-medium' : ''}`}>
-            {t(`composer.perm.${mode}`)}
-          </span>
-          {recommended ? (
-            <span className="rounded-[4px] bg-ink/[0.06] px-1.5 py-px text-[11px] font-medium text-ink-soft">
-              {t('onboarding.permissions.recommended')}
-            </span>
-          ) : null}
-        </span>
-        <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">
-          {t(`onboarding.permissions.${mode}.line`)}
-        </span>
-      </span>
-    </button>
-  );
-}
-
-
 export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) {
   const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
-  const { state: discoveryState, startRoute } = useDiscovery();
+  const { startRoute } = useDiscovery();
   const dirtyGuard = useContext(DirtyGuardContext);
+  const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [step, setStep] = useState<OnboardingStep>('welcome');
   // Appearance stays complete but folded: the first screen answers "what is
@@ -285,7 +229,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   useEffect(() => {
     if (permissionTouched.current) return;
     const mode = configQuery.data?.default_permission_mode;
-    if (mode !== 'manual' && mode !== 'auto' && mode !== 'yolo') return;
+    if (!isStoredPermissionMode(mode)) return;
     // A first run upgrades a manual server preference to the recommended auto
     // choice; reopening from Settings preserves an explicit manual preference.
     setPermissionMode(freshRun.current && mode === 'manual' ? 'auto' : mode);
@@ -332,8 +276,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     return () => { window.removeEventListener('keydown', onKeyDown, true); };
   }, [dismiss]);
 
-
-  /** The permission step's save: the selection lands in the server config. */
+  /** The agreement step's save: the permission default lands in the server config. */
   const savePermissionMode = async (): Promise<boolean> => {
     setPermissionBusy(true);
     setPermissionFeedback(null);
@@ -345,7 +288,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       );
       queryClient.setQueryData(['config'], merged);
       const echoedMode = merged.default_permission_mode;
-      if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'yolo') {
+      if (isStoredPermissionMode(echoedMode)) {
         writeSettings({ defaultPermissionMode: echoedMode });
       }
       return true;
@@ -359,13 +302,13 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
 
   const goNext = async () => {
     if (step === 'welcome') {
-      setStep('permissions');
+      setStep('agreement');
       return;
     }
-    // The permission default is saved on leaving its step, so the closing
-    // invitation after it never holds anything unsaved.
-    if (step === 'permissions' && await savePermissionMode()) {
-      setStep('discover');
+    // The permission default is saved on leaving its step, so the departure
+    // after it never holds anything unsaved.
+    if (step === 'agreement' && await savePermissionMode()) {
+      setStep('depart');
     }
   };
 
@@ -379,9 +322,10 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
    * which is not what the label promises. On the last step there is no next
    * step to move to, so it keeps the original meaning and closes.
    *
-   * The permission step saves like any other advance: its default is a choice
-   * already made, and skipping past it must not silently discard it. A failed
-   * save keeps the step, so the choice is never lost behind the skip.
+   * The agreement step saves like any other advance: its permission default
+   * is a choice already made, and skipping past it must not silently discard
+   * it. A failed save keeps the step, so the choice is never lost behind the
+   * skip.
    */
   const skipStep = async () => {
     const index = STEPS.indexOf(step);
@@ -389,7 +333,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       close();
       return;
     }
-    if (step === 'permissions' && !await savePermissionMode()) return;
+    if (step === 'agreement' && !await savePermissionMode()) return;
     setStep(STEPS[index + 1]!);
   };
 
@@ -416,6 +360,21 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     } finally {
       setDiscoverBusy(false);
     }
+  };
+
+  /**
+   * The hand-off to the Connections card goes through the same guarded
+   * navigation the hub's model row uses. It is not an exit (see the header):
+   * the dialog closes so the card is usable, the run stays unmarked. A
+   * cancelled dirty-draft prompt is the user choosing to stay, so the dialog
+   * stays with them; without a draft to guard the navigation commits at once.
+   */
+  const openModelSettings = () => {
+    let cancelled = false;
+    const result = navigate(MODEL_SETTINGS_HREF, undefined, () => { cancelled = true; });
+    const settle = () => { if (!cancelled) onClose(); };
+    if (result instanceof Promise) void result.then(settle, () => {});
+    else if (dirtyGuard?.dirty !== true) settle();
   };
 
   const stepIndex = STEPS.indexOf(step);
@@ -564,52 +523,25 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           </div>
         ) : null}
 
-        {step === 'discover' ? (
-          <div className="mt-2" data-onboarding-discover>
-            <p className="max-w-[52ch] text-[13px] leading-relaxed text-ink-soft">
-              {t('onboarding.discover.body')}
-            </p>
-            {/* The five routes of the shared catalog, as the same rows the
-                /discover hub shows. No accent button here on purpose — this
-                page offers five peer places to start, not one recommended
-                action — and every row enters the same DiscoveryContext. */}
-            <div className="mt-2 space-y-1" role="group" aria-label={t('onboarding.step.discover')}>
-              {DISCOVERY_ROUTES.map((route, index) => (
-                <DiscoveryRouteRow
-                  key={route.id}
-                  route={route}
-                  progress={discoveryRouteProgress(discoveryState, route.id)}
-                  disabled={discoverBusy}
-                  autoFocus={index === 0}
-                  onSelect={() => { void startDiscoveryRoute(route.id); }}
-                  data={{ 'data-onboarding-route': route.id }}
-                />
-              ))}
-            </div>
-            <FeedbackLine feedback={discoverFeedback} />
-          </div>
+        {step === 'agreement' ? (
+          <OnboardingAgreementStep
+            permissionMode={permissionMode}
+            onPermissionModeChange={(mode) => {
+              permissionTouched.current = true;
+              setPermissionMode(mode);
+            }}
+            permissionBusy={permissionBusy}
+            permissionFeedback={permissionFeedback}
+          />
         ) : null}
 
-        {step === 'permissions' ? (
-          <div className="mt-3 space-y-4">
-            <p className="text-[13px] leading-relaxed text-ink-soft">{t('onboarding.permissions.body')}</p>
-            <div role="radiogroup" aria-label={t('onboarding.step.permissions')} className="space-y-2">
-              {PERMISSION_MODES.map(({ id: mode }) => (
-                <PermissionOption
-                  key={mode}
-                  mode={mode}
-                  selected={permissionMode === mode}
-                  recommended={mode === RECOMMENDED_PERMISSION_MODE}
-                  disabled={permissionBusy}
-                  onSelect={() => {
-                    permissionTouched.current = true;
-                    setPermissionMode(mode);
-                  }}
-                />
-              ))}
-            </div>
-            <FeedbackLine feedback={permissionFeedback} />
-          </div>
+        {step === 'depart' ? (
+          <OnboardingDepartStep
+            onOpenModelSettings={openModelSettings}
+            onStartRoute={(routeId) => { void startDiscoveryRoute(routeId); }}
+            discoverBusy={discoverBusy}
+            discoverFeedback={discoverFeedback}
+          />
         ) : null}
         </div>
         {stepScrollsMore ? (
@@ -634,7 +566,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             disabled={permissionBusy}
             className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
           >
-            {last ? t('onboarding.notNow') : t('onboarding.skip')}
+            {last ? t('onboarding.close') : t('onboarding.skip')}
           </button>
         )}
         {/* A failed hand-off belongs to the button that made it: the step is
@@ -649,8 +581,8 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               {t('onboarding.back')}
             </button>
           ) : null}
-          {/* The last step's actions are the route rows themselves, so the
-              footer keeps no primary of its own. */}
+          {/* The last step's actions are its own three paths, so the footer
+              keeps no primary of its own. */}
           {!last ? (
             <button
               type="button"
@@ -659,7 +591,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
               onClick={() => void goNext()}
               className={PRIMARY_BUTTON}
             >
-              {step === 'permissions' && permissionBusy ? t('common.saving') : t('onboarding.next')}
+              {step === 'agreement' && permissionBusy ? t('common.saving') : t('onboarding.next')}
             </button>
           ) : null}
         </div>

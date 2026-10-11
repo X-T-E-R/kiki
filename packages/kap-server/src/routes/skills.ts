@@ -35,6 +35,7 @@ import {
   type SkillDefinition,
 } from '@kiki/agent-core-v2';
 import { KIKI_AS_SUBAGENT_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/builtin/kiki-as-subagent';
+import { KIKI_OPS_SKILL } from '@kiki/agent-core-v2/app/skillCatalog/builtin/kiki-ops';
 import { InMemorySkillCatalog } from '@kiki/agent-core-v2/app/skillCatalog/registry';
 import { configuredRoots } from '@kiki/agent-core-v2/app/skillCatalog/skillRoots';
 import { EXTRA_SKILL_DIRS_SECTION, type ExtraSkillDirsConfig } from '@kiki/agent-core-v2/app/skillCatalog/configSection';
@@ -67,7 +68,7 @@ import {
 import { workspaceIdParamSchema } from '../protocol/rest-workspace';
 import type { SkillDescriptor } from '../protocol/skill';
 import { parseActionSuffix } from './action-suffix';
-import { HostSkillInstallConflict, installHostSkill, previewHostSkill } from './hostSkillInstall';
+import { HostSkillInstallConflict, installHostSkill, previewHostSkill, type HostSkillName } from './hostSkillInstall';
 
 interface SkillsRouteHost {
   get(
@@ -97,12 +98,15 @@ const skillTailParamsSchema = z.object({
   tail: z.string().min(1),
 });
 const hostSkillTargetSchema = z.enum(['claude', 'codex', 'grok', 'agents']);
-const hostSkillPreviewBody = z.object({ host: hostSkillTargetSchema }).strict();
-const hostSkillInstallBody = hostSkillPreviewBody.extend({
-  revision: z.string().regex(/^[a-f0-9]{64}$/),
-  confirmed: z.literal(true),
+const hostSkillNameSchema = z.enum(['kiki-as-subagent', 'kiki-ops']);
+const hostSkillTailParamsSchema = z.object({ tail: z.string().min(1) });
+const hostSkillBody = z.object({
+  host: hostSkillTargetSchema,
+  revision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  confirmed: z.literal(true).optional(),
 }).strict();
 const hostSkillPreviewResponse = z.object({
+  skill: hostSkillNameSchema,
   host: hostSkillTargetSchema,
   directory: z.string(),
   path: z.string(),
@@ -131,7 +135,10 @@ async function resolveActivatedSession(
   return { envelope: errEnvelope(ErrorCode.SESSION_NOT_FOUND, msg, requestId) };
 }
 
-const HOST_SKILL_TEXT = `---\nname: kiki-as-subagent\ndescription: ${JSON.stringify(KIKI_AS_SUBAGENT_SKILL.description)}\n---\n\n${KIKI_AS_SUBAGENT_SKILL.content}\n`;
+const HOST_SKILL_TEXT: Record<HostSkillName, string> = {
+  'kiki-as-subagent': `---\nname: kiki-as-subagent\ndescription: ${JSON.stringify(KIKI_AS_SUBAGENT_SKILL.description)}\n---\n\n${KIKI_AS_SUBAGENT_SKILL.content}\n`,
+  'kiki-ops': `---\nname: kiki-ops\ndescription: ${JSON.stringify(KIKI_OPS_SKILL.description)}\n---\n\n${KIKI_OPS_SKILL.content}\n`,
+};
 
 async function resolveSkillAgent(
   core: Scope,
@@ -225,47 +232,51 @@ function skillActivationFingerprint(
 }
 
 export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
-  const hostPreviewRoute = defineRoute(
+  const hostSkillRoute = defineRoute(
     {
       method: 'POST',
-      path: '/skills/kiki-as-subagent:preview-install',
-      body: hostSkillPreviewBody,
+      path: '/skills/{tail}',
+      params: hostSkillTailParamsSchema,
+      body: hostSkillBody,
       success: { data: hostSkillPreviewResponse },
       errors: { [ErrorCode.VALIDATION_FAILED]: {} },
-      description: 'Preview an opt-in global installation of the Kiki external-host skill',
+      description: 'Preview (`:preview-install`) or install (`:install`, confirmed with the previewed revision) a Kiki skill into an external agent host',
       tags: ['skills'],
+      operationId: 'installHostSkill',
     },
     async (req, reply) => {
+      const parsed = parseActionSuffix({
+        tail: req.params.tail,
+        allowedActions: ['preview-install', 'install'] as const,
+        resourceLabel: 'skill_name',
+      });
+      if (parsed.kind !== 'action') {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${req.params.tail}`, req.id));
+        return;
+      }
+      const skill = hostSkillNameSchema.safeParse(parsed.id);
+      if (!skill.success) {
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, `unsupported skill: ${parsed.id}`, req.id));
+        return;
+      }
+      const content = HOST_SKILL_TEXT[skill.data];
       try {
-        reply.send(okEnvelope(await previewHostSkill(req.body.host, HOST_SKILL_TEXT), req.id));
+        if (parsed.action === 'preview-install') {
+          reply.send(okEnvelope(await previewHostSkill(req.body.host, skill.data, content), req.id));
+          return;
+        }
+        if (req.body.revision === undefined || req.body.confirmed !== true) {
+          reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'install requires the previewed revision and confirmed: true', req.id));
+          return;
+        }
+        reply.send(okEnvelope(await installHostSkill(req.body.host, skill.data, content, req.body.revision), req.id));
       } catch (error) {
         if (!(error instanceof HostSkillInstallConflict)) throw error;
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
       }
     },
   );
-  app.post(hostPreviewRoute.path, hostPreviewRoute.options, hostPreviewRoute.handler as Parameters<SkillsRouteHost['post']>[2]);
-
-  const hostInstallRoute = defineRoute(
-    {
-      method: 'POST',
-      path: '/skills/kiki-as-subagent:install',
-      body: hostSkillInstallBody,
-      success: { data: hostSkillPreviewResponse },
-      errors: { [ErrorCode.VALIDATION_FAILED]: {} },
-      description: 'Install the Kiki external-host skill after confirming the exact target and overwrite',
-      tags: ['skills'],
-    },
-    async (req, reply) => {
-      try {
-        reply.send(okEnvelope(await installHostSkill(req.body.host, HOST_SKILL_TEXT, req.body.revision), req.id));
-      } catch (error) {
-        if (!(error instanceof HostSkillInstallConflict)) throw error;
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id));
-      }
-    },
-  );
-  app.post(hostInstallRoute.path, hostInstallRoute.options, hostInstallRoute.handler as Parameters<SkillsRouteHost['post']>[2]);
+  app.post(hostSkillRoute.path, hostSkillRoute.options, hostSkillRoute.handler as Parameters<SkillsRouteHost['post']>[2]);
 
   const builtinContentRoute = defineRoute(
     {

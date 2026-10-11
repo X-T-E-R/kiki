@@ -645,11 +645,15 @@ export interface CapabilityStatus {
   };
 }
 
-/** Agent hosts that can load the `kiki-as-subagent` skill from their user skills folder. */
+/** Agent hosts that can load a Kiki skill from their user skills folder. */
 export type HostSkillTarget = 'claude' | 'codex' | 'grok' | 'agents';
 
-/** Preview/result of installing the external-host skill (`revision` pins the previewed target). */
+/** The builtin skills Kiki can write into an external host; the server allowlists the same two names. */
+export type HostSkillName = 'kiki-as-subagent' | 'kiki-ops';
+
+/** Preview/result of installing an external-host skill (`revision` pins the previewed target). */
 export interface HostSkillInstallPreview {
+  readonly skill: string;
   readonly host: string;
   readonly directory: string;
   readonly path: string;
@@ -1772,14 +1776,14 @@ export class KikiClient {
     return result.content;
   }
 
-  /** Where the external-host skill would land for `host` and whether it replaces a file; writes nothing. */
-  previewHostSkillInstall(host: HostSkillTarget): Promise<HostSkillInstallPreview> {
-    return this.run(this.rest.skills.previewHostInstall(host));
+  /** Where `skill` would land for `host` and whether it replaces a file; writes nothing. */
+  previewHostSkillInstall(host: HostSkillTarget, skill: HostSkillName): Promise<HostSkillInstallPreview> {
+    return this.run(this.rest.skills.previewHostInstall(host, skill));
   }
 
-  /** Writes the external-host skill; the server rejects (40001) when the target changed since `revision`. */
-  installHostSkill(host: HostSkillTarget, revision: string): Promise<HostSkillInstallPreview> {
-    return this.run(this.rest.skills.installHost(host, revision));
+  /** Writes `skill` into `host`; the server rejects (40001) when the target changed since `revision`. */
+  installHostSkill(host: HostSkillTarget, skill: HostSkillName, revision: string): Promise<HostSkillInstallPreview> {
+    return this.run(this.rest.skills.installHost(host, skill, revision));
   }
 
   async previewHostFile(path: string, maxBytes = 512_001): Promise<{ text: string; truncated: boolean }> {

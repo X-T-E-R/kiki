@@ -2,10 +2,12 @@
 
 /**
  * OnboardingWizard — the first-run dialog: the auto-popup decision rule
- * (shouldOfferOnboarding), the three-step walk (nothing here configures a
- * model; the closing step starts a discovery route in place), the save
- * semantics of every advance (Next persists the permission default), and exit
- * state.
+ * (shouldOfferOnboarding), the three-step walk (welcome → agreement → depart;
+ * nothing here configures a model, each exit is explicit), the save semantics
+ * of every advance (Next on the agreement step persists the permission
+ * default; the notify switch and the voice memory write on the spot), the
+ * depart page's three ways out (a model hand-off, the kiki-ops install, and
+ * the folded discovery routes), and exit state.
  */
 
 import { act, useEffect } from 'react';
@@ -18,14 +20,14 @@ import { clearStoredDrafts, readDraft, readNewSessionDraft, resetDraftMemoryForT
 import { currentDiscoveryScope, readDiscoveryState } from '@kiki/session-core/discovery';
 import { readSettings } from '@kiki/session-core/settings';
 
-import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
+import { createMemoryRouter, RouterProvider, useLocation, useNavigate, type NavigateOptions, type To } from 'react-router-dom';
 
 import { I18nProvider } from '../i18n';
 import { readSkinPrefs } from '../lib/skins';
-import { PERMISSION_MODES } from '../lib/permissionModes';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
 import { DiscoveryPage, DiscoveryProvider } from './discovery';
+import { HOST_SKILL_HOSTS } from './settings/HostSkillInstallCard';
 import {
   OnboardingWizard,
   requestOnboardingOpen,
@@ -47,6 +49,7 @@ const createProvider = vi.fn();
 const probeProviderDraft = vi.fn();
 const previewHostSkillInstall = vi.fn();
 const installHostSkill = vi.fn();
+const putMemory = vi.fn();
 const navigate = vi.fn();
 
 /** Mutable connection surface, so one test can take the socket away. */
@@ -72,6 +75,7 @@ vi.mock('../state/connection', () => ({
       probeProviderDraft,
       previewHostSkillInstall,
       installHostSkill,
+      putMemory,
     },
   }),
 }));
@@ -137,11 +141,12 @@ beforeEach(() => {
   createProvider.mockReset().mockResolvedValue({ id: 'kimi', revision: 'r1' });
   probeProviderDraft.mockReset().mockResolvedValue([]);
   previewHostSkillInstall.mockReset().mockResolvedValue({
-    host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-as-subagent/SKILL.md', overwrites: true, revision: 'rev-1',
+    skill: 'kiki-ops', host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-ops/SKILL.md', overwrites: true, revision: 'rev-1',
   });
   installHostSkill.mockReset().mockResolvedValue({
-    host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-as-subagent/SKILL.md', overwrites: false, revision: 'rev-2',
+    skill: 'kiki-ops', host: 'claude', directory: 'C:/Users/me/.claude/skills', path: 'C:/Users/me/.claude/skills/kiki-ops/SKILL.md', overwrites: false, revision: 'rev-2',
   });
+  putMemory.mockReset().mockResolvedValue({ entry: { id: 'mem_1', revision: 'mrev_1' }, operationId: 'op1', outcome: 'applied' });
 });
 
 afterEach(async () => {
@@ -157,9 +162,10 @@ afterAll(() => {
 });
 
 async function mount(onClose: () => void = () => {}): Promise<HTMLDivElement> {
-  // The wizard's last step starts discovery routes through the shared context,
-  // so every mount lives inside the same router + guard + discovery shell the
-  // App gives it; a bare dialog would throw on useDiscovery.
+  // The depart step starts discovery routes through the shared context and
+  // hands off to Settings through the guarded navigator, so every mount lives
+  // inside the same router + guard + discovery shell the App gives it; a bare
+  // dialog would throw on useDiscovery.
   const { container } = await mountWithDiscovery({ onClose });
   return container;
 }
@@ -169,16 +175,6 @@ async function click(element: Element): Promise<void> {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-}
-
-/** Simulate the App shell closing the wizard: unmount the latest mount. */
-async function unmountLast(): Promise<void> {
-  const root = roots.pop();
-  const container = containers.pop();
-  if (root !== undefined) {
-    await act(async () => { root.unmount(); });
-  }
-  container?.remove();
 }
 
 async function flush(): Promise<void> {
@@ -191,6 +187,10 @@ function dialog(): HTMLElement {
   const element = document.querySelector<HTMLElement>('[role="dialog"]');
   if (element === null) throw new Error('wizard dialog not mounted');
   return element;
+}
+
+function queryDialog(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[role="dialog"]');
 }
 
 function buttonByText(text: string): HTMLElement {
@@ -275,19 +275,22 @@ describe('manual re-entry channel', () => {
   });
 });
 
-/**
- * Welcome → approvals: the one advance moves straight to the permission
- * default, which is the second of three steps.
- */
-async function toPermissionsStep(): Promise<void> {
+/** Welcome → agreement: the second of three steps. */
+async function toAgreementStep(): Promise<void> {
   await click(buttonByText('Next'));
   await flush();
 }
 
-/** … → approvals → (Next saves the mode) → the closing invitation. */
-async function toDiscoverStep(): Promise<void> {
-  await toPermissionsStep();
+/** … → agreement (Next saves the mode) → the depart page. */
+async function toDepartStep(): Promise<void> {
+  await toAgreementStep();
   await click(buttonByText('Next'));
+  await flush();
+}
+
+/** The depart page folds its five routes away; open the disclosure first. */
+async function openBrowse(): Promise<void> {
+  await click(dialog().querySelector('[data-onboarding-browse-open]')!);
   await flush();
 }
 
@@ -347,15 +350,15 @@ describe('OnboardingWizard', () => {
   it('walks forward and back through the setup steps', async () => {
     await mount();
     // The welcome page is the only look step: nothing configures a model here,
-    // so the next page is already the permission default.
-    await toPermissionsStep();
+    // so the next page is already the agreement.
+    await toAgreementStep();
     expect(dialog().textContent).toContain('Step 2 of 3');
-    expect(dialog().textContent).toContain('How much should Kiki do on its own?');
+    expect(dialog().textContent).toContain('How should Kiki work with you?');
 
     await click(buttonByText('Next'));
     await flush();
     expect(dialog().textContent).toContain('Step 3 of 3');
-    expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-depart]')).not.toBeNull();
 
     await click(buttonByText('Back'));
     expect(dialog().textContent).toContain('Step 2 of 3');
@@ -418,16 +421,24 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  it('offers every permission mode, recommends auto, and Next writes it to the server config', async () => {
+  it('offers manual/auto/yolo with auto recommended, hides review behind "more", and Next writes the mode', async () => {
     await mount();
-    await toPermissionsStep();
-    const options = [...dialog().querySelectorAll<HTMLElement>('[data-permission-choice]')];
-    expect(options.map((option) => option.dataset['permissionChoice'])).toEqual(
-      PERMISSION_MODES.map((mode) => mode.id),
-    );
-    const auto = options.find((option) => option.dataset['permissionChoice'] === 'auto');
+    await toAgreementStep();
+
+    // The first screen offers three modes; `review` is not wrong, only worth
+    // choosing once a reviewer exists, so it waits behind the disclosure.
+    const visible = [...dialog().querySelectorAll<HTMLElement>('[data-permission-choice]')];
+    expect(visible.map((option) => option.dataset['permissionChoice'])).toEqual(['manual', 'auto', 'yolo']);
+    expect(dialog().querySelector('[data-permission-choice="review"]')).toBeNull();
+
+    const auto = visible.find((option) => option.dataset['permissionChoice'] === 'auto');
     expect(auto?.getAttribute('aria-checked')).toBe('true');
     expect(auto?.textContent).toContain('Recommended');
+
+    await click(dialog().querySelector('[data-onboarding-permission-more]')!);
+    const expanded = [...dialog().querySelectorAll<HTMLElement>('[data-permission-choice]')];
+    expect(expanded.map((option) => option.dataset['permissionChoice'])).toEqual(['manual', 'auto', 'yolo', 'review']);
+
     await click(buttonByText('Next'));
     await flush();
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
@@ -437,20 +448,88 @@ describe('OnboardingWizard', () => {
   it('a failed permission save stays on the step', async () => {
     patchConfig.mockRejectedValueOnce(new Error('config is read-only'));
     await mount();
-    await toPermissionsStep();
+    await toAgreementStep();
     await click(buttonByText('Next'));
     await flush();
     expect(dialog().textContent).toContain('Step 2 of 3');
-    expect(dialog().querySelector('[data-onboarding-discover]')).toBeNull();
+    expect(dialog().querySelector('[data-onboarding-depart]')).toBeNull();
   });
 
   it('a replay shows the server’s explicit permission choice instead of forcing auto', async () => {
     localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
     getConfig.mockResolvedValue({ default_permission_mode: 'yolo' });
     await mount();
-    await toPermissionsStep();
+    await toAgreementStep();
     const yolo = dialog().querySelector('[data-permission-choice="yolo"]');
     expect(yolo?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('a replay already on review opens the disclosure so the current choice is never hidden', async () => {
+    localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+    getConfig.mockResolvedValue({ default_permission_mode: 'review' });
+    await mount();
+    await toAgreementStep();
+    const review = dialog().querySelector('[data-permission-choice="review"]');
+    expect(review).not.toBeNull();
+    expect(review?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('the notify switch writes the completed away-notification kind on the spot', async () => {
+    await mount();
+    await toAgreementStep();
+    const toggle = dialog().querySelector<HTMLInputElement>('#onboarding-notify-completed')!;
+    expect(toggle.checked).toBe(true);
+    await click(toggle);
+    expect(readSettings().awayNotifications.completed).toBe(false);
+    // The other kinds are untouched: only `completed` was on this page.
+    expect(readSettings().awayNotifications.failed).toBe(true);
+    expect(readSettings().awayNotifications.question).toBe(true);
+    expect(readSettings().awayNotifications.approval).toBe(true);
+    // No server write and no step change: this is a local device preference.
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(dialog().textContent).toContain('Step 2 of 3');
+  });
+
+  it('the voice choice is kept as a user memory, not a setting', async () => {
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    await flush();
+    expect(putMemory).toHaveBeenCalledTimes(1);
+    const [target, id, body] = putMemory.mock.calls[0]!;
+    expect(target).toEqual({ scope: 'global' });
+    expect(id).toBe('new');
+    expect(body).toMatchObject({ type: 'user' });
+    expect(String(body.title)).toContain('conclusion first');
+    expect(body.reason).toBeTruthy();
+    expect(dialog().textContent).toContain('Saved as a memory');
+  });
+
+  it('a second voice choice updates the same memory instead of adding another', async () => {
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    await flush();
+    await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
+    await flush();
+    expect(putMemory).toHaveBeenCalledTimes(2);
+    const [target, id, body] = putMemory.mock.calls[1]!;
+    expect(target).toEqual({ scope: 'global' });
+    expect(id).toBe('mem_1');
+    expect(body).toMatchObject({ action: 'update', expected_revision: 'mrev_1' });
+  });
+
+  it('a failed memory write says so in place and never blocks the step', async () => {
+    putMemory.mockRejectedValueOnce(new Error('memory store unavailable'));
+    await mount();
+    await toAgreementStep();
+    await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
+    await flush();
+    expect(dialog().textContent).toContain('memory store unavailable');
+    // The step is unchanged and its advance still works.
+    await click(buttonByText('Next'));
+    await flush();
+    expect(dialog().textContent).toContain('Step 3 of 3');
   });
 
   it('the first step asks nothing, so it offers only Next and keeps the run open', async () => {
@@ -467,26 +546,26 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
   });
 
-  it('"Set up later" from the permission step saves the chosen default and moves on', async () => {
+  it('"Set up later" from the agreement step saves the chosen default and moves on', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toPermissionsStep();
+    await toAgreementStep();
     await click(buttonByText('Set up later'));
     await flush();
     // Skipping past the step must not silently discard the choice already made.
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
     expect(onClose).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-depart]')).not.toBeNull();
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
   });
 
   it('"Not now" on the last step closes the run without starting anything', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    await toDiscoverStep();
+    await toDepartStep();
     // There is no next step to move to, so this one ends the run here,
     // without starting a session or routing anywhere.
-    await click(buttonByText('Not now'));
+    await click(buttonByText('Close setup'));
     await flush();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(createSession).not.toHaveBeenCalled();
@@ -494,16 +573,87 @@ describe('OnboardingWizard', () => {
     expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
   });
 
-  describe('the closing step starts a discovery route in place', () => {
-    it('lists the five catalog routes as quiet rows, and nothing the hub owns', async () => {
+  describe('the depart page hands off a model connection', () => {
+    it('names the real paths, opens the Settings card, and does not mark the run done', async () => {
+      const onClose = vi.fn();
+      const { router } = await mountWithDiscovery({ onClose });
+      await toDepartStep();
+
+      expect(dialog().querySelector('[data-onboarding-depart-model]')).not.toBeNull();
+      const open = dialog().querySelector<HTMLButtonElement>('[data-onboarding-model-settings]')!;
+      expect(open.textContent).toBe('Open model settings');
+      // Auth "not ready" yet: the run is unmarked, so a user who comes back
+      // without a model is offered the walk again.
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+
+      await click(open);
+      await flush();
+      expect(router.state.location.pathname).toBe('/settings/ai');
+      expect(router.state.location.search).toBe('?tab=providers');
+      expect(onClose).toHaveBeenCalledTimes(1);
+      // The hand-off is not an exit: the run stays unmarked.
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+    });
+  });
+
+  describe('the depart page installs kiki-ops into an agent the user already has', () => {
+    it('lists the hosts neutrally and previews the named skill', async () => {
       await mount();
-      await toDiscoverStep();
+      await toDepartStep();
+
+      const hosts = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-host]')];
+      expect(hosts.map((host) => host.dataset['onboardingHost'])).toEqual(
+        HOST_SKILL_HOSTS.map((host) => host.id),
+      );
+      expect(dialog().querySelector('[data-onboarding-depart-agent]')?.textContent).toContain('does not detect');
+
+      await click(dialog().querySelector('[data-onboarding-host="codex"]')!);
+      await flush();
+      expect(previewHostSkillInstall).toHaveBeenCalledWith('codex', 'kiki-ops');
+      expect(document.querySelector('[data-host-skill-path]')?.textContent).toContain('kiki-ops');
+    });
+
+    it('confirms with the pinned revision and then offers the one line to paste', async () => {
+      await mount();
+      await toDepartStep();
+
+      await click(dialog().querySelector('[data-onboarding-host="claude"]')!);
+      await flush();
+      await click(document.querySelector('[data-host-skill-confirm]')!);
+      await flush();
+
+      expect(installHostSkill).toHaveBeenCalledWith('claude', 'kiki-ops', 'rev-1');
+      const line = dialog().querySelector('[data-onboarding-agent-line]');
+      expect(line).not.toBeNull();
+      expect(line?.textContent).toContain('/kiki-ops set Kiki up for me');
+    });
+
+    it('a cancelled install leaves the page usable', async () => {
+      await mount();
+      await toDepartStep();
+      await click(dialog().querySelector('[data-onboarding-host="grok"]')!);
+      await flush();
+      // Cancel on the install dialog.
+      await click([...document.querySelectorAll('button')].find((b) => b.textContent === 'Cancel')!);
+      await flush();
+      expect(dialog().querySelector('[data-onboarding-agent-line]')).toBeNull();
+      expect(dialog().querySelector('[data-onboarding-depart]')).not.toBeNull();
+      expect(localStorage.getItem('kiki.onboarding')).toBeNull();
+    });
+  });
+
+  describe('the depart page starts a discovery route in place', () => {
+    it('folds the five catalog routes away and lists nothing the hub owns', async () => {
+      await mount();
+      await toDepartStep();
 
       expect(dialog().textContent).toContain('Step 3 of 3');
-      expect(dialog().textContent).toContain('Look around Kiki');
-      expect(dialog().textContent).toContain('Start from a place that interests you.');
-      expect(dialog().querySelector('[data-onboarding-discover]')).not.toBeNull();
+      expect(dialog().textContent).toContain('Go');
+      expect(dialog().querySelector('[data-onboarding-depart-browse]')).not.toBeNull();
+      // Folded until asked for.
+      expect(dialog().querySelector('[data-onboarding-route]')).toBeNull();
 
+      await openBrowse();
       const rows = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-route]')];
       expect(rows.map((row) => row.dataset['onboardingRoute'])).toEqual([
         'overview', 'do-first', 'understand', 'sustain', 'extend',
@@ -526,7 +676,8 @@ describe('OnboardingWizard', () => {
     it('a route row starts that route right there and completes the run, creating nothing', async () => {
       const onClose = vi.fn();
       const { router } = await mountWithDiscovery({ onClose });
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
 
       await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
       await flush();
@@ -549,7 +700,8 @@ describe('OnboardingWizard', () => {
     it('a route whose first stop is this page starts in place, without leaving', async () => {
       const onClose = vi.fn();
       const { router } = await mountWithDiscovery({ onClose });
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
 
       await click(dialog().querySelector('[data-onboarding-route="overview"]')!);
       await flush();
@@ -567,7 +719,8 @@ describe('OnboardingWizard', () => {
     it('a cancelled dirty-draft prompt leaves the wizard and the tour untouched', async () => {
       const onClose = vi.fn();
       const { router, cancelAction } = await mountWithDiscovery({ onClose, dirty: true });
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
 
       await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
       await cancelAction();
@@ -584,7 +737,8 @@ describe('OnboardingWizard', () => {
     it('a confirmed dirty-draft prompt commits the route and ends the run', async () => {
       const onClose = vi.fn();
       const { router, confirmAction } = await mountWithDiscovery({ onClose, dirty: true });
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
 
       await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
       await confirmAction();
@@ -603,7 +757,8 @@ describe('OnboardingWizard', () => {
       connectionState.wsStatus = 'closed';
       const onClose = vi.fn();
       const { router } = await mountWithDiscovery({ onClose });
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
 
       await click(dialog().querySelector('[data-onboarding-route="sustain"]')!);
       await flush();
@@ -622,9 +777,9 @@ describe('OnboardingWizard', () => {
     it('closes the run without a session, a draft or a navigation when the action is skipped', async () => {
       const onClose = vi.fn();
       await mount(onClose);
-      await toDiscoverStep();
+      await toDepartStep();
 
-      await click(buttonByText('Not now'));
+      await click(buttonByText('Close setup'));
       await flush();
 
       expect(onClose).toHaveBeenCalledTimes(1);
@@ -638,7 +793,8 @@ describe('OnboardingWizard', () => {
       await mount();
       const useTitles = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-use]')]
         .map((use) => ({ id: use.dataset['onboardingUse'], title: use.querySelector('span > span')?.textContent }));
-      await toDiscoverStep();
+      await toDepartStep();
+      await openBrowse();
       for (const { id, title } of useTitles) {
         const row = dialog().querySelector<HTMLElement>(`[data-onboarding-route="${id}"]`);
         expect(row).not.toBeNull();

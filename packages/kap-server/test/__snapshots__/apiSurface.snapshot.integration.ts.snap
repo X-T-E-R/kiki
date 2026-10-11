@@ -1426,11 +1426,7 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
-      "/api/skills/kiki-as-subagent{install}",
-    ],
-    [
-      "POST",
-      "/api/skills/kiki-as-subagent{preview}-install",
+      "/api/skills/{tail}",
     ],
     [
       "POST",

@@ -133,17 +133,28 @@ describe('server-v2 /api skills', () => {
     );
   }
 
-  it('previews the global host skill and requires an explicit confirmed install body', async () => {
-    const preview = await postJson<{ host: string; directory: string; path: string; overwrites: boolean; revision: string }>(
-      '/api/skills/kiki-as-subagent:preview-install', { host: 'agents' },
-    );
-    expect(preview.body.code).toBe(0);
-    expect(preview.body.data.path.replaceAll('\\', '/')).toMatch(/\/\.agents\/skills\/kiki-as-subagent\/SKILL\.md$/);
-    expect(preview.body.data.revision).toMatch(/^[a-f0-9]{64}$/);
-    const notConfirmed = await postJson('/api/skills/kiki-as-subagent:install', {
-      host: 'agents', revision: preview.body.data.revision, confirmed: false,
-    });
-    expect(notConfirmed.body.code).toBe(40001);
+  it('previews and installs a named host skill, rejecting unknown names, unconfirmed bodies and stale revisions', async () => {
+    type HostSkillWire = { skill: string; host: string; directory: string; path: string; overwrites: boolean; revision: string };
+    for (const skill of ['kiki-as-subagent', 'kiki-ops'] as const) {
+      const preview = await postJson<HostSkillWire>(`/api/skills/${skill}:preview-install`, { host: 'agents' });
+      expect(preview.body.code).toBe(0);
+      expect(preview.body.data.skill).toBe(skill);
+      expect(preview.body.data.path.replaceAll('\\', '/')).toMatch(new RegExp(`/\\.agents/skills/${skill}/SKILL\\.md$`));
+      expect(preview.body.data.revision).toMatch(/^[a-f0-9]{64}$/);
+      const notConfirmed = await postJson(`/api/skills/${skill}:install`, {
+        host: 'agents', revision: preview.body.data.revision, confirmed: false,
+      });
+      expect(notConfirmed.body.code).toBe(40001);
+      const missingRevision = await postJson(`/api/skills/${skill}:install`, { host: 'agents', confirmed: true });
+      expect(missingRevision.body.code).toBe(40001);
+      const stale = await postJson(`/api/skills/${skill}:install`, { host: 'agents', revision: 'a'.repeat(64), confirmed: true });
+      expect(stale.body.code).toBe(40001);
+    }
+    const unknown = await postJson('/api/skills/not-a-kiki-skill:preview-install', { host: 'agents' });
+    expect(unknown.body.code).toBe(40001);
+    expect(unknown.body.msg).toContain('unsupported skill');
+    const bareName = await postJson('/api/skills/kiki-ops', { host: 'agents' });
+    expect(bareName.body.code).toBe(40001);
   });
 
   it('discovers user and workspace Markdown commands and activates the latest prompt once', async () => {
