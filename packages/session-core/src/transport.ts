@@ -387,6 +387,8 @@ export interface AgentTranscriptTask {
   readonly name?: string;
   readonly subagentName?: string;
   readonly description?: string;
+  readonly command?: string;
+  readonly ownerTurnId?: number;
   readonly agentId?: string;
   readonly outputTail: string;
   /** Present when `outputTail` is truncated; the full task is read by reference. */

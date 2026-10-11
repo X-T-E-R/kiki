@@ -182,7 +182,7 @@ import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './To
 import { DisclosureChevron, Icon, OutcomeMark } from './icons';
 import { Wordmark } from './Wordmark';
 import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
-import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
+import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
 import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
@@ -884,6 +884,15 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
   const [open, setOpen] = useState(false);
   useFindReveal(block.id, open, setOpen);
   const preview = latestLineOf(block.output);
+  const commandSource = block.commandTaskId === undefined
+    ? frameContentSource(block)
+    : { kind: 'task' as const, id: block.commandTaskId };
+  const commandRoots = block.commandTaskId === undefined ? SHELL_COMMAND_ROOTS : TASK_COMMAND_ROOTS;
+  const outputSource = block.outputTaskId === undefined
+    ? frameContentSource(block)
+    : { kind: 'task' as const, id: block.outputTaskId };
+  const outputRoots = block.outputTaskId === undefined ? OUTPUT_ROOTS : TASK_OUTPUT_ROOTS;
+  const outputPending = useContentContinuation(outputSource, outputRoots).pending.length > 0 || block.outputDetail !== undefined;
   // A shell run is an activity line like any other; only its OUTPUT keeps the
   // dark island. The old always-dark collapsed header made every command look
   // like the loudest thing in the turn even when it succeeded quietly.
@@ -936,9 +945,15 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
             </div>
           ) : null}
           <ShellOutputDetail block={block} />
-          <pre className={`max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink${block.command === undefined && block.outputDetail === undefined ? '' : ' border-t border-shell-hairline'}`}>
-            {block.output === '' ? '…' : block.output}
-          </pre>
+          {block.output !== '' ? (
+            <pre className={`max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink${block.command === undefined && block.outputDetail === undefined ? '' : ' border-t border-shell-hairline'}`}>
+              {block.output}
+            </pre>
+          ) : outputPending ? null : (
+            <p data-shell-output-empty className="px-3 py-2 text-[12px] text-shell-ink-soft">
+              {t(block.done ? 'transcript.shell.noOutput' : 'tasks.noOutput')}
+            </p>
+          )}
         </div>
       ) : undefined}
       {open ? (
@@ -946,18 +961,14 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
         // produced are each continued by their own control, and neither ever
         // points at the other's entity.
         <div className="mt-1 space-y-1">
-          {block.command === undefined ? null : (
-            <ContentContinuation
-              source={frameContentSource(block)}
-              roots={SHELL_COMMAND_ROOTS}
-              label={t('transcript.content.command')}
-            />
-          )}
           <ContentContinuation
-            source={block.outputTaskId === undefined
-              ? frameContentSource(block)
-              : { kind: 'task', id: block.outputTaskId }}
-            roots={block.outputTaskId === undefined ? OUTPUT_ROOTS : TASK_OUTPUT_ROOTS}
+            source={commandSource}
+            roots={commandRoots}
+            label={t('transcript.content.command')}
+          />
+          <ContentContinuation
+            source={outputSource}
+            roots={outputRoots}
             label={t('tc.output')}
           />
         </div>
@@ -3314,7 +3325,7 @@ export function Transcript({
   // latest turn folds everything but its newest process row, which stays in
   // view until the next one arrives. Rows the reader is looking at while
   // scrolled up (`heldRows`) are left in place until they return.
-  const liveTurnId = latestTurnId(mergedNodes);
+  const liveTurnId = state.busy ? latestTurnId(mergedNodes) : undefined;
   const [heldRows, setHeldRows] = useState<ReadonlySet<string>>(EMPTY_HELD);
   const processNodes = useMemo(
     () => foldHistory(mergedNodes, liveTurnId, { keepOpen: heldRows }),

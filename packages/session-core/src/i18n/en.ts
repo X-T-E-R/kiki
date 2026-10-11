@@ -1429,6 +1429,7 @@ export const en = {
   'transcript.marker.modelSwitch': 'Model changed from {from} to {to}',
   'transcript.failed': 'failed',
   'transcript.shell': 'Shell',
+  'transcript.shell.noOutput': 'No output recorded.',
   'transcript.steps': 'Steps · {count}',
   'transcript.stepsAria': '{count} reads, click to expand or collapse',
   'transcript.stepsNoTiming': 'no timing recorded',

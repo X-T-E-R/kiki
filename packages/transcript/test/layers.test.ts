@@ -23,6 +23,7 @@ import {
   transcriptResetPayloadSchema,
   transcriptResponseSchema,
   transcriptSubscribeV2PayloadSchema,
+  transcriptTaskSchema,
 } from '#/contract/schema';
 import type { TranscriptItem } from '#/model/item';
 import type { AgentTranscriptSnapshot, TranscriptOperation } from '#/ops/operation';
@@ -1572,7 +1573,7 @@ describe('TranscriptWireAdapter', () => {
       { type: 'plan.revision', id: 'plan-1', path: 'agents/main/plan/v2.md', version: 2, time: 6 },
       {
         type: 'task.started',
-        info: { taskId: 'shell-1', kind: 'process', status: 'running', description: 'test', startedAt: 9 },
+        info: { taskId: 'shell-1', kind: 'process', status: 'running', description: 'test', command: 'echo passed', ownerTurnId: 0, startedAt: 9 },
         time: 9,
       },
       {
@@ -1608,8 +1609,11 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTasks().get('shell-1')).toMatchObject({
       kind: 'shell',
       state: 'completed',
+      command: 'echo passed',
+      ownerTurnId: 0,
       outputTail: 'passed',
     });
+    expect(transcriptTaskSchema.parse(transcript.getTasks().get('shell-1'))).toMatchObject({ command: 'echo passed', ownerTurnId: 0 });
     expect(transcript.getTasks().has('agent-1')).toBe(false);
     expect(
       transcript.getItems().filter((item) => item.kind === 'taskref').map((item) => item.taskId),

@@ -1981,6 +1981,26 @@ describe('live and event chrome', () => {
     },
   );
 
+  it('keeps completed empty terminals inside worked folds and exposes an honest empty state', async () => {
+    const container = await renderTranscript([
+      { kind: 'assistant', id: 'before-shell', turnId: 't0', text: 'Before.', streaming: false, createdAt: undefined },
+      { kind: 'shell', id: 'empty-shell', commandId: 'bash-empty', turnId: 't0', command: 'true', output: '', done: true, isError: false },
+      { kind: 'assistant', id: 'after-shell', turnId: 't0', text: 'After.', streaming: false, createdAt: undefined },
+    ]);
+    expect(container.querySelector('[data-shell]')).toBeNull();
+    const fold = container.querySelector('[data-history-fold]')!;
+    expect(fold).not.toBeNull();
+    await act(async () => { click(fold.querySelector('button')!); });
+    const shell = fold.querySelector('[data-shell]')!;
+    expect(shell.textContent).toContain('$ true');
+    await act(async () => { click(shell.querySelector('button')!); });
+    expect(shell.querySelector('pre')).toBeNull();
+    expect(shell.querySelector('[data-shell-output-empty]')?.textContent).toBe('No output recorded.');
+    expect(container.textContent).not.toContain('…');
+    expect(container.querySelector('[data-block-id="before-shell"]')!.compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fold.compareDocumentPosition(container.querySelector('[data-block-id="after-shell"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('keeps shell cards collapsed by default and expands them on click', async () => {
     const container = await renderTranscript([
       {
@@ -5469,7 +5489,7 @@ describe('settled history folds and the unified locate entry', () => {
       useLayoutEffect(() => { recordNavigation({ location, scope: { homeId: 'main', scopeId: 'local' }, action }); }, [location, action]);
       if (location.pathname === '/away') return <div>away</div>;
       const work = settled ? turnBlocks(1, 'reading') : [userBlock({ id: 'u1', text: 'reading', turnId: 't1' }), doneTool('tool1a', 't1'), think('th1', 't1')];
-      return <I18nProvider>{virtualTranscript(transcriptState([...virtualBlocks(30), ...work]))}</I18nProvider>;
+      return <I18nProvider>{virtualTranscript(transcriptState([...virtualBlocks(30), ...work], { busy: !settled }))}</I18nProvider>;
     }
     const router = createMemoryRouter([{ path: '*', element: <Page /> }], { initialEntries: ['/s/session_test'] });
     blockHeights.set('th1', 900);

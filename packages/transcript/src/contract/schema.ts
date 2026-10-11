@@ -321,6 +321,7 @@ export const transcriptTaskSchema = z.object({
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
   description: z.string().optional(),
+  command: z.string().optional(),
   agentId: agentIdSchema.optional(),
   outputTail: z.string(),
   startedAt: z.string().optional(),

@@ -748,6 +748,7 @@ export class TranscriptWireAdapter {
         executorId: stringOf(info?.['executorId']) ?? previous?.executorId,
         executorProtocol: stringOf(info?.['executorProtocol']) ?? previous?.executorProtocol,
         description: stringOf(info?.['description']) ?? previous?.description,
+        command: stringOf(info?.['command']) ?? previous?.command,
         agentId,
         outputTail: stringOf(record['outputTail']) ?? previous?.outputTail ?? '',
         startedAt: previous?.startedAt ?? isoOf(numberOf(info?.['startedAt'])),

@@ -2440,6 +2440,15 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(taskOnly).not.toHaveProperty('stepId');
   });
 
+  it('restores background shell command and owner turn from durable process facts', () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'task.started', time: 1, info: { taskId: 'bash-fixture', kind: 'process', command: 'echo fixture', description: 'Check fixture', ownerTurnId: 0, status: 'running', startedAt: 1, detached: true } },
+      { type: 'task.terminated', time: 2, info: { taskId: 'bash-fixture', kind: 'process', ownerTurnId: 0, status: 'completed', startedAt: 1, endedAt: 2 }, outputTail: 'fixture output' },
+    ]);
+    const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' });
+    expect(blocks).toEqual([expect.objectContaining({ kind: 'shell', command: 'echo fixture', commandTaskId: 'bash-fixture', turnId: 't0', output: 'fixture output', outputTaskId: 'bash-fixture', done: true })]);
+  });
+
   it('projects a shell taskref as a shell card instead of a bare task id', () => {
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
       items: [

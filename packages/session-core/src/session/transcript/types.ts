@@ -278,6 +278,7 @@ export interface ShellBlock {
   readonly frameId?: string;
   readonly stepId?: string;
   readonly outputTaskId?: string;
+  readonly commandTaskId?: string;
   readonly kind: 'shell';
   readonly id: string;
   readonly commandId: string;

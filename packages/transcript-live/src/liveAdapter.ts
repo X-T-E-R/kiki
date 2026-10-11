@@ -1160,9 +1160,11 @@ export class AgentTranscriptLiveAdapter {
 
   private onTaskLifecycle(event: {
     type: 'task.started' | 'task.terminated';
+    outputTail?: string;
     info: {
       taskId: string;
       kind: string;
+      command?: string;
       description: string;
       status: TranscriptTask['state'];
       detached?: boolean;
@@ -1195,8 +1197,9 @@ export class AgentTranscriptLiveAdapter {
       name: info.collaborationTaskName ?? prev?.name,
       subagentName: info.profile ?? prev?.subagentName,
       description: info.description,
+      command: info.command ?? prev?.command,
       agentId: info.agentId ?? prev?.agentId,
-      outputTail: prev?.outputTail ?? '',
+      outputTail: event.outputTail ?? prev?.outputTail ?? '',
       startedAt: prev?.startedAt ?? epochMsToIso(info.startedAt),
       endedAt: info.endedAt === null ? prev?.endedAt : epochMsToIso(info.endedAt),
       resultSummary: prev?.resultSummary,
@@ -1223,6 +1226,7 @@ export class AgentTranscriptLiveAdapter {
   private onShellStarted(event: { commandId: string; taskId: string }): TranscriptOperation[] {
     this.shellTasks.set(event.commandId, event.taskId);
     const task = this.upsertTask(event.taskId, (prev) => ({
+      ...prev,
       taskId: event.taskId,
       kind: 'shell',
       state: 'running',
@@ -1306,6 +1310,7 @@ export class AgentTranscriptLiveAdapter {
     const taskId = this.shellTaskId(event);
     const hadTask = this.tasks.has(taskId);
     const task = this.upsertTask(taskId, (prev) => ({
+      ...prev,
       taskId,
       kind: prev?.kind ?? 'shell',
       state: event.isError ? 'failed' : 'completed',

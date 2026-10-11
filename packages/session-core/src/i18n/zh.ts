@@ -1416,6 +1416,7 @@ export const zh = {
   'transcript.marker.modelSwitch': '模型从 {from} 换成 {to}',
   'transcript.failed': '失败',
   'transcript.shell': '终端',
+  'transcript.shell.noOutput': '没有录得输出。',
   'transcript.steps': '步骤 · {count}',
   'transcript.stepsAria': '{count} 次读取，点击展开或收起',
   'transcript.stepsNoTiming': '未记录时长',

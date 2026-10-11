@@ -406,7 +406,7 @@ export function foldHistory(
   let run: Row[] = [];
   let runTurn: string | undefined;
   const flush = () => {
-    if (run.length >= HISTORY_FOLD_MIN) out.push(buildFold(run, runTurn));
+    if (run.length >= HISTORY_FOLD_MIN || run.some((node) => node.kind === 'shell')) out.push(buildFold(run, runTurn));
     else out.push(...run);
     run = [];
     runTurn = undefined;

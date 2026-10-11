@@ -1139,7 +1139,8 @@ describe('AgentTranscriptLiveAdapter', () => {
     const started = {
       taskId: 'bash-1',
       kind: 'process',
-      description: 'ls -la',
+      command: 'ls -la',
+      description: 'List fixture files',
       status: 'running',
       detached: false,
       lifetime: 'service' as const,
@@ -1176,7 +1177,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       ownerAgentId: 'main',
       ownerTurnId: 7,
       goalId: 'goal-1',
-      description: 'ls -la',
+      description: 'List fixture files',
+      command: 'ls -la',
       outputTail: 'a\nb\n',
     });
     expect(
@@ -1184,6 +1186,17 @@ describe('AgentTranscriptLiveAdapter', () => {
         ev({ type: 'shell.output', commandId: 'cmd-1', update: { kind: 'progress', percent: 50 } }),
       ),
     ).toEqual([]);
+  });
+
+  it('keeps process command and the terminal output without shell chunks', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const info = { taskId: 'bash-background', kind: 'process', command: 'echo fixture', description: 'Fixture check', ownerTurnId: 0, detached: true, startedAt: 10, endedAt: null, status: 'running' };
+    tx.apply(adapter.map(ev({ type: 'task.started', info })));
+    tx.apply(adapter.map(ev({ type: 'task.terminated', info: { ...info, status: 'completed', endedAt: 20 }, outputTail: 'fixture\n' })));
+    expect(tx.getTask(info.taskId)).toMatchObject({ command: 'echo fixture', ownerTurnId: 0, state: 'completed', outputTail: 'fixture\n' });
+    tx.apply(adapter.map(ev({ type: 'task.terminated', info: { ...info, status: 'completed', endedAt: 20 }, outputTail: '' })));
+    expect(tx.getTask(info.taskId)?.outputTail).toBe('');
   });
 
   it('fills the shell task output from late stderr chunks before completing', () => {

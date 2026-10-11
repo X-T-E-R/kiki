@@ -254,6 +254,18 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(nodes[2]).toBe(blocks[4]);
   });
 
+  it('folds completed empty shells without moving prose or hiding running shells', () => {
+    const before = inTurn(text('assistant'), 't2');
+    const thought = inTurn(thinking(), 't2');
+    const empty = inTurn(shell(), 't2');
+    const after = inTurn(text('assistant'), 't2');
+    const nodes = foldHistory([before, thought, empty, after], undefined);
+    expect(nodes.map((node) => node.kind)).toEqual(['assistant', 'history-fold', 'assistant']);
+    expect((nodes[1] as HistoryFold).members).toEqual([thought, empty]);
+    expect(nodes[1]).toMatchObject({ steps: 1, thoughts: 1 });
+    expect(foldHistory([thought, { ...empty, done: false }], 't2').map((node) => node.kind)).toEqual(['thinking', 'shell']);
+  });
+
   it('keeps rows the reader holds in place, folding around them', () => {
     const blocks = [inTurn(thinking(), 't2'), inTurn(read('/w/a'), 't2'), inTurn(shell(), 't2'), inTurn(read('/w/b'), 't2')];
     const nodes = foldHistory(blocks, 't2', { keepOpen: new Set([blocks[1]!.id, blocks[2]!.id]) });

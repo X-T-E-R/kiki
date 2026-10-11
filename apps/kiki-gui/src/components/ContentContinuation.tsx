@@ -20,6 +20,7 @@ export const INPUT_ROOTS: readonly string[] = ['input'];
 export const INPUT_TEXT_ROOTS: readonly string[] = ['inputText'];
 export const DISPLAY_ROOTS: readonly string[] = ['display'];
 export const TASK_OUTPUT_ROOTS: readonly string[] = ['outputTail'];
+export const TASK_COMMAND_ROOTS: readonly string[] = ['command'];
 export const SHELL_COMMAND_ROOTS: readonly string[] = ['input', 'inputText'];
 /** Edit-style bodies render as a diff, built from the display or the args. */
 export const EDIT_ROOTS: readonly string[] = ['display', 'input', 'inputText'];
