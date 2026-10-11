@@ -33,7 +33,7 @@ export interface ModelRequestTiming {
 }
 
 export type ModelRequestEvent =
-  | { readonly type: 'part'; readonly part: StreamedMessagePart }
+  | { readonly type: 'part'; readonly part: StreamedMessagePart; readonly responseInstanceId?: string }
   | { readonly type: 'usage'; readonly usage: TokenUsage; readonly model?: string }
   | {
       readonly type: 'finish';

@@ -24,7 +24,7 @@ import {
 import type { AgentTranscriptResponse } from '../transport';
 
 import { buildAgentForest } from './agentTree';
-import { groupBlocks } from './grouping';
+import { foldHistory, groupBlocks } from './grouping';
 
 import {
   agentTranscriptPageFromResponse,
@@ -2438,6 +2438,68 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const taskOnly = projected.blocks.find((block) => block.id === 'shell-standalone-shell');
     expect(taskOnly).not.toHaveProperty('frameId');
     expect(taskOnly).not.toHaveProperty('stepId');
+  });
+
+  it('combines thinking by proven response instance in live and cold projections without changing source frames', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 'step-fixture', turnId: 't0', ordinal: 1, state: 'running' } },
+    ]);
+    const project = () => agentTranscriptToBlocks({ ...tx.snapshot(), agent_id: 'main' });
+    const add = (id: string, text: string, responseInstanceId: string) => tx.apply([{ op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: id, text, responseInstanceId } }]);
+    add('reasoning-one', 'First item', 'attempt-fixture-one');
+    const firstId = project()[0]!.id;
+    add('reasoning-two', 'Second item', 'attempt-fixture-one');
+    add('reasoning-summary', 'Summary', 'attempt-fixture-one');
+    expect(project()).toEqual([expect.objectContaining({ id: firstId, text: 'First item\n\nSecond item\n\nSummary' })]);
+    tx.apply([{ op: 'append', target: { type: 'frame', turnId: 't0', stepId: 'step-fixture', frameId: 'reasoning-summary' }, offset: 7, text: ' update' }]);
+    expect(project()[0]).toMatchObject({ id: firstId, text: 'First item\n\nSecond item\n\nSummary update', streaming: true });
+    add('next-response', 'Separate response', 'attempt-fixture-two');
+    expect(project().filter((block) => block.kind === 'thinking')).toHaveLength(2);
+    const wire = [
+      { type: 'step.begin', uuid: 'step-fixture', turnId: '0', step: 1 },
+      ...[['reasoning-one', 'First item'], ['reasoning-two', 'Second item'], ['reasoning-summary', 'Summary update']].map(([uuid, think]) => ({ type: 'content.part', uuid, stepUuid: 'step-fixture', turnId: '0', step: 1, responseInstanceId: 'attempt-fixture-one', part: { type: 'think', think, encrypted: 'fixture-opaque', signature: 'fixture-signature' } })),
+      { type: 'content.part', uuid: 'next-response', stepUuid: 'step-fixture', turnId: '0', step: 1, responseInstanceId: 'attempt-fixture-two', part: { type: 'think', think: 'Separate response' } },
+      { type: 'step.end', uuid: 'step-fixture', turnId: '0', step: 1, messageId: 'response-fixture-final', finishReason: 'end_turn' },
+    ];
+    const original = structuredClone(wire);
+    const cold = replayAgentWire('main', wire.map((event, time) => ({ type: 'context.append_loop_event', event, time })));
+    const coldBlocks = agentTranscriptToBlocks({ ...cold, agent_id: 'main' });
+    expect(coldBlocks.map((block) => [block.id, block.kind === 'thinking' ? block.text : undefined])).toEqual(project().map((block) => [block.id, block.kind === 'thinking' ? block.text : undefined]));
+    expect(coldBlocks[0]).toMatchObject({ fragments: [{ frameId: 'reasoning-one' }, { frameId: 'reasoning-two' }, { frameId: 'reasoning-summary' }] });
+    expect(cold.items.filter((item) => item.kind === 'turn').flatMap((item) => item.steps.flatMap((step) => step.frames))).toHaveLength(4);
+    expect(wire).toEqual(original);
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 'step-fixture', turnId: 't0', ordinal: 1, state: 'completed' } },
+    ]);
+    expect(project()[0]).toMatchObject({ id: firstId, streaming: false, fragments: [{ streaming: false }, { streaming: false }, { streaming: false }] });
+    expect(coldBlocks[0]).toMatchObject({ id: firstId, streaming: false });
+    const folded = foldHistory([...coldBlocks, { kind: 'shell', id: 'quiet-shell', commandId: 'quiet-shell', turnId: 't0', output: '', done: true, isError: false }], undefined);
+    expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
+  });
+
+  it('recovers only explicit successful response associations and respects prose and tool barriers', () => {
+    const cold = (messageId?: string) => replayAgentWire('main', [
+      { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 'old-step', turnId: '0', step: 1 } },
+      ...['one', 'two'].map((think) => ({ type: 'context.append_loop_event', event: { type: 'content.part', uuid: `old-${think}`, stepUuid: 'old-step', turnId: '0', step: 1, part: { type: 'think', think } } })),
+      { type: 'context.append_loop_event', event: { type: 'step.end', uuid: 'old-step', turnId: '0', step: 1, messageId, finishReason: 'end_turn' } },
+    ]);
+    expect(agentTranscriptToBlocks({ ...cold(), agent_id: 'main' })).toHaveLength(2);
+    expect(agentTranscriptToBlocks({ ...cold('response-fixture-old'), agent_id: 'main' })).toEqual([expect.objectContaining({ text: 'one\n\ntwo' })]);
+    const snapshot = cold('response-fixture-old');
+    const turn = snapshot.items.find((item) => item.kind === 'turn')!;
+    expect(turn.kind).toBe('turn');
+    if (turn.kind !== 'turn') return;
+    const first = turn.steps[0]!.frames[0]!;
+    const second = turn.steps[0]!.frames[1]!;
+    const unknownLiveFrames = ['failed-live', 'successful-live'].map((frameId) => ({ kind: 'thinking' as const, frameId, text: frameId }));
+    expect(agentTranscriptToBlocks({ ...snapshot, agent_id: 'main', items: [{ ...turn, steps: [{ ...turn.steps[0]!, frames: unknownLiveFrames }] }] })).toHaveLength(2);
+    expect(agentTranscriptToBlocks({ ...cold(''), agent_id: 'main' })).toHaveLength(2);
+    const frames = [first, { kind: 'text' as const, frameId: 'body', role: 'assistant' as const, text: 'Body stays here' }, second, { kind: 'tool' as const, frameId: 'tool', toolCallId: 'tool', name: 'Read', state: 'done' as const }, { ...first, frameId: 'after-tool' }];
+    const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main', items: [{ ...turn, steps: [{ ...turn.steps[0]!, frames }] }] });
+    expect(blocks.map((block) => block.kind)).toEqual(['thinking', 'assistant', 'thinking', 'tool', 'thinking']);
   });
 
   it('restores background shell command and owner turn from durable process facts', () => {

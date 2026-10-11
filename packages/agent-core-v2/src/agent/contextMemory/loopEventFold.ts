@@ -36,6 +36,7 @@ export type LoopRecordedEvent =
     }
   | {
       readonly type: 'content.part';
+      readonly responseInstanceId?: string;
       readonly stepUuid: string;
       readonly part: ContentPart;
       readonly uuid?: string;

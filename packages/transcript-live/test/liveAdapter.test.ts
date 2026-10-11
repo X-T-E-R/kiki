@@ -517,6 +517,19 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(created?.frame.frameId).toBe('t0.1.f2');
   });
 
+  it('preserves response instance boundaries across thinking fragments and flushes within one step', () => {
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    for (const [partId, responseInstanceId, delta] of [
+      ['item-one', 'attempt-one', 'First'], ['summary-one', 'attempt-one', 'Summary'], ['item-two', 'attempt-two', 'Separate'],
+    ]) tx.apply(adapter.map(ev({ type: 'thinking.delta', turnId: 0, step: 1, stepId: 'step-fixture', partId, responseInstanceId, delta })));
+    tx.apply(adapter.map(ev({ type: 'assistant.delta', turnId: 0, step: 1, stepId: 'step-fixture', partId: 'body', delta: 'Final' })));
+    const frames = turnOps('t0', tx.getItems()).steps[0]!.frames.filter((frame) => frame.kind === 'thinking');
+    expect(frames.map((frame) => [frame.frameId, frame.responseInstanceId, frame.text])).toEqual([
+      ['item-one', 'attempt-one', 'First'], ['summary-one', 'attempt-one', 'Summary'], ['item-two', 'attempt-two', 'Separate'],
+    ]);
+  });
+
   it('adopts a backfilled tool frame when the result arrives after a mid-bind attach', () => {
     const tx = new AgentTranscript('main');
     tx.apply([

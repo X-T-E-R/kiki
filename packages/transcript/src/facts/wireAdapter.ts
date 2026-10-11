@@ -1747,6 +1747,7 @@ export class TranscriptWireAdapter {
       stringOf(event['rawFinishReason']) ??
       stringOf(event['providerFinishReason']);
     const interrupted = finishReason === 'interrupted' || finishReason === 'error';
+    const providerResponseId = stringOf(event['messageId']);
     const step: StepHeader = {
       kind: 'step',
       stepId,
@@ -1757,6 +1758,7 @@ export class TranscriptWireAdapter {
       endedAt: isoOf(time),
       usage,
       finishReason,
+      providerResponseId: interrupted || finishReason === undefined || !providerResponseId?.trim() ? undefined : providerResponseId,
       endReason: interrupted ? finishReason : undefined,
       timing: {
         llmFirstTokenLatencyMs: numberOf(event['llmFirstTokenLatencyMs']),
@@ -1839,6 +1841,8 @@ export class TranscriptWireAdapter {
             kind: 'thinking',
             frameId: partId,
             part: identity,
+            responseInstanceId: stringOf(event['responseInstanceId']),
+            recordedStepId: stepId,
             text: stringOf(part['think']) ?? '',
           },
         },

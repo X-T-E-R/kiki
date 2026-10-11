@@ -378,7 +378,8 @@ function gatherRows(nodes: readonly DisplayNode[], live: string | undefined): Di
 /**
  * Fold settled process: each run of ≥2 consecutive process rows of one turn
  * (tools, read runs, shell, thinking, settled subagents, reminders, settled
- * decisions, engine notes) becomes one `HistoryFold`. In the latest turn
+ * decisions, engine notes), or a single completed shell, becomes one
+ * `HistoryFold`. In the latest turn
  * (`liveTurnId`) the newest process row stays out, as does anything still
  * running or held by `keepOpen`; the next row to arrive folds it in. A run
  * breaks at anything the user reads: messages, dividers, image rows, live

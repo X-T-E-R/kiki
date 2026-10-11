@@ -692,7 +692,7 @@ function latestLineOf(text: string): string {
 const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: ThinkingBlock }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  useFindReveal(block.id, open, setOpen);
+  useFindReveal(block.fragments?.map((fragment) => fragment.id) ?? block.id, open, setOpen);
   // deepseek-harness's ReasoningRow summary rule: while tokens are streaming
   // the collapsed line tracks the LATEST line; once settled it pins the first.
   const summary = block.streaming ? latestLineOf(block.text) : firstLineOf(block.text);
@@ -715,8 +715,12 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
     >
       {open ? (
         <div className="border-l border-hairline pl-3 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink-soft italic">
-          {block.text}
-          <ContentContinuation source={frameContentSource(block)} roots={MESSAGE_TEXT_ROOTS} label={t('transcript.thinking')} className="mt-1 not-italic" />
+          {(block.fragments ?? [block]).map((fragment, index) => (
+            <div key={fragment.id} data-block-id={fragment.id} className={index === 0 ? undefined : 'mt-3'}>
+              {fragment.text}
+              <ContentContinuation source={frameContentSource(fragment)} roots={MESSAGE_TEXT_ROOTS} label={t('transcript.thinking')} className="mt-1 not-italic" />
+            </div>
+          ))}
         </div>
       ) : undefined}
     </ActivityRow>
@@ -3469,13 +3473,16 @@ export function Transcript({
     const subagents = new Map<string, { index: number; foldId?: string }>();
     const visit = (node: TimelineNode, index: number, foldId: string | undefined) => {
       blocks.set(node.id, { index, foldId });
+      if (node.kind === 'thinking') {
+        for (const fragment of node.fragments ?? []) blocks.set(fragment.id, { index, foldId });
+      }
       if (node.kind === 'subagent' && !subagents.has(node.subagentId)) subagents.set(node.subagentId, { index, foldId });
       if (node.kind === 'history-fold') {
         for (const member of node.members) visit(member, index, node.id);
       } else if (node.kind === 'subagent-group' || node.kind === 'media-run') {
         for (const member of node.members) visit(member, index, foldId);
       } else if (node.kind === 'activity-summary') {
-        for (const member of node.members) blocks.set(member.id, { index, foldId });
+        for (const member of node.members) visit(member, index, foldId);
       } else if (node.kind === 'tool-group') {
         for (const member of node.members) blocks.set(member.id, { index, foldId });
       }

@@ -168,6 +168,7 @@ export class AssistantDelta extends Event2<AssistantDeltaPayload> {
 export interface AssistantDelta extends AssistantDeltaPayload {}
 
 export interface ThinkingDeltaPayload {
+  readonly responseInstanceId?: string;
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;

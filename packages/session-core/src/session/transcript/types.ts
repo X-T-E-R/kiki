@@ -163,6 +163,8 @@ export interface AssistantBlock {
 }
 
 export interface ThinkingBlock {
+  readonly responseInstanceId?: string;
+  readonly fragments?: readonly ThinkingBlock[];
   readonly kind: 'thinking';
   readonly frameId?: string;
   readonly stepId?: string;

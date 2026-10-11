@@ -1501,6 +1501,13 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('retains response instance and provider response metadata in canonical schema round trips', () => {
+    const frame = transcriptOperationSchema.parse({ op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'item-fixture', text: 'fixture summary', responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
+    expect(frame).toMatchObject({ frame: { responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
+    const step = transcriptOperationSchema.parse({ op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 'step-fixture', turnId: 't0', ordinal: 1, state: 'completed', providerResponseId: 'response-fixture' } });
+    expect(step).toMatchObject({ step: { providerResponseId: 'response-fixture' } });
+  });
+
   it('projects notes metadata alongside todos, including notes-only writes and restored checkpoints', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

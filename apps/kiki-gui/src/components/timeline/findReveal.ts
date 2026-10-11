@@ -43,17 +43,17 @@ const EMPTY_STORE: FindRevealStore = {
 export const FindRevealContext = createContext<FindRevealStore>(EMPTY_STORE);
 
 /** True while a find step asks this row to be open. */
-export function useFindForced(id: string | undefined): boolean {
+export function useFindForced(id: string | readonly string[] | undefined): boolean {
   const store = useContext(FindRevealContext);
   return useSyncExternalStore(
     store.subscribe,
-    () => id !== undefined && store.has(id),
+    () => typeof id === 'string' ? store.has(id) : id?.some((value) => store.has(value)) === true,
     () => false,
   );
 }
 
 /** Open a row's own disclosure when a find step lands inside it. */
-export function useFindReveal(id: string | undefined, open: boolean, setOpen: (open: boolean) => void): void {
+export function useFindReveal(id: string | readonly string[] | undefined, open: boolean, setOpen: (open: boolean) => void): void {
   const forced = useFindForced(id);
   useEffect(() => {
     if (forced && !open) setOpen(true);

@@ -34,7 +34,7 @@ export interface AgentLLMRequestFinish {
   traceId?: string;
 }
 
-export type AgentLLMRequestPartHandler = (part: StreamedMessagePart) => void | Promise<void>;
+export type AgentLLMRequestPartHandler = (part: StreamedMessagePart, responseInstanceId?: string) => void | Promise<void>;
 
 export interface AgentLLMRequestOverrides {
   messages?: readonly Message[];

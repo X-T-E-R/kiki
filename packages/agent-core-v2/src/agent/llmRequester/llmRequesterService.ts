@@ -487,7 +487,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         })) {
           switch (event.type) {
             case 'part':
-              await onPart(this.normalizeStreamPart(toolCallIds, event.part));
+              await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
               break;
             case 'usage':
               usage = event.usage;

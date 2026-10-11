@@ -47,6 +47,7 @@ import {
   assistantMessageIdFromBlockId,
   buildAgentForest,
   createViewState,
+  mergeResponseThinking,
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type AgentForest,
@@ -1999,6 +2000,26 @@ describe('live and event chrome', () => {
     expect(container.textContent).not.toContain('…');
     expect(container.querySelector('[data-block-id="before-shell"]')!.compareDocumentPosition(fold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(fold.compareDocumentPosition(container.querySelector('[data-block-id="after-shell"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows one thinking row and thought count for one response while retaining every fragment', async () => {
+    const thoughts: Block[] = ['First reasoning', 'Second reasoning', 'Response summary'].map((text, index) => ({ kind: 'thinking', id: `fragment-${index}`, frameId: `frame-${index}`, stepId: 'step-fixture', turnId: 't0', responseInstanceId: 'attempt-fixture', text, streaming: false, createdAt: undefined }));
+    const container = await renderTranscript([
+      ...mergeResponseThinking(thoughts),
+      { kind: 'shell', id: 'shell-fixture', commandId: 'shell-fixture', turnId: 't0', command: 'true', output: '', done: true, isError: false },
+      { kind: 'assistant', id: 'final-fixture', turnId: 't0', text: 'Final body', streaming: false, createdAt: undefined },
+    ]);
+    const fold = container.querySelector('[data-history-fold]')!;
+    expect(fold.textContent).toContain('1 thought');
+    await act(async () => { click(fold.querySelector('button')!); });
+    expect(container.querySelectorAll('.thinking-row')).toHaveLength(1);
+    const row = container.querySelector('.thinking-row')!;
+    await act(async () => { click(row.querySelector('button')!); });
+    expect(row.querySelector('[data-block-id="fragment-0"]')?.textContent).toBe('First reasoning');
+    expect(row.querySelector('[data-block-id="fragment-1"]')?.textContent).toBe('Second reasoning');
+    expect(row.querySelector('[data-block-id="fragment-2"]')?.textContent).toBe('Response summary');
+    expect(row.textContent!.indexOf('Second reasoning')).toBeLessThan(row.textContent!.indexOf('Response summary'));
+    expect(container.querySelector('[data-block-id="final-fixture"]')!.textContent).toContain('Final body');
   });
 
   it('keeps shell cards collapsed by default and expands them on click', async () => {

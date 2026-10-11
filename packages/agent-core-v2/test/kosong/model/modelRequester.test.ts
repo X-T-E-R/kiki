@@ -369,6 +369,32 @@ describe('ModelRequesterImpl request execution', () => {
     expect(traceIds).toEqual(['trace-1']);
   });
 
+  it('assigns one response instance per actual attempt including forced auth refresh', async () => {
+    const provider = new FakeChatProvider();
+    provider.handler = (index) => Promise.resolve(index === 0 ? {
+      ...streamOf([]),
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'think' as const, think: 'first attempt' };
+        throw new APIStatusError(401, 'fixture unauthorized');
+      },
+    } : streamOf([
+      { type: 'think', think: 'second attempt item' },
+      { type: 'think', think: 'second attempt summary' },
+      { type: 'text', text: 'fixture final' },
+    ]));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth: () => Promise.resolve({ apiKey: 'fixture-token' }) }), registryReturning(provider));
+    const events = await collect(requester.request(INPUT));
+    const parts = events.filter((event) => event.type === 'part');
+    expect(parts).toHaveLength(4);
+    expect(parts[0]!.responseInstanceId).toEqual(expect.any(String));
+    expect(parts[1]!.responseInstanceId).toEqual(expect.any(String));
+    expect(parts[0]!.responseInstanceId).not.toBe(parts[1]!.responseInstanceId);
+    expect(new Set(parts.slice(1).map((part) => part.responseInstanceId)).size).toBe(1);
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]!.history).toEqual(INPUT.messages);
+    expect(provider.calls[1]!.history).toEqual(INPUT.messages);
+  });
+
   it('replays once after a forced token refresh on 401', async () => {
     const provider = new FakeChatProvider();
     provider.handler = (callIndex) =>

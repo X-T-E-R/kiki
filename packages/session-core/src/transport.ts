@@ -307,7 +307,7 @@ export type AgentTranscriptFrame =
       taskId?: string;
       origin?: unknown;
     }
-  | { kind: 'thinking'; frameId: string; text: string }
+  | { kind: 'thinking'; frameId: string; text: string; responseInstanceId?: string; recordedStepId?: string }
   | {
       kind: 'tool';
       frameId: string;
@@ -337,6 +337,7 @@ export interface AgentTranscriptTurn {
   readonly execution?: unknown;
   readonly steps: readonly {
     stepId: string;
+    providerResponseId?: string;
     startedAt?: string;
     endedAt?: string;
     frames: readonly AgentTranscriptFrame[];

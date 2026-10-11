@@ -74,6 +74,10 @@ export interface TextFrame {
 
 /** Model thinking chain. Same full-text invariant as TextFrame. */
 export interface ThinkingFrame {
+  /** Stable identity of one actual provider attempt, shared by its reasoning items. */
+  readonly responseInstanceId?: string;
+  /** Durable content.part association; recovery also requires this step's successful provider response ID. */
+  readonly recordedStepId?: string;
   readonly kind: 'thinking';
   readonly frameId: FrameId;
   readonly part?: TranscriptPartIdentity;

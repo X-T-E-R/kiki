@@ -1090,6 +1090,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         step: currentStep,
         stepUuid,
         part: entry.part,
+        responseInstanceId: entry.responseInstanceId,
       });
     }
   }
@@ -1108,6 +1109,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         step: currentStep,
         stepUuid,
         part: entry.part,
+        responseInstanceId: entry.responseInstanceId,
       });
     }
   }
@@ -1347,7 +1349,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onResponseEvent: () => void,
   ): StreamPartCollector {
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
-    const partialContent: Array<{ id: string; part: ContentPart }> = [];
+    const partialContent: Array<{ id: string; part: ContentPart; responseInstanceId?: string }> = [];
+    let responseInstanceId: string | undefined;
     let forceContentPartBoundary = false;
     const accumulate = (part: ContentPart): string => {
       const last = partialContent.at(-1);
@@ -1355,13 +1358,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         return last.id;
       }
       forceContentPartBoundary = false;
-      const entry = { id: randomUUID(), part: { ...part } };
+      const entry = { id: randomUUID(), part: { ...part }, responseInstanceId };
       partialContent.push(entry);
       return entry.id;
     };
 
     return {
-      handle: (part) => {
+      handle: (part, instanceId) => {
+        if (instanceId !== responseInstanceId) {
+          callsByIndex.clear();
+          forceContentPartBoundary = true;
+          responseInstanceId = instanceId;
+        }
         switch (part.type) {
           case 'text': {
             onResponseEvent();
@@ -1376,7 +1384,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
             const partId = accumulate(part);
             void this.dispatcher.dispatch(
-              new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think }),
+              new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think, responseInstanceId }),
             );
             return;
           }
@@ -1424,12 +1432,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         }
       },
       resolveContent: (content) => {
-        const unused = [...partialContent];
+        const unused = partialContent.filter((entry) => entry.responseInstanceId === responseInstanceId);
         return content.map((part) => {
           const index = unused.findIndex((entry) => entry.part.type === part.type);
-          if (index === -1) return { id: randomUUID(), part };
+          if (index === -1) return { id: randomUUID(), part, responseInstanceId };
           const [entry] = unused.splice(index, 1);
-          return { id: entry!.id, part };
+          return { id: entry!.id, part, responseInstanceId: entry!.responseInstanceId };
         });
       },
       discardAttemptParts: () => {
@@ -1516,10 +1524,10 @@ interface MaterializeAnchor {
 }
 
 interface StreamPartCollector {
-  readonly handle: (part: StreamedMessagePart) => void;
+  readonly handle: (part: StreamedMessagePart, responseInstanceId?: string) => void;
   discardAttemptParts(): void;
-  resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart }>;
-  drainInterruptedContent(): Array<{ id: string; part: ContentPart }>;
+  resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
+  drainInterruptedContent(): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
 }
 
 function cancelReasonFor(cancellation: unknown): 'user_cancelled' | 'aborted' {

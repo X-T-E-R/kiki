@@ -185,8 +185,9 @@ export class ModelRequesterImpl implements ModelRequester {
     try {
       result = await this.runWithAuthRefresh(
         async (auth, requestSignal) => {
+          const responseInstanceId = randomUUID();
           const permit = await this.admission?.acquire({
-            ...attribution, attemptId: randomUUID(), modelId: this.model.id, providerId: this.model.providerName,
+            ...attribution, attemptId: responseInstanceId, modelId: this.model.id, providerId: this.model.providerName,
           }, requestSignal);
           try {
             requestSignal?.throwIfAborted();
@@ -199,7 +200,7 @@ export class ModelRequesterImpl implements ModelRequester {
               {
                 onMessagePart: (part) => {
                   firstChunkAt ??= Date.now();
-                  queue.push({ type: 'part', part });
+                  queue.push({ type: 'part', part, responseInstanceId });
                 },
               },
               { ...options, signal: requestSignal, auth },

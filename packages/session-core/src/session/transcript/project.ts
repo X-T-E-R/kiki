@@ -71,6 +71,7 @@ import {
   type TurnTailInfo,
   type UserBlock,
   type ToolBlock,
+  type ThinkingBlock,
 } from './types';
 import { projectSendMessage } from '../messageView';
 import { questionAnswerTexts } from './questionAnswers';
@@ -2608,6 +2609,7 @@ export function agentTranscriptToBlocks(
           case 'thinking':
             blocks.push({
               kind: 'thinking',
+              responseInstanceId: frame.responseInstanceId ?? (frame.recordedStepId !== step.stepId || step.providerResponseId === undefined ? undefined : `provider:${step.providerResponseId}`),
               id: `agent-frame-${frame.frameId}`,
               frameId: frame.frameId,
               stepId: step.stepId,
@@ -2778,12 +2780,37 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(insertInteractionBlocks(
+  return mergeResponseThinking(foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(insertInteractionBlocks(
     withSubagentEvents,
     response.interactions ?? [],
     response.agent_id,
     previous,
-  ))));
+  )))));
+}
+
+export function mergeResponseThinking(blocks: readonly Block[]): Block[] {
+  const merged: Block[] = [];
+  for (const block of blocks) {
+    const previous = merged.at(-1);
+    if (block.kind !== 'thinking' || previous?.kind !== 'thinking' ||
+      block.responseInstanceId === undefined || block.responseInstanceId === '' ||
+      previous.responseInstanceId !== block.responseInstanceId ||
+      previous.turnId !== block.turnId || previous.stepId !== block.stepId) {
+      merged.push(block);
+      continue;
+    }
+    const fragments: readonly ThinkingBlock[] = [
+      ...(previous.fragments ?? [previous]),
+      ...(block.fragments ?? [block]),
+    ];
+    merged[merged.length - 1] = {
+      ...previous,
+      text: fragments.map((fragment) => fragment.text).join('\n\n'),
+      streaming: fragments.some((fragment) => fragment.streaming),
+      fragments,
+    };
+  }
+  return merged;
 }
 
 /**

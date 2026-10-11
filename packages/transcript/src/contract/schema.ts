@@ -150,6 +150,8 @@ export const textFrameSchema = z.object({
 });
 
 export const thinkingFrameSchema = z.object({
+  responseInstanceId: z.string().optional(),
+  recordedStepId: z.string().optional(),
   kind: z.literal('thinking'),
   frameId: frameIdSchema,
   contentRefs: contentWindowSchema.shape.contentRefs,
@@ -241,6 +243,7 @@ export const transcriptStepSchema = z.object({
   endedAt: z.string().optional(),
   usage: stepUsageSchema.optional(),
   finishReason: z.string().optional(),
+  providerResponseId: z.string().optional(),
   timing: stepTimingSchema.optional(),
   retry: stepRetrySchema.optional(),
   endReason: z.string().optional(),

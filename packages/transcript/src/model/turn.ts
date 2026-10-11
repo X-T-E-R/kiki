@@ -126,6 +126,7 @@ export interface TranscriptStep {
   readonly usage?: StepUsage;
   /** Provider finish reason (`finishReason ?? rawFinishReason ?? providerFinishReason`). */
   readonly finishReason?: string;
+  readonly providerResponseId?: string;
   readonly timing?: StepTiming;
   readonly retry?: StepRetry;
   /** `turn.step.interrupted` reason / message. */

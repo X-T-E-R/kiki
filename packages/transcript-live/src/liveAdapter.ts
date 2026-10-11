@@ -220,6 +220,7 @@ export interface LiveAdapterLookups {
 }
 
 interface OpenTextFrame {
+  readonly responseInstanceId?: string;
   readonly frameId: string;
   offset: number;
   text: string;
@@ -752,7 +753,7 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onTextDelta(
-    event: { turnId: number; step?: number; stepId?: string; partId?: string; delta: string; part?: unknown },
+    event: { turnId: number; step?: number; stepId?: string; partId?: string; delta: string; part?: unknown; responseInstanceId?: string },
     kind: 'assistant' | 'thinking',
   ): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
@@ -818,7 +819,7 @@ export class AgentTranscriptLiveAdapter {
     open ??= this.adoptStreamFrame(turnId, step.stepId, kind, partId);
     if (open === undefined) {
       const frameId = partId;
-      open = { frameId, offset: 0, text: '' };
+      open = { frameId, offset: 0, text: '', responseInstanceId: event.responseInstanceId };
       const part = {
         partId: frameId,
         messageId: step.stepId,
@@ -832,7 +833,7 @@ export class AgentTranscriptLiveAdapter {
         frame:
           kind === 'assistant'
             ? { kind: 'text', frameId, part, role: 'assistant', text: '' }
-            : { kind: 'thinking', frameId, part, text: '' },
+            : { kind: 'thinking', frameId, part, text: '', responseInstanceId: open.responseInstanceId },
       });
     }
     ops.push({
@@ -875,7 +876,7 @@ export class AgentTranscriptLiveAdapter {
       return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
     }
     if (kind === 'thinking' && frame?.kind === 'thinking') {
-      return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
+      return { frameId: frame.frameId, offset: frame.text.length, text: frame.text, responseInstanceId: frame.responseInstanceId };
     }
     return undefined;
   }
@@ -905,6 +906,7 @@ export class AgentTranscriptLiveAdapter {
             }
           : {
               kind: 'thinking',
+              responseInstanceId: open.responseInstanceId,
               frameId: open.frameId,
               part: {
                 partId: open.frameId,
