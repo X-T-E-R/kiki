@@ -1,17 +1,20 @@
 import { mediaGenerateInputSchema, mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
-import { type IDisposable } from '#/_base/di/lifecycle';
+import { dispose, type IDisposable } from '#/_base/di/lifecycle';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import type { PluginTool } from '#/app/plugin/contributions';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { isWithinDirectory, resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
@@ -36,9 +39,17 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentPluginMediaService private readonly media?: IAgentPluginMediaService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @ISessionContext private readonly session?: ISessionContext,
+    @ISessionMediaStore private readonly attachmentStore?: ISessionMediaStore,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
+      event.waitUntil(this.queueRefresh());
+    }));
+    if (this.usage !== undefined) this._register(this.usage.onDidChange((event) => {
+      if (event.workspaceId !== this.session?.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== this.session?.sessionId)) return;
       event.waitUntil(this.queueRefresh());
     }));
     void this.queueRefresh();
@@ -53,9 +64,10 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
 
   private async refresh(): Promise<void> {
     const definitions = await this.hosts.list();
-    for (const registration of this.registrations.values()) registration.dispose();
+    await dispose(this.registrations.values());
     this.registrations.clear();
     for (const { pluginId, definition } of definitions) {
+      if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) continue;
       const name = `plugin__${pluginId.replaceAll('-', '_')}__${definition.name}`;
       if (this.registry.resolve(name) !== undefined) continue;
       const tool: ExecutableTool = {
@@ -70,10 +82,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
 
   private async resolveExecution(name: string, pluginId: string, definition: PluginTool, args: unknown): Promise<ToolExecution> {
     const inspected = inspectAgentRuntime(this.runtime);
-    const view = new RuntimeWorkspaceView(inspected, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const workspace: WorkspaceConfig = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const fileTargets: { field?: string; inputIndex?: number; raw: string; path: string; operation: 'read' | 'write' }[] = [];
@@ -118,6 +127,9 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       approvalRule: path === undefined ? definition.approvalRule ?? name : literalRulePattern(name, path),
       matchesRule: path === undefined ? undefined : (ruleArgs) => matchesPathRuleSubject(ruleArgs, path, pathOptions),
       execute: async (context) => {
+        if (this.usage !== undefined && !await this.usage.allows(this.session?.workspaceId, pluginId, this.session?.sessionId)) {
+          return { isError: true, output: `Plugin ${pluginId} is disabled in this session.` };
+        }
         const current = this.runtime.acquire(['fs']);
         try {
           if (current.runtime.identity.generation !== inspected.identity.generation) {
@@ -156,16 +168,17 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
             media: this.media?.api(context.toolCallId, admittedRequest),
+            attachmentStore: this.attachmentStore,
           }, definition);
         } finally { current.dispose(); }
       },
     };
   }
 
-  override dispose(): void {
-    for (const registration of this.registrations.values()) registration.dispose();
+  override async dispose(): Promise<void> {
+    await dispose(this.registrations.values());
     this.registrations.clear();
-    super.dispose();
+    await super.dispose();
   }
 }
 

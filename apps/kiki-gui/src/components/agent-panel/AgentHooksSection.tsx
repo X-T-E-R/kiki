@@ -26,6 +26,39 @@ function QuietHead() {
   return <h3 className="flex h-8 items-center gap-1.5"><span className={INSPECTOR_HEAD}>{t('agentPanel.hooks')}</span></h3>;
 }
 
+/**
+ * `absent` is a source file that was never written, which is the same as no
+ * configuration. Only a source that failed to load is a fault worth reading.
+ */
+function faultySources(inspect: AgentHooksInspect): AgentHooksInspect['sources'] {
+  return inspect.sources.filter((source) => source.status === 'invalid' || source.status === 'unavailable');
+}
+
+function SourceList({ sources }: { readonly sources: AgentHooksInspect['sources'] }) {
+  return (
+    <ul data-agent-hooks-sources className="mt-2 space-y-0.5">
+      {sources.map((source) => (
+        <li key={`${source.namespace}:${source.path}`} className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-ink-faint">
+          <span className="min-w-0 truncate font-mono" title={source.path}>{source.path}</span>
+          <span className="shrink-0">{source.status}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DiagnosticList({ diagnostics }: { readonly diagnostics: AgentHooksInspect['diagnostics'] }) {
+  return (
+    <ul data-agent-hooks-diagnostics className="mt-1 space-y-0.5">
+      {diagnostics.map((diagnostic, index) => (
+        <li key={index} className="text-[11px] leading-snug text-ink-faint">
+          <span className="font-mono">{diagnostic.path}</span>{diagnostic.hookId !== undefined ? ` (${diagnostic.hookId})` : ''}: {diagnostic.message}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function RuleRow({ rule }: { readonly rule: AgentHooksInspect['rules'][number] }) {
   const { t } = useI18n();
   return (
@@ -56,10 +89,15 @@ function RuleRow({ rule }: { readonly rule: AgentHooksInspect['rules'][number] }
 }
 
 /**
- * The agent panel's on-demand answer to "which rules get injected into this
- * agent, and from where". Closed it is one summary line; open it lists each
- * rule's id, source path, event, active flag and cadence state. Rule text
- * itself stays on disk — the inspect payload deliberately omits it.
+ * The agent panel's on-demand answer to "which rules run for this agent, and
+ * from where". Closed it is one summary line; open it lists each rule's id,
+ * source path, event, active flag and cadence state. Rule text itself stays on
+ * disk — the inspect payload deliberately omits it.
+ *
+ * An agent with nothing configured has no chapter here at all: a heading over
+ * an empty line only teaches the reader to ignore the rail. What must stay
+ * visible is the opposite case — a source that failed to load or a diagnostic
+ * the user has to act on renders the chapter even when no rule survived.
  */
 export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, agentId }: AgentHooksSectionProps) {
   const { t } = useI18n();
@@ -102,16 +140,15 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
   }
 
   const rules = [...inspect.data.rules].sort((a, b) => a.order - b.order);
-  if (rules.length === 0) {
-    return <section data-agent-hooks-section data-agent-hooks-state="empty">
-      <QuietHead />
-      <p className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">{t('agentPanel.hooks.empty')}</p>
-    </section>;
+  const degradedSources = faultySources(inspect.data);
+  const diagnostics = inspect.data.diagnostics;
+  if (rules.length === 0 && degradedSources.length === 0 && diagnostics.length === 0) {
+    return null;
   }
   const activeCount = rules.filter((rule) => rule.active).length;
-  const degradedSources = inspect.data.sources.filter((source) => source.status !== 'loaded');
+  const faulty = degradedSources.length > 0 || diagnostics.length > 0;
   return (
-    <section data-agent-hooks-section data-agent-hooks-state="ready">
+    <section data-agent-hooks-section data-agent-hooks-state={faulty ? 'faulty' : 'ready'}>
       <button
         type="button"
         aria-expanded={open}
@@ -121,35 +158,22 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
         <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('agentPanel.hooks')}</span>
         {!open ? (
           <span data-agent-hooks-summary className="min-w-0 flex-1 truncate text-[12px] text-ink-faint">
-            {t('agentPanel.hooks.summary', { count: activeCount })}
+            {faulty
+              ? t('agentPanel.hooks.summaryFaulty')
+              : t('agentPanel.hooks.summary', { count: activeCount })}
           </span>
         ) : <span className="flex-1" />}
         <InspectorChevron open={open} />
       </button>
       {open ? (
         <div className="pt-1">
-          <ul className="max-h-80 space-y-2 overflow-y-auto overscroll-y-contain pr-0.5">
-            {rules.map((rule) => <RuleRow key={`${rule.path}:${rule.id}`} rule={rule} />)}
-          </ul>
-          {degradedSources.length > 0 ? (
-            <ul data-agent-hooks-sources className="mt-2 space-y-0.5">
-              {degradedSources.map((source) => (
-                <li key={`${source.namespace}:${source.path}`} className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-ink-faint">
-                  <span className="min-w-0 truncate font-mono" title={source.path}>{source.path}</span>
-                  <span className="shrink-0">{source.status}</span>
-                </li>
-              ))}
+          {rules.length > 0 ? (
+            <ul className="max-h-80 space-y-2 overflow-y-auto overscroll-y-contain pr-0.5">
+              {rules.map((rule) => <RuleRow key={`${rule.path}:${rule.id}`} rule={rule} />)}
             </ul>
           ) : null}
-          {inspect.data.diagnostics.length > 0 ? (
-            <ul data-agent-hooks-diagnostics className="mt-1 space-y-0.5">
-              {inspect.data.diagnostics.map((diagnostic, index) => (
-                <li key={index} className="text-[11px] leading-snug text-ink-faint">
-                  <span className="font-mono">{diagnostic.path}</span>{diagnostic.hookId !== undefined ? ` (${diagnostic.hookId})` : ''}: {diagnostic.message}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {degradedSources.length > 0 ? <SourceList sources={degradedSources} /> : null}
+          {diagnostics.length > 0 ? <DiagnosticList diagnostics={diagnostics} /> : null}
         </div>
       ) : null}
     </section>

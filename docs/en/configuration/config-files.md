@@ -109,6 +109,50 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## External harness defaults
+
+An external harness (the program running the agent) can use its own configuration without a Kiki profile. For the main-agent `execution` selection, set reusable Kiki overrides under `[agent_executor_overrides.<id>.defaults]`; a session override wins over an explicitly declared profile value, which wins over these settings. Anything left unset stays with the harness's own default. Native execution keeps Kiki's existing model and profile defaults.
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# Optional: use the harness's model ID, not a native Kiki model alias.
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+Omit model, effort and permission fields to let the harness choose them. `kiki_context` accepts `memory`, `board`, `cron`, `threads`, `history` and `hooks`; `[]` explicitly disables all groups, and `allow_kiki_subagents = false` explicitly disables delegation. An omitted profile field inherits the harness settings in this execution path. Changing settings does not rewrite an existing binding: select the execution again or explicitly rebuild its context to adopt them.
+
+`defaults.executor_prompt` accepts `delivery` (`append`, `replace` or `preamble`), `body`, `append`, `include`, and `per_engine.<id>` overrides. These fields merge individually with the selected profile, so setting only `delivery` does not erase the default body. Omitted `include` inherits; `include = []` turns off the additional sections. A profile body is used when no effective `executor_prompt.body` is set. External execution does not automatically add Kiki cognition or shared prompt fields; request the desired fields explicitly in `include`.
+
+Through [the REST API](../server/rest-api.md#sessions), update these settings with `POST /api/config` and an `agent_executor_overrides` object. A defaults field set to JSON `null` removes that saved setting; `defaults: null` removes the whole defaults block. TOML has no `null`, so remove the corresponding key when editing the file. Launch settings such as `bin_path`, `home_dir`, `env` and `args` remain separate from defaults.
+
+Display preferences are separate from execution settings. Set `show_in_profile_list = false` under `[agent_executor_overrides.<id>]` to hide one engine from profile and execution pickers, or `externals_visible = false` under `[agent_executor_display]` to hide all external engines. Omitted values mean show; the global switch takes precedence over per-engine values. Hiding does not disable or uninstall an engine, change its execution binding, or cancel tasks.
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = false
+
+[agent_executor_display]
+externals_visible = false
+```
+
+Send the same snake_case fields in `POST /api/config`; JSON `null` removes the saved preference without removing launch settings or defaults. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`; `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. Bare engine entries appear only when the executable is ready and the engine has confirmed login or usable configuration of its own, such as its declared API-key environment or an anonymous local descriptor. A profile, launch preference or native Kiki model alone does not make an engine runnable; explicit hide settings still take precedence. Settings retains every engine for configuration and Check. If a bound engine becomes unavailable, its session keeps that identity and offers configuration recovery instead of silently switching engines.
+
+Custom executor descriptors can read model IDs from a metadata-only command under `[agent_executors.<id>.model_probe]`. For a command whose JSON response contains `command.data.models`, configure:
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+Use the vendor's actual metadata subcommand and flag order; a print, prompt or slash-command invocation is not a guarantee that no model request will run. Arguments are passed directly as an array, not through a shell. `format` accepts `lines` (the default), `tab`, or `json`; `json_path` selects the JSON array of strings or objects with an `id`. IDs stay unchanged. Invalid JSON or a missing array leaves the catalog partial rather than proving that saved model IDs are invalid.
+
 ## Continuity reminder cues
 
 Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.
@@ -164,6 +208,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
 | `request_governance` | `table` | No rules | Model-request and agent-execution concurrency and waiting budgets → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | Server-side transcript history memory budgets → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
@@ -181,7 +226,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `model_switch`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
+The following sections detail the nested tables listed above.
 
 ## `providers`
 
@@ -568,6 +613,18 @@ match = '^provider\.'
 retry = false
 ```
 
+## `transcript_memory`
+
+`transcript_memory` controls how much transcript history the server keeps in memory. All three fields are optional: an omitted field uses its default.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `tail_turns` | positive integer | `20` | How many finished turns stay resident per agent |
+| `max_agent_bytes` | positive integer | `16777216` (16 MiB) | Per-agent resident byte budget — what stays in memory. Older turns are read from disk on demand |
+| `max_detail_cache_bytes` | non-negative safe integer | `268435456` (256 MiB) | Largest single full-detail read cached at once. `0` turns that extra slot off, leaving the content to be read without being held in that cache. A changed value takes effect at the next cache admission or eviction; lowering it evicts what no longer fits, and does not cancel a read already in progress |
+
+These are server-side memory budgets, not read limits. Lowering them reduces memory use and may mean reading the same content from disk again.
+
 ## `token_counting`
 
 `token_counting` selects which context token count is reported externally — the value behind the context-size display. Internal logic (automatic compaction triggers, budgets, and overflow backoff) always uses both provider-reported usage and estimates, regardless of this setting.
@@ -729,8 +786,13 @@ Which image formats reach the model depends on the provider the request resolves
 | --- | --- | --- | --- |
 | `model` | `string` | unset | Model alias used to write session titles. While it is unset (or empty) Kiki sends no title request at all: it does not fall back to `fast_model`, and it does not use a managed `chat_title` tool, so no title generation is billed to a subscription |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | The moments that write a title on their own. Any of `first_user_message`, `first_turn_completed`, `context_compacted`. An empty array turns automatic titling off; asking for a title on demand still works, and it still needs a `model` |
+| `prompt` | `string` | built-in prompt | Optional system prompt for the title model. Multiline text is sent in full, without template expansion. Remove this field or leave it blank to use the built-in prompt; the default text is not saved as an override |
 
-A model you picked is used as-is, under the same title-prompt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+The built-in prompt asks for a recognizable title based on the current purpose and concrete subject, keeping useful names and identifiers without claiming unproven success. Changing `prompt` takes effect on the next title request, including in an open session, without restarting. Saving or removing the override does not rename existing sessions or send a title request.
+
+A model you picked is used as-is, under the same excerpt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+
+`GET /api/config` and successful `POST /api/config` responses include `session_title.default_prompt` and `prompt_source` (`default` or `custom`). These are read-only fields; `prompt` is returned only for a nonblank override. Save with `{ "session_title": { "prompt": "Your title instructions" } }`, or remove the override with `{ "session_title": { "prompt": null } }`. Omitted fields stay unchanged, so these patches preserve `model` and `triggers`. Use `model: null` to remove the model without erasing the prompt or selected moments; do not use `replace_domains` for a single-field edit.
 
 On-demand generation is `POST /api/sessions/{session_id}/title/generate`, which the SDK exposes. It needs a `model`, because without one there is nothing to ask. Its `force` option is what replaces a hand-written title; leave it unset to keep that title.
 
@@ -738,15 +800,15 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 
 ## `experimental`
 
-`experimental` stores persistent overrides for experimental-feature flags, keyed by flag id. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, the `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default.
+`experimental` stores persistent overrides for built-in rollout and rollback flags, keyed by flag id. Built-in features are available by default; an explicit `false` remains off. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, a truthy `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default. A falsy master switch is treated as unset, not as a global off command.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
-| `usage_export` | `boolean` | `false` | Send content-free usage buckets to destinations configured under Usage → External sync; while it is off those routes are not mounted at all |
+| `native_browser` | `boolean` | `true` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
+| `local_session_resume` | `boolean` | `true` | Continue existing local Claude Code and Codex sessions; managed under Settings → Sessions and checked on each new attachment |
 
-Any registered flag can be overridden here by id, with a boolean value. A flag that has its own control on a feature page is switched there; a flag that does not appears under **Settings → Developer → Experimental**, which lists server-reported flags by id.
+Any registered flag can be overridden here by id, with a boolean value. Every built-in switch is named and explained on its related Settings page; **Settings → Experimental** links to those homes and shows when a change applies. Unknown extension flags appear under **Settings → Developer** by id. Availability does not install a plugin, authorize a script or connect an unconfigured external destination.
 
 ## `browser_control`
 
@@ -776,14 +838,14 @@ Computer tools from the recognized cua-driver MCP default to the main agent of e
 
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
 
-No credentials or configuration are required for the default `WebSearch` lane, `github.repositories`, but it searches GitHub repositories only. For library documentation, choose `context7.docs` explicitly; it returns typed context and cannot be combined with result lanes. `duckduckgo.search` is an optional keyless general-web lane, but its public HTML endpoint may return a CAPTCHA; for reliable broader coverage, configure a provider credential and override `defaults.search_lane`. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
+The default `WebSearch` lane is `duckduckgo.search`, which searches the general web without registration, credentials or configuration. Its public HTML endpoint may issue a challenge or rate limit; wait before retrying, or explicitly choose another configured source. These failures are errors, not empty results, and never trigger a silent switch to a paid provider. Configured defaults and explicit lane selections take precedence. For repository search or library documentation, choose `github.repositories` or `context7.docs` explicitly; the latter returns typed context and cannot be combined with result lanes. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, `key_strategy` (`round-robin` or `priority`), `balance_ttl_ms` (60,000–86,400,000), and provider-specific `options` |
 | `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
 | `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
-| `defaults.search_lane` | `string` | No | Built-in default is `github.repositories` (repositories only); override for general-web search. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
+| `defaults.search_lane` | `string` | No | Built-in default is keyless `duckduckgo.search` (general web); configured defaults take precedence. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
 | `defaults.fetch_chain` | `array<table>` | No | URL default tries `direct.fetch` first and keyless `jina.reader` on failure; a successful but unusable direct response needs explicit `execution.fetch.quality` rules to trigger fallback |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 

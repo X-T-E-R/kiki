@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { sessionCreateSchema, type SessionCreate } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
-import type { NamedAgentProfile } from '../lib/client';
+import { ApiError, type NamedAgentProfile } from '../lib/client';
 import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
   AUTO_WORKSPACE_ID,
@@ -17,7 +17,6 @@ import {
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
-import { ApiError } from '../lib/client';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', label: null as string | null },
@@ -30,6 +29,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     getAuth: vi.fn(),
     createSession: vi.fn(),
     getPersona: vi.fn(),
+    previewAgentProfileFile: vi.fn((...args: unknown[]) => client.klient.rest.agents.previewFile(...args)),
   },
   navigate: vi.fn(),
 }));
@@ -235,6 +235,299 @@ describe('buildNewSessionCreate', () => {
     expect(body.agent_config).toMatchObject({ profile: 'agent' });
   });
 
+  /**
+   * A bare external engine must arrive as a bare harness. The legacy top-level
+   * fields are session overrides once the execution path reads them, so
+   * sending a value the user never chose would let Kiki's own default — the
+   * model chip's resolved id, the app's permission mode — decide for a harness
+   * that was explicitly chosen as-is.
+   */
+  it('sends no legacy control a bare external engine never inherited', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      // What the page is displaying, none of it chosen here:
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      plan_mode: false,
+    });
+  });
+
+  it('keeps an explicit choice on a bare external engine', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: true,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
+  it('drops only the control that was not touched, keeping the rest explicit', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      thinking: 'high',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
+  it('leaves the native engine and an external profile exactly as before', () => {
+    // Native keeps every legacy field, untouched or not: that path has always
+    // sent them and the server resolves them against Kiki's own defaults.
+    const native = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(native.agent_config).toEqual({
+      profile: 'agent',
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'auto',
+      plan_mode: false,
+    });
+    // A profile on an external engine supplies those values itself, so the
+    // page must not withhold them just because the user did not touch them.
+    const profiled = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'claude-reviewer',
+      execution: { executor: 'claude-acp', profile: 'claude-reviewer', profile_file: undefined, overrides: undefined },
+      model: 'provider/model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(profiled.agent_config).toEqual({
+      execution: { executor: 'claude-acp', profile: 'claude-reviewer' },
+      model: 'provider/model',
+      thinking: 'high',
+      permission_mode: 'auto',
+      plan_mode: false,
+    });
+  });
+
+  it('withholds only the controls the execution does not itself name', () => {
+    // The real counter-example: an engine configured with a model and an
+    // effort has said nothing about approvals, so the app's `manual` default
+    // must not be promoted into a session override on its behalf.
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'example-acp',
+        profile: undefined, profile_file: undefined,
+        overrides: { model: 'vendor-model', thinking: 'high' },
+      },
+      model: 'vendor-model',
+      thinking: 'high',
+      permissionMode: 'manual',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    // The execution names model and effort, so it owns both and the legacy
+    // fields are not repeated; permission is unnamed and untouched, so Kiki's
+    // `manual` is not promoted into an override either.
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } },
+      plan_mode: false,
+    });
+    expect(body.agent_config).not.toHaveProperty('permission_mode');
+  });
+
+  it('does not let a null override revive the displayed default', () => {
+    // `null` is "fall through to the next layer", not "send what is on screen".
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'example-acp',
+        profile: undefined, profile_file: undefined,
+        overrides: { model: null, permission_mode: null },
+      },
+      model: 'vendor-model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'example-acp', overrides: { model: null, permission_mode: null } },
+      // `thinking` was never named, so the effort stays with the engine.
+      plan_mode: false,
+    });
+  });
+
+  it('sends an approval mode on a bare engine the user actually picked', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      permissionMode: 'review',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      permission_mode: 'review',
+      plan_mode: false,
+    });
+  });
+
+  it('leaves a control the execution names entirely to the execution', () => {
+    // The execution already carries the answer for `model`, so the legacy
+    // field would be a second, conflicting statement about the same value.
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: {
+        executor: 'claude-acp',
+        profile: undefined, profile_file: undefined,
+        overrides: { model: 'harness-model', allow_kiki_subagents: false },
+      },
+      model: 'harness-model',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    // `model` is named by the execution and `thinking` was never touched, so
+    // only the untouched-and-unnamed controls are withheld; `permission_mode`
+    // was never named either and the user did not pick it.
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp', overrides: { model: 'harness-model', allow_kiki_subagents: false } },
+      plan_mode: false,
+    });
+  });
+
+  it('creates a session that runs a profile file, without naming a registered profile', () => {
+    const body = buildNewSessionCreate({
+      cwd: '/work',
+      profile: 'agent',
+      execution: {
+        executor: 'native',
+        profile: undefined,
+        profile_file: '/work/profiles/research.md',
+        overrides: undefined,
+      },
+      // A file pick carries no model or effort: nothing was chosen, and the
+      // file's own configuration supplies whatever it declares.
+      model: undefined,
+      thinking: undefined,
+      permissionMode: 'manual',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'native', profile_file: '/work/profiles/research.md' },
+      permission_mode: 'manual',
+      plan_mode: false,
+    });
+    expect(body.agent_config).not.toHaveProperty('profile');
+  });
+
+  it('leaves an external engine’s profile file its own model and effort', () => {
+    // The process never resolved the file, so it cannot know which model or
+    // effort it declares: the value merely on display must not become an
+    // override that outranks the file.
+    const body = buildNewSessionCreate({
+      cwd: '/work',
+      profile: 'agent',
+      execution: {
+        executor: 'claude-acp',
+        profile: undefined,
+        profile_file: '/work/profiles/research.md',
+        overrides: undefined,
+      },
+      model: 'vendor/model-a',
+      thinking: 'high',
+      permissionMode: 'auto',
+      planMode: false,
+      modelTouched: false,
+      effortTouched: false,
+      permissionTouched: false,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp', profile_file: '/work/profiles/research.md' },
+      plan_mode: false,
+    });
+  });
+
+  it('still lets a touched control win over an engine that names no override', () => {
+    const body = buildNewSessionCreate({
+      cwd: 'C:/repo',
+      profile: 'agent',
+      execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
+      model: 'picked/model',
+      thinking: 'low',
+      permissionMode: 'yolo',
+      planMode: false,
+      modelTouched: true,
+      effortTouched: true,
+      permissionTouched: true,
+    });
+    expect(body.agent_config).toEqual({
+      execution: { executor: 'claude-acp' },
+      model: 'picked/model',
+      thinking: 'low',
+      permission_mode: 'yolo',
+      plan_mode: false,
+    });
+  });
+
   it('binds a persona and leaves its profile to the persona', () => {
     const body = buildNewSessionCreate({
       cwd: 'C:/repo',
@@ -269,6 +562,32 @@ describe('buildNewSessionCreate', () => {
 });
 
 describe('useNewSessionDraft agent profile scope', () => {
+  it('clears touched native controls when choosing a bare engine and preserves it across remount', async () => {
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent', 'provider/alpha', 'high')] });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setModelOverride('provider/alpha');
+      state.setEffortOverride('high');
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
+    });
+    state = await settleDraft((value) => value.execution.executor === 'claude-acp');
+    expect(state.modelOverride).toBeUndefined();
+    expect(state.effectiveEffort).toBeUndefined();
+    expect(readStoredDraft()).toMatchObject({ execution: { executor: 'claude-acp' } });
+    await unmountDraft();
+    client.listModels.mockReturnValue(new Promise(() => {}));
+    client.listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
+    await renderDraft();
+    state = await settleDraft((value) => value.execution.executor === 'claude-acp' && value.agentProfileCatalogPending);
+    await act(async () => { await state.send('Bare engine', []); });
+    expect(client.createSession.mock.calls[0]![0].agent_config).toEqual({
+      execution: { executor: 'claude-acp' }, plan_mode: false,
+    });
+    expect(navigate).toHaveBeenCalled();
+  });
+
   it('keeps remote cwd/draft separate from local and rejects Windows paths without sending', async () => {
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ cwd: 'C:/local/project' }));
     scope.id = 'ssh:host-1';
@@ -594,8 +913,10 @@ describe('useNewSessionDraft agent profile scope', () => {
     );
     expect(state.autoWorkspace).toBe(true);
     expect(state.agentProfileCatalogMode).toEqual({ mode: 'unscoped' });
-    await act(async () => { void state.send('Wait for the profile catalog', []); });
-    expect(client.createSession).not.toHaveBeenCalled();
+    client.createSession.mockRejectedValueOnce(new Error('Binding rejected by server'));
+    await act(async () => { await state.send('Send without waiting for the profile catalog', []); });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({ profile: 'agent' }) }));
+    client.createSession.mockClear();
 
     catalog.resolve({ items: [profile('agent'), { ...profile('auto-lead'), source: 'user' }] });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
@@ -608,7 +929,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(body.agent_config?.profile).toBe('auto-lead');
   });
 
-  it('blocks creation until an initial agent is validated and then sends its workspace pins', async () => {
+  it('sends the preserved initial agent before catalog completion and enriches its workspace pins later', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
@@ -618,10 +939,14 @@ describe('useNewSessionDraft agent profile scope', () => {
     let state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
-    await act(async () => {
-      void state.send('Too early', []);
-    });
-    expect(client.createSession).not.toHaveBeenCalled();
+    client.createSession.mockRejectedValueOnce(new Error('Binding rejected by server'));
+    await act(async () => { await state.send('Send the saved choice', []); });
+    const early = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(early.workspace_id).toBe('wd_alpha');
+    expect(early.agent_config?.profile).toBe('workspace-main');
+    expect(early.agent_config?.model).toBeUndefined();
+    expect(early.agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     catalog.resolve({
       items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')],
@@ -693,7 +1018,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     },
   );
 
-  it('ends pending after a catalog error but keeps the initial selection blocked until retry succeeds', async () => {
+  it('keeps the initial selection sendable through a catalog error and background retry', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
@@ -703,20 +1028,29 @@ describe('useNewSessionDraft agent profile scope', () => {
     let state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 1
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Still validating', []);
+      await state.send('Still validating', []);
       catalog.reject(new Error('catalog unavailable'));
     });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
     expect(state.agentProfile).toBe('workspace-main');
     expect(state.modelOverride).toBeUndefined();
     expect(readStoredDraft()).toMatchObject({
       profile: 'workspace-main', modelFromProfile: true, effortFromProfile: true,
     });
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('An error is not permission to fall back', []);
+      await state.send('An error is not permission to fall back', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
 
     const retry = deferred<{ items: NamedAgentProfile[] }>();
     client.listNamedAgentProfiles.mockReturnValue(retry.promise);
@@ -726,10 +1060,14 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) =>
       value.agentProfileCatalogPending && client.listNamedAgentProfiles.mock.calls.length === 2
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Retry is still pending', []);
+      await state.send('Retry is still pending', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    client.createSession.mockClear();
     retry.resolve({
       items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')],
     });
@@ -791,10 +1129,16 @@ describe('useNewSessionDraft agent profile scope', () => {
       modelFromProfile: true,
       effortFromProfile: true,
     });
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('A rejected catalog must still block', []);
+      await state.send('Keep the selected profile without stale workspace pins', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_beta', agent_config: expect.objectContaining({ profile: 'alpha-only' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     await act(async () => {
       state.selectWorkspace('wd_alpha');
@@ -923,7 +1267,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     });
   });
 
-  it('restores profile-derived pins from localStorage and sends only after the remounted catalog resolves', async () => {
+  it('restores the profile selection immediately and enriches its pins after the remounted catalog resolves', async () => {
     const items = [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')];
     client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
@@ -941,6 +1285,7 @@ describe('useNewSessionDraft agent profile scope', () => {
       prefillSource: JSON.stringify(['wd_alpha', null, null]),
       workspaceId: 'wd_alpha',
       cwd: '',
+      execution: { executor: 'native', profile: 'workspace-choice' },
       profile: 'workspace-choice',
       modelOverride: 'provider/alpha',
       effortOverride: 'low',
@@ -961,10 +1306,16 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.agentProfile).toBe('workspace-choice');
     expect(state.modelOverride).toBe('provider/alpha');
     expect(state.effectiveEffort).toBe('low');
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('Restored pins are not yet validated', []);
+      await state.send('Restore the selection while its derived pins are unresolved', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace_id: 'wd_alpha', agent_config: expect.objectContaining({ profile: 'workspace-choice' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.thinking).toBeUndefined();
+    client.createSession.mockClear();
 
     catalog.resolve({ items });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
@@ -1135,10 +1486,16 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = await settleDraft((value) =>
       value.agentProfileCatalogMode.mode === 'cwd' && value.agentProfileCatalogPending
     );
+    client.createSession.mockRejectedValueOnce(new Error('server binding unavailable'));
     await act(async () => {
-      void state.send('The directory catalog is still pending', []);
+      await state.send('Send the exact directory while its catalog is pending', []);
     });
-    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: { cwd: '/workspace/custom' }, agent_config: expect.objectContaining({ profile: 'alpha-only' }),
+    }));
+    expect(client.createSession.mock.calls[0]![0].workspace_id).toBeUndefined();
+    expect(client.createSession.mock.calls[0]![0].agent_config?.model).toBeUndefined();
+    client.createSession.mockClear();
     catalog.resolve({ items: [profile('agent'), profile('directory-main', 'provider/custom', 'high')] });
     state = await settleDraft((value) => !value.agentProfileCatalogPending);
     expect(state.agentProfileCatalogMode).toEqual({ mode: 'cwd', cwd: '/workspace/custom', effective: true });
@@ -1547,6 +1904,46 @@ describe('persona model and effort choice sources', () => {
     expect(handoff.thinking).toBe(explicit ? 'high' : undefined);
   });
 
+  it('carries a bare external engine to the first message with the same emptiness', async () => {
+    // The create body and the first prompt are two hops, and the second one
+    // used to re-send the displayed model, effort and approval mode — putting
+    // back exactly the overrides the create had just declined to send.
+    await renderDraft({});
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
+    });
+    state = latestDraftState!;
+    // The page still shows Kiki's own default; none of it was chosen here, and
+    // whatever it is, it must not reach the harness.
+    expect(state.permissionMode).toBe('auto');
+    await act(async () => { await state.send('Hello', []); });
+
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toEqual({ execution: { executor: 'claude-acp' }, plan_mode: expect.any(Boolean) });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['model']).toBeUndefined();
+    expect(handoff['thinking']).toBeUndefined();
+    expect(handoff['permissionMode']).toBeUndefined();
+  });
+
+  it('sends an approval mode the user picked on a bare external engine', async () => {
+    await renderDraft({});
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => {
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
+    });
+    state = latestDraftState!;
+    await act(async () => { state.setPermissionMode('yolo'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Hello', []); });
+
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({ execution: { executor: 'claude-acp' }, permission_mode: 'yolo' });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['permissionMode']).toBe('yolo');
+  });
+
   it('keeps unpinned persona profile defaults inherited and clearing persona restores ordinary profile submission', async () => {
     client.getPersona.mockResolvedValue({ revision: 'revision-1', definition: { id: 'sample', name: 'Sample', description: 'Sample persona' } });
     await renderDraft({ initialPersona: 'sample' });
@@ -1560,8 +1957,6 @@ describe('persona model and effort choice sources', () => {
     expect(body.agent_config).toMatchObject({ profile: 'agent', model: 'fixture/model', thinking: 'high' });
   });
 });
-
-
 describe('explicit profile file drafts', () => {
   const profile: NamedAgentProfile = {
     name: 'helper', source: 'file', source_file: '/workspace/profiles/helper.md',
@@ -1588,9 +1983,39 @@ describe('explicit profile file drafts', () => {
     const state = await settleDraft((value) => value.selectionReady && value.modelOverride === 'vendor-model');
     expect(state.effectiveEffort).toBe('vendor-effort');
     await act(async () => { await state.send('Hello', []); });
-    expect(client.createSession.mock.calls[0]![0].agent_config).toMatchObject({
-      execution: { executor: 'example-acp', profile_file: profile.source_file }, model: 'vendor-model', thinking: 'vendor-effort',
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({
+      execution: { executor: 'example-acp', profile_file: profile.source_file },
     });
+    expect(body.agent_config?.model).toBeUndefined();
+    expect(body.agent_config?.thinking).toBeUndefined();
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['initialPrompt']).toBe('Hello');
+    expect(handoff['model']).toBeUndefined();
+    expect(handoff['thinking']).toBeUndefined();
+  });
+
+  it('sends a model and effort the user touched on an external profile file, on create and the first message', async () => {
+    client.listModels.mockResolvedValue({ items: [] });
+    client.klient.rest.agents.previewFile.mockResolvedValue({ profile: { ...profile, executor: 'example-acp', pinned_model_alias: 'vendor-model', thinking_effort: 'vendor-effort' } });
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({ workspaceId: AUTO_WORKSPACE_ID,
+      execution: { executor: 'example-acp', profile_file: profile.source_file }, modelFromProfile: true, effortFromProfile: true,
+    }));
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady && value.modelOverride === 'vendor-model');
+    await act(async () => { state.setModelOverride('vendor-model'); state.setEffortOverride('vendor-effort'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Hello', []); });
+    const body = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(body.agent_config).toMatchObject({
+      execution: { executor: 'example-acp', profile_file: profile.source_file },
+      model: 'vendor-model',
+      thinking: 'vendor-effort',
+    });
+    const handoff = navigate.mock.calls[0]![1].state as Record<string, unknown>;
+    expect(handoff['initialPrompt']).toBe('Hello');
+    expect(handoff['model']).toBe('vendor-model');
+    expect(handoff['thinking']).toBe('vendor-effort');
   });
 
   it('restores a non-main file, previews in its workspace, and creates with its canonical source', async () => {
@@ -1629,5 +2054,74 @@ describe('explicit profile file drafts', () => {
     expect(state.draft).toBe('Keep this draft');
     expect(state.modelOverride).toBe('fixture/model');
     expect(state.effectiveEffort).toBe('high');
+  });
+});
+
+describe('workspace list failures on /new', () => {
+  const workspace = (id: string, name: string) => ({
+    id,
+    name,
+    root: `/workspace/${name.toLowerCase()}`,
+    pinned: false,
+    isGit: false,
+    last_opened_at: '2026-09-05T00:00:00.000Z',
+    session_count: 0,
+  });
+
+  it('reports a failed read instead of reading it as a home with no workspaces', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesFailed);
+
+    expect(state.workspaces).toEqual([]);
+    expect(state.workspacesError).toBe('workspace list unavailable');
+    expect(state.workspacesLoading).toBe(false);
+    // A read that never answered cannot decide the target by allocating one.
+    expect(state.autoWorkspace).toBe(false);
+    expect(state.effectiveWorkspace).toBeUndefined();
+    // A non-index failure is not a cold home: it is reported at once, not retried.
+    expect(client.listWorkspaces).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the draft and the explicit automatic option while the read has failed', async () => {
+    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesFailed);
+
+    await act(async () => { state.updateDraft('keep this draft'); });
+    await act(async () => { latestDraftState!.setCwd('C:/proj'); });
+    expect(latestDraftState!.draft).toBe('keep this draft');
+    // A typed absolute path still decides the target while the list is broken.
+    expect(latestDraftState!.autoWorkspace).toBe(false);
+
+    await act(async () => { latestDraftState!.setCwd(''); });
+    await act(async () => { latestDraftState!.selectWorkspace(AUTO_WORKSPACE_ID); });
+    expect(latestDraftState!.autoWorkspace).toBe(true);
+    expect(latestDraftState!.draft).toBe('keep this draft');
+  });
+
+  it('distinguishes an empty home: a resolved empty list is not a failure', async () => {
+    client.listWorkspaces.mockResolvedValue({ items: [] });
+    await renderDraft();
+    const state = await settleDraft((value) => value.workspacesLoading === false && !value.workspacesFailed);
+
+    expect(state.workspacesFailed).toBe(false);
+    expect(state.workspacesError).toBeNull();
+    // Automatic allocation is the honest target for a home with no folders yet.
+    expect(state.autoWorkspace).toBe(true);
+  });
+
+  it('retries a cold index within the shared bounded window, then lists the folder', async () => {
+    const building = new ApiError({ code: 40939, msg: 'session index is building', data: null });
+    client.listWorkspaces
+      .mockRejectedValueOnce(building)
+      .mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    await renderDraft();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    const state = await settleDraft((value) => value.workspaces.length > 0);
+
+    expect(client.listWorkspaces).toHaveBeenCalledTimes(2);
+    expect(state.workspacesFailed).toBe(false);
+    expect(state.effectiveWorkspace?.id).toBe('wd_alpha');
   });
 });

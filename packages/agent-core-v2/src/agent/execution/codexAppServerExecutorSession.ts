@@ -32,7 +32,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
@@ -50,6 +50,7 @@ import type {
   AgentRunRequest,
   RunAgentOptions,
 } from '#/session/subagent/subagent';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
@@ -123,7 +124,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   #kikiToolsApproved = false;
   readonly #states: IAgentStateService;
   readonly #dispatcher: IEventDispatcher;
-  readonly #workspace: ISessionWorkspaceContext;
+  readonly #workspace: RuntimeWorkspaceRoots;
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
@@ -173,7 +174,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     }
     this.#states = context.agent.accessor.get(IAgentStateService);
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
-    this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
+    this.#workspace = inspectAgentWorkspaceRoots(
+      runtime,
+      context.agent.accessor.get(ISessionWorkspaceContext),
+    );
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,

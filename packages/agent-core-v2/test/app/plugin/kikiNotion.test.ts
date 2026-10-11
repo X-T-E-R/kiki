@@ -153,7 +153,7 @@ describe('kiki-notion install and scripted MCP contract', () => {
       stubPair(IHostFileSystem, {} as IHostFileSystem),
       stubPair(IAtomicDocumentStore, {} as IAtomicDocumentStore),
     ]);
-    cleanups.push(() => { host.dispose(); });
+    cleanups.push(async () => { await host.dispose(); });
     const plugins = host.app.accessor.get(IPluginService);
     const plan = await plugins.previewPlugin({ source });
     expect(plan.consentRequired).toBe(true);

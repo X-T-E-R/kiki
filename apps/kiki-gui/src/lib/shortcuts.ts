@@ -107,6 +107,15 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** Tab cycling belongs to the browser, not the web application. */
+export function browserOwnsShortcut(event: ShortcutKeyEvent): boolean {
+  return event.key === 'Tab' && event.ctrlKey && !event.altKey;
+}
+
+export function browserOwnsChord(chord: ShortcutChord): boolean {
+  return chord.key === 'Tab' && ['ctrl', 'mod', 'ctrl-meta'].includes(chord.modifier) && !chord.alt;
+}
+
 /** A single printable key with no Ctrl/⌘/Alt: typing, when focus is in a field. */
 export function isBareCharacterChord(chord: ShortcutChord): boolean {
   return chord.modifier === 'none' && !chord.alt && Array.from(chord.key).length === 1;

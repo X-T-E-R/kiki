@@ -1955,10 +1955,10 @@ export class AgentTestContext {
     if (this.closed) return;
     this.closed = true;
     for (const disposable of this.disposables.splice(0)) {
-      disposable.dispose();
+      await disposable.dispose();
     }
     await this.closeWire();
-    this.root.dispose();
+    await this.root.dispose();
   }
 
   async dispose(): Promise<void> {
@@ -2332,6 +2332,7 @@ function createPermissionModeService(initialMode: PermissionMode): IAgentPermiss
     get mode() {
       return mode;
     },
+    externalOverride: undefined,
     setMode: (nextMode) => {
       mode = nextMode;
     },

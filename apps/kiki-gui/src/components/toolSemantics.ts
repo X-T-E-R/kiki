@@ -16,6 +16,7 @@ import type { I18nKey, I18nParams, PluralBase } from '@kiki/session-core/i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 
 import type { Locale } from '../i18n';
+import { roomHref } from '../components/comms/roomNames';
 import type { IconName } from './icons';
 import { toolRecordCopy } from './toolRecordCopy';
 
@@ -75,6 +76,8 @@ export interface SemanticContext {
   readonly tp: (base: PluralBase, count: number, params?: I18nParams) => string;
   /** A session's title from what the client already knows, if anything. */
   readonly threadTitle: (sessionId: string) => string | undefined;
+  /** A room's name from the room list the client already holds, if anything. */
+  readonly roomName?: (roomId: string) => string | undefined;
 }
 
 type Rec = Record<string, unknown>;
@@ -250,12 +253,81 @@ function threadLink(sessionId: string | undefined, ctx: SemanticContext, turn?: 
   return sessionId === undefined ? undefined : { kind: 'session', sessionId, turn, label: ctx.t('tc.sem.openThread') };
 }
 
+/** The room name the client already holds, else the id (a deleted room reads as deleted). */
+function roomField(roomId: string, ctx: SemanticContext): SemanticField {
+  const name = ctx.roomName?.(roomId);
+  return name === undefined
+    ? { label: ctx.t('tc.sem.field.room'), value: shortId(roomId), mono: true, valueTitle: roomId }
+    : { label: ctx.t('tc.sem.field.room'), value: name, valueTitle: roomId };
+}
+
+function roomLink(roomId: string | undefined, ctx: SemanticContext): SemanticLink | undefined {
+  return roomId === undefined ? undefined : { kind: 'route', path: roomHref(roomId), label: ctx.t('tc.sem.openRoom') };
+}
+
 const THREAD_ACTIVITY_KEYS: Record<string, I18nKey> = {
   terminal: 'tc.sem.thread.activity.terminal',
   attention: 'tc.sem.thread.activity.attention',
   lifecycle: 'tc.sem.thread.activity.lifecycle',
   message_undeliverable: 'tc.sem.thread.activity.undeliverable',
 };
+
+/**
+ * `ThreadSend({room, content, mentions?})`. The room is the destination and the
+ * receipt's `delivered` means the room recorded the line.
+ *
+ * Three different facts, kept apart because the wire only proves the first:
+ * recorded, asked for, woken. `mentions` says who the sender REQUESTED, and a
+ * bot send with no mentions wakes nobody at all (only a USER message with no
+ * mentions defaults to the host; a bot send also skips the sender and any
+ * muted member). The receipt carries no wake result, so the row never claims a
+ * number of people were woken — it names who was asked and says plainly that
+ * attention is on its way. The body is the message itself, read whole on expand.
+ */
+function roomSend(
+  block: ToolBlock,
+  ctx: SemanticContext,
+  room: string,
+  content: string | undefined,
+  delivery: string | undefined,
+): ToolSemantics {
+  const { t } = ctx;
+  const args = rec(block.args) ?? {};
+  const result = rec(outputJson(block.output));
+  const mentions = arr(args['mentions']).filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  const name = ctx.roomName?.(room);
+  // No receipt yet means the room has not confirmed anything: the call is still
+  // running, so the row says so rather than claiming a message was logged.
+  const settled = delivery !== undefined;
+  const refused = delivery === 'undeliverable';
+  return {
+    icon: 'room',
+    verb: t('tc.sem.thread.sendRoom'),
+    object: name ?? shortId(room),
+    note: content === undefined ? undefined : clipLine(content, 90),
+    noteTitle: content,
+    state: !settled
+      ? { text: t('tc.sem.thread.roomSending'), tone: 'plain' }
+      : refused
+        ? { text: t('tc.sem.thread.undeliverable'), tone: 'danger' }
+        : mentions.length === 0
+          ? { text: t('tc.sem.thread.roomLoggedSilent'), tone: 'plain' }
+          : { text: ctx.tp('tc.sem.thread.roomLoggedAsked', mentions.length), tone: 'plain' },
+    link: roomLink(room, ctx),
+    fields: [
+      roomField(room, ctx),
+      // What the send asked for, which is all the wire can prove about
+      // attention; a refused send never claims anyone was asked.
+      ...(refused ? [] : [{
+        label: t('tc.sem.field.mentions'),
+        value: mentions.length === 0 ? t('tc.sem.thread.roomNoMention') : mentions.join(', '),
+      }]),
+      ...(str(result?.['messageId']) === undefined ? [] : [{ label: t('tc.sem.field.messageId'), value: str(result?.['messageId'])!, mono: true }]),
+    ],
+    preview: content === undefined ? undefined : previewOf(content, 24, 4000),
+    previewFull: content,
+  };
+}
 
 function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const { t, tp } = ctx;
@@ -323,9 +395,14 @@ function describeThread(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       };
     }
     case 'ThreadSend': {
-      const id = threadSessionId(args['thread']);
       const content = str(args['content']);
       const delivery = str(result?.['delivery']);
+      // A room send and a peer send are different destinations, so they get
+      // different rows: a room has no thread to name, no queue to wait in, and
+      // `delivered` only means the room recorded the line.
+      const room = str(args['room']);
+      if (room !== undefined) return roomSend(block, ctx, room, content, delivery);
+      const id = threadSessionId(args['thread']);
       return {
         icon: 'thread',
         verb: t('tc.sem.thread.send'),

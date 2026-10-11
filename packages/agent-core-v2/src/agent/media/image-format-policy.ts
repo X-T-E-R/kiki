@@ -2,6 +2,9 @@ import { providerImagePolicy } from '#/kosong/provider/providerImagePolicy';
 
 import { IMAGE_MIME_BY_SUFFIX, sniffMediaFromMagic } from './file-type';
 
+export const INVALID_IMAGE_DATA_URL_MESSAGE =
+  'The image attachment has an incomplete or invalid base64 data URL. Reattach the original image and retry.';
+
 const IMAGE_FORMAT_LABELS: Readonly<Record<string, string>> = Object.freeze({
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
@@ -77,6 +80,36 @@ export function parseImageDataUrl(url: string): { mimeType: string; base64: stri
   const match = /^data:([^;,]+)(?:;[^;,]+)*?;base64,(.*)$/si.exec(url);
   if (match === null) return null;
   return { mimeType: match[1]!, base64: match[2]! };
+}
+
+export function parseCompleteImageDataUrl(
+  url: string,
+): { mimeType: string; base64: string } | null {
+  const parsed = parseImageDataUrl(url);
+  if (parsed === null || !isCompleteBase64(parsed.base64)) return null;
+  return parsed;
+}
+
+function isCompleteBase64(base64: string): boolean {
+  if (base64.length === 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) return false;
+  if (base64.length % 4 === 1) return false;
+  const unpadded = base64.replace(/=+$/u, '');
+  const canonical = Buffer.from(base64, 'base64').toString('base64');
+  return canonical.replace(/=+$/u, '') === unpadded;
+}
+
+export function matchesKnownTruncatedImageDataUrl(
+  candidate: string,
+  canonical: string,
+): boolean {
+  const candidateParsed = parseImageDataUrl(candidate);
+  const canonicalParsed = parseCompleteImageDataUrl(canonical);
+  if (candidateParsed === null || canonicalParsed === null) return false;
+  if (normalizeImageMime(candidateParsed.mimeType) !== normalizeImageMime(canonicalParsed.mimeType)) return false;
+  const sourceDataPrefix = canonicalParsed.base64.slice(0, 1022);
+  return canonicalParsed.base64.length > sourceDataPrefix.length &&
+    candidateParsed.base64 === sourceDataPrefix &&
+    candidate === `data:${candidateParsed.mimeType};base64,${sourceDataPrefix}`;
 }
 
 export function isDataUrl(url: string): boolean {

@@ -53,6 +53,7 @@
   "dependencies": {
     "@kiki/auth-native": "workspace:*",
     "proper-lockfile": "^4.1.2",
+    "smol-toml": "^1.6.1",
     "zod": "catalog:"
   },
   "devDependencies": {

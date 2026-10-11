@@ -10,6 +10,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
@@ -275,6 +276,130 @@ describe('Markdown link menus', () => {
   });
 });
 
+describe('Markdown internal links', () => {
+  it.each([
+    ['/rooms/release-contract', 'room'],
+    ['/s/session_example', 'thread'],
+    ['/board', 'board'],
+    ['/memory', 'memory'],
+    ['/usage', 'usage'],
+  ])('marks a link to a real page %s and keeps the author text', async (to, name) => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={`[see the contract](${to})`} /></MemoryRouter>);
+    const link = probe.container.querySelector(`[data-internal-link="${name}"]`)!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe(to);
+    // The writer's own words are the label; only the mark is added.
+    expect(link.textContent).toBe('see the contract');
+    expect(link.querySelector('svg')).not.toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('leaves an unknown in-app path as a plain router link with no mark', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[custom](/custom/thing)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.getAttribute('href')).toBe('/custom/thing');
+    expect(probe.container.querySelector('[data-internal-link]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('keeps an external link external, with its own menu', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[example](https://example.com/rooms/x)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.getAttribute('href')).toBe('https://example.com/rooms/x');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(probe.container.querySelector('[data-internal-link]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+});
+
+describe('Markdown autolinks beside CJK punctuation', () => {
+  const real = '新版预览已启动：**http://127.0.0.1:63474**，浏览器也已打开。';
+
+  it('keeps the URL a real link and gives the swallowed sentence back', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={real} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('http://127.0.0.1:63474/');
+    expect(link.textContent).toBe('http://127.0.0.1:63474');
+    // The tail the autolink swallowed is readable prose again, and the block
+    // marker is gone.
+    expect(probe.container.textContent).toContain('浏览器也已打开。');
+    expect(probe.container.textContent).not.toContain('[blocked]');
+    // The emphasis the writer put around the URL is emphasis again, not raw
+    // `**` beside it.
+    expect(probe.container.textContent).not.toContain('**');
+    expect(probe.container.querySelector('[data-streamdown="strong"] a')).not.toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('renders the same way while the text is still streaming', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={real} mode="streaming" /></MemoryRouter>);
+    expect(probe.container.querySelector('a')?.getAttribute('href')).toBe('http://127.0.0.1:63474/');
+    expect(probe.container.textContent).not.toContain('[blocked]');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it.each([
+    ['a **http://127.0.0.1:63474** b', 'http://127.0.0.1:63474/'],
+    ['see http://127.0.0.1:63474 now', 'http://127.0.0.1:63474/'],
+    ['see https://example.com/x now', 'https://example.com/x'],
+  ])('leaves an ordinary link alone: %s', async (text, href) => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={text} /></MemoryRouter>);
+    expect(probe.container.querySelector('a')?.getAttribute('href')).toBe(href);
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('leaves an author-written link alone even when its URL is malformed', async () => {
+    const probe = makeRoot();
+    // `[说明](https://example.com:bad)` is the writer's own link with a bad URL.
+    // Re-cutting it would invent a different address AND replace their label.
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[说明](https://example.com:bad)'} /></MemoryRouter>);
+    expect(probe.container.textContent).toContain('说明');
+    expect(probe.container.textContent).not.toContain('https://example.com/');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it.each([
+    ['inline with a matching label', '[https://example.com:bad](https://example.com:bad)'],
+    ['a reference link', '[https://example.com:bad]'],
+    ['an autolink in angle brackets', '<https://example.com:bad>'],
+  ])('never trims an explicit link: %s', async (_label, text) => {
+    const probe = makeRoot();
+    // Each of these carries an author's own malformed URL and a label equal to
+    // it, which is not evidence that GFM built a bare autolink. Trimming it
+    // would silently invent a different address.
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={text} /></MemoryRouter>);
+    const shown = probe.container.textContent ?? '';
+    expect(shown).toContain('https://example.com:bad');
+    expect(probe.container.querySelector('a[href="https://example.com/"]')).toBeNull();
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('keeps the label of a valid link whose path is Chinese', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[说明](https://example.com/中文路径)'} /></MemoryRouter>);
+    const link = probe.container.querySelector('a')!;
+    expect(link.textContent).toBe('说明');
+    expect(link.getAttribute('href')).toBe('https://example.com/%E4%B8%AD%E6%96%87%E8%B7%AF%E5%BE%84');
+    await act(async () => { probe.root.unmount(); });
+  });
+
+  it('still refuses a dangerous scheme', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><Markdown text={'[click](javascript:alert(1))'} /></MemoryRouter>);
+    // The sanitizer is untouched: nothing becomes a live javascript: link.
+    const link = probe.container.querySelector('a');
+    expect(link?.getAttribute('href') ?? '').not.toContain('javascript:');
+    await act(async () => { probe.root.unmount(); });
+  });
+});
+
 describe('Markdown annotation marks', () => {
   const annotation = {
     id: 'ta-marked',
@@ -309,5 +434,70 @@ describe('Markdown annotation marks', () => {
     )).toBe(false);
     expect(marks.filter((mark) => mark.tabIndex === 0)).toHaveLength(1);
     expect(probe.container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('marked');
+  });
+});
+
+
+describe('file citation entrances', () => {
+  function api(openFile = vi.fn()): MediaPreviewApi {
+    return { cwd: 'C:/work', sessionId: undefined, openFile, openImage: vi.fn(), openAttachment: vi.fn(), previewTabCount: 0, previewPanelOpen: false, togglePreviewPanel: vi.fn(), openAgentPanel: vi.fn(), openBuiltinSkill: vi.fn(), activeAgentPanelId: undefined };
+  }
+  it.each([
+    ['See C:\\Example\\analyses\\pending-decisions.md:309', 'C:\\Example\\analyses\\pending-decisions.md', 309, undefined],
+    ['See C:/Example/analyses/pending-decisions.md:309', 'C:/Example/analyses/pending-decisions.md', 309, undefined],
+    ['See C:\\Example\\.tmp\\_notes.md:309', 'C:\\Example\\.tmp\\_notes.md', 309, undefined],
+    ['See `src/example.ts:12:7`', 'C:/work/src/example.ts', 12, 7],
+    ['See src/example.ts:12:7', 'C:/work/src/example.ts', 12, 7],
+    ['See `C:/Example/a b.md:3`', 'C:/Example/a b.md', 3, undefined],
+    ['See `src/a%3A%23.ts:12`', 'C:/work/src/a%3A%23.ts', 12, undefined],
+    ['See src/a%20b.ts:12', 'C:/work/src/a%20b.ts', 12, undefined],
+  ])('renders and opens %s as a path and position', async (text, path, line, column) => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewContext.Provider value={preview}><Markdown text={text} /></MediaPreviewContext.Provider>);
+    const link = probe.container.querySelector('a')!;
+    expect(link).not.toBeNull();
+    await act(async () => { link.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path, line, column }));
+  });
+  it('does not linkify commands, fenced code, app routes or external URLs', async () => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MemoryRouter><MediaPreviewContext.Provider value={preview}><Markdown text={'`cat src/example.ts`\n\n`./script.sh argument`\n\n```sh\ncat src/example.ts:12\n```\n\n[settings](/settings/models) [external](https://example.test/file.md#L12)'} /></MediaPreviewContext.Provider></MemoryRouter>);
+    const links = probe.container.querySelectorAll('a');
+    expect(links).toHaveLength(2);
+    expect([...links].some((link) => link.href.includes('__kiki-'))).toBe(false);
+  });
+  it('opens document-local and cross-file heading references relative to the document', async () => {
+    const preview = api();
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewContext.Provider value={preview}><Markdown mode="static" documentDirectory="C:/other/docs" documentPath="C:/other/docs/current%23.md" text={'[here](#%E4%B8%AD%E6%96%87) [other](./a%20b.md#hello-world) [range](a.md#L3-L7)'} /></MediaPreviewContext.Provider>);
+    const links = probe.container.querySelectorAll('a');
+    expect(links).toHaveLength(3);
+    await act(async () => { links[0]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/current%23.md', heading: '中文' }));
+    await act(async () => { links[1]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/a b.md', heading: 'hello-world' }));
+    await act(async () => { links[2]!.click(); });
+    expect(preview.openFile).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'C:/other/docs/a.md', line: 3, endLine: 7 }));
+  });
+  it('indexes actual rendered headings with stable duplicate slugs and locates each new request', async () => {
+    const probe = makeRoot();
+    const result = vi.fn();
+    const scroll = vi.fn();
+    const originalScroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { callback(0); return 0; });
+    try {
+      const render = async (heading: string) => renderSettled(probe.root, <Markdown mode="static" text={'# Hello **World**!\n\n## 中文\n\n## 中文\n\n## 中文-1'} documentPath="C:/work/example.md" headingNavigation={{ path: 'C:/work/example.md', heading }} onHeadingResult={result} />);
+      await render('中文-1');
+      expect([...probe.container.querySelectorAll<HTMLElement>('[data-markdown-heading]')].map((element) => element.dataset['markdownHeading'])).toEqual(['hello-world', '中文', '中文-1', '中文-1-1']);
+      expect(result).toHaveBeenLastCalledWith(true);
+      expect(scroll.mock.instances.at(-1)).toBe(probe.container.querySelectorAll('h2')[1]);
+      await render('hello-world');
+      expect(scroll.mock.instances.at(-1)).toBe(probe.container.querySelector('h1'));
+      await render('missing');
+      expect(result).toHaveBeenLastCalledWith(false);
+    } finally { raf.mockRestore(); HTMLElement.prototype.scrollIntoView = originalScroll; }
   });
 });

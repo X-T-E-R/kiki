@@ -37,6 +37,25 @@ async function openConnection(page, id) {
   await page.waitForSelector(`[data-browser-detail="${id}"]`, { timeout: 10_000 });
 }
 
+/**
+ * The native-flag trip has to land on the row that holds the switch, inside
+ * the viewport — visible in the DOM is not enough, or the page is sending
+ * people somewhere they still have to hunt.
+ */
+async function requireFlagRowInViewport(page, width, from) {
+  const row = page.locator('[data-experimental-row="native_browser"]');
+  await row.waitFor({ state: 'visible', timeout: 30_000 });
+  const height = width <= 600 ? 844 : 900;
+  await page.waitForFunction(([selector, limit]) => {
+    const box = document.querySelector(selector)?.getBoundingClientRect();
+    return box !== undefined && box.top >= 0 && box.bottom <= limit;
+  }, ['[data-experimental-row="native_browser"]', height], { timeout: 5_000 })
+    .catch(async () => {
+      throw new Error(`${from}: the flag row is not in the viewport: ${JSON.stringify(await row.boundingBox())}`);
+    });
+  await resetScroll(page);
+}
+
 const scenarios = [
   {
     name: 'browser-control',
@@ -47,10 +66,47 @@ const scenarios = [
       // the narrow layout, so both widths come out of one run.
       const phoneWidth = view.width > 600;
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await page.waitForSelector('[data-browser-connection="research"]', { timeout: 30_000 });
+      // The wizard is the opening state: three named routes, each saying what
+      // it still needs. Nothing below it has to be opened to see this.
+      await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="codex-browser"]', { timeout: 30_000 });
+      await resetScroll(page);
+      await shot('wizard');
+
+      // The managed route is the one a reader can finish without a person in
+      // the loop, so it gets the primary action; the flag trip sits at its own
+      // step because that is where the decision is.
+      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-enable-feature]').click();
+      await requireFlagRowInViewport(page, view.width, "the wizard's flag trip");
+      await shot('wizard-flag-home');
+      await page.goBack({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+
+      // Codex is another app's control surface: named, linked, and given no
+      // Kiki connect button. The shot proves the absence rather than a claim.
+      await page.locator('[data-browser-route="codex-browser"]').scrollIntoViewIfNeeded();
+      await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-route-instructions]', { timeout: 10_000 });
+      const codexButtons = await page.locator('[data-browser-route="codex-browser"] [data-browser-route-prepare], [data-browser-route="codex-browser"] [data-browser-route-connect]').count();
+      if (codexButtons !== 0) throw new Error(`external control surface offered ${codexButtons} Kiki actions`);
+      await resetScroll(page);
+      await shot('wizard-codex');
+
+      // The Kimi route: everything installed except the store approval, which
+      // is a link to a page only a person can click through.
+      await page.locator('[data-browser-route="kimi-webbridge"] [data-browser-route-extension]').first().scrollIntoViewIfNeeded();
+      await page.waitForSelector('[data-browser-route-blocker="extension"]', { timeout: 10_000 });
+      await resetScroll(page);
+      await shot('wizard-kimi-extension');
+      if (phoneWidth) await shot('wizard-kimi-extension-390', { width: 390, height: 844 });
+
+      // The connections and the default live below the routes, in the advanced
+      // region — the things a person fills in, not picks.
+      await page.locator('[data-browser-advanced-region] summary').click();
+      await page.waitForSelector('[data-browser-connection="research"]', { timeout: 10_000 });
       await page.waitForSelector('[data-browser-state="ready"]', { timeout: 30_000 });
       await resetScroll(page);
-      await shot('list');
+      await shot('advanced-connections');
 
       // The default is its own control, and "choose each time" is a real value.
       await page.locator('#browser-default').click();
@@ -158,8 +214,9 @@ const scenarios = [
       await shot('delete-confirm');
       await page.keyboard.press('Escape');
 
-      // A new connection: the id and the style decide everything, the rest of
-      // the ecosystems are named conditions rather than dead controls.
+      // A new connection: the id and the style decide everything. The
+      // hand-written routes the wizard does not cover are named here rather
+      // than as a wall of inert conditions.
       await page.locator('[data-browser-add]').click();
       await page.waitForSelector('[data-browser-detail="new"]', { timeout: 10_000 });
       await page.fill('[data-browser-id-input]', 'staging');
@@ -169,8 +226,7 @@ const scenarios = [
       await page.waitForSelector('[data-secret-field]', { timeout: 10_000 });
       await resetScroll(page);
       await shot('create-cdp');
-      await page.locator('[data-browser-other] summary').click();
-      await page.locator('[data-browser-other-row="executors"]').scrollIntoViewIfNeeded();
+      await page.locator('[data-browser-other]').scrollIntoViewIfNeeded();
       await shot('other-ecosystems');
 
       // Releasing a running browser under an edited draft: the two actions that
@@ -207,23 +263,14 @@ const scenarios = [
       // flag, in the viewport, not just in the DOM — otherwise the page is
       // sending people somewhere that does not have the switch.
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      await page.locator('[data-browser-advanced-region] summary').click();
       await page.waitForSelector('[data-browser-connection="work"]', { timeout: 30_000 });
       await openConnection(page, 'work');
       await page.locator('[data-browser-connect]').click();
       await page.waitForSelector('[data-browser-open-flag]', { timeout: 30_000 });
-      const tripHeight = view.width <= 600 ? 844 : 900;
       await page.locator('[data-browser-open-flag]').click();
-      const flagRow = page.locator('[data-experimental-row="native_browser"]');
-      await flagRow.waitFor({ state: 'visible', timeout: 30_000 });
-      // The row is visible the moment it exists, so the viewport is the test.
-      await page.waitForFunction(([selector, height]) => {
-        const box = document.querySelector(selector)?.getBoundingClientRect();
-        return box !== undefined && box.top >= 0 && box.bottom <= height;
-      }, ['[data-experimental-row="native_browser"]', tripHeight], { timeout: 5_000 })
-        .catch(async () => {
-          const box = await flagRow.boundingBox();
-          throw new Error(`the flag row is not in the viewport after the trip: ${JSON.stringify(box)}`);
-        });
+      await requireFlagRowInViewport(page, view.width, "the connection card's flag trip");
       await shot('flag-home');
     },
   },

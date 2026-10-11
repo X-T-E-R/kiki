@@ -52,8 +52,8 @@ describe('AgentTitlePromptSource', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('returns the first three prompts from the live context and queue in order', async () => {
@@ -97,6 +97,9 @@ describe('AgentTitlePromptSource', () => {
       '开场提问',
       '最近的追问',
     ]);
+    await expect(ix.get(IAgentTitlePromptSource).digestExcerpt()).resolves.toEqual({
+      firstUser: '开场提问', lastUser: '最近的追问', assistant: undefined,
+    });
   });
 
   it('returns no title prompts when history contains only slash activations', async () => {

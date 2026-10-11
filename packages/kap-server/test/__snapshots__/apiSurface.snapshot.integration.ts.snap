@@ -158,6 +158,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/browser/setup",
+    ],
+    [
+      "GET",
+      "/api/browser/setup/{preset}",
+    ],
+    [
+      "GET",
       "/api/capabilities",
     ],
     [
@@ -187,6 +195,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/cron",
+    ],
+    [
+      "GET",
+      "/api/cron/{task_id}",
     ],
     [
       "GET",
@@ -382,6 +394,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/notifications/completions",
+    ],
+    [
+      "GET",
       "/api/notifications/deliveries",
     ],
     [
@@ -519,6 +535,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/sessions/{session_id}",
+    ],
+    [
+      "GET",
+      "/api/sessions/{session_id}/agent-tasks",
     ],
     [
       "GET",
@@ -782,6 +802,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/cron/{task_id}",
+    ],
+    [
+      "PATCH",
       "/api/homes/{id}",
     ],
     [
@@ -858,6 +882,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/browser/setup/{tail}",
+    ],
+    [
+      "POST",
       "/api/capabilities/{tail}",
     ],
     [
@@ -875,6 +903,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/config/overrides{remove}",
+    ],
+    [
+      "POST",
+      "/api/cron",
     ],
     [
       "POST",

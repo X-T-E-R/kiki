@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
-import { AcpLoginHelper } from '@kiki/acp-client';
+import { AcpLoginHelper, type HostProcessServiceLike } from '@kiki/acp-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -14,7 +14,7 @@ import {
 } from '#/app/agentExecutor/antigravityService';
 import { IEventService } from '#/app/event/event';
 import * as archive from '#/os/backends/node-local/binaryArchive';
-import { antigravitySettingsHome } from '#/app/agentExecutor/antigravityProcess';
+import { antigravityProcessService, antigravitySettingsHome } from '#/app/agentExecutor/antigravityProcess';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -49,7 +49,33 @@ describe('Antigravity managed login service', () => {
       expect(await context.service.beginLogin('oauth-business')).toEqual({ alreadySignedIn: true });
       expect(JSON.parse(await readFile(join(context.root, 'custom-gemini/antigravity-acp/settings.json'), 'utf8'))).toMatchObject({ auth: { type: 'oauth-business' } });
       expect(close).toHaveBeenCalledOnce();
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
+  });
+
+  it('expands tilde settings paths against the final child home', async () => {
+    const context = await fixture();
+    try {
+      const inheritedHome = join(context.root, 'inherited-home');
+      const childHome = join(context.root, 'child-home');
+      const bootstrap = { ...context.bootstrap, getEnv: (name: string) => name === 'HOME' ? inheritedHome : undefined } as IBootstrapService;
+      expect(antigravitySettingsHome({ GEMINI_HOME: '~/custom' }, bootstrap)).toBe(join(inheritedHome, 'custom'));
+      expect(antigravitySettingsHome({ GEMINI_HOME: '~\\custom', HOME: childHome }, bootstrap)).toBe(join(childHome, 'custom'));
+
+      const spawn = vi.fn<HostProcessServiceLike['spawn']>();
+      const processes: HostProcessServiceLike = { spawn };
+      const descriptor = { id: 'antigravity-acp', protocol: 'acp-v1', revision: 'fixture', args: [], homeEnv: 'GEMINI_HOME', homeDir: '~/profile' } as const;
+      const settingsPath = join(childHome, 'profile', 'antigravity-acp', 'settings.json');
+      await mkdir(join(childHome, 'profile', 'antigravity-acp'), { recursive: true });
+      const originalSettings = '{broken';
+      await writeFile(settingsPath, originalSettings);
+      const wrapped = antigravityProcessService(processes, descriptor, bootstrap);
+      await wrapped.spawn('antigravity', [], { env: { HOME: childHome, GEMINI_API_KEY: 'fixture-secret' } });
+      expect(await readFile(settingsPath, 'utf8')).toBe(originalSettings);
+      const options = spawn.mock.calls[0]?.[2] as (NonNullable<Parameters<HostProcessServiceLike['spawn']>[2]> & { readonly envUnset?: readonly string[] }) | undefined;
+      expect(options?.env).toMatchObject({ HOME: childHome, GEMINI_HOME: join(childHome, 'profile') });
+      expect(options?.env).not.toHaveProperty('GEMINI_API_KEY');
+      expect(options?.envUnset).toContain('GEMINI_API_KEY');
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('closes an in-flight helper and never publishes a login handle after disposal', async () => {
@@ -67,7 +93,7 @@ describe('Antigravity managed login service', () => {
       resolve({ alreadySignedIn: false, authUrl: 'https://accounts.google.com/', redirectUri: 'http://127.0.0.1:48123/' });
       await rejected;
       await expect(context.service.beginLogin('oauth-personal')).rejects.toThrow('closed');
-    } finally { context.services.dispose(); }
+    } finally { await context.services.dispose(); }
   });
 });
 
@@ -99,7 +125,7 @@ describe('Antigravity install progress', () => {
       expect(context.published.map((event) => event.stage)).toEqual(['download', 'download', 'extract', 'activate', 'done']);
       expect(new Set(context.published.map((event) => event.installId)).size).toBe(1);
       expect(context.published.every((event) => event.version === '1.2.1')).toBe(true);
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('ends a timed-out download with one failed event and no activate', async () => {
@@ -113,7 +139,7 @@ describe('Antigravity install progress', () => {
       expect(context.published.map((event) => event.stage)).toEqual(['download', 'failed']);
       expect(context.published.at(-1)).toMatchObject({ stage: 'failed', timedOut: true });
       expect((await context.service.status()).phase).toBe('failed');
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('marks an ordinary failure as not timed out', async () => {
@@ -122,7 +148,7 @@ describe('Antigravity install progress', () => {
     try {
       await expect(context.service.install('1.9.9')).rejects.toThrow('HTTP 404');
       expect(context.published).toEqual([expect.objectContaining({ stage: 'failed', timedOut: false, version: '1.9.9', error: 'Binary download failed (HTTP 404)' })]);
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 });
 
@@ -142,7 +168,7 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=other&code=x'))
         .toMatchObject({ signedIn: false, retryable: true, messageCode: 'callback_mismatch' });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('codes a vendor rejection as a final sign-in failure and keeps the vendor words in message', async () => {
@@ -151,7 +177,7 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
         .toEqual({ signedIn: false, retryable: false, messageCode: 'signin_failed', message: 'Antigravity sign-in failed: invalid_grant' });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 
   it('carries no code on success', async () => {
@@ -160,6 +186,6 @@ describe('Antigravity sign-in completion codes', () => {
     try {
       expect(await context.service.completeLogin(context.handle, 'http://127.0.0.1:48123/?state=fixture-state&code=x'))
         .toEqual({ signedIn: true, retryable: false });
-    } finally { await context.service.dispose(); context.services.dispose(); }
+    } finally { await context.service.dispose(); await context.services.dispose(); }
   });
 });

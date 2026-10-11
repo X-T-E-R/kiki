@@ -8,7 +8,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { prepareToolRuntime } from '#/agent/tools/os/sshToolTarget';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
@@ -280,7 +280,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     if (paths.length === 0) return { args, accesses: ToolAccesses.all(), outputPath: undefined, verify: async () => undefined };
     const runtime = await prepareToolRuntime(this.runtime, 'local');
     if (runtime.fs === undefined) throw new BrowserError('browser.invalid', 'Browser files require the Kiki service host filesystem');
-    const view = new RuntimeWorkspaceView(runtime, { workDir: this.workspace.workDir, additionalDirs: this.workspace.additionalDirs });
+    const view = new RuntimeWorkspaceView(runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspace));
     const workspace: WorkspaceConfig = { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
     const env = { _serviceBrand: undefined, ...runtime.environment, ready: Promise.resolve() };
     const accesses: ToolFileAccess[] = [];

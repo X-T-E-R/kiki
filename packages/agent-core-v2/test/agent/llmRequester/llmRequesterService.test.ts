@@ -88,6 +88,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import {
   IRequestIdentityInstallation,
   IRequestIdentityRegistry,
@@ -215,6 +216,8 @@ function createService(
   options: {
     readonly thinkingLevel?: ThinkingEffort;
     readonly tokenMeasurementTrusted?: boolean;
+    readonly measuredTokens?: number;
+    readonly reservedContextSize?: number;
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
     readonly contextMessages?: Message[];
     readonly sessionId?: string;
@@ -252,13 +255,14 @@ function createService(
     fields: [],
   });
   const profile: Partial<IAgentProfileService> = {
+    getRecipeModelSettings: () => undefined,
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
-      modelCapabilities: capabilities,
-      maxOutputSize: undefined,
+      modelCapabilities: requester.model.capabilities,
+      maxOutputSize: requester.model.maxOutputSize,
       alwaysThinking: undefined,
       thinkingLevel,
-      reservedContextSize: undefined,
+      reservedContextSize: options.reservedContextSize,
       compactionTriggerRatio: undefined,
       compactionMaxAttempts: undefined,
       compactionSoftContextSize: undefined,
@@ -293,7 +297,7 @@ function createService(
   };
   const measuredCalls: { readonly messages: number; readonly usage: TokenUsage }[] = [];
   const tokenCounting = {
-    get: () => ({ size: 0, measured: 0, estimated: 0 }),
+    get: () => ({ size: 0, measured: options.measuredTokens ?? 0, estimated: 0 }),
     isCurrentContextMeasured: () => options.tokenMeasurementTrusted ?? false,
     measured: (input: readonly Message[], _output: readonly Message[], usage: TokenUsage) => {
       measuredCalls.push({ messages: input.length, usage });
@@ -464,6 +468,7 @@ function createService(
   registerTestEventDispatcher(ix);
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
+  ix.stub(IAppendLogStore, { append: () => {}, flush: async () => {} });
 
   return {
     identityCatalog: catalog,
@@ -533,6 +538,56 @@ describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
 });
 
 describe('AgentLLMRequesterService parameter budgets', () => {
+  it.each(['openai', 'openai_responses'] as const)('uses the server output default for %s without a real output limit', async (protocol) => {
+    for (const contextSize of [0, 128000]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        protocol, capabilities: { ...capabilities, max_context_tokens: contextSize }, maxContextSize: contextSize,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { reservedContextSize: 50000 });
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+      expect(captured[0]?.maxContextTokens).toBeUndefined();
+    }
+  });
+
+  it('keeps explicit output, real model output and ContextBudget ceilings for OpenAI', async () => {
+    for (const limit of [
+      { model: {}, params: { maxCompletionTokens: 300 }, expected: 300 },
+      { model: { maxOutputSize: 600 }, params: {}, expected: 600 },
+      { model: {}, params: { maxContextTokens: 400 }, expected: 400 },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai', ...limit.model });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { requestParams: limit.params });
+      await service.request({ maxOutputSize: 900, messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(limit.expected);
+    }
+  });
+
+  it('retains measured context independently of an automatic output budget', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai' });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { tokenMeasurementTrusted: true, measuredTokens: 800 });
+    await service.request({});
+    expect(captured[0]).toMatchObject({ usedContextTokens: 800, usedContextTokensTrusted: true });
+    expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+  });
+
+  it('keeps legacy unknown output fallback for other protocols and Kimi', async () => {
+    for (const model of [
+      { protocol: 'anthropic' as const },
+      { protocol: 'openai' as const, providerType: 'kimi' },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        ...model, capabilities: { ...capabilities, max_context_tokens: 0 }, maxContextSize: 0,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined);
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(32000);
+    }
+  });
   it('clamps output to the context budget even when operation history has no measured usage', async () => {
     const requester = createRequester({ value: 0 }, null);
     const captured = captureRequestParams(requester);
@@ -2145,5 +2200,31 @@ describe('AgentLLMRequesterService governance attribution', () => {
     const { service } = createService(requester, undefined, { env: { KIKI_INFINITE_RETRY: 'true' } });
     await expect(service.request()).rejects.toMatchObject({ code });
     expect(calls.value).toBe(1);
+  });
+});
+
+
+describe('Anthropic raw capture management port', () => {
+  it('defaults off and admits only the addressed identity and exact normal request binding', async () => {
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const params = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { agentId: 'example-child', sessionId: 'example-session', thinkingLevel: 'medium' });
+    expect(await service.anthropicResponseCaptureStatus()).toBeNull();
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    const input = { sessionId: 'example-session', agentId: 'example-child', providerId: 'p', model: 'wire-model', thinkingEffort: 'medium', expiresAt: Date.now() + 3_600_000, maxResponses: 20 };
+    expect(() => service.armAnthropicResponseCapture({ ...input, sessionId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, agentId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, expiresAt: Date.now() - 1 })).toThrow('future expiry');
+    const armed = service.armAnthropicResponseCapture(input);
+    expect(() => service.armAnthropicResponseCapture(input)).toThrow('Stop the existing');
+    await service.request({ source: { type: 'turn', turnId: 7, step: 3 } });
+    expect(params.at(-1)?.rawResponseObserver).toBeDefined();
+    expect(await service.anthropicResponseCaptureStatus()).toMatchObject({ responses: 1, completed: 1, flushed: true });
+    await expect(service.stopAnthropicResponseCapture('other')).rejects.toThrow('id does not match');
+    expect(await service.stopAnthropicResponseCapture(armed.captureId)).toMatchObject({ enabled: false, closedReason: 'operator', flushed: true });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    service.armAnthropicResponseCapture({ ...input, providerId: 'other' });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
   });
 });

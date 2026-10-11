@@ -51,6 +51,7 @@ import {
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type AgentForest,
+  type AgentTreeNode,
   type Block,
   type DisplayNode,
   type SessionViewState,
@@ -185,22 +186,36 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
  */
 let editFixture: import('node:child_process').ChildProcess | undefined;
 let editFixturePort: number;
+let editFixtureStderr = '';
+let editFixtureReady: Promise<void> | undefined;
+function startEditFixture(): Promise<void> {
+  editFixtureReady ??= (async () => {
+    const { spawn } = await import('node:child_process');
+    const { resolve } = await import('node:path');
+    editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: resolve(import.meta.dirname, '../..'), stdio: ['ignore', 'pipe', 'pipe'] });
+    editFixture.stderr!.on('data', (chunk) => {
+      const text = String(chunk);
+      editFixtureStderr += text;
+      process.stderr.write(`[Transcript fixture] ${text}`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      editFixture!.stdout!.on('data', (chunk) => {
+        output += String(chunk);
+        const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
+        if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
+      });
+      editFixture!.once('error', reject);
+      editFixture!.once('exit', (code) => {
+        if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
+      });
+    });
+  })();
+  return editFixtureReady;
+}
 async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
   if (connected) {
-    if (editFixture === undefined) {
-      const { spawn } = await import('node:child_process');
-      editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-      await new Promise<void>((resolve, reject) => {
-        let output = '';
-        editFixture!.stdout!.on('data', (chunk) => {
-          output += String(chunk);
-          const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
-          if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
-        });
-        editFixture!.once('error', reject);
-        editFixture!.once('exit', (code) => { if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}`)); });
-      });
-    }
+    await startEditFixture();
     writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
   }
   let ready = false;
@@ -727,6 +742,7 @@ async function renderTranscript(
   rowActions?: TranscriptRowActions,
   stateOverrides?: Partial<SessionViewState>,
   transcriptProps?: Partial<ComponentProps<typeof Transcript>>,
+  connected = false,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(
@@ -1074,6 +1090,66 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([]);
     expect(container.querySelector('[data-transcript-loading]')).toBeNull();
     expect(container.textContent).toContain('A blank page');
+    expect(container.querySelector('[data-top-edge]')).toBeNull();
+  });
+
+  it('exposes the older-page action when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-only', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    expect(container.textContent).not.toContain('A blank page');
+    await act(async () => { click(loadButton!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+  });
+
+  it('renders a stable delivered user row after the older page fills the filtered tail', async () => {
+    const queued = userBlock({ id: 'stable-user', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    const initial = transcriptState([queued], { historyCoverageKind: 'tail', hasMoreHistory: true });
+    await renderSettled(root, virtualTranscript(initial, onLoadOlder));
+    await settleVirtualizer();
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    await act(async () => { click(loadButton!); });
+
+    const delivered = { ...queued, text: 'delivered prompt', promptStatus: undefined };
+    await renderSettled(root, virtualTranscript({
+      ...initial,
+      blocks: [delivered],
+      hasMoreHistory: false,
+      fetchedOlder: true,
+      historyCoverageKind: 'full',
+    }, onLoadOlder));
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="stable-user"]')?.textContent).toContain('delivered prompt');
+  });
+
+  it('keeps an older-page failure retryable when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-error', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true, olderError: 'page unavailable',
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    expect(container.textContent).toContain('Could not load earlier messages');
+    expect(container.textContent).toContain('page unavailable');
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    await act(async () => { click(retry!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
   });
 
   it('does not certify an unverified empty cold read as a blank session', async () => {
@@ -1770,16 +1846,47 @@ describe('live and event chrome', () => {
     expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
   });
 
-  it('renders twelve consecutive goal updates as one divider with a repeat count', async () => {
-    const snapshot = replayAgentWire('main', Array.from({ length: 12 }, (_, index) => ({
-      type: 'goal.update', tokensUsed: index + 1, time: 1000 + index,
-    })));
-    const state = projectAgentTranscriptView(createViewState('marker-fold'), 'main', snapshot);
+  it('names each real goal change and keeps accounting updates out of the timeline', async () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'turn.prompt', turnId: 1, promptId: 'p1', time: 1000, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Take the input area down to what is really waiting' }] },
+      { type: 'goal.create', objective: 'Remove the composer noise that never ends', time: 1100 },
+      { type: 'goal.update', tokensUsed: 1, time: 1200 },
+      { type: 'goal.update', tokensUsed: 2, turnsUsed: 1, wallClockMs: 900, time: 1300 },
+      { type: 'goal.update', status: 'paused', reason: 'waiting for the reader', time: 1400 },
+      { type: 'goal.update', tokensUsed: 3, turnsUsed: 2, time: 1500 },
+      { type: 'goal.update', status: 'active', time: 1600 },
+      { type: 'turn.prompt', turnId: 2, promptId: 'p2', time: 1700, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Continue with the transcript labels' }] },
+    ]);
+    const state = projectAgentTranscriptView(createViewState('goal-changes'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
-    const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]');
-    expect(dividers).toHaveLength(1);
-    expect(dividers[0]?.textContent).toBe('Goal updated ×12');
-    expect(container.querySelector('[data-block-id]')?.getAttribute('data-block-id')).toBe(state.blocks[0]?.id);
+    const dividers = [...container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]')];
+    // Accounting-only updates (tokens, turns, wall clock) are not changes and
+    // never grow a divider; each real change keeps its own kind, so a pause and
+    // the resume that follows it are two facts rather than one folded line.
+    expect(dividers.map((divider) => divider.getAttribute('data-goal-change'))).toEqual(['created', 'paused', 'resumed']);
+    expect(dividers.map((divider) => divider.textContent)).toEqual(['Goal set', 'Goal paused', 'Goal resumed']);
+    // The engine's own reason rides on the hover title, not on a wall of text.
+    expect(dividers[1]?.getAttribute('title')).toContain('waiting for the reader');
+    // The conversation itself still reads around the markers.
+    expect(container.textContent).toContain('Take the input area down to what is really waiting');
+    expect(container.textContent).toContain('Continue with the transcript labels');
+  });
+
+  it('labels folded compactions as successful commits and expands every time and reason', async () => {
+    const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
+      type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+    })));
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks]);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
+    expect(toggle.textContent).toBe('Context compacted · summary generated · 3 successful compactions');
+    expect(toggle.textContent).not.toContain('×');
+    await act(async () => { click(toggle); });
+    const entries = container.querySelectorAll('[data-compaction-history] li');
+    expect(entries).toHaveLength(3);
+    expect(entries[0]?.textContent).toContain('The agent has no working notes');
+    expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
+    expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
   });
 
   it('labels folded compactions as successful commits and expands every time and reason', async () => {
@@ -1851,10 +1958,20 @@ describe('live and event chrome', () => {
 
   it('renders a projected image compression caption as a separate folded reminder, not user text', async () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost. The original is at "/example/original.png".';
-    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
-      kind: 'turn', turnId: 't-image', prompt: `Look at this.\n<system>${caption}</system>`,
-      startedAt: '2026-01-01T00:00:00.000Z', steps: [],
-    }] });
+    const source = { agent_id: 'main', items: [
+      {
+        kind: 'marker', markerId: 'caption', marker: 'message.delivery', at: '2026-01-01T00:00:00.000Z',
+        payload: { messageId: 'caption', text: `<system-reminder>${caption}</system-reminder>`,
+          origin: { kind: 'injection', variant: 'image_compression', ownerPromptId: 'image-message' } },
+      },
+      {
+        kind: 'turn', turnId: 't-image', ordinal: 0, state: 'completed', promptId: 'image-message',
+        origin: { kind: 'user', payload: { userMessageId: 'image-message' } }, prompt: 'Look at this.',
+        startedAt: '2026-01-01T00:00:01.000Z', steps: [],
+      },
+    ] } satisfies Parameters<typeof agentTranscriptToBlocks>[0];
+    const blocks = agentTranscriptToBlocks(source);
+    expect(blocks.map((block) => block.id)).toEqual(['user-image-message', 'reminder-caption-0']);
     const container = await renderTranscript(blocks);
     const bubble = container.querySelector('.steer-bubble');
     expect(bubble?.textContent).toBe('Look at this.');
@@ -1862,9 +1979,11 @@ describe('live and event chrome', () => {
     expect(reminder?.textContent).toContain('System reminder');
     expect(reminder?.textContent).toContain('Image compressed');
     expect(reminder?.closest('.steer-bubble')).toBeNull();
+    expect(bubble!.compareDocumentPosition(reminder!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(reminder?.textContent).not.toContain('<system>');
     expect(reminder?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { click(reminder!.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(container.textContent).toContain(caption);
     expect(container.textContent).toContain('/example/original.png');
     expect(bubble?.textContent).toBe('Look at this.');
   });
@@ -2344,6 +2463,7 @@ describe('explicit unknown timing', () => {
 });
 
 describe('message row actions', () => {
+  beforeAll(startEditFixture);
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
@@ -2522,6 +2642,9 @@ describe('message row actions', () => {
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
       rowActions,
+      undefined,
+      undefined,
+      true,
     );
     const row = container.querySelector('[data-block-id="user-m1"]')!;
     await act(async () => {
@@ -2535,6 +2658,7 @@ describe('message row actions', () => {
     expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
       'Keep or change attachments',
     );
+    expect(container.querySelector('[data-edit-editor] [data-composer-card]')).not.toBeNull();
     await act(async () => {
       flushSync(() => {
         const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
@@ -2753,6 +2877,9 @@ describe('message row actions', () => {
       const container = await renderTranscript(
         [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
         rowActions,
+        undefined,
+        undefined,
+        true,
       );
       const row = () => container.querySelector('[data-block-id="user-m1"]')!;
       expect(row().querySelector('[data-actions-open]')).toBeNull();
@@ -3179,6 +3306,7 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
+  beforeAll(startEditFixture);
   it('keeps unverified coverage quiet while older pages remain to load', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
       historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: false,
@@ -3498,6 +3626,51 @@ describe('virtualized transcript scrolling', () => {
     expect(after.offset).toBe(before.offset);
   });
 
+  it('keeps the visible block inset when the older-page top edge moves to a prepended row', async () => {
+    let topEdgeInset = 62.59375;
+    let postPrependInset = 0;
+    let lateLayout: ReturnType<typeof setTimeout> | undefined;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      if (scroll === null) return original.call(this);
+      const inset = this.hasAttribute('data-block-id') ? row?.dataset['index'] === '0' ? topEdgeInset : postPrependInset : 0;
+      const top = row === null ? 0 : virtualItemStart(row) - scroll.scrollTop + inset;
+      const height = row === null ? scroll.clientHeight : row.offsetHeight;
+      return { x: 0, y: top, top, bottom: top + height, left: 0, right: 760, width: 760, height, toJSON: () => ({}) };
+    });
+    try {
+      const current = virtualBlocks(100, 'reading');
+      const state = { ...transcriptState(current), hasMoreHistory: true };
+      const pending = pendingVoid();
+      const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
+      const { root, container } = makeRoot();
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 32);
+      await settleVirtualizer();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      await setTranscriptScroll(scroll, 0);
+      topEdgeInset += 25.59375;
+      await settleVirtualizer();
+      const block = container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!;
+      const before = block.getBoundingClientRect().top;
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+      await act(async () => {
+        pending.resolve();
+        lateLayout = setTimeout(() => { postPrependInset = -28; }, 32);
+      });
+      await settleReadingFrames();
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+      expect(container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!.getBoundingClientRect().top).toBeCloseTo(before, 0);
+    } finally {
+      clearTimeout(lateLayout);
+      rect.mockRestore();
+    }
+  });
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');
@@ -3814,6 +3987,74 @@ describe('virtualized transcript scrolling', () => {
       await new Promise((resolve) => setTimeout(resolve, 35));
     });
     expect(container.querySelector('[data-block-id="floor-0"]')).not.toBeNull();
+  });
+});
+
+function liveToolRow(id: string, turnId: string): Block {
+  return {
+    kind: 'tool', id: `tool-${id}`, toolCallId: id, name: 'Read', argsText: '', args: { path: 'a.ts' },
+    display: undefined, description: undefined, status: 'done', output: 'ok', isError: undefined,
+    startedAt: undefined, durationMs: undefined, progressText: undefined, turnId,
+  };
+}
+
+function liveThoughtRow(id: string, text: string, turnId: string): Block {
+  return { kind: 'thinking', id, text, streaming: true, turnId, createdAt: undefined };
+}
+
+/**
+ * A live turn's process rows are exactly the rows a reader can expand while the
+ * turn keeps producing content: a long in-progress reasoning line, a tool body,
+ * a continuation block. The reader who clicked one must keep both their place
+ * and the expansion they asked for, however the turn keeps growing underneath.
+ */
+describe('a live process row the reader expanded', () => {
+  function liveTurn(extra: Block[] = []): Block[] {
+    return [
+      ...virtualBlocks(40, 'hist'),
+      userBlock({ id: 'live-user', text: 'go', turnId: 't9' }),
+      liveThoughtRow('thought-a', 'first thought', 't9'),
+      liveToolRow('tool-a', 't9'),
+      liveThoughtRow('thought-b', `${'long in-progress thought\n'.repeat(60)}`, 't9'),
+      ...extra,
+    ];
+  }
+
+  it('keeps the place the reader clicked while the turn keeps growing', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn())));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const toggle = () => container.querySelector<HTMLElement>('[data-block-id="thought-b"] [data-activity-toggle]');
+    // Following the end, as the live turn leaves it.
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    const clickedAt = scroll.scrollTop;
+    const item = toggle()!.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    const start = virtualItemStart(item);
+    await act(async () => { click(toggle()!); });
+    await settleVirtualizer();
+    const opened = toggle()!;
+    expect(opened.getAttribute('aria-expanded')).toBe('true');
+
+    // Opening the row lays its body out: the row grows past the estimate. The
+    // click was a reading gesture, so the row's own header must not be carried
+    // out of view — unlike an append, which keeps the end pinned.
+    await act(async () => { resizeElement(item, 900); await new Promise((resolve) => setTimeout(resolve, 35)); });
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(virtualItemStart(item)).toBe(start);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
+
+    // The turn keeps producing rows after it; none of them may drag the reader.
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn([liveToolRow('tool-b', 't9')]))));
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
   });
 });
 
@@ -4142,6 +4383,21 @@ describe('subagent timeline dual form (G-4)', () => {
       status: 'completed',
       at: '2026-01-01T00:00:05.000Z',
     };
+  }
+
+  /**
+   * Stamp birth times onto a built forest the way the engine will once it
+   * records one per agent: an immutable fact on the node itself, which no
+   * later run start can move. Applied after the build because the roster
+   * descriptor does not carry it yet.
+   */
+  function born(forest: AgentForest, births: Readonly<Record<string, string>>): AgentForest {
+    const byId: Record<string, AgentTreeNode> = { ...forest.byId };
+    for (const [agentId, createdAt] of Object.entries(births)) {
+      const node = byId[agentId];
+      if (node !== undefined) byId[agentId] = { ...node, createdAt } as AgentTreeNode;
+    }
+    return { roots: forest.roots.map((root) => byId[root.agentId] ?? root), byId };
   }
 
   async function renderWithAgents(
@@ -4524,16 +4780,25 @@ describe('subagent timeline dual form (G-4)', () => {
   });
 
   describe('nested subagents that finished before the view opened', () => {
-    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => buildAgentForest(
-      [],
-      [
-        { agentId: 'main', name: 'Main' },
-        { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
-        ...Object.entries(grandStatus).map(([agentId, status]) => ({
-          agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
-          startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
-        })),
-      ],
+    // Every agent is born just after the one that dispatched it, so all of
+    // them lay out and these cases stay about the settled-vs-live fold rule.
+    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          ...Object.entries(grandStatus).map(([agentId, status], index) => ({
+            agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
+            startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
+          })),
+        ],
+      ),
+      {
+        'main': '2026-01-01T00:00:00.000Z',
+        'lead': '2026-01-01T00:00:01.000Z',
+        ...Object.fromEntries(Object.keys(grandStatus).map((agentId, index) => [agentId, `2026-01-01T00:00:0${index + 2}.000Z`])),
+      },
     );
     const leadBlock = lifecycleSubagentBlock('lead', { status: 'running', name: 'Lead' });
     const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
@@ -4578,7 +4843,7 @@ describe('subagent timeline dual form (G-4)', () => {
 
     it('tracks running agents even before their collapsed parent mounts them', async () => {
       const { root, container } = makeRoot();
-      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }])} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={born(buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }]), { main: '2026-01-01T00:00:00.000Z', lead: '2026-01-01T00:00:01.000Z', worker: '2026-01-01T00:00:02.000Z' })} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
       await render('running');
       expect(card(container, 'worker')).toBeNull();
       await render('completed');
@@ -4607,6 +4872,248 @@ describe('subagent timeline dual form (G-4)', () => {
     });
   });
 
+describe('a dispatch card lays out only the descendants it provably created', () => {
+    const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
+    const group = (container: Element) => container.querySelector('[data-other-descendants]');
+    const page_groups = (container: Element): Element[] => [...container.querySelectorAll('[data-other-descendants]')];
+    const groupToggle = (container: Element) => container.querySelector<HTMLButtonElement>('[data-other-descendants] [data-activity-toggle]')!;
+    const BORN = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+
+    // The counterexample, in the shape the page actually shows. `lead`
+    // (agent-2) was BORN at 00:10 and already owned agent-1, born 00:20; the
+    // dispatch this card represents is a LATER run of lead, from 00:40. Only
+    // agent-3, born 00:50, belongs to that dispatch. Comparing descendants
+    // against lead's own birth would wrongly expand agent-1.
+    const tree = (extra: readonly { agentId: string; parentAgentId: string; status: string }[] = []) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed', toolCallCount: 2, summary: 'Old result.' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running', toolCallCount: 1 },
+          ...extra,
+        ],
+      ),
+      { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50), 'agent-4': BORN(25), 'agent-5': BORN(51) },
+    );
+    const leadBlock = lifecycleSubagentBlock('agent-2', {
+      status: 'running', name: 'Lead', startedAt: BORN(40), endedAt: undefined,
+    });
+
+    it('shows this dispatch’s descendant and folds the rest behind one line', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree());
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(card(container, 'agent-1')).toBeNull();
+      const folded = group(container)!;
+      expect(folded.getAttribute('data-other-descendants')).toBe('1');
+      expect(folded.textContent).toContain('Other subagents');
+      expect(groupToggle(container).getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('folds an old descendant that is only being resumed, and opens a new birth', async () => {
+      // The contrast that matters: `agent-1` is running again right now, and
+      // that is not why it folds — it was BORN at 00:20, before this dispatch
+      // at 00:40, and a resume never moves a birth. `agent-3` was born at
+      // 00:50, inside the dispatch, and opens even while still queued.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)?.textContent).toContain('1 running');
+    });
+
+    it('opens a descendant born this dispatch that has not started running yet', async () => {
+      // A queued birth is still a birth: membership never waits on a run.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'Queued', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('folds every descendant when the records carry no birth time', async () => {
+      // Nothing is proven, so nothing is expanded — and nothing is lost.
+      const container = await renderWithAgents([leadBlock], [], buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+        ],
+      ));
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+      await act(async () => { groupToggle(container).click(); });
+      expect(card(container, 'agent-1')).not.toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('folds every descendant when the card has no window, even with a later run on the node', async () => {
+      // The live node here reports a run that started at 00:55, well after
+      // any birth in this tree, so borrowing it would let agent-3 through. It
+      // is not a confirmed record of THIS dispatch — it is the agent's newest
+      // run — so the card's missing window stays missing and everything folds.
+      const container = await renderWithAgents(
+        [lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt: undefined, endedAt: undefined })],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', startedAt: BORN(55) },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+    });
+
+    it('keeps two dispatch cards for one agent independent, so opening one group opens only that one', async () => {
+      // One agent, dispatched twice: the OLDER card and the NEWER card each
+      // fold their own descendants. They must not share one open/closed
+      // choice, or opening the older card's group would open the newer one's
+      // as well. The two blocks differ only in the call that dispatched them.
+      const OLD_START = BORN(30);
+      const NEW_START = BORN(45);
+      const cardFor = (id: string, call: string, startedAt: string): Block => {
+        const base = lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt, endedAt: undefined });
+        if (base.kind !== 'subagent') throw new Error('the fixture block is not a subagent card');
+        return { ...base, id, parentToolCallId: call };
+      };
+      const older = cardFor('subagent-agent-2-old', 'call-lead-older', OLD_START);
+      const newer = cardFor('subagent-agent-2-new', 'call-lead-newer', NEW_START);
+      // A notice between the cards keeps both of them individually in view.
+      const container = await renderWithAgents(
+        [older, { kind: 'notice', id: 'between', text: 'boundary', tone: 'danger' }, newer],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20) },
+        ),
+      );
+      // Both cards fold the same historical descendant, so both groups exist.
+      const groups = page_groups(container);
+      expect(groups.length).toBe(2);
+      expect(groups.every((row) => row.getAttribute('data-other-descendants') === '1')).toBe(true);
+
+      // Opening the first group's group must not open the second's.
+      await act(async () => {
+        const first = groups[0]!.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+        first.click();
+      });
+      const after = page_groups(container);
+      expect(after[0]?.hasAttribute('data-other-descendants-open')).toBe(true);
+      expect(after[1]?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+
+    it('keeps a grandchild of a folded descendant folded, and lays out this run’s own', async () => {
+      // Membership is per direct child. `agent-1` is the folded one, and its
+      // child `agent-4` is reached only through it, so it is folded too.
+      // `agent-3` is this dispatch's and lays out; its own child `agent-5` is
+      // inside that card and is governed by that card's own children row.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        tree([
+          { agentId: 'agent-4', parentAgentId: 'agent-1', status: 'completed' },
+          { agentId: 'agent-5', parentAgentId: 'agent-3', status: 'completed' },
+        ]),
+      );
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('1');
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-4')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('renders no fold group when every descendant belongs to this dispatch', async () => {
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('opens the folded descendants on click, and keeps the reader’s close', async () => {
+      const { root, container } = makeRoot();
+      const render = () => renderSettled(
+        root,
+        <Transcript
+          state={transcriptState([leadBlock])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+          forest={tree()}
+          onOpenAgent={() => {}}
+        />,
+      );
+      await render();
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.getAttribute('data-other-descendants-open')).toBe('true');
+      expect(card(container, 'agent-1')).not.toBeNull();
+
+      // A status update must not reopen what the reader closed.
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+      expect(card(container, 'agent-1')).toBeNull();
+      await render();
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+  });
   it('renders a suspended card compact and a completed parent does not inflate for a running child', async () => {
     const forest = buildAgentForest(
       [],
@@ -5593,6 +6100,65 @@ describe('settled history folds and the unified locate entry', () => {
     expect(outcome).toEqual({ status: 'not-found' });
   });
 
+  it('locates an older target beyond forty pages with one intent and stops at the target', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let pages = 0;
+    let state = transcriptState(virtualBlocks(3, 'tail'), { sessionId: 'session_far', hasMoreHistory: true });
+    const onLoadOlder = vi.fn(async () => {
+      pages += 1;
+      state = { ...state, blocks: [assistantBlock(pages === 43 ? 'far-target' : `page-${pages}`, `Older page ${pages}`), ...state.blocks] };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await settleVirtualizer();
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => {
+      void locateInTimeline({ kind: 'block', blockId: 'far-target' }, { sessionId: 'session_far', notify: false }).then((value) => { outcome = value; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    for (let frame = 0; frame < 450; frame += 1) {
+      if (outcome !== undefined) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+    }
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+    expect(outcome).toEqual({ status: 'found' });
+    expect(container.querySelector('[data-block-id="far-target"]')).not.toBeNull();
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+  }, 10_000);
+
+  it('cancels an older locate on a user scroll before a late page can move the viewport', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let resolvePage!: (loaded: boolean) => void;
+    let signal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((consumerSignal?: AbortSignal) => {
+      signal = consumerSignal;
+      return new Promise<boolean>((resolve) => { resolvePage = resolve; });
+    });
+    await renderSettled(root, virtualTranscript(transcriptState(virtualBlocks(100, 'tail'), {
+      sessionId: 'session_cancel_seek', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+    let pending!: Promise<Awaited<ReturnType<typeof locateInTimeline>>>;
+    await act(async () => {
+      pending = locateInTimeline({ kind: 'block', blockId: 'old-target' }, { sessionId: 'session_cancel_seek', notify: false });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(signal?.aborted).toBe(true);
+    const top = scroll.scrollTop;
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => { resolvePage(true); outcome = await pending; });
+    expect(outcome).toEqual({ status: 'no-timeline' });
+    expect(scroll.scrollTop).toBe(top);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();
@@ -5654,7 +6220,7 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     kind: 'tool', id, toolCallId: id, name: 'Bash', argsText: '', args: { command: `echo ${id}` }, display: undefined,
     description: undefined, status: 'done', output: 'ok', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
   });
-  const look = (id: string, turnId = 't1'): Block => ({
+  const look = (id: string, turnId = 't1'): Extract<Block, { kind: 'tool' }> => ({
     kind: 'tool', id, toolCallId: id, name: 'ReadMediaFile', argsText: '', args: { path: `C:/w/${id}.png` }, display: undefined,
     description: undefined, status: 'done', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
     output: [
@@ -5713,6 +6279,28 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(settled?.hasAttribute('data-media-run-latest')).toBe(false);
     expect(settled?.querySelector('img')?.className).toContain('h-9');
     expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
+  });
+
+  it('shows an image the result reports as its own attachment, and only once beside its content part', async () => {
+    const { root, container } = makeRoot();
+    const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
+    // No content parts at all: the image is known only through the result's
+    // own attachment reference — the shape an external harness reports.
+    const attached: Block = {
+      ...look('a1'),
+      output: undefined,
+      media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png', mime: 'image/png' }],
+    };
+    await render([user, step('s1'), attached]);
+    const attachedRun = container.querySelector('[data-media-run]');
+    expect(attachedRun?.getAttribute('data-media-run')).toBe('1');
+    expect(attachedRun?.querySelector('[data-media-thumb]')?.getAttribute('title')).toBe('answer.png');
+    // The same file, now reported twice (content part and reference): one slot.
+    const described: Block = { ...look('a2'), media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'a2.png', mime: 'image/png' }] };
+    await render([user, step('s1'), described]);
+    const deduped = container.querySelector('[data-media-run]');
+    expect(deduped?.getAttribute('data-media-run')).toBe('1');
+    expect(deduped?.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
   });
 });
 
@@ -6383,6 +6971,7 @@ it('strips a stored SSH host block from an old message and draws no per-message 
 
 
 describe('ordinary bounded message reading', () => {
+  beforeAll(startEditFixture);
   it('continues prompt, assistant and thinking from their exact sources, then restores full copy/edit targets', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };

@@ -43,6 +43,8 @@ import {
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { subscribeUsageFreshness } from '../lib/usageFreshness';
+import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -150,7 +152,7 @@ interface ConnectionValue {
 
 export interface ControllerLease {
   readonly controller: SessionController;
-  /** Initial open has settled; failures remain in the controller's load state. */
+  /** Initial open or cache resume has settled; failures remain in the controller's load state. */
   readonly ready: Promise<void>;
   /** Idempotent; the last lease closes and unregisters its controller. */
   release(): void;
@@ -274,8 +276,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
       // Cache hit: the retained view repaints now and catches up behind it.
       this.unpark(entry);
       entry.references = 1;
-      entry.ready = Promise.resolve();
-      entry.controller.resume();
+      entry.ready = entry.controller.resume();
       this.add(entry.controller);
     } else {
       entry.references += 1;
@@ -1020,6 +1021,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return subscription;
     };
     let searchIndex = subscribeSearchIndex();
+    let offUsage = subscribeUsageFreshness(klient, queryClient);
+    // A plugin change moves capabilities, skills, MCP, panels and commands too,
+    // and a reconnect can carry one this window never saw.
+    let offPlugins = subscribePluginFreshness(klient, queryClient);
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
       socketStatusRef.current = status;
@@ -1035,6 +1040,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       if (status === 'open') {
         searchIndex.dispose();
         searchIndex = subscribeSearchIndex();
+        offUsage();
+        offUsage = subscribeUsageFreshness(klient, queryClient);
+        offPlugins();
+        offPlugins = subscribePluginFreshness(klient, queryClient);
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
@@ -1045,6 +1054,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
+      offUsage();
+      offPlugins();
     };
   }, [socket, klient, queryClient]);
 

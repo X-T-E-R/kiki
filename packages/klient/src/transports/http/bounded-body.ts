@@ -1,6 +1,7 @@
 import { RPCError } from '../../core/errors.js';
 
-export const SESSION_READ_BODY_BYTES = 96 * 1024;
+/** One server transcript window plus its JSON envelope. A canonical header may exceed the old 96KB cap and still has to open; anything past this cap is refused. */
+export const SESSION_READ_BODY_BYTES = 1024 * 1024 + 64 * 1024;
 
 /** Count decoded response bytes while reading, without trusting headers or parsing an oversized body. */
 export async function readBoundedJsonBody(response: Response, maxBytes = SESSION_READ_BODY_BYTES): Promise<unknown> {

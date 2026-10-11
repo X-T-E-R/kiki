@@ -82,6 +82,7 @@ export class CronListTool implements ICronListTool {
       `prompt: ${JSON.stringify(previewPrompt(task.prompt))}`,
       `nextFireAt: ${nextFireAtIso}`,
       `recurring: ${String(recurring)}`,
+      `deliveryMode: ${task.deliveryMode ?? 'idle'}`,
       `ageDays: ${ageDays.toFixed(2)}`,
       `stale: ${String(stale)}`,
     ].join('\n');

@@ -621,6 +621,32 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('retains recorded display and latest progress without fabricating missing or orphan facts', () => {
+    const event = (value: Record<string, unknown>): TranscriptWireRecord => ({ type: 'context.append_loop_event', event: value });
+    const call = records[3]!;
+    const original = call['event'] as Record<string, unknown>;
+    const enriched = { ...call, event: { ...original, display: { type: 'diff', before: 'a', after: 'b' } } };
+    const transcript = replay([
+      ...records.slice(0, 3),
+      event({ type: 'tool.progress', toolCallId: 'orphan', update: { kind: 'status', text: 'ignored' } }),
+      enriched,
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'progress', percent: 10 } }),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } }),
+      ...records.slice(4),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'invalid', text: 'ignored' } }),
+    ]);
+    expect(transcript.getToolCall('orphan')).toBeUndefined();
+    expect(transcript.getToolCall('call-1')?.frame).toMatchObject({ state: 'done', output: '/repo',
+      display: { type: 'diff', before: 'a', after: 'b' },
+      progress: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } });
+    const absent = replay(records).getToolCall('call-1')?.frame;
+    expect(absent?.display).toBeUndefined();
+    expect(absent?.progress).toBeUndefined();
+    const terminal = replay([...records, event({ type: 'tool.progress', toolCallId: 'call-1',
+      update: { kind: 'status', text: 'late update' } })]).getToolCall('call-1')?.frame;
+    expect(terminal).toMatchObject({ state: 'done', output: '/repo', progress: { kind: 'status', text: 'late update' } });
+  });
+
   it('recovers an edited message appended before its managed resend turn', () => {
     const message = (text: string) => ({
       id: 'message-1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }],
@@ -656,6 +682,15 @@ describe('TranscriptWireAdapter', () => {
     expect(cold.getTurn('t1')?.steps.flatMap((step) => step.frames)).toEqual([
       expect.objectContaining({ kind: 'text', role: 'assistant', text: 'edited reply' }),
     ]);
+  });
+
+  it('replays a durable prompt outcome without requiring a legacy completion record', () => {
+    const cold = replay([
+      { type: 'prompt.enqueued', promptId: 'p-outcome', userMessageId: 'm-outcome', message: { id: 'm-outcome', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }, time: 1_000 },
+      { type: 'prompt.launch_committed', promptId: 'p-outcome', time: 1_100 },
+      { type: 'prompt.outcome_committed', terminal: { promptId: 'p-outcome', turnId: 2, state: 'blocked' }, time: 1_200 },
+    ]);
+    expect(cold.getPrompt('p-outcome')).toMatchObject({ status: 'blocked', finishedAt: new Date(1_200).toISOString(), userMessageId: 'm-outcome' });
   });
 
   it('carries validated text presentation through queue replacement, delivery, steer, and cold replay', () => {
@@ -887,6 +922,27 @@ describe('TranscriptWireAdapter', () => {
     },
   );
 
+  it('projects Grok tool input snapshots through live and cold facts without reviving terminal tools', () => {
+    const input = (text: string): TranscriptWireRecord => ({ type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_input', value: { toolCallId: 'call-1', stepId: 'step-1', name: 'Bash', inputText: text } });
+    const progress: TranscriptWireRecord = { type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_progress', value: { toolCallId: 'call-1', update: { kind: 'status', text: 'Waiting for permission' } } };
+    const all = [records[0]!, records[1]!, input('{"command":'), input('{"command":"pwd"}'), records[3]!, progress,
+      records[4]!, input('late'), records[6]!, records[7]!];
+    const cold = replay(all);
+    const live = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(live);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of all) reducer.apply(adapter.add(record));
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    const frame = cold.getTurn('t0')?.steps[0]?.frames[0];
+    expect(frame).toMatchObject({ kind: 'tool', name: 'Bash', state: 'done', input: { command: 'pwd' },
+      inputText: '{"command":"pwd"}', output: '/repo', progress: { text: 'Waiting for permission' } });
+    expect(cold.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
+    const interrupted = replay([records[0]!, records[1]!, input('{"command":')]);
+    expect(interrupted.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({ inputText: '{"command":', state: 'interrupted' });
+  });
+
   it('projects durable executor delivery, diff, compaction, and unknown markers through recovery', () => {
     const delivery = { type: 'executor.prompt.delivery', executorId: 'codex-app-server', turnId: 0,
       promptId: 'queued', origin: 'user', method: 'native_steer', status: 'delivered' };
@@ -918,8 +974,12 @@ describe('TranscriptWireAdapter', () => {
     recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
     expect(recovered.getItems().filter((item) => item.kind === 'marker')).toMatchObject([
       { marker: 'executor.session', payload: updates[0] },
-      { marker: 'executor.usage', payload: updates[1] },
     ]);
+    expect(recovered.getMeta().agent).toMatchObject({
+      contextTokens: 41_000,
+      maxContextTokens: 200_000,
+      contextUsage: 0.205,
+    });
   });
 
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
@@ -1483,6 +1543,7 @@ describe('TranscriptWireAdapter', () => {
     ]).snapshot());
   });
 
+
   it('keeps queued cancellation separate from an active run, preserves failures on cold replay and never invents a commit', () => {
     const records: TranscriptWireRecord[] = [
       { type: 'full_compaction.begin', source: 'auto', time: 1000 },
@@ -1500,6 +1561,7 @@ describe('TranscriptWireAdapter', () => {
       expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'old successful record' }) }),
     ]);
   });
+
 
   it('retracts discarded streaming frames idempotently in stores and subscriber grades', () => {
     const seed: TranscriptOperation[] = [turnOp(0), { ...stepOp, turnId: 't0', step: { ...stepOp.step, turnId: 't0', stepId: 'step-fixture' } },
@@ -1525,11 +1587,30 @@ describe('TranscriptWireAdapter', () => {
     expect(draft.snapshot()).toEqual(tx.snapshot());
   });
 
+
   it('retains response instance and provider response metadata in canonical schema round trips', () => {
     const frame = transcriptOperationSchema.parse({ op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'item-fixture', text: 'fixture summary', responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
     expect(frame).toMatchObject({ frame: { responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
     const step = transcriptOperationSchema.parse({ op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 'step-fixture', turnId: 't0', ordinal: 1, state: 'completed', providerResponseId: 'response-fixture' } });
     expect(step).toMatchObject({ step: { providerResponseId: 'response-fixture' } });
+  });
+
+
+  it('classifies same-model resume, effort changes, context rebuilds and real model switches without changing the journal', () => {
+    const adapter = new TranscriptWireAdapter('child');
+    adapter.add({ type: 'profile.bind', modelAlias: 'example/model', thinkingEffort: 'high', time: 1 });
+    const restored = new TranscriptWireAdapter('child');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    const change = (operationId: string, thinking: string, mode = 'direct', toModel = 'example/model') => {
+      const facts = restored.add({ type: 'agent.model_switch', operationId, fromModel: 'example/model', toModel, thinking, mode, oldEpoch: 0, newEpoch: mode === 'direct' ? 0 : 1 });
+      return facts[0]?.operations[0];
+    };
+    expect(change('resume:parent:1', 'high')).toMatchObject({ item: { payload: { change: 'resume', state: 'completed' } } });
+    restored.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'pending' } } });
+    expect(change('resume:parent:2', 'low')).toMatchObject({ item: { payload: { change: 'effort' } } });
+    expect(restored.add({ type: 'prompt.model_switch_status', receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'completed', binding: { thinking: 'low' } } })[0]?.operations[0]).toMatchObject({ item: { payload: { change: 'effort', state: 'completed' } } });
+    expect(change('resume:parent:3', 'low', 'fresh')).toMatchObject({ item: { payload: { change: 'context' } } });
+    expect(change('resume:parent:4', 'low', 'direct', 'example/other')).toMatchObject({ item: { payload: { change: 'model' } } });
   });
 
   it('projects notes metadata alongside todos, including notes-only writes and restored checkpoints', () => {
@@ -3068,6 +3149,55 @@ describe('TranscriptWireAdapter', () => {
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
   });
 
+  it('retains prompt-bound controls on the same message through queue moves and cold replay', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', profile: 'example-profile', execution: { executor: 'native', profile: 'example-profile' }, planMode: false };
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'bound-message', userMessageId: 'bound-message', message: { id: 'bound-message', origin: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] }, execution: { ...runtimeControls, goalObjective: 'not a public binding field' }, queueIndex: 0, time: 1000 },
+      { type: 'prompt.moved', queuedPromptIds: ['bound-message'], time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'bound-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('bound-message')).toMatchObject({ runtimeControls, status: 'running' });
+    expect(transcript.getPrompt('bound-message')?.runtimeControls).not.toHaveProperty('goalObjective');
+    expect(transcript.getItems()).toEqual([]);
+  });
+
+  it('keeps producer profile_file through cold replay and the wire adapter checkpoint', () => {
+    const runtimeControls = {
+      model: 'example/new',
+      execution: { executor: 'claude-acp', profile_file: 'C:/profiles/example.md', overrides: { permission_mode: 'manual' as const } },
+    };
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    new TranscriptFactReducer(transcript).apply(adapter.add({
+      type: 'prompt.enqueued', promptId: 'profile-file', userMessageId: 'profile-file',
+      message: { id: 'profile-file', origin: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] },
+      execution: { ...runtimeControls, goalObjective: 'not a public binding field' }, queueIndex: 0, time: 1000,
+    }));
+    expect(transcript.getPrompt('profile-file')?.runtimeControls).toEqual(runtimeControls);
+    const checkpoint = JSON.parse(JSON.stringify(adapter.checkpoint()));
+    expect(checkpoint.prompts).toContainEqual(['profile-file', expect.objectContaining({ runtimeControls })]);
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(checkpoint);
+    expect(restored.checkpoint().prompts).toContainEqual(['profile-file', expect.objectContaining({ runtimeControls })]);
+  });
+
+  it('keeps message-bound controls with separate request identity and presentation across replacement', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', execution: { executor: 'native' } };
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'continue' }] };
+    const content = [{ type: 'text' as const, text: 'continue', presentation }];
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'retry-request', userMessageId: 'logical-message', message: { id: 'logical-message', origin: { kind: 'user' }, content }, execution: runtimeControls, queueIndex: 0, revision: 0, time: 1000 },
+      { type: 'prompt.replaced', promptId: 'retry-request', content, revision: 1, time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'retry-request', userMessageId: 'logical-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('retry-request')).toMatchObject({
+      userMessageId: 'logical-message', content, runtimeControls, revision: 1, status: 'running',
+    });
+    expect(transcript.getPrompt('logical-message')).toBeUndefined();
+  });
+
   it('recovers the prompt queue content, timing and order from durable wire facts', () => {
     const transcript = replay([
       {
@@ -3223,7 +3353,64 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
   });
 
-  it('hides non-user-origin prompts from replay, tail records and checkpoint restore', () => {
+  it('preserves scheduled queue content and origin across moves and checkpoint restore', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'scheduled-1', userMessageId: 'scheduled-1', message: { origin: { kind: 'cron_job' }, content }, createdAt: '2026-01-01T00:00:00.000Z', queueIndex: 0 }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'queued', queuePosition: 1 });
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(transcript.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed' }));
+    expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
+  });
+
+  it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-1',
+      userMessageId: 'scheduled-1',
+      message: { origin: { kind: 'cron_job', deliveryMode }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({
+      originKind: 'cron_job',
+      originDeliveryMode: deliveryMode,
+      status: 'queued',
+      queuePosition: 1,
+    });
+  });
+
+  it('leaves a scheduled record with no delivery mode undefined rather than defaulting it', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    new TranscriptFactReducer(transcript).apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-legacy',
+      userMessageId: 'scheduled-legacy',
+      message: { origin: { kind: 'cron_job' }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    const prompt = transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-legacy');
+    expect(prompt?.originKind).toBe('cron_job');
+    expect(prompt?.originDeliveryMode).toBeUndefined();
+  });
+
+  it('hides other non-user-origin prompts from replay, tail records and checkpoint restore', () => {
     const records: TranscriptWireRecord[] = [
       {
         type: 'prompt.enqueued',
@@ -3233,8 +3420,8 @@ describe('TranscriptWireAdapter', () => {
         createdAt: '2026-06-09T00:00:00.000Z',
         message: {
           id: 'mc1',
-          origin: { kind: 'cron_job', jobId: 'j1', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false },
-          content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }],
+          origin: { kind: 'system_trigger', name: 'internal' },
+          content: [{ type: 'text', text: 'internal prompt' }],
         },
         alreadyMaterialized: false,
         appendTiming: 'agent_idle',
@@ -3389,7 +3576,7 @@ describe('TranscriptWireAdapter', () => {
   it.each([
     { origin: { kind: 'cron_job', jobId: 'j1' }, promptId: 'p-cron' },
     { origin: { kind: 'agent_message', senderAgentId: 'peer' }, promptId: 'p-mailbox' },
-  ])('retains the $origin.kind turn id for abort without revealing a hidden prompt', ({ origin, promptId }) => {
+  ])('retains the $origin.kind turn id for abort without revealing internal turn text', ({ origin, promptId }) => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
@@ -3405,13 +3592,14 @@ describe('TranscriptWireAdapter', () => {
       input: [{ type: 'text', text: 'internal trigger' }], time: 2_000,
     }));
     const running = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
-    expect(running.prompts).toEqual([]);
+    const expectedPrompts = origin.kind === 'cron_job' ? [expect.objectContaining({ promptId, originKind: 'cron_job', content: [{ type: 'text', text: 'internal trigger' }] })] : [];
+    expect(running.prompts).toEqual(expectedPrompts);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'running', promptId });
     expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
 
     reducer.apply(adapter.add({ type: 'turn.ended', turnId: 0, reason: 'cancelled', time: 3_000 }));
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', promptId });
-    expect(transcript.snapshot().prompts).toEqual([]);
+    expect(transcript.snapshot().prompts).toEqual(expectedPrompts);
   });
 });
 
@@ -4194,6 +4382,17 @@ describe('AgentTranscriptDraft differential replay', () => {
 });
 
 describe('wire model binding facts', () => {
+  it('projects a canonical committed binding immediately without reviving a pending selection', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high' }));
+    reducer.apply(adapter.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', state: 'pending', mode: 'direct' } } }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'high' });
+    reducer.apply(adapter.add({ type: 'agent.model_switch', operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', thinking: 'max', mode: 'direct' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/new', thinkingEffort: 'max' });
+    expect(transcript.getItems()[0]).toMatchObject({ marker: 'model.switch', payload: { state: 'preparing' } });
+  });
   it('restores model and effort metadata while marking only alias changes and never copying configuration prompts', () => {
     const adapter = new TranscriptWireAdapter('main');
     const transcript = new AgentTranscript('main');
@@ -4280,11 +4479,11 @@ it('preserves subagent task effort and provenance through wire and schema projec
     { type: 'task.terminated', time: 2, info: { kind: 'agent', taskId: 'task', agentId: 'child', status: 'completed', description: 'work', startedAt: 1, endedAt: 2, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' } },
   ];
   for (const record of records) {
-    const ops = adapter.add(record).flatMap((fact) => fact.operations);
-    const task = ops.find((op) => op.op === 'task.upsert');
+    const ops = adapter.add(record).flatMap(fact => fact.operations);
+    const task = ops.find(op => op.op === 'task.upsert');
     expect(task?.op).toBe('task.upsert');
     expect(transcriptOperationSchema.parse(task)).toMatchObject({ task: { thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp' } });
   }
-  const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap((fact) => fact.operations).find((op) => op.op === 'task.upsert');
+  const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap(fact => fact.operations).find(op => op.op === 'task.upsert');
   expect(legacy?.op === 'task.upsert' ? legacy.task.thinkingEffort : 'missing').toBeUndefined();
 });

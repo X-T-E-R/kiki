@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Readable, Writable } from 'node:stream';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -17,7 +17,7 @@ import {
   AgentExecutorRegistryService,
   descriptorRevisionFromConfig,
 } from '#/app/agentExecutor/agentExecutorRegistryService';
-import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
+import { compareExecutorBinaryCandidates, parseModelProbeOutput, probeExecutorModelCatalog } from '#/app/agentExecutor/binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import {
@@ -115,10 +115,10 @@ describe('AgentExecutorRegistryService', () => {
       get: async () => undefined } as unknown as IAtomicTomlDocumentStore);
   });
 
-  afterEach(() => {
-    provider?.dispose();
+  afterEach(async () => {
+    await provider?.dispose();
     provider = undefined;
-    services.dispose();
+    await services.dispose();
   });
 
   it('normalizes the native executor when no descriptor is configured', () => {
@@ -198,6 +198,118 @@ describe('AgentExecutorRegistryService', () => {
     command = 'replacement-acp';
     expect(registry.negotiated('test', '1.0')).toBeUndefined();
     expect(registry.lastNegotiated('test')).toBeUndefined();
+  });
+
+  it('projects typed capability catalog state without treating an unverified version as ready', () => {
+    const config = { ...configWith({}), get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? ({ test: {
+      protocol: 'acp-v1', command: 'test-acp', args: [],
+    } }) as T : undefined as T };
+    const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
+    registry.recordNegotiated('test', '1.0', { models: ['one'], thinkingLevels: ['medium'] });
+    expect(registry.getExecutorCapabilityCatalog?.('test')).toMatchObject({
+      source: 'negotiated', version: '1.0',
+      models: { state: 'unknown' }, thinkingLevels: { state: 'unknown' },
+    });
+    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
+      models: { state: 'ready', values: ['one'] }, thinkingLevels: { state: 'ready', values: ['medium'] },
+    });
+    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '2.0' })).toBeUndefined();
+    registry.recordExecutorCapabilityCatalog?.({
+      executorId: 'test', descriptorRevision: registry.get('test')!.revision, version: '1.0',
+      source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+      models: { state: 'partial', values: ['one'], diagnostic: 'credential state is unknown' },
+      thinkingLevels: { state: 'unknown' },
+      context: { state: 'unknown' },
+      controls: { modelSwitch: { applicability: 'unknown', applyState: 'unknown' }, thinkingSwitch: { applicability: 'unknown', applyState: 'unknown' }, manualCompact: { applicability: 'unknown', applyState: 'unknown' } },
+    });
+    expect(registry.getExecutorCapabilityCatalog?.('test', { version: '1.0' })).toMatchObject({
+      models: { state: 'partial' }, thinkingLevels: { state: 'unknown' },
+    });
+  });
+
+  it('projects explicit AGY control contracts as fresh-binding or unsupported without inferring effort live support', () => {
+    const config = { ...configWith({}), get: <T>(domain: string) => domain === AGENT_EXECUTORS_SECTION ? ({ agy: {
+      protocol: 'acp-v1', command: 'agy-acp', args: [], model_binding: 'session_config',
+      controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
+    } }) as T : undefined as T };
+    const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
+    registry.recordNegotiated('agy', '0.1.0', { models: ['gemini'], thinkingLevels: ['medium'] });
+    expect(registry.getExecutorCapabilityCatalog?.('agy', { version: '0.1.0' })?.controls).toEqual({
+      modelSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'unknown' },
+      thinkingSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'unknown' },
+      manualCompact: { advertised: false, applicability: 'unsupported', applyState: 'unsupported' },
+    });
+  });
+
+  it('validates only confirmed external models and efforts, never partial catalog values', () => {
+    provider = registerAgentExecutorProvider({
+      id: 'catalog-provider', protocol: 'catalog-v1', validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }), create: () => { throw new Error('not used'); },
+    });
+    const config = configWith({ catalog: { protocol: 'catalog-v1', command: 'catalog', args: [] } });
+    const registry = new AgentExecutorRegistryService(config, processService, fs, bootstrap);
+    const descriptorRevision = registry.get('catalog')!.revision;
+    registry.recordExecutorCapabilityCatalog?.({
+      executorId: 'catalog', descriptorRevision, version: '1.0', source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+      models: { state: 'ready', values: ['agy-model'] }, thinkingLevels: { state: 'ready', values: ['medium'] },
+      context: { state: 'unknown' },
+      controls: { modelSwitch: { applicability: 'unknown', applyState: 'unknown' }, thinkingSwitch: { applicability: 'unknown', applyState: 'unknown' }, manualCompact: { applicability: 'unknown', applyState: 'unknown' } },
+    });
+    expect(registry.validateBinding('catalog', {}, { modelAlias: 'missing', thinkingEffort: 'medium' })).toMatchObject({
+      ok: false, diagnostic: expect.stringContaining('does not advertise model "missing"'),
+    });
+    expect(registry.validateBinding('catalog', {}, { modelAlias: 'agy-model', thinkingEffort: 'high' })).toMatchObject({
+      ok: false, diagnostic: expect.stringContaining('does not advertise thinking effort "high"'),
+    });
+    registry.recordExecutorCapabilityCatalog?.({
+      executorId: 'catalog', descriptorRevision, version: '1.0', source: 'cli_probe', provenance: 'read_only_cli_probe', observedAt: Date.now(),
+      models: { state: 'partial', values: ['agy-model'] }, thinkingLevels: { state: 'unknown' },
+      context: { state: 'unknown' },
+      controls: { modelSwitch: { applicability: 'unknown', applyState: 'unknown' }, thinkingSwitch: { applicability: 'unknown', applyState: 'unknown' }, manualCompact: { applicability: 'unknown', applyState: 'unknown' } },
+    });
+    expect(registry.validateBinding('catalog', {}, { modelAlias: 'missing', thinkingEffort: 'high' })).toMatchObject({ ok: true });
+  });
+
+  it('runs a bounded shell-free tab model probe and never exposes probe output', async () => {
+    const calls: Array<{ command: string; args: readonly string[]; shell?: boolean; timeout?: number }> = [];
+    const process = {
+      spawn: async (command: string, args: readonly string[], options: { shell?: boolean; timeout?: number }) => {
+        calls.push({ command, args, shell: options.shell, timeout: options.timeout });
+        return {
+          _serviceBrand: undefined, pid: 1, exitCode: 0, stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+          stdout: Readable.from([args[0] === '--version' ? 'agy 1.3.1\n' : 'gemini-3.8-flash-medium\tmedium\ngemini-3.8-flash-low\tlow\n']),
+          stderr: Readable.from(['secret-token-must-not-escape']), wait: async () => { await new Promise<void>((resolve) => setImmediate(resolve)); return 0; },
+          kill: async () => {}, dispose: async () => {},
+        };
+      },
+    } as unknown as IHostProcessService;
+    const result = await probeExecutorModelCatalog({
+      id: 'agy-cli-909', protocol: 'acp-v1', command: 'agy.exe', args: [], revision: 'r1',
+      modelProbe: { args: ['models'], format: 'tab', versionProbe: { args: ['--version'] }, timeoutMs: 2_000, maxOutputBytes: 1_024 },
+    }, { id: 'command', kind: 'path-lookup', available: true, command: 'agy.exe', version: '1.3.1' }, process,
+      { stat: async () => ({ isFile: true, isDirectory: false, size: 1 }) } as unknown as IHostFileSystem,
+      { platform: 'win32', osHomeDir: 'C:/Users/example', getEnv: (name: string) => name === 'PATH' ? 'C:/bin' : undefined } as IBootstrapService);
+    expect(result).toMatchObject({ command: 'C:/bin/agy.exe', programVersion: 'agy 1.3.1', models: { state: 'ready', values: ['gemini-3.8-flash-medium', 'gemini-3.8-flash-low'] } });
+    expect(calls).toEqual([
+      { command: 'C:/bin/agy.exe', args: ['--version'], shell: false, timeout: undefined },
+      { command: 'C:/bin/agy.exe', args: ['models'], shell: false, timeout: undefined },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('secret-token');
+  });
+
+  it('parses raw JSON metadata model IDs and round-trips the extraction path', () => {
+    const jsonPath = ['command', 'data', 'models'];
+    const output = JSON.stringify({ conversation_id: '', num_turns: 0, usage: { total_tokens: 0 },
+      command: { name: 'models', data: { models: [{ id: 'vendor-opus-high', label: 'Opus high' }, { id: 'vendor-opus-high' }, 'vendor-flash-medium'] } } });
+    expect(parseModelProbeOutput(output, 'json', jsonPath)).toEqual(['vendor-opus-high', 'vendor-flash-medium']);
+    expect(parseModelProbeOutput('["model","#local"]', 'json')).toEqual(['model', '#local']);
+    expect(parseModelProbeOutput('{invalid', 'json', jsonPath)).toEqual([]);
+    expect(parseModelProbeOutput(output, 'json', ['missing'])).toEqual([]);
+    const toml = { example: { protocol: 'acp-v1', command: 'vendor.exe', args: [],
+      model_probe: { args: ['--output-format', 'json', 'models'], format: 'json', json_path: jsonPath } } };
+    const parsed = agentExecutorsFromToml(toml);
+    expect(agentExecutorsToToml(parsed)).toEqual(toml);
+    expect(AgentExecutorsConfigSchema.parse(parsed)['example']?.modelProbe).toMatchObject({ format: 'json', jsonPath });
   });
 
   it('treats a declared revision as a salt instead of replacing the descriptor digest', () => {
@@ -413,6 +525,8 @@ describe('AgentExecutorRegistryService', () => {
           args: ['acp'],
           env: { CURSOR_CONFIG_DIR: 'C:/cursor' },
           startup_timeout_ms: 70_000,
+          model_probe: { command: 'agy.exe', args: ['models'], format: 'tab', version_probe: { args: ['--version'] }, timeout_ms: 2_000, max_output_bytes: 4_096 },
+          control_capabilities: { model_switch: 'fresh_binding', thinking_switch: 'fresh_binding', manual_compact: 'unsupported' },
           model_binding: 'argv',
           model_args: ['--model', '{model}'],
           permission_mode_mapping: {
@@ -432,6 +546,8 @@ describe('AgentExecutorRegistryService', () => {
       args: ['acp'],
       env: { CURSOR_CONFIG_DIR: 'C:/cursor' },
       startupTimeoutMs: 70_000,
+      modelProbe: { command: 'agy.exe', args: ['models'], format: 'tab', versionProbe: { args: ['--version'] }, timeoutMs: 2_000, maxOutputBytes: 4_096 },
+      controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
       modelBinding: 'argv',
       modelArgs: ['--model', '{model}'],
       permissionModeMapping: {
@@ -442,6 +558,10 @@ describe('AgentExecutorRegistryService', () => {
       },
       revision: 'r1',
     });
+    expect(agentExecutorsToToml(parsed)).toMatchObject({ cursor: {
+      model_probe: { command: 'agy.exe', args: ['models'], format: 'tab', version_probe: { args: ['--version'] }, timeout_ms: 2_000, max_output_bytes: 4_096 },
+      control_capabilities: { model_switch: 'fresh_binding', thinking_switch: 'fresh_binding', manual_compact: 'unsupported' },
+    } });
     expect(() => AgentExecutorsConfigSchema.parse({
       cursor: {
         protocol: 'acp-v1',
@@ -467,13 +587,15 @@ describe('AgentExecutorRegistryService', () => {
     } });
   });
 
-  it('validates and round-trips agent executor launch overrides', () => {
+  it('validates and round-trips agent executor launch and display overrides', () => {
     const toml = {
       'codex-acp': {
         bin_path: 'C:/tools/codex.exe',
         home_dir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        show_in_profile_list: false,
+        defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     };
     const runtime = AgentExecutorOverridesSchema.parse(agentExecutorOverridesFromToml(toml));
@@ -484,11 +606,28 @@ describe('AgentExecutorRegistryService', () => {
         homeDir: 'C:/codex-home',
         env: { CODEX_TOKEN: 'fixture-token' },
         args: ['--profile', 'fixture'],
+        showInProfileList: false,
+        defaults: { model_alias: 'vendor-model', thinking_effort: 'high', permission_mode: 'auto', kiki_context: [], allow_kiki_subagents: false },
       },
     });
     expect(agentExecutorOverridesToToml(runtime)).toEqual(toml);
     expect(AgentExecutorOverrideSchema.safeParse({ binPath: 'x', unsupported: true }).success).toBe(false);
     expect(AgentExecutorOverridesSchema.safeParse({ 'codex-acp': { env: { TOKEN: 1 } } }).success).toBe(false);
+    expect(AgentExecutorOverrideSchema.safeParse({ showInProfileList: 'false' }).success).toBe(false);
+  });
+
+  it('removes null harness defaults while preserving explicit empty and false settings', async () => {
+    const { ConfigRegistry } = await import('#/app/config/configService');
+    const registry = new ConfigRegistry();
+    try {
+      const base = { 'example-acp': { binPath: 'fixture', defaults: { model_alias: 'old-model', thinking_effort: 'high',
+        kiki_context: ['memory'], allow_kiki_subagents: true } } };
+      const merged = registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, base,
+        { 'example-acp': { defaults: { model_alias: null, thinking_effort: null, kiki_context: [], allow_kiki_subagents: false } } }));
+      expect(merged).toEqual({ 'example-acp': { binPath: 'fixture', defaults: { kiki_context: [], allow_kiki_subagents: false } } });
+      expect(registry.validate(AGENT_EXECUTOR_OVERRIDES_SECTION, registry.merge(AGENT_EXECUTOR_OVERRIDES_SECTION, merged,
+        { 'example-acp': { defaults: null } }))).toEqual({ 'example-acp': { binPath: 'fixture' } });
+    } finally { await registry.dispose(); }
   });
 
   it('maps an override home and environment into the executor process environment', () => {

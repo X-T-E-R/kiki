@@ -123,7 +123,7 @@ describe('facade routing', () => {
       await expect(dedicated).resolves.toEqual({ decision: 'approved' });
     } finally {
       await klient.close();
-      ix.dispose();
+      await ix.dispose();
     }
   });
   it('admits a potentially slow resume without the generic call deadline and preserves missing-session results', async () => {
@@ -627,6 +627,18 @@ describe('session skills routing', () => {
     ]);
   });
 
+  it('shuts down only the addressed agent execution and omits an unset reason', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('child-1');
+    await agent.shutdownExecution('failed-external-cleanup');
+    await agent.shutdownExecution();
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'shutdown', args: ['failed-external-cleanup'] },
+      { scope: { sessionId: 's1', agentId: 'child-1' }, service: 'agentExecutionService', method: 'shutdown', args: [] },
+    ]);
+  });
+
   it('getContext merges the contextMemory and tokenCounting reads', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -672,6 +684,43 @@ describe('agent mcp / compaction routing', () => {
       args: [],
     });
     expect(channel.calls).toHaveLength(1);
+  });
+
+  it('routes locator-addressed MCP session capability reads and overrides', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    const capability = {
+      locator: { source: 'global', name: 'mock' },
+      runtimeName: 'mock',
+      origin: 'global',
+      config: { transport: 'stdio', command: 'mock-mcp' },
+      authStatus: 'not-applicable',
+      connection: 'connected',
+      override: 'inherit',
+    };
+    channel.results.set('agentMcpService.listMcpSessionCapabilities', [capability]);
+    channel.results.set('agentMcpService.setMcpSessionOverride', { ...capability, override: 'off', connection: 'disabled' });
+
+    await expect(agent.listMcpSessionCapabilities()).resolves.toEqual([capability]);
+    await expect(agent.setMcpSessionOverride({
+      locator: { source: 'global', name: 'mock' },
+      override: 'off',
+    })).resolves.toMatchObject({ connection: 'disabled', override: 'off' });
+    expect(channel.calls.slice(-2)).toEqual([
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentMcpService',
+        method: 'listMcpSessionCapabilities',
+        args: [],
+      },
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentMcpService',
+        method: 'setMcpSessionOverride',
+        args: [{ locator: { source: 'global', name: 'mock' }, override: 'off' }],
+      },
+    ]);
   });
 
   it('compact issues a manual begin with the optional instruction', async () => {
@@ -765,9 +814,10 @@ describe('agent domain routing', () => {
     channel.results.set('agentTaskService.detach', undefined);
     channel.results.set('agentFullCompactionService.isCompacting', false);
     channel.results.set('agentContextRebuildService.rebuild', {
-      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       changed: true,
-      changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, injections: false },
+      changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, mcp: false, injections: false },
+      readiness: { mcp: [], plugins: { state: 'ready', errors: [] } },
     });
 
     await agent.activatePluginCommand({ pluginId: 'plugin', commandName: 'command', args: 'arg' });

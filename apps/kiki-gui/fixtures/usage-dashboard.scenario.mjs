@@ -173,9 +173,30 @@ function mergeByKey(groups) {
     prev.cost_unknown ||= entry.cost_unknown;
     if (prev.model_alias !== entry.model_alias) prev.model_alias = null;
     if (prev.provider !== entry.provider) prev.provider = null;
+    if (prev.profile_name !== entry.profile_name) prev.profile_name = null;
   }
   return [...merged.values()].sort((left, right) => right.cost_usd_estimated - left.cost_usd_estimated);
 }
+
+const providerFiveHourTrend = fiveHourTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.map((entry) => group(
+    keyByAttribution('provider', entry.provider),
+    entry.tokens,
+    entry.cost_usd_estimated,
+    { provider: entry.provider, model_alias: entry.model_alias, cost_unknown: entry.cost_unknown },
+  ))),
+}));
+
+const profileFiveHourTrend = fiveHourTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.map((entry) => group(
+    keyByAttribution('profile', entry.profile_name ?? 'general'),
+    entry.tokens,
+    entry.cost_usd_estimated,
+    { provider: entry.provider, model_alias: entry.model_alias, profile_name: entry.profile_name ?? 'general' },
+  ))),
+}));
 
 const agentDayTrend = dayTrend.map((bucket) => ({
   ...bucket,
@@ -213,6 +234,99 @@ const agentDayTrend = dayTrend.map((bucket) => ({
         cost_unknown: entry.cost_unknown,
       }),
     ];
+  })),
+}));
+
+// Like kap-server, the native provider and profile dimensions key by an
+// opaque identity derived from the record's own attribution: `provider:"x"` /
+// `profile:"x"`, and `unknown` only when the record has none.
+function keyByAttribution(prefix, value) {
+  return value === null || value === undefined ? 'unknown' : `${prefix}:${JSON.stringify(value)}`;
+}
+
+const priorDayTrend = dayTrend.map((bucket, index) => ({
+  ...dayBucket(20 - (dayTrend.length - 1 - index) * 2, bucket.groups.map((entry) => group(
+    entry.key,
+    entry.tokens,
+    Math.round(entry.cost_usd_estimated * 0.6 * 100) / 100,
+    { provider: entry.provider, model_alias: entry.model_alias, profile_name: entry.profile_name, cost_unknown: entry.cost_unknown },
+  )), drilldown([])),
+}));
+
+const priorProviderDayTrend = priorDayTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.map((entry) => group(
+    keyByAttribution('provider', entry.provider),
+    entry.tokens,
+    entry.cost_usd_estimated,
+    { provider: entry.provider, model_alias: entry.model_alias, cost_unknown: entry.cost_unknown },
+  ))),
+}));
+
+const priorFiveHourTrend = fiveHourTrend.map((bucket, index) => fiveHourBucket(
+  index + 10,
+  bucket.groups.map((entry) => group(
+    entry.key,
+    entry.tokens,
+    Math.round(entry.cost_usd_estimated * 0.6 * 100) / 100,
+    { provider: entry.provider, model_alias: entry.model_alias, profile_name: entry.profile_name, cost_unknown: entry.cost_unknown },
+  )),
+  drilldown([]),
+));
+
+const priorProviderFiveHourTrend = priorFiveHourTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.map((entry) => group(
+    keyByAttribution('provider', entry.provider),
+    entry.tokens,
+    entry.cost_usd_estimated,
+    { provider: entry.provider, model_alias: entry.model_alias, cost_unknown: entry.cost_unknown },
+  ))),
+}));
+
+const providerDayTrend = dayTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.flatMap((entry) => [group(
+    keyByAttribution('provider', entry.provider),
+    entry.tokens,
+    entry.cost_usd_estimated,
+    {
+      provider: entry.provider,
+      model_alias: entry.model_alias,
+      cost_unknown: entry.cost_unknown,
+    },
+  )])),
+}));
+
+const profileDayTrend = dayTrend.map((bucket) => ({
+  ...bucket,
+  groups: mergeByKey(bucket.groups.flatMap((entry) => {
+    // Split each model's day between two roles so the profile axis reads a
+    // real ranking rather than one row.
+    const profiles = entry.profile_name === null
+      ? [null]
+      : [entry.profile_name, 'explore'];
+    const share = profiles.length;
+    return profiles.map((profile, index) => {
+      const ratio = (index + 1) / share;
+      const main = tok(
+        Math.round(entry.tokens.input_other * ratio),
+        Math.round(entry.tokens.output * ratio),
+        Math.round(entry.tokens.input_cache_read * ratio),
+        Math.round(entry.tokens.input_cache_creation * ratio),
+      );
+      return group(
+        keyByAttribution('profile', profile),
+        main,
+        Math.round(entry.cost_usd_estimated * ratio * 100) / 100,
+        {
+          provider: entry.provider,
+          model_alias: entry.model_alias,
+          profile_name: profile,
+          cost_unknown: entry.cost_unknown,
+        },
+      );
+    });
   })),
 }));
 
@@ -294,7 +408,27 @@ function sumTokens(items) {
 /** Exported so other scenarios (e.g. `skins`) can show a populated /usage. */
 export const usageV2 = {
   trend: { day: dayTrend, five_hour: fiveHourTrend },
-  trendByDimension: { agent: { day: agentDayTrend }, project: { day: projectDayTrend } },
+  trendByDimension: {
+    agent: { day: agentDayTrend },
+    project: { day: projectDayTrend },
+    provider: {
+      day: providerDayTrend,
+      five_hour: providerFiveHourTrend,
+      // A comparison window lands before the current range; these buckets are
+      // what that read answers with.
+      prior: { day: priorProviderDayTrend, five_hour: priorProviderFiveHourTrend },
+      priorDay: { day: priorProviderDayTrend },
+      priorFiveHour: { five_hour: priorProviderFiveHourTrend },
+    },
+    profile: { day: profileDayTrend, five_hour: profileFiveHourTrend },
+    priorDay: { day: priorDayTrend },
+    priorFiveHour: { five_hour: priorFiveHourTrend },
+  },
+  providerByModel: {
+    [K2]: 'kimi',
+    [SONNET]: 'anthropic',
+    'mystery-9': 'local',
+  },
   summary: {
     tokens: sumTokens(sessionItems),
     cost_usd_estimated: Math.round(sessionItems.reduce((sum, item) => sum + item.usage.cost_usd_estimated, 0) * 10000) / 10000,
@@ -317,6 +451,10 @@ export const usageV2 = {
     }),
   ],
   reliability: {
+    // The seeded fleet is fully scanned; the one unpriced model is a pricing
+    // gap, not a coverage gap, so coverage stays complete.
+    complete: true,
+    usage_coverage: { known_records: 412, missing_records: 0, legacy_zero_records: 0 },
     coverage: { earliest_at: dayStart(31), latest_at: msAgo(2) },
     scanned_sessions: sessionItems.length,
     incomplete_sessions: 0,

@@ -117,8 +117,11 @@ class FoldContextImpl implements FoldContext {
     this.pendingClear = true;
   }
 
-  undoToCheckpoint(count: number): void {
+  afterUndo: ((state: any) => any) | undefined;
+
+  undoToCheckpoint(count: number, afterUndo?: (state: any) => any): void {
     this.pendingUndo = count;
+    this.afterUndo = afterUndo;
   }
 
   emit(event: Event2<any>): void {
@@ -299,8 +302,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       for (const { key, fold } of folds) {
         const meta = this.ensureMeta(key);
         const ctx = new FoldContextImpl(this, silent);
-        const [next, patches, inversePatches] = produceWithPatches<any>(
-          this.agentState.get(key),
+        let previous = this.agentState.get(key);
+        let [next, patches, inversePatches] = produceWithPatches<any>(
+          previous,
           (draft: any) => fold(draft, event, ctx) as any,
         );
         if (ctx.pendingUndo !== undefined && patches.length > 0) {
@@ -316,7 +320,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         ) {
           ctx.pendingUndo = undefined;
         }
-        prepared.push({ key, meta, ctx, next, patches, inversePatches });
+        if (ctx.pendingUndo !== undefined && ctx.afterUndo !== undefined) {
+          const targetId = meta.checkpoints[meta.checkpoints.length - ctx.pendingUndo]!;
+          let restored = this.agentState.get(key);
+          for (let index = meta.history.length - 1; index >= 0 && meta.history[index]!.id > targetId; index--) {
+            restored = applyPatches(restored, [...meta.history[index]!.inversePatches]);
+          }
+          previous = restored;
+          [next, patches, inversePatches] = produceWithPatches<any>(restored, ctx.afterUndo);
+        }
+        const compacted = compactArrayReplacement(previous, next, patches, inversePatches);
+        prepared.push({ key, meta, ctx, next, ...compacted });
       }
     }
     for (const p of prepared) {
@@ -349,7 +363,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const targetId = meta.checkpoints[targetIndex]!;
       this.rollback(key, meta, targetId);
       meta.checkpoints = meta.checkpoints.slice(0, targetIndex);
-      return;
+      if (ctx.afterUndo === undefined) return;
     }
     this.agentState.set(key, next);
     if (ctx.pendingClear) {
@@ -494,7 +508,12 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         if (saved?.name !== key.name || !isStateMeta(saved.meta)) return false;
         const parsed = key.replayable.schema.safeParse(saved.value);
         if (!parsed.success) return false;
-        restored.push({ key, value: parsed.data, meta: saved.meta });
+        const meta: StateMeta = saved.meta;
+        meta.history = meta.history.map((entry) => ({
+          ...entry,
+          ...compactArrayReplacement(entry.inversePatches[0]?.value, entry.patches[0]?.value, entry.patches, entry.inversePatches),
+        }));
+        restored.push({ key, value: parsed.data, meta });
       }
       for (const entry of restored) {
         this.agentState.set(entry.key, Object.freeze(entry.value));
@@ -575,6 +594,48 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   async flush(): Promise<void> {
     await this.wire.flush();
   }
+}
+
+function compactArrayReplacement(
+  previous: unknown,
+  next: unknown,
+  patches: PatchEntry['patches'],
+  inversePatches: PatchEntry['inversePatches'],
+): Pick<PreparedFold, 'patches' | 'inversePatches'> {
+  if (patches.length !== 1 || inversePatches.length !== 1 ||
+      patches[0]?.op !== 'replace' || patches[0].path.length > 0 ||
+      inversePatches[0]?.op !== 'replace' || inversePatches[0].path.length > 0 ||
+      !isDenseArray(previous) || !isDenseArray(next)) return { patches, inversePatches };
+  const forward: import('immer').Patch[] = [];
+  const backward: import('immer').Patch[] = [];
+  const shared = Math.min(previous.length, next.length);
+  for (let index = 0; index < shared; index++) {
+    if (Object.is(previous[index], next[index])) continue;
+    forward.push({ op: 'replace', path: [index], value: next[index] });
+    backward.push({ op: 'replace', path: [index], value: previous[index] });
+  }
+  for (let index = previous.length - 1; index >= next.length; index--) {
+    forward.push({ op: 'remove', path: [index] });
+  }
+  for (let index = shared; index < next.length; index++) {
+    forward.push({ op: 'add', path: [index], value: next[index] });
+  }
+  for (let index = next.length - 1; index >= previous.length; index--) {
+    backward.push({ op: 'remove', path: [index] });
+  }
+  for (let index = shared; index < previous.length; index++) {
+    backward.push({ op: 'add', path: [index], value: previous[index] });
+  }
+  return { patches: forward, inversePatches: backward };
+}
+
+function isDenseArray(value: unknown): value is readonly unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+      Reflect.ownKeys(value).length !== value.length + 1) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
 }
 
 function isStateMeta(value: unknown): value is StateMeta {

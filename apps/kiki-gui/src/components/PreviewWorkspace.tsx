@@ -57,6 +57,7 @@ import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
 import { ImageViewport } from './ImageViewport';
+import { DocumentTabView } from './preview/DocumentTabView';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -421,6 +422,7 @@ export function PreviewWorkspace({
             reportDirty={reportDirty}
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
+            sessionId={sessionId}
           />
         );
       })}
@@ -1153,7 +1155,7 @@ const PREVIEW_SCROLL_SELECTOR = '.cm-scroller, [data-preview-scroll], [data-imag
 type PreviewScrollPosition = { readonly top: number; readonly left?: number };
 
 function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPosition | undefined,
-  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined) {
+  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined, navigation?: FileReference) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const visitId = useNavVisitId();
   const positionRef = useRef(position);
@@ -1186,7 +1188,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
   }, [onReadingReady]);
   useEffect(() => {
     if (!visible) { appliedRef.current = null; return; }
-    if (ready === 0) return;
+    if (ready === 0 || navigation?.line !== undefined || navigation?.heading !== undefined) return;
     const identity = `${visitId ?? 'embedded'}\0${ready}`;
     if (appliedRef.current === identity) {
       const equal = (value: PreviewScrollPosition | undefined) => value?.top === position?.top && value?.left === position?.left;
@@ -1198,7 +1200,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
     // Ready comes from the renderer, not a DOM polling deadline. One layout
     // frame also lets a resident provider commit this visit's saved positions.
     const frame = requestAnimationFrame(() => {
-      const scroller = panelRef.current?.querySelector<HTMLElement>(PREVIEW_SCROLL_SELECTOR);
+      const scroller = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(PREVIEW_SCROLL_SELECTOR) ?? []).find((element) => element.closest('[hidden]') === null);
       const saved = positionRef.current;
       if (scroller !== undefined && scroller !== null && saved !== undefined) {
         scroller.scrollTop = saved.top;
@@ -1209,7 +1211,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
       pendingRef.current = false;
     });
     return () => { cancelAnimationFrame(frame); pendingRef.current = false; };
-  }, [visible, visitId, ready, position?.top, position?.left]);
+  }, [visible, visitId, ready, position?.top, position?.left, navigation]);
   return { panelRef, onReadingReady };
 }
 
@@ -1222,6 +1224,7 @@ function PreviewTabView({
   reportDirty,
   position,
   onScrollPosition,
+  sessionId,
 }: {
   readonly path: string;
   /** Session workspace cwd — the resource root an HTML preview is opened against. */
@@ -1233,9 +1236,14 @@ function PreviewTabView({
   /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
+  /** Which session's document renderer and asset route serve this file. */
+  readonly sessionId?: string;
 }) {
   const kind = previewKindOf(path);
-  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const openers = useFileOpeners();
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
   return (
     <div
       ref={panelRef}
@@ -1248,6 +1256,19 @@ function PreviewTabView({
         <ImageTabView path={path} onOpenImage={onOpenImage} />
       ) : kind === 'video' ? (
         <VideoTabView path={path} />
+      ) : kind === 'audio' ? (
+        <AudioTabView path={path} scopeId={connection?.scopeId} />
+      ) : kind === 'pdf' || kind === 'office' ? (
+        <DocumentTabView
+          source={{ kind: 'workspace', path }}
+          sessionId={sessionId}
+          client={connection?.client}
+          onOpenLocally={openers === null ? undefined : () => { openers.open(path); }}
+          onDownload={() => {
+            const target = connection?.client;
+            if (target !== undefined) void downloadHostFile(host, target, path, basenameOf(path));
+          }}
+        />
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
@@ -1419,6 +1440,107 @@ function BinaryTabView({ path }: { readonly path: string }) {
  * stretched to fill it. A container the runtime cannot decode (codec missing)
  * degrades to the binary fallback, whose opener buttons are the recovery.
  */
+/**
+ * Audio tab: read the original host bytes once, then hand the resulting blob
+ * URL to the browser's native player. A failed read stays actionable so the
+ * same tab can retry; a browser decode failure uses the ordinary file fallback.
+ */
+function AudioTabView({ path, scopeId }: { readonly path: string; readonly scopeId?: string }) {
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const name = basenameOf(path);
+  const [attempt, setAttempt] = useState(0);
+  const [unplayable, setUnplayable] = useState(false);
+  const [state, setState] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'error' }
+    | {
+      readonly status: 'ready';
+      readonly client: KikiClient;
+      readonly path: string;
+      readonly scopeId: string | undefined;
+      readonly url: string;
+      readonly size: number;
+    }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    setUnplayable(false);
+    if (client === undefined) {
+      setState({ status: 'error' });
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    setState({ status: 'loading' });
+    client.readHostFileBytes(path).then(
+      ({ bytes, mime }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setState({ status: 'ready', client, path, scopeId, url: objectUrl, size: bytes.byteLength });
+      },
+      () => {
+        if (!cancelled) setState({ status: 'error' });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attempt, client, path, scopeId]);
+
+  const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
+    ? state
+    : undefined;
+  if (unplayable) return <BinaryTabView path={path} />;
+
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {path}
+        </span>
+        {readyState !== undefined ? (
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-audio-meta>
+            {formatBytes(readyState.size)}
+          </span>
+        ) : null}
+        <HeaderFileActions path={path} name={name} />
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+        {readyState === undefined && state.status === 'loading' ? (
+          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('preview.loading')}
+          </p>
+        ) : readyState === undefined && state.status === 'error' ? (
+          <div className="flex items-center gap-2 text-[12.5px] text-danger">
+            <span>{t('preview.failed')}</span>
+            <button
+              type="button"
+              data-preview-audio-retry
+              onClick={() => { setAttempt((value) => value + 1); }}
+              className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : readyState !== undefined ? (
+          <audio
+            src={readyState.url}
+            controls
+            preload="metadata"
+            aria-label={name}
+            data-preview-audio
+            onError={() => { setUnplayable(true); }}
+            className="w-full max-w-2xl"
+          />
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 function VideoTabView({ path }: { readonly path: string }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;

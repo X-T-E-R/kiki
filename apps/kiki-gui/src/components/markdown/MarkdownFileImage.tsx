@@ -1,36 +1,70 @@
-import { useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 
-import { resolveFileReference, unwrapFileLinkTarget } from '@kiki/session-core/composer/media';
+import { resolveFileReference, unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
+import { parseDaemonFileRefFileId } from '@kiki/transcript';
 
+import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
+import { safeImagePreviewName } from '../imagePreviewName';
+import { MediaPart, useSessionMedia } from '../mediaParts';
+import { useMediaPreview } from '../mediaPreviewContext';
 
 type ImageProps = ComponentProps<'img'>;
 
-export function MarkdownFileImage({ src, documentDirectory, ...props }: ImageProps & {
-  documentDirectory: string;
+export function MarkdownFileImage({ src, alt, title: _title, node: _node, documentDirectory, ...props }: ImageProps & {
+  documentDirectory?: string;
+  node?: unknown;
 }) {
   const client = useOptionalConnection()?.client;
+  const preview = useMediaPreview();
+  const { t } = useI18n();
   const target = typeof src === 'string' ? unwrapFileLinkTarget(src) ?? src : undefined;
+  const directory = documentDirectory ?? preview?.cwd;
   const path = useMemo(() => target === undefined
     ? undefined
-    : resolveFileReference(target.split(/[?#]/, 1)[0]!, documentDirectory)?.path, [target, documentDirectory]);
-  const [image, setImage] = useState<{ client: typeof client; path: string; url: string }>();
+    : resolveFileReference(target.split(/[?#]/, 1)[0]!, directory)?.path, [target, directory]);
+  const [attempt, setAttempt] = useState(0);
+  const [failure, setFailure] = useState(false);
 
-  useEffect(() => {
-    if (path === undefined || client === undefined) return;
-    let active = true;
-    let objectUrl: string | undefined;
-    void client.readHostFileBytes(path).then(({ bytes, mime }) => {
-      if (!active || !mime.startsWith('image/')) return;
-      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime }));
-      setImage({ client, path, url: objectUrl });
-    }).catch(() => undefined);
-    return () => {
-      active = false;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-    };
-  }, [client, path]);
+  const fileId = target === undefined ? undefined : parseDaemonFileRefFileId(target);
+  const localPath = fileId === undefined ? path : undefined;
+  const mediaItem = useMemo<MediaRef>(() => ({ kind: 'image', path: localPath }), [localPath]);
+  const load = useSessionMedia(mediaItem, preview?.sessionId, localPath !== undefined && client !== undefined, true, attempt);
+  if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
 
-  if (path !== undefined) return <img {...props} src={image !== undefined && image.client === client && image.path === path ? image.url : undefined} />;
-  return <img {...props} src={src} />;
+  const name = safeImagePreviewName({ metadataName: load.status === 'ready' ? load.name : undefined, path });
+  const label = name ?? t('media.image');
+  const description = safeImagePreviewName({ name: alt }) ?? label;
+
+  if (path !== undefined && (load.status === 'failed' || failure)) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setFailure(false);
+          setAttempt((value) => value + 1);
+        }}
+        className="text-[12px] text-ink-faint hover:text-ink hover:underline"
+      >
+        {t('preview.failed')} · {t('transcript.detail.retry')}
+      </button>
+    );
+  }
+
+  const url = path === undefined ? src : load.status === 'ready' ? load.url : undefined;
+  const content = <img {...props} src={url} alt={description} decoding="async" onError={() => { setFailure(true); }} className="max-w-full h-auto" />;
+  if (preview === null) return content;
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      className="inline-block max-w-full bg-transparent p-0 align-middle focus-visible:outline-2 focus-visible:outline-selected-ink"
+      onClick={() => {
+        if (typeof url === 'string') preview.openImage(url, name);
+      }}
+    >
+      {content}
+    </button>
+  );
 }

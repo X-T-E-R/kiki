@@ -22,6 +22,8 @@ import { IModelPricingService } from '../pricing/modelPricingService';
 
 const DEFAULT_PAGE_SIZE = 50;
 const INDEX_PAGE_SIZE = 100;
+const CHECKPOINT_READ_CONCURRENCY = 8;
+const AGENT_STAT_CONCURRENCY = 16;
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERSISTENCE_SCOPE = 'cache/usage-aggregation-v1';
@@ -88,6 +90,19 @@ interface SessionCacheEntry {
   readonly persisted: PersistentSessionRecords;
   readonly complete: boolean;
   readonly bytes: number;
+  readonly view?: SessionCacheView;
+}
+
+interface SessionCacheView {
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly parts: readonly string[];
+}
+
+interface PreparedSession {
+  readonly persisted: PersistentSessionRecords;
+  readonly current: boolean;
+  readonly view: boolean;
 }
 
 interface WireCheckpoint {
@@ -132,6 +147,7 @@ interface NormalizedQuery {
   readonly dimension: UsageResponse['query']['dimension'];
   readonly models: readonly string[];
   readonly providers: readonly string[];
+  readonly profiles: readonly string[];
   readonly agentIds: readonly string[];
   readonly workspaceIds: readonly string[];
   readonly includeArchived: boolean;
@@ -189,7 +205,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for wire files produced through the managed append/rewrite stores. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
+/** Incremental usage projection for wire files produced through the managed append/rewrite stores. Bounded query views are read-only and never replace full incremental checkpoints. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
@@ -385,14 +401,41 @@ export class UsageAggregationService {
     };
     const listed = await this.listSessions(query, budget);
     const sessions: SessionRecords[] = [];
-    for (const summary of listed.items) {
+    sessionLoop: for (let offset = 0; offset < listed.items.length; offset += CHECKPOINT_READ_CONCURRENCY) {
       if (this.now() >= budget.deadlineAt) {
         budget.incompleteReason = 'deadline';
         break;
       }
-      const session = await this.readSession(summary, budget);
-      if (session !== undefined) sessions.push(session);
-      if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break;
+      const batch = listed.items.slice(offset, offset + CHECKPOINT_READ_CONCURRENCY);
+      const prepared = await Promise.all(batch.map(async (summary) => {
+        const key = sessionKey(summary);
+        const cached = this.readCachedSession(key, query.range);
+        const persisted = cached?.persisted ?? await this.readPersistentSession(
+          this.core.accessor.get(IFileSystemStorageService), key,
+        );
+        const current = await this.cacheIsCurrent(summary, persisted);
+        if (current && !cached?.view && this.rescan.state !== 'running') {
+          this.cacheSessionRange(key, persisted, true, query.range);
+        }
+        if (current && !cached?.view && (query.range.startAt !== undefined || query.range.endAt !== undefined)) {
+          return {
+            persisted: { ...persisted, records: persisted.records.filter((record) => record.invalid || inRange(record.time, query.range)) },
+            current,
+            view: true,
+          };
+        }
+        return { persisted, current, view: cached?.view ?? false };
+      }));
+      for (const [index, summary] of batch.entries()) {
+        if (index > 0 && this.now() >= budget.deadlineAt) {
+          budget.incompleteReason = 'deadline';
+          break sessionLoop;
+        }
+        const session = await this.readSession(summary, budget, false, prepared[index], query.range);
+        if (session !== undefined) sessions.push(session);
+        if (budget.incompleteReason === 'record_budget' || budget.incompleteReason === 'deadline') break sessionLoop;
+      }
+      await yieldToEventLoop();
     }
     let ephemeralUsage: readonly EphemeralUsageTotal[] = [];
     if (budget.incompleteReason === null) {
@@ -460,25 +503,28 @@ export class UsageAggregationService {
     summary: SessionSummary,
     budget: ScanBudget,
     preserveMissingSources = false,
+    prepared?: PreparedSession,
+    range?: RangeBounds,
   ): Promise<SessionRecords | undefined> {
     const cacheKey = sessionKey(summary);
-    const cached = this.cache.get(cacheKey);
+    const cached = prepared === undefined ? this.readCachedSession(cacheKey, range) : undefined;
     if (this.rescan.state === 'running') {
-      const persisted = cached?.persisted ?? await this.readPersistentSession(
+      const persisted = prepared?.persisted ?? cached?.persisted ?? await this.readPersistentSession(
         this.core.accessor.get(IFileSystemStorageService), cacheKey,
       );
-      const complete = await this.cacheIsCurrent(summary, persisted);
+      const complete = prepared?.current ?? await this.cacheIsCurrent(summary, persisted);
       if (!complete) budget.sourcesComplete = false;
       return { summary, records: persisted.records, complete, deleted: false };
     }
-    if (cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
-      this.cache.delete(cacheKey);
-      this.cache.set(cacheKey, cached);
+    if (prepared?.current) {
+      return { summary, records: prepared.persisted.records, complete: true, deleted: false };
+    }
+    if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
       return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
-      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources);
+      flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted);
       this.sessionFlights.set(cacheKey, flight);
       const clearFlight = (): void => {
         if (this.sessionFlights.get(cacheKey) === flight) this.sessionFlights.delete(cacheKey);
@@ -492,7 +538,10 @@ export class UsageAggregationService {
     }
     budget.remainingRecords -= result.scannedRecordCount;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
-    this.cacheSession(cacheKey, result.persisted, result.session.complete);
+    this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
+    if (range !== undefined && (range.startAt !== undefined || range.endAt !== undefined)) {
+      return { ...result.session, records: result.session.records.filter((record) => record.invalid || inRange(record.time, range)) };
+    }
     return result.session;
   }
 
@@ -501,15 +550,18 @@ export class UsageAggregationService {
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
     if (agentIds.length !== Object.keys(persisted.agents).length) return false;
-    for (const agentId of agentIds) {
-      const checkpoint = persisted.agents[agentId];
-      if (checkpoint === undefined || !checkpoint.valid || checkpoint.offset !== checkpoint.size) return false;
-      const wireScope = agentScopeOf(sessionScope, agentId);
-      const [size, mtimeMs] = await Promise.all([
-        storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
-        storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
-      ]);
-      if ((size ?? 0) !== checkpoint.size || (mtimeMs ?? 0) !== checkpoint.mtimeMs) return false;
+    for (let offset = 0; offset < agentIds.length; offset += AGENT_STAT_CONCURRENCY) {
+      const current = await Promise.all(agentIds.slice(offset, offset + AGENT_STAT_CONCURRENCY).map(async (agentId) => {
+        const checkpoint = persisted.agents[agentId];
+        if (checkpoint === undefined || !checkpoint.valid || checkpoint.offset !== checkpoint.size) return false;
+        const wireScope = agentScopeOf(sessionScope, agentId);
+        const [size, mtimeMs] = await Promise.all([
+          storage.size(wireScope, AGENT_WIRE_RECORD_KEY),
+          storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY),
+        ]);
+        return (size ?? 0) === checkpoint.size && (mtimeMs ?? 0) === checkpoint.mtimeMs;
+      }));
+      if (current.some((value) => !value)) return false;
     }
     return true;
   }
@@ -520,10 +572,11 @@ export class UsageAggregationService {
     deadlineAt: number,
     onScannedRecord?: () => void,
     preserveMissingSources = false,
+    prepared?: PersistentSessionRecords,
   ): Promise<SessionLoadResult> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const cacheKey = sessionKey(summary);
-    const persisted = this.cache.get(cacheKey)?.persisted ?? await this.readPersistentSession(storage, cacheKey);
+    const persisted = this.readCachedSession(cacheKey)?.persisted ?? prepared ?? await this.readPersistentSession(storage, cacheKey);
     const workspaceScope = workspacePersistenceScope('sessions', summary.workspaceId);
     const sessionScope = sessionScopeOf(workspaceScope, summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
@@ -722,7 +775,63 @@ export class UsageAggregationService {
     }
   }
 
-  private cacheSession(key: string, persisted: PersistentSessionRecords, complete: boolean): void {
+  private readCachedSession(key: string, range?: RangeBounds): {
+    persisted: PersistentSessionRecords; complete: boolean; view: boolean;
+  } | undefined {
+    const entry = this.cache.get(key);
+    if (entry === undefined) return undefined;
+    if (entry.view === undefined) {
+      this.cache.delete(key);
+      this.cache.set(key, entry);
+      return { persisted: entry.persisted, complete: entry.complete, view: false };
+    }
+    if (range?.startAt === undefined || range.endAt === undefined ||
+      range.startAt < entry.view.startAt || range.endAt > entry.view.endAt) return undefined;
+    const parts: SessionCacheEntry[] = [];
+    for (const partKey of entry.view.parts) {
+      const part = this.cache.get(partKey);
+      if (part === undefined) return undefined;
+      parts.push(part);
+    }
+    const records: NormalizedUsageRecord[] = [];
+    for (const [index, part] of parts.entries()) {
+      for (const record of part.persisted.records) records.push(record);
+      const partKey = entry.view.parts[index] as string;
+      this.cache.delete(partKey);
+      this.cache.set(partKey, part);
+    }
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    return { persisted: { ...entry.persisted, records }, complete: entry.complete, view: true };
+  }
+
+  private cacheSessionRange(
+    key: string, persisted: PersistentSessionRecords, complete: boolean, range?: RangeBounds,
+  ): void {
+    if (range?.startAt === undefined || range.endAt === undefined) {
+      this.cacheSession(key, persisted, complete);
+      return;
+    }
+    const existing = this.cache.get(key);
+    if (existing !== undefined) this.deleteCacheEntry(key, existing);
+    const records = persisted.records.filter((record) => record.invalid || inRange(record.time, range));
+    if (records.length > this.limits.cacheMaxRecords || this.limits.cacheMaxEntryRecords <= 0) return;
+    const parts: string[] = [];
+    for (let offset = 0; offset < records.length; offset += this.limits.cacheMaxEntryRecords) {
+      const partKey = `${key}\0view:${range.startAt}:${range.endAt}:${offset}`;
+      this.cacheSession(partKey, {
+        ...persisted, records: records.slice(offset, offset + this.limits.cacheMaxEntryRecords), agents: {},
+      }, complete);
+      parts.push(partKey);
+    }
+    this.cacheSession(key, { ...persisted, records: [] }, complete, {
+      startAt: range.startAt, endAt: range.endAt, parts,
+    });
+  }
+
+  private cacheSession(
+    key: string, persisted: PersistentSessionRecords, complete: boolean, view?: SessionCacheView,
+  ): void {
     const existing = this.cache.get(key);
     if (existing !== undefined) this.deleteCacheEntry(key, existing);
     const records = persisted.records;
@@ -732,7 +841,8 @@ export class UsageAggregationService {
       (record.agentId?.length ?? 0) + (record.parentAgentId?.length ?? 0) +
       (record.provider?.length ?? 0) + (record.modelAlias?.length ?? 0) +
       (record.profileName?.length ?? 0)
-    ), 256 + Object.keys(persisted.agents).length * 256);
+    ), 256 + Object.keys(persisted.agents).length * 256 +
+      (view?.parts.reduce((total, part) => total + 32 + part.length * 2, 0) ?? 0));
     if (bytes > this.limits.cacheMaxBytes) return;
     while (
       this.cache.size >= this.limits.cacheMaxEntries ||
@@ -748,6 +858,7 @@ export class UsageAggregationService {
       persisted,
       complete,
       bytes,
+      view,
     });
     this.cachedRecordCount += records.length;
     this.cachedBytes += bytes;
@@ -757,16 +868,20 @@ export class UsageAggregationService {
     this.cache.delete(key);
     this.cachedRecordCount -= entry.persisted.records.length;
     this.cachedBytes -= entry.bytes;
+    for (const partKey of entry.view?.parts ?? []) {
+      const part = this.cache.get(partKey);
+      if (part !== undefined) this.deleteCacheEntry(partKey, part);
+    }
   }
 
-  private aggregate(
+  private async aggregate(
     query: NormalizedQuery,
     sessions: readonly SessionRecords[],
     fingerprint: string,
     cursor: readonly [number, string] | undefined,
     budget: ScanBudget,
     ephemeralUsage: readonly EphemeralUsageTotal[] = [],
-  ): UsageResponse {
+  ): Promise<UsageResponse> {
     const total = emptyAggregate();
     const buckets = new Map<string, BucketAccumulator>();
     const sessionAccumulators = new Map<string, SessionAccumulator>();
@@ -793,6 +908,7 @@ export class UsageAggregationService {
           break sessionLoop;
         }
         processedRecords += 1;
+        if (processedRecords % 1024 === 0) await yieldToEventLoop();
         if (!inRange(record.time, query.range) || !matchesFilters(record, query)) continue;
         const cost = pricing.calculate(record.model, record.usage);
         addAggregate(total, record, cost);
@@ -881,9 +997,11 @@ export class UsageAggregationService {
       }
     }
     for (const entry of ephemeralUsage) {
+      processedRecords += 1;
+      if (processedRecords % 1024 === 0) await yieldToEventLoop();
       if (!inRange(entry.time, query.range)) continue;
       if (query.workspaceIds.length > 0 && !query.workspaceIds.includes(entry.workspaceId)) continue;
-      if (query.agentIds.length > 0 || query.providers.length > 0) continue;
+      if (query.agentIds.length > 0 || query.providers.length > 0 || query.profiles.length > 0) continue;
       if (query.models.length > 0 && !query.models.includes(entry.model)) continue;
       const record: NormalizedUsageRecord = entry;
       const cost = pricing.calculate(record.model, record.usage);
@@ -907,7 +1025,9 @@ export class UsageAggregationService {
       }
       bucket.requestCount += 1;
       const groupKey = query.dimension === 'project' ? entry.workspaceId
-        : query.dimension === 'model' ? entry.model : 'ephemeral';
+        : query.dimension === 'model' ? entry.model
+        : query.dimension === 'provider' || query.dimension === 'profile' ? `${query.dimension}:null`
+        : 'ephemeral';
       let group = bucket.groups.get(groupKey);
       if (group === undefined) {
         group = {
@@ -918,6 +1038,12 @@ export class UsageAggregationService {
       }
       addAggregate(group, record, cost);
       group.modelAliases.add(entry.model);
+      if (query.dimension === 'provider' || query.dimension === 'profile') {
+        group.providers.add(null);
+        group.profileNames.add(null);
+        group.agentIds.add(null);
+        group.parentAgentIds.add(null);
+      }
     }
     if (budget.incompleteReason === null && this.now() >= budget.deadlineAt) {
       budget.incompleteReason = 'deadline';
@@ -941,6 +1067,7 @@ export class UsageAggregationService {
         dimension: query.dimension,
         models: [...query.models],
         providers: [...query.providers],
+        profiles: [...query.profiles],
         agent_ids: [...query.agentIds],
         workspace_ids: [...query.workspaceIds],
         include_archived: query.includeArchived,
@@ -1056,6 +1183,7 @@ async function readWireTail(
   let offset = startOffset;
   let scannedRecordCount = 0;
   let valid = true;
+  let readFailed = false;
   let incompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
   const records: NormalizedUsageRecord[] = [];
   try {
@@ -1082,7 +1210,7 @@ async function readWireTail(
         offset += newline + 1;
         scannedRecordCount += 1;
         onScannedRecord?.();
-        if (onScannedRecord !== undefined && scannedRecordCount % 1024 === 0) await yieldToEventLoop();
+        if (scannedRecordCount % 1024 === 0) await yieldToEventLoop();
         if (line.length === 0) continue;
         let raw: WireRecord;
         try {
@@ -1099,14 +1227,14 @@ async function readWireTail(
       if (incompleteReason !== null) break;
     }
   } catch {
-    valid = false;
+    readFailed = true;
   }
   return {
     records,
     offset,
     scannedRecordCount,
     valid,
-    complete: incompleteReason === null && offset === size,
+    complete: !readFailed && incompleteReason === null && offset === size,
     incompleteReason,
   };
 }
@@ -1195,6 +1323,7 @@ function normalizeQuery(raw: UsageQuery, now: number): NormalizedQuery {
     dimension: raw.dimension ?? 'model',
     models: normalizeRepeated(raw.model),
     providers: normalizeRepeated(raw.provider),
+    profiles: normalizeRepeated(raw.profile),
     agentIds: normalizeRepeated(raw['agent.id']),
     workspaceIds: normalizeRepeated(raw['workspace.id']),
     includeArchived: raw.include_archived === 'true',
@@ -1322,6 +1451,10 @@ function matchesFilters(record: NormalizedUsageRecord, query: NormalizedQuery): 
     (record.provider === undefined || !query.providers.includes(record.provider))
   ) return false;
   if (
+    query.profiles.length > 0 &&
+    (record.profileName === undefined || !query.profiles.includes(record.profileName))
+  ) return false;
+  if (
     query.agentIds.length > 0 &&
     (record.agentId === undefined || !query.agentIds.includes(record.agentId))
   ) return false;
@@ -1339,6 +1472,8 @@ function dimensionKey(
 ): string {
   if (dimension === 'agent') return record.agentId ?? 'unknown';
   if (dimension === 'model') return record.modelAlias ?? 'unknown';
+  if (dimension === 'provider') return `provider:${JSON.stringify(record.provider ?? null)}`;
+  if (dimension === 'profile') return `profile:${JSON.stringify(record.profileName ?? null)}`;
   if (dimension === 'project') return session.workspaceId;
   return session.id;
 }
@@ -1451,6 +1586,7 @@ function queryFingerprint(query: NormalizedQuery): string {
       query.includeArchived,
       query.timezoneOffsetMinutes,
       query.pageSize,
+      ...(query.profiles.length > 0 ? [query.profiles] : []),
     ]))
     .digest('base64url')
     .slice(0, 16);

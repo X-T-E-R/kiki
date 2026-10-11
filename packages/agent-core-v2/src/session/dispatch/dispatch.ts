@@ -5,7 +5,7 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { BindingSelectionInput, ProfileData } from '#/agent/profile/profile';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
-import type { Runtime } from '#/runtime/runtime';
+import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { DelegatorRef, AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { AgentRunHandle, AgentRunRequest } from '#/session/subagent/subagent';
 
@@ -42,6 +42,7 @@ export interface DispatchLaunchInput {
   readonly runtime: Runtime;
   readonly runtimeId?: string;
   readonly workDir: string;
+  readonly workspaceRoots?: RuntimeWorkspaceRoots;
   readonly signal: AbortSignal;
   readonly labels?: Readonly<Record<string, string>>;
   readonly userLabel?: string;

@@ -1,17 +1,23 @@
-import { parse } from 'smol-toml';
-
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter } from '#/_base/event';
 import { IModelService } from '#/kosong/model/model';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IHookRulesRegistry } from '../app/hookRules';
-import { loadHookRules } from '../internal/loadRules';
-import { hookHash, hookOrder, retainFailedHookSources, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
+import { loadWorkspaceHookRules, projectHookRules } from '../internal/snapshot';
+import { hookHash, retainFailedHookSources, type HookEvent, type HookRulesSnapshot } from '../internal/rules';
 import { IHookRulesSession, ISessionHookWorkspace } from './hookRules';
 
 export class HookRulesSession extends Disposable implements IHookRulesSession {
   declare readonly _serviceBrand: undefined;
-  readonly ready: Promise<void>;
+  private readonly initial: Promise<void>;
+  private usageReady: Promise<void> = Promise.resolve();
+  private usageOverrides: Readonly<Record<string, boolean>> = {};
+  private allowedPluginIds: ReadonlySet<string> | undefined;
+  get ready(): Promise<void> { return Promise.all([this.initial, this.usageReady]).then(() => {}); }
   private project: HookRulesSnapshot = { revision: '', rules: [], diagnostics: [] };
   private pending: Promise<void> = Promise.resolve();
   private readonly subscriptions = this._register(new DisposableStore());
@@ -24,9 +30,35 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     @IHookRulesRegistry private readonly registry: IHookRulesRegistry,
     @IModelService private readonly models: IModelService,
     @ref(ISessionHookWorkspace) private readonly workspace: LiveRef<ISessionHookWorkspace>,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @ISessionContext private readonly session?: ISessionContext,
+    @IPluginService private readonly plugins?: IPluginService,
   ) {
     super();
-    this.ready = this.reload();
+    this.initial = this.reload();
+    const refreshUsage = () => {
+      if (usage === undefined || !usage.enabled() || session === undefined) return Promise.resolve();
+      return Promise.all([
+        usage.read(session.workspaceId),
+        usage.readSession(session.workspaceId, session.sessionId),
+        this.plugins?.enabledHookRules(session.workspaceId, session.sessionId) ?? Promise.resolve([]),
+      ]).then(([workspaceSnapshot, sessionSnapshot, sources]) => {
+        this.usageOverrides = { ...workspaceSnapshot.overrides, ...sessionSnapshot.overrides };
+        this.allowedPluginIds = this.plugins === undefined
+          ? undefined
+          : new Set(sources
+            .map((source) => source.namespace.startsWith('plugin/') ? source.namespace.slice('plugin/'.length) : undefined)
+            .filter((id): id is string => id !== undefined));
+        this.changed.fire();
+      });
+    };
+    this.usageReady = refreshUsage();
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      if (event.workspaceId !== session?.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== session?.sessionId)) return;
+      this.usageReady = refreshUsage();
+      event.waitUntil(this.usageReady);
+    }));
     this._register(registry.onDidChange(() => { this.changed.fire(); }));
     this._register(models.onDidChangeModels(() => { void this.reload(); }));
     this._register(workspace.onDidChange(() => { void this.reload(); }));
@@ -36,9 +68,22 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     const global = this.registry.snapshot();
     const disabled = this.registry.disabled();
     const trusted = this.workspace.current?.trust.isTrusted() === true;
-    const rules = [...global.rules, ...this.project.rules.map((entry) => !trusted ? { ...entry, active: false, reason: 'workspace_untrusted' } : entry)]
-      .map((entry) => disabled.includes('*') || disabled.includes(entry.id) ? { ...entry, active: false, reason: 'disabled' } : entry).toSorted(hookOrder);
-    return { sources: [...global.sources ?? [], ...this.project.sources ?? []], revision: hookHash([global.revision, this.project.revision, trusted, disabled]), rules, diagnostics: [...global.diagnostics, ...this.project.diagnostics] };
+    const overrides = this.usage?.enabled() !== true ? undefined : {
+      ...this.usageOverrides,
+      ...this.pluginDisabledOverrides(global),
+    };
+    return projectHookRules(global, this.project, disabled, trusted, overrides);
+  }
+
+  private pluginDisabledOverrides(global: HookRulesSnapshot): Readonly<Record<string, boolean>> {
+    if (this.allowedPluginIds === undefined) return {};
+    const disabled: Record<string, boolean> = {};
+    for (const rule of global.rules) {
+      if (rule.namespace.startsWith('plugin/') && !this.allowedPluginIds.has(rule.namespace.slice('plugin/'.length))) {
+        disabled[rule.namespace.slice('plugin/'.length)] = false;
+      }
+    }
+    return disabled;
   }
 
   observe(event: HookEvent, hookId: string): void { this.observed.fire({ ...event, hookId }); }
@@ -58,11 +103,11 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
   private async load(): Promise<void> {
     await this.registry.ready;
     const workspace = this.workspace.current;
-    this.subscriptions.clear();
+    await this.subscriptions.clear();
     if (workspace === undefined) return;
     await workspace.trust.ready;
     const { runtime, root } = workspace;
-    this.subscriptions.add(workspace.trust.onDidChange(() => { void this.reload(); }));
+    this.subscriptions.add(workspace.trust.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
     const file = runtime.path.join(root, '.kiki', 'hooks.toml');
     if (runtime.fs === undefined) {
       this.project = retainFailedHookSources(this.project, { revision: 'unsupported', rules: [], sources: [{ namespace: 'workspace', path: file, status: 'unavailable' }], diagnostics: [{ path: file, message: 'workspace hooks unsupported: runtime has no filesystem capability' }] });
@@ -71,22 +116,14 @@ export class HookRulesSession extends Disposable implements IHookRulesSession {
     }
     if (runtime.watch !== undefined) {
       const handle = this.subscriptions.add(runtime.watch.watch(file));
-      this.subscriptions.add(handle.onDidChange(() => { void this.reload(); }));
+      this.subscriptions.add(handle.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
     }
-    let config: unknown;
-    try { config = parse(await runtime.fs.readText(file))['hooks']; }
-    catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'os.fs.not_found' || error.code === 'ENOENT')) config = undefined;
-      else throw error;
-    }
-    const next = config === undefined ? { revision: 'absent', rules: [], diagnostics: [], sources: [{ namespace: 'workspace', path: file, status: 'absent' as const }] } : await loadHookRules([
-      { namespace: 'workspace', path: file, root, config, trusted: workspace.trust.isTrusted(), mutable: true },
-    ], runtime.fs, runtime.path, (alias) => this.models.resolveId(alias));
+    const next = await loadWorkspaceHookRules(workspace, alias => this.models.resolveId(alias));
     this.project = retainFailedHookSources(this.project, next);
     if (runtime.watch !== undefined) {
       for (const watched of (this.project.watchPaths ?? []).filter((watched) => watched !== file)) {
         const handle = this.subscriptions.add(runtime.watch.watch(watched));
-        this.subscriptions.add(handle.onDidChange(() => { void this.reload(); }));
+        this.subscriptions.add(handle.onDidChange(() => { this.reload().catch(onUnexpectedError); }));
       }
     }
     this.changed.fire();

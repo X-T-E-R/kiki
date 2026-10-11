@@ -1,4 +1,6 @@
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import {
@@ -238,7 +240,8 @@ export class SessionTodoService extends Service implements ISessionTodoService {
     const bindings = this.agentBindings.get(agentId);
     if (bindings === undefined) return;
     for (const disposable of bindings) {
-      disposable.dispose();
+      const result = disposable.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }
     this.agentBindings.delete(agentId);
     this.lastKnownTodos.delete(agentId);

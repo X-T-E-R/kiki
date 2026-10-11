@@ -108,6 +108,7 @@ export class ContextApplyCompaction extends Event2<ContextApplyCompactionPayload
 
 const contextUndoSchema = z.object({
   count: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  replacementPrompt: z.custom<import('#/agent/prompt/promptService').PromptEnqueuedPayload>().optional(),
 });
 
 export class ContextUndo extends Event2<z.infer<typeof contextUndoSchema>> {

@@ -8,7 +8,8 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (51 sections · 1 overlay(s))
+# Index (52 sections · 1 overlay(s))
+#   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -63,6 +64,16 @@
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
+# agentExecutorDisplay (config.toml: agent_executor_display)
+#   owner: src/app/agentExecutor/executorOverrides.ts
+#   scope: core
+#   hooks: custom merge · custom toToml
+# ##########################################################################
+
+[agent_executor_display]
+# externals_visible: boolean
+
+# ##########################################################################
 # agentExecutorOverrides (config.toml: agent_executor_overrides)
 #   owner: src/app/agentExecutor/executorOverrides.ts
 #   scope: core
@@ -89,6 +100,7 @@
   # home_dir: string
   # env: record<string, string>
   # args: string[]
+  # show_in_profile_list: boolean
 
 # ##########################################################################
 # agentExecutors (config.toml: agent_executors)
@@ -108,6 +120,15 @@
   # source: string
   # version_probe: object
     # args: string[]
+  # model_probe: object
+    # command: string
+    # args: string[]
+    # format: "lines" | "tab" | "json" (default: "lines")
+    # json_path: string[]
+    # version_probe: object
+      # args: string[]
+    # timeout_ms: integer
+    # max_output_bytes: integer
   # diagnostics: object | object | object | object | object | object[]
   # auth: object | object | object
   # args: string[] (default: [])
@@ -119,6 +140,10 @@
   # model_args: string[]
   # model_config_category: string
   # model_config_id: string
+  # control_capabilities: object
+    # model_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # thinking_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # manual_compact: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
   # thought_config_category: string
   # thought_config_id: string
   # permission_mode_mapping: object
@@ -448,7 +473,7 @@ merge_all_available_skills = true
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
@@ -604,7 +629,7 @@ reuse_local_config = true
 # ##########################################################################
 
 [notifications]
-global = { enabled = false, suppress_viewing_session = true, min_work_ms = 30000, work_stable_ms = 3000, que…
+global = { enabled = true, suppress_viewing_session = true, min_work_ms = 0, work_stable_ms = 3000, question…
 provider_instances = {  }
 channels = {  }
 credential_slots = {  }
@@ -745,7 +770,7 @@ enter_approval_timeout_ms = 60000
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
@@ -842,11 +867,13 @@ max_queued_restores = 8
 # sessionTitle (config.toml: session_title)
 #   owner: src/session/sessionTitle/configSection.ts
 #   scope: core
+#   hooks: custom merge
 # ##########################################################################
 
 [session_title]
 # model: string
 # triggers: "first_user_message" | "first_turn_completed" | "context_compacted"[]
+# prompt: string
 
 # ##########################################################################
 # skipBuiltinProfileInstallation (config.toml: skip_builtin_profile_installation)

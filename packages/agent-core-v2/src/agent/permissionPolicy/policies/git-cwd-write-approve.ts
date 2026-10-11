@@ -2,7 +2,7 @@ import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/tool
 import { isWithinWorkspace } from '#/tool/path-access';
 import { IGitService } from '#/app/git/git';
 import type { IGitService as GitService } from '#/app/git/git';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { ISessionWorkspaceContext as WorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type {
@@ -30,7 +30,8 @@ export class GitCwdWriteApprovePermissionPolicyService implements PermissionPoli
     lease.dispose();
     if (pathClass !== 'posix') return undefined;
 
-    const cwd = this.workspace.workDir;
+    const roots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+    const cwd = roots.workDir;
     if (cwd.length === 0) return undefined;
 
     const writeAccesses = writeFileAccesses(context);
@@ -39,7 +40,7 @@ export class GitCwdWriteApprovePermissionPolicyService implements PermissionPoli
       !writeAccesses.every((access) =>
         isWithinWorkspace(
           access.path,
-          { workspaceDir: cwd, additionalDirs: this.workspace.additionalDirs },
+          { workspaceDir: cwd, additionalDirs: roots.additionalDirs ?? [] },
           'posix',
         ),
       )

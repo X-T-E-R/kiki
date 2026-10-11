@@ -26,7 +26,7 @@ import { Icon } from './icons';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
-import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
+import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
@@ -37,16 +37,23 @@ import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
+import { importHistoryPath } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 
-/** Basename label for the workspace chip; separator-only paths echo raw. */
+/**
+ * What the target row and the starters name this session's home. A typed cwd
+ * reads as its own folder; a workspace the user chose reads as its name; and a
+ * workspace kiki had to create for itself reads as that fact rather than as the
+ * internal name the server filed it under — the date and id in that name are
+ * never the user's words. `undefined` means the target is still undecided.
+ */
 function workspaceChipLabel(state: NewSessionDraftState): string | undefined {
   const cwd = state.cwd.trim();
   if (cwd !== '') {
     const base = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
     return base !== '' ? base : cwd;
   }
-  return state.effectiveWorkspace?.name;
+  return isAutoCreatedWorkspace(state.effectiveWorkspace) ? undefined : state.effectiveWorkspace?.name;
 }
 
 /**
@@ -102,7 +109,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           />
         </svg>
         <span className="min-w-0 truncate">
-          {label ?? (state.autoWorkspace
+          {label ?? (state.autoWorkspace || isAutoCreatedWorkspace(state.effectiveWorkspace)
             ? state.dailyPersonaName === undefined ? t('new.autoWorkspace') : t('persona.workspaceAuto', { name: state.dailyPersonaName })
             : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
         </span>
@@ -594,7 +601,7 @@ function NewSessionPageContent({
                     <button
                       type="button"
                       data-hero-import
-                      onClick={() => { void navigate('/capabilities?view=import'); }}
+                      onClick={() => { void navigate(importHistoryPath()); }}
                       className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
                     >
                       <Icon name="read" size={12} className="text-ink-faint" />

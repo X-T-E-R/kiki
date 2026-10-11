@@ -17,6 +17,8 @@ export function parseNamedAgentTools(value: string): string[] | null {
   return tools.length === 0 ? null : tools;
 }
 
+export { sortThinkingEffortsForDisplay } from './thinkingEffort';
+
 export function resolveSelectedEffort(
   efforts: readonly string[] | undefined,
   effortOverride: string | undefined,
@@ -145,6 +147,7 @@ export function experimentalFlagRows(
   const effective = meta.experimental_flags ?? {};
   const overrides = config.experimental ?? {};
   return [...new Set([...Object.keys(effective), ...Object.keys(overrides)])]
+    .filter((id) => id !== 'usage_export')
     .toSorted((a, b) => a.localeCompare(b))
     .map((id) => ({ id, effective: effective[id] === true, override: overrides[id] }));
 }

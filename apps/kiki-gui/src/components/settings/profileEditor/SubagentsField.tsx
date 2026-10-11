@@ -143,6 +143,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
       {rowEntries.map((entry, index) => {
         const target = byName.get(entry.name);
         const missing = target === undefined && entry.source === undefined;
+        const targetModels = target === undefined || (target.executor ?? 'native') !== 'native' ? [] : models;
         const ownModel = target?.pinned_model_alias;
         const ownEffort = target?.thinking_effort;
         return <li key={entry.name} data-subagent-row={entry.name}
@@ -167,11 +168,11 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
           </span>
           <div className="col-span-3 col-start-1 grid min-w-0 grid-cols-[minmax(0,1fr)_6.5rem] gap-2 pl-7">
             <div className="min-w-0">
-              <ModelPicker id={`lease-model-${entry.name}`} value={entry.modelAlias} models={models} allowInherit disabled={disabled}
+              <ModelPicker id={`lease-model-${entry.name}`} value={entry.modelAlias} models={targetModels} allowInherit disabled={disabled}
                 unsetLabel={t('st.profiles.leaseInherits', { value: ownModel ?? t('st.profiles.modelUnset') })}
                 unsetTrigger={<span className="truncate font-mono text-ink-soft">{ownModel ?? <span className="font-sans">{t('st.profiles.modelUnset')}</span>}</span>}
                 ariaLabel={`${entry.name} · ${t('st.profiles.leaseModel')}`}
-                missing={entry.modelAlias !== '' && entry.modelAlias !== 'inherit' && models.length > 0 && !models.some((model) => model.id === entry.modelAlias)}
+                missing={entry.modelAlias !== '' && entry.modelAlias !== 'inherit' && targetModels.length > 0 && !targetModels.some((model) => model.id === entry.modelAlias)}
                 onChange={(value) => update(index, { modelAlias: value })} />
             </div>
             <EffortPicker id={`lease-effort-${entry.name}`} value={entry.effort} disabled={disabled}

@@ -50,6 +50,7 @@ import {
   getLiveSessionById,
   programForSession,
   setSessionArchivedBatch,
+  archiveSessionFamily,
   isError2,
   Error2,
   type ContextMessage,
@@ -63,7 +64,8 @@ import {
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';
@@ -158,6 +160,7 @@ const sessionsListQueryCoercion = z
     include_ephemeral: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
+    q: z.string().max(500).optional(),
     workspace_id: workspaceIdSchema.optional(),
     persona: z.string().min(1).optional(),
   })
@@ -211,6 +214,8 @@ const sessionActionRequestSchema = z.preprocess(
   z.object({
     title: z.string().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    include_attached: z.boolean().optional(),
+    exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
     instruction: z.string().optional(),
     strategy: z.enum(['summarize', 'relay']).optional(),
     count: z.number().int().positive().optional(),
@@ -280,6 +285,15 @@ export function registerSessionsRoutes(
 ): void {
   registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
+  const pendingOverlayCleanups = new Set<Promise<void>>();
+  const log = core.accessor.get(ILogService);
+  const trackOverlayCleanup = (result: void | Promise<void>): void => {
+    if (!(result instanceof Promise)) return;
+    pendingOverlayCleanups.add(result);
+    result.finally(() => pendingOverlayCleanups.delete(result)).catch((error: unknown) => {
+      log.error('session source overlay release failed', { error });
+    });
+  };
   const releaseSessionOverlays = (sessionId: string) => {
     const resources = overlayResourcesBySession.get(sessionId);
     if (resources === undefined) return;
@@ -442,11 +456,16 @@ export function registerSessionsRoutes(
             ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
                 execution: body.agent_config?.execution }
             : body.persona === undefined
+              && body.agent_config?.execution === undefined
               && body.agent_config?.model === undefined
               && body.agent_config?.profile === undefined
               && body.agent_config?.thinking === undefined
               ? undefined
               : {
+                  execution: body.agent_config?.execution === undefined ? undefined : { ...body.agent_config.execution, overrides: {
+                    ...body.agent_config.execution.overrides,
+                    permission_mode: body.agent_config.permission_mode ?? body.agent_config.execution.overrides?.permission_mode,
+                  } },
                   persona: body.persona,
                   profile: body.agent_config?.profile
                     ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
@@ -561,6 +580,7 @@ export function registerSessionsRoutes(
         }
       }
       const archivedOnly = raw.archived_only === true;
+      const needle = raw.q?.trim().toLocaleLowerCase();
 
       const workspaces = await core.accessor.get(IWorkspaceService).list();
       const roots = new Map(workspaces.map((w) => [w.id, w.root]));
@@ -584,7 +604,8 @@ export function registerSessionsRoutes(
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
         if (facts.live === false) {
-          const personaId = await core.accessor.get(IBotService).sessionPersonaId(summary);
+          const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
+          const personaId = summary.personaId ?? (typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined);
           if (personaId !== undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {
@@ -629,8 +650,9 @@ export function registerSessionsRoutes(
               exhausted = true;
               break;
             }
-            const cwd = summary.cwd ?? roots.get(summary.workspaceId);
+            const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
+            if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
             if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
@@ -734,19 +756,7 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      let facts = resolveSessionFacts(core, session_id, summary.usage);
-      if (!facts.live) {
-        const profile = await readPersistedAgentProfileSnapshot(core, summary.workspaceId, session_id, MAIN_AGENT_ID, undefined);
-        const persona = profile?.persona?.definition;
-        if (profile !== undefined) {
-          facts = { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
-            model: profile.modelAlias ?? '', profile: profile.profileName,
-            persona: persona === undefined ? undefined : {
-              id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
-            },
-          } };
-        }
-      }
+      const facts = await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage);
       reply.send(
         okEnvelope(
           toWireSession(
@@ -820,7 +830,7 @@ export function registerSessionsRoutes(
           toWireSession(
             summary,
             cwd,
-            resolveSessionFacts(core, session_id, summary.usage),
+            await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage),
           ),
           req.id,
         ),
@@ -982,6 +992,20 @@ export function registerSessionsRoutes(
     app.post(route.path, route.options, route.handler as Parameters<SessionRouteHost['post']>[2]);
   }
 
+  const deleteAllArchivedRoute = defineRoute(
+    {
+      method: 'POST', path: '/sessions::delete-archived',
+      body: z.object({}).strict(),
+      success: { data: deleteArchivedSessionsResponseSchema },
+      description: 'Permanently delete all archived conversations in the connected home',
+      tags: ['sessions'],
+    },
+    async (req, reply) => {
+      reply.send(okEnvelope(await deleteArchivedSessions(core), req.id));
+    },
+  );
+  app.post(deleteAllArchivedRoute.path, deleteAllArchivedRoute.options, deleteAllArchivedRoute.handler as Parameters<SessionRouteHost['post']>[2]);
+
   const sessionActionRoute = defineRoute(
     {
       method: 'POST',
@@ -996,6 +1020,7 @@ export function registerSessionsRoutes(
           sessionAbortResponseSchema,
           startBtwSessionResponseSchema,
           archiveSessionResponseSchema,
+          deleteArchivedSessionsResponseSchema,
         ]),
       },
       errors: {
@@ -1017,12 +1042,18 @@ export function registerSessionsRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore'] as const,
+          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore', 'delete-archived'] as const,
           resourceLabel: 'session',
         });
         if (parsed.kind !== 'action') {
           const message = parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(buildValidationEnvelope([{ path: 'session_id', message }], req.id));
+          return;
+        }
+
+        if (parsed.action === 'delete-archived') {
+          const body = deleteArchivedSessionRequestSchema.parse(req.body);
+          reply.send(okEnvelope(await deleteArchivedSessions(core, parsed.id, body.exclude_session_ids), req.id));
           return;
         }
 
@@ -1092,11 +1123,11 @@ export function registerSessionsRoutes(
         if (parsed.action === 'compact') {
           const body = compactSessionRequestSchema.parse(req.body);
           await withMainAgent(core, parsed.id, async (agent) => {
-            agent.accessor
-              .get(IAgentFullCompactionService)
-              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
-            requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
-            reply.send(okEnvelope({}, req.id));
+            const compaction = agent.accessor.get(IAgentFullCompactionService);
+            const accepted = compaction.begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
+            const status = compaction.queuedManualCompaction ? 'queued' : 'running';
+            requestLog(req)?.info({ session_id: parsed.id, action: 'compact', source: 'manual', accepted, status }, 'session compaction requested');
+            reply.send(okEnvelope({ accepted, status, source: 'manual' }, req.id));
           });
           return;
         }
@@ -1160,6 +1191,13 @@ export function registerSessionsRoutes(
           return;
         }
 
+        if (req.body.include_attached === true) {
+          const outcomes = await archiveSessionFamily(core.accessor, parsed.id, req.body.exclude_session_ids);
+          const archived = outcomes.every((outcome) => outcome.ok);
+          requestLog(req)?.info({ session_id: parsed.id, action: 'archive', archived, family_count: outcomes.length }, 'session family archive completed');
+          reply.send(okEnvelope({ archived, outcomes }, req.id));
+          return;
+        }
         const archiveOutcome = (await setSessionArchivedBatch(core.accessor, [parsed.id], true))[0]!;
         if (!archiveOutcome.ok) {
           if (archiveOutcome.reason === 'not_found') {
@@ -1387,6 +1425,9 @@ export function registerSessionsRoutes(
             return;
           }
           const overlayPin = await acquireSessionOperation(core, session_id, 'source-overlay');
+          const releaseOverlayPin = (): void => {
+            trackOverlayCleanup(overlayPin.dispose());
+          };
           let attached = false;
           try {
             if (overlayPin.handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
@@ -1403,7 +1444,7 @@ export function registerSessionsRoutes(
                 resources?.delete(resourceId);
                 if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
               } finally {
-                overlayPin.dispose();
+                releaseOverlayPin();
               }
             });
             if (!attached) {
@@ -1420,7 +1461,7 @@ export function registerSessionsRoutes(
               skills: contributions.skills.skills.length,
             }, req.id));
           } finally {
-            if (!attached) overlayPin.dispose();
+            if (!attached) releaseOverlayPin();
           }
         });
       } catch (error) {
@@ -1596,6 +1637,26 @@ export interface SessionFacts {
   readonly live?: boolean;
 }
 
+export async function resolveSessionBindingFacts(
+  core: Scope,
+  sessionId: string,
+  workspaceId: string,
+  persistedUsage?: SessionUsageSummary,
+  metadata?: AgentMeta,
+): Promise<SessionFacts> {
+  const facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  if (facts.live) return facts;
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, metadata);
+  if (profile === undefined) return facts;
+  const persona = profile.persona?.definition;
+  return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
+    execution: profile.execution, model: profile.modelAlias ?? '', profile: profile.profileName,
+    persona: persona === undefined ? undefined : {
+      id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+    },
+  } };
+}
+
 /**
  * Resolve a session's live wire facts from the core `ISessionActivityView`
  * aggregate (`busy` = any agent with an active turn or background task; the
@@ -1646,6 +1707,7 @@ export function resolveSessionFacts(
     agentConfig: profile === undefined
       ? undefined
       : {
+          execution: profile.execution,
           model: profile.modelAlias ?? '',
           profile: profile.profileName,
           persona: persona === undefined

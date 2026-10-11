@@ -1,8 +1,10 @@
 import type { TranscriptFact } from './reducer';
+import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
+import { mediaUrlFromPart, parseDaemonFileRefFileId, sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
 import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
@@ -113,6 +115,8 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly modelSwitchChanges?: readonly [string, string][];
   readonly compaction?: CompactionProjectionCheckpoint;
   readonly queuedModelSwitchIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
@@ -167,6 +171,8 @@ export class TranscriptWireAdapter {
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
   #modelAlias: string | undefined;
+  #thinkingEffort: string | undefined;
+  readonly #modelSwitchChanges = new Map<string, string>();
   readonly #compaction = new CompactionProjection();
 
   activeCompactionOperations(): TranscriptOperation[] {
@@ -218,6 +224,8 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       modelAlias: this.#modelAlias,
+      thinkingEffort: this.#thinkingEffort,
+      modelSwitchChanges: [...this.#modelSwitchChanges],
       compaction: this.#compaction.checkpoint(),
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       prompts: [...this.#prompts],
@@ -297,6 +305,8 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
+    this.#thinkingEffort = checkpoint.thinkingEffort;
+    replaceMap(this.#modelSwitchChanges, checkpoint.modelSwitchChanges ?? []);
     this.#compaction.restore(checkpoint.compaction);
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
@@ -397,18 +407,42 @@ export class TranscriptWireAdapter {
       const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
       const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
       const state = committed ? (this.#queuedModelSwitchIds.has(operationId) ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
-      if ((committed || state === 'completed') && to !== undefined) this.#modelAlias = to;
-      return [{ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
-        payload: { operationId, from, to, state, mode: committed ? record['mode'] : receipt?.['mode'],
+      const mode = committed ? record['mode'] : receipt?.['mode'];
+      const thinking = stringOf(committed ? record['thinking'] : objectOf(receipt?.['binding'])?.['thinking']);
+      const change = committed && from === to && mode === 'direct' && thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort
+        ? 'effort' : this.#modelSwitchChanges.get(operationId) ?? (from !== to ? 'model'
+        : mode !== 'direct' ? 'context'
+        : thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort ? 'effort'
+        : operationId.startsWith('resume:') ? 'resume' : 'binding');
+      this.#modelSwitchChanges.set(operationId, change);
+      const operations: TranscriptOperation[] = [];
+      if (committed || state === 'completed') {
+        const agent: { model?: string; thinkingEffort?: string } = {};
+        if (to !== undefined) {
+          this.#modelAlias = to;
+          agent.model = to;
+        }
+        if (thinking !== undefined) {
+          this.#thinkingEffort = thinking;
+          agent.thinkingEffort = thinking;
+        }
+        if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
+      }
+      operations.push({ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
+        payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
-          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } }];
+          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } });
+      return operations;
     }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
       const model = stringOf(record['modelAlias']);
       const thinkingEffort = stringOf(record['thinkingEffort']) ?? stringOf(record['thinkingLevel']);
       const agent: { model?: string; thinkingEffort?: string } = {};
       if (model !== undefined && model.length > 0) agent.model = model;
-      if (thinkingEffort !== undefined) agent.thinkingEffort = thinkingEffort;
+      if (thinkingEffort !== undefined) {
+        agent.thinkingEffort = thinkingEffort;
+        this.#thinkingEffort = thinkingEffort;
+      }
       const operations: TranscriptOperation[] = Object.keys(agent).length === 0
         ? [] : [{ op: 'meta.merge', meta: { agent } }];
       if (agent.model === undefined) return operations;
@@ -429,7 +463,15 @@ export class TranscriptWireAdapter {
       return event === undefined ? [] : this.loopEvent(event, ordinal, record.time);
     }
     if (record.type === 'turn.ended') return this.turnEnded(record);
-    if (record.type === 'context.undo') return this.undo(numberOf(record['count']) ?? 1);
+    if (record.type === 'context.undo') {
+      const operations = this.undo(numberOf(record['count']) ?? 1);
+      const prompt = objectOf(record['replacementPrompt']);
+      if (prompt !== undefined) {
+        operations.push(...this.legacyMessage({ ...record, type: 'context.append_message', message: prompt['message'] }, ordinal));
+        operations.push(...this.promptRecord({ ...prompt, type: 'prompt.enqueued', time: record.time }));
+      }
+      return operations;
+    }
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
     const compaction = this.#compaction.project(record, ordinal);
     if (compaction !== undefined) return compaction;
@@ -438,19 +480,24 @@ export class TranscriptWireAdapter {
   }
 
   private promptRecord(record: TranscriptWireRecord): TranscriptOperation[] {
-    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']);
+    const terminal = objectOf(record['terminal']);
+    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']) ?? stringOf(terminal?.['promptId']);
     if (promptId === undefined) return [];
     if (record.type === 'prompt.enqueued') {
       const message = objectOf(record['message']);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
-      if (originKind !== 'user') {
+      if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
         return [];
       }
+      this.#hiddenPromptIds.delete(promptId);
+      const origin = objectOf(message?.['origin']);
       const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
       const prompt: TranscriptPrompt = {
         promptId,
         runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
+        originKind: originKind === 'cron_job' ? originKind : undefined,
+        originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
@@ -507,6 +554,24 @@ export class TranscriptWireAdapter {
           status: 'running',
           queuePosition: undefined,
           revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.outcome_committed') {
+      const terminal = objectOf(record['terminal']);
+      const terminalPromptId = stringOf(terminal?.['promptId']);
+      if (terminalPromptId === undefined) return [];
+      const state = stringOf(terminal?.['state']);
+      const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
+        : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
+      const prior = this.#prompts.get(terminalPromptId);
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(prior, terminalPromptId, record),
+          status,
+          finishedAt: isoOf(record.time) ?? previous?.finishedAt,
+          queuePosition: undefined,
+          abortedBeforeStart: status === 'aborted' ? previous?.abortedBeforeStart : undefined,
         }),
       ];
     }
@@ -603,6 +668,22 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'executor.tool.display') return this.externalToolDisplay(record);
     if (record.type === 'executor.runtime.update') {
+      if (record['kind'] === 'usage') {
+        const value = objectOf(record['value']);
+        const used = numberOf(value?.['used']);
+        const size = numberOf(value?.['size']);
+        if (used === undefined) return [];
+        return [{ op: 'meta.merge', meta: { agent: {
+          contextTokens: used,
+          maxContextTokens: size,
+          contextUsage: size !== undefined && size > 0 ? used / size : undefined,
+        } } }];
+      }
+      if (record['kind'] === 'tool_input') return this.externalToolInput(record);
+      if (record['kind'] === 'tool_progress') {
+        const value = objectOf(record['value']);
+        return value === undefined ? [] : this.toolProgress(value);
+      }
       const marker = record['kind'] === 'diff' ? 'executor.diff'
         : record['kind'] === 'compaction' ? 'executor.compaction'
         : record['kind'] === 'session' ? 'executor.session'
@@ -644,47 +725,55 @@ export class TranscriptWireAdapter {
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];
     }
-    if (record.type === 'goal.create') {
+    if (record.type === 'goal.create' || record.type === 'goal.update' || record.type === 'goal.clear') {
+      const before = this.#goal;
       const status = stringOf(record['status']);
-      this.#goal = {
-        objective: stringOf(record['objective']) ?? '',
-        status: isGoalStatus(status) ? status : 'active',
-        completionCriterion: stringOf(record['completionCriterion']),
-        followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
-        controlRevision: numberOf(record['controlRevision']) ?? 1,
-        budgetUsed: 0,
-      };
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.update') {
-      if (this.#goal !== undefined) {
-        const status = stringOf(record['status']);
-        const tokenBudget = numberOf(objectOf(record['budgetLimits'])?.['tokenBudget']);
-        const completionCriterion = record['completionCriterion'];
+      const limits = objectOf(record['budgetLimits']);
+      if (record.type === 'goal.create') {
         this.#goal = {
-          ...this.#goal,
-          objective: stringOf(record['objective']) ?? this.#goal.objective,
+          goalId: stringOf(record['goalId']),
+          objective: stringOf(record['objective']) ?? '',
+          status: isGoalStatus(status) ? status : 'active',
+          completionCriterion: stringOf(record['completionCriterion']),
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
+          controlRevision: numberOf(record['controlRevision']) ?? 1,
+          budgetUsed: 0,
+          turnsUsed: 0,
+          wallClockMs: 0,
+          budgetLimit: numberOf(limits?.['tokenBudget']),
+          turnBudget: numberOf(limits?.['turnBudget']),
+          wallClockBudgetMs: numberOf(limits?.['wallClockBudgetMs']),
+        };
+      } else if (record.type === 'goal.clear') {
+        this.#goal = undefined;
+      } else if (before !== undefined) {
+        const completionCriterion = record['completionCriterion'];
+        const nextStatus = isGoalStatus(status) ? status : before.status;
+        this.#goal = {
+          ...before,
+          objective: stringOf(record['objective']) ?? before.objective,
           completionCriterion: completionCriterion === null
-            ? undefined
-            : stringOf(completionCriterion) ?? this.#goal.completionCriterion,
-          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? this.#goal.followUpTiming,
-          controlRevision: numberOf(record['controlRevision']) ?? this.#goal.controlRevision,
-          status: isGoalStatus(status) ? status : this.#goal.status,
-          budgetUsed: numberOf(record['tokensUsed']) ?? this.#goal.budgetUsed,
-          budgetLimit: tokenBudget ?? this.#goal.budgetLimit,
+            ? undefined : stringOf(completionCriterion) ?? before.completionCriterion,
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? before.followUpTiming,
+          controlRevision: numberOf(record['controlRevision']) ?? before.controlRevision,
+          status: nextStatus,
+          terminalReason: nextStatus !== before.status
+            ? nextStatus === 'active' ? undefined : stringOf(record['reason']) : before.terminalReason,
+          budgetUsed: numberOf(record['tokensUsed']) ?? before.budgetUsed,
+          turnsUsed: numberOf(record['turnsUsed']) ?? before.turnsUsed,
+          wallClockMs: numberOf(record['wallClockMs']) ?? before.wallClockMs,
+          budgetLimit: limits === undefined ? before.budgetLimit : numberOf(limits['tokenBudget']),
+          turnBudget: limits === undefined ? before.turnBudget : numberOf(limits['turnBudget']),
+          wallClockBudgetMs: limits === undefined ? before.wallClockBudgetMs : numberOf(limits['wallClockBudgetMs']),
         };
       }
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.clear') {
-      this.#goal = undefined;
-      return [{ op: 'meta.merge', meta: { goal: null } }];
+      const change = record.type === 'goal.create' ? { kind: 'created' as const }
+        : projectGoalChange(before, this.#goal, {
+          reason: stringOf(record['reason']), actor: stringOf(record['actor']),
+        });
+      const operations: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: this.#goal ?? null } }];
+      if (change !== undefined) operations.push(this.marker(record, ordinal, 'goal', { change, snapshot: this.#goal ?? null }));
+      return operations;
     }
     if (record.type === 'plan_mode.enter') {
       this.#plan = undefined;
@@ -952,7 +1041,7 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
-      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request']);
+      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request'], record.time);
       const requestToolCallId = stringOf(objectOf(request)?.['toolCallId']);
       const toolCallId = stringOf(record['toolCallId']) ?? requestToolCallId;
       const recordOrigin = objectOf(record['origin']);
@@ -1724,6 +1813,7 @@ export class TranscriptWireAdapter {
     if (type === 'content.part') return this.contentPart(event, ordinal);
     if (type === 'tool.call') return this.toolCall(event, ordinal, time);
     if (type === 'tool.result') return this.toolResult(event, time);
+    if (type === 'tool.progress') return this.toolProgress(event);
     return [];
   }
 
@@ -1931,6 +2021,25 @@ export class TranscriptWireAdapter {
     return [{ op: 'frame.upsert', ...hit }];
   }
 
+  private externalToolInput(record: TranscriptWireRecord): TranscriptOperation[] {
+    const value = objectOf(record['value']);
+    const toolCallId = stringOf(value?.['toolCallId']);
+    const stepId = stringOf(value?.['stepId']);
+    const turnId = turnIdOf(record['turnId'], undefined);
+    const inputText = stringOf(value?.['inputText']);
+    if (toolCallId === undefined || stepId === undefined || turnId === undefined || inputText === undefined) return [];
+    const previous = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    if (previous !== undefined && previous.frame.state !== 'running') return [];
+    const frame: ToolCallFrame = previous === undefined ? {
+      kind: 'tool', frameId: `${stepId}.${toolCallId}`, toolCallId,
+      part: { partId: toolCallId, messageId: stepId, revision: 0, provenance: { source: 'engine' } },
+      name: stringOf(value?.['name']) ?? '', state: 'running', inputText,
+    } : { ...previous.frame, name: stringOf(value?.['name']) ?? previous.frame.name, inputText };
+    const hit = { turnId, stepId, frame };
+    this.storeTool(toolCallId, hit);
+    return [{ op: 'frame.upsert', ...hit }];
+  }
+
   private toolCall(
     event: Readonly<Record<string, unknown>>,
     ordinal: number,
@@ -1956,11 +2065,29 @@ export class TranscriptWireAdapter {
       name: stringOf(event['name']) ?? '',
       state: 'running',
       input: event['args'],
+      inputText: this.#tools.get(toolCallId)?.frame.inputText ?? this.lookups?.tool?.(toolCallId)?.frame.inputText,
+      display: event['display'] ?? objectOf(event['extras'])?.['display'],
       startedAt: isoOf(time),
     };
     const hit = { turnId, stepId, frame };
     this.storeTool(toolCallId, hit);
     return [{ op: 'frame.upsert', ...hit }];
+  }
+
+  private toolProgress(event: Readonly<Record<string, unknown>>): TranscriptOperation[] {
+    const toolCallId = stringOf(event['toolCallId']);
+    if (toolCallId === undefined) return [];
+    const hit = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const update = objectOf(event['update']);
+    const kind = stringOf(update?.['kind']);
+    if (hit === undefined || update === undefined ||
+        kind !== 'stdout' && kind !== 'stderr' && kind !== 'progress' && kind !== 'status' && kind !== 'custom') return [];
+    const frame: ToolCallFrame = { ...hit.frame, progress: {
+      kind, text: stringOf(update['text']), percent: typeof update['percent'] === 'number' ? update['percent'] : undefined,
+      customKind: stringOf(update['customKind']), customData: update['customData'],
+    } };
+    this.storeTool(toolCallId, { ...hit, frame });
+    return [{ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame }];
   }
 
   private toolResult(
@@ -2439,6 +2566,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.timing_changed' ||
     type === 'prompt.moved' ||
     type === 'prompt.launch_committed' ||
+    type === 'prompt.outcome_committed' ||
     type === 'prompt.completed' ||
     type === 'prompt.aborted' ||
     type === 'prompt.steered' ||
@@ -2488,6 +2616,7 @@ function projectWireQuestionRequest(
   interactionId: string,
   interactionKind: 'approval' | 'question',
   request: unknown,
+  recordedAt: number | undefined,
 ): unknown {
   if (interactionKind !== 'question') return request;
   const payload = objectOf(request);
@@ -2496,6 +2625,7 @@ function projectWireQuestionRequest(
   return {
     ...payload,
     question_id: interactionId,
+    created_at: stringOf(payload?.['createdAt']) ?? stringOf(payload?.['created_at']) ?? isoOf(recordedAt),
     questions: questions.map((value, questionIndex) => {
       const question = objectOf(value);
       return {
@@ -2614,15 +2744,15 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined): PendingS
   const ref = key === undefined ? objectOf(value?.['source']) : nested;
   const name = stringOf(attachment?.['name']) ?? stringOf(ref?.['name']) ?? stringOf(value?.['name']) ?? stringOf(resourceLink?.['name']);
   const size = numberOf(attachment?.['size']) ?? numberOf(ref?.['size']) ?? numberOf(value?.['size']) ?? numberOf(resourceLink?.['size']);
-  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(value?.['mimeType'])
+  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(ref?.['media_type']) ?? stringOf(value?.['mimeType'])
     ?? stringOf(resourceLink?.['mimeType']) ?? (kind === undefined ? undefined : `${kind}/*`);
   const fileId = stringOf(attachment?.['fileId']) ?? stringOf(attachment?.['file_id'])
-    ?? stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
+    ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']) ?? stringOf(value?.['file_id']);
   if (kind === undefined || mimeType === undefined) return undefined;
   if (fileId !== undefined) return { kind, mediaType: mimeType, source: { kind: 'session_media', fileId }, name, size };
-  const url = stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
+  const url = mediaUrlFromPart(value)?.url ?? stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
   if (url === undefined) return { kind, mediaType: mimeType, source: undefined, name, size };
-  const daemonRef = /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
+  const daemonRef = sessionMediaIdFromBlobUrl(url) ?? parseDaemonFileRefFileId(url);
   return {
     kind,
     mediaType: mimeType,
@@ -2842,6 +2972,10 @@ function promptAppendTimingOf(value: unknown): TranscriptPromptAppendTiming | un
   return value === 'agent_idle' || value === 'subagents_done' || value === 'tasks_done'
     ? value
     : undefined;
+}
+
+function cronDeliveryModeOf(value: unknown): TranscriptPrompt['originDeliveryMode'] {
+  return value === 'queue' || value === 'steer' || value === 'idle' ? value : undefined;
 }
 
 function promptRecordTime(record: TranscriptWireRecord, keys: readonly string[]): string | undefined {

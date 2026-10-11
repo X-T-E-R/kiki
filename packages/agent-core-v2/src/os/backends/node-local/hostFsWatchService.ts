@@ -1,13 +1,15 @@
 import '#/_base/utils/fsWatchGuard';
-import { watch as fsWatch } from 'node:fs';
+import { watch as fsWatch, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, posix, relative, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, win32 } from 'node:path';
 
 import { FSWatcher } from 'chokidar';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { Emitter, type Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 
@@ -39,9 +41,11 @@ interface NativeFsWatcher {
 interface HostFsWatchRuntime {
   readonly platform: NodeJS.Platform;
   readonly homeDir: string;
+  readonly resolvePath?: (path: string) => string;
   watchNative(
     root: string,
     listener: (eventType: string, filename: string | null) => void,
+    onError: (error: NodeJS.ErrnoException) => void,
   ): NativeFsWatcher;
   watchFallback(
     root: string,
@@ -54,8 +58,13 @@ interface HostFsWatchRuntime {
 const NODE_HOST_FS_WATCH_RUNTIME: HostFsWatchRuntime = {
   platform: process.platform,
   homeDir: homedir(),
-  watchNative: (root, listener) =>
-    fsWatch(root, { persistent: false, recursive: true }, listener),
+  resolvePath: (path) => process.platform === 'win32' && /~\d/.test(path) ? resolveLongWatchPath(path) : path,
+  watchNative: (root, listener, onError) => {
+    const watcher = fsWatch(root, { persistent: false, recursive: true });
+    watcher.on('error', onError);
+    watcher.on('change', listener);
+    return watcher;
+  },
   watchFallback: (root, options, reportError) =>
     new HostFsWatchHandle(root, options, reportError),
   scheduleRetry: (callback, delayMs) => {
@@ -176,7 +185,16 @@ class SignalWatchHandle implements IHostFsWatchHandle {
   private startNativeLeg(): void {
     if (this.disposed) return;
     try {
-      const watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
+      let watcher: NativeFsWatcher | undefined;
+      let earlyError: NodeJS.ErrnoException | undefined;
+      const onError = (error: NodeJS.ErrnoException): void => {
+        if (watcher === undefined) {
+          earlyError = error;
+          return;
+        }
+        this.onNativeError(watcher, error);
+      };
+      watcher = this.runtime.watchNative(this.root, (_eventType, filename) => {
         if (this.disposed) return;
         this.retryAttempts = 0;
         this.recoveryInvalidated = false;
@@ -184,10 +202,12 @@ class SignalWatchHandle implements IHostFsWatchHandle {
         const absPath = resolveNativeSignalPath(this.root, filename);
         if (absPath !== this.root && this.ignored(absPath)) return;
         this.fireInvalidation();
-      });
-      watcher.on('error', (error: NodeJS.ErrnoException) => {
-        this.onNativeError(watcher, error);
-      });
+      }, onError);
+      if (earlyError !== undefined) {
+        watcher.close();
+        this.onNativeError(undefined, earlyError);
+        return;
+      }
       this.nativeWatcher = watcher;
       this.readiness.resolve();
       if (this.recovering) {
@@ -212,7 +232,8 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     }
     this.recovering = true;
     this.retryAttempts += 1;
-    this.retry?.dispose();
+    const previous = this.retry?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     this.retry = undefined;
     if (this.retryAttempts >= NATIVE_ERROR_LIMIT) {
       this.recovering = false;
@@ -274,13 +295,13 @@ class SignalWatchHandle implements IHostFsWatchHandle {
     this.emitter.fire({ path: this.root, action: 'modified', kind: 'directory' });
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.readiness.resolve();
-    this.retry?.dispose();
+    await this.retry?.dispose();
     this.nativeWatcher?.close();
-    this.chokidarLeg?.dispose();
+    await this.chokidarLeg?.dispose();
     this.emitter.dispose();
   }
 }
@@ -323,13 +344,44 @@ export class HostFsWatchService implements IHostFsWatchService {
   ) {}
 
   watch(path: string, options?: HostFsWatchOptions): IHostFsWatchHandle {
-    if (
-      useNativeRecursive(options, this.runtime.platform) &&
-      !isExpansiveNativeRoot(path, this.runtime)
-    ) {
-      return new SignalWatchHandle(path, options, this.runtime, this.reportError);
+    const watched = this.runtime.resolvePath?.(path) ?? path;
+    const requestedPath = (changed: string): string => {
+      const pathApi = this.runtime.platform === 'win32' ? win32 : posix;
+      const rel = pathApi.relative(watched, changed);
+      if (rel === '..' || rel.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(rel)) return changed;
+      return rel === '' ? path : pathApi.join(path, rel);
+    };
+    const ignored = options?.ignored;
+    const watchOptions = watched === path || ignored === undefined ? options : {
+      ...options,
+      ignored: Object.assign((changed: string) => ignored(requestedPath(changed)), {
+        subtree: ignored.subtree === undefined ? undefined : (changed: string) => ignored.subtree!(requestedPath(changed)),
+      }),
+    };
+    const handle = useNativeRecursive(watchOptions, this.runtime.platform) && !isExpansiveNativeRoot(watched, this.runtime)
+      ? new SignalWatchHandle(watched, watchOptions, this.runtime, this.reportError)
+      : this.runtime.watchFallback(watched, watchOptions, this.reportError);
+    if (watched === path) return handle;
+    return {
+      ready: handle.ready,
+      onDidChange: Event.map(handle.onDidChange, (change) => ({ ...change, path: requestedPath(change.path) })),
+      dispose: () => handle.dispose(),
+    };
+  }
+}
+
+function resolveLongWatchPath(path: string): string {
+  const missing: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return path;
+      missing.unshift(basename(current));
+      current = parent;
     }
-    return this.runtime.watchFallback(path, options, this.reportError);
   }
 }
 

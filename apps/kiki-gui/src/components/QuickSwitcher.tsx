@@ -148,6 +148,13 @@ export function QuickSwitcher({
   };
 
   const searching = search.contentPending;
+  // The content layer keeps its own failures: a read that failed or an index
+  // this server cannot serve is not "no sessions match". The local title /
+  // cwd matches and the typed query stay exactly as they are.
+  const contentProblem = search.contentInitialError !== null;
+  const unavailable = search.unavailable;
+  const searchStatus = input.trim() !== ''
+    && (contentProblem || unavailable !== undefined || search.building !== undefined || search.incomplete);
   const firstActionIndex = items.findIndex((item) => item.kind === 'action');
   const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
   const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
@@ -188,9 +195,13 @@ export function QuickSwitcher({
         className="max-h-[340px] overflow-y-auto p-2"
       >
         {items.length === 0 ? (
-          <p className="px-2 py-6 text-center text-[12px] text-ink-faint">
-            {searching ? t('sidebar.searching') : input.trim() === '' ? t('switcher.empty') : t('switcher.noMatches', { query: input.trim() })}
-          </p>
+          // A content-layer problem is stated below instead: never claim the
+          // search found nothing when it did not finish.
+          searchStatus ? null : (
+            <p className="px-2 py-6 text-center text-[12px] text-ink-faint">
+              {searching ? t('sidebar.searching') : input.trim() === '' ? t('switcher.empty') : t('switcher.noMatches', { query: input.trim() })}
+            </p>
+          )
         ) : (
           items.map((item, index) => {
             const active = index === activeIndex;
@@ -276,6 +287,47 @@ export function QuickSwitcher({
             );
           })
         )}
+        {searchStatus ? (
+          <div data-switcher-search-status className="border-t border-hairline px-2 pt-1.5 pb-0.5 text-[12px] leading-snug text-ink-faint">
+            {contentProblem ? (
+              <div data-search-error className="mx-1 border-l-2 border-danger py-0.5 pl-3">
+                <p className="text-[12.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+                <p className="text-[12px] text-ink-soft">{search.contentInitialError?.message || t('common.unknownError')}</p>
+                <button
+                  type="button"
+                  data-search-initial-retry
+                  onClick={search.retry}
+                  className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+                >
+                  {t('common.retry')}
+                </button>
+              </div>
+            ) : null}
+            {unavailable !== undefined ? (
+              <p data-search-unavailable role="status" className="px-2">
+                {t(`sidebar.results.unavailable.${unavailable.reason ?? 'generic'}`)}
+                {unavailable.reason !== 'disabled' && unavailable.reason !== 'runtime_disabled' ? (
+                  <button
+                    type="button"
+                    data-search-unavailable-retry
+                    onClick={() => { void search.retryUnavailable().catch(() => search.retry()); }}
+                    className="ml-2 font-medium text-ink underline underline-offset-2"
+                  >
+                    {t('common.retry')}
+                  </button>
+                ) : null}
+              </p>
+            ) : null}
+            {search.building !== undefined ? (
+              <p data-search-building className="px-2">
+                {t('sidebar.results.building', { indexed: search.building.indexed_sessions, total: search.building.total_sessions })}
+              </p>
+            ) : null}
+            {search.incomplete ? (
+              <p data-search-incomplete className="px-2">{t('sidebar.results.incomplete')}</p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="border-t border-hairline px-4 py-2 text-[11px] text-ink-faint">

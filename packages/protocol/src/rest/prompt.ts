@@ -35,9 +35,9 @@
 
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema } from '../execution';
 
 import { messageContentSchema } from '../message';
+import { executionSelectionSchema } from '../execution';
 import { isoDateTimeSchema } from '../time';
 
 // Accept any non-empty, model-declared effort string. Providers normalize
@@ -67,10 +67,10 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
-  execution: executionSelectionSchema.optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
+  execution: executionSelectionSchema.optional(),
   // Agent profile captured with this prompt and applied when the prompt starts.
   // A different name replaces the target agent's current base-profile binding.
   profile: z.string().min(1).optional(),

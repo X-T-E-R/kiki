@@ -14,19 +14,25 @@ import {
   type TranscriptTask,
   transcriptReadForCoverage,
   type TranscriptRead,
+  jsonBytes,
+  type ContentRef,
+  type ContentSegment,
+  type TranscriptItem,
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
 import { boundedEntity, readContentSegment } from './boundedContent';
-import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
-import { jsonBytes, type ContentRef, type ContentSegment, type TranscriptItem } from '@kiki/transcript';
+import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
+
+const DETAIL_PAGE_BYTES = 48 * 1024;
+const DETAIL_ENTITY_BYTES = 2048;
 
 export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
-  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range);
+  return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
 }
 
 export async function readSessionViewCanonicalEntity(
@@ -71,8 +77,20 @@ export async function readSessionViewCanonicalEntity(
 export async function readSessionViewTranscriptPage(
   ...args: Parameters<typeof readSessionViewTranscriptPageRaw>
 ): Promise<TranscriptResponse | undefined> {
-  const response = await readSessionViewTranscriptPageRaw(...args);
-  return response === undefined ? undefined : boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail');
+  try {
+    const response = await readSessionViewTranscriptPageRaw(...args);
+    if (response === undefined) return undefined;
+    const bounded = boundedTranscriptResponse(response, args[2].afterTurn !== undefined || args[2].afterItem !== undefined ? 'head' : 'tail', 64 * 1024);
+    return { ...bounded, next_cursor: bounded.next_cursor === undefined || response.read === undefined ? bounded.next_cursor
+      : encodePageCursor(bounded.next_cursor, response.agent_id, response.read.source, response.cursor?.epoch) };
+  } catch (error) {
+    if (!(error instanceof TranscriptSourceChangedError)) throw error;
+    return {
+      session_id: args[1], agent_id: args[2].agentId, items: [], has_more: true,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'unknown', hasMoreOlder: true }, read: staleRead(error.source),
+    };
+  }
 }
 
 export async function readSessionViewTranscriptDetail(
@@ -82,7 +100,7 @@ export async function readSessionViewTranscriptDetail(
   if (detail === undefined) return undefined;
   if (detail.kind === 'tool') {
     const lookup = detail.lookup;
-    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }) } };
+    return lookup.status !== 'found' ? detail : { ...detail, lookup: { ...lookup, frame: boundedEntity(lookup.frame, { kind: 'frame', id: lookup.frame.frameId, turnId: lookup.turnId, stepId: lookup.stepId }, undefined, detail.agent_id) } };
   }
   if (detail.kind === 'task') return { ...detail, task: boundedEntity(detail.task, { kind: 'task', id: detail.task.taskId }) };
   if (detail.kind === 'attachment') return { ...detail, attachment: boundedAttachment(detail.attachment, detail.agent_id) };
@@ -96,7 +114,8 @@ export async function readColdSessionViewBaseline(
   grade: Exclude<TranscriptGrade, 'off'>,
   signal: AbortSignal,
 ): Promise<TranscriptResetEvent | undefined> {
-  const source = await service.readColdSnapshot(sessionId, agentId, undefined, signal);
+  const source = await service.readColdPageSnapshot(sessionId, agentId,
+    (snapshot) => boundedTranscriptPageSource(snapshot, agentId, 'tail'), signal);
   if (source === undefined) return undefined;
   signal.throwIfAborted();
   const transcript = new AgentTranscript(agentId);
@@ -118,6 +137,14 @@ export class TranscriptDetailCursorError extends Error {
   }
 }
 
+class TranscriptSourceChangedError extends Error {
+  constructor(readonly source: TranscriptRead['source']) { super('transcript source changed'); }
+}
+
+function staleRead(source: TranscriptRead['source']): TranscriptRead {
+  return { source, readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } };
+}
+
 interface TranscriptDetailCursor {
   readonly v: 1 | 2;
   readonly agentId: string;
@@ -134,7 +161,6 @@ function decodeTranscriptDetailCursor(
   encoded: string,
   agentId: string,
   kind: TranscriptDetailCursor['kind'],
-  source?: TranscriptRead['source'],
 ): TranscriptDetailCursor {
   try {
     const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<TranscriptDetailCursor>;
@@ -143,9 +169,9 @@ function decodeTranscriptDetailCursor(
       parsed.agentId !== agentId ||
       parsed.kind !== kind ||
       typeof parsed.after !== 'string' ||
-      parsed.after.length === 0
+      parsed.after.length === 0 ||
+      (parsed.v === 2 && !isTranscriptSource(parsed.source))
     ) throw new Error('invalid cursor');
-    if (parsed.v === 2 && parsed.source !== source) throw new Error('stale cursor');
     return parsed as TranscriptDetailCursor;
   } catch {
     throw new TranscriptDetailCursorError();
@@ -165,14 +191,16 @@ async function readSessionViewTranscriptPageRaw(
     readonly signal?: AbortSignal;
   },
 ): Promise<TranscriptResponse | undefined> {
-  const pageQueryInput = { beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
+  const pageQueryInput = { agentId: input.agentId, beforeTurn: input.beforeTurn, beforeItem: input.beforeItem, afterTurn: input.afterTurn, afterItem: input.afterItem, pageSize: input.pageSize ?? 20 };
+  const sourceDirection: 'head' | 'tail' = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined ? 'head' : 'tail';
   const store = transcriptService.forSessionLive(sessionId);
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId);
     if (transcript === undefined) return undefined;
     const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
-      const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
+      const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
+        (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection));
       if (cold === undefined) return undefined;
       const page = paginateTurns(cold.items, pageQueryFor(pageQueryInput, 'derived'));
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
@@ -210,7 +238,8 @@ async function readSessionViewTranscriptPageRaw(
       next_cursor: hasMore && page.items.length > 0 ? encodePageCursor(itemKey(page.items[0]!), input.agentId, 'live', cursor?.epoch) : undefined,
     } as unknown as TranscriptResponse;
   }
-  const snapshot = await transcriptService.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+  const snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId,
+    (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection), input.signal);
   if (snapshot === undefined) return undefined;
   const page = paginateTurns(snapshot.items, pageQueryFor(pageQueryInput, 'cold'));
   const roster = (await transcriptService.readColdRoster(sessionId)) ?? [];
@@ -339,18 +368,23 @@ export async function readSessionViewTranscriptDetails(
     return a < b ? -1 : a > b ? 1 : 0;
   });
   const source: TranscriptRead['source'] = transcript === undefined ? 'cold' : transcript.hasMoreOlder ? 'derived' : 'live';
-  const after = input.cursor === undefined ? undefined : decodeTranscriptDetailCursor(input.cursor, input.agentId, input.kind, source).after;
+  const cursor = input.cursor === undefined ? undefined : decodeTranscriptDetailCursor(input.cursor, input.agentId, input.kind);
+  if (cursor?.v === 2 && cursor.source !== source) return {
+    session_id: sessionId, agent_id: input.agentId, kind: input.kind, items: [], has_more: true, read: staleRead(source),
+  };
+  const after = cursor?.after;
   const limit = Math.max(1, Math.min(100, Math.floor(input.limit ?? 20)));
   const start = after === undefined ? 0 : ordered.findIndex((entry) => detailEntityId(input.kind, entry) > after);
   const offset = start < 0 ? ordered.length : start;
   const items: TranscriptCollectionEntity[] = [];
+  const pageBytes = input.kind === 'todo' ? TRANSCRIPT_WINDOW_BYTES : DETAIL_PAGE_BYTES;
   let bytes = 2048;
   for (const entity of ordered.slice(offset, offset + limit)) {
     input.signal?.throwIfAborted();
-    const projected = input.kind === 'attachment' ? boundedAttachment(entity as TranscriptAttachment, input.agentId)
-      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) }, 12 * 1024);
+    const projected = input.kind === 'attachment' ? boundedAttachment(entity as TranscriptAttachment, input.agentId, DETAIL_ENTITY_BYTES)
+      : boundedEntity(entity, { kind: input.kind, id: detailEntityId(input.kind, entity) }, input.kind === 'todo' ? undefined : DETAIL_ENTITY_BYTES);
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > TRANSCRIPT_WINDOW_BYTES) break;
+    if (items.length > 0 && bytes + size > pageBytes) break;
     items.push(projected);
     bytes += size;
   }
@@ -358,7 +392,7 @@ export async function readSessionViewTranscriptDetails(
   const nextCursor = hasMore && items.length > 0 ? encodeTranscriptDetailCursor({ v: 2, agentId: input.agentId, kind: input.kind, source, after: detailEntityId(input.kind, items.at(-1)!) }) : undefined;
   const read = readFor(source, snapshot.toolCallCountKnown === true ? { kind: 'full', hasMoreOlder: false } : { kind: 'unknown', hasMoreOlder: true });
   const result = { session_id: sessionId, agent_id: input.agentId, kind: input.kind, items, total: ordered.length, has_more: hasMore, read, ...(nextCursor === undefined ? {} : { next_cursor: nextCursor }) };
-  if (jsonBytes(result) > TRANSCRIPT_WINDOW_BYTES) throw new Error('Transcript collection exceeds its window budget');
+
   return result as TranscriptDetailListResponse;
 }
 
@@ -396,19 +430,19 @@ export async function readSessionViewTranscriptCatchUp(
   let complete = catchup.complete;
   if (transcript === undefined) complete = false;
   else for (const batch of catchup.batches) {
-    const ops = boundedTranscriptOps(filterOpsForGrade(grade, batch.ops), transcript);
+    const ops = boundedTranscriptOps(filterOpsForGrade(grade, batch.ops), transcript, DETAIL_ENTITY_BYTES);
     const bounded = { seq: batch.seq, ops };
     const size = jsonBytes(bounded) + 1;
-    if (bytes + size > 48 * 1024) {
-      hasMore = batches.length > 0;
-      if (!hasMore) complete = false;
+    if (bytes + size > DETAIL_PAGE_BYTES) {
+      if (batches.length === 0) complete = false;
+      else hasMore = true;
       break;
     }
     if (ops.length > 0) { batches.push(bounded as TranscriptOpsCatchupResponse['batches'][number]); bytes += size; }
     through = batch.seq;
   }
   const result = { session_id: sessionId, agent_id: input.agentId, epoch: catchup.epoch, batches, through_seq: hasMore ? through : catchup.throughSeq, complete, has_more: hasMore };
-  if (jsonBytes(result) > 48 * 1024) throw new Error('Transcript catch-up exceeds its page budget');
+
   return result;
 }
 
@@ -435,17 +469,22 @@ function encodePageCursor(anchor: string, agentId: string, source: TranscriptRea
   return Buffer.from(JSON.stringify({ v: 2, agentId, source, anchor, epoch } satisfies PageCursor), 'utf8').toString('base64url');
 }
 
-function pageQueryFor(input: { readonly beforeTurn?: string; readonly beforeItem?: string; readonly afterTurn?: string; readonly afterItem?: string; readonly pageSize: number }, source: TranscriptRead['source']) {
+function isTranscriptSource(source: unknown): source is TranscriptRead['source'] {
+  return source === 'live' || source === 'cold' || source === 'derived';
+}
+
+function pageQueryFor(input: { readonly agentId: string; readonly beforeTurn?: string; readonly beforeItem?: string; readonly afterTurn?: string; readonly afterItem?: string; readonly pageSize: number }, source: TranscriptRead['source']) {
   const decode = (value: string | undefined): string | undefined => {
     if (value === undefined) return undefined;
     try {
       const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PageCursor>;
-      if (parsed.v === 2 && typeof parsed.anchor === 'string') {
-        if (parsed.source !== source) throw new TranscriptDetailCursorError();
+      if (parsed.v === 2) {
+        if (parsed.agentId !== input.agentId || typeof parsed.anchor !== 'string' || parsed.anchor.length === 0 || !isTranscriptSource(parsed.source)) throw new TranscriptDetailCursorError();
+        if (parsed.source !== source) throw new TranscriptSourceChangedError(source);
         return parsed.anchor;
       }
     } catch (error) {
-      if (error instanceof TranscriptDetailCursorError) throw error;
+      if (error instanceof TranscriptDetailCursorError || error instanceof TranscriptSourceChangedError) throw error;
       return value;
     }
     return value;
@@ -458,10 +497,11 @@ function paginateTurns(items: readonly TranscriptItem[], query: { beforeTurn?: s
   if (cursor === undefined) return paginateCanonicalTurns(items, query);
   const index = items.findIndex((item) => itemKey(item) === cursor);
   if (index < 0) throw new TranscriptDetailCursorError();
+  const pageSize = Math.max(1, Math.min(100, Math.floor(query.pageSize)));
   if (query.afterItem !== undefined) {
-    const end = Math.min(items.length, index + 101);
+    const end = Math.min(items.length, index + pageSize + 1);
     return { items: items.slice(index + 1, end), hasMore: end < items.length };
   }
-  const start = Math.max(0, index - 100);
+  const start = Math.max(0, index - pageSize);
   return { items: items.slice(start, index), hasMore: start > 0 };
 }

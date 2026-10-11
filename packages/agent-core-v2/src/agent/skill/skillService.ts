@@ -35,6 +35,9 @@ import {
 } from './skill';
 import { SkillActivate, skillKey } from './skillOps';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { assertPluginSkillUsage } from './pluginSkillUsage';
 import { IEventService } from '#/app/event/event';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
@@ -119,6 +122,9 @@ export class AgentSkillService extends Service implements IAgentSkillService {
       if (terminal?.state === 'failed' || terminal?.state === 'cancelled') throw terminalPromptError(terminal);
       if (receipt !== undefined) {
         const turnId = terminal?.turnId ?? this.prompt.lookup(input.promptId!)?.turnId;
+        if (turnId === undefined) {
+          throw new Error2(ErrorCodes.INTERNAL, `Prompt "${input.promptId}" has no assigned turn`);
+        }
         return {
           turn_id: turnId,
           prompt_id: input.promptId!,
@@ -140,6 +146,13 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         `Skill "${skill.name}" cannot be activated by the user`,
       );
     }
+    await assertPluginSkillUsage(
+      skill.path,
+      this.sessionContext.workspaceId,
+      optionalService(this.instantiation, IPluginService),
+      optionalService(this.instantiation, IPluginUsageService),
+      this.sessionContext.sessionId,
+    );
 
     const skillArgs = input.args ?? '';
     const skillContent = this.renderSkillPrompt(skill, skillArgs);
@@ -348,6 +361,8 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     }
     const handle = await this.prompt.enqueue({
       id: activation?.promptId,
+      userMessageId: activation?.promptId,
+      retryFingerprint: activation?.retryFingerprint,
       waitForLaunch: execution === undefined,
       message,
       execution,
@@ -363,6 +378,8 @@ export class AgentSkillService extends Service implements IAgentSkillService {
     delivery: SkillActivationDelivery,
   ): Promise<void> {
     if (input.promptId === undefined || input.retryFingerprint === undefined) return;
+    const existing = await promptRetryFor(this.prompt).lookup(input.promptId, input.retryFingerprint);
+    if (existing !== undefined) return;
     const handle = delivery.handle;
     await promptRetryFor(this.prompt).commit(input.promptId, input.retryFingerprint, {
       status: handle?.state === 'pending' ? 'queued' : handle?.state === 'blocked' ? 'blocked' : 'running',
@@ -388,6 +405,14 @@ export class AgentSkillService extends Service implements IAgentSkillService {
         flow_name: origin.skillName,
       });
     }
+  }
+}
+
+function optionalService<T>(instantiation: IInstantiationService, id: import('#/_base/di/instantiation').ServiceIdentifier<T>): T | undefined {
+  try {
+    return instantiation.invokeFunction((accessor) => accessor.get(id));
+  } catch {
+    return undefined;
   }
 }
 

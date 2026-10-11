@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
+import { CodeEditor } from './CodeEditor';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -187,6 +188,7 @@ export function MediaPreviewProvider({
     ready: sessionId !== undefined,
     capture: () => ({ tabsState, panelOpen, positions }),
     restore: (snapshot) => {
+      setNavigation(undefined);
       setTabsState((current) => {
         const kept = current.tabs.filter((tab) => tab.kind === 'file' && dirtyPaths.has(tab.path) &&
           !snapshot.tabsState.tabs.some((candidate) => previewTabKey(candidate) === previewTabKey(tab)));
@@ -208,11 +210,14 @@ export function MediaPreviewProvider({
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openFile = useCallback((input: string | FileReference) => {
     const raw = typeof input === 'string' ? { path: input } : input;
-    const reference = { ...raw, path: normalizeRawPath(raw.path) };
+    const path = normalizeRawPath(raw.path);
+    const identity = (value: string) => /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
+    const existing = tabsState.tabs.find((tab) => tab.kind === 'file' && identity(tab.path) === identity(path));
+    const reference = { ...raw, path: existing?.kind === 'file' ? existing.path : path };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
     revealPreview();
-  }, [revealPreview]);
+  }, [revealPreview, tabsState.tabs]);
 
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
@@ -356,7 +361,7 @@ export function MediaPreviewProvider({
       workspaceNavigation={workspaceNavigation}
       onCancelTask={onCancelTask}
       onStopAgentTask={onStopAgentTask}
-      onActivate={(key) => { setTabsState((state) => ({ ...state, active: key })); }}
+      onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
       onClose={(key) => { requestClose({ kind: 'tab', key }); }}
       onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
       onCloseAll={() => { requestClose({ kind: 'all' }); }}
@@ -413,7 +418,8 @@ export { PreviewToggleButton } from './PreviewToggleButton';
 
 // ---------------------------------------------------------------------------
 
-import { attachmentName, useSessionMedia } from './mediaParts';
+import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts';
+import { safeImagePreviewName } from './imagePreviewName';
 
 function isTextPreview(mime: string, name: string): boolean {
   if (mime.startsWith('text/')) return true;
@@ -432,14 +438,19 @@ function AttachmentPreviewDialog({
 }) {
   const { t } = useI18n();
   const host = useHost();
+  const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
-  const [original, setOriginal] = useState(false);
-  const [textLimit, setTextLimit] = useState(1024 * 1024);
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
-  const load = useSessionMedia(item, sessionId, true, !original);
-  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+  const [attempt, setAttempt] = useState(0);
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const viewable = item.kind !== 'file' || /^(?:image|video|audio)\//.test(item.mime ?? '') || item.mime === 'application/pdf' || /\.pdf$/i.test(item.name ?? '') || isTextPreview(item.mime ?? '', item.name ?? '');
+  const load = useSessionMedia(item, sessionId, viewable, false, attempt);
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  const downloadName = safeImagePreviewName({ name: item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: item.path });
   const title = t('preview.openFile', { name });
+  const imageActionLabel = t('media.viewImage');
+  const [original, setOriginal] = useState(false);
   const imageSurface = item.kind === 'image' || item.mime?.startsWith('image/') === true;
   const [imageMenu, setImageMenu] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
@@ -463,7 +474,7 @@ function AttachmentPreviewDialog({
         await target.write(chunk);
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
-      const options = { signal: controller.signal, timeoutMs: 0 };
+      const options = { ...client.readingOptions(), signal: controller.signal };
       if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
       else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
       controller.signal.throwIfAborted();
@@ -479,29 +490,35 @@ function AttachmentPreviewDialog({
   };
   let body: ReactNode;
 
-  if (load.status === 'loading') {
+  if (!viewable) {
+    body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.unsupported')}</div>;
+  } else if (load.status === 'loading') {
     body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.loading')}</div>;
-  } else if (load.status === 'failed') {
-    body = <div className="flex min-h-48 items-center justify-center text-sm text-danger">{t('preview.failed')}</div>;
+  } else if (load.status === 'failed' || failedUrl === load.url) {
+    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} onRetry={() => { setFailedUrl(undefined); setAttempt((value) => value + 1); }} />;
   } else if (load.mime.startsWith('image/')) {
-    body = <img src={load.url} alt={name} className="max-h-[72vh] max-w-full object-contain" />;
+    body = (
+      <button
+        type="button"
+        title={imageActionLabel}
+        aria-label={imageActionLabel}
+        onClick={() => { preview?.openImage(load.url, downloadName); }}
+        className="block max-h-[72vh] max-w-full overflow-hidden rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+      >
+        <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full object-contain" />
+      </button>
+    );
   } else if (load.mime.startsWith('video/')) {
-    body = <video src={load.url} controls className="max-h-[72vh] max-w-full" />;
+    body = <video src={load.url} controls onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full" />;
   } else if (load.mime.startsWith('audio/')) {
     body = <audio src={load.url} controls className="w-full" />;
   } else if (load.mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
     body = <iframe src={load.url} title={name} className="h-[72vh] w-full rounded-lg border border-hairline bg-white" />;
   } else if (isTextPreview(load.mime, name)) {
-    const shown = load.bytes.subarray(0, textLimit);
-    const text = new TextDecoder().decode(shown, { stream: shown.byteLength < load.bytes.byteLength });
-    body = (
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3">
-        <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
-        {load.bytes.byteLength > shown.byteLength ? (
-          <button type="button" onClick={() => { setTextLimit((value) => value + 1024 * 1024); }} className="mt-3 text-[11px] text-accent">{t('transcript.showMore')}</button>
-        ) : null}
-      </div>
-    );
+    const text = new TextDecoder().decode(load.bytes);
+    body = load.bytes.byteLength > 1024 * 1024
+      ? <div className="h-[72vh] min-h-0 w-full overflow-hidden rounded-lg border border-hairline bg-paper"><CodeEditor key={`${name}:${attempt}`} path={name} value={text} generation={attempt} readOnly onChange={() => {}} ariaLabel={title} /></div>
+      : <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3"><pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre></div>;
   } else {
     body = (
       <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-ink-faint">

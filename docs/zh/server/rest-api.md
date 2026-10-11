@@ -146,9 +146,11 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/config` | 读取全局配置（密钥字段脱敏） |
 | `POST /api/config` | 合并式更新配置，并广播 `event.config.changed` |
 
+会话标题提示词的读取、只读默认值，以及逐字段保存和删除方式见 [`session_title`](../configuration/config-files.md#session-title)。
+
 `hooks` 接受 legacy 命令规则数组，或 `schemaVersion: 2` 的声明式对象。读取和保存均保留完整值，包括 `rules`、`legacy`、`enabled`、`disabled` 和 `files`。嵌套 JSON 键使用 camelCase（`textFile`、`agentRoles`、`everyCompletedSteps`、`counterScope`、`partitionBy`），TOML 使用 snake_case。编辑时发送完整的 hooks 数组或对象；省略 `hooks` 不改动此配置，发送 `[]` 则清空。`null` 或不支持的规则形状返回校验错误码 `40001`，不改变已存文件。读取或保存配置不会执行 hook 命令。支持的事件和动作见 [Hooks](../customization/hooks.md)。
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是活跃 Agent 的独立只读检查视图。返回的规则、来源状态、诊断和计步值描述实际运行状态，不用于保存配置。
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` 是独立的只读检查视图。活跃 Agent 返回实际生效的规则、来源状态、诊断和计步值；已关闭的会话则按保存的智能体绑定、计步记录和当前规则来源读取，不恢复 Agent，也不执行 hooks。工作区来源无效时，诊断保留该错误，有效的全局规则仍可查看。此接口不保存配置。
 
 ### 模型与供应商
 
@@ -208,11 +210,13 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/sessions` | 创建会话；同时省略 `workspace_id` 与 `metadata.cwd` 时自动分配新工作区 |
-| `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 等过滤 |
+| `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 和标题、工作区搜索 `q` |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
 | `POST /api/sessions/{session_id}/profile` | 更新标题、元数据、agent 配置 |
 | `POST /api/sessions/{session_id}:{action}` | 会话动作：`fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:delete-archived` | 永久删除已归档对话及仍附属的归档对话 |
+| `POST /api/sessions:delete-archived` | 永久删除当前连接 home 中全部归档对话 |
 | `GET /api/sessions/{session_id}/children` | 列出子会话 |
 | `POST /api/sessions/{session_id}/children` | 创建子会话（fork 并打标） |
 | `GET /api/sessions/{session_id}/status` | 实时状态汇总 |
@@ -221,7 +225,39 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions/{session_id}/export` | 导出会话与诊断信息（zip 流，不走信封） |
 | `GET /api/sessions/{session_id}/snapshot` | 客户端重建用全量快照（含 `as_of_seq` 与 `epoch`） |
 
+快照的 `subagents` 名册条目包含可选的 `created_at`，以 UTC ISO 时间表示 Agent 不变的创建时刻。新建 Agent 在首次运行前就带有该值，包括仍在排队时；续跑同一 Agent、恢复其作用域、重启服务或切换模型均不会改变它。fork 若创建了新的 Agent 实体，则记录新的创建时间。另一个可选字段 `started_at` 表示该条目所描述的运行开始时间，后续运行可以更新它。
+
+模型、思考强度与执行器字段优先使用 Agent 当前已提交的元数据，当前值缺失时才回退到创建快照。思考强度来源与执行器协议沿用所选数据源；当前绑定本身不证明哪个模型处理了真实请求。
+
+Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客户端应保留未知状态，不借用会话创建时间、运行开始时间、附着时间，也不从 ID 推断。创建时间使用主机时钟，不是派遣或轮次标识：时间戳相同、时钟变化或缺少比较边界时，不能据此确认 Agent 属于哪次派遣。
+
 要自动分配工作区，可向 `POST /api/sessions` 发送 `{}`。服务端会在 `$KIKI_HOME/workspaces/` 下为该会话新建独立目录并注册工作区；响应中的 `workspace_id` 和 `metadata.cwd` 是新工作区的信息。显式提供已有 `workspace_id` 或 `metadata.cwd` 时仍按原方式定位，未知 `workspace_id` 仍会被拒绝。
+
+创建时设置 `agent_config.execution`，即可独立于 profile 选择 harness：
+
+```json
+{ "agent_config": { "execution": { "executor": "claude-acp" } } }
+```
+
+选择对象为 `{ executor, profile?, profile_file?, overrides? }`。可选择已注册的 `profile` 名称，或 `profile_file` Markdown 路径；两者互斥，所选 profile 必须使用同一执行器。显式文件不要求 `main: true`，不会被注册或复制进 profile 目录。同时省略这两个字段表示外部直连。`overrides` 接受 `model`、`thinking`、`permission_mode`、`kiki_context`、`allow_kiki_subagents`。执行器和 profile 名称或文件路径相同时，省略覆盖字段保留该会话已有覆盖；`null` 删除覆盖并恢复 [下层默认值](../configuration/config-files.md#外部-harness-默认设置)，`[]` 与 `false` 则明确关闭对应能力。旧的顶层 model/profile/thinking 请求仍可使用。
+
+选文件前可用 `POST /api/agent-profiles/file-preview`，请求为 `{ path, cwd?, workspace_id? }`，响应为 `{ profile }`，包含普通 profile 元数据、规范绝对路径 `source_file` 和执行器。`cwd` 与 `workspace_id` 最多传一个；相对路径必须指定其中一个，绝对路径或 `~/` 路径则无需指定。路径由当前连接的服务端读取，不是客户端本机路径。缺失或非法文件返回 `40001` 和带路径的诊断，不改变绑定。typed HTTP 客户端对应 `klient.rest.agents.previewFile(body, options?)`。创建会话或发送下一条消息时，把返回的 `source_file` 作为 `execution.profile_file`。
+
+读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
+
+#### `POST /api/sessions/{session_id}:archive`
+
+空请求体保留单会话归档行为。发送 `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` 可归档仍附属的整组对话。服务器跨所有工作区读取持久元数据，不依赖客户端已加载的页面。`created_by_session_id` 表示创建的线程；`parent_session_id` 只有同时带 `child_session_kind: "child"` 才算附属，普通 fork 不包含在内。排除某个线程会排除其整棵子树；排除请求中的根线程 ID 不会排除根自身。
+
+整组请求返回 `data: { archived, outcomes }`。`archived: true` 确认全部目标已归档；每项结果为 `{ id, ok: true }` 或 `{ id, ok: false, reason, message }`。部分失败时，即使信封 code 为 `0`，`archived` 仍为 `false`；保留成功项，重试完成未归档项。归属发现失败会在任何归档改动之前返回错误。无论成功或失败，都应刷新列表。旧服务器未返回 `outcomes` 时不能确认整组归档。归档不删除历史或 worktree；`:restore` 只恢复请求中的会话。既有批量归档端点仍只操作传入的 ID。
+
+#### 归档对话管理
+
+使用 `GET /api/sessions?archived_only=true`，配合既有 `page_size` 和 `before_id` 游标读取归档。`q` 最多接受 500 个字符，在各页中按标题、工作区路径或工作区 ID 匹配不区分大小写的子串，不搜索消息正文。读取已归档对话的消息不会将其恢复为未归档。
+
+`POST /api/sessions/{session_id}:delete-archived` 接受 `{}` 或 `{ "exclude_session_ids": ["independent-thread-id"] }`。它按[会话归档](#会话)相同的附属关系发现整组对话，排除指定的整棵子树，只删除其中已归档的成员。请求的根对话须仍为已归档；目标在删除前被恢复时会保留。`POST /api/sessions:delete-archived` 接受 `{}`，先发现当前连接 home 中全部已归档对话，再执行删除；搜索、工作区筛选和已加载页面均不收窄范围。独立显示的已归档顶层线程也包含在全部删除中。
+
+两项操作都会永久移除已保存的对话数据，返回 `data: { deleted_ids, failed }`。每个失败项为 `{ id, title?, message }`；`failed` 非空时，信封 code 为 `0` 不代表全部成功。成功、部分失败或请求报错后都须刷新归档列表，按最新状态决定重试。发现目标失败会在删除前返回错误。客户端须在发送请求前取得确认，取消确认不得发送删除请求。
 
 #### `POST /api/sessions/{session_id}:compact`
 
@@ -241,12 +277,18 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | 消息分页（`before_id` / `after_id` / `role`） |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | 读取单条消息 |
+| `POST /api/sessions/{session_id}/messages/{message_id}:edit` | 替换用户消息，并从该消息重新运行 |
+| `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | 按最新终态 Assistant 消息对应的用户输入重新运行 |
 | `GET /api/sessions/{session_id}/transcript` | 转录按轮次分页（需 `agent_id` 和 `transcript_coverage_version=2`），全局状态不分页随响应返回 |
 | `GET /api/sessions/{session_id}/transcript/ops` | 转录批次补漏（需 `agent_id`、`since_seq` 和 `transcript_coverage_version=2`），`complete: false` 时需全量刷新 |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | 各轮次的用户输入，不分页 |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode 计划内容、路径与审阅结果 |
 | `GET /api/sessions/{session_id}/transcript/detail` | 读取一条 canonical 实体（`agent_id`、`kind`、`id`） |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | 从一条 `contentRefs` 继续读取被截断的字段 |
+
+编辑和重新生成都要求会话空闲，并携带当前会话视图的 `expected_cursor: { seq, epoch }`。编辑会替换完整 `content` 数组，包括附件；重新生成沿用所选终态 Assistant 回复对应的原用户输入。预检拒绝不会改变对话历史；成功受理的改写保留 `user_message_id`，并取得新的 `prompt_id`。
+
+需要恢复丢失的响应时，可提供 `operation_id`，并在重试同一次操作时保持该 ID 和完整请求体不变。与已受理请求匹配的重试返回原回执，不再启动一次运行，即使原上传文件已经过期也能恢复。修改请求体或开始新操作时应使用新 ID。同一 ID 携带不同输入会返回 `40938`；游标过期会返回 `40937`，应先刷新会话视图，再开始新操作。响应状态不确定时，手动重试原操作，不要自动提交另一操作。
 
 转录分页与批次补漏请求都须携带 `transcript_coverage_version=2`。成功响应在 `data.transcript_coverage_version` 回显数字 `2`；缺少或使用不受支持的版本时，服务端以信封错误码 `40001` 提示升级，不返回转录。新版客户端读取未确认历史完整性的旧服务端时，会将历史标为未验证，而不是误判为完整。
 
@@ -258,6 +300,8 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 源历史仍在定位时，同一次调用返回 `code: 40923` 和 `msg: "history_canonical_preparing"`，用同一请求体重试。字段已与引用不一致时，返回 `code: 40922` 和 `msg: "Content changed; reload its preview before continuing."`。重新加载转录预览，再从新的引用继续。未知引用返回 `code: 40401` 和 `msg: "content unavailable"`。其他路由也会使用 `40922` 和 `40923`；以这条 `msg` 为准。请求体无效时返回 `code: 40001` 和 `msg: "invalid content reference"`。
 
+转录响应的 `agents` 描述符使用 camelCase：`{ agentId, type?, parentAgentId?, delegator?, label?, createdAt?, disposedAt? }`。其中可选的 `createdAt` 与快照 `subagents[].created_at` 表示同一个不变的 UTC ISO 创建时间，活跃会话和已关闭会话均遵循相同的[未知时间规则](#会话)。它不是转录轮次的 `startedAt`，也不是快照运行的 `started_at`。
+
 ### 提示词
 
 | 方法与路径 | 说明 |
@@ -267,6 +311,10 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
+
+提交提示词后若响应丢失，重试时保持可选的 `prompt_id` 和完整请求体不变。匹配的重试返回原受理回执，不会重复提交，main agent、附件和内嵌 Skill 提交也遵循此规则。输入改变时须使用新 `prompt_id`；复用已受理 ID 携带不同输入会返回 `40938`。较早的受理请求若没有可重放回执，应检查队列或历史，不要自动再次发送。
+
+提示词可在顶层 `execution` 携带同一份 [execution 选择](#会话)。选择随该提示词保存，到启动时才应用，而不是入队就生效；当前轮次保持已提交的绑定。execution 代际变化时新建远端会话，不恢复或 fork 旧远端，也不发送旧 Kiki 对话的交接文本；Kiki 中可见的历史仍保留。冷恢复继续使用已提交的代际及其自身保存的远端引用。
 
 顶层 `profile`、`model` 与 `thinking` 选择也随提示词保存。与 `model` 一起携带 `model_switch_mode: "direct" | "compact" | "fresh"`，即可将已确认的上下文选择附在同一条消息上：保留当前上下文、先生成摘要，或重建新的上下文窗口。该选择不能同时改变 `profile` 或 `execution`。提示词列表项通过可选的 `runtime_controls` 返回保存的设置，其中模式使用 camelCase `modelSwitchMode`。队列恢复后设置仍保留，不会创建独立的控制队列项；保存的选择或受理回执都不证明真实请求已使用目标模型。
 
@@ -294,8 +342,15 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | 读取任务（可选输出预览） |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | 取消任务 |
 | `GET /api/cron` | 跨工作区列出定时任务 |
+| `POST /api/cron` | 为 `session_id` 创建定时消息 |
+| `GET /api/cron/{task_id}` | 读取完整定时消息 |
+| `PATCH /api/cron/{task_id}` | 编辑调度或在同工作区内重绑定会话 |
+| `POST /api/cron/{task_id}:pause` / `:resume` / `:run` | 暂停、恢复或触发任务 |
+| `DELETE /api/cron/{task_id}` | 删除调度 |
 
 任务和定时任务列表支持 `page_size`（1–100，默认 100）与 `offset`（默认 0）。响应包含 `items`、`has_more`，有下一页时还包含 `next_offset`。后台任务列表另支持 `status`，定时任务列表另支持 `session_id`。若两次请求之间任务发生变化，按偏移量翻页可能出现位置偏移。
+
+创建定时消息接受 `session_id`、`cron`、`prompt`，以及可选的 `recurring`、`paused` 和 `delivery_mode`。编辑请求接受除 `paused` 以外的任意非空字段子集；暂停与恢复使用对应操作。`delivery_mode` 可选 `idle`（默认，等待当前工作完成后优先普通消息）、`queue`（按正常消息顺序排队）或 `steer`（下一安全步骤插入，不取消当前请求）。同一任务在空闲等待期间重复触发会合并，并保留总次数。任务响应包含生效的 `delivery_mode`；旧任务未保存模式时，下次触发默认使用 idle，不改变已经入队的投递。投递时机与恢复语义详见[定时任务](../reference/tools.md#定时任务)。
 
 ### 技能、工具与 MCP
 
@@ -337,7 +392,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 
 `rest.ssh.hostKeys(id, workspaceId?)` 返回解析出的 `hostname`、`port`、匹配用的 `label`，以及 `state`、`records` 和来源 `files`。`recorded` 仅表示本机存在身份记录，不代表刚刚校验过远端密钥。`unrecorded` 表示在可读或不存在的文件中没有找到匹配记录；`unavailable` 表示读取不完整，或匹配记录无法解释。记录包含可读取时的 SHA256 `fingerprint`、`algorithm`、文件与行号、主机匹配模式，以及状态（`recorded`、`revoked`、`unsupported` 或 `invalid`）。不支持的标记（如 `@cert-authority`）、无效公钥和文件错误均携带 `reason`。
 
-OpenSSH 的 `ssh -G` 输出会丢失路径引号。`UserKnownHostsFile` 包含多个文件或路径含空白时，读取返回 `unavailable`，原因为 `ambiguous-known-hosts-paths`；常见的 OpenSSH 双文件默认值也属于此情况，接口不会猜测路径边界。此 API 不连接主机、不修改信任记录，也无法判断远端密钥未变或已变化。首次密钥审批和变化后拒绝连接仍由既有连接流程处理。
+Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的路径边界，支持多个文件和用引号包围的含空格路径。无法唯一确定边界时，请求失败，不会猜测。`UserKnownHostsFile none` 返回空的 `files` 列表，也不会写入默认文件；未知密钥仍需在每次连接时审批。此 API 不连接主机、不修改信任记录，也无法判断远端密钥未变或已变化。首次密钥审批和变化后拒绝连接仍由既有连接流程处理。
 
 ### 浏览器连接
 
@@ -400,9 +455,11 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `GET /api/memory/{scope}/journal` | 改动历史，可用 `id` 收窄到单条 |
 | `POST /api/memory/{scope}/undo` | 按 `operation_id` 撤销一次操作 |
 
-不带分页参数的 `GET /api/memory/{scope}` 返回整个命名空间的 `{ items, coverage }`，既有客户端无需改动。它的默认状态按形状不同：没有 `query` 时返回 `active` 和 `pending`，带 `query` 时只搜 `active`，`include_inactive=true` 则把两者都放宽到四种。`coverage` 会写明实际查的是哪些状态。
+`GET /api/memory/{scope}` 返回有界分页的 `{ items, mode, next_cursor, coverage }`，不带分页参数时也一样。没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`；`page_size` 取 1–20。没有显式 `statuses` 时，list 查 `active` 和 `pending`，search 查 `active`，`include_inactive=true` 把两者都放宽到四种。`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串。既有客户端必须消费 `next_cursor`，不能把第一页当成整个命名空间。
 
-传 `mode`、`page_size`、`statuses` 或 `cursor` 则切换为分页结果，并多出 `next_cursor`。此时没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`，`page_size` 取 1–20，`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串，默认只查生效条目。翻页时保持同一个 `{scope}` 路径和同一组 `workspace_id` / `persona_id`，并且只带 `cursor`，不要再带 `mode`、`query`、`type`、`page_size`、`statuses` 或 `include_inactive`——范围、过滤条件和页大小都记在 cursor 里了，把其中任何一项加回去都会返回 `40944`。底下的条目或命名空间发生变化后 cursor 也会失效，这时重新发起查询并按 id 对账，不要以为第二次跑的就覆盖了第一次的范围。
+持续接续，直到 `next_cursor` 为 null 且 `coverage.exhausted` 为 true。带 cursor 的空准备页不代表命名空间为空。`coverage.complete` 和 `warnings` 说明不可读、非法或过大的记录；这些记录不会隐藏其余可读条目。扫描预算限制单次调用，不永久限制清单大小；搜索相关性排序与列表标题排序针对每个有界源片段。
+
+续读保持同一个 `{scope}` 路径和归属的 `workspace_id` / `persona_id`，只传 `cursor`，不要再带原过滤条件或页大小，混传会返回 `40944`。源内容变化或 store 重启会让 cursor 失效；重新查询并按范围加 ID 对账。`GET /api/memory/{scope}/inbox` 为 `pending` 返回同样的分页形状，接受 `page_size` 或 pending 列表的 `cursor`；其他状态或 search 模式的 cursor 会被拒绝。
 
 `PUT /api/memory/{scope}/{id}` 使用与 [`MemoryWrite`](../reference/tools.md#写入一条条目)相同的动作词表：`action`（`create`、`update`、`supersede`、`archive`）、`type`、`title`、`body`、`reason`、`expected_revision` 和 `pinned`。经 REST 的写入一律记录为来自你，无论 Agent 本会用哪个 `source`。响应是 `{ entry, operationId, outcome, warnings? }`，`outcome` 取 `applied`、`pending` 或 `unchanged`；`unchanged` 以及与已在等待的提议完全相同的重复提交，`operationId` 为 `null`，这两种情况都没有可撤销的操作。`update`、`supersede` 和 `archive` 必须带 `expected_revision`——基于过期版本的 `PUT` 会被拒绝，而不是覆盖掉更新的那一版。
 
@@ -428,7 +485,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 | 方法与路径 | 说明 |
 | --- | --- |
 | `GET /api/threads` | 列出可寻址的 thread，可按 `workspace_id` 过滤，游标分页 |
-| `POST /api/threads:read` | 读取一个 thread 已完成的用户与 peer 轮次，可带 `cursor` 续读 |
+| `POST /api/threads:read` | 读取一个 thread 已完成的轮次，保留其记录的来源，可带 `cursor` 续读 |
 | `POST /api/threads:send` | 向另一个 thread 持久投递一条消息（需非空 `idempotency_key`，同一 key 只对应同一条消息） |
 | `POST /api/threads:wait` | 长轮询等待至多 8 条 thread 的活动，`timeout_ms` 最长 60 秒 |
 | `GET /api/workspaces/{workspace_id}/thread-communication` | 读取该工作区 peer thread 通信的持久化覆盖值与生效状态 |
@@ -514,12 +571,25 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `GET /api/usage` | 按有界筛选与分页汇总各会话用量 |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | 查询模型价格来源或按键修改用户价格覆盖，见下节 |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | 创建或列出外部委派席位 |
+| `POST /api/external-delegation/seats:resolve` | 按 `{ workspace, principal }` 查找已有席位，返回含委派 token 的席位或 `null`；不创建席位、会话或工作区 |
 | `DELETE /api/external-delegation/seats/{seat_id}` | 撤销外部委派席位 |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | 调用已获准的外部委派过程 |
 | `GET /api/sessions/query` | 新一代会话列表，见下节 |
 | `POST /api/sessions:archive` | 批量归档会话，见下节 |
 | `POST /api/sessions:restore` | 批量恢复已归档会话，见下节 |
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
+
+`POST /api/search` 接受 `query`，默认搜索用户与 Assistant 正文及会话标题。设置 `include_tool_output: true` 才纳入工具结果和 Shell 输出，思考块、工具名称和工具输入始终排除。`role` 可选 `user`、`assistant`、`tool` 或 `title`，其中 `role: "tool"` 显式选择工具结果。相同内容范围适用于在线会话与已有索引；改变范围会使旧 `page_token` 失效，应去掉令牌重新查询。
+
+### 用量来源分组
+
+`GET /api/usage` 支持 `dimension=agent|model|project|session|provider|profile`。原生 `provider` 与 `profile` 维度按每条记录保存的来源分组，包括同一个 Agent 切换智能体档、同一个模型别名切换供应商的情况。智能体档（Profile）指执行档，不是 persona，也不是 main/subagent 身份。
+
+重复 `model`、`provider`、`profile`、`agent.id` 或 `workspace.id` 可选择多个值，例如 `?dimension=profile&profile=explore&profile=general`。同一个筛选字段内取 OR，不同字段间取 AND。`profile` 区分大小写、精确匹配记录的 `profileName`，不读取 Agent 当前档。响应在 `query.profiles` 中返回规范化的筛选值；旧服务器可能省略这个新增字段。
+
+来源组使用不透明键，例如 `provider:"example-provider"` 或 `profile:"explore"`；缺失来源单独使用 `provider:null` 或 `profile:null`，对应归因字段为 `null`。这些记录保留已记录用量，不从模型或 Agent ID 猜来源。筛选值取 `group.provider` 或 `group.profile_name`，不要发送分组键。缺失来源没有筛选哨兵值；字面值 `unknown` 只匹配真实携带这个名称的记录。
+
+查询所选时段或比较窗口时，发送 `range=custom&start_at=A&end_at=B`，边界为 epoch 毫秒的 `[A,B)`。概要、趋势分组与各会话的 `usage` 使用相同的记录筛选和精确窗口；会话金额不混入其他智能体档或时间桶余下部分。费用与 Token 的未知标记仍与已记录数字小计分别表达。保留现有归档、时区和分页参数；修改筛选或窗口后丢弃 `page_token`。
 
 ### 全量重扫用量统计
 

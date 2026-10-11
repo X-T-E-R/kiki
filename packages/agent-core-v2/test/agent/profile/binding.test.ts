@@ -1,6 +1,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'pathe';
+import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -393,6 +395,149 @@ describe('AgentProfileService.bind', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
+  it.each(['', 'main: false\n'])('binds an explicit profile file without main curation (%s)', async (main) => {
+    const path = join(homeDir, 'selected.md');
+    await writeFile(path, `---\nname: resume-profile\ndescription: Explicit file fixture\n${main}model_alias: ${RESUME_OLD_MODEL}\ntools: [Read]\ndisallowedTools: [Bash]\n---\nEXPLICIT_FILE_BODY\n\${builtin_prompt}\n`);
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    const before = service.data();
+    const preview = await service.resolveFile(path);
+    expect(preview.sourcePath?.toLowerCase()).toBe(path.replaceAll('\\', '/').toLowerCase());
+    expect(service.data()).toEqual(before);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data()).toMatchObject({ profileName: 'resume-profile', modelAlias: RESUME_OLD_MODEL,
+      execution: { selection: { executor: 'native', profile_file: preview.sourcePath } } });
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    expect(service.data().boundProfile?.fileSources?.root.path).toBe(preview.sourcePath);
+    expect(service.data().disallowedTools).toContain('Bash');
+    await service.rebuildPromptContext();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    const frozen = service.data();
+    await writeFile(path, '---\nname: invalid\nexecutor: missing-executor\n---\ninvalid');
+    await expect(service.bind({ execution: { executor: 'native', profile_file: path } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    await expect(service.bind({ execution: { executor: 'native', profile_file: join(homeDir, 'missing.md') } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+  });
+
+  it('inherits a same-name profile for an explicit file and keeps executor policy', async () => {
+    const path = join(homeDir, 'inherit.md');
+    await writeFile(path, '---\nname: resume-profile\ndescription: Inherit fixture\nmain: false\nsystem_prompt_mode: inherit\nprompt_overrides:\n  fields:\n    system.shared: Fixture shared field\nmodel_alias: ' + RESUME_OLD_MODEL + '\n---\n');
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile({ allowedSubagents: ['explore'] }))));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().boundProfile?.allowedSubagents).toEqual(['explore']);
+    const frozen = service.data();
+    await expect(service.bind({ execution: { executor: 'grok-acp', profile_file: path } })).rejects.toThrow('does not use executor');
+    expect(service.data()).toEqual(frozen);
+    vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'getDefault').mockReturnValue(normalizeAgentProfile({ name: 'agent', systemPrompt: () => 'CHANGED_DEFAULT' }));
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().systemPrompt).not.toContain('CHANGED_DEFAULT');
+  });
+
+  it('binds a direct executor without a synthetic profile and clears inherited profile state', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false }, appService(IAgentExecutorRegistry, externalExecutorRegistry()), hostEnvironmentServices(homeDir, hostPathClass));
+    ctx = build();
+    const service = ctx.get(IAgentProfileService);
+    service.applyBindingSnapshot({ profileName: 'old-profile', modelAlias: 'old-model', thinkingLevel: 'high',
+      systemPrompt: 'OLD_KIKI_SYSTEM', executorId: 'grok-acp', executorProtocol: 'acp-v1',
+      executorDescriptorRevision: 'test-revision', roomPrompt: 'OLD_ROOM', personaId: 'old-persona' });
+    await service.bind({ execution: { executor: 'grok-acp' } });
+    expect(service.data()).toMatchObject({ systemPrompt: '', thinkingLevel: 'off', kikiContext: [], allowKikiSubagents: false,
+      execution: { selection: { executor: 'grok-acp' }, effective: { kiki_context: [], allow_kiki_subagents: false } } });
+    expect(service.data().profileName).toBeUndefined();
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().roomPrompt).toBeUndefined();
+    expect(service.data().personaId).toBeUndefined();
+    expect(service.isRunnable()).toBe(true);
+    const frozen = service.data();
+    await service.preparePromptConfiguration();
+    expect(service.data().execution).toEqual(frozen.execution);
+    service.applyBindingSnapshot(frozen);
+    expect(service.data().execution).toEqual(frozen.execution);
+    await ctx.get(IWireService).flush();
+    const projected = await readPersistedAgentProfileSnapshot({
+      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
+    }, 'test-workspace', 'test-session', 'main', undefined);
+    expect(projected?.execution).toEqual(frozen.execution);
+    expect(projected?.profileName).toBeUndefined();
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data().execution).toEqual(frozen.execution);
+    expect(restored.data().systemPrompt).toBe('');
+    expect(restored.data().modelAlias).toBeUndefined();
+    expect(restored.isRunnable()).toBe(true);
+  });
+
+  it('resolves harness defaults, profile and session overrides without filling omitted vendor controls', async () => {
+    const external = normalizeAgentProfile({ name: 'optional-custom', executor: 'grok-acp', modelAlias: 'profile-model',
+      systemPrompt: () => 'ONLY_PROFILE_BODY', kikiContext: ['history'], allowKikiSubagents: true, canSpawnSubagents: false });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      model_alias: 'settings-model', thinking_effort: 'low', permission_mode: 'auto', kiki_context: ['memory'], allow_kiki_subagents: true,
+    } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name,
+      overrides: { model: 'session-model', kiki_context: [], allow_kiki_subagents: false } } });
+    expect(service.data().execution).toMatchObject({ effective: { model: 'session-model', thinking: 'low', permission_mode: 'auto',
+      kiki_context: [], allow_kiki_subagents: false }, sources: { model: 'session', thinking: 'harness-settings', kiki_context: 'session' } });
+    expect(service.data().systemPrompt).toBe('ONLY_PROFILE_BODY');
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name, overrides: { model: null, kiki_context: null, allow_kiki_subagents: null } } });
+    expect(service.data().execution).toMatchObject({ effective: { model: 'profile-model', kiki_context: ['history'], allow_kiki_subagents: true }, sources: { model: 'profile' } });
+    expect(service.data().canSpawnSubagents).toBe(false);
+    await expect(service.bind({ execution: { executor: 'native', profile: external.name } })).rejects.toThrow('does not use executor');
+    await ctx.get(IConfigService).replace('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      kiki_context: [], allow_kiki_subagents: false,
+    } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'grok-acp' } });
+    expect(service.data().execution).toMatchObject({ effective: { kiki_context: [], allow_kiki_subagents: false },
+      sources: { thinking: 'harness-default', kiki_context: 'harness-settings', allow_kiki_subagents: 'harness-settings' } });
+    expect(service.data().execution?.effective.thinking).toBeUndefined();
+  });
+
+  it.each([undefined, []] as const)('inherits omitted executor prompt fields and preserves explicit empty include %j from a profile', async (include) => {
+    const external = normalizeAgentProfile({ name: 'optional-custom', executor: 'grok-acp', systemPrompt: () => 'PROFILE_BODY',
+      executorPrompt: executorPromptSchema.parse({ delivery: 'preamble', include }) });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { executor_prompt: {
+      body: 'HARNESS_BODY', include: ['workspace_info'], per_engine: { 'grok-acp': { append: 'HARNESS_APPEND', delivery: 'replace' } },
+    } } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name } });
+    expect(service.data().executorPrompt).toEqual({ body: 'HARNESS_BODY', append: 'HARNESS_APPEND', delivery: 'preamble', include: include ?? ['workspace_info'] });
+    expect(service.data().systemPrompt.startsWith('HARNESS_BODY\n\nHARNESS_APPEND')).toBe(true);
+    expect(service.data().systemPrompt.includes('## workspace_info')).toBe(include === undefined);
+    expect(service.data().execution?.sources).toMatchObject({ 'executor_prompt.body': 'harness-settings',
+      'executor_prompt.append': 'harness-settings', 'executor_prompt.delivery': 'profile', 'executor_prompt.include': include === undefined ? 'harness-settings' : 'profile' });
+    const before = service.data();
+    await ctx.get(IConfigService).replace('agentExecutorOverrides', { 'grok-acp': { defaults: { executor_prompt: { body: 'UPDATED_BODY' } } } }, ConfigTarget.Memory);
+    await service.preparePromptConfiguration();
+    await service.refreshSystemPrompt();
+    expect(service.data().systemPrompt).toBe(before.systemPrompt);
+    expect(service.data().execution).toEqual(before.execution);
+    await service.rebuildPromptContext();
+    expect(service.data().systemPrompt).toBe('UPDATED_BODY');
+    expect(service.data().execution?.selection).toEqual(before.execution?.selection);
+    expect(service.data().execution?.generation).toBe(before.execution!.generation + 1);
+  });
+
   function buildNativeResumeProfile(profile: AgentProfile): IAgentProfileService {
     ctx = createTestAgent(
       nativeResumeOptions(),
@@ -619,6 +764,39 @@ describe('AgentProfileService.bind', () => {
     expect(profileRecords).toHaveLength(1);
     expect(JSON.stringify(profileRecords)).not.toContain(secret);
     expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
+  });
+
+  it('keeps absent external effort as vendor default and preserves an explicit off choice', async () => {
+    const seen: ExecutorBinding[] = [];
+    const external = normalizeAgentProfile({
+      name: 'external-vendor-default', executor: 'grok-acp', modelAlias: 'vendor-model',
+      systemPrompt: () => 'external worker',
+    });
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent(
+      { persistence },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry(DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR, (binding) => {
+        seen.push(binding);
+        return { ok: true, binding };
+      })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data()).toMatchObject({ thinkingLevel: 'off', thinkingEffortExplicit: false });
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      thinkingEffort: 'off', thinkingEffortExplicit: false,
+    });
+
+    svc.setThinking('off');
+    expect(seen.at(-1)?.thinkingEffort).toBe('off');
+    expect(svc.data().thinkingEffortExplicit).toBe(true);
+
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data().thinkingEffortExplicit).toBe(false);
   });
 
   it.each([
@@ -876,12 +1054,37 @@ describe('AgentProfileService.bind', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it('binds an external driver without a local model and exposes image media capability', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+
+    expect(svc.data().driver).toBe('external');
+    expect(svc.data().modelAlias).toBeUndefined();
+    expect(svc.isRunnable()).toBe(false);
+    expect(svc.getModelCapabilities()).toMatchObject({ image_in: true, video_in: false });
+    expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
+  });
+
+  it('clears the external driver only when a local model binding is explicit', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+    expect(svc.isRunnable()).toBe(false);
+
+    await svc.bind({ model: MOCK_MODEL });
+
+    expect(svc.data().driver).toBeUndefined();
+    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(svc.isRunnable()).toBe(true);
+  });
+
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
 
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeDefined();
-    catalog.dispose();
+    await catalog.dispose();
 
     expect(svc.isRunnable()).toBe(false);
 
@@ -1086,7 +1289,7 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('does not admit deleted collaboration tools on any builtin profile', () => {
+  it('does not admit deleted collaboration tools on any builtin profile', async () => {
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     const collaborationTools = [
       'spawn_agent',
@@ -1103,7 +1306,7 @@ describe('AgentProfileService.bind', () => {
       expect(collaborationTools.filter((name) => isToolActive(profile, name))).toEqual([]);
     }
 
-    catalog.dispose();
+    await catalog.dispose();
   });
 
   it('waits for the identity freeze instead of racing it', async () => {
@@ -1242,7 +1445,7 @@ describe('AgentProfileService.bind', () => {
     profile.setThinking('high');
     expect(profile.data().thinkingLevel).toBe('high');
     expect(profile.data().lockedThinkingEffort).toBe('off');
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
       code: 'agent_profile_route.switch_forbidden',
     });
@@ -1629,7 +1832,7 @@ describe('AgentProfileService.bind', () => {
         model: { source: 'dispatch-explicit', requestedValue: RESUME_NEW_MODEL },
       },
     });
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     expect(profile.data().bindingAdvisories).toEqual([
       expect.objectContaining({
         code: 'model_not_preferred',
@@ -1639,8 +1842,9 @@ describe('AgentProfileService.bind', () => {
 
     profile.publishBindingAdvisories();
     profile.publishBindingAdvisories();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatchObject({
+    const advisoryWarnings = warnings.filter(({ code }) => code === 'profile-binding-advisory');
+    expect(advisoryWarnings).toHaveLength(1);
+    expect(advisoryWarnings[0]).toMatchObject({
       code: 'profile-binding-advisory',
       advisory: expect.objectContaining({ code: 'model_not_preferred' }),
     });
@@ -2601,14 +2805,14 @@ describe('AgentProfileService.bind', () => {
 
   it('registers and executes read-only memory in a child main-profile binding with a frozen private view', async () => {
     const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
-    const search = vi.fn<IMemoryStore['search']>(async () => []);
+    const query = vi.fn<IMemoryStore['query']>(async () => ({ items: [], mode: 'search', next_cursor: null, coverage: { scopes: [], statuses: ['active'], exhausted: true, complete: true, warnings: [] } }));
     const get = vi.fn<IMemoryStore['get']>(async () => undefined);
     const original = resumeProfile({ main: true });
     ctx = createTestAgent(
       { ...nativeResumeOptions(), cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, memory: { enabled: true, approval: 'auto', workspaces: {} } } },
       agentService(IAgentScopeContext, childScope),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
-      appServices((reg) => reg.definePartialInstance(IMemoryStore, { search, get })),
+      appServices((reg) => reg.definePartialInstance(IMemoryStore, { query, get })),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
     const profile = ctx.get(IAgentProfileService);
@@ -2625,7 +2829,7 @@ describe('AgentProfileService.bind', () => {
       { id: 'read', type: 'function', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_private' }) },
     ], { signal: new AbortController().signal, turnId: 1 })) results.push(result);
     expect(results.map((result) => result.result.isError === true)).toEqual([false, false]);
-    expect(search.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
+    expect(query.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(get.mock.calls.map((call) => call[0])).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(profile.data().personaId).toBeUndefined();
     expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');
@@ -2637,7 +2841,7 @@ describe('AgentProfileService.bind', () => {
     const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
     const readThread = vi.fn(async () => ({ thread: { hostId: 'local', workspaceId: 'workspace-1', sessionId: 'peer' }, turns: [] }));
     const build = () => createTestAgent(
-      { ...nativeResumeOptions(), persistence, cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, threadCommunication: { enabled: true } } },
+      { ...nativeResumeOptions(), persistence, autoConfigure: false, cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, threadCommunication: { enabled: true } } },
       agentService(IAgentScopeContext, childScope),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
       appServices((reg) => reg.definePartialInstance(IThreadCommunicationService, { hostId: 'local', isWorkspaceEnabled: async () => true, readThread })),

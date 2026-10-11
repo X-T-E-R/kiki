@@ -20,6 +20,7 @@ export interface TranscriptPromptRuntimeControls {
   readonly execution?: {
     readonly executor: string;
     readonly profile?: string;
+    readonly profile_file?: string;
     readonly overrides?: {
       readonly model?: string | null;
       readonly thinking?: string | null;
@@ -45,6 +46,9 @@ export interface TranscriptPrompt extends ContentWindow {
   readonly userMessageId?: string;
   /** Open content envelope (the engine's message content parts). */
   readonly content?: unknown;
+  readonly originKind?: 'cron_job';
+  /** Scheduled origin's delivery mode; absent on records admitted without one. */
+  readonly originDeliveryMode?: 'queue' | 'steer' | 'idle';
   readonly createdAt: string;
   readonly finishedAt?: string;
   /** Zero-based position while the prompt is queued. */

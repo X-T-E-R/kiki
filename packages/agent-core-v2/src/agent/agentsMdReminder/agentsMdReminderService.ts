@@ -7,7 +7,7 @@ import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { translateShellDrivePath } from '#/_base/execEnv/shellPathBridge';
 import { profileKey } from '#/agent/profile/profileOps';
@@ -144,7 +144,10 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     let target = normalize(directory);
     try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
     const pathClass = lease.runtime.environment.pathClass;
-    const base = normalize(lease.runtime.workspace.mapRoots({ workDir: this.sessionContext.cwd, additionalDirs: [] }).workDir);
+    const base = normalize(lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
+      workDir: this.sessionContext.cwd,
+      additionalDirs: [],
+    })).workDir);
     const normalized = pathClass === 'win32' ? target.toLowerCase() : target;
     const root = pathClass === 'win32' ? base.toLowerCase() : base;
     return this.discovery.discover(lease, target, normalized === root || normalized.startsWith(`${root}/`) ? base : undefined);
@@ -181,8 +184,12 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       try {
         const env = lease.runtime.environment;
         const shellPath = (path: string) => env.pathClass === 'win32' ? translateShellDrivePath(path) : path;
-        const rawCwd = shellPath(stringArg(ctx.args, 'cwd') ?? this.sessionContext.cwd);
-        const cwd = isAbsolute(rawCwd) ? rawCwd : join(this.sessionContext.cwd, rawCwd);
+        const agentWorkDir = inspectAgentWorkspaceRoots(this.runtime, {
+          workDir: this.sessionContext.cwd,
+          additionalDirs: [],
+        }).workDir;
+        const rawCwd = shellPath(stringArg(ctx.args, 'cwd') ?? agentWorkDir);
+        const cwd = isAbsolute(rawCwd) ? rawCwd : join(agentWorkDir, rawCwd);
         const command = stringArg(ctx.args, 'command') ?? '';
         let parsed = this.bashParser.parse(command, { timeoutMs: 500, maxNodes: 10_000 });
         if (!parsed.ok && command.length <= 512) parsed = this.bashParser.parse(command, { timeoutMs: Number.POSITIVE_INFINITY, maxNodes: 10_000 });

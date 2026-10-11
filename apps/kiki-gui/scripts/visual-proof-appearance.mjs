@@ -98,11 +98,15 @@ async function clearBackground(page) {
   await page.evaluate(() => { localStorage.removeItem('kiki.background'); });
 }
 
+/**
+ * Resolve the app's theme through the OS preference, which is the app's own
+ * `system` path. Writing the device `kiki.settings.theme` cannot switch it:
+ * `theme` is a space-portable setting (`PORTABLE_DESKTOP_KEYS`), and the space
+ * bridge wins over the device key when settings are read, so every "dark" pass
+ * used to render light.
+ */
 async function setTheme(page, theme) {
-  await page.evaluate((value) => {
-    const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
-    localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: value }));
-  }, theme);
+  await page.emulateMedia({ colorScheme: theme });
 }
 
 const deep = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl)}&token=${FIXTURE_TOKEN}`;
@@ -167,6 +171,14 @@ async function renderedContrast(page, selectors) {
       const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
       return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
     };
+    // A `color-mix` ink resolves to `color(srgb r g b)` with 0..1 channels, not
+    // to `rgb()`; read as 0..255 it turns every ratio into noise and the check
+    // passes on nothing.
+    const channels = (css) => {
+      const srgb = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(css);
+      if (srgb !== null) return [srgb[1], srgb[2], srgb[3]].map((value) => Number(value) * 255);
+      return css.match(/[\d.]+/g).slice(0, 3).map(Number);
+    };
     const out = [];
     for (const entry of entries) {
       const image = new Image();
@@ -183,7 +195,7 @@ async function renderedContrast(page, selectors) {
         const l = lum([data[index], data[index + 1], data[index + 2]]);
         lo = Math.min(lo, l); hi = Math.max(hi, l);
       }
-      const text = lum(entry.color.match(/\d+/g).slice(0, 3).map(Number));
+      const text = lum(channels(entry.color));
       const ratio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
       out.push({ selector: entry.selector, worst: Number(Math.min(ratio(text, lo), ratio(text, hi)).toFixed(2)) });
     }
@@ -298,17 +310,44 @@ async function scenarioMatrix(page) {
       await shot(page, `matrix-sidebar-${name}-${theme}-1440`);
       for (const item of await renderedContrast(page, PROBES.slice(0, 1))) check(item.worst >= 4.5, `${theme} ${name} sidebar: ${item.selector} ${item.worst} ≥ 4.5`);
     }
-    // Sidebar text-layer blocks share one column and one gap.
+    // One column, one ground: the sidebar composites the picture's own wash into
+    // one column and every row reads on it. The skin layer must not raise a slab
+    // per group, and the Settings row must not be cut out of the column by a band
+    // of its own; only the objects that mean one action keep a surface.
     await setLocalBackground(page, join(MEDIA, 'vivid-anime.jpg'), 'image/jpeg', {});
     await open(page, SESSION, '[data-kiki-backdrop-item]');
+    const dial = (await layerVars(page)).canvas / 100;
+    const pane = await page.evaluate(() => {
+      const read = (selector) => {
+        const element = document.querySelector(selector);
+        return element === null ? null : getComputedStyle(element).backgroundColor;
+      };
+      // The collapsed rail carries the same hook; the row's mark is the one the
+      // expanded column renders.
+      const chip = [...document.querySelectorAll('[data-new-session]')].find((node) => node.closest('[data-sidebar-rail]') === null);
+      const box = chip?.getBoundingClientRect();
+      return {
+        column: read('.app-sidebar'),
+        wordmark: read('.app-sidebar > div:has(> [data-search-toggle])'),
+        navList: read('.app-sidebar [data-primary-nav] > ul'),
+        filters: read('.app-sidebar > [data-sidebar-filters]'),
+        groupBlock: read('.app-sidebar > [data-session-list] > [data-session-group-block]'),
+        settingsRow: read('.app-sidebar > [data-sidebar-footer]'),
+        chip: chip === undefined ? null : getComputedStyle(chip).backgroundColor,
+        chipBand: box === undefined ? null : { top: Math.floor(box.top) - 1, bottom: Math.ceil(box.bottom) + 1 },
+      };
+    });
     const blocks = await sidebarBlocks(page);
-    console.log(`[info] ${theme} sidebar blocks ${JSON.stringify(blocks)}`);
-    const lefts = new Set(blocks.map((b) => b.left)); const rights = new Set(blocks.map((b) => b.right));
-    check(lefts.size === 1 && rights.size === 1, `${theme} sidebar blocks share one left/right edge (${[...lefts]} / ${[...rights]})`);
-    // Gaps between the top blocks; the footer sits at the window bottom.
-    check(blocks.length >= 5, `${theme} sidebar has wordmark, chip, nav, sessions and footer blocks (${blocks.length})`);
-    const gaps = blocks.slice(1, -1).map((b, i) => b.top - blocks[i].bottom);
-    check(gaps.every((g) => g === gaps[0]), `${theme} sidebar block gaps are equal (${gaps.join(', ')})`);
+    console.log(`[info] ${theme} sidebar pane ${JSON.stringify(pane)} blocks ${JSON.stringify(blocks)}`);
+    // The dial the user asked for is the ground the column carries: no solved floor.
+    check(surfaceAlpha(pane.column) === dial, `${theme} sidebar is one wash at the requested dial (${pane.column}, dial ${dial * 100}%)`);
+    for (const [row, color] of [['wordmark', pane.wordmark], ['nav list', pane.navList], ['session groups', pane.groupBlock], ['Settings row', pane.settingsRow]]) {
+      check(color === 'rgba(0, 0, 0, 0)', `${theme} the ${row} paints no slab of its own (${color})`);
+    }
+    check(pane.filters === null || pane.filters === 'rgba(0, 0, 0, 0)', `${theme} the filter row paints no slab of its own (${pane.filters})`);
+    check(surfaceAlpha(pane.chip) === 1, `${theme} the New session mark keeps its own surface (${pane.chip})`);
+    const strays = pane.chipBand === null ? null : blocks.filter((block) => block.top < pane.chipBand.top || block.bottom > pane.chipBand.bottom);
+    check(strays !== null && strays.length === 0, `${theme} no row in the column raises a block below the New session mark (${JSON.stringify(strays)})`);
     // The previous single-layer model, emulated for a before/after: the whole
     // canvas at the text floor this picture needs, no separate text layer.
     await setLocalBackground(page, join(MEDIA, 'vivid-anime.jpg'), 'image/jpeg', {});

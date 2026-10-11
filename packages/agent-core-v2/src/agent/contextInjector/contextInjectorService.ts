@@ -72,7 +72,7 @@ export class AgentContextInjectorService extends Service implements IAgentContex
     try {
       await this.reconcileAtSafeBoundary(name);
     } finally {
-      quiescence.dispose();
+      await quiescence.dispose();
     }
   }
 

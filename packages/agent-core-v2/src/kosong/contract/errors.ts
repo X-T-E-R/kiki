@@ -439,7 +439,8 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
-function readProviderErrorIdentifier(value: unknown): string | null {
+/** Filters a provider identifier without retaining content or credentials. */
+export function readProviderErrorIdentifier(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0 || value.length > 200) return null;
   const redacted = redactSensitiveText(value);
   return /^[A-Za-z0-9_.:-]+$/.test(redacted) ? redacted : null;

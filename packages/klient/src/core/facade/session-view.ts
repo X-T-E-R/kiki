@@ -43,7 +43,7 @@ export interface SessionViewSubscription {
 
 export interface SessionViewTranscriptFacade {
   page(input: SessionViewTranscriptPageInput, options?: CallOptions): Promise<TranscriptResponse>;
-  catchUp(input: SessionViewTranscriptCatchUpInput): Promise<TranscriptOpsCatchupResponse>;
+  catchUp(input: SessionViewTranscriptCatchUpInput, options?: CallOptions): Promise<TranscriptOpsCatchupResponse>;
   /**
    * Read the canonical body of one task, attachment, or prompt that a
    * windowed reset summarized (`detailRef`). Absent on transports that do
@@ -103,11 +103,11 @@ export function createSessionViewFacade(
           ? parse('output', 'session.view.transcript.page', sessionViewTranscriptPageOutputSchema, output)
           : (output as TranscriptResponse);
       },
-      async catchUp(input) {
+      async catchUp(input, options) {
         const wireInput = validate
           ? parse('input', 'session.view.transcript.catchUp', sessionViewTranscriptCatchUpInputSchema, input)
           : input;
-        const output = await requireChannel().transcriptCatchUp(sessionId, wireInput);
+        const output = await requireChannel().transcriptCatchUp(sessionId, wireInput, options);
         return validate
           ? parse('output', 'session.view.transcript.catchUp', sessionViewTranscriptCatchUpOutputSchema, output)
           : (output as TranscriptOpsCatchupResponse);

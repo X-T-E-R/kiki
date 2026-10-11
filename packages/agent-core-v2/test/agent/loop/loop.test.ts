@@ -1,6 +1,11 @@
 import { getMaxListeners } from 'node:events';
 
 import { type ToolCall } from '#/kosong/contract/message';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
+import type { ChatProvider } from '#/kosong/contract/provider';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,6 +35,7 @@ import { userCancellationReason } from '#/_base/utils/abort';
 
 import {
   agentService,
+  appService,
   createTestAgent,
   permissionModeServices,
   type TestAgentContext,
@@ -71,7 +77,7 @@ describe('Agent loop', () => {
     const waiting = loop.settled().then(() => { settled = true; });
     await Promise.resolve();
     expect(settled).toBe(false);
-    admission!.dispose();
+    await admission!.dispose();
     await waiting;
     expect(settled).toBe(true);
   });
@@ -85,7 +91,7 @@ describe('Agent loop', () => {
     expect(admission).toBeDefined();
     const prepared = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'prepared' }], toolCalls: [] }, { admission: 'newTurn' }), { at: 'head' });
     expect(loop.status().state).toBe('idle');
-    admission!.dispose();
+    await admission!.dispose();
     const turn = (await prepared.assigned).turn;
     expect((await standalone.assigned).turn.id).toBe(turn.id);
     expect((await turn.result).type).toBe('completed');
@@ -145,6 +151,28 @@ describe('Agent loop', () => {
   `);
   });
 
+  it('streams native model images with the same part identity as durable content, without putting bytes in text', async () => {
+    const events: AssistantDelta[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(AssistantDelta, (event) => events.push(event));
+    const image = { type: 'image_url' as const, imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png' } };
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'Here is the image.' }, image, { type: 'text', text: 'Done.' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Draw an image' }] });
+      await ctx.untilTurnEnd();
+      expect(events.map((event) => event.delta)).toEqual(['Here is the image.', '', 'Done.']);
+      const media = events.filter((event) => event.part?.type === 'image_url');
+      expect(media).toHaveLength(1);
+      expect(media[0]?.part).toEqual(image);
+      const persisted = await ctx.persistedWireRecords();
+      const content = persisted.filter((record) => record.type === 'context.append_loop_event')
+        .map((record) => record['event'] as { type: string; uuid?: string; part?: { type: string } });
+      expect(content.find((event) => event.type === 'content.part' && event.part?.type === 'image_url')?.uuid).toBe(media[0]?.partId);
+      expect(new Set(events.map((event) => event.partId)).size).toBe(3);
+    } finally {
+      await subscription.dispose();
+    }
+  });
+
   it('merges text deltas across a vacuous reasoning part instead of splitting the text', async () => {
     const assistantDeltas: AssistantDelta[] = [];
     const thinkingDeltas: ThinkingDelta[] = [];
@@ -162,7 +190,7 @@ describe('Agent loop', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
       await ctx.untilTurnEnd();
     } finally {
-      for (const subscription of subscriptions) subscription.dispose();
+      for (const subscription of subscriptions) await subscription.dispose();
     }
 
     expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello, ', 'world']);
@@ -258,7 +286,7 @@ describe('Agent loop', () => {
     expect(next.id).not.toBe(turn.id);
     expect((await next.result).type).toBe('completed');
     expect(events.map((event) => event.turnId)).toEqual([turn.id, next.id]);
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('automatically recovers a transient final flush without replaying execution', async () => {
@@ -305,8 +333,72 @@ describe('Agent loop', () => {
     expect(prompts.list().active).toBeUndefined();
     expect(ended).toHaveLength(1);
     expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'llm.request')).toHaveLength(1);
-    subscription.dispose();
+    await subscription.dispose();
     ctx.wire.flush = originalFlush;
+  });
+
+  it('automatically finalizes a real prompt after two flush failures without repeating execution', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let finalFlushes = 0;
+    ctx.wire.flush = async () => {
+      if (loop.status().finalizing && finalFlushes++ < 2) throw new Error('temporary final flush unavailable');
+      await originalFlush();
+    };
+    const ended: TurnEnded[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event));
+    ctx.mockNextResponse({ type: 'text', text: 'computed once' });
+    const handle = await prompts.enqueue({ id: 'automatic-finalization', message: { role: 'user', content: [{ type: 'text', text: 'compute once' }], toolCalls: [] } });
+    const turn = await handle.launched;
+    await expect(turn!.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    expect(ended).toEqual([]);
+    expect(loop.status().finalizing).toBe(true);
+    expect((await handle.completion).state).toBe('completed');
+    expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+    expect(prompts.list().active).toBeUndefined();
+    expect(ended).toHaveLength(1);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect((await ctx.persistedWireRecords()).filter((entry) => entry.type === 'turn.ended')).toHaveLength(1);
+    await subscription.dispose();
+    ctx.wire.flush = originalFlush;
+  });
+
+  it('bounds finalization retry timers and recovers on the next prompt after a longer storage outage', async () => {
+    profile.update({ activeToolNames: [] });
+    const prompts = ctx.get(IAgentPromptService);
+    const originalFlush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    let failures = 0;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) {
+        if (failures === 0) vi.useFakeTimers();
+        failures++;
+        throw new Error('storage still unavailable');
+      }
+      await originalFlush();
+    };
+    ctx.mockNextResponse({ type: 'text', text: 'first computed once' });
+    const first = await prompts.enqueue({ id: 'long-outage', message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] } });
+    await expect((await first.launched)!.result).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      const boundedFailures = failures;
+      expect(boundedFailures).toBe(8);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(failures).toBe(boundedFailures);
+      expect(loop.status()).toMatchObject({ state: 'running', finalizing: true });
+      failing = false;
+      ctx.mockNextResponse({ type: 'text', text: 'next prompt completed' });
+      const next = await prompts.enqueue({ id: 'after-long-outage', message: { role: 'user', content: [{ type: 'text', text: 'next task' }], toolCalls: [] } });
+      expect((await first.completion).state).toBe('completed');
+      expect((await next.completion).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(loop.status().finalizing).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      ctx.wire.flush = originalFlush;
+    }
   });
 
   it('fails the turn after a filtered step completes', async () => {
@@ -501,7 +593,7 @@ describe('Agent loop', () => {
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
     expect(loop.status().lastTurnResult).toBe('cancelled');
-    subscription.dispose();
+    await subscription.dispose();
 
     const begins = wireLoopEvents(ctx, 'step.begin');
     const ends = wireLoopEvents(ctx, 'step.end');
@@ -908,7 +1000,7 @@ describe('Agent loop', () => {
 
     expect([first.state, second.state, third.state]).toEqual(['running', 'queued', 'queued']);
     await Promise.all([first.result, second.result, third.result]);
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(events).toEqual([
       'turn.started:0',
@@ -942,7 +1034,7 @@ describe('Agent loop', () => {
     expect(loop.tryAcquireQuiescence()).toBeUndefined();
     expect(active.signal.aborted).toBe(false);
 
-    hook.dispose();
+    await hook.dispose();
     ctx.mockNextResponse({ type: 'text', text: 'completed normally' });
     release();
     await expect(active.result).resolves.toMatchObject({ type: 'completed' });
@@ -963,7 +1055,7 @@ describe('Agent loop', () => {
     expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: true });
 
     ctx.mockNextResponse({ type: 'text', text: 'after undo' });
-    lease?.dispose();
+    await lease?.dispose();
     const resumed = (await held.assigned).turn;
     await expect(resumed.result).resolves.toMatchObject({ type: 'completed' });
   });
@@ -977,7 +1069,7 @@ describe('Agent loop', () => {
     await expect(held.assigned).rejects.toBeDefined();
     expect(loop.hasPendingRequests()).toBe(false);
 
-    lease?.dispose();
+    await lease?.dispose();
     expect(loop.status().state).toBe('idle');
   });
 
@@ -1067,7 +1159,7 @@ describe('Agent loop', () => {
     expect(cancelledReceipt.abort()).toBe(true);
     await expect(cancelledTurn.result).resolves.toMatchObject({ type: 'cancelled', steps: 0 });
     await Promise.all([first.result, third.result]);
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(started).toEqual([0, 2]);
     expect(ctx.contextData().history).not.toContainEqual(
@@ -1114,7 +1206,7 @@ describe('Agent loop', () => {
     await subagent.result;
     const user = (await loop.enqueue(nextTurnMessage('hi')).assigned).turn;
     await user.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(prompts).toEqual([undefined, 'scan the repo', 'hi']);
   });
@@ -1146,7 +1238,7 @@ describe('Agent loop', () => {
       ).assigned
     ).turn;
     await turn.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(payloads).toEqual([
       [
@@ -1185,7 +1277,7 @@ describe('Agent loop', () => {
       ).assigned
     ).turn;
     await turn.result;
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(payloads).toEqual([
       [
@@ -1471,7 +1563,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history.slice(0, 2)).toEqual([
       expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Hello' }] }),
@@ -1527,7 +1619,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
     expect(results).toEqual([true, true]);
     expect(
       ctx.allEvents.filter(
@@ -1547,7 +1639,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history).toContainEqual({
       role: 'assistant',
@@ -1573,7 +1665,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.get(IEventBus).publish(
@@ -1638,7 +1730,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
     await ctx.untilTurnEnd();
-    subscription.dispose();
+    await subscription.dispose();
     ctx.llmInputs();
 
     ctx.mockNextResponse({ type: 'text', text: 'second answer' });
@@ -1659,7 +1751,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
     await ctx.untilTurnEnd();
-    subscription.dispose();
+    await subscription.dispose();
     expect(interruptionReminders()).toHaveLength(1);
     await loop.settled();
 
@@ -1680,7 +1772,7 @@ describe('interruption reminder', () => {
     });
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(ctx.contextData().history).toContainEqual({
       role: 'assistant',
@@ -1697,7 +1789,7 @@ describe('interruption reminder', () => {
     const subscription = cancelOnFirstDelta();
     const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
-    subscription.dispose();
+    await subscription.dispose();
 
     expect(contentPartRecordsIn(ctx)).toBe(0);
     expect(ctx.contextData().history.slice(0, 2)).toEqual([
@@ -1712,7 +1804,7 @@ describe('interruption reminder', () => {
     const first = cancelOnFirstDelta();
     const firstTurn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
     await expect(firstTurn.result).resolves.toMatchObject({ type: 'cancelled' });
-    first.dispose();
+    await first.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.mockNextResponse({ type: 'text', text: 'retried answer' });
@@ -1721,7 +1813,7 @@ describe('interruption reminder', () => {
     });
     const retryTurn = (await loop.enqueue(new RetryStepRequest()).assigned).turn;
     await expect(retryTurn.result).resolves.toMatchObject({ type: 'cancelled' });
-    onStepStarted.dispose();
+    await onStepStarted.dispose();
     expect(interruptionReminders()).toHaveLength(1);
 
     ctx.mockNextResponse({ type: 'text', text: 'third answer' });
@@ -1735,7 +1827,7 @@ describe('interruption reminder', () => {
     const first = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
     await ctx.untilTurnEnd();
-    first.dispose();
+    await first.dispose();
 
     ctx.mockNextResponse({ type: 'text', text: 'completed answer' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'completed prompt' }] });
@@ -1746,7 +1838,7 @@ describe('interruption reminder', () => {
     const second = cancelOnFirstDelta();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'second prompt' }] });
     await ctx.untilTurnEnd();
-    second.dispose();
+    await second.dispose();
 
     ctx.mockNextResponse({ type: 'text', text: 'final answer' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'final prompt' }] });
@@ -1807,7 +1899,7 @@ describe('llm requester attempt retry', () => {
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello' }] });
         await ctx.untilTurnEnd();
       } finally {
-        subscription.dispose();
+        await subscription.dispose();
       }
 
       expect(assistantDeltas.map((event) => event.delta)).toEqual(['Hello', 'World']);
@@ -1817,6 +1909,80 @@ describe('llm requester attempt retry', () => {
       expect(contentParts[0]?.['uuid']).toBe(assistantDeltas[1]?.partId);
     } finally {
       await ctx.dispose();
+    }
+  });
+});
+
+describe('native empty provider completion', () => {
+  it.each([true, false])('classifies raw Messages output=0 with subagent=%s without retrying', async (subagent) => {
+    const create = vi.fn().mockImplementation(async () => (async function* () {
+      yield { type: 'message_start', message: { id: 'example-empty', usage: { input_tokens: 30189, output_tokens: 0, cache_read_input_tokens: 20677 } } };
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
+      yield { type: 'message_stop' };
+    })());
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'YOUR_API_KEY',
+      baseUrl: 'https://api.example.test',
+      clientFactory: () => ({ messages: { create } }) as unknown as import('@anthropic-ai/sdk').default,
+    });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const local = createTestAgent(permissionModeServices('manual'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    if (subagent) Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      const handle = await local.get(IAgentPromptService).enqueue({
+        id: 'example-empty-prompt',
+        message: { role: 'user', content: [{ type: 'text', text: 'Complete the task and report the result.' }], toolCalls: [] },
+      });
+      const terminal = await handle.completion;
+      expect(terminal).toMatchObject({ state: subagent ? 'failed' : 'completed', result: { type: subagent ? 'failed' : 'completed' } });
+      if (subagent) expect(terminal.result).toMatchObject({ error: { code: 'loop.empty_completion', details: {
+        providerFinishReason: 'completed', rawFinishReason: 'end_turn', messageId: 'example-empty',
+        usage: { output: 0, inputOther: 30189, inputCacheRead: 20677 },
+      } } });
+      const records = await local.persistedWireRecords();
+      expect(records.find((record) => record.type === 'turn.ended')).toMatchObject({ reason: subagent ? 'failed' : 'completed' });
+      expect(records.find((record) => record.type === 'prompt.outcome_committed')).toMatchObject({ terminal: { state: subagent ? 'failed' : 'completed' } });
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it.each([true, false])('preserves text-free tool execution with stopTurn=%s', async (stopTurn) => {
+    const local = createTestAgent(permissionModeServices('yolo'));
+    Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      local.get(IAgentToolRegistryService).register({
+        name: 'FinishWork', description: 'Complete work.', parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'FinishWork', execute: async () => ({ output: 'work saved', stopTurn }) }),
+      });
+      local.get(IAgentProfileService).update({ activeToolNames: ['FinishWork'] });
+      local.mockNextResponse({ type: 'function', id: 'example-work', name: 'FinishWork', arguments: '{}' });
+      if (!stopTurn) local.mockNextResponse({ type: 'text', text: 'Work saved.' });
+      const handle = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Complete work.' }], toolCalls: [],
+      } });
+      expect(await handle.completion).toMatchObject({ state: 'completed' });
+      expect(local.llmCalls).toHaveLength(stopTurn ? 1 : 2);
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('preserves a completed thinking-only subagent step', async () => {
+    const local = createTestAgent(permissionModeServices('manual'));
+    Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
+    try {
+      local.mockNextResponse({ type: 'think', think: 'deliberate silent completion' });
+      const handle = await local.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Do not add a public reply.' }], toolCalls: [],
+      } });
+      expect(await handle.completion).toMatchObject({ state: 'completed' });
+    } finally {
+      await local.dispose();
     }
   });
 });
@@ -1926,7 +2092,7 @@ describe('aborted step tool execution', () => {
         message: 'Tool execution timed out',
       });
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       await ctx.dispose();
     }
   });
@@ -1972,6 +2138,9 @@ function createTimingRequester(): IAgentLLMRequesterService {
     _serviceBrand: undefined,
     prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
     invalidatePromptSnapshots: () => 0,
+    armAnthropicResponseCapture: () => { throw new Error('response capture is unused in this fixture'); },
+    anthropicResponseCaptureStatus: async () => null,
+    stopAnthropicResponseCapture: () => { throw new Error('response capture is unused in this fixture'); },
     async request(_overrides, onPart = () => {}) {
       await onPart({ type: 'text', text: 'answer' });
       return {
@@ -1997,6 +2166,9 @@ function createRetryingRequester(): IAgentLLMRequesterService {
     _serviceBrand: undefined,
     prepareTurnConfig: () => ({ thinkingEffort: 'off' }),
     invalidatePromptSnapshots: () => 0,
+    armAnthropicResponseCapture: () => { throw new Error('response capture is unused in this fixture'); },
+    anthropicResponseCaptureStatus: async () => null,
+    stopAnthropicResponseCapture: () => { throw new Error('response capture is unused in this fixture'); },
     async request(overrides = {}, onPart = () => {}) {
       await onPart({ type: 'text', text: 'Hello' });
       overrides.onAttemptRetry?.();

@@ -1,4 +1,4 @@
-import * as posixPath from 'node:path/posix';
+import { posix as posixPath, win32 as win32Path } from 'node:path';
 import type { SSHKaos } from '@kiki/kaos/ssh';
 import type { TrustUnknownKey } from '@kiki/kaos/ssh-connection';
 import type { SshCredentialSubmission } from '#/session/approval/approval';
@@ -13,19 +13,26 @@ import type { Runtime, RuntimePath, RuntimeStatus } from './runtime';
 import type { RuntimeProviderAttachment, RuntimeProviderContext, RuntimeProviderFactory } from './runtimeProvider';
 import type { RuntimeProviderHost, RuntimeProviderRuntimeHandle } from './runtimeUnitHost';
 
-const path: RuntimePath = {
-  separator: '/', delimiter: ':',
-  isAbsolute: (value) => posixPath.isAbsolute(value),
-  join: (...parts) => posixPath.join(...parts),
-  relative: (from, to) => posixPath.relative(from, to),
-  resolve: (...parts) => posixPath.resolve(...parts),
-  basename: (value) => posixPath.basename(value),
-  dirname: (value) => posixPath.dirname(value),
+const windowsPath: RuntimePath = {
+  separator: '/', delimiter: ';',
+  isAbsolute: (value) => win32Path.isAbsolute(value),
+  join: (...parts) => win32Path.join(...parts).replaceAll('\\', '/'),
+  relative: (from, to) => win32Path.relative(from, to).replaceAll('\\', '/'),
+  resolve: (...parts) => {
+    const native = parts.map((part) => part.replace(/^\/([A-Za-z]:[\\/])/, '$1'));
+    if (!native.some((part) => /^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]/.test(part))) {
+      throw new Error('Remote Windows paths require an absolute drive or UNC working directory');
+    }
+    return win32Path.resolve(...native).replaceAll('\\', '/');
+  },
+  basename: (value) => win32Path.basename(value),
+  dirname: (value) => win32Path.dirname(value).replaceAll('\\', '/'),
 };
+const path: RuntimePath = { ...posixPath, separator: '/' };
 
 export class SshRuntime implements Runtime {
   readonly capabilities = new Set(['fs', 'process'] as const);
-  readonly path = path;
+  get path(): RuntimePath { return this.environment.pathClass === 'win32' ? windowsPath : path; }
   readonly fs;
   readonly process;
   readonly workspace: Runtime['workspace'];
@@ -73,7 +80,7 @@ export class SshRuntime implements Runtime {
       osVersion: remote?.osVersion ?? 'unknown',
       shellName: remote?.shellName ?? 'sh',
       shellPath: remote?.shellPath ?? '/bin/sh',
-      pathClass: 'posix' as const,
+      pathClass: remote?.osKind === 'Windows' ? 'win32' : 'posix',
       homeDir: this.connection?.gethome() ?? '/__ssh_connection_required__',
     };
   }

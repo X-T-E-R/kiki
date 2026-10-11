@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v2';
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
 import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema } from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
@@ -469,20 +470,37 @@ timeout = 600
     expect((await getConfig()).prompt).toEqual({});
   });
 
-  it('round trips the session_title model pin through its replace-domain', async () => {
-    await boot();
-    const pinned = await patchConfig({ session_title: { model: 'kimi-for-coding' }, replace_domains: ['session_title'] });
-    expect(pinned.session_title).toEqual({ model: 'kimi-for-coding' });
-    expect((await getConfig()).session_title).toEqual({ model: 'kimi-for-coding' });
-    const moments = { model: 'kimi-for-coding', triggers: ['first_user_message', 'context_compacted'] };
-    for (const schema of [sharedConfigResponseSchema, sharedPatchConfigRequestSchema]) expect(schema.parse({ session_title: moments }).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: moments, replace_domains: ['session_title'] })).session_title).toEqual(moments);
-    expect((await getConfig()).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: { model: 'kimi-for-coding', triggers: [] }, replace_domains: ['session_title'] })).session_title).toEqual({ model: 'kimi-for-coding', triggers: [] });
-    expect((await getConfig()).session_title?.triggers).toEqual([]);
-    const cleared = await patchConfig({ session_title: {}, replace_domains: ['session_title'] });
-    expect(cleared.session_title?.model).toBeUndefined();
-    expect((await getConfig()).session_title?.model).toBeUndefined();
+  it('round trips session_title prompt overrides, preserves sibling settings and reads the same default after cold reload', async () => {
+    await boot('[search]\nenabled=false\n');
+    const defaults = { default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'default' };
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    expect((await getConfig()).session_title).toEqual(defaults);
+    const moments = { model: 'title-model', triggers: [] };
+    expect((await patchConfig({ session_title: moments })).session_title).toEqual({ ...moments, ...defaults });
+    const prompt = '  Name this conversation\n保留换行、{content}、${name}\n  ';
+    const custom = { ...moments, prompt, default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'custom' };
+    for (const schema of [sharedPatchConfigRequestSchema, patchConfigRequestSchema]) {
+      expect(schema.parse({ session_title: { prompt } }).session_title).toEqual({ prompt });
+      expect(schema.safeParse({ session_title: { default_prompt: 'not editable' } }).success).toBe(false);
+    }
+    expect((await patchConfig({ session_title: { prompt } })).session_title).toEqual(custom);
+    expect(sharedConfigResponseSchema.parse(await getConfig()).session_title).toEqual(custom);
+    expect((await patchConfig({ session_title: { model: 'another-title-model' } })).session_title).toEqual({ ...custom, model: 'another-title-model' });
+    expect((await patchConfig({ session_title: { triggers: ['context_compacted'] } })).session_title?.prompt).toBe(prompt);
+    expect((await patchConfig({ session_title: { model: null, triggers: [] } })).session_title).toEqual({ ...custom, model: undefined });
+    const text = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(text).toContain('prompt ='); expect(text).not.toContain('default_prompt'); expect(text).not.toContain('prompt_source');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).session_title).toEqual({ ...custom, model: undefined });
+    expect((await patchConfig({ session_title: { prompt: null } })).session_title).toEqual({ triggers: [], ...defaults });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('prompt =');
+    await patchConfig({ session_title: { prompt, model: 'title-model' } });
+    expect((await patchConfig({ session_title: { prompt: ' \n\t ' } })).session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    await server!.close(); server = undefined; await boot();
+    const restored = await getConfig();
+    expect(restored.session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    expect(restored.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(restored.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
   });
 
   it('round trips board storage modes and subagent limits without retaining a stale fixed path', async () => {
@@ -1136,6 +1154,60 @@ timeout = 600
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(await readFile(configPath, 'utf-8')).toBe(before);
     expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
+  });
+
+  it('persists display-only executor preferences through HTTP and cold restart without changing execution', async () => {
+    await boot('[search]\nenabled=false\n[agent_executors.example_custom]\nprotocol="acp-v1"\ncommand="example-custom"\n[agent_executor_overrides.claude-acp]\nbin_path="example-adapter"\nargs=["--example"]\n[agent_executor_overrides.claude-acp.defaults]\nmodel_alias="example-model"\n[unrelated]\nkeep="example-value"\n');
+    const { IAgentExecutorRegistry } = await import('@kiki/agent-core-v2/app/agentExecutor/agentExecutor');
+    const { executorProcessEnv, executorLaunchArgs } = await import('@kiki/agent-core-v2/app/agentExecutor/executorOverrides');
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get('claude-acp')!;
+    const ids = registry.list().map((entry) => entry.id);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: false }, 'not-configured': { show_in_profile_list: true } } });
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    const edited = await getConfig();
+    expect(edited.raw?.['agent_executor_overrides']).toEqual({
+      'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' }, show_in_profile_list: false },
+      'not-configured': { show_in_profile_list: true },
+    });
+    expect(edited.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
+    expect(edited.raw?.['agent_executors']).toEqual({ example_custom: { protocol: 'acp-v1', command: 'example-custom', args: [] } });
+    expect(edited.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(sharedConfigResponseSchema.parse(edited).raw).toEqual(edited.raw);
+    expect(registry.list().map((entry) => entry.id)).toEqual(ids);
+    expect(registry.get('not-configured')).toBeUndefined();
+    expect(registry.get('agent_executor_display')).toBeUndefined();
+    expect(registry.get('claude-acp')).toEqual(descriptor);
+    expect(executorProcessEnv(registry.get('claude-acp')!)).toEqual(executorProcessEnv(descriptor));
+    expect(executorLaunchArgs(registry.get('claude-acp')!, ['stdio'])).toEqual(executorLaunchArgs(descriptor, ['stdio']));
+    const path = join(home as string, 'config.toml');
+    const saved = await readFile(path, 'utf-8');
+    expect(saved).toContain('show_in_profile_list = false');
+    expect(saved).toContain('externals_visible = false');
+    expect(saved).not.toContain('showInProfileList');
+    for (const patch of [
+      { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: 'no' } } },
+      { agent_executor_overrides: { _external_engines: { externals_visible: false } } },
+      { agent_executor_overrides: { 'claude-acp': { unexpected_option: true } } },
+      { agent_executor_display: { externals_visible: 'no' } },
+      { agent_executor_display: { unexpected_option: true } },
+    ]) {
+      const response = await authedFetch(server!, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+      expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf-8')).toBe(saved);
+    }
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(edited.raw);
+    expect(server!.core.accessor.get(IAgentExecutorRegistry).get('claude-acp')).toEqual(descriptor);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: null }, 'not-configured': { show_in_profile_list: null } }, agent_executor_display: { externals_visible: null } });
+    const cleared = await getConfig();
+    expect(cleared.raw?.['agent_executor_display']).toEqual({});
+    expect(cleared.raw?.['agent_executor_overrides']).toEqual({ 'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' } }, 'not-configured': {} });
+    expect(await readFile(path, 'utf-8')).toContain('keep="example-value"');
+    expect(await readFile(path, 'utf-8')).not.toContain('show_in_profile_list');
+    expect(await readFile(path, 'utf-8')).not.toContain('externals_visible');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(cleared.raw);
   });
 
   it('saves executor overrides and preserves executor ids and environment variable names', async () => {

@@ -12,6 +12,7 @@ export interface InstalledRecord {
   readonly root: string;
   readonly source: PluginSource;
   readonly enabled: boolean;
+  readonly defaultEnabled?: boolean;
   readonly installedAt: string;
   readonly updatedAt?: string;
   readonly originalSource?: string;

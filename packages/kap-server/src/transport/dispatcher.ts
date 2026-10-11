@@ -165,6 +165,6 @@ export async function dispatch(
     const result = await (member as (...a: unknown[]) => unknown).apply(service, args);
     return assertSerializable(result);
   } finally {
-    lease?.dispose();
+    await lease?.dispose();
   }
 }

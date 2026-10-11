@@ -27,12 +27,17 @@ export function stubPluginService(options: StubPluginServiceOptions): IPluginSer
     setPluginMcpServerEnabled: async () => {},
     removePlugin: async () => {},
     reloadPlugins: async (): Promise<ReloadSummary> => ({ added: [], removed: [], errors: [] }),
-    getPluginInfo: async () => {
-      throw new Error('getPluginInfo is not used by this stub');
-    },
+    getPluginInfo: async ({ id }) => ({
+      id,
+      enabled: true,
+      globalEnabled: true,
+      state: 'ok' as const,
+      manifest: undefined,
+    }) as never,
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => [],
     enabledSessionStarts: async () => options.sessionStarts,
     enabledSystemPrompts: async () => [],

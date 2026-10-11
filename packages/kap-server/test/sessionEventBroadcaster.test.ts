@@ -1021,6 +1021,7 @@ describe('SessionEventBroadcaster', () => {
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -1050,6 +1051,7 @@ describe('SessionEventBroadcaster', () => {
     finishAcquire();
     expect(await pending).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins).toBe(0);
     expect(release).toHaveBeenCalledOnce();
   });
@@ -1095,6 +1097,7 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins.get(newHandle)).toBe(0);
     expect(release).toHaveBeenCalledTimes(2);
   });
@@ -1163,6 +1166,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target, new Set(['main']))).toBe(true);
     expect(acquire).toHaveBeenCalledTimes(2);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(firstRelease).toHaveBeenCalledOnce();
     expect(secondRelease).toHaveBeenCalledOnce();
   });
@@ -1187,6 +1191,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target)).toBe(false);
     expect(await bc.subscribe('s1', target)).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -2858,6 +2863,41 @@ describe('SessionEventBroadcaster', () => {
 
     await vi.waitFor(() => expect(envelopes).toHaveLength(1));
     expect(envelopes[0]!.type).toBe('session.meta.updated');
+  });
+
+  it.each(['question', 'approval'] as const)('delivers session %s interactions past agent filters live and on replay', async (kind) => {
+    const lc = new FakeLifecycle();
+    lc.addAgent('main');
+    const sub = lc.addAgent('sub-1');
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    const filter = new Set(['main']);
+    await bc.close();
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus), maxBufferSize: 20 });
+    await bc.subscribe('s1', target, filter);
+
+    lc.interactions.enqueue({
+      id: 'interaction-sub', kind,
+      payload: kind === 'question'
+        ? { questions: [{ question: 'Pick', options: [{ label: 'A' }] }] }
+        : { toolCallId: 'call-sub', toolName: 'Bash', action: 'run' },
+      origin: { agentId: 'sub-1' },
+    });
+    await bc.getCursor('s1');
+    lc.interactions.respond('interaction-sub', kind === 'question'
+      ? { answers: { q_0: 'opt_0_0' } } : { decision: 'allow' });
+    sub.bus.emit(agentEvent('turn.ended', { turnId: 1 }));
+    await bc.getCursor('s1');
+
+    const expected = [`event.${kind}.requested`, `event.${kind}.${kind === 'question' ? 'answered' : 'resolved'}`];
+    const live = envelopes.filter((event) => expected.includes(event.type));
+    expect(live.map((event) => event.type)).toEqual(expected);
+    expect(live.every((event) => (event.payload as { agentId: string }).agentId === 'sub-1')).toBe(true);
+    expect(envelopes.some((event) => event.type === 'turn.ended')).toBe(false);
+    const replay = await bc.getBufferedSince('s1', { seq: 0 }, filter);
+    expect(replay.resyncRequired).toBe(false);
+    expect(replay.events.filter((event) => expected.includes(event.envelope.type)).map((event) => event.envelope)).toEqual(live);
+    expect(replay.events.some((event) => event.envelope.type === 'turn.ended')).toBe(false);
   });
 
   it('replays only the allowlisted agent events while keeping the global sequence', async () => {

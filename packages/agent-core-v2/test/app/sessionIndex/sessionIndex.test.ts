@@ -98,7 +98,7 @@ describe('FileSessionIndex (legacy)', () => {
   let homeDir: string;
   let sessionsDir: string;
   let workspaceId: string;
-  let disposeHost: (() => void) | undefined;
+  let disposeHost: (() => void | Promise<void>) | undefined;
 
   beforeEach(async () => {
     _clearScopedRegistryForTests();
@@ -116,7 +116,7 @@ describe('FileSessionIndex (legacy)', () => {
   });
 
   afterEach(async () => {
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
@@ -134,7 +134,7 @@ describe('FileSessionIndex (legacy)', () => {
       stubPair(ILogService, stubLog()),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     return host.app.accessor.get(ISessionIndex);
   }
@@ -631,7 +631,7 @@ describe('FileSessionIndex (read model)', () => {
   let homeDir: string;
   let sessionsDir: string;
   let workspaceId: string;
-  let disposeHost: (() => void) | undefined;
+  let disposeHost: (() => void | Promise<void>) | undefined;
   let queryStore: IQueryStore;
   let mirror: ISessionIndexMirror;
 
@@ -665,7 +665,7 @@ describe('FileSessionIndex (read model)', () => {
   });
 
   afterEach(async () => {
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -687,7 +687,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(flagEnabled)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -925,7 +925,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -1141,6 +1141,29 @@ describe('FileSessionIndex (read model)', () => {
     expect(new Set(walked).size).toBe(summaries.length);
     expect((await store.listRecent({ after: 'tie-0600', limit: 50 })).items.map((item) => item.id))
       .toEqual(canonicalIds(summaries.filter((item) => item.updatedAt > 100 || item.updatedAt === 100 && item.id > 'tie-0600')).slice(0, 50));
+  });
+
+  it('hydrates own recency from unchanged historical metadata without rebuilding the published index', async () => {
+    await seedSession('parent', { createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
+    await seedSession('other', { createdAt: 1, updatedAt: 50 });
+    const store = build();
+    await store.prepare();
+    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    const collection = sessionCollection(manifest!.seq);
+    for (const id of ['parent', 'other']) {
+      const cached = await queryStore.get<SessionSummary>(collection, id);
+      const { ownUpdatedAt: _own, ...old } = cached!;
+      await queryStore.put(collection, id, old, { columns: { [recencyColumn(manifest!.seq)]: old.updatedAt } });
+    }
+    const page = await store.listRecent({ limit: 1 });
+    expect(page.items).toMatchObject([{ id: 'parent', updatedAt: 100, ownUpdatedAt: 10 }]);
+    expect(page.nextCursor).toBe('parent');
+    expect(await store.get('other')).toMatchObject({ updatedAt: 50, ownUpdatedAt: 50 });
+    await (mirror as SessionIndexMirror).drain();
+    expect((await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq).toBe(manifest!.seq);
+    expect(await queryStore.get(collection, 'parent')).toMatchObject({ updatedAt: 100, ownUpdatedAt: 10 });
+    const raw = JSON.parse(await fsp.readFile(join(sessionsDir, workspaceId, 'parent', 'session-meta', 'state.json'), 'utf8'));
+    expect(raw).toEqual({ createdAt: 1, updatedAt: 10, activityUpdatedAt: 100 });
   });
 
   it('listRecent treats a cache entry missing required fields as a cold miss', async () => {
@@ -1805,7 +1828,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -1930,7 +1953,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2026,7 +2049,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2094,7 +2117,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2129,7 +2152,7 @@ describe('FileSessionIndex (read model)', () => {
     await first.prepare();
     expect(first.status().state).toBe('ready');
 
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2466,7 +2489,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2531,7 +2554,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2637,7 +2660,7 @@ describe('FileSessionIndex (read model)', () => {
     const first = build();
     await first.prepare();
 
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2660,7 +2683,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2717,7 +2740,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2735,7 +2758,7 @@ describe('FileSessionIndex (read model)', () => {
     await store.reprojectNow();
     expect(store.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
 
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2768,7 +2791,7 @@ describe('FileSessionIndex (read model)', () => {
     expect(first.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
     const published = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     expect(published).toMatchObject({ seq: 1, sourceMaxMtimeMs: expect.any(Number) });
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2791,7 +2814,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);
@@ -2812,7 +2835,7 @@ describe('FileSessionIndex (read model)', () => {
     const first = build();
     await first.prepare();
     expect(first.status()).toEqual({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2838,7 +2861,7 @@ describe('FileSessionIndex (read model)', () => {
     const first = build();
     await first.prepare();
     await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: 1 });
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -2896,7 +2919,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IFlagService, stubFlag(true)),
     ]);
     disposeHost = () => {
-      host.dispose();
+      return host.dispose();
     };
     queryStore = host.app.accessor.get(IQueryStore);
     mirror = host.app.accessor.get(ISessionIndexMirror);

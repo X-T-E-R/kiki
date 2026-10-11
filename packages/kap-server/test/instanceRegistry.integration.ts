@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -203,6 +204,25 @@ describe('createInstanceRegistry — update', () => {
     expect(after.pid).toBe(process.pid);
     expect(after.started_at).toBe(1000);
     await reg.release();
+  });
+
+  it('updates while an ordinary reader handle remains open and preserves the registration identity', async () => {
+    const registry = createInstanceRegistry({ instancesDir, now: () => 2000 });
+    const reg = await registry.register(baseInfo);
+    const filePath = join(instancesDir, `${reg.serverId}.json`);
+    const reader = await open(filePath, 'r');
+    try {
+      await reg.update({ port: 58628, workspaces: ['example-workspace'] });
+      expect(readInstance(reg.serverId)).toMatchObject({
+        server_id: reg.serverId,
+        pid: process.pid,
+        port: 58628,
+        workspaces: ['example-workspace'],
+      });
+    } finally {
+      await reader.close();
+      await reg.release();
+    }
   });
 
   it('refreshes heartbeat without changing port when patch is empty', async () => {

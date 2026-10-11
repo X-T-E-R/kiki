@@ -4,12 +4,13 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, type NbSearchKeyUsageView, type NbSearchManagedCredentialView } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
 import { createSessionTransport } from '@kiki/session-core/session/klientTransport';
+import { documentPreviewAssetPath } from './previewAssets';
 import type {
   ActivateSkillRequest,
   ActivateSkillResult,
@@ -43,6 +44,8 @@ import type {
   ListTerminalsResponse,
   ListToolsResponse,
   ListWorkspacesResponse,
+  MemoryRestListQuery,
+  MemoryRestListResponse,
   Message,
   MessageContent,
   MetaResponse,
@@ -125,9 +128,12 @@ import type {
   PersonaPutInput,
   PersonaSnapshot,
   PersonaSummary,
+  PluginUsageRequest,
+  PluginUsageResponse,
+  PluginUsageTarget,
 } from '@kiki/protocol';
 
-import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
+import { RPCError, type AgentFacade, type AgentEventPayloads, type HttpRestCronTask, type HttpRestCronTaskDetail, type HttpRestCreateCronTask, type HttpRestUpdateCronTask, type OAuthMethodStatus, type SessionViewFacade } from '@kiki/klient';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import {
   fetchRemoteModels,
@@ -239,12 +245,14 @@ export interface MessageRunOverrides {
 
 /** `POST /sessions/{sid}/messages/{mid}:edit` body — full replacement semantics. */
 export interface EditMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly content: MessageContent[];
   readonly expected_cursor: SessionCursor;
 }
 
 /** `POST /sessions/{sid}/messages/{mid}:regenerate` body. */
 export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly expected_cursor: SessionCursor;
 }
 
@@ -517,6 +525,9 @@ export interface ResumeAgentGoalInput {
  * see `HttpRestCronTask`). Paused tasks carry `next_fire_at: null` and sort last.
  */
 export type CronTask = HttpRestCronTask;
+export type CronTaskDetail = HttpRestCronTaskDetail;
+export type CreateCronTaskRequest = HttpRestCreateCronTask;
+export type UpdateCronTaskRequest = HttpRestUpdateCronTask;
 
 export interface ListCronTasksResponse {
   readonly items: readonly CronTask[];
@@ -537,6 +548,40 @@ export type MemoryWriter = 'user' | 'agent' | 'consolidator' | 'import';
 export type MemoryApproval = 'auto' | 'review' | 'off';
 
 export const MEMORY_TYPES: readonly MemoryType[] = ['user', 'feedback', 'project', 'reference'];
+
+/** Why the content is recorded as it is. `unknown` means unestablished, not false. */
+export type MemoryBasisKind = 'human' | 'observed' | 'derived' | 'unknown';
+
+/**
+ * Content evidence, separate from `source`, which records who last wrote the
+ * entry. A write's session and turn identify the writer, not the original
+ * human instruction, so neither stands in for the other. Absent on entries
+ * written before the field existed; nothing is inferred to fill it.
+ */
+export interface MemoryBasis {
+  readonly kind: MemoryBasisKind;
+  readonly note: string;
+  readonly refs?: readonly string[];
+}
+
+/** What must be checked before relying on a changing fact, and its hard endpoint. */
+export interface MemoryValidity {
+  readonly check: string;
+  readonly until?: string;
+}
+
+/**
+ * The active same-scope entry that took over this one's content when it was
+ * retired, with the revision checked at the time. A stored entry carries
+ * `revision`; a request sends the same pair as `expected_revision`.
+ */
+export interface MemoryCoveredBy {
+  readonly id: string;
+  readonly revision: string;
+}
+
+/** What a write actually did. A pre-`outcome` server leaves it absent. */
+export type MemoryWriteOutcome = 'applied' | 'pending' | 'unchanged';
 
 export interface MemoryEntry {
   readonly id: string;
@@ -559,7 +604,11 @@ export interface MemoryEntry {
    * id, and `archive` archives that entry rather than the candidate.
    */
   readonly pending_action?: 'update' | 'archive';
+  readonly basis?: MemoryBasis;
+  readonly validity?: MemoryValidity;
+  readonly covered_by?: MemoryCoveredBy;
   readonly revision: string;
+  readonly content_complete?: boolean;
 }
 
 export interface MemorySettings {
@@ -606,12 +655,24 @@ export interface MemoryPutBody {
   readonly reason: string;
   readonly expected_revision?: string;
   readonly pinned?: boolean;
+  /**
+   * Content metadata rides the same save, so editing here cannot silently drop
+   * what a write recorded. Both are omitted to keep what the store holds;
+   * `validity: null` clears a check deliberately, and `basis` is cleared by
+   * writing `{kind: 'unknown', note}` rather than by null.
+   */
+  readonly basis?: MemoryBasis;
+  readonly validity?: MemoryValidity | null;
+  /** Consolidation retirement: the retained same-scope entry and the revision checked against it. */
+  readonly covered_by?: { readonly id: string; readonly expected_revision: string };
 }
 
-export interface MemoryListQuery {
-  readonly query?: string;
-  readonly type?: MemoryType;
-  readonly include_inactive?: boolean;
+export type MemoryListQuery = MemoryRestListQuery;
+
+export interface MemoryListPage {
+  readonly items: readonly MemoryEntry[];
+  readonly next_cursor?: MemoryRestListResponse['next_cursor'];
+  readonly coverage?: MemoryRestListResponse['coverage'];
 }
 
 /** 40423 / 40944 on the memory routes. */
@@ -683,6 +744,7 @@ export interface PluginSummary {
   /** Manifest icon inlined as a `data:` URI (svg/png); inert in an `<img>`. */
   readonly icon?: string;
   readonly enabled: boolean;
+  readonly globalEnabled: boolean;
   readonly state: 'ok' | 'error';
   readonly skillCount: number;
   readonly mcpServerCount: number;
@@ -711,6 +773,14 @@ export interface ListPluginsResponse {
   readonly plugins: readonly PluginSummary[];
 }
 
+/** A plugin command in one scope; `pluginId` is what the scope filter keys on. */
+export interface PluginCommandSummary {
+  readonly pluginId: string;
+  readonly name: string;
+  readonly description: string;
+  readonly prompt: string;
+}
+
 export interface PluginMarketplaceEntry {
   readonly id: string;
   readonly tier: 'official' | 'curated' | 'third-party';
@@ -728,6 +798,28 @@ export interface PluginMarketplaceEntry {
   };
   readonly version?: string;
   readonly source: string;
+  /** Digest of the archive at `source`, when the catalog publishes one. */
+  readonly sha256?: string;
+  /** Plugin engine range this build is checked against, not the product version. */
+  readonly engines?: { readonly kiki?: string };
+  readonly author?: string;
+  readonly license?: string;
+  /** Whether this build can install the entry now; a listed entry may not be installable. */
+  readonly installable?: boolean;
+  /** Catalog-declared sub-group, so a package family reads as one block. */
+  readonly group?: string;
+  /**
+   * Per-language catalog text keyed by language tag, so the reader sees names
+   * and descriptions in their own language. Catalog metadata only — it never
+   * travels with the plugin itself. Every field is optional and falls back to
+   * the top-level value, so an entry with no localization simply shows its own
+   * text.
+   */
+  readonly localizations?: Readonly<Record<string, {
+    readonly displayName?: string;
+    readonly description?: string;
+    readonly keywords?: readonly string[];
+  }>>;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
   readonly updateAvailable?: boolean;
 }
@@ -812,6 +904,8 @@ export type AgentTranscriptFrame =
       frameId: string;
       role: 'assistant' | 'user';
       text: string;
+      /** Canonical attachment ids on this frame (assistant image/audio/resource blobs). */
+      attachmentIds?: readonly string[];
       /** Linked task entity for user-role inputs about a task. */
       taskId?: string;
       /** Engine prompt origin for non-typed user inputs (e.g. {kind:'task'}). */
@@ -831,6 +925,8 @@ export type AgentTranscriptFrame =
       inputText?: string;
       startedAt?: string;
       endedAt?: string;
+      /** Canonical attachment ids on this call's output, alongside its content parts. */
+      attachmentIds?: readonly string[];
       progress?: { text?: string };
       /** Agents spawned by this call. */
       agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' }[];
@@ -1090,6 +1186,7 @@ export class KikiClient {
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
+  private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string }> }>();
   private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
   constructor(options: KikiClientOptions) {
@@ -1101,6 +1198,7 @@ export class KikiClient {
       endpoint: this.baseUrl,
       token: this.token,
       timeoutMs: options.timeoutMs,
+      readingTimeoutMs: () => this.readingOptions().timeoutMs,
       onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
       ...options.transport,
     });
@@ -1138,19 +1236,7 @@ export class KikiClient {
   sessionView(sessionId: string): SessionViewFacade {
     const view = this.klient.session(sessionId).view;
     return {
-      snapshot: async (options) => {
-        const snapshotKlient = createKlient({
-          endpoint: this.baseUrl,
-          token: this.token,
-          timeoutMs: 0,
-          ...this.transport,
-        });
-        try {
-          return await this.run(() => snapshotKlient.session(sessionId).view.snapshot(options));
-        } finally {
-          await snapshotKlient.close();
-        }
-      },
+      snapshot: (options) => this.run(() => view.snapshot(options)),
       transcript: view.transcript,
       subscribe: (input, onSignal) => view.subscribe(input, onSignal),
     };
@@ -1286,7 +1372,7 @@ export class KikiClient {
 
   /** Cross-session usage aggregation. Filter axes travel in the query. */
   getUsage(
-    query: Record<string, string | number | boolean | undefined>,
+    query: Record<string, string | readonly string[] | number | boolean | undefined>,
   ): Promise<UsageResponseWire> {
     return this.run(() => this.rest.usage(query));
   }
@@ -1326,12 +1412,49 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.applyPersonaSettings(sessionId, input));
   }
 
-  archiveSession(sessionId: string): Promise<ArchiveSessionResponse> {
-    return this.run(() => this.rest.sessions.archive(sessionId));
+  archiveSession(sessionId: string, options: import('@kiki/protocol').ArchiveSessionRequest = {}): Promise<ArchiveSessionResponse> {
+    return this.run(async () => {
+      const includeAttached = options.include_attached ?? true;
+      const result = await this.rest.sessions.archive(sessionId, { ...options, include_attached: includeAttached });
+      if (includeAttached && result.outcomes === undefined) {
+        throw new Error('The connected server cannot confirm archiving attached conversations. Refresh the list and update the server before retrying.');
+      }
+      if (!result.archived || result.outcomes?.some((outcome) => !outcome.ok)) {
+        const failed = result.outcomes?.filter((outcome) => !outcome.ok).map((outcome) => `${outcome.id}: ${outcome.message}`).join('; ');
+        throw new Error(`Some conversations could not be archived. Retry to finish archiving${failed ? `: ${failed}` : '.'}`);
+      }
+      return result;
+    });
   }
 
   restoreSession(sessionId: string): Promise<RestoreSessionResponse> {
     return this.run(() => this.rest.sessions.restore(sessionId));
+  }
+
+  /**
+   * Permanently remove one archived conversation, its attached archived family
+   * members included. `exclude_session_ids` is the same hold-back the family
+   * archive takes: the conversations the user explicitly promoted to the top
+   * level stay archived and listed.
+   *
+   * The response is a partial result, not a verdict, so it is handed back as
+   * it came: the caller lists what is still there. Only a rejected request
+   * throws, because that is the case where nothing is known.
+   */
+  deleteArchivedSession(
+    sessionId: string,
+    options: import('@kiki/protocol').DeleteArchivedSessionRequest = {},
+  ): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse> {
+    return this.run(() => this.rest.sessions.deleteArchived(sessionId, options));
+  }
+
+  /**
+   * Every archived conversation this connection holds, on every page and
+   * outside the current search. Unarchived conversations and room scope are
+   * the server's to keep; this names no filters because it asks for none.
+   */
+  deleteAllArchivedSessions(): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse> {
+    return this.run(() => this.rest.sessions.deleteAllArchived());
   }
 
   getSessionGoal(sessionId: string): Promise<GoalSnapshot | null> {
@@ -1558,8 +1681,8 @@ export class KikiClient {
   }
 
   /** Every switch operation this agent still tracks, with queue positions. */
-  listAgentModelSwitches(sessionId: string, agentId: string): Promise<readonly QueuedModelSwitch[]> {
-    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches());
+  listAgentModelSwitches(sessionId: string, agentId: string, signal?: AbortSignal): Promise<readonly QueuedModelSwitch[]> {
+    return this.run(this.klient.session(sessionId).agent(agentId).listModelSwitches({ signal }));
   }
 
   /** Edit a still-pending switch (target model / mode); the revision guards races. */
@@ -1724,6 +1847,7 @@ export class KikiClient {
     const api = this.rest.notifications;
     const wrap = <A extends unknown[], R>(call: (...args: A) => Promise<R>) => (...args: A): Promise<R> => this.run(() => call(...args));
     return {
+      listCompletions: wrap(api.listCompletions.bind(api)),
       getSettings: wrap(api.getSettings.bind(api)),
       updateSettings: wrap(api.updateSettings.bind(api)),
       listProviders: wrap(api.listProviders.bind(api)),
@@ -1751,6 +1875,37 @@ export class KikiClient {
     return this.run(this.klient.global.agentPanel.read(query, { signal }));
   }
 
+  /**
+   * Background task metadata for every agent in the session, one bounded page
+   * at a time.
+   *
+   * This is the cockpit's whole-tree read: `GET /sessions/:id/agent-tasks`
+   * answers for agents the reader has never opened, and says which owners it
+   * settled, which are still pending and which failed, so a partial read is
+   * never mistaken for an idle session. Task metadata only — no message
+   * bodies, no output, no agent materialization.
+   */
+  listAgentTasks(
+    sessionId: string,
+    query?: import('@kiki/protocol').ListAgentTasksQuery,
+    requestOptions?: { readonly signal?: AbortSignal },
+  ): Promise<import('@kiki/protocol').ListAgentTasksResponse> {
+    return this.run(this.rest.sessions.listAgentTasks(sessionId, query, requestOptions));
+  }
+
+  /**
+   * Validate a profile Markdown file on the connected host, without registering
+   * or binding anything. `cwd` / `workspace_id` name the host that reads it, so
+   * a path typed for a remote session is resolved there, not on this machine;
+   * the answer is the profile the server would really run.
+   */
+  previewAgentProfileFile(
+    body: import('@kiki/protocol').PreviewAgentProfileFileRequest,
+    options?: import('@kiki/klient').HttpRestRequestOptions,
+  ): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse> {
+    return this.run(this.rest.agents.previewFile(body, options));
+  }
+
   createAgentProfile(body: CreateNamedAgentProfileRequest): Promise<NamedAgentProfile> {
     return this.run(this.rest.agents.create(body));
   }
@@ -1770,12 +1925,12 @@ export class KikiClient {
     return this.run(this.rest.agents.shipped.restore(id));
   }
 
-  async readHostFile(path: string): Promise<string> {
-    return this.run(this.rest.filesystem.readHostFile(path));
+  async readHostFile(path: string, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<string> {
+    return this.run(this.rest.filesystem.readHostFile(path, { ...this.readingOptions(), ...options }));
   }
 
-  async readBuiltinSkill(name: string): Promise<string> {
-    const result = await this.run(this.rest.skills.readBuiltinContent(name));
+  async readBuiltinSkill(name: string, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<string> {
+    const result = await this.run(this.rest.skills.readBuiltinContent(name, { ...this.readingOptions(), ...options }));
     return result.content;
   }
 
@@ -1789,8 +1944,8 @@ export class KikiClient {
     return this.run(this.rest.skills.installHost(host, skill, revision));
   }
 
-  async previewHostFile(path: string, maxBytes = 512_001): Promise<{ text: string; truncated: boolean }> {
-    return this.run(this.rest.filesystem.previewHostFile(path, maxBytes));
+  async previewHostFile(path: string, maxBytes = 512_001, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<{ text: string; truncated: boolean }> {
+    return this.run(this.rest.filesystem.previewHostFile(path, maxBytes, { ...this.readingOptions(), ...options }));
   }
 
   async openHtmlPreview(input: import('@kiki/protocol').HtmlPreviewRequest, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<import('@kiki/protocol').HtmlPreviewResponse> {
@@ -1801,7 +1956,40 @@ export class KikiClient {
     return this.run(this.rest.filesystem.closeHtmlPreview(previewId, options));
   }
 
-  private async cachedPreviewBytes(
+  private cachedPreviewBytes(
+    key: string,
+    read: (etag: string | undefined, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    if (signal?.aborted === true) return Promise.reject(signal.reason);
+    let flight = this.previewFlights.get(key);
+    if (flight === undefined) {
+      const controller = new AbortController();
+      flight = { controller, users: 0, promise: this.readAndCachePreview(key, (etag) => read(etag, controller.signal)) };
+      this.previewFlights.set(key, flight);
+      const current = flight;
+      const clear = () => { if (this.previewFlights.get(key) === current) this.previewFlights.delete(key); };
+      void current.promise.then(clear, clear);
+    }
+    const current = flight;
+    current.users += 1;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (done: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', cancel);
+        current.users -= 1;
+        if (current.users === 0 && this.previewFlights.get(key) === current) { this.previewFlights.delete(key); current.controller.abort(); }
+        done();
+      };
+      const cancel = () => { finish(() => { reject(signal?.reason); }); };
+      signal?.addEventListener('abort', cancel, { once: true });
+      void current.promise.then((value) => { finish(() => { resolve(value); }); }, (error: unknown) => { finish(() => { reject(error); }); });
+    });
+  }
+
+  private async readAndCachePreview(
     key: string,
     read: (etag?: string) => Promise<{ bytes: Uint8Array; mime: string; name?: string; etag?: string; notModified?: boolean }>,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
@@ -1829,16 +2017,16 @@ export class KikiClient {
 
   /** Binary variant of readHostFile, retaining the server MIME. */
   readHostFileBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
-    return this.run(this.rest.filesystem.readHostFileBytes(path, options));
+    return this.run(this.rest.filesystem.readHostFileBytes(path, { ...this.readingOptions(), ...options }));
   }
 
   readHostMediaPreviewBytes(path: string, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<{ bytes: Uint8Array; mime: string }> {
-    return this.cachedPreviewBytes(`host-preview:${path}`, (etag) =>
-      this.rest.filesystem.readHostMediaPreview(path, { ...options, ifNoneMatch: etag }));
+    return this.cachedPreviewBytes(`host-preview:${path}:${options?.mediaType ?? ''}`, (etag, signal) =>
+      this.rest.filesystem.readHostMediaPreview(path, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }
 
   downloadHostFile(path: string, sink: import('@kiki/klient').HttpRestMediaSink, options?: import('@kiki/klient').HttpRestMediaOptions): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
-    return this.run(this.rest.filesystem.downloadHostFile(path, sink, options));
+    return this.run(this.rest.filesystem.downloadHostFile(path, sink, { ...this.readingOptions(), ...options }));
   }
 
   /** Read a canonical transcript attachment (or its staged-upload fallback). */
@@ -1847,7 +2035,7 @@ export class KikiClient {
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.run(this.rest.sessions.media(sessionId, fileId, options));
+    return this.run(this.rest.sessions.media(sessionId, fileId, { ...this.readingOptions(), ...options }));
   }
 
   readSessionMediaPreviewBytes(
@@ -1855,8 +2043,8 @@ export class KikiClient {
     fileId: string,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
-    return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag) =>
-      this.rest.sessions.mediaPreview(sessionId, fileId, { ...options, ifNoneMatch: etag }));
+    return this.cachedPreviewBytes(`media-preview:${sessionId}:${fileId}:${options?.mediaType ?? ''}`, (etag, signal) =>
+      this.rest.sessions.mediaPreview(sessionId, fileId, { ...this.readingOptions(), ...options, signal, ifNoneMatch: etag }), options?.signal);
   }
 
   downloadSessionMedia(
@@ -1865,7 +2053,7 @@ export class KikiClient {
     sink: import('@kiki/klient').HttpRestMediaSink,
     options?: import('@kiki/klient').HttpRestMediaOptions,
   ): Promise<import('@kiki/klient').HttpRestMediaReceipt> {
-    return this.run(this.rest.sessions.downloadMedia(sessionId, fileId, sink, options));
+    return this.run(this.rest.sessions.downloadMedia(sessionId, fileId, sink, { ...this.readingOptions(), ...options }));
   }
 
   downloadTranscriptContent(
@@ -1889,6 +2077,10 @@ export class KikiClient {
   /** `PATCH /api/workspaces/{id}` — pin / unpin. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<Workspace> {
     return this.run(this.rest.workspaces.setPinned(workspaceId, pinned));
+  }
+
+  setWorkspaceTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }> {
+    return this.run(this.rest.workspaces.setTrust(workspaceId, trusted));
   }
 
   /** `DELETE /api/workspaces/{id}` — unregister (does not remove on-disk content). */
@@ -2249,10 +2441,6 @@ export class KikiClient {
     return this.memoryRequest('POST', '/executors/antigravity-acp/logout', { body: {} });
   }
 
-  previewAgentProfileFile(body: import('@kiki/protocol').PreviewAgentProfileFileRequest): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse> {
-    return this.run(this.rest.agents.previewFile(body));
-  }
-
   previewExecutorPrompt(name: string, workspace: string, executor: string): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse> {
     return this.memoryRequest('POST', `/agents/${encodeURIComponent(name)}/executor-prompt:preview`,
       { body: { workspace, executor } });
@@ -2359,6 +2547,7 @@ export class KikiClient {
     readonly sha256?: string;
     readonly fingerprint: string;
     readonly consent: boolean;
+    readonly defaultEnabled?: boolean;
   }): Promise<PluginSummary> {
     return this.run(this.rest.plugins.install(input) as Promise<PluginSummary>);
   }
@@ -2384,16 +2573,39 @@ export class KikiClient {
     return this.run(this.rest.plugins.dismissRecommendation(pluginId));
   }
 
-  listPluginPanels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }> {
-    return this.run(this.rest.plugins.panels());
+  /**
+   * Panels a plugin contributes. `target` narrows the answer to the plugins
+   * usable in that scope; without one the answer is the sidebar-level set.
+   * A workspace panel is served only for a targeted read.
+   */
+  listPluginPanels(target?: PluginUsageTarget): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }> {
+    return this.run(this.rest.plugins.panels(target));
   }
 
-  getPluginPanelDocument(pluginId: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument> {
-    return this.run(this.rest.plugins.panelDocument(pluginId, panelId));
+  getPluginPanelDocument(pluginId: string, panelId: string, target?: PluginUsageTarget): Promise<import('@kiki/protocol').PluginPanelDocument> {
+    return this.run(this.rest.plugins.panelDocument(pluginId, panelId, target));
+  }
+
+  /** Commands usable in `target`; untargeted reads stay sidebar-scope. */
+  listPluginCommands(target?: PluginUsageTarget): Promise<{ readonly commands: readonly PluginCommandSummary[] }> {
+    return this.run(this.rest.plugins.commands(target));
+  }
+
+  /**
+   * Per-workspace plugin usage. The target resolves the workspace; the answer
+   * carries the target the server actually used, which is the only name of it
+   * the UI may show.
+   */
+  getPluginUsage(target: PluginUsageTarget): Promise<PluginUsageResponse> {
+    return this.run(this.rest.plugins.usage(target));
   }
 
   pluginNavigation(): Promise<import('@kiki/protocol').PluginNavigation> {
     return this.run(this.rest.plugins.navigation());
+  }
+
+  setPluginUsage(input: PluginUsageRequest): Promise<PluginUsageResponse> {
+    return this.run(this.rest.plugins.setUsage(input));
   }
 
   callPluginPanelBridge(
@@ -2484,6 +2696,18 @@ export class KikiClient {
     return this.run(this.rest.cron.list(query));
   }
 
+  getCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.get(taskId, { session_id: sessionId }));
+  }
+
+  createCronTask(input: CreateCronTaskRequest): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.create(input));
+  }
+
+  updateCronTask(taskId: string, input: UpdateCronTaskRequest, sessionId?: string): Promise<{ readonly task: CronTaskDetail }> {
+    return this.run(this.rest.cron.update(taskId, input, { session_id: sessionId }));
+  }
+
   /** `sessionId` disambiguates a task id shared by several sessions (else 40001). */
   pauseCronTask(taskId: string, sessionId?: string): Promise<{ readonly task: CronTask }> {
     return this.run(this.rest.cron.pause(taskId, { session_id: sessionId }));
@@ -2523,13 +2747,16 @@ export class KikiClient {
     return this.memoryRequest('PATCH', `/memory/workspaces/${encodeURIComponent(workspaceId)}/settings`, { body: { enabled } });
   }
 
-  listMemory(target: MemoryTarget, query: MemoryListQuery = {}): Promise<{ readonly items: readonly MemoryEntry[] }> {
+  listMemory(target: MemoryTarget, query: MemoryListQuery = {}, signal?: AbortSignal): Promise<MemoryListPage> {
     return this.memoryRequest('GET', `/memory/${target.scope}`, {
-      target,
-      query: {
+      target, signal,
+      query: query.cursor !== undefined ? { cursor: query.cursor } : {
         query: query.query !== undefined && query.query.trim() !== '' ? query.query.trim() : undefined,
         type: query.type,
         include_inactive: query.include_inactive === true ? 'true' : undefined,
+        mode: query.mode,
+        statuses: query.statuses?.join(','),
+        page_size: query.page_size?.toString(),
       },
     });
   }
@@ -2538,8 +2765,19 @@ export class KikiClient {
     return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target });
   }
 
-  /** `id: 'new'` creates; otherwise `expected_revision` guards the update (40944 on a stale revision). */
-  putMemory(target: MemoryTarget, id: string, body: MemoryPutBody): Promise<{ readonly entry: MemoryEntry; readonly operationId: string }> {
+  /**
+   * `id: 'new'` creates; otherwise `expected_revision` guards the update (40944
+   * on a stale revision). `outcome` reports what the store actually did: a
+   * save whose content already matched returns `unchanged` with a null
+   * `operationId`, so the caller must not offer to undo it. A pre-`outcome`
+   * server leaves `outcome` absent, which reads as `applied`.
+   */
+  putMemory(target: MemoryTarget, id: string, body: MemoryPutBody): Promise<{
+    readonly entry: MemoryEntry;
+    readonly operationId: string | null;
+    readonly outcome?: MemoryWriteOutcome;
+    readonly warnings?: readonly string[];
+  }> {
     return this.memoryRequest('PUT', `/memory/${target.scope}/${encodeURIComponent(id)}`, { target, body });
   }
 
@@ -2554,8 +2792,11 @@ export class KikiClient {
     return this.memoryRequest('GET', `/memory/${target.scope}/journal`, { target, query: { id } });
   }
 
-  memoryInbox(target: MemoryTarget): Promise<readonly MemoryEntry[]> {
-    return this.memoryRequest('GET', `/memory/${target.scope}/inbox`, { target });
+  async memoryInbox(target: MemoryTarget, query: Pick<MemoryListQuery, 'cursor' | 'page_size'> = {}, signal?: AbortSignal): Promise<MemoryListPage> {
+    const page = await this.memoryRequest<MemoryListPage | readonly MemoryEntry[]>('GET', `/memory/${target.scope}/inbox`, {
+      target, signal, query: query.cursor !== undefined ? { cursor: query.cursor } : { page_size: query.page_size?.toString() },
+    });
+    return Array.isArray(page) ? { items: page } : page as MemoryListPage;
   }
 
   undoMemory(target: MemoryTarget, operationId: string): Promise<{ readonly entry: MemoryEntry | null }> {
@@ -2565,7 +2806,7 @@ export class KikiClient {
   private async memoryRequest<T>(
     method: 'GET' | 'PUT' | 'PATCH' | 'POST' | 'DELETE',
     path: string,
-    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number } = {},
+    options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {},
   ): Promise<T> {
     const root = this.baseUrl.replace(/\/+$/u, '');
     const url = root === '' ? new URL(`/api${path}`, globalThis.location?.origin ?? 'http://localhost') : new URL(`${root}/api${path}`);
@@ -2587,7 +2828,7 @@ export class KikiClient {
         method,
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+        signal: options.signal === undefined ? AbortSignal.timeout(options.timeoutMs ?? 30_000) : AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)]),
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'TimeoutError') {
@@ -2611,6 +2852,81 @@ export class KikiClient {
         request_id: 'request_id' in envelope && typeof envelope.request_id === 'string' ? envelope.request_id : undefined });
     }
     return ('data' in envelope ? envelope.data : null) as T;
+  }
+
+  /**
+   * One rendered document-preview asset, as bytes over the authenticated
+   * connection this client already holds.
+   *
+   * The asset route sits behind the same bearer gate as every other `/api`
+   * route, so a browser `<img src>` or a bare `getDocument({ url })` would be
+   * refused — and a remote scope would send the request to the wrong origin.
+   * Reading it here keeps one rule: bytes come from the connection the file
+   * lives on, never from a host path or a Tauri-relative address in the DOM.
+   *
+   * `assetUrl` is the server's own value. A root-relative URL is resolved
+   * against this client's endpoint, which is also what a remote scope needs.
+   */
+  async readDocumentPreviewAsset(assetUrl: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
+    const path = documentPreviewAssetPath(assetUrl);
+    const root = this.baseUrl.replace(/\/+$/u, '');
+    const url = root === ''
+      ? new URL(path, globalThis.location?.origin ?? 'http://localhost')
+      : new URL(`${root}${path}`);
+    const headers: Record<string, string> = { accept: '*/*' };
+    if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
+    const response = await (this.transport?.fetch ?? fetch)(url, { headers, signal });
+    if (!response.ok) {
+      throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: `Preview asset could not be read (HTTP ${response.status})`, data: null });
+    }
+    return { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('content-type') ?? 'application/octet-stream' };
+  }
+
+  /**
+   * Work modes for THIS home: `/api/work-presets` (list, explicit enable,
+   * customize, remove). The routes and schemas are the shared contract, but
+   * `klient.rest` groups no work-presets domain yet, so these ride the same
+   * authenticated `/api` path `memoryRequest` already uses. Enabling a mode is
+   * the only call that installs or turns anything on; a list, a mode switch or
+   * a route restore never revives what the user removed.
+   */
+  async listWorkPresets(): Promise<WorkPresetsResponse> {
+    return workPresetsResponseSchema.parse(await this.memoryRequest<unknown>('GET', '/work-presets'));
+  }
+
+  async enableWorkPreset(id: string, installPrerequisites: boolean): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('POST', `/work-presets/${encodeURIComponent(id)}/enable`, {
+      body: { consent: true, install_prerequisites: installPrerequisites },
+    }));
+  }
+
+  async updateWorkPreset(id: string, patch: { enabled?: boolean; preferences?: WorkPresetPreference }): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('PATCH', `/work-presets/${encodeURIComponent(id)}`, { body: patch }));
+  }
+
+  /** Removes the mode only. Plugins, sessions and documents stay in this home. */
+  async removeWorkPreset(id: string): Promise<WorkPresetMutationResponse> {
+    return workPresetMutationResponseSchema.parse(await this.memoryRequest<unknown>('DELETE', `/work-presets/${encodeURIComponent(id)}`));
+  }
+
+  /**
+   * `POST /sessions/{id}/document-preview` — one page, sheet or text window of
+   * a document, rendered by the server from the bytes it already has. The
+   * answer is a discriminated union: `ready` carries read-only rendered assets,
+   * `text` is the file's own text (labelled `source`, never a layout), and
+   * `missing_dependency` names the one thing to install. Nothing is fetched
+   * from the network and no path is handed to an external viewer.
+   */
+  async documentPreview(
+    sessionId: string,
+    request: DocumentPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<DocumentPreviewResponse> {
+    return documentPreviewResponseSchema.parse(await this.memoryRequest<unknown>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/document-preview`,
+      { body: request, signal, ...this.readingOptions() },
+    ));
   }
 
   /**

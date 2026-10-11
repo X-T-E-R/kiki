@@ -534,7 +534,7 @@ describe('server-v2 /api/debug RPC', () => {
       { input: [{ type: 'text', text: 'hello title' }] },
     );
     expect(body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const meta = await call<SessionMetaWire>('POST', rpc('session', ISessionMetadata, 'read', { sid: id }));
     expect(meta.body.code).toBe(0);
@@ -849,7 +849,7 @@ describe('server-v2 /api/debug scoped operation residency', () => {
 
       const restored = await manager.acquire!(sessionId, 'test-setup');
       expect(restored).toBeDefined();
-      restored!.dispose();
+      await restored!.dispose();
       const errorResponse = await fetch(`${base}${rpc('session', ISessionMetadata, 'missingMethod', { sid: sessionId })}`, { method: 'POST', headers });
       expect(((await errorResponse.json()) as Envelope<null>).code).toBe(40001);
       expect(await manager.evictIfIdle!(sessionId)).toBe(true);
@@ -971,7 +971,7 @@ describe('server-v2 /api/debug deadline and scoped residency', () => {
       await gate;
       return {
         handle: lease.handle,
-        dispose: () => { lease.dispose(); dispose(); },
+        dispose: async () => { await lease.dispose(); dispose(); },
       };
     });
 
@@ -1031,7 +1031,7 @@ describe('server-v2 /api/debug deadline and scoped residency', () => {
       await gate;
       return {
         handle: lease.handle,
-        dispose: () => { lease.dispose(); dispose(); },
+        dispose: async () => { await lease.dispose(); dispose(); },
       };
     });
 

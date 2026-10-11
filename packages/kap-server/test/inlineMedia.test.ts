@@ -1,13 +1,23 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'node:http';
+import * as sessionOperation from '../src/lib/sessionOperationLease';
+import { installErrorHandler } from '../src/error-handler';
 import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
 import { AgentTranscript, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
-import { boundedEntity } from '../src/transport/klient/boundedContent';
-import type { Scope } from '@kiki/agent-core-v2';
+import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
+import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionIndex, ISessionManager, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
+import * as mainAgent from '../src/transport/mainAgent';
+import * as promptMedia from '../src/lib/promptMedia';
+import { registerSkillsRoutes } from '../src/routes/skills';
 import { registerSessionMediaRoutes } from '../src/routes/sessionMedia';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
-import { boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { inlineMediaFile } from '../src/services/inlineMedia';
+import { boundedTranscriptOps, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
+import { inlineMediaFile, parseInlineMediaIdentity } from '../src/services/inlineMedia';
+import { publishedInlineMediaReader } from '../src/services/publishedMedia';
+import { resolvePromptSessionMediaRefs } from '../src/lib/promptMedia';
+import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { PromptSubmission } from '../src/protocol/rest-prompt';
 
 function bitmap(): Buffer {
   const bytes = Buffer.alloc(54 + 800 * 3 * 600);
@@ -21,12 +31,271 @@ const servers: ReturnType<typeof Fastify>[] = [];
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); });
 
 describe('canonical inline media original', () => {
+  it('activates a skill with its retained canonical original and rejects a replaced revision without activating again', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const original: Buffer = picture(80, 60, [140, 50, 20]);
+    const image = { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } };
+    const prompt = { promptId: 'published', status: 'completed' as const, createdAt: '2026-01-01T00:00:00.000Z', content: [image] };
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'prompt.upsert', prompt }]);
+    const forSessionLive = vi.fn(() => ({ getAgent: () => transcript }));
+    const service = { forSessionLive, ensureAgentHistory: async () => transcript } as unknown as TranscriptService;
+    const projected = (boundedTranscriptSnapshot(transcript.snapshot(), 'main').prompts[0]! as { content: PromptSubmission['content'] }).content;
+    const draft = structuredClone(projected);
+    const before = JSON.stringify(draft);
+    const store = { open: vi.fn(async () => undefined) };
+    const activate = vi.fn(async () => {});
+    const dispose = vi.fn(async () => {});
+    const sessionServices = new Map<unknown, unknown>([
+      [SessionMediaStoreToken, store], [ISessionContext, { sessionDir: 'unused' }],
+      [ISessionSkillCatalog, { ready: Promise.resolve(), catalog: { getSkill: () => ({ name: 'welcome', metadata: {} }) } }],
+    ]);
+    const agentServices = new Map<unknown, unknown>([
+      [IAgentPromptService, {}], [IAgentSkillService, { activate }],
+      [IAgentProfileService, { getModelProviderType: () => 'kimi' }],
+    ]);
+    const coreServices = new Map<unknown, unknown>([
+      [IFileService, {}], [IBootstrapService, { cacheDir: 'unused' }],
+      [ITelemetryService, { withContext: () => ({}) }],
+    ]);
+    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
+      handle: { accessor: { get: (token: unknown) => sessionServices.get(token) } }, dispose,
+    } as unknown as sessionOperation.SessionOperationLease);
+    const ensure = vi.spyOn(mainAgent, 'ensureMainAgent').mockResolvedValue({ accessor: { get: (token: unknown) => agentServices.get(token) } } as unknown as Awaited<ReturnType<typeof mainAgent.ensureMainAgent>>);
+    const prepare = vi.spyOn(promptMedia, 'resolvePromptMediaFiles').mockImplementation(async (content) => ({ content, discard: async () => {} } as promptMedia.PromptMediaPreparation));
+    const app = Fastify(); servers.push(app);
+    installErrorHandler(app);
+    app.setSerializerCompiler(() => (data) => JSON.stringify(data));
+    registerSkillsRoutes(app as unknown as Parameters<typeof registerSkillsRoutes>[0], { accessor: { get: (token: unknown) => coreServices.get(token) } } as unknown as Scope, service);
+    try {
+      const response = await app.inject({ method: 'POST', url: '/sessions/fixture/skills/welcome:activate', payload: { attachments: draft } });
+      expect(response.json()).toMatchObject({ code: 0, data: { activated: true, skill_name: 'welcome' } });
+      expect(activate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ content: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${original.toString('base64')}`, name: 'ordinary.png' } }] }));
+      expect(forSessionLive).toHaveBeenCalledWith('fixture');
+      expect(store.open).not.toHaveBeenCalled();
+      expect(JSON.stringify(draft)).toBe(before);
+      transcript.apply([{ op: 'prompt.upsert', prompt: { ...prompt, content: [{ ...image, source: { ...image.source, data: original.subarray(0, 32).toString('base64') } }] } }]);
+      const stale = await app.inject({ method: 'POST', url: '/sessions/fixture/skills/welcome:activate', payload: { attachments: draft } });
+      expect(stale.json()).toMatchObject({ code: 40407 });
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(draft)).toBe(before);
+    } finally { acquire.mockRestore(); ensure.mockRestore(); prepare.mockRestore(); }
+  });
+  it('resolves an edited retained handle from the published original across queued, running and completed without changing the draft', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const original: Buffer = picture(80, 60, [140, 50, 20]);
+    const image = { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } };
+    let prompt = { promptId: 'published', userMessageId: 'logical', status: 'queued' as 'queued' | 'running' | 'completed', createdAt: '2026-01-01T00:00:00.000Z', content: [image] };
+    const transcript = new AgentTranscript('main');
+    const service = { forSessionLive: () => ({ getAgent: () => transcript }), ensureAgentHistory: async () => transcript } as unknown as TranscriptService;
+    const reader = publishedInlineMediaReader(service, 'fixture');
+    const store = { open: vi.fn(async () => undefined) } as unknown as ISessionMediaStore;
+    let stableId: string | undefined;
+    let draft!: PromptSubmission['content'];
+    for (const status of ['queued', 'running', 'completed'] as const) {
+      prompt = { ...prompt, status };
+      transcript.apply([{ op: 'prompt.upsert', prompt }]);
+      const projectedPrompt = boundedTranscriptSnapshot(transcript.snapshot(), 'main').prompts[0]! as { content: readonly unknown[] };
+      const projected = projectedPrompt.content[0] as { type: 'image' | 'video'; source: { kind: 'session_media'; file_id: string }; name?: string };
+      if (projected.type !== 'image' || projected.source.kind !== 'session_media') throw new Error('Expected typed media');
+      stableId ??= projected.source.file_id;
+      expect(projected.source.file_id).toBe(stableId);
+      if (stableId === undefined) throw new Error('Expected stable media id');
+      expect(parseInlineMediaIdentity(stableId)).toMatchObject({ kind: 'content', agentId: 'main', source: { kind: 'prompt', id: 'published' }, path: ['content', 0] });
+      const text = { type: 'text' as const, text: 'Edited text', presentation: { spans: [{ kind: 'selection' as const, start: 0, end: 6, quote: 'Edited' }] } };
+      draft = [text, { ...projected, opaque: { keep: ['original'] } } as unknown as PromptSubmission['content'][number]];
+      const before = JSON.stringify(draft);
+      const resolved = await resolvePromptSessionMediaRefs(draft, store, reader);
+      expect(resolved[0]).toBe(text);
+      expect(resolved[1]).toMatchObject({ ...image, opaque: { keep: ['original'] } });
+      expect(Buffer.from((resolved[1] as typeof image).source.data, 'base64')).toEqual(original);
+      expect(JSON.stringify(draft)).toBe(before);
+      expect(transcript.getPrompt('published')!.content).toEqual([image]);
+    }
+    expect(store.open).not.toHaveBeenCalled();
+    const before = JSON.stringify(draft);
+    transcript.apply([{ op: 'prompt.upsert', prompt: { ...prompt, content: [{ ...image, source: { ...image.source, data: original.subarray(0, 32).toString('base64') } }] } }]);
+    await expect(resolvePromptSessionMediaRefs(draft, store, reader)).rejects.toMatchObject({ code: 'file.not_found' });
+    expect(JSON.stringify(draft)).toBe(before);
+    await expect(resolvePromptSessionMediaRefs(draft, store)).rejects.toMatchObject({ code: 'file.not_found' });
+    expect(store.open).not.toHaveBeenCalled();
+  });
+  it('closes a cancelled session preview source and releases its operation without affecting the next download', async () => {
+    const app = Fastify(); servers.push(app);
+    installErrorHandler(app);
+    app.addHook('onSend', async (_req, _reply, payload) => payload);
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    let proceed!: () => void;
+    const gate = new Promise<void>((resolve) => { proceed = resolve; });
+    let sourceClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { sourceClosed = resolve; });
+    let released!: () => void;
+    const disposed = new Promise<void>((resolve) => { released = resolve; });
+    let slow = true;
+    const bytes = new Uint8Array(1024);
+    const dispose = vi.fn(async () => { released(); });
+    const file = { name: 'fixture.png', mediaType: 'image/png', size: bytes.byteLength,
+      stream: async function* (range?: { start: number; end: number }) {
+        try {
+          if (slow) { started(); await gate; }
+          yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
+        } finally { sourceClosed(); }
+      },
+    };
+    const acquire = vi.spyOn(sessionOperation, 'acquireSessionOperation').mockResolvedValue({
+      handle: { accessor: { get: () => ({ open: async () => file }) } }, dispose,
+    } as unknown as sessionOperation.SessionOperationLease);
+    const services = new Map<unknown, unknown>([
+      [ISessionIndex, { get: async () => undefined }],
+      [ISessionManager, { get: () => ({}) }],
+    ]);
+    const core = { accessor: { get: (token: unknown) => services.get(token) } } as unknown as Scope;
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], core); }, { prefix: '/api' });
+    const base = await app.listen({ host: '127.0.0.1', port: 0 });
+    const disconnected = new Promise<void>((resolve) => { app.server.once('request', (_req, response) => { response.once('close', resolve); }); });
+    const request = get(`${base}/api/sessions/fixture/media/file/preview`);
+    request.on('error', () => {});
+    try {
+      await reading;
+      request.destroy();
+      await disconnected;
+      proceed();
+      await closed;
+      await disposed;
+      expect(dispose).toHaveBeenCalledTimes(1);
+      slow = false;
+      const normal = await fetch(`${base}/api/sessions/fixture/media/file`, { headers: { range: 'bytes=0-15' } });
+      expect(normal.status).toBe(206);
+      expect(new Uint8Array(await normal.arrayBuffer())).toEqual(bytes.subarray(0, 16));
+      await vi.waitFor(() => { expect(dispose).toHaveBeenCalledTimes(2); });
+      expect(app.server.listening).toBe(true);
+    } finally {
+      proceed();
+      request.destroy();
+      acquire.mockRestore();
+    }
+  });
+  it('keeps delivered prompt images whole in baseline, live operations and content continuations without resuming a cold session', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const original: Buffer = pictures[1].bytes;
+    const prompt = { promptId: 'image-prompt', userMessageId: 'image-prompt', status: 'completed' as const, createdAt: '2026-01-01T00:00:00.000Z',
+      content: [{ type: 'text' as const, text: 'Example feedback' }, { type: 'image' as const, name: 'ordinary.png', source: { kind: 'base64' as const, media_type: 'image/png', data: original.toString('base64') } }] };
+    const transcript = new AgentTranscript('child');
+    transcript.apply([{ op: 'reset', agentId: 'child', snapshot: { items: [], tasks: [], attachments: [], prompts: [prompt], interactions: [], todos: [], meta: {} } }]);
+    const snapshot = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
+    const media = (snapshot.prompts[0]!.content as { type: string; source: { kind: string; file_id: string } }[])[1]!;
+    expect(media).toMatchObject({ type: 'image', name: 'ordinary.png', source: { kind: 'session_media' } });
+    const op = boundedTranscriptOps([{ op: 'prompt.upsert', prompt }], transcript)[0]!;
+    expect(op).toMatchObject({ op: 'prompt.upsert', prompt: { content: [prompt.content[0], media] } });
+    const preview = boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 512);
+    const ref = preview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
+    const continuation = readContentSegment(prompt, ref, false, 'child');
+    expect(continuation.value).toEqual([prompt.content[0], media]);
+    expect(continuation.contentRefs).toEqual([]);
+    expect(prompt.content[1]!.source?.data).toBe(original.toString('base64'));
+    for (const status of ['queued', 'running'] as const) {
+      const active = { ...prompt, status };
+      const activeSnapshot = boundedTranscriptSnapshot({ ...transcript.snapshot(), prompts: [active] }, 'child');
+      expect(activeSnapshot.prompts[0]!.content).toEqual([prompt.content[0], media]);
+      expect(jsonBytes(activeSnapshot)).toBeLessThan(4096);
+      expect(boundedTranscriptOps([{ op: 'prompt.upsert', prompt: active }], transcript)[0]).toMatchObject({ op: 'prompt.upsert', prompt: { content: [prompt.content[0], media] } });
+      const activePreview = boundedEntity(active, { kind: 'prompt', id: active.promptId }, 512);
+      const activeRef = activePreview.contentRefs!.find((ref) => ref.path.length === 1 && ref.path[0] === 'content')!;
+      const activeSegment = readContentSegment(active, activeRef, false, 'child');
+      expect(activeSegment.value).toEqual([prompt.content[0], media]);
+      expect(activeSegment.contentRefs).toEqual([]);
+    }
+    let changed = false;
+    const service = { forSessionLive: () => undefined, readColdSnapshot: async (session: string, agent: string) =>
+      session === 'fixture-session' && agent === 'child' ? { ...transcript.snapshot(), prompts: changed ? [] : [prompt] } : undefined,
+    } as unknown as TranscriptService;
+    const app = Fastify(); servers.push(app);
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service); }, { prefix: '/api' });
+    const path = `/api/sessions/fixture-session/media/${encodeURIComponent(media.source.file_id)}`;
+    const downloaded = await app.inject({ url: path });
+    expect(downloaded.rawPayload).toEqual(original);
+    expect(downloaded.headers['content-disposition']).toContain('ordinary.png');
+    expect((await app.inject({ url: `${path}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ url: path.replace('fixture-session', 'wrong-session') })).statusCode).toBe(404);
+    expect((await app.inject({ url: path.replace('child', 'other') })).statusCode).toBe(404);
+    const address = JSON.parse(Buffer.from(media.source.file_id.split(':')[2]!, 'base64url').toString('utf8'));
+    address.path = ['content', 1, 'source'];
+    const forged = `inline-content:child:${Buffer.from(JSON.stringify(address)).toString('base64url')}:${media.source.file_id.split(':')[3]}`;
+    expect((await app.inject({ url: `/api/sessions/fixture-session/media/${encodeURIComponent(forged)}` })).statusCode).toBe(404);
+    changed = true;
+    expect((await app.inject({ url: path })).statusCode).toBe(404);
+  });
+
+  it('projects large recorded tool images to exact revision-bound HTTP media instead of truncated data URLs', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const original: Buffer = pictures[1].bytes;
+    expect(original.length).toBeGreaterThan(64 * 1024);
+    const output = [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${original.toString('base64')}` } }];
+    const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 's1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: 'f1', name: 'ReadMediaFile', toolCallId: 'call1', state: 'done', output }] }] });
+    const transcript = new AgentTranscript('child');
+    transcript.apply([{ op: 'reset', agentId: 'child', snapshot: { items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } }]);
+    const frame = turn.steps[0]!.frames[0]!;
+    const snapshot = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
+    const projectedTurn = snapshot.items[0]!;
+    if (projectedTurn.kind !== 'turn') throw new Error('Expected turn');
+    const media = (projectedTurn.steps[0]!.frames[0] as { output: { type: string; source: { kind: string; file_id: string } }[] }).output[0]!;
+    expect(media.type).toBe('image'); expect(media.source.kind).toBe('session_media');
+    const fileId = media.source.file_id;
+    expect(fileId).toMatch(/^inline-content:child:/u);
+    expect(jsonBytes(snapshot)).toBeLessThan(16 * 1024);
+    expect(projectedTurn.contentRefs).toBeUndefined();
+    const op = boundedTranscriptOps([{ op: 'frame.upsert', turnId: 't1', stepId: 's1', frame }], transcript)[0]!;
+    if (op.op !== 'frame.upsert' || op.frame.kind !== 'tool' || frame.kind !== 'tool') throw new Error('Expected tool frame');
+    expect(op.frame.output).toEqual([media]);
+    expect(frame.output).toEqual(output);
+    const laterFrame = { ...frame, output: [...Array.from({ length: 4 }, () => ({ type: 'text', text: 'before media' })), ...output] };
+    const source = { kind: 'frame' as const, id: frame.frameId, turnId: 't1', stepId: 's1' };
+    const preview = boundedEntity(laterFrame, source, undefined, 'child');
+    const ref = preview.contentRefs?.find((candidate) => candidate.path.length === 1 && candidate.path[0] === 'output');
+    expect(ref).toBeDefined();
+    if (ref === undefined) throw new Error('Expected array continuation');
+    const continuation = readContentSegment(laterFrame, ref, false, 'child');
+    const laterMedia = (continuation.value as { type: string; source: { file_id: string } }[])[0]!;
+    expect(laterMedia.type).toBe('image');
+    expect(laterMedia.source.file_id).toMatch(/^inline-content:child:/u);
+    expect(continuation.contentRefs).toEqual([]);
+    expect(continuation.next).toBeUndefined();
+    let changed = false;
+    const service = { readCanonicalEntity: async (session: string, agent: string, source: { id: string; turnId?: string; stepId?: string }) =>
+      session === 'fixture-session' && agent === 'child' && source.id === 'f1' && source.turnId === 't1' && source.stepId === 's1'
+        ? changed ? { ...frame, output: [{ type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } }] } : frame : undefined,
+    } as unknown as TranscriptService;
+    const app = Fastify(); servers.push(app);
+    await app.register(async (router) => { registerSessionMediaRoutes(router as unknown as Parameters<typeof registerSessionMediaRoutes>[0], {} as Scope, service); }, { prefix: '/api' });
+    const client = createKlient({ endpoint: await app.listen({ host: '127.0.0.1', port: 0 }) });
+    try {
+      const bytes: Uint8Array[] = [];
+      await client.rest!.sessions.downloadMedia('fixture-session', fileId, (chunk) => { bytes.push(chunk.slice()); });
+      expect(Buffer.concat(bytes)).toEqual(original);
+      expect((await client.rest!.sessions.media('fixture-session', fileId, { range: 'bytes=0-63' })).bytes).toEqual(new Uint8Array(original.subarray(0, 64)));
+      await expect(client.rest!.sessions.media('wrong-session', fileId)).rejects.toThrow();
+      await expect(client.rest!.sessions.media('fixture-session', fileId.replace('child:', 'other:'))).rejects.toThrow();
+      await expect(client.rest!.sessions.media('fixture-session', 'inline-content:child:invalid:bad')).rejects.toThrow();
+      changed = true;
+      await expect(client.rest!.sessions.media('fixture-session', fileId)).rejects.toThrow();
+    } finally { await client.close(); }
+  });
+
   it('reads the complete 70-KiB-key tool original as a real HTTP file without rebuilding an object in the GUI, and rejects a changed revision', async () => {
     const output = { ['key'.repeat(Math.ceil(70 * 1024 / 3))]: { text: 'Original 正文😀' } };
     const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', turnId: 't1', stepId: 's1', ordinal: 1, state: 'completed', frames: [{ kind: 'tool', frameId: 'f1', name: 'Read', toolCallId: 'call1', state: 'done', output }] }] });
     const transcript = new AgentTranscript('main');
     transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } }]);
-    const service = { forSessionLive: (id: string) => id === 'fixture-session' ? { getAgent: () => transcript } : undefined, whenReady: async () => {}, ensureAgentHistory: async () => transcript, readColdSnapshot: async () => undefined } as unknown as TranscriptService;
+    const service = { forSessionLive: (id: string) => id === 'fixture-session' ? { getAgent: () => transcript } : undefined, whenReady: async () => {}, ensureAgentHistory: async () => transcript, readColdSnapshot: async () => undefined,
+      readCanonicalEntity: async (id: string, agent: string, source: { id: string; turnId?: string; stepId?: string }) => id === 'fixture-session' && agent === 'main'
+        ? transcript.getTurn(source.turnId ?? '')?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id) : undefined,
+    } as unknown as TranscriptService;
     const frame = turn.steps[0]!.frames[0]!;
     const preview = boundedEntity(frame, { kind: 'frame', id: 'f1', turnId: 't1', stepId: 's1' });
     const ref = preview.contentRefs![0]!;
@@ -87,17 +356,36 @@ describe('canonical inline media original', () => {
 
   it('preserves percent-encoded binary data, UTF-8 text, whitespace/unpadded base64, and malformed-source failure', async () => {
     for (const [url, expected] of [
-      ['data:image/png,%89PNG%0D%0A%1A%0A', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])],
+      ['data:application/octet-stream,%89PNG%0D%0A%1A%0A', Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])],
       ['data:text/plain;charset=utf-8,中文%20text', Buffer.from('中文 text')],
       ['data:application/octet-stream;base64,Z m\n8', Buffer.from('fo')],
       ['data:application/octet-stream;base64,Zg%3D%3D', Buffer.from('f')],
     ] as const) {
-      const file = inlineMediaFile({ attachmentId: 'isolated', mediaType: 'application/octet-stream', source: { kind: 'url', url } })!;
+      const file = (await inlineMediaFile({ attachmentId: 'isolated', mediaType: 'application/octet-stream', source: { kind: 'url', url } }))!;
       const chunks: Uint8Array[] = [];
       for await (const chunk of file.stream()) chunks.push(chunk);
       expect(Buffer.concat(chunks)).toEqual(expected);
       expect(file.size).toBe(expected.byteLength);
     }
-    expect(inlineMediaFile({ attachmentId: 'invalid', mediaType: 'image/png', source: { kind: 'url', url: 'data:image/png;base64,invalid!' } })).toBeUndefined();
+    expect(await inlineMediaFile({ attachmentId: 'invalid', mediaType: 'image/png', source: { kind: 'url', url: 'data:image/png;base64,invalid!' } })).toBeUndefined();
+  });
+
+  it('rejects the 1044-character truncated PNG while preserving complete unpadded PNG and JPEG original bytes', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { pictures } = await import(fixture);
+    const png: Buffer = pictures[1].bytes;
+    const bad = `data:image/png;base64,${png.toString('base64').slice(0, 1022)}`;
+    expect(bad.length).toBe(1044);
+    expect(await inlineMediaFile({ attachmentId: 'bad', mediaType: 'image/png', source: { kind: 'url', url: bad } })).toBeUndefined();
+    const { compressImageForModel } = await import('@kiki/agent-core-v2/agent/media/image-compress');
+    const jpeg = Buffer.from((await compressImageForModel(png, 'image/png', { maxEdge: 128, byteBudget: 16 * 1024, outputMimes: new Set(['image/jpeg']) })).data);
+    for (const [mime, bytes] of [['image/png', png], ['image/jpeg', jpeg]] as const) {
+      const file = await inlineMediaFile({ attachmentId: mime, mediaType: mime, source: { kind: 'url', url: `data:${mime};base64,${bytes.toString('base64').replace(/=+$/u, '')}` } });
+      expect(file).toBeDefined();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of file!.stream()) chunks.push(chunk);
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+      expect(file!.size).toBe(bytes.length);
+    }
   });
 });

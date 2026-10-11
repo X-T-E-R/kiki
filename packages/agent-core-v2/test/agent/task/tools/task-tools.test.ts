@@ -53,8 +53,8 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 const signal = new AbortController().signal;
 const waitToolDisposables = new DisposableStore();
 
-afterEach(() => {
-  waitToolDisposables.clear();
+afterEach(async () => {
+  await waitToolDisposables.clear();
 });
 
 function createWaitTool(
@@ -195,6 +195,10 @@ class FakeTaskService implements IAgentTaskService {
 
   async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
     return this.getTask(taskId);
+  }
+
+  hasUnfinishedWork(): boolean {
+    return this.list().some((info) => info.lifetime !== 'service');
   }
 
   list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {

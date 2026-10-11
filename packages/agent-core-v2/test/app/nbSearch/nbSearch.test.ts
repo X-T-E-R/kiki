@@ -257,6 +257,7 @@ function stubService(overrides: Partial<INbSearchService> = {}): INbSearchServic
     test: vi.fn().mockResolvedValue(testStatus()),
     keyUsage: vi.fn().mockResolvedValue({ provider_instance_id: 'exa.default', provider_id: 'exa', balance_supported: false, keys: [] }),
     validateConfiguration: vi.fn().mockResolvedValue(undefined),
+    quotaSources: vi.fn().mockResolvedValue([]),
     readManagedCredential: vi.fn().mockResolvedValue(undefined),
     writeManagedCredential: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -539,8 +540,8 @@ describe('NbSearchSourceStore', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.unstubAllEnvs();
   });
 
@@ -845,8 +846,8 @@ describe('NbSearchService', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('lists quota source metadata without creating a runtime and never refreshes an off instance', async () => {
@@ -1240,8 +1241,8 @@ describe('nb-search tool adapters', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exposes an optional lane and forwards an explicit GMA selection', async () => {
@@ -1562,7 +1563,7 @@ describe('NbSearch local CLI credential lane safety', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     vi.unstubAllEnvs();
     await rm(fixture, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });

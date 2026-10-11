@@ -45,6 +45,7 @@ import type {
   FinishReason,
   GenerateOptions,
   ProviderRequestAuth,
+  RawResponseObserver,
   ResponseFormat,
   StreamedMessage,
   ThinkingEffort,
@@ -70,6 +71,7 @@ import {
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
+import { observeResponseFetch } from '../observe-response';
 
 function normalizeAnthropicStopReason(raw: string | null | undefined): {
   finishReason: FinishReason | null;
@@ -1070,7 +1072,7 @@ export class AnthropicChatProvider implements ChatProvider {
       requestOptions['signal'] = options.signal;
     }
     const finalRequestOptions = Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
-    const client = this._createClient(auth);
+    const client = this._createClient(auth, options?.rawResponseObserver);
     options?.onRequestSent?.();
 
     if (this._stream) {
@@ -1154,7 +1156,11 @@ export class AnthropicChatProvider implements ChatProvider {
     return patch;
   }
 
-  private _createClient(auth: ProviderRequestAuth | undefined): Anthropic {
+  private _createClient(auth: ProviderRequestAuth | undefined, observer?: RawResponseObserver): Anthropic {
+    if (observer !== undefined && this._clientFactory === undefined) {
+      return this._buildClient(this._requireApiKey(auth), auth, observer);
+    }
+    if (observer !== undefined) { try { observer.end('unsupported-client-factory'); } catch {} }
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
@@ -1201,13 +1207,14 @@ export class AnthropicChatProvider implements ChatProvider {
     return defaultHeaders;
   }
 
-  private _buildClient(apiKey: string, auth?: ProviderRequestAuth): Anthropic {
+  private _buildClient(apiKey: string, auth?: ProviderRequestAuth, observer?: RawResponseObserver): Anthropic {
+    const fetchImpl = requestIdentityFetchForAuth(auth);
     return new Anthropic({
       apiKey,
       authToken: null,
       baseURL: this._baseUrl ?? null,
       defaultHeaders: this._buildDefaultHeaders(apiKey),
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: observer === undefined ? fetchImpl : observeResponseFetch(fetchImpl, observer),
       maxRetries: 0,
     });
   }

@@ -25,6 +25,8 @@ export const SubagentToolInputSchema = z.preprocess(
   z.object({
     prompt: z.string().describe('Full task prompt for the subagent'),
     description: z.string().describe('Short task description (3-5 words) for UI display'),
+    workDir: z.string().trim().min(1).optional().describe('Admitted absolute working directory for this child. Omit to inherit the parent workspace directory. New-agent only; resume preserves its original roots.'),
+    additionalDirs: z.array(z.string().trim().min(1)).optional().describe('Admitted additional workspace directories for this child. Omit to inherit the parent workspace directories. New-agent only; resume preserves its original roots.'),
     profile: z
       .string()
       .optional()
@@ -106,6 +108,9 @@ export const SubagentToolInputSchema = z.preprocess(
       if (issue !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `name ${issue}`, path: ['name'] });
       }
+    }
+    if (args.resume?.trim() && (args.workDir !== undefined || args.additionalDirs !== undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set workDir or additionalDirs when continuing an existing agent; its workspace roots are fixed at creation.' });
     }
   }),
 );

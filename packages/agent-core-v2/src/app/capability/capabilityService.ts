@@ -173,9 +173,9 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     return this.statusOf(entry);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     for (const active of this.browserInstalls.values()) active.controller.abort();
-    super.dispose();
+    return super.dispose();
   }
 
   private requireEntry(id: string): CapabilityEntry {

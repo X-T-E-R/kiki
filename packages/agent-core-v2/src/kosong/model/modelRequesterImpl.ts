@@ -176,6 +176,7 @@ export class ModelRequesterImpl implements ModelRequester {
         decodeStats = stats;
       },
       onTraceId: params?.onTraceId,
+      rawResponseObserver: params?.rawResponseObserver,
       requestIdentity: params?.requestIdentity,
       responseFormat: input.responseFormat,
     };

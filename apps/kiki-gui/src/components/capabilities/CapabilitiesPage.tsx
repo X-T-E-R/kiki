@@ -12,16 +12,17 @@
  * same views (`CapabilityTabBody`), so there is one implementation of each.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
-import { readLastSessionId } from '@kiki/session-core/settings';
+import { importHistoryPath, pluginSettingsPath, readLastSessionId } from '@kiki/session-core/settings';
+
+import type { PluginUsageTarget } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
-import { isCatalogShelf } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { Icon } from '../icons';
@@ -38,6 +39,7 @@ import { IconButton } from './primitives';
 import { SkillsView } from './SkillsView';
 import { ToolsView } from './ToolsView';
 import { usePluginPanels } from './usePlugins';
+import { panelScopeFrom } from './pluginUsage';
 
 export type CapabilityTab = 'plugins' | 'skills' | 'mcp' | 'tools';
 const TABS: readonly CapabilityTab[] = ['plugins', 'skills', 'mcp', 'tools'];
@@ -53,26 +55,15 @@ export function pluginsRouteFrom(params: URLSearchParams): PluginsRoute {
   const view = params.get('view');
   // `manage` is the retired name of the Installed view; old links still land.
   if (view === 'installed' || view === 'manage') return { view: 'installed' };
-  // Import history is a plugins sub-view, so it deep-links with the rest of them
-  // and keeps the same `?source=` handle a plugin detail uses to hand off.
-  if (view === 'import') {
-    const source = params.get('source');
-    // A source is named by its plugin and its id. A link that carries only the
-    // source id still resolves (the view matches on the id alone); carrying the
-    // plugin too is what makes the link unambiguous when two plugins contribute
-    // the same source name.
-    const plugin = params.get('sourcePlugin');
-    return {
-      view: 'import',
-      ...(source !== null && source !== '' ? { sourceId: source } : {}),
-      ...(plugin !== null && plugin !== '' ? { sourcePluginId: plugin } : {}),
-    };
-  }
+  // Import history used to be a plugins sub-view. It is a built-in session
+  // surface now, so this case resolves to the market it was carved out of and
+  // the redirect below carries the caller to the one address it really has.
+  // `?source=` / `?sourcePlugin=` are dropped with it: the new page lists every
+  // source itself, so a half-carried handle would preselect nothing.
+  if (view === 'import') return { view: 'market' };
   // Media is a plugins sub-view for the same reason import history is: it
   // manages what installed plugin packages can do.
   if (view === 'media') return { view: 'media' };
-  const shelf = params.get('shelf');
-  if (view === 'shelf' && isCatalogShelf(shelf)) return { view: 'shelf', shelf };
   return { view: 'market' };
 }
 
@@ -85,13 +76,7 @@ export function applyPluginsRoute(params: URLSearchParams, route: PluginsRoute):
   next.delete('sourcePlugin');
   if (route.view === 'detail') next.set('plugin', route.id);
   if (route.view === 'installed') next.set('view', 'installed');
-  if (route.view === 'import') {
-    next.set('view', 'import');
-    if (route.sourceId !== undefined) next.set('source', route.sourceId);
-    if (route.sourcePluginId !== undefined) next.set('sourcePlugin', route.sourcePluginId);
-  }
   if (route.view === 'media') next.set('view', 'media');
-  if (route.view === 'shelf') { next.set('view', 'shelf'); next.set('shelf', route.shelf); }
   return next;
 }
 
@@ -158,12 +143,50 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
   const panel = params.get('panel');
   const [panelPluginId, panelId] = panel?.split(':') ?? [];
   const sessionId = params.get('session') ?? readLastSessionId();
+  const panelScope = panelScopeFrom(params);
+
+  // Import history moved to the sessions route, where it belongs: bringing an
+  // old conversation in is a way of working with sessions, and reading it as a
+  // plugin sub-view asked people to install something Kiki already ships. An
+  // old link redirects rather than dead-ends, and Back returns to where it
+  // came from because this is a replace, not a push.
+  useEffect(() => {
+    if (params.get('view') !== 'import') return;
+    const next = new URLSearchParams(params);
+    next.delete('view');
+    next.delete('source');
+    next.delete('sourcePlugin');
+    const query = next.toString();
+    setParams(next, { replace: true });
+    void navigate(`${importHistoryPath()}${query === '' ? '' : `?${query}`}`, { replace: true });
+  }, [params, setParams, navigate]);
 
   const setTab = (next: CapabilityTab) => {
     const updated = applyPluginsRoute(params, { view: 'market' });
     if (next === 'plugins') updated.delete('tab');
     else updated.set('tab', next);
     setParams(updated);
+  };
+  // Focusing a tab that the strip has scrolled past leaves it off screen, and
+  // the browser's own scroll-into-view is not allowed here: it walks up to
+  // whatever ancestor it finds, which would move the page. Moving the strip's
+  // own offset instead is the only scroll this needs. A tab already inside the
+  // strip is left exactly where it is, so pointer and touch panning are
+  // unaffected.
+  const tabStripRef = useRef<HTMLElement>(null);
+  const revealTab = (tab: HTMLElement) => {
+    const strip = tabStripRef.current;
+    if (strip === null) return;
+    const stripBox = strip.getBoundingClientRect();
+    const tabBox = tab.getBoundingClientRect();
+    if (tabBox.left >= stripBox.left && tabBox.right <= stripBox.right) return;
+    // Raising `scrollLeft` moves the content left and lowering it moves the
+    // content right, so the two edges need opposite signs: a tab past the right
+    // edge scrolls forward, a tab past the left edge scrolls back. The
+    // distances are the gap between the tab's edge and the strip's edge, so the
+    // tab lands flush against the edge it came from.
+    if (tabBox.left < stripBox.left) strip.scrollLeft -= stripBox.left - tabBox.left;
+    else strip.scrollLeft += tabBox.right - stripBox.right;
   };
   const setRoute = (next: PluginsRoute) => {
     const updated = applyPluginsRoute(params, next);
@@ -234,13 +257,30 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 MCP) which workspace. Every view below starts at its own
                 switch + search. */}
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-hairline pb-3">
-              <nav aria-label={t('cap.page.tabs')} className="-mb-3 flex min-w-0 items-end gap-5 overflow-x-auto [scrollbar-width:none]" data-capabilities-tab={tab}>
+              {/* `overflow-x` on its own computes `overflow-y` to `auto`, which
+                  turns the strip into a vertical scroll box: the label bleeds
+                  1px below the flex line (`-mb-px`) so its underline lands on
+                  this row's rule, so there is a real 1px overflow to scroll.
+                  Clipping the vertical axis removes the scroll region rather
+                  than hiding its bar, which matters because the inherited
+                  global `scrollbar-width` is unlayered and outranks a
+                  `scrollbar-width: none` utility. The padding gives the clip
+                  box room for the underline and the 4px focus ring, and the
+                  negative margins pay the same room straight back so the row
+                  keeps its spacing and the strip keeps its left edge. */}
+              <nav
+                ref={tabStripRef}
+                aria-label={t('cap.page.tabs')}
+                className="-mx-1 -mt-1 -mb-[17px] flex min-w-0 items-end gap-5 overflow-x-auto overflow-y-clip px-1 pt-1 pb-[5px] [scrollbar-width:none]"
+                data-capabilities-tab={tab}
+              >
                 {TABS.map((value) => (
                   <button
                     key={value}
                     type="button"
                     aria-current={value === tab ? 'page' : undefined}
                     data-segment={value}
+                    onFocus={(event) => { revealTab(event.currentTarget); }}
                     onClick={() => { setTab(value); }}
                     className={`-mb-px shrink-0 border-b-2 pb-2 text-[14px] transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
                       value === tab ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
@@ -275,7 +315,10 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
                 onOpenPanel={openPanel}
                 onOpenPlugin={(id) => { setRoute({ view: 'detail', id }); }}
                 sessionId={sessionId}
-                onOpenSession={(sessionId) => { void navigate(`/s/${sessionId}`); }}
+                onOpenSettings={(id) => { void navigate(pluginSettingsPath(id)); }}
+                onOpenImportHistory={({ source, sourcePlugin }) => {
+                  void navigate(`${importHistoryPath()}?source=${encodeURIComponent(source)}&sourcePlugin=${encodeURIComponent(sourcePlugin)}`);
+                }}
               />
             )}
           </div>
@@ -286,7 +329,7 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
       ) : null}
       {install !== null ? <InstallFlow request={install} onClose={() => { setInstall(null); }} /> : null}
       {panelPluginId !== undefined && panelId !== undefined ? (
-        <PanelSheet pluginId={panelPluginId} panelId={panelId} sessionId={sessionId} onClose={closePanel} />
+        <PanelSheet pluginId={panelPluginId} panelId={panelId} sessionId={panelScope.sessionId} target={panelScope.target} onClose={closePanel} />
       ) : null}
     </MediaPreviewProvider>
   );
@@ -301,8 +344,9 @@ export function CapabilityTabBody({
   workspaceRoot,
   onOpenPanel,
   onOpenPlugin,
-  onOpenSession,
+  onOpenImportHistory,
   sessionId,
+  onOpenSettings,
 }: {
   readonly tab: CapabilityTab;
   readonly route: PluginsRoute;
@@ -311,12 +355,15 @@ export function CapabilityTabBody({
   readonly workspaceRoot?: string;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
   readonly onOpenPlugin?: (pluginId: string) => void;
-  /** Open an imported conversation as a live session, on the session route. */
-  readonly onOpenSession?: (sessionId: string) => void;
+  /** The built-in import-history page; a source plugin hands its source to it. */
+  readonly onOpenImportHistory?: (source: { readonly source: string; readonly sourcePlugin: string }) => void;
   /** Session in focus; the media sub-view lists its jobs. */
   readonly sessionId?: string;
+  /** A plugin's own settings page; the plugins tab links there instead of
+   *  embedding the form, so both surfaces edit the plugin in one place. */
+  readonly onOpenSettings?: (pluginId: string) => void;
 }) {
-  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenSession={onOpenSession} sessionId={sessionId} />;
+  if (tab === 'plugins') return <PluginsView route={route} onRoute={onRoute} workspaceRoot={workspaceRoot} onOpenPanel={onOpenPanel} onOpenImportHistory={onOpenImportHistory} sessionId={sessionId} onOpenSettings={onOpenSettings} />;
   if (tab === 'skills') return <SkillsView workspaceId={workspaceId} onOpenPlugin={onOpenPlugin} />;
   if (tab === 'mcp') return <McpView cwd={workspaceRoot ?? ''} />;
   return <ToolsView />;
@@ -360,14 +407,16 @@ function AddMenu({ onClose, onPick }: { readonly onClose: () => void; readonly o
   );
 }
 
-function PanelSheet({ pluginId, panelId, sessionId, onClose }: {
+function PanelSheet({ pluginId, panelId, sessionId, target, onClose }: {
   readonly pluginId: string;
   readonly panelId: string;
   readonly sessionId?: string;
+  /** The scope the panel is opened for; a workspace panel is served only for it. */
+  readonly target?: PluginUsageTarget;
   readonly onClose: () => void;
 }) {
   const { t } = useI18n();
-  const panels = usePluginPanels();
+  const panels = usePluginPanels(target);
   const label = panels.data?.panels.find((entry) => entry.pluginId === pluginId && entry.id === panelId)?.label ?? panelId;
   return (
     <Dialog
@@ -384,7 +433,7 @@ function PanelSheet({ pluginId, panelId, sessionId, onClose }: {
         <IconButton icon="close" label={t('common.close')} onClick={onClose} />
       </div>
       <div className="min-h-0 flex-1">
-        <PluginPanelHost pluginId={pluginId} panelId={panelId} label={label} sessionId={sessionId} />
+        <PluginPanelHost pluginId={pluginId} panelId={panelId} label={label} sessionId={sessionId} target={target} />
       </div>
     </Dialog>
   );

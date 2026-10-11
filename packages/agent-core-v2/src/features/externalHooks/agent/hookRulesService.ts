@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -20,6 +22,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IHookRulesSession, ISessionHookWorkspace } from '../session/hookRules';
 import { hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
 import { hookPartition, hookStateKey, HookRulesConfigured, HookStepPrepared, HookObserved, semanticRevision, type HookReceipt } from './hookState';
+import { projectHookInspection } from '../internal/inspection';
 import { IAgentHookRules } from './hookRules';
 import { IAgentExternalHooksService } from './agentExternalHooks';
 
@@ -161,7 +164,8 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       }));
     }
     if (this.providerRevision !== snapshot.revision) {
-      this.providers.clear();
+      const previous = this.providers.clear();
+      if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
       for (const rule of snapshot.rules.filter((entry) => entry.rule.event === 'step.before' && entry.rule.action.type === 'inject')) {
         this.providers.add(this.injector.register(`hook_rule/${rule.id}`, () => {
           const current = this.stepEvent;
@@ -176,6 +180,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   }
 
   private receipt(rule: EffectiveHookRule, event: HookEvent): HookReceipt | undefined {
+    if (rule.namespace.startsWith('plugin/') && this.rules.snapshot().rules.find((current) => current.id === rule.id)?.active !== true) return undefined;
     if (!matchesHook(rule, event)) return undefined;
     if (event.executorId !== undefined && event.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(event.event)) return undefined;
     const state = this.states.get(hookStateKey).rules[rule.id];
@@ -212,19 +217,6 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     const snapshot = this.rules.snapshot();
     const binding = this.binding();
     const clock = this.states.get(hookStateKey);
-    return { revision: snapshot.revision, sources: [...snapshot.sources ?? []], diagnostics: [...snapshot.diagnostics], binding: { ...binding, executorId: binding.executorId ?? 'native' }, rules: snapshot.rules.map((rule, order) => {
-      const unsupported = binding.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(rule.rule.event);
-      const cadence = rule.rule.cadence;
-      const stored = clock.rules[rule.id];
-      const state = stored?.semanticHash === rule.semanticHash ? stored : undefined;
-      const bucket = state?.buckets[hookPartition(binding.modelId ?? '', clock.turnId, cadence?.counterScope ?? 'agent')];
-      const reason = rule.reason ?? (unsupported ? 'unsupported_executor' : undefined);
-      return { id: rule.id, path: rule.path, namespace: rule.namespace, event: rule.rule.event, action: { type: rule.rule.action.type }, active: rule.active && !unsupported, reason, order,
-        resetPending: stored !== undefined && state === undefined,
-        semanticRevision: state === undefined ? undefined : semanticRevision(state),
-        completedSteps: bucket?.completed ?? 0,
-        nextDue: cadence === undefined ? undefined : (Math.floor((bucket?.delivered ?? 0) / cadence.everyCompletedSteps) + 1) * cadence.everyCompletedSteps,
-      };
-    }) };
+    return projectHookInspection(snapshot, binding, clock);
   }
 }

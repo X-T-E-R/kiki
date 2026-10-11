@@ -16,7 +16,11 @@ import type { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/con
 import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
 import type { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
-import type { IAgentMcpService } from '@kiki/agent-core-v2/agent/mcp/mcp';
+import type {
+  IAgentMcpService,
+  McpSessionCapability,
+  McpSessionOverride,
+} from '@kiki/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPluginCommandService } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
 import type { IAgentPluginService } from '@kiki/agent-core-v2/agent/plugin/agentPlugin';
 import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
@@ -36,7 +40,7 @@ import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/
 import type { McpServerConfig } from '../../contract/mcp.js';
 import type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 import type { ModelSwitchMode } from '../../contract/agent/modelSwitch.js';
-import type { ScopeRef } from '../channel.js';
+import type { ScopeRef, CallOptions } from '../channel.js';
 import type { ScopedCaller } from './session.js';
 
 export type PromptLaunchResult = Awaited<ReturnType<IAgentPromptService['submit']>>;
@@ -59,6 +63,7 @@ export type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
 export type { AgentTaskInfo } from '../../contract/agent/schemas.js';
 export type McpServerEntry = ReturnType<IAgentMcpService['list']>[number];
+export type { McpSessionCapability, McpSessionOverride } from '@kiki/agent-core-v2/agent/mcp/mcp';
 export type ContextStrategy = ReturnType<IAgentFullCompactionService['getContextStrategy']>['strategy'];
 export type ContextStrategyStatus = ReturnType<IAgentFullCompactionService['getContextStrategy']>;
 
@@ -66,7 +71,7 @@ export interface AgentFacade {
   readonly media: AgentMediaFacade;
   switchModel(input: Parameters<IAgentPromptService['switchModel']>[0]): ReturnType<IAgentPromptService['switchModel']>;
   getModelSwitch(operationId: string): Promise<ReturnType<IAgentPromptService['getModelSwitch']>>;
-  listModelSwitches(): Promise<ReturnType<IAgentPromptService['listModelSwitches']>>;
+  listModelSwitches(options?: CallOptions): Promise<ReturnType<IAgentPromptService['listModelSwitches']>>;
   updateModelSwitch(input: Parameters<IAgentPromptService['switchModel']>[0], expectedRevision?: number): ReturnType<IAgentPromptService['updateModelSwitch']>;
   cancelModelSwitch(operationId: string): ReturnType<IAgentPromptService['cancelModelSwitch']>;
   recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: ModelSwitchMode): ReturnType<IAgentPromptService['recoverModelSwitch']>;
@@ -102,6 +107,8 @@ export interface AgentFacade {
   ): Promise<void>;
   refreshPluginSessionStart(): ReturnType<IAgentPluginService['refreshSessionStart']>;
   cancel(input?: { turnId?: number }): Promise<void>;
+  /** Permanently close this agent's local executor without deleting its history or closing the session. */
+  shutdownExecution(reason?: string): Promise<void>;
   getLoopStatus(): Promise<AgentLoopStatus>;
   runShellCommand(input: { command: string; commandId?: string }): Promise<ShellCommandResult>;
   cancelShellCommand(input: { commandId: string }): Promise<void>;
@@ -154,6 +161,10 @@ export interface AgentFacade {
   getMcpStartupDuration(): Promise<number>;
   reconnectMcpServer(name: string): Promise<void>;
   connectMcpServer(input: { name: string; config: McpServerConfig }): Promise<void>;
+  /** Lists safe configured locators and known local state without connection/auth probes. */
+  listMcpSessionCapabilities(): Promise<readonly McpSessionCapability[]>;
+  /** Changes only this session's persisted selection; resolves config server-side and never accepts credentials. */
+  setMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability>;
   /**
    * Trigger a manual full compaction. Async: `true` means the compaction was
    * started (it runs in the background); `false` means one is already running.
@@ -193,7 +204,7 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     media: createAgentMedia((service, method, args, options) => call(scope, service, method, args, options)),
     switchModel: (input) => call(scope, 'agentPromptService', 'switchModel', [input]) as ReturnType<AgentFacade['switchModel']>,
     getModelSwitch: (id) => call(scope, 'agentPromptService', 'getModelSwitch', [id]) as ReturnType<AgentFacade['getModelSwitch']>,
-    listModelSwitches: () => call(scope, 'agentPromptService', 'listModelSwitches', []) as ReturnType<AgentFacade['listModelSwitches']>,
+    listModelSwitches: (options) => call(scope, 'agentPromptService', 'listModelSwitches', [], options) as ReturnType<AgentFacade['listModelSwitches']>,
     updateModelSwitch: (input, revision) => call(scope, 'agentPromptService', 'updateModelSwitch', revision === undefined ? [input] : [input, revision]) as ReturnType<AgentFacade['updateModelSwitch']>,
     cancelModelSwitch: (id) => call(scope, 'agentPromptService', 'cancelModelSwitch', [id]) as ReturnType<AgentFacade['cancelModelSwitch']>,
     recoverModelSwitch: (id, action, mode) => call(scope, 'agentPromptService', 'recoverModelSwitch', mode === undefined ? [id, action] : [id, action, mode]) as ReturnType<AgentFacade['recoverModelSwitch']>,
@@ -214,6 +225,8 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       // No turnId sends an empty arg list: `[undefined]` would cross the wire
       // as `[null]`, and `cancelFromUser(null)` would not match the active turn.
       call(scope, 'agentLoopService', 'cancelFromUser', input?.turnId === undefined ? [] : [input.turnId]) as Promise<void>,
+    shutdownExecution: (reason) =>
+      call(scope, 'agentExecutionService', 'shutdown', reason === undefined ? [] : [reason]) as Promise<void>,
     getLoopStatus: () =>
       call(scope, 'agentLoopService', 'status', []) as Promise<AgentLoopStatus>,
     runShellCommand: (input) =>
@@ -320,6 +333,10 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentMcpService', 'reconnect', [name]) as Promise<void>,
     connectMcpServer: (input) =>
       call(scope, 'agentMcpService', 'connect', [input.name, input.config]) as Promise<void>,
+    listMcpSessionCapabilities: () =>
+      call(scope, 'agentMcpService', 'listMcpSessionCapabilities', []) as Promise<readonly McpSessionCapability[]>,
+    setMcpSessionOverride: (input) =>
+      call(scope, 'agentMcpService', 'setMcpSessionOverride', [input]) as Promise<McpSessionCapability>,
     compact: (input) =>
       call(scope, 'agentFullCompactionService', 'begin', [
         { source: 'manual', instruction: input?.instruction },

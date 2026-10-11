@@ -1,6 +1,6 @@
 export { installNbSearchWorkerHost, runNbSearchWorkerCommand, NB_SEARCH_WORKER_COMMAND } from '#/nb-search-worker';
 export { KimiHarness } from '#/kimi-harness';
-export type { KimiHarnessRuntimeOptions } from '#/kimi-harness';
+export type { KimiHarnessExitReceipt, KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';

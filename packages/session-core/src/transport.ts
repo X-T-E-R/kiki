@@ -3,6 +3,7 @@ import type {
   ApprovalResolveResult,
   CancelTaskQuery,
   ConfigResponse,
+  CronDeliveryMode,
   DeferredAppendTiming,
   MessageContent,
   PageResponse,
@@ -74,13 +75,13 @@ export const API_CODES = {
 } as const;
 
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
-  '*': 'turn',
+  '*': 'off',
   main: 'delta',
 };
 
 export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
   if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
-  return { '*': 'turn', main: 'off', [focusedAgentId]: 'delta' };
+  return { '*': 'off', main: 'off', [focusedAgentId]: 'delta' };
 }
 
 export interface SearchMessageHit {
@@ -110,11 +111,13 @@ export interface MessageRunOverrides {
 }
 
 export interface EditMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly content: MessageContent[];
   readonly expected_cursor: SessionCursor;
 }
 
 export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly expected_cursor: SessionCursor;
 }
 
@@ -377,16 +380,17 @@ export interface AgentTranscriptStepUsage {
 }
 
 export interface AgentTranscriptTask {
-  readonly thinkingEffort?: string;
-  readonly thinkingEffortExplicit?: boolean;
-  readonly executorId?: string;
-  readonly executorProtocol?: string;
   readonly taskId: string;
   readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
   readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
   readonly detached: boolean;
   readonly name?: string;
   readonly subagentName?: string;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly description?: string;
   readonly command?: string;
   readonly ownerTurnId?: number;
@@ -430,6 +434,8 @@ export interface AgentTranscriptPrompt {
   readonly status: 'running' | 'queued' | 'blocked' | 'completed' | 'failed' | 'aborted';
   readonly userMessageId?: string;
   readonly content?: unknown;
+  readonly originKind?: 'cron_job';
+  readonly originDeliveryMode?: CronDeliveryMode;
   readonly createdAt: string;
   readonly finishedAt?: string;
   readonly queuePosition?: number;
@@ -481,7 +487,9 @@ export interface AgentTranscriptResponse {
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
+  readonly next_cursor?: string;
   readonly coverage?: { readonly kind: 'full' | 'tail' | 'unknown'; readonly hasMoreOlder: boolean };
+  readonly read?: import('@kiki/transcript').TranscriptRead;
   readonly tool_call_count?: number;
   readonly cursor?: { readonly seq: number; readonly epoch?: string };
   readonly interactions?: readonly AgentTranscriptInteraction[];

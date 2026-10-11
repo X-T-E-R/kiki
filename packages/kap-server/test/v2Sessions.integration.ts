@@ -123,6 +123,7 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
       return { items, nextCursor: undefined };
     },
     get: async (id) => summaries.find((summary) => summary.id === id),
+    archiveFamily: async () => [],
     count: async () => summaries.length,
     remove: async () => {},
   };
@@ -581,13 +582,13 @@ describe('server /api/sessions batch archive/restore', () => {
     return (server as RunningServer).core.accessor;
   }
 
-  function collectEvents(): { events: Event2[]; dispose(): void } {
+  function collectEvents(): { events: Event2[]; dispose(): Promise<void> } {
     const events: Event2[] = [];
     const sub = core().get(IEventService).subscribe((event) => events.push(event));
     return {
       events,
-      dispose: () => {
-        sub.dispose();
+      dispose: async () => {
+        await sub.dispose();
       },
     };
   }
@@ -669,7 +670,7 @@ describe('server /api/sessions batch archive/restore', () => {
           payload: (event as { readonly payload?: unknown }).payload,
         })),
     ).toEqual([{ type: 'event.session.archived', payload: { sessionId: created.id } }]);
-    dispose();
+    await dispose();
   });
 
   it('archives a live session through the full lifecycle chain', async () => {
@@ -691,7 +692,7 @@ describe('server /api/sessions batch archive/restore', () => {
       ),
     ).toBe(true);
     expect(await indexArchived(created.id)).toBe(true);
-    dispose();
+    await dispose();
   });
 
   it('settles an in-flight resume before classifying (no cold-write race)', async () => {
@@ -758,7 +759,7 @@ describe('server /api/sessions batch archive/restore', () => {
     expect(await indexArchived(created.id)).toBe(false);
     expect(await listedIds()).toEqual([created.id]);
     expect(events.filter((event) => event.type === 'event.session.archived')).toEqual([]);
-    dispose();
+    await dispose();
   });
 
   it('restores a live session through the lifecycle chain and keeps it live', async () => {

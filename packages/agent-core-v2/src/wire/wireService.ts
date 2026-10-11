@@ -60,6 +60,11 @@ export class WireService extends Service implements IWireService {
   private epochExpectedHash: Hash | undefined;
   private epochExpectedSize = 0;
   private verifiedAcceptedRecords = -1;
+  private transcriptVerification: {
+    readonly epoch: WireTranscriptReceipt;
+    readonly accepted: number;
+    readonly promise: Promise<boolean>;
+  } | undefined;
 
   constructor(
     @IAgentScopeContext scopeContext: IAgentScopeContext,
@@ -156,9 +161,21 @@ export class WireService extends Service implements IWireService {
 
   async verifyTranscriptLiveEpoch(): Promise<boolean> {
     const epoch = this.transcriptEpoch;
-    this.verifiedAcceptedRecords = -1;
     if (epoch?.state !== 'open' || !epoch.trusted || this.persistFailure !== undefined) return false;
     const accepted = this.epochAcceptedRecords;
+    const pending = this.transcriptVerification;
+    if (pending?.epoch === epoch && pending.accepted === accepted) return pending.promise;
+    this.verifiedAcceptedRecords = -1;
+    const verification = { epoch, accepted, promise: this.verifyTranscriptFence(epoch, accepted) };
+    this.transcriptVerification = verification;
+    try {
+      return await verification.promise;
+    } finally {
+      if (this.transcriptVerification === verification) this.transcriptVerification = undefined;
+    }
+  }
+
+  private async verifyTranscriptFence(epoch: WireTranscriptReceipt, accepted: number): Promise<boolean> {
     await this.flush();
     const stored = await this.storage.read(this.wireScope, WIRE_TRANSCRIPT_RECEIPT_KEY);
     if (stored === undefined || Buffer.from(stored).toString('utf8') !== JSON.stringify(epoch)) return false;
@@ -168,7 +185,9 @@ export class WireService extends Service implements IWireService {
       digest.lines === this.epochBaselineLines + accepted &&
       this.epochExpectedHash !== undefined && digest.size === this.epochExpectedSize &&
       digest.sha256 === this.epochExpectedHash.copy().digest('hex');
-    this.verifiedAcceptedRecords = verified ? accepted : -1;
+    if (this.transcriptEpoch === epoch && this.epochAcceptedRecords === accepted) {
+      this.verifiedAcceptedRecords = verified ? accepted : -1;
+    }
     return verified;
   }
 

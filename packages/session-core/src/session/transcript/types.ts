@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  CronDeliveryMode,
   DeferredAppendTiming,
   GoalSnapshot,
   Message,
@@ -23,6 +24,7 @@ import type { ContextBreakdown, WireTokenUsage } from '../../wire';
 
 export interface UserBlock {
   readonly kind: 'user';
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly contentSource?: import('@kiki/transcript').ContentSource;
   readonly id: string;
   readonly text: string;
@@ -97,6 +99,7 @@ export interface SystemReminderBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly variant?: string;
+  readonly ownerPromptId?: string;
   readonly disclosure?: unknown;
   /** The reminder's category and trigger facts, when its disclosure carries a known kind. */
   readonly category?: ReminderCategory;
@@ -131,6 +134,7 @@ export interface SystemBlock {
   readonly createdAt: string | undefined;
   readonly turnId?: string;
   readonly source?: string;
+  readonly ownerPromptId?: string;
   /** Task notifications: the background task the note is about. */
   readonly taskId?: string;
   /** Hook results: the event that produced it (`kiki:<harness>:<event>` for Kiki's own hooks). */
@@ -195,6 +199,14 @@ export interface ToolBlock {
   readonly description: string | undefined;
   readonly status: ToolStatus;
   readonly output: unknown;
+  /**
+   * Media this call produced, taken from the frame's canonical attachment
+   * references. An external harness reports its result bodies as attachment
+   * ids rather than inline parts, so without this the timeline can only show
+   * the placeholder text. Read through the same session-media path the
+   * attachment's own preview uses.
+   */
+  readonly media?: readonly MediaRef[];
   readonly isError: boolean | undefined;
   /** Stable reason for a failure the engine reported, e.g. `codex_mcp_approval_denied`. */
   readonly errorCode?: string;
@@ -374,6 +386,7 @@ export interface SubagentEventBlock {
 }
 
 export interface NoticeBlock {
+  readonly goalChange?: import('@kiki/transcript').GoalMarkerChange;
   readonly compactionPhase?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   readonly compactionFailure?: string;
   readonly compactionHistory?: readonly {
@@ -384,6 +397,7 @@ export interface NoticeBlock {
     readonly reasonCodes?: readonly string[];
   }[];
   readonly modelSwitch?: {
+    readonly change?: 'model' | 'context' | 'effort' | 'resume' | 'binding';
     readonly operationId: string;
     readonly mode: 'direct' | 'compact' | 'fresh';
     readonly state: 'pending' | 'preparing' | 'completed' | 'failed' | 'cancelled';
@@ -404,7 +418,11 @@ export interface NoticeBlock {
   readonly markerRepeatCount?: number;
   /** External-engine runtime fact the GUI renders as a quiet in-turn note, not a divider. */
   readonly executor?: ExecutorNote;
-  /** Text saved into the session by an external client. */
+  /**
+   * Text an external client saved into this session (`external.text`). It is
+   * the client's own record, never a `user`/`assistant` turn, so it keeps its
+   * kind and source instead of borrowing the role it is not.
+   */
   readonly externalText?: ExternalTextNote;
   /**
    * Set on the single `notice-prompt-outcomes-earlier` row: settled prompts
@@ -412,20 +430,6 @@ export interface NoticeBlock {
    */
   readonly earlierPromptOutcomes?: readonly EarlierPromptOutcome[];
 }
-
-export type ExternalTextNote = {
-  readonly recordId: string;
-  readonly markerId: string;
-  readonly kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
-  readonly title?: string;
-  readonly text: string;
-  readonly source: {
-    readonly connectionId: string;
-    readonly clientName: string;
-    readonly sessionRef: string;
-  };
-  readonly sourceUrl?: string;
-};
 
 /**
  * External-engine records carried by a notice: a prompt-delivery status
@@ -441,9 +445,25 @@ export type ExecutorNote =
     }
   | { readonly kind: 'compaction' }
   | { readonly kind: 'diff'; readonly diff: string }
-  | { readonly kind: 'unknown'; readonly updateType?: string }
-  | { readonly kind: 'usage'; readonly used: number; readonly size?: number }
+  | { readonly kind: 'unknown'; readonly updateType?: string; readonly method?: string; readonly payload?: unknown }
   | {
+      /**
+       * The engine's own context accounting for its turn
+       * (`executor.runtime.update` kind `usage`). It stays inside the engine's
+       * turn and is labelled as the engine's, because the numbers describe the
+       * engine's window, not Kiki's.
+       */
+      readonly kind: 'usage';
+      readonly used: number;
+      readonly size?: number;
+    }
+  | {
+      /**
+       * A session fact the engine reported that nothing else in the UI carries:
+       * the identity it is actually running, or an image it dropped instead of
+       * sending on. `observed` is the engine's own report — shown as what the
+       * engine is running, never written back as a Kiki model choice.
+       */
       readonly kind: 'session';
       readonly observed?: {
         readonly source?: string;
@@ -456,6 +476,36 @@ export type ExecutorNote =
         readonly notes?: readonly string[];
       };
     };
+
+/**
+ * A text record an external client saved on purpose. `kind` is the client's
+ * own claim about what the text is — a `user_excerpt` is the client handing
+ * over what the user said there, never the user speaking in this session —
+ * and `source` keeps the record attributable when the session outlives the
+ * connection.
+ */
+export type ExternalTextNote = {
+  readonly recordId: string;
+  /**
+   * The transcript marker's own id, exactly as the store holds it — not the
+   * `agent-marker-…` display id derived from it. A long body is read back
+   * through a content ref addressed to this id, and the server rejects
+   * anything that is not the real marker.
+   */
+  readonly markerId: string;
+  readonly kind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+  readonly text: string;
+  readonly title?: string;
+  readonly sourceUrl?: string;
+  readonly clientTime?: string;
+  readonly source: {
+    readonly driver: 'external';
+    readonly connectionId: string;
+    readonly clientName: string;
+    readonly sessionRef: string;
+  };
+  readonly turn?: number;
+};
 
 export interface ApprovalResolution {
   readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';
@@ -638,6 +688,7 @@ export interface SessionViewState {
    * open. Never used to invent cards that are not on the current page.
    */
   readonly snapshotSubagents: readonly SnapshotSubagent[];
+  readonly agentCounts?: import('@kiki/protocol').SessionAgentCounts;
   /**
    * How much of each global collection the last windowed reset carried.
    * Undefined for servers that send the full collections.
@@ -735,8 +786,16 @@ export interface FloorEntry {
 }
 
 export interface QueuedPromptMeta {
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly appendTiming: DeferredAppendTiming;
   readonly revision?: number;
+  readonly originKind?: 'cron_job';
+  readonly content?: Message['content'];
+  /**
+   * The scheduled origin's delivery mode. Absent on records the server
+   * admitted before modes existed; those stay ordinary FIFO.
+   */
+  readonly cronDeliveryMode?: CronDeliveryMode;
   /**
    * The engine's shared queue-order slot (model-switch control items occupy
    * slots in the same sequence). Absent for locally echoed prompts that the
@@ -746,8 +805,12 @@ export interface QueuedPromptMeta {
 }
 
 export interface QueuedPromptPreview {
+  readonly runtimeControls?: import('@kiki/transcript').TranscriptPromptRuntimeControls;
   readonly promptId: string;
   readonly text: string;
+  readonly originKind?: 'cron_job';
+  /** Scheduled delivery mode; absent on a legacy cron record, which reads FIFO. */
+  readonly cronDeliveryMode?: CronDeliveryMode;
   readonly media?: readonly MediaRef[];
   readonly content?: Message['content'];
   /** Effective append timing; absent on older servers, displays as agent_idle. */

@@ -10,6 +10,7 @@ export {
   HTTP_TRANSPORT_TIMEOUT_REASON,
   HttpChannel,
   type HttpChannelOptions,
+  type HttpTimeoutDetails,
   type HttpSocketCloseCause,
   type HttpSocketDiagnostic,
 } from './channel.js';

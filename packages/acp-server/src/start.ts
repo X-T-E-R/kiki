@@ -134,7 +134,7 @@ export async function runAcpServerWithStream(
       );
     }
   } catch (error) {
-    core.dispose();
+    await core.dispose();
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
     await drainSessionMetadataWrites();
@@ -227,7 +227,7 @@ export async function runAcpServerWithStream(
       await drainSessionMetadataWrites();
       await core.accessor.get(ISessionIndexMirror).drain();
       await acpProviderRegistration.dispose();
-      core.dispose();
+      await core.dispose();
       // `core.dispose()` runs the mirror's and the query store's synchronous
       // `dispose()`, whose drains/closes are asynchronous — await them so an
       // embedding host that removes homeDir right after close() never races

@@ -16,7 +16,7 @@ export const SettingsFlashContext = createContext<string | null>(null);
  */
 export const SettingsCardMountContext = createContext<((id: string) => void) | null>(null);
 
-export type PanelScope = 'app' | 'server' | 'workspace' | 'readOnly';
+export type PanelScope = 'app' | 'server' | 'workspace' | 'space' | 'readOnly';
 
 /**
  * The scope the page header already announces. A panel writing to the same
@@ -28,6 +28,7 @@ export const SettingsPageScopeContext = createContext<PanelScope | null>(null);
 export function scopeLabelKey(scope: PanelScope): I18nKey {
   return scope === 'app' ? 'st.scope.device'
     : scope === 'readOnly' ? 'st.scope.diagnostic'
+    : scope === 'space' ? 'st.scope.space'
     : scope === 'workspace' ? 'st.scope.workspace'
     : 'st.scope.connectedServer';
 }

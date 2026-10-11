@@ -58,6 +58,7 @@ export interface ProgramDependencies {
   readonly oauth: McpOAuthService;
   readonly configStore: IMcpConfigStore;
   readonly plugins: IPluginService;
+  readonly pluginUsage?: import('#/app/pluginUsage/pluginUsage').IPluginUsageService;
   readonly sessionManager: LiveRef<ISessionManager>;
   readonly agentProfiles: IAgentProfileRegistry;
   readonly agentExecutors: IAgentExecutorRegistry;

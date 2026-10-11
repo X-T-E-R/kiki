@@ -99,6 +99,15 @@ describe('ThreadRefText', () => {
     expect(container.querySelector('[data-where]')?.textContent).toBe(href);
   });
 
+  it('preserves a linked room subroute, query and hash when it opens the chip', async () => {
+    const href = '/rooms/room_1/members?tab=all#top';
+    const container = await render(`open ${href}`, []);
+    const chip = container.querySelector<HTMLAnchorElement>('[data-room-ref-chip="room_1"]')!;
+    expect(chip.getAttribute('href')).toBe(href);
+    await act(async () => { chip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); });
+    expect(container.querySelector('[data-where]')?.textContent).toBe(href);
+  });
+
   it('labels an untitled or unknown thread with its short id', async () => {
     const container = await render(`kiki://s/${ID}`, []);
     const chip = container.querySelector(`[data-thread-ref-chip="${ID}"]`)!;

@@ -1,6 +1,11 @@
 import { createHmac, randomBytes } from 'node:crypto';
 
-import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import {
+  auth,
+  discoverAuthorizationServerMetadata,
+  discoverOAuthServerInfo,
+  type OAuthClientProvider,
+} from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 
 import type { ILogger as Logger } from '#/_base/log/log';
@@ -508,9 +513,12 @@ export class McpOAuthService {
         }
       });
       try {
+        const fetchFn = this.authFetch(provider, [signal]);
+        const scope = await this.resolveRequestScope(provider, serverUrl, fetchFn);
         const result = await auth(provider as OAuthClientProvider, {
           serverUrl,
-          fetchFn: this.authFetch(provider, [signal]),
+          fetchFn,
+          scope,
         });
         if (result !== 'REDIRECT') {
           await callbackServer.close();
@@ -641,6 +649,36 @@ export class McpOAuthService {
     scope: 'all' | 'client' | 'tokens' | 'discovery' = 'all',
   ): Promise<void> {
     return this.getProvider(serverName, serverUrl).clearCredentials(scope);
+  }
+
+  private async resolveRequestScope(
+    provider: McpOAuthClientProvider,
+    serverUrl: string | URL,
+    fetchFn: typeof fetch,
+  ): Promise<string | undefined> {
+    let discovery = await provider.discoveryState();
+    if (discovery?.authorizationServerMetadata === undefined) {
+      try {
+        discovery = discovery?.authorizationServerUrl === undefined
+          ? await discoverOAuthServerInfo(serverUrl, {
+              resourceMetadataUrl: discovery?.resourceMetadataUrl === undefined ? undefined : new URL(discovery.resourceMetadataUrl),
+              fetchFn,
+            })
+          : {
+              ...discovery,
+              authorizationServerMetadata: await discoverAuthorizationServerMetadata(discovery.authorizationServerUrl, { fetchFn }),
+            };
+        await provider.saveDiscoveryState(discovery);
+      } catch {
+        return undefined;
+      }
+    }
+    if (!discovery.authorizationServerMetadata?.scopes_supported?.includes('offline_access')) return undefined;
+    const resourceScopes = discovery.resourceMetadata?.scopes_supported;
+    const scopes = resourceScopes !== undefined && resourceScopes.length > 0 ? resourceScopes :
+      provider.clientMetadata.scope?.split(/\s+/).filter(Boolean) ?? [];
+    if (scopes.includes('offline_access')) return undefined;
+    return [...scopes, 'offline_access'].join(' ');
   }
 
   invalidateTokensIfCurrent(

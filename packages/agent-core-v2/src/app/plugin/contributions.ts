@@ -101,6 +101,9 @@ export type PluginPanel = z.infer<typeof panelContributionSchema> & { readonly f
 export type PluginDeclarativeCommand = z.infer<typeof commandContributionSchema>;
 export type PluginSettings = z.infer<typeof settingsContributionSchema>;
 
+export const mediaSourceGroupSchema = z.object({ id: slug, label: z.string().min(1), providerIds: z.array(slug).min(1), settingsPrefix: z.string().regex(/^[a-z0-9]+__$/), legacyPluginId: z.string().optional(), required: z.array(z.string()).default([]) }).strict();
+export type PluginMediaSourceGroup = z.infer<typeof mediaSourceGroupSchema>;
+
 export interface PluginExtension {
   readonly engines?: { readonly kiki: string };
   readonly permissions?: PluginPermissions;
@@ -109,6 +112,8 @@ export interface PluginExtension {
   readonly tools?: readonly PluginTool[];
   readonly sessionSources?: readonly SessionSourceDefinition[];
   readonly mediaProviders?: readonly MediaProviderDefinition[];
+  readonly mediaSources?: readonly PluginMediaSourceGroup[];
+  readonly mediaScriptProvider?: string;
   readonly panels?: readonly PluginPanel[];
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
@@ -135,7 +140,9 @@ export async function parsePluginExtension(
     providerPresets: z.array(providerPresetSchema).optional(),
     tools: z.array(toolContributionSchema).optional(),
     sessionSources: z.array(sessionSourceDefinitionSchema).max(20).optional(),
-    mediaProviders: z.array(mediaProviderDefinitionSchema).max(20).optional(),
+    mediaProviders: z.array(mediaProviderDefinitionSchema).max(1000).optional(),
+    mediaSources: z.array(mediaSourceGroupSchema).max(1000).optional(),
+    mediaScriptProvider: slug.optional(),
     panels: z.array(panelContributionSchema).optional(),
     commands: z.array(commandContributionSchema).optional(),
     entry: z.string().startsWith('./').optional(),
@@ -172,6 +179,13 @@ export async function parsePluginExtension(
       diagnostics.push({ severity: 'error', message: `Media provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }
+  const groups = value.mediaSources ?? [];
+  const groupedIds = groups.flatMap((group) => group.providerIds);
+  if (new Set(groups.map((group) => group.id)).size !== groups.length || new Set(groups.map((group) => group.settingsPrefix)).size !== groups.length || new Set(groupedIds).size !== groupedIds.length || groupedIds.some((id) => !value.mediaProviders?.some((provider) => provider.id === id))) diagnostics.push({ severity: 'error', message: 'Media source groups require unique ids, prefixes and declared providers' });
+  for (const group of groups) {
+    if (group.required.some((key) => value.settings?.schema.properties[group.settingsPrefix + key] === undefined)) diagnostics.push({ severity: 'error', message: `Media source ${group.id} required settings must be declared` });
+  }
+  if (value.mediaScriptProvider !== undefined && (!value.mediaProviders?.some((provider) => provider.id === value.mediaScriptProvider) || value.settings?.schema.properties['scriptSources']?.type !== 'string')) diagnostics.push({ severity: 'error', message: 'Media scripts require a declared provider and scriptSources string setting' });
   const resolvedEntry = value.entry === undefined ? undefined : await safePluginFile(root, value.entry);
   if (value.entry !== undefined && resolvedEntry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry must be an existing file inside the plugin' });
@@ -222,6 +236,8 @@ export async function parsePluginExtension(
     tools: value.tools,
     sessionSources: value.sessionSources,
     mediaProviders: value.mediaProviders,
+    mediaSources: value.mediaSources,
+    mediaScriptProvider: value.mediaScriptProvider,
     panels,
     commands: value.commands,
     entry: resolvedEntry,

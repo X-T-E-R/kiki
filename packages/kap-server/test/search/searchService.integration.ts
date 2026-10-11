@@ -14,6 +14,7 @@ import type {
   SessionSummary,
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { MiniDb } from '@kiki/minidb';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +68,7 @@ function makeSessionIndex(
     status: () => status,
     listRecent: list,
     get: async () => undefined,
+    archiveFamily: async () => [],
     count: async () => 0,
     remove: async () => {},
   };
@@ -141,7 +143,7 @@ async function writeTitle(
 ): Promise<void> {
   const dir = join(home, 'sessions', workspaceId, sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'state.json'), JSON.stringify({ title }), 'utf8');
+  await atomicWrite(join(dir, 'state.json'), JSON.stringify({ title }));
 }
 
 const noopLog = {
@@ -2261,6 +2263,7 @@ describe('GlobalSearchService', () => {
         }),
         listRecent: async () => ({ items: summaries, nextCursor: undefined }),
         get: async (id) => byId.get(id),
+        archiveFamily: async () => [],
         count: async () => summaries.length,
         remove: async () => {},
       };
@@ -2511,6 +2514,41 @@ describe('GlobalSearchService', () => {
         query: 'live-outputneedle', container: { sessionId: 's1' }, role: 'tool', pageSize: 1,
       });
       expect(explicitRole.items[0]?.role).toBe('tool');
+    });
+
+    it('searches real user-origin live steer frames but excludes internal user-role content', async () => {
+      const s1 = summary('s1', 'unrelated title', T1);
+      const store = makeLiveStore('s1');
+      const needle = 'uniquesteerneedle';
+      store.getAgent('main')!.apply([
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'real-steer', role: 'user', origin: { kind: 'user' }, text: needle,
+          delivery: { deliveryId: 'steer-delivery', messageId: 'real-steer', origin: 'user' },
+        } },
+        ...['system_trigger', 'task', 'mailbox', 'injection'].map((kind): TranscriptOperation => ({
+          op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+            kind: 'text', frameId: `internal-${kind}`, role: 'user', origin: { kind }, text: needle,
+          },
+        })),
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'unknown-provenance', role: 'user', text: needle,
+        } },
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'thinking', frameId: 'private-thought', text: needle,
+        } },
+      ]);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      for (const mode of ['terms', 'literal'] as const) {
+        for (const includeToolOutput of [false, true]) {
+          const page = await service.search({ query: needle, mode, includeToolOutput,
+            container: { sessionId: 's1', agentId: 'main' } });
+          expect(page.source).toBe('live');
+          expect(page.items).toHaveLength(1);
+          expect(page.items[0]).toMatchObject({ role: 'user', turn: 0, stepId: 't0.1' });
+          expect(page.items[0]?.snippet).toContain(needle);
+        }
+      }
     });
 
     it('accepts single-character literal queries on the live route', async () => {

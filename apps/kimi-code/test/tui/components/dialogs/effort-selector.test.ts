@@ -13,6 +13,27 @@ function text(component: EffortSelectorComponent, width = 120): string {
 }
 
 describe('EffortSelectorComponent', () => {
+  it('sorts the displayed intensity slots, keeps vendor values and commits the original selection', () => {
+    const efforts = ['high', 'Vendor-ULTRA', 'max', 'low', 'medium', 'xhigh'];
+    const onSelect = vi.fn();
+    const picker = new EffortSelectorComponent({ efforts, currentValue: 'high', onSelect, onCancel: vi.fn() });
+    const row = picker.render(140).map(strip).find((line) => line.includes('[ High ]'))!;
+    const labels = ['Low', 'Vendor-ULTRA', 'Medium', 'High', 'Xhigh', 'Max'];
+    expect(labels.map((label) => row.indexOf(label))).toEqual(labels.map((label) => row.indexOf(label)).toSorted((a, b) => a - b));
+    picker.handleInput('\r');
+    expect(onSelect).toHaveBeenLastCalledWith('high');
+    picker.handleInput(RIGHT);
+    picker.handleInput('\r');
+    expect(onSelect).toHaveBeenLastCalledWith('xhigh');
+    expect(efforts).toEqual(['high', 'Vendor-ULTRA', 'max', 'low', 'medium', 'xhigh']);
+  });
+
+  it('keeps boolean on/off segments in their existing order', () => {
+    const picker = new EffortSelectorComponent({ efforts: ['on', 'off'], currentValue: 'on', onSelect: vi.fn(), onCancel: vi.fn() });
+    const row = picker.render(120).map(strip).find((line) => line.includes('[ On ]'))!;
+    expect(row.indexOf('On')).toBeLessThan(row.indexOf('Off'));
+  });
+
   it('renders efforts as horizontal segments with the active one bracketed', () => {
     const picker = new EffortSelectorComponent({
       efforts: ['off', 'low', 'high', 'max'],

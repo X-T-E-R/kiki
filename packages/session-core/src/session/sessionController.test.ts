@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MessageContent, PromptSubmitResult, Session, SessionSnapshotResponse } from '@kiki/protocol';
@@ -18,7 +20,7 @@ import type { TranscriptEvent } from '@kiki/transcript';
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
-import { ASSISTANT_FRAME_ID, emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
@@ -214,6 +216,47 @@ function fakeAnimationFrames() {
   };
 }
 
+it('publishes resumed model and effort facts to the child state and subscribed forest without a new phase', async () => {
+  const client = { snapshot: vi.fn(async () => snapshot({ subagents: [{
+    id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, session_id: 'session_test', kind: 'subagent',
+    description: 'worker', status: 'running', activity_status: 'running', status_source: 'runtime',
+    model: 'example/old', thinking_effort: 'high', live: true, parent_agent_id: 'main',
+  }] })) };
+  const { scheduler, flushAll } = manualScheduler();
+  const controller = new SessionController(client as unknown as KikiClient, fakeView(client, {}), 'session_test', { scheduler });
+  try {
+    await controller.open();
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 1));
+    controller.handleTranscript(opsEvent('main', spawnChildOps(), 2));
+    controller.handleTranscript(resetEvent(CHILD_AGENT_ID, emptySnapshot({
+      meta: { agent: { model: 'example/old', thinkingEffort: 'high', phase: { kind: 'idle' } } },
+    }), 1));
+    controller.flushFrames();
+    flushAll();
+    const observed: string[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      const node = controller.getForest()?.byId[CHILD_AGENT_ID];
+      observed.push(`${node?.model}:${node?.thinkingEffort}`);
+    });
+    controller.handleTranscript(opsEvent(CHILD_AGENT_ID, [{
+      op: 'meta.merge', meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } },
+    }], 2));
+    controller.flushFrames();
+    flushAll();
+    expect(controller.getAgentState(CHILD_AGENT_ID)).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    expect(observed).toContain('example/new:xhigh');
+    const retained = controller.getForest();
+    controller.handleTranscript(opsEvent(CHILD_AGENT_ID, [{
+      op: 'meta.merge', meta: { agent: { thinkingEffort: 'low' } },
+    }], 3));
+    controller.flushFrames();
+    flushAll();
+    expect(controller.getForest()).not.toBe(retained);
+    expect(observed).toContain('example/new:low');
+    unsubscribe();
+  } finally { controller.close(); }
+});
+
 function visibilityDocument(initial: 'hidden' | 'visible') {
   const target = new EventTarget() as EventTarget & { readonly visibilityState: string };
   let visibilityState = initial;
@@ -366,6 +409,184 @@ describe('SessionController prompt runtime projection', () => {
 });
 
 describe('SessionController pipeline', () => {
+  it('keeps the shell snapshot separate from transcript readiness before sending', async () => {
+    const client = {
+      snapshot: vi.fn(async () => snapshot()),
+      submitPrompt: vi.fn(async () => ({
+        prompt_id: 'p-ready', user_message_id: 'm-ready', status: 'running' as const,
+        content: [{ type: 'text' as const, text: 'ready' }], created_at: '2026-01-01T00:00:02.000Z',
+      })),
+    };
+    const controller = new SessionController(
+      client as unknown as KikiClient,
+      fakeView(client, {}),
+      'session_test',
+    );
+
+    await controller.open();
+    expect(controller.getState()).toMatchObject({ loaded: true, transcriptReady: false });
+
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 11));
+    controller.flushFrames();
+    expect(controller.getState().transcriptReady).toBe(true);
+
+    await controller.sendPrompt({ text: 'ready' });
+    expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', expect.objectContaining({
+      content: [{ type: 'text', text: 'ready' }],
+    }));
+
+    await controller.resync();
+    expect(controller.getState().transcriptReady).toBe(false);
+    controller.handleTranscript(resetEvent('main', emptySnapshot(), 12));
+    controller.flushFrames();
+    expect(controller.getState().transcriptReady).toBe(true);
+    controller.close();
+  });
+
+  it('records serialized HTTP operation phases before and after the lease gate', async () => {
+    type Stage = { readonly name: string; readonly at: number };
+    type Result = { readonly stages: readonly Stage[]; readonly requests: Readonly<Record<string, number>> };
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    const run = async (preflightBeforeOpen: boolean): Promise<Result> => {
+      const stages: Stage[] = [];
+      const requests: Record<string, number> = {};
+      let operationTail = Promise.resolve();
+      const mark = (name: string) => { stages.push({ name, at: performance.now() }); };
+      const count = (path: string) => { requests[path] = (requests[path] ?? 0) + 1; };
+      const respond = (response: import('node:http').ServerResponse, body: unknown) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(body));
+      };
+      const operate = async (name: string, work: () => Promise<void>): Promise<void> => {
+        const previous = operationTail;
+        let release!: () => void;
+        operationTail = new Promise<void>((resolve) => { release = resolve; });
+        await previous;
+        mark(`${name}:start`);
+        try { await work(); }
+        finally { mark(`${name}:end`); release(); }
+      };
+      const server = createServer((request, response) => {
+        const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+        count(path);
+        request.resume();
+        if (path === '/snapshot') {
+          void operate('snapshot', async () => { await delay(2); respond(response, snapshot()); });
+          return;
+        }
+        if (path === '/auto-compact') {
+          void operate('preflight', async () => { await delay(40); respond(response, { tokens: 80 }); });
+          return;
+        }
+        if (path === '/prompt') {
+          void operate('prompt', async () => {
+            await delay(2);
+            respond(response, {
+              prompt_id: 'http-prompt', user_message_id: 'http-message', status: 'running',
+              content: [{ type: 'text', text: 'http send' }], created_at: '2026-01-01T00:00:02.000Z',
+            });
+          });
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve());
+      });
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('HTTP harness did not bind a port');
+      const endpoint = `http://127.0.0.1:${address.port}`;
+      const requestJson = async (path: string, init: RequestInit = {}): Promise<unknown> => {
+        const response = await fetch(`${endpoint}${path}`, init);
+        if (!response.ok) throw new Error(`HTTP ${response.status} for ${path}`);
+        return response.json();
+      };
+      const scheduled: (() => void)[] = [];
+      const view = {
+        snapshot: async ({ signal }: { signal?: AbortSignal } = {}) =>
+          await requestJson('/snapshot', { signal }) as SessionSnapshotResponse,
+        transcript: {
+          page: async () => { throw new Error('history page is not part of this fixture'); },
+          catchUp: async () => { throw new Error('catch-up is not part of this fixture'); },
+        },
+        subscribe: (_input: unknown, onSignal: Parameters<SessionViewFacade['subscribe']>[1]) => {
+          let closed = false;
+          queueMicrotask(() => {
+            if (closed) return;
+            onSignal({ type: 'transcript', event: resetEvent('main', emptySnapshot(), 11), generation: 0 });
+            onSignal({ type: 'ready', currentSessionCursor: { seq: 10, epoch: 'epoch-1' }, reconnected: false, generation: 0 });
+          });
+          return {
+            updateSessionCursor: () => {}, setTranscriptGrades: () => {}, updateTranscriptCursor: () => {},
+            restart: () => {}, nudge: () => {}, close: () => { closed = true; },
+          };
+        },
+      } as unknown as SessionViewFacade;
+      const transport = {
+        submitPrompt: (_sessionId: string, body: unknown) => requestJson('/prompt', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        }),
+      } as unknown as KikiClient;
+      const controller = new SessionController(transport, view, 'session_test', {
+        scheduler: {
+          schedule: (callback) => { scheduled.push(callback); return callback; },
+          cancel: (handle) => {
+            const index = scheduled.indexOf(handle as () => void);
+            if (index >= 0) scheduled.splice(index, 1);
+          },
+        },
+      });
+      const drain = () => { while (scheduled.length > 0) scheduled.shift()!(); controller.flushFrames(); };
+      try {
+        const started = performance.now();
+        mark('scenario:start');
+        let preflight: Promise<unknown> | undefined;
+        if (preflightBeforeOpen) {
+          preflight = requestJson('/auto-compact');
+          await waitFor(() => stages.some((stage) => stage.name === 'preflight:start'));
+        }
+        await controller.open();
+        mark('shell');
+        mark('send');
+        await controller.sendPrompt({ text: 'http send' });
+        await waitFor(() => { drain(); return controller.getState().transcriptReady; });
+        mark('seed:after-send');
+        if (!preflightBeforeOpen) await requestJson('/auto-compact');
+        await preflight;
+        mark('scenario:end');
+        return { stages: stages.map((stage) => ({ ...stage, at: stage.at - started })), requests };
+      } finally {
+        controller.close();
+        await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+      }
+    };
+
+    const before = await run(true);
+    const after = await run(false);
+    const beforeNames = before.stages.map((stage) => stage.name);
+    const afterNames = after.stages.map((stage) => stage.name);
+    expect(before.requests).toEqual({ '/auto-compact': 1, '/snapshot': 1, '/prompt': 1 });
+    expect(after.requests).toEqual(before.requests);
+    expect(beforeNames).toEqual([
+      'scenario:start', 'preflight:start', 'preflight:end', 'snapshot:start', 'snapshot:end',
+      'shell', 'send', 'prompt:start', 'prompt:end', 'seed:after-send', 'scenario:end',
+    ]);
+    expect(afterNames).toEqual([
+      'scenario:start', 'snapshot:start', 'snapshot:end', 'shell', 'send',
+      'prompt:start', 'prompt:end', 'seed:after-send', 'preflight:start', 'preflight:end', 'scenario:end',
+    ]);
+    const beforeShell = before.stages.find((stage) => stage.name === 'shell')!;
+    const afterShell = after.stages.find((stage) => stage.name === 'shell')!;
+    const beforePreflightEnd = before.stages.find((stage) => stage.name === 'preflight:end')!;
+    const afterPreflightStart = after.stages.find((stage) => stage.name === 'preflight:start')!;
+    expect(beforeShell.at).toBeGreaterThan(beforePreflightEnd.at);
+    expect(afterShell.at).toBeLessThan(afterPreflightStart.at);
+  });
+
   it('aborts the in-flight snapshot when the session closes', async () => {
     let signal: AbortSignal | undefined;
     const view: SessionViewFacade = {
@@ -662,28 +883,28 @@ describe('SessionController pipeline', () => {
     const releaseFirst = controller.subscribeAgent('cold-child', vi.fn());
     await controller.open();
     expect(socket.subscribe).toHaveBeenCalledWith('session_test', expect.any(Object), {
-      '*': 'turn', main: 'delta', 'cold-child': 'turn',
+      '*': 'off', main: 'delta', 'cold-child': 'turn',
     });
     const releaseSecond = controller.subscribeAgent('cold-child', vi.fn());
     expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
     controller.setFocusedAgent('focused-child');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'focused-child': 'delta', 'cold-child': 'turn',
+      '*': 'off', main: 'off', 'focused-child': 'delta', 'cold-child': 'turn',
     });
     releaseFirst();
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(1);
     releaseSecond();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'focused-child': 'delta',
+      '*': 'off', main: 'off', 'focused-child': 'delta',
     });
     const releaseLate = controller.subscribeAgent('late-child', vi.fn());
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'focused-child': 'delta', 'late-child': 'turn',
+      '*': 'off', main: 'off', 'focused-child': 'delta', 'late-child': 'turn',
     });
     controller.setFocusedAgent('late-child');
     releaseLate();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'late-child': 'delta',
+      '*': 'off', main: 'off', 'late-child': 'delta',
     });
     expect(socket.unsubscribe).not.toHaveBeenCalled();
     controller.close();
@@ -703,7 +924,7 @@ describe('SessionController pipeline', () => {
     await opening;
     expect(client.snapshot).toHaveBeenCalledTimes(1);
     expect(socket.subscribe).toHaveBeenCalledExactlyOnceWith('session_test', expect.any(Object), {
-      '*': 'turn', main: 'delta', 'child-1': 'delta',
+      '*': 'off', main: 'delta', 'child-1': 'delta',
     });
     expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
     controller.close();
@@ -730,7 +951,7 @@ describe('SessionController pipeline', () => {
     expect(socket.subscribe).toHaveBeenCalledWith(
       'session_test',
       expect.any(Object),
-      { '*': 'turn', main: 'off', 'child-1': 'delta' },
+      { '*': 'off', main: 'off', 'child-1': 'delta' },
     );
     controller.close();
   });
@@ -803,7 +1024,33 @@ describe('SessionController pipeline', () => {
       await controller.sendPrompt({ promptId: 'captured-x', text: 'X' });
       expect(client.submitPrompt.mock.calls.slice(0, 2).map((call) => call[1].prompt_id)).toEqual(['captured-x', 'captured-x']);
       await controller.sendPrompt({ text: 'Y' });
-      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).toBeUndefined();
+      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).toEqual(expect.any(String));
+      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).not.toBe('captured-x');
+    } finally { controller.close(); }
+  });
+
+  it('preserves captured bundled skills and controls across an unknown response retry', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<PromptSubmitResult>();
+    const content: MessageContent[] = [{ type: 'text', text: 'review this',
+      presentation: { spans: [{ start: 0, end: 6, kind: 'selection', quote: 'review' }] } },
+      { type: 'image', source: { kind: 'url', url: 'https://example.test/review.png' } }];
+    const input = { promptId: 'captured-skill', text: 'review this', content, skills: [{ name: 'review', args: '--fix' }],
+      profile: 'review-profile', execution: { executor: 'native' }, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual' as const, planGate: 'gated' as const, planMode: true };
+    client.submitPrompt.mockReturnValueOnce(held.promise).mockResolvedValue({ prompt_id: input.promptId,
+      user_message_id: input.promptId, status: 'running', content, created_at: '2026-01-01T00:00:02Z' });
+    try {
+      const first = controller.sendPrompt(input);
+      expect(client.submitPrompt.mock.calls[0]![1]).toMatchObject({ prompt_id: 'captured-skill', skills: input.skills,
+        content, profile: 'review-profile', execution: { executor: 'native' }, model: 'selected-model', thinking: 'high' });
+      const failed = expect(first).rejects.toThrow('response unavailable');
+      held.reject(new TypeError('response unavailable'));
+      await failed;
+      await controller.sendPrompt(input);
+      expect(client.submitPrompt.mock.calls[1]![1]).toEqual(client.submitPrompt.mock.calls[0]![1]);
+      await controller.sendPrompt({ text: 'new explicit action' });
+      expect(client.submitPrompt.mock.calls[2]![1].prompt_id).not.toBe(input.promptId);
     } finally { controller.close(); }
   });
 
@@ -1083,7 +1330,7 @@ describe('SessionController message closure', () => {
     expect(socket.subscribe).toHaveBeenLastCalledWith(
       'session_test',
       { seq: 12, epoch: 'epoch-1' },
-      expect.objectContaining({ '*': 'turn', main: 'delta' }),
+      expect.objectContaining({ '*': 'off', main: 'delta' }),
     );
     controller.close();
   });
@@ -1110,6 +1357,7 @@ describe('SessionController message closure', () => {
     const before = calls();
     await controller.editMessage('m-user', { text: 'rewritten' });
     expect(client.editMessage).toHaveBeenCalledWith('session_test', 'm-user', {
+      operation_id: expect.any(String),
       content: [{ type: 'text', text: 'rewritten' }],
       expected_cursor: { seq: 10, epoch: 'epoch-1' },
       model: undefined,
@@ -1129,6 +1377,7 @@ describe('SessionController message closure', () => {
     const before = calls();
     await controller.regenerateMessage('m-assistant');
     expect(client.regenerateMessage).toHaveBeenCalledWith('session_test', 'm-assistant', {
+      operation_id: expect.any(String),
       expected_cursor: { seq: 10, epoch: 'epoch-1' },
       model: undefined,
       thinking: undefined,
@@ -1137,6 +1386,148 @@ describe('SessionController message closure', () => {
       plan_mode: undefined,
     });
     await waitFor(() => calls() > before);
+    controller.close();
+  });
+
+  it('shares one edit flight for concurrent identical clicks', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<PromptSubmitResult>();
+    const receipt: PromptSubmitResult = {
+      prompt_id: 'p-flight', user_message_id: 'm-flight', status: 'running',
+      content: [{ type: 'text', text: 'flight body' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockReturnValueOnce(held.promise);
+    const input = { text: 'flight body' };
+    const first = controller.editMessage('m-user', input);
+    const second = controller.editMessage('m-user', input);
+    await waitFor(() => client.editMessage.mock.calls.length === 1);
+    held.resolve(receipt);
+    await Promise.all([first, second]);
+    expect(client.editMessage).toHaveBeenCalledExactlyOnceWith('session_test', 'm-user', expect.objectContaining({
+      operation_id: expect.any(String),
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+    }));
+    controller.close();
+  });
+
+  it('shares an edit flight and preserves the full operation body after an unknown transport error', async () => {
+    const { controller, client } = await openController();
+    const attachment = { type: 'file' as const, file_id: 'f-retry', name: 'retry.txt', media_type: 'text/plain', size: 4 };
+    const receipt = {
+      prompt_id: 'p-retry', user_message_id: 'm-retry', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'retry body' }, attachment], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockRejectedValueOnce(new TypeError('response body unavailable')).mockResolvedValueOnce(receipt);
+    const input = { text: 'retry body', content: receipt.content };
+
+    await expect(controller.editMessage('m-user', input)).rejects.toThrow('response body unavailable');
+    await controller.editMessage('m-user', input);
+
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody).toEqual({
+      operation_id: expect.any(String),
+      content: receipt.content,
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      model: undefined,
+      thinking: undefined,
+      permission_mode: undefined,
+      plan_gate: undefined,
+      plan_mode: undefined,
+    });
+    expect(secondBody).toEqual(firstBody);
+    controller.close();
+  });
+
+  it('retains a newer edit retry identity when an older overlapping edit is rejected', async () => {
+    const { controller, client } = await openController();
+    const older = deferred<PromptSubmitResult>();
+    const newer = deferred<PromptSubmitResult>();
+    const presentation = { spans: [{ start: 0, end: 7, kind: 'selection' as const, quote: 'context', comment: 'keep' }] };
+    const content = [
+      { type: 'text' as const, text: 'context\nnew body', presentation },
+      { type: 'file' as const, file_id: 'f-overlap', name: 'draft.txt', media_type: 'text/plain', size: 4 },
+      { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/draft.png' }, name: 'draft.png' },
+    ];
+    const receipt: PromptSubmitResult = {
+      prompt_id: 'p-overlap', user_message_id: 'm-user', status: 'running',
+      content, created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise).mockResolvedValueOnce(receipt);
+    const first = controller.editMessage('m-user', { text: 'old body' });
+    const input = { text: 'context\nnew body', content, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual' as const, planMode: true, planGate: 'gated' as const };
+    const second = controller.editMessage('m-user', input);
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody).toEqual({ operation_id: expect.any(String), content,
+      expected_cursor: { seq: 10, epoch: 'epoch-1' }, model: 'selected-model', thinking: 'high',
+      permission_mode: 'manual', plan_mode: true, plan_gate: 'gated' });
+
+    const validation = new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'invalid old content', data: null });
+    const rejectedFirst = expect(first).rejects.toBe(validation);
+    older.reject(validation);
+    await rejectedFirst;
+    const unknown = new TypeError('new response body unavailable');
+    const rejectedSecond = expect(second).rejects.toBe(unknown);
+    newer.reject(unknown);
+    await rejectedSecond;
+
+    await controller.editMessage('m-user', input);
+    expect(client.editMessage).toHaveBeenCalledTimes(3);
+    expect(client.editMessage.mock.calls[2]![2]).toEqual(secondBody);
+    controller.close();
+  });
+
+  it('drops a rejected validation operation so a corrected retry receives a new operation id', async () => {
+    const { controller, client } = await openController();
+    const validation = new ApiError({ code: API_CODES.REQUEST_INVALID, msg: 'invalid content', data: null });
+    const receipt = {
+      prompt_id: 'p-valid', user_message_id: 'm-valid', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'valid retry' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockRejectedValueOnce(validation).mockResolvedValueOnce(receipt);
+    const input = { text: 'valid retry' };
+
+    await expect(controller.editMessage('m-user', input)).rejects.toBe(validation);
+    await controller.editMessage('m-user', input);
+
+    expect(client.editMessage).toHaveBeenCalledTimes(2);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody.expected_cursor).toEqual({ seq: 10, epoch: 'epoch-1' });
+    controller.close();
+  });
+
+  it('assigns a new operation id after the cursor advances for the next rewrite', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const receipt = {
+      prompt_id: 'p-cursor', user_message_id: 'm-cursor', status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'cursor retry' }], created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.editMessage.mockResolvedValue(receipt);
+    const input = { text: 'cursor retry' };
+    await controller.editMessage('m-user', input);
+    await waitFor(() => calls() > 1);
+    const firstBody = client.editMessage.mock.calls[0]![2];
+
+    deliverFrame(controller, frame({ type: 'turn.ended', turnId: 1, reason: 'completed' } as never, { seq: 14 }));
+    await controller.editMessage('m-user', input);
+
+    const secondBody = client.editMessage.mock.calls[1]![2];
+    expect(firstBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).toEqual(expect.any(String));
+    expect(secondBody.operation_id).not.toBe(firstBody.operation_id);
+    expect(secondBody.expected_cursor).toEqual({ seq: 14, epoch: 'epoch-1' });
     controller.close();
   });
 
@@ -1165,6 +1556,7 @@ describe('SessionController message closure', () => {
     expect(socket.updateCursor).toHaveBeenCalledWith('session_test', { seq: 14, epoch: 'epoch-1' });
     await controller.regenerateMessage('m-assistant');
     expect(client.regenerateMessage).toHaveBeenCalledWith('session_test', 'm-assistant', {
+      operation_id: expect.any(String),
       expected_cursor: { seq: 14, epoch: 'epoch-1' },
       model: undefined,
       thinking: undefined,
@@ -1209,7 +1601,7 @@ describe('SessionController transcript authority', () => {
       listTasks: vi.fn(async () => ({ items: [] })),
       getSessionGoal: vi.fn(async () => null),
       listMessages: vi.fn(async () => ({ items: [], has_more: false })),
-      getAgentTranscript: vi.fn(async (): Promise<AgentTranscriptResponse> => ({
+      getAgentTranscript: vi.fn(async (_sessionId: string, _agentId: string, _options: object): Promise<AgentTranscriptResponse> => ({
         agent_id: 'main',
         items: [],
         has_more: false,
@@ -1311,6 +1703,23 @@ describe('SessionController transcript authority', () => {
     retryRelease();
     controller.close();
   });
+
+  async function openEntityController(entities: NonNullable<SessionViewFacade['transcript']['entities']>) {
+    let signal: Parameters<SessionViewFacade['subscribe']>[1] | undefined;
+    const view = {
+      snapshot: vi.fn(async () => snapshot()),
+      transcript: { page: vi.fn(), catchUp: vi.fn(), entities },
+      subscribe: (_input: unknown, onSignal: Parameters<SessionViewFacade['subscribe']>[1]) => {
+        signal = onSignal;
+        return { updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} };
+      },
+    } as unknown as SessionViewFacade;
+    const { scheduler, flushAll } = manualScheduler();
+    const controller = new SessionController({} as KikiClient, view, 'session_test', { scheduler });
+    await controller.open();
+    const deliver = (event: TranscriptEvent) => { signal!({ type: 'transcript', event, generation: 1 }); };
+    return { controller, entities, deliver, flushAll };
+  }
 
   it.each([
     { origin: { kind: 'cron' as const }, promptId: 'p-cron' },
@@ -1437,19 +1846,19 @@ describe('SessionController transcript authority', () => {
     controller.retainAgentView('left', 'child-1', 'delta');
     controller.retainAgentView('right', 'child-2', 'delta');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
+      '*': 'off', main: 'off', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
     });
     controller.releaseAgentView('left');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'off', 'legacy-child': 'delta', 'child-2': 'delta',
+      '*': 'off', main: 'off', 'legacy-child': 'delta', 'child-2': 'delta',
     });
     controller.setFocusedAgent(undefined);
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'child-2': 'delta',
+      '*': 'off', main: 'delta', 'child-2': 'delta',
     });
     controller.updateAgentView('right', 'off');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'child-2': 'off',
+      '*': 'off', main: 'delta', 'child-2': 'off',
     });
     controller.close();
   });
@@ -1471,15 +1880,15 @@ describe('SessionController transcript authority', () => {
     expect(client.getAgentTranscript).not.toHaveBeenCalled();
     controller.retainAgentView('inspector', 'child-1', 'block');
     controller.releaseAgentView('tab');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta', 'child-1': 'block' });
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'off', main: 'delta', 'child-1': 'block' });
     controller.updateAgentView('inspector', 'turn');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta', 'child-1': 'turn' });
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'off', main: 'delta', 'child-1': 'turn' });
     controller.releaseAgentView('inspector');
     const releasedCalls = socket.setTranscriptGrades.mock.calls.length;
     controller.releaseAgentView('inspector');
     controller.updateAgentView('inspector', 'delta');
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(releasedCalls);
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'turn', main: 'delta' });
+    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'off', main: 'delta' });
     controller.close();
   });
 
@@ -1496,7 +1905,7 @@ describe('SessionController transcript authority', () => {
     }
     const grades = socket.setTranscriptGrades.mock.lastCall?.[1] as Record<string, string>;
     expect(Object.entries(grades).filter(([key, grade]) => key.startsWith('child-') && grade === 'off')).toHaveLength(511);
-    expect(grades).toMatchObject({ '*': 'turn', main: 'delta' });
+    expect(grades).toMatchObject({ '*': 'off', main: 'delta' });
     controller.close();
   });
 
@@ -1507,7 +1916,7 @@ describe('SessionController transcript authority', () => {
     controller.retainAgentView('tab', 'child-2', 'block');
     controller.retainAgentView('main-view', 'main', 'off');
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'turn', main: 'delta', 'child-1': 'turn', 'child-2': 'block',
+      '*': 'off', main: 'delta', 'child-1': 'turn', 'child-2': 'block',
     });
     expect(() => controller.retainAgentView('wildcard', '*', 'off')).toThrow('concrete agent ID');
     expect(() => controller.retainAgentView('', 'child-1', 'delta')).toThrow('view ID');
@@ -1569,6 +1978,475 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  const historyTurn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `history-${ordinal}`, ordinal,
+    state: 'completed' as const, origin: { kind: 'user' as const }, prompt: `History ${ordinal}`, steps: [] });
+  const historyTexts = (controller: SessionController) => controller.getState().blocks
+    .filter((block): block is UserBlock => block.kind === 'user').map((block) => block.text);
+  const readHistoryToBoundary = async (controller: SessionController): Promise<void> => {
+    while (controller.getState().hasMoreHistory) {
+      if (!await controller.loadOlderMessages()) break;
+    }
+  };
+
+  it('keeps requested history headers beyond the preview cache budget and restores a visible preview', async () => {
+    const { controller, client } = await openTranscriptController({ historyPreviewBytes: 12000 });
+    const turns = Array.from({ length: 80 }, (_, ordinal) => ({ ...historyTurn(ordinal), prompt: `History ${ordinal} ${'x'.repeat(2000)}`,
+      contentRefs: [{ source: { kind: 'turn' as const, id: `history-${ordinal}` }, path: ['steps', 0, 'frames', 0, 'text'], revision: 'preview', kind: 'text' as const, offset: 2000, total: 4000 }],
+      steps: [{ kind: 'step' as const, stepId: `history-${ordinal}.1`, turnId: `history-${ordinal}`, ordinal: 1, state: 'completed' as const,
+        frames: [{ kind: 'text' as const, frameId: `reply-${ordinal}`, role: 'assistant' as const, text: `Reply ${ordinal} ${'y'.repeat(2000)}` }] }] }));
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-1), olderCursor: '79' }), 1, true));
+    client.getAgentTranscript.mockImplementation(async (_session, _agent, options) => {
+      const input = options as { beforeItem: string };
+      const end = Number(input.beforeItem); const start = Math.max(0, end - 10);
+      return { agent_id: 'main', items: turns.slice(start, end), has_more: start > 0, next_cursor: start > 0 ? String(start) : undefined };
+    });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toHaveLength(80);
+      expect(controller.historyPreviewPending('main', 'history-0')).toBe(true);
+      const before = controller.residentBytes();
+      const releasePreview = controller.retainHistoryPreview('main', 'history-0');
+      try {
+        await waitFor(() => !controller.historyPreviewPending('main', 'history-0'));
+        expect(historyTexts(controller)[0]).toBe(turns[0]!.prompt);
+        expect(controller.getState().blocks.find((block) => block.kind === 'assistant' && block.turnId === 'history-0')).toMatchObject({ text: turns[0]!.steps[0]!.frames[0]!.text });
+        expect(client.getAgentTranscript.mock.calls.length).toBe(9);
+      } finally { releasePreview(); }
+      expect(controller.residentBytes()).toBeLessThan(before + 12000);
+      expect(controller.historyPreviewPending('main', 'history-0')).toBe(true);
+      expect(controller.getState().hasMoreHistory).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it.each([false, true])('recovers an unloaded history preview from stale without repeating its source token (repeat stale: %s)', async (repeatStale) => {
+    const { controller, client } = await openTranscriptController({ historyPreviewBytes: 512 });
+    const target = { ...historyTurn(0), prompt: 'Original preview '.repeat(150), steps: [{ kind: 'step' as const, stepId: 'step-0', turnId: 'history-0', ordinal: 0,
+      state: 'completed' as const, frames: [{ kind: 'text' as const, frameId: 'frame-0', role: 'assistant' as const, text: 'Recorded response '.repeat(150) }] }] };
+    const stale: AgentTranscriptResponse = { agent_id: 'main', items: [], has_more: true,
+      read: { source: 'cold', readiness: 'partial', stale: { reason: 'source_changed', retry: 'authoritative' } } };
+    try {
+      controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'old-live-source-token' }), 1, true));
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [target], has_more: false });
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+      const recovery = deferred<AgentTranscriptResponse>();
+      client.getAgentTranscript.mockResolvedValueOnce(stale).mockImplementationOnce(() => recovery.promise);
+      const release = controller.retainHistoryPreview('main', target.turnId);
+      const loading = controller.loadHistoryPreview('main', target.turnId);
+      await waitFor(() => client.getAgentTranscript.mock.calls.length === 3);
+      const sameFlight = controller.loadHistoryPreview('main', target.turnId);
+      expect(historyTexts(controller)[0]).not.toBe(target.prompt);
+      expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+      recovery.resolve(repeatStale ? stale : {
+        agent_id: 'main', items: [target], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' },
+      });
+      expect(await loading).toBe(!repeatStale);
+      expect(await sameFlight).toBe(!repeatStale);
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'old-live-source-token' });
+      expect(client.getAgentTranscript.mock.calls[2]?.[2]).toMatchObject({ beforeItem: undefined, beforeTurn: 'history-1' });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+      if (repeatStale) {
+        expect(controller.historyPreviewPending('main', target.turnId)).toBe(true);
+        expect(controller.getState().detailLoads['history:history-0']).toEqual({ status: 'error', message: 'History preview continuation is still stale' });
+        client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [target], has_more: false });
+        expect(await controller.loadHistoryPreview('main', target.turnId)).toBe(true);
+        expect(client.getAgentTranscript.mock.calls[3]?.[2]).toMatchObject({ beforeItem: undefined, beforeTurn: 'history-1' });
+      }
+      expect(historyTexts(controller)[0]).toBe(target.prompt);
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant' && block.turnId === target.turnId)).toMatchObject({ text: target.steps[0]!.frames[0]!.text });
+      expect(controller.getState().historyRead).toMatchObject({ source: 'cold', readiness: 'partial' });
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(await controller.loadHistoryPreview('main', target.turnId)).toBe(false);
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(repeatStale ? 4 : 3);
+      release();
+    } finally { controller.close(); }
+  });
+
+  it('reads 1100 turns only on explicit continuation demand while preserving live newest messages', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const turns = Array.from({ length: 1100 }, (_, ordinal) => historyTurn(ordinal));
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-20), olderCursor: '1080' }), 1, true));
+    // The old consumer path leaves only the reset window until scrolling requests a page.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(historyTexts(controller)).toEqual(turns.slice(-20).map((turn) => turn.prompt));
+    expect(client.getAgentTranscript).not.toHaveBeenCalled();
+    client.getAgentTranscript.mockImplementation(async (_session, _agent, options) => {
+      const input = options as { beforeItem: string; pageSize: number };
+      const end = Number(input.beforeItem);
+      const start = Math.max(0, end - input.pageSize);
+      if (end === 1080) {
+        controller.handleTranscript(opsEvent('main', [{ op: 'turn.upsert', turn: historyTurn(1100) }], 2));
+        flushAll();
+      }
+      return { agent_id: 'main', items: turns.slice(start, end), has_more: start > 0,
+        next_cursor: start > 0 ? String(start) : undefined,
+        coverage: start > 0 ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false } };
+    });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual([...turns, historyTurn(1100)].map((turn) => turn.prompt));
+      expect(controller.getState()).toMatchObject({ historyCoverageKind: 'full', loadingOlder: false, olderError: undefined });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(54);
+      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: '1080', pageSize: 20 });
+    } finally { controller.close(); }
+  });
+
+  it('consumes oversized HTTP pages through the real klient decoder and completes ordered history', async () => {
+    const { createKlient } = await import('@kiki/klient/http');
+    const { controller, client } = await openTranscriptController();
+    const turns = Array.from({ length: 240 }, (_, ordinal) => ({ ...historyTurn(ordinal), prompt: `History ${ordinal} ${'界'.repeat(700)}` }));
+    const decodedBytes: number[] = [];
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const input = new URL(String(url));
+      const end = Number(input.searchParams.get('before_item'));
+      const start = Math.max(0, end - 100);
+      const body = JSON.stringify({ code: 0, msg: 'success', request_id: 'history-page', data: {
+        session_id: 'session_test', agent_id: 'main', items: turns.slice(start, end), has_more: start > 0,
+        next_cursor: start > 0 ? String(start) : undefined, transcript_coverage_version: 2,
+        tasks: [], meta: {}, agents: [], pending_interactions: [],
+        coverage: start > 0 ? { kind: 'tail', hasMoreOlder: true } : { kind: 'full', hasMoreOlder: false },
+      } });
+      decodedBytes.push(new TextEncoder().encode(body).byteLength);
+      return new Response(body);
+    });
+    const klient = createKlient({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    const view = fakeView(client, {});
+    const scoped = new SessionController(client as unknown as KikiClient, { ...view, transcript: klient.session('session_test').view.transcript }, 'session_test');
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: turns.slice(-20), olderCursor: '220' }), 1, true));
+    await readHistoryToBoundary(scoped);
+    try {
+      await waitFor(() => !scoped.getState().hasMoreHistory);
+      expect(decodedBytes[0]).toBeGreaterThan(96 * 1024);
+      expect(historyTexts(scoped)).toEqual(turns.map((turn) => turn.prompt));
+      expect(scoped.getState()).toMatchObject({ olderError: undefined, historyCoverageKind: 'full' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally { scoped.close(); controller.close(); await klient.close(); }
+  });
+
+  it('continues a preparing history page without reporting it as a terminal read failure', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    client.getAgentTranscript.mockRejectedValueOnce(new ApiError({ code: 40923, msg: 'Preparing navigation', data: null }));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+    const errors: string[] = [];
+    const unsubscribe = controller.subscribe(() => { if (controller.getState().olderError !== undefined) errors.push(controller.getState().olderError!); });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(errors).toEqual([]);
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
+    } finally { unsubscribe(); controller.close(); }
+  });
+
+  it('keeps a failed page idle until retry demand, then clears its error before continuing', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)] }), 1, true));
+    client.getAgentTranscript.mockRejectedValueOnce(new Error('temporary network failure'));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: true });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false } });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => controller.getState().olderError !== undefined);
+      expect(controller.getState().hasMoreHistory).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+      await readHistoryToBoundary(controller);
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(3);
+      expect(client.getAgentTranscript.mock.calls.map((call) => call[2])).toEqual([
+        expect.objectContaining({ beforeTurn: 'history-2' }),
+        expect.objectContaining({ beforeTurn: 'history-2' }),
+        expect.objectContaining({ beforeTurn: 'history-1' }),
+      ]);
+    } finally { controller.close(); }
+  });
+
+  it('recovers a structured stale page once without discarding history or merging its payload', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'live-bound' }), 1, true));
+    const held = deferred<AgentTranscriptResponse>();
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(99)], has_more: true,
+      read: { source: 'cold', readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } } });
+    client.getAgentTranscript.mockImplementationOnce(() => held.promise);
+    const loading = controller.loadOlderMessages();
+    try {
+      await waitFor(() => client.getAgentTranscript.mock.calls.length === 2);
+      expect(historyTexts(controller)).toEqual(['History 2']);
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeTurn: 'history-2', beforeItem: undefined });
+      held.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' } });
+      await expect(loading).resolves.toBe(true);
+      expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(controller.getState().olderError).toBeUndefined();
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
+    } finally { held.resolve({ agent_id: 'main', items: [], has_more: true }); controller.close(); }
+  });
+
+  it('recovers a structured stale entity cursor without losing prior entities and stops on the server\'s own end', async () => {
+    const prompt = (promptId: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('retained')], has_more: true, next_cursor: 'live-bound' })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('discard-stale')], has_more: true,
+        read: { source: 'cold', readiness: 'partial', stale: { reason: 'source_changed', retry: 'authoritative' } } })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('recovered')], has_more: false, read: { source: 'cold', readiness: 'partial' } });
+    const { controller, deliver } = await openEntityController(entities);
+    try {
+      deliver(resetEvent('main', emptySnapshot(), 1, true));
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(true);
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(true);
+      expect(entities.mock.calls[2]?.[0]).toMatchObject({ cursor: undefined });
+      expect(controller.getState().blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['retained', 'recovered']);
+      // The page says there is no more. A read that was not authoritative is
+      // not a reason to keep a continuation the reader could press forever:
+      // `has_more` is the server's own statement about what is left.
+      expect(controller.getState().globalCoverage?.prompts.hasMore).toBe(false);
+      expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+      expect(entities).toHaveBeenCalledTimes(3);
+      // An exhausted collection parks itself: the next press asks for nothing.
+      expect(await controller.loadTranscriptEntities('main', 'prompt')).toBe(false);
+      expect(entities).toHaveBeenCalledTimes(3);
+    } finally { controller.close(); }
+  });
+
+  it('stops repeated cursors as a retryable error without falsely completing history', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'cursor-2' }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(1)], has_more: true, next_cursor: 'cursor-2' });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => controller.getState().olderError !== undefined);
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      expect(controller.getState()).toMatchObject({ hasMoreHistory: true, loadingOlder: false, olderError: 'History page did not advance its cursor' });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+      await controller.loadOlderMessages();
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2']);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it('retains read windows on same-epoch tail refresh but fills the gap from the new tail cursor', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: '2' }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+    await controller.loadOlderMessages();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(5)], olderCursor: '5' }), 2, true));
+    expect(historyTexts(controller)).toEqual(['History 0', 'History 1', 'History 2', 'History 5']);
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(2), historyTurn(3), historyTurn(4)], has_more: true, next_cursor: '2' });
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0), historyTurn(1)], has_more: false });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(historyTexts(controller)).toEqual(Array.from({ length: 6 }, (_, ordinal) => `History ${ordinal}`));
+      expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: '5' });
+    } finally { controller.close(); }
+  });
+
+  it('keeps a delivered row visible across a bounded same-epoch reset and loads it once from cold tail history', async () => {
+    const deliveredPrompt = {
+      promptId: 'prompt-111', userMessageId: 'user-111', status: 'completed' as const,
+      content: [{ type: 'text' as const, text: 'row 111 full text' }], createdAt: '2026-01-01T00:01:51.000Z',
+      finishedAt: '2026-01-01T00:01:52.000Z',
+    };
+    const deliveredTurn = {
+      kind: 'turn' as const, turnId: 'turn-111', ordinal: 111, state: 'completed' as const,
+      origin: { kind: 'user' as const, payload: { promptId: deliveredPrompt.promptId, userMessageId: deliveredPrompt.userMessageId } },
+      prompt: 'row 111 full text', startedAt: deliveredPrompt.createdAt, endedAt: deliveredPrompt.finishedAt, steps: [],
+    };
+    const tailTurn = (ordinal: 113 | 114) => ({
+      kind: 'turn' as const, turnId: `turn-${ordinal}`, ordinal, state: 'completed' as const,
+      origin: { kind: 'other' as const }, prompt: `tail ${ordinal}`, startedAt: `2026-01-01T00:01:${ordinal}.000Z`, steps: [],
+    });
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [deliveredTurn], prompts: [deliveredPrompt] }), 1, true));
+    expect(historyTexts(controller)).toEqual(['row 111 full text']);
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [tailTurn(113), tailTurn(114)] }), 2, true));
+    expect(historyTexts(controller)).toEqual(['row 111 full text']);
+    controller.close();
+    const cold = await openTranscriptController();
+    cold.controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [tailTurn(113), tailTurn(114)] }), 1, true));
+    cold.client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [deliveredTurn], has_more: false });
+    await expect(cold.controller.loadOlderMessages()).resolves.toBe(true);
+    const users = cold.controller.getState().blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === deliveredPrompt.userMessageId);
+    expect(users).toHaveLength(1);
+    expect(users[0]?.text).toBe('row 111 full text');
+    expect(cold.client.getAgentTranscript).toHaveBeenCalledExactlyOnceWith('session_test', 'main', expect.objectContaining({ beforeTurn: 'turn-113' }));
+    cold.controller.close();
+  });
+
+  it('loads a partial global prompt collection through one entity page without overwriting a live upsert', async () => {
+    const prompt = (promptId: string, text: string) => ({
+      promptId, userMessageId: `user-${promptId}`, status: 'queued' as const,
+      content: [{ type: 'text' as const, text }], createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const initial = Array.from({ length: 8 }, (_, index) => prompt(`p-${index}`, `initial ${index}`));
+    const stale = prompt('p-0', 'stale page text');
+    const page = [stale, ...Array.from({ length: 4 }, (_, index) => prompt(`p-${index + 8}`, `page ${index + 8}`))];
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>();
+    const held = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    entities.mockImplementationOnce(() => held.promise);
+    const { controller, deliver, flushAll } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({
+      prompts: initial,
+      globalCoverage: {
+        version: 1,
+        tasks: { returned: 0, total: 0, hasMore: false },
+        attachments: { returned: 0, total: 0, hasMore: false },
+        prompts: { returned: 8, total: 12, hasMore: true },
+      },
+    }), 1, true));
+    const loading = controller.loadTranscriptEntities('main', 'prompt');
+    expect(entities).toHaveBeenCalledExactlyOnceWith({ agentId: 'main', kind: 'prompt', cursor: undefined, limit: 20 }, { signal: expect.any(AbortSignal) });
+    deliver(opsEvent('main', [{ op: 'prompt.upsert', prompt: prompt('p-0', 'live full text') }], 2));
+    flushAll();
+    held.resolve({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: page, has_more: false, total: 12 });
+    await expect(loading).resolves.toBe(true);
+    expect(controller.getState().globalCoverage?.prompts).toEqual({ returned: 12, total: 12, hasMore: false });
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'live full text')).toBe(true);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'stale page text')).toBe(false);
+    controller.close();
+  });
+
+  it.each([undefined, '', 'same'] as const)('keeps entity pagination retryable after a network failure and rejects %s cursor progress', async (invalidCursor) => {
+    const prompt = (promptId: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const page = (promptId: string, hasMore: boolean, nextCursor?: string) => ({
+      session_id: 'session_test', agent_id: 'main', kind: 'prompt' as const, items: [prompt(promptId)], has_more: hasMore, total: 2,
+      next_cursor: nextCursor,
+    }) as Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>;
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockRejectedValueOnce(new Error('entity network down'));
+    if (invalidCursor === 'same') {
+      entities
+        .mockResolvedValueOnce(page('p-0', true, 'cursor-1'))
+        .mockResolvedValueOnce(page('p-invalid', true, 'cursor-1'))
+        .mockResolvedValueOnce(page('p-recovered', false));
+    } else {
+      entities
+        .mockResolvedValueOnce(page('p-invalid', true, invalidCursor === undefined ? undefined : invalidCursor))
+        .mockResolvedValueOnce(page('p-recovered', false));
+    }
+    const { controller, deliver } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({ prompts: [], globalCoverage: {
+      version: 1,
+      tasks: { returned: 0, total: 0, hasMore: false },
+      attachments: { returned: 0, total: 0, hasMore: false },
+      prompts: { returned: 0, total: 2, hasMore: true },
+    } }), 1, true));
+    await expect(controller.loadTranscriptEntities('main', 'prompt')).resolves.toBe(false);
+    expect(controller.getState().detailLoads['entities:prompt']).toEqual({ status: 'error', message: 'entity network down' });
+    const firstPage = await controller.loadTranscriptEntities('main', 'prompt');
+    let invalidPage = firstPage;
+    if (invalidCursor === 'same') {
+      expect(firstPage).toBe(true);
+      expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+      expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'p-0')).toBe(true);
+      invalidPage = await controller.loadTranscriptEntities('main', 'prompt');
+    }
+    expect(invalidPage).toBe(false);
+    expect(controller.getState().detailLoads['entities:prompt']).toEqual({ status: 'error', message: 'Transcript entity page did not advance its cursor' });
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'p-invalid')).toBe(false);
+    const expectedRetryCursor = invalidCursor === 'same' ? 'cursor-1' : undefined;
+    expect(entities.mock.calls.at(-1)?.[0]).toMatchObject({ cursor: expectedRetryCursor });
+    await expect(controller.loadTranscriptEntities('main', 'prompt')).resolves.toBe(true);
+    expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+    expect(entities.mock.calls.at(-1)?.[0]).toMatchObject({ cursor: expectedRetryCursor });
+    controller.close();
+  });
+
+  it('ignores an old entity page and error after a reset while allowing the new generation to load', async () => {
+    const prompt = (promptId: string, text: string) => ({ promptId, status: 'queued' as const, content: [{ type: 'text' as const, text }], createdAt: '2026-01-01T00:00:00.000Z' });
+    const oldPage = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    const freshPage = deferred<Awaited<ReturnType<NonNullable<SessionViewFacade['transcript']['entities']>>>>();
+    const entities = vi.fn<NonNullable<SessionViewFacade['transcript']['entities']>>()
+      .mockImplementationOnce(() => oldPage.promise)
+      .mockImplementationOnce(() => freshPage.promise);
+    const { controller, deliver } = await openEntityController(entities);
+    deliver(resetEvent('main', emptySnapshot({ prompts: [prompt('old', 'old text')] }), 1, true));
+    const oldLoad = controller.loadTranscriptEntities('main', 'prompt');
+    deliver(resetEvent('main', emptySnapshot({ prompts: [prompt('new', 'new text')] }), 2, true));
+    const freshLoad = controller.loadTranscriptEntities('main', 'prompt');
+    expect(entities).toHaveBeenCalledTimes(2);
+    freshPage.resolve({ session_id: 'session_test', agent_id: 'main', kind: 'prompt', items: [prompt('fresh', 'fresh text')], has_more: false, total: 2 });
+    expect(await freshLoad).toBe(true);
+    oldPage.reject(new Error('old entity network down'));
+    expect(await oldLoad).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'new text')).toBe(true);
+    expect(controller.getState().detailLoads['entities:prompt']).toBeUndefined();
+    controller.close();
+  });
+
+  it('keeps unknown coverage partial after requested pagination reaches its source boundary', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)] }), 1, true));
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+      coverage: { kind: 'unknown', hasMoreOlder: true } });
+    await readHistoryToBoundary(controller);
+    try {
+      await waitFor(() => !controller.getState().hasMoreHistory);
+      expect(controller.getState().historyCoverageKind).toBe('unknown');
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+    } finally { controller.close(); }
+  });
+
+  it.each(['suspend', 'close', 'reset'] as const)('aborts obsolete page HTTP metadata on %s and ignores its late body', async (action) => {
+    const { controller, client } = await openTranscriptController();
+    const held = deferred<AgentTranscriptResponse>();
+    let signal: AbortSignal | undefined;
+    const view = fakeView(client, {});
+    view.transcript.page = async (_input, options) => { signal = options?.signal; return held.promise as ReturnType<SessionViewFacade['transcript']['page']>; };
+    const scoped = new SessionController(client as unknown as KikiClient, view, 'session_test');
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)] }), 1, true));
+    const first = scoped.loadOlderMessages();
+    const second = scoped.loadOlderMessages();
+    try {
+      await waitFor(() => signal !== undefined);
+      expect(signal?.aborted).toBe(false);
+      if (action === 'suspend') scoped.suspend();
+      else if (action === 'close') scoped.close();
+      else scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(9)] }), 2));
+      expect(signal?.aborted).toBe(true);
+      held.resolve({ agent_id: 'main', items: [historyTurn(0)], has_more: false });
+      expect(await first).toBe(false);
+      expect(await second).toBe(false);
+      expect(historyTexts(scoped)).not.toContain('History 0');
+      expect(scoped.getState().loadingOlder).toBe(false);
+    } finally { scoped.close(); controller.close(); }
+  });
+
+  it.each([false, true])('cancels only abandoned older-page consumers and rejects a late abandoned body (last=%s)', async (cancelLast) => {
+    const { controller, client } = await openTranscriptController();
+    const held = deferred<AgentTranscriptResponse>();
+    let wireSignal: AbortSignal | undefined;
+    const view = fakeView(client, {});
+    view.transcript.page = async (_input, options) => { wireSignal = options?.signal; return held.promise as ReturnType<SessionViewFacade['transcript']['page']>; };
+    const scoped = new SessionController(client as unknown as KikiClient, view, 'session_test');
+    await scoped.open();
+    scoped.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)] }), 1, true));
+    const firstDemand = new AbortController();
+    const secondDemand = new AbortController();
+    const first = scoped.loadOlderMessages('main', firstDemand.signal);
+    const second = scoped.loadOlderMessages('main', secondDemand.signal);
+    firstDemand.abort();
+    expect(await first).toBe(false);
+    expect(wireSignal?.aborted).toBe(false);
+    if (cancelLast) secondDemand.abort();
+    expect(wireSignal?.aborted).toBe(cancelLast);
+    held.resolve({ agent_id: 'main', items: [historyTurn(0)], has_more: false });
+    expect(await second).toBe(!cancelLast);
+    await held.promise;
+    expect(historyTexts(scoped).includes('History 0')).toBe(!cancelLast);
+    expect(scoped.getState().loadingOlder).toBe(false);
+    scoped.close();
+    controller.close();
+  });
+
   it('shares a pending older-page request between two views of one agent', async () => {
     const { controller, client } = await openTranscriptController();
     controller.retainAgentView('route', 'child-1', 'delta');
@@ -1582,7 +2460,7 @@ describe('SessionController transcript authority', () => {
     expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
     held.resolve({ agent_id: 'child-1', items: [{ kind: 'turn', turnId: 't0', prompt: 'older', steps: [] }], has_more: false });
     expect(await first).toBe(true);
-    expect(await second).toBe(false);
+    expect(await second).toBe(true);
     expect(controller.getAgentState('child-1').blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
     controller.close();
   });
@@ -1619,20 +2497,25 @@ describe('SessionController transcript authority', () => {
     const older = { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,
       origin: { kind: 'user' as const }, prompt: 'older', steps: [] };
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 1, true));
-    client.getAgentTranscript.mockResolvedValueOnce({
-      agent_id: 'main', items: [older], has_more: false,
-      coverage: { kind: 'unknown', hasMoreOlder: true },
-    });
+    client.getAgentTranscript
+      .mockResolvedValueOnce({
+        agent_id: 'main', items: [older], has_more: false,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+      })
+      .mockResolvedValueOnce({
+        agent_id: 'main', items: [], has_more: false,
+        coverage: { kind: 'full', hasMoreOlder: false },
+      });
     await expect(controller.loadOlderMessages()).resolves.toBe(true);
-    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: false });
+    expect(controller.getState()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: true });
     await expect(controller.loadOlderMessages()).resolves.toBe(false);
-    expect(client.getAgentTranscript).toHaveBeenCalledTimes(1);
+    expect(client.getAgentTranscript).toHaveBeenCalledTimes(2);
     const unknownReset = resetEvent('main', emptySnapshot({ items: [] }), 2, true);
     if (unknownReset.type !== 'transcript.reset') throw new Error('Expected transcript reset');
     const beforeResetVersion = controller.getState().transcriptResetVersion;
     controller.handleTranscript({ ...unknownReset, coverage: { kind: 'unknown', hasMoreOlder: true } });
     expect(controller.getState()).toMatchObject({
-      historyCoverageKind: 'unknown', hasMoreHistory: false, transcriptResetVersion: beforeResetVersion,
+      historyCoverageKind: 'unknown', hasMoreHistory: true, transcriptResetVersion: beforeResetVersion,
     });
     expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'older')).toBe(true);
     controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [newer] }), 3, true));
@@ -1650,7 +2533,7 @@ describe('SessionController transcript authority', () => {
     expect(socket.subscribe).toHaveBeenCalledWith(
       'session_test',
       { seq: 10, epoch: 'epoch-1' },
-      expect.objectContaining({ '*': 'turn', main: 'delta' }),
+      expect.objectContaining({ '*': 'off', main: 'delta' }),
     );
     expect(controller.getState().blocks).toEqual([]);
     controller.close();
@@ -1900,7 +2783,8 @@ describe('SessionController transcript authority', () => {
     client.getAgentTranscript.mockResolvedValueOnce(olderPage);
     await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
     const firstIds = controller.getState().blocks.map((block) => block.id);
-    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(false);
+    expect(controller.getState().olderError).toBe('History page did not advance its cursor');
     expect(controller.getState().blocks.map((block) => block.id)).toEqual(firstIds);
 
     controller.handleTranscript(asTranscriptEvent({
@@ -2035,9 +2919,7 @@ describe('SessionController transcript authority', () => {
       }));
     }
     expect(publishes).toBe(0);
-    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
-      text: '',
-    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toBeUndefined();
     flushAll();
     expect(publishes).toBe(1);
     expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
@@ -2483,6 +3365,18 @@ describe('SessionController transcript authority', () => {
     });
     expect(controller.getState().blocks.find((block): block is UserBlock => block.kind === 'user'))
       .toMatchObject({ text: 'keep text', queuedContent: [{ type: 'text', text: 'keep text' }] });
+    controller.close();
+  });
+
+  it('replaces a queued prompt with image-only content without an empty text part or a new identity', async () => {
+    const { controller, client } = await openTranscriptController();
+    const image = { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: 'cG5n' } };
+    client.replacePrompt = vi.fn(async () => ({ prompt_id: 'p-edit', user_message_id: 'um-edit', status: 'queued' as const, content: [image], created_at: '2026-01-01T00:00:00.000Z' }));
+    await controller.replaceQueued('p-edit', '', [image]);
+    expect(client.replacePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'p-edit', { content: [image], replace_attachments: true });
+    expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toEqual([
+      expect.objectContaining({ promptId: 'p-edit', userMessageId: 'um-edit', queuedContent: [image] }),
+    ]);
     controller.close();
   });
 
@@ -3990,16 +4884,33 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('resynchronizes the current window instead of draining an unbounded catchup backlog', async () => {
+  it('continues beyond two bounded catchup pages and publishes the recovered newest region', async () => {
     const { controller, client, flushAll } = await openTranscriptController();
     seedTextAgent(controller, 'main', 'f1', 'Hello');
-    const before = client.snapshot.mock.calls.length;
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 2, complete: true, has_more: true, batches: [] });
-    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 3, complete: true, has_more: true, batches: [] });
-    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9, ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    const target = { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 'f1' };
+    for (let seq = 2; seq <= 6; seq += 1) client.getTranscriptOps.mockResolvedValueOnce({
+      session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: seq,
+      complete: true, has_more: seq < 6,
+      batches: [{ seq, ops: [{ op: 'append', target, offset: seq + 3, text: String(seq) }] }],
+    });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 6,
+      ops: [{ op: 'append', target, offset: 9, text: '6' }] }));
     flushAll();
-    await waitFor(() => client.snapshot.mock.calls.length > before);
-    expect(client.getTranscriptOps).toHaveBeenCalledTimes(2);
+    await waitFor(() => { flushAll(); return controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'Hello23456'); });
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(5);
+    expect(client.snapshot).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('resynchronizes a catchup cursor that stops advancing rather than looping forever', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    seedTextAgent(controller, 'main', 'f1', 'Hello');
+    client.getTranscriptOps.mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', epoch: 'epoch-1', through_seq: 1, complete: true, has_more: true, batches: [] });
+    controller.handleTranscript(asTranscriptEvent({ type: 'transcript.ops', agent_id: 'main', seq: 9,
+      ops: [{ op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' }, offset: 99, text: 'gap' }] }));
+    flushAll();
+    await waitFor(() => client.snapshot.mock.calls.length > 1);
+    expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
     controller.close();
   });
 

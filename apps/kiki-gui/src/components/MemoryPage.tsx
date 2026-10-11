@@ -25,10 +25,9 @@
  * `auto` there is nothing pending, so there is no tab.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemorySources, type MemorySource } from './useMemorySources';
-import { historyLabel, MemoryHistoryDialog, MemoryReadView, TypeTag } from './MemoryHistory';
 import { MemorySharingControls } from './MemorySharingControls';
 import { useSearchParams, type To } from 'react-router-dom';
 
@@ -38,6 +37,9 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
+import { BasisLine, historyLabel, MemoryHistoryDialog, MemoryReadView, TypeTag, ValidityLine } from './MemoryHistory';
+import { memoryApplicability, parseMemoryEntry } from './memory/memoryReceipt';
+import { continueMemory } from './memory/continueMemory';
 import {
   ApiError,
   MEMORY_NOT_FOUND,
@@ -142,6 +144,9 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
   const effectiveScope = mode === 'persona' ? normalizedWorkspaceParam : scope;
   const patchParams = (workspaceId: string | undefined, personaId: string | undefined, kind?: 'workspace' | 'persona') => {
     const updated = new URLSearchParams(params);
+    updated.delete('entry');
+    updated.delete('tab');
+    updated.delete('inactive');
     if (workspaceId === undefined) updated.delete('workspace');
     else updated.set('workspace', workspaceId);
     if (personaId === undefined) updated.delete('persona');
@@ -439,12 +444,26 @@ function MemoryScopeView({
   const { t, tp, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<MemoryTab>('entries');
+  const [params] = useSearchParams();
+  const linkedEntry = params.get('entry');
+  const linkedTab = params.get('tab');
+  const linkedInactive = params.get('inactive') === 'true';
+  const namespace = targetKey(target);
+  const [tab, setTab] = useState<MemoryTab>(review && linkedTab === 'inbox' ? 'inbox' : 'entries');
   useEffect(() => { if (!review) setTab('entries'); }, [review]);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<MemoryType | 'all'>('all');
-  const [showInactive, setShowInactive] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showInactive, setShowInactive] = useState(linkedInactive);
+  const [selectedId, setSelectedId] = useState<string | null>(linkedEntry === null ? null : `${namespace}:${linkedEntry}`);
+  useEffect(() => {
+    if (linkedEntry === null) return;
+    setSelectedId(`${namespace}:${linkedEntry}`);
+    setSearch('');
+    setTypeFilter('all');
+    setCreating(false);
+    setShowInactive(linkedInactive);
+    setTab(review && linkedTab === 'inbox' ? 'inbox' : 'entries');
+  }, [linkedEntry, linkedInactive, linkedTab, review, namespace]);
   const [creating, setCreating] = useState(false);
   const guard = useDirtyGuard();
 
@@ -456,27 +475,37 @@ function MemoryScopeView({
     if (guard.confirmDiscard === undefined) go();
   };
 
-  const lists = useQueries({ queries: sources.map((source) => ({
-    queryKey: ['memory', targetKey(source.target), { search, typeFilter, showInactive }],
-    queryFn: () => client.listMemory(source.target, {
-      query: search,
-      type: typeFilter === 'all' ? undefined : typeFilter,
-      include_inactive: showInactive,
-    }),
-    staleTime: 5_000,
-  })) });
+  const lists = useQueries({ queries: sources.map((source) => {
+    const queryKey = ['memory', targetKey(source.target), { search, typeFilter, showInactive }];
+    return {
+      queryKey,
+      queryFn: ({ signal }: { signal: AbortSignal }) => continueMemory(
+        (cursor) => client.listMemory(source.target, cursor === undefined ? {
+          mode: search.trim() === '' ? 'list' : 'search', query: search,
+          type: typeFilter === 'all' ? undefined : typeFilter,
+          include_inactive: showInactive, page_size: 20,
+          statuses: showInactive ? ['active', 'superseded', 'archived'] : ['active'],
+        } : { cursor }, signal),
+        (page) => queryClient.setQueryData(queryKey, page), signal,
+      ),
+      staleTime: 5_000, retry: false,
+    };
+  }) });
   const listQuery = {
-    isPending: lists.some((query) => query.isPending),
+    isPending: lists.every((query) => query.data === undefined) && lists.some((query) => query.isPending),
     isError: lists.some((query) => query.isError),
     error: lists.find((query) => query.isError)?.error,
-    data: lists.every((query) => query.data !== undefined) ? true : undefined,
+    data: lists.some((query) => query.data !== undefined) ? true : undefined,
     refetch: () => Promise.all(lists.map((query) => query.refetch())),
   };
   const inboxQuery = useQuery({
     queryKey: ['memory-inbox', targetKey(target)],
-    queryFn: () => client.memoryInbox(target),
+    queryFn: ({ signal }) => continueMemory(
+      (cursor) => client.memoryInbox(target, cursor === undefined ? { page_size: 20 } : { cursor }, signal),
+      (page) => queryClient.setQueryData(['memory-inbox', targetKey(target)], page), signal,
+    ),
     enabled: review,
-    staleTime: 5_000,
+    staleTime: 5_000, retry: false,
   });
 
   const refresh = () => {
@@ -492,12 +521,27 @@ function MemoryScopeView({
   const entries = groups.flatMap((source) => source.entries.map((entry) => ({
     entry, source, key: `${targetKey(source.target)}:${entry.id}`,
   })));
-  const inbox = inboxQuery.data ?? [];
+  const inbox = inboxQuery.data?.items ?? [];
+  const readingEntries = lists.some((query) => query.isFetching || query.data?.coverage?.exhausted === false);
+  const readingInbox = inboxQuery.isFetching || inboxQuery.data?.coverage?.exhausted === false;
+  const coverageWarnings = tab === 'inbox' ? inboxQuery.data?.coverage?.warnings ?? [] : lists.flatMap((query, index) => (query.data?.coverage?.warnings ?? []).map((warning) => `${sources[index]!.label}: ${warning}`));
+  const coverageIncomplete = (tab === 'inbox' ? [inboxQuery.data] : lists.map((query) => query.data)).some((page) => page?.coverage?.complete === false);
+  const readError = tab === 'inbox' ? inboxQuery.error : listQuery.error;
+  // One reading of "now" for the whole list, so two rows cannot disagree about
+  // whether the same check has run out.
+  const now = Date.now();
   // Namespace is part of identity: copied/imported memories can share an id.
   const selected = entries.find((item) => item.key === selectedId);
+  const selectedDetail = useQuery({
+    queryKey: ['memory-detail', selected?.key, selected?.entry.revision],
+    queryFn: () => client.getMemory(selected!.source.target, selected!.entry.id),
+    enabled: selected?.entry.content_complete === false,
+    gcTime: 0,
+  });
+  const selectedEntry = selected?.entry.content_complete === false ? selectedDetail.data : selected?.entry;
   useEffect(() => {
-    if (!listQuery.isPending && selectedId !== null && selected === undefined) setSelectedId(null);
-  }, [listQuery.isPending, selectedId, selected]);
+    if (!readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
+  }, [readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
   const filtersActive = search.trim() !== '' || typeFilter !== 'all' || showInactive;
 
   const detail = creating ? (
@@ -510,15 +554,22 @@ function MemoryScopeView({
         refresh();
       }}
     />
-  ) : selected !== undefined ? (
+  ) : selected !== undefined && selectedEntry !== undefined ? (
     <MemoryDetail
       key={selected.key}
       target={selected.source.target}
       sourceLabel={selected.source.label}
-      entry={selected.entry}
+      entry={selectedEntry}
+      now={now}
       onOpenSession={onOpenSession}
       onChanged={refresh}
       onClosed={() => { setSelectedId(null); }}
+      onOpenCoveredBy={
+        selected.entry.covered_by !== undefined &&
+        entries.some((item) => item.key === `${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`)
+          ? () => { setSelectedId(`${targetKey(selected.source.target)}:${selected.entry.covered_by?.id}`); }
+          : undefined
+      }
       onOpenReplacement={
         selected.entry.superseded_by !== undefined &&
         entries.some((item) => item.key === `${targetKey(selected.source.target)}:${selected.entry.superseded_by}`)
@@ -526,6 +577,11 @@ function MemoryScopeView({
           : undefined
       }
     />
+  ) : selected !== undefined ? (
+    <div role="status" className="text-[13px] text-ink-soft">
+      {selectedDetail.isError ? errorText(locale, selectedDetail.error) : t('memory.loading')}
+      {selectedDetail.isError ? <button type="button" onClick={() => { void selectedDetail.refetch(); }} className={SECONDARY_BUTTON}>{t('common.retry')}</button> : null}
+    </div>
   ) : null;
 
   return (
@@ -565,8 +621,19 @@ function MemoryScopeView({
           </div>
         ) : null}
 
+        {readError !== null && readError !== undefined || coverageIncomplete ? (
+          <div data-memory-coverage role="status" className="mb-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] leading-relaxed text-danger">
+            <p>{t(readError ? 'memory.loadFailed' : 'memory.readIncomplete')}</p>
+            {readError ? <p>{errorText(locale, readError)}</p> : null}
+            {coverageWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+            <button type="button" onClick={() => { void (tab === 'inbox' ? inboxQuery.refetch() : listQuery.refetch()); }} className="mt-1 underline">{t('common.retry')}</button>
+          </div>
+        ) : null}
+        {(tab === 'inbox' ? readingInbox : readingEntries) && !readError ? (
+          <p data-memory-continuing role="status" className="mb-3 text-[12px] text-ink-faint">{t('memory.readingMore')}</p>
+        ) : null}
         {review && tab === 'inbox' ? (
-          <MemoryInbox target={target} entries={inbox} loading={inboxQuery.isPending} onChanged={refresh} />
+          <MemoryInbox target={target} entries={inbox} loading={inboxQuery.isPending && inbox.length === 0 || readingInbox && inbox.length === 0 && !readError} incomplete={coverageIncomplete || Boolean(readError)} linkedEntry={linkedEntry} onChanged={refresh} />
         ) : (
           <>
             <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -614,20 +681,12 @@ function MemoryScopeView({
               </span>
             </div>
 
-            {listQuery.isPending ? (
+            {listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
               <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
                 <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
                 {t('memory.loading')}
               </p>
-            ) : listQuery.isError ? (
-              <div data-memory-error className="rounded-xl border border-danger/30 bg-danger/5 p-4">
-                <p className="text-[13px] font-medium text-danger">{t('memory.loadFailed')}</p>
-                <p className="mt-1 font-mono text-[11px] text-danger">{errorText(locale, listQuery.error)}</p>
-                <button type="button" onClick={() => { void listQuery.refetch(); }} className="mt-2 text-[12px] font-medium text-danger underline">
-                  {t('common.retry')}
-                </button>
-              </div>
-            ) : entries.length === 0 && !creating ? (
+            ) : entries.length === 0 && (listQuery.isError || coverageIncomplete) ? null : entries.length === 0 && !creating ? (
               <div data-memory-empty className="py-10">
                 {filtersActive ? (
                   <>
@@ -660,7 +719,7 @@ function MemoryScopeView({
                           const key = `${targetKey(group.target)}:${entry.id}`;
                           return (
                             <li key={key}>
-                              <MemoryListRow entry={entry} active={key === selectedId} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
+                              <MemoryListRow entry={entry} active={key === selectedId} now={now} onOpen={() => { leaveEditor(() => { setCreating(false); setSelectedId(key); }); }} />
                             </li>
                           );
                         })}
@@ -690,21 +749,31 @@ function MemoryScopeView({
   );
 }
 
+/**
+ * One entry in the list: what it is, and the two states that want a reader's
+ * attention before they rely on it. The basis stays in the detail view, so a
+ * row is not a claim about who authorized the content.
+ */
 function MemoryListRow({
   entry,
   active,
+  now,
   onOpen,
 }: {
   readonly entry: MemoryEntry;
   readonly active: boolean;
+  /** Shared across the list so every row reads "now" the same way. */
+  readonly now: number;
   readonly onOpen: () => void;
 }) {
   const { t } = useI18n();
   const inactive = entry.status === 'archived' || entry.status === 'superseded';
+  const applicability = memoryApplicability(entry.validity, now);
   return (
     <button
       type="button"
       data-memory-row={entry.id}
+      data-memory-validity={applicability}
       aria-current={active ? 'true' : undefined}
       onClick={onOpen}
       className={`flex w-full min-w-0 flex-col gap-1.5 rounded-lg px-3 py-3 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-selected-ink ${
@@ -715,12 +784,23 @@ function MemoryListRow({
         {entry.pinned ? <span role="img" aria-label={t('memory.pinned')} className="flex shrink-0 text-ink-faint"><Icon name="pin" size={12} /></span> : null}
         <span className={`min-w-0 truncate text-[13px] ${active ? 'font-medium text-ink' : inactive ? 'text-ink-soft' : 'text-ink'}`}>{entry.title}</span>
       </span>
-      <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-ink-faint">
+      <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-ink-faint">
         <TypeTag type={entry.type} />
         <span className="shrink-0">{t(`memory.writer.${entry.source.writer}`)}</span>
         <span className="shrink-0">· <RelativeTime at={entry.updated} /></span>
         {inactive ? (
           <span className="shrink-0">· {t(entry.status === 'archived' ? 'memory.status.archived' : 'memory.status.superseded')}</span>
+        ) : null}
+        {/* `unrecorded` says nothing on a row: a missing check is not a defect
+            the reader has to triage, so only the two actionable states show. */}
+        {applicability === 'recheck' || applicability === 'expired' ? (
+          <span data-memory-row-validity={applicability}
+            className={`shrink-0 rounded-sm px-1.5 py-px text-[11px] font-medium ${applicability === 'expired' ? 'bg-amber-card text-amber-ink' : 'bg-ink/[0.05] text-ink-soft'}`}>
+            {t(applicability === 'expired' ? 'memory.validity.expiredShort' : 'memory.validity.recheckShort')}
+          </span>
+        ) : null}
+        {entry.covered_by !== undefined && inactive ? (
+          <span data-memory-row-covered className="shrink-0">· {t('memory.coveredBy.short')}</span>
         ) : null}
       </span>
     </button>
@@ -742,6 +822,8 @@ function MemoryDetail({
   onChanged,
   onClosed,
   onOpenReplacement,
+  onOpenCoveredBy,
+  now,
 }: {
   readonly target: MemoryTarget;
   readonly entry: MemoryEntry;
@@ -750,6 +832,8 @@ function MemoryDetail({
   readonly onChanged: () => void;
   readonly onClosed: () => void;
   readonly onOpenReplacement?: () => void;
+  readonly onOpenCoveredBy?: () => void;
+  readonly now: number;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -785,6 +869,10 @@ function MemoryDetail({
       reason: t('memory.defaultReason.edit'),
       expected_revision: entry.revision,
       pinned: !entry.pinned,
+      // Pinning changes nothing about the content, so the recorded basis and
+      // check ride along unchanged rather than being dropped by this save.
+      basis: entry.basis,
+      validity: entry.validity,
     }),
     onSuccess: () => { onChanged(); },
     onError: fail,
@@ -830,7 +918,7 @@ function MemoryDetail({
   return (
     <div data-memory-detail={entry.id} className="min-w-0 space-y-4">
       {editing && !inactive ? <MemoryEditor target={target} entry={entry} onDone={() => { setEditing(false); onChanged(); }} />
-        : <MemoryReadView entry={entry} target={target} sourceLabel={sourceLabel} onOpenReplacement={onOpenReplacement} />}
+        : <MemoryReadView entry={entry} target={target} sourceLabel={sourceLabel} onOpenReplacement={onOpenReplacement} onOpenCoveredBy={onOpenCoveredBy} now={now} />}
 
       <div className="flex flex-wrap items-center gap-3">
         {!inactive ? <>
@@ -963,12 +1051,17 @@ function MemoryEditor({
   const { client } = useConnection();
   // The fact the draft started from, including the revision a save must be
   // measured against. Read once, and never advanced by a background read.
+  // The editor explicitly resends the seed's recorded basis and validity.
+  // Omitting basis on a substantive content change would downgrade attribution;
+  // omitting validity alone preserves the stored check.
   const [seed] = useState(() => ({
     id: entry?.id,
     revision: entry?.revision,
     title: entry?.title ?? '',
     body: entry?.body ?? '',
     type: entry?.type ?? ('project' as MemoryType),
+    basis: entry?.basis,
+    validity: entry?.validity,
   }));
   const [title, setTitle] = useState(seed.title);
   const [body, setBody] = useState(seed.body);
@@ -994,11 +1087,16 @@ function MemoryEditor({
         ? t(seed.id === undefined ? 'memory.defaultReason.create' : 'memory.defaultReason.edit')
         : reason.trim(),
       expected_revision: seed.revision,
+      basis: seed.basis,
+      validity: seed.validity,
     }),
     onSuccess: (result) => {
       setConflict(false);
       setReason('');
-      pushToast({ tone: 'success', text: t('memory.saved') });
+      // A save whose content already matched is not a new version; saying
+      // "Saved" would imply a change that did not happen.
+      if (result.outcome === 'unchanged') pushToast({ tone: 'success', text: t('memory.savedUnchanged') });
+      else pushToast({ tone: 'success', text: t('memory.saved') });
       onDone(result.entry);
     },
     onError: (error: unknown) => {
@@ -1127,30 +1225,51 @@ function MemoryInbox({
   target,
   entries,
   loading,
+  incomplete,
+  linkedEntry,
   onChanged,
 }: {
   readonly target: MemoryTarget;
   readonly entries: readonly MemoryEntry[];
   readonly loading: boolean;
+  readonly incomplete: boolean;
+  readonly linkedEntry: string | null;
   readonly onChanged: () => void;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const locatedRef = useRef<HTMLLIElement>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const expanded = useQuery({
+    queryKey: ['memory-inbox-detail', targetKey(target), expandedId],
+    queryFn: () => client.getMemory(target, expandedId!),
+    enabled: expandedId !== null, gcTime: 0,
+  });
+  const locatedId = entries.find((entry) => entry.id === linkedEntry)?.id;
+  const namespace = targetKey(target);
+  useEffect(() => {
+    if (loading || locatedId === undefined) return;
+    locatedRef.current?.scrollIntoView?.({ block: 'nearest' });
+    locatedRef.current?.focus({ preventScroll: true });
+  }, [loading, linkedEntry, locatedId, namespace]);
   const fail = (error: unknown) => {
     pushToast({ tone: 'error', text: t('memory.actionFailed', { detail: errorText(locale, error) }) });
   };
   const keep = useMutation({
     // Accepting is an update *of the candidate*; which action that performs on
     // the entry it supersedes is the candidate's own `pending_action`, decided
-    // by the store, so this page does not restate or guess it.
-    mutationFn: (entry: MemoryEntry) => client.putMemory(target, entry.id, {
-      action: 'update',
-      type: entry.type,
-      title: entry.title,
-      body: entry.body,
-      reason: t('memory.defaultReason.keep'),
-      expected_revision: entry.revision,
-    }),
+    // by the store, so this page does not restate or guess it. The proposal's
+    // basis and check are what the reviewer just decided on, so they ride the
+    // acceptance instead of being dropped at the last step.
+    mutationFn: async (entry: MemoryEntry) => {
+      const full = entry.content_complete === false ? await client.getMemory(target, entry.id) : entry;
+      if (full.revision !== entry.revision) throw new ApiError({ code: MEMORY_REVISION_CONFLICT, msg: t('memory.conflict'), data: null });
+      return client.putMemory(target, entry.id, {
+        action: 'update', type: full.type, title: full.title, body: full.body,
+        reason: t('memory.defaultReason.keep'), expected_revision: entry.revision,
+        basis: full.basis, validity: full.validity,
+      });
+    },
     onSuccess: onChanged,
     onError: fail,
   });
@@ -1171,19 +1290,31 @@ function MemoryInbox({
     );
   }
   if (entries.length === 0) {
-    return <p data-memory-inbox-empty className="py-8 text-[13px] text-ink-soft">{t('memory.inbox.empty')}</p>;
+    return incomplete ? null : <p data-memory-inbox-empty className="py-8 text-[13px] text-ink-soft">{t('memory.inbox.empty')}</p>;
   }
   const busy = keep.isPending || discard.isPending;
   return (
     <ul data-memory-inbox className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
       {entries.map((entry) => (
-        <li key={entry.id} data-memory-inbox-row={entry.id} className="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-3">
+        <li
+          key={entry.id}
+          ref={entry.id === linkedEntry ? locatedRef : undefined}
+          tabIndex={entry.id === linkedEntry ? -1 : undefined}
+          aria-current={entry.id === linkedEntry ? 'true' : undefined}
+          data-memory-inbox-row={entry.id}
+          className="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-3"
+        >
           <div className="min-w-0 flex-1">
             <p className="flex min-w-0 items-center gap-1.5 text-[13px] text-ink">
               <TypeTag type={entry.type} />
               <span className="min-w-0 truncate">{entry.title}</span>
             </p>
-            <p className="mt-0.5 line-clamp-2 text-[12px] leading-relaxed text-ink-soft">{entry.body}</p>
+            <p className={`mt-0.5 text-[12px] leading-relaxed text-ink-soft ${expandedId === entry.id ? 'whitespace-pre-wrap' : 'line-clamp-2'}`}>{expandedId === entry.id && expanded.data !== undefined ? expanded.data.body : entry.body}{entry.content_complete === false && expandedId !== entry.id ? '…' : ''}</p>
+            {entry.content_complete === false ? (
+              <button type="button" data-memory-inbox-read onClick={() => { setExpandedId(expandedId === entry.id ? null : entry.id); }} className="mt-1 text-[12px] text-ink-soft underline">{t('memory.tool.view')}</button>
+            ) : null}
+            {expandedId === entry.id && expanded.isPending ? <p role="status" className="text-[12px] text-ink-faint">{t('memory.loading')}</p> : null}
+            {expandedId === entry.id && expanded.isError ? <button type="button" onClick={() => { void expanded.refetch(); }} className="text-[12px] text-danger underline">{errorText(locale, expanded.error)} · {t('common.retry')}</button> : null}
             {entry.reason !== '' ? (
               <p className="mt-0.5 text-[12px] text-ink-faint">{t('memory.tool.reason')}: {entry.reason}</p>
             ) : null}
@@ -1195,6 +1326,14 @@ function MemoryInbox({
               <p data-memory-inbox-action={entry.pending_action} className="mt-0.5 text-[12px] text-ink-soft">
                 {t(entry.pending_action === 'archive' ? 'memory.inbox.proposesArchive' : 'memory.inbox.proposesUpdate')}
               </p>
+            ) : null}
+            {/* What the proposal is based on, so a review is a decision about
+                real content rather than about a title and a paragraph. */}
+            {parseMemoryEntry(entry) !== undefined ? (
+              <div data-memory-inbox-provenance className="mt-1.5 space-y-1 border-l border-hairline pl-2.5">
+                <BasisLine entry={parseMemoryEntry(entry)!} />
+                <ValidityLine validity={entry.validity} />
+              </div>
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">

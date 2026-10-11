@@ -11,6 +11,7 @@ import { turnKey } from '#/agent/loop/turnOps';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { planKey } from '#/features/plan/planOps';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import type { PromptEnqueuedPayload } from '#/agent/prompt/promptService';
 import { IAgentTaskService, type AgentTask } from '#/agent/task/task';
 import { TaskSettlementReady } from '#/agent/task/taskOps';
 import { taskNotificationDeliveryKey } from '#/agent/task/taskService';
@@ -138,7 +139,7 @@ describe('AgentConversationUndoService', () => {
     expect(loop.status().state).toBe('running');
     expect(ctx.context.get()).toBe(history);
 
-    hook.dispose();
+    await hook.dispose();
     release();
     await expect(turn.result).resolves.toMatchObject({ type: 'completed' });
   });
@@ -231,9 +232,46 @@ describe('AgentConversationUndoService', () => {
         },
       });
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
     expect(ctx.context.get().map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('cuts and appends a replacement prompt, replays it, then supports ordinary undo', async () => {
+    setup();
+    const undo = ctx.get(IAgentConversationUndoService);
+    ctx.appendTurnExchange('u1', 'a1');
+    ctx.appendTurnExchange('u2', 'a2');
+    const replacement: PromptEnqueuedPayload = {
+      schemaVersion: 1,
+      promptId: 'replacement-prompt',
+      userMessageId: 'replacement-user',
+      createdAt: '2026-01-01T00:00:03.000Z',
+      message: {
+        id: 'replacement-user',
+        role: 'user',
+        content: [{ type: 'text', text: 'replacement' }],
+        toolCalls: [],
+        origin: { kind: 'user' },
+      },
+      alreadyMaterialized: true,
+      appendTiming: 'agent_idle',
+      revision: 0,
+      queueIndex: 0,
+      retryFingerprint: 'replacement-fingerprint',
+    };
+
+    await undo.undo(1, undefined, replacement);
+
+    expect(ctx.context.get().map((message) => message.content[0]?.type === 'text' ? message.content[0].text : '')).toEqual(['u1', 'a1', 'replacement']);
+    expect(ctx.allEvents.find((event) => event.type === '[wire]' && event.event === 'context.undo')?.args).toMatchObject({
+      count: 1,
+      replacementPrompt: replacement,
+    });
+    await ctx.expectResumeMatches();
+
+    await undo.undo(1);
+    expect(ctx.context.get().map((message) => message.content[0]?.type === 'text' ? message.content[0].text : '')).toEqual(['u1', 'a1']);
   });
 
   it('restores todos to their pre-turn value', async () => {
@@ -273,7 +311,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.get(IAgentTelemetryContextService).get().mode).toBe('agent');
       expect(restoredModes).toEqual([false]);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -343,7 +381,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.agentState.get(turnKey).anchorTurnIds).toEqual([]);
       expect(ctx.context.get()).toHaveLength(0);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -373,7 +411,7 @@ describe('AgentConversationUndoService', () => {
       await undo.undo(1);
       expect(fromTurnId).toBeUndefined();
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
     }
   });
 
@@ -404,7 +442,7 @@ describe('AgentConversationUndoService', () => {
 
       expect(order).toEqual(['flush', 'state', 'flush', 'context.undone']);
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       flush.mockRestore();
     }
   });
@@ -446,7 +484,7 @@ describe('AgentConversationUndoService', () => {
         expect(undone).toEqual([]);
         expect(records.filter((record) => record.event === 'conversation_undo')).toEqual([]);
       } finally {
-        subscription.dispose();
+        await subscription.dispose();
         flush.mockRestore();
       }
     },
@@ -577,7 +615,7 @@ describe('AgentConversationUndoService', () => {
         properties: { agent_id: 'main', count: 1 },
       });
     } finally {
-      subscription.dispose();
+      await subscription.dispose();
       update.mockRestore();
     }
   });
@@ -673,7 +711,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.context.get().filter((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toHaveLength(1);
     } finally {
       release.resolve();
-      subscription.dispose();
+      await subscription.dispose();
       outputSnapshot.mockRestore();
     }
   });
@@ -716,7 +754,7 @@ describe('AgentConversationUndoService', () => {
       expect(ctx.context.get().some((message) => (message.origin as TaskOrigin | undefined)?.taskId === taskId)).toBe(false);
     } finally {
       release.resolve();
-      subscription.dispose();
+      await subscription.dispose();
       snapshot.mockRestore();
     }
   });

@@ -9,6 +9,8 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
+import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
@@ -19,6 +21,8 @@ import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSect
 import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT, sessionTitlePromptOverride } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
   NB_SEARCH_SECTION,
@@ -377,6 +381,20 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       if (publicValue !== undefined) wire[camelToSnake(domain)] = publicValue;
     }
   }
+  const raw = isPlainObject(wire['raw']) ? { ...wire['raw'] } : {};
+  if (wire['agent_executor_overrides'] !== undefined) raw['agent_executor_overrides'] = agentExecutorOverridesToToml(wire['agent_executor_overrides']);
+  if (wire['agent_executors'] !== undefined) raw['agent_executors'] = agentExecutorsToToml(wire['agent_executors']);
+  const display = wire['agent_executor_display'];
+  if (isPlainObject(display)) raw['agent_executor_display'] = display['externalsVisible'] === undefined ? {} : { externals_visible: display['externalsVisible'] };
+  wire['raw'] = raw;
+  const sessionTitle = resolved[SESSION_TITLE_SECTION] as SessionTitleConfig | undefined;
+  const prompt = sessionTitlePromptOverride(sessionTitle?.prompt);
+  wire['session_title'] = {
+    ...sessionTitle,
+    prompt,
+    default_prompt: DEFAULT_SESSION_TITLE_PROMPT,
+    prompt_source: prompt === undefined ? 'default' : 'custom',
+  };
   const defaultPermissionMode = resolved['defaultPermissionMode'];
   if (typeof defaultPermissionMode === 'string') {
     wire['yolo'] = defaultPermissionMode === 'yolo';
@@ -430,7 +448,9 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
+      if (!preserveKeys && key === 'agent_executor_overrides') {
+        result[targetKey] = agentExecutorOverridesFromToml(value);
+      } else if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
         result[targetKey] = value;
       } else {
         result[targetKey] = convertKeysSnakeToCamel(

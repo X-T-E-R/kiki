@@ -101,6 +101,10 @@ api_key = "sk-xxxxx"
 
 > When using the Kimi Code managed service, running `/login` automatically configures `base_url` and credentials — no manual setup needed.
 
+For the standard managed Kimi Code credential slot, Kiki can also reuse an existing Kimi Code sign-in when its own slot has no token. It reads the original home from `KIMI_CODE_HOME`, or `~/.kimi-code` by default, and follows that installation's `credentials_store` setting. This selects a credential slot, not a verified account identity. An explicitly connected original source stays selected; disconnecting it from Kiki does not delete the original credentials.
+
+With `credentials_store = "keyring"`, an unavailable keyring is a storage error, not a signed-out account; restore keyring access before retrying. `auto` mode can use a readable file copy. Reusing the source reads its credentials in place rather than copying them into Kiki's own credential directory.
+
 ## `anthropic`
 
 For connecting to the Claude API. Standard Claude models automatically enable vision, tool use, and Thinking (where supported); custom or uncovered models need `capabilities` declared explicitly on `[models.<alias>]`.
@@ -131,6 +135,8 @@ api_key = "sk-ant-xxxxx"
 For connecting to the OpenAI Chat Completions protocol, as well as any third-party service compatible with that protocol (override `base_url` as needed).
 
 Third-party reasoning models (DeepSeek, Qwen, One API, etc.) work out of the box: the CLI automatically handles the `reasoning_content` field and `reasoning_effort` injection. If your gateway returns reasoning content under a non-standard field name, set `reasoning_key` on the model alias to override.
+
+For both `openai` and `openai_responses`, Kiki does not send an output-length limit of its own when you have not set one and the model's capability is unknown — the request carries no `max_tokens`, `max_completion_tokens` or `max_output_tokens`, and the server's own default applies. A limit you set yourself, a known model output capability, a tighter session or profile limit, and a remaining-window budget are all still honored; the context window size on its own is not treated as an output limit. That maximum is a ceiling, not a promise about answer length — what the model returns still depends on the task and on when it stops — and you are billed for the response you actually get.
 
 - Default `base_url`: `https://api.openai.com/v1`
 - Credential key names: `OPENAI_API_KEY`, `OPENAI_BASE_URL`

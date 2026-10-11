@@ -78,14 +78,14 @@ async function acquireDirectoryProfileCatalog(core: Scope, cwd: string, includeS
     await Promise.all([preview.catalog.ready, preview.skills?.ready]);
     return preview;
   } catch (error) {
-    preview.dispose();
+    await preview.dispose();
     throw error;
   }
 }
 
 interface WorkspaceCatalogEntry {
   readonly catalog: SessionAgentProfileCatalogService;
-  readonly dispose: () => void;
+  readonly dispose: () => Promise<void>;
   users: number;
 }
 
@@ -99,29 +99,29 @@ function workspaceCatalogCache(core: Scope): Map<string, WorkspaceCatalogEntry> 
   workspaceCatalogCaches.set(core, entries);
   const cache = entries;
   const manager = core.accessor.get(IWorkspaceInstanceManager);
-  const closeListener = manager.onDidChange(({ workspaceId, instance }) => {
+  const closeListener = manager.onDidChange(async ({ workspaceId, instance }) => {
     if (instance !== undefined) return;
     const entry = cache.get(workspaceId);
     if (entry !== undefined) {
       cache.delete(workspaceId);
-      entry.dispose();
+      await entry.dispose();
     }
   });
-  core.accessor.get(IInstantiationService).onWillDispose(() => {
+  core.accessor.get(IInstantiationService).onWillDispose(async () => {
     closeListener.dispose();
-    for (const entry of cache.values()) entry.dispose();
+    for (const entry of cache.values()) await entry.dispose();
     cache.clear();
     workspaceCatalogCaches.delete(core);
   });
   return cache;
 }
 
-function trimWorkspaceCatalogCache(entries: Map<string, WorkspaceCatalogEntry>): void {
+async function trimWorkspaceCatalogCache(entries: Map<string, WorkspaceCatalogEntry>): Promise<void> {
   while (entries.size > MAX_WORKSPACE_CATALOGS) {
     const oldest = [...entries].find(([, entry]) => entry.users === 0);
     if (oldest === undefined) return;
     entries.delete(oldest[0]);
-    oldest[1].dispose();
+    await oldest[1].dispose();
   }
 }
 
@@ -167,10 +167,17 @@ export async function acquireWorkspaceProfileCatalog(
       ]));
       try {
         const catalog = container.createInstance(SessionAgentProfileCatalogService);
-        entry = { catalog, users: 0, dispose: () => { catalog.dispose(); container.dispose(); } };
+        entry = {
+          catalog,
+          users: 0,
+          dispose: async () => {
+            await catalog.dispose();
+            await container.dispose();
+          },
+        };
         entries.set(workspaceId, entry);
       } catch (error) {
-        container.dispose();
+        await container.dispose();
         throw error;
       }
     }
@@ -181,7 +188,7 @@ export async function acquireWorkspaceProfileCatalog(
     } catch (error) {
       if (entries.get(workspaceId) === acquired) {
         entries.delete(workspaceId);
-        acquired.dispose();
+        await acquired.dispose();
       }
       throw error;
     }
@@ -189,10 +196,10 @@ export async function acquireWorkspaceProfileCatalog(
       workspace_id: workspaceId, cache_state: cacheState, outcome: 'ready',
       complete: acquired.catalog.complete, duration_ms: Date.now() - startedAt,
     });
-    trimWorkspaceCatalogCache(entries);
+    await trimWorkspaceCatalogCache(entries);
     return { workspaceId, catalog: acquired.catalog, skills: lease.instance.program.skills.catalog,
       instance: lease.instance,
-      dispose: () => { acquired.users -= 1; lease.dispose(); trimWorkspaceCatalogCache(entries); } };
+      dispose: async () => { acquired.users -= 1; lease.dispose(); await trimWorkspaceCatalogCache(entries); } };
   } catch (error) {
     if (entry !== undefined) entry.users -= 1;
     lease.dispose();
@@ -230,9 +237,13 @@ export async function agentCapabilities(
     const pricing = core.accessor.get(IModelPricingService);
     const skipAgentIds: string[] = [];
     const mutableAgentIds: string[] = [];
+    const mutableUsageRecords: Record<string, number> = Object.create(null);
     for (const handle of lifecycle?.list() ?? []) {
       const accounting = handle.accessor.get(IAgentStateService).get(panelAccountingKey);
-      if (accounting.incomplete) mutableAgentIds.push(handle.id);
+      if (accounting.incomplete) {
+        mutableAgentIds.push(handle.id);
+        mutableUsageRecords[handle.id] = accounting.records;
+      }
       else skipAgentIds.push(handle.id);
     }
     const persisted = workspaceId === undefined ? {} : await readPersistedAgentPanelMetrics(
@@ -245,6 +256,7 @@ export async function agentCapabilities(
         agentIds: [query.agent_id],
         skipAgentIds,
         mutableAgentIds,
+        mutableUsageRecords,
       },
     );
     if (agent === undefined) {
@@ -437,7 +449,7 @@ export async function agentCapabilities(
       skills: panelSkills(workspace.skills.listSkills(), isToolActiveComposed(policy, 'Skill')),
     };
   } finally {
-    workspace.dispose();
+    await workspace.dispose();
   }
 }
 

@@ -851,9 +851,19 @@ export class TranscriptProjector {
         const stepId = agent.live.stepId ?? stepIdOf(turnId, 1);
         const isError = payload.is_error === true || payload.isError === true;
         const existing = findFrame(findStep(findTurn(agent.snapshot, turnId), stepId), `tool-${toolCallId}`);
+        // A result may report its media as canonical attachments instead of
+        // inline parts (the shape an external harness reports): the entities
+        // ride the same list the turn attachments use, and the frame names
+        // them by id. Nothing is invented here — a scenario that declares no
+        // attachments keeps the frame exactly as before.
+        const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+        const attachmentIds = Array.isArray(payload.attachmentIds) && payload.attachmentIds.length > 0
+          ? payload.attachmentIds
+          : existing?.attachmentIds;
         projected = {
           agentId,
           ops: [
+            ...attachments.map((attachment) => ({ op: 'attachment.upsert', attachment })),
             {
               op: 'frame.upsert',
               turnId,
@@ -866,6 +876,7 @@ export class TranscriptProjector {
                 name: payload.name ?? existing?.name ?? 'tool',
                 state: isError ? 'error' : 'done',
                 output: payload.output,
+                attachmentIds,
                 // Same rule as the live adapters: the error line is readable text, never a stringified object.
                 error: isError
                   ? (typeof payload.output === 'string'

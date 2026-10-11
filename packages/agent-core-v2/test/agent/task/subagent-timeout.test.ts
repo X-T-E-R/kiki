@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
-import { createTestAgent, type TestAgentContext } from '../../harness';
+import { createTestAgent, permissionModeServices, type TestAgentContext } from '../../harness';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -22,7 +22,7 @@ describe('SubagentTask — timeoutMs', () => {
   let background: IAgentTaskService;
 
   beforeEach(() => {
-    ctx = createTestAgent();
+    ctx = createTestAgent(permissionModeServices('manual'));
     background = ctx.get(IAgentTaskService);
   });
 
@@ -33,6 +33,16 @@ describe('SubagentTask — timeoutMs', () => {
     } finally {
       await ctx.dispose();
     }
+  });
+
+  it.each(['', ' \n\t'])('does not certify a blank final agent receipt as completed: %j', async (result) => {
+    const taskId = background.registerTask(agentTask(Promise.resolve({ result }), 'missing receipt'));
+    const info = await background.wait(taskId);
+    expect(info?.status).toBe('failed');
+    expect(info?.stopReason).toContain('without a final receipt');
+    expect(info?.stopReason).toContain('resume the same agent with a new prompt ID');
+    expect(info?.receipt?.contentState).toBe('unavailable');
+    expect((await background.getTaskSnapshot(taskId))?.status).toBe('failed');
   });
 
   it('external deadline marks task timed_out', async () => {

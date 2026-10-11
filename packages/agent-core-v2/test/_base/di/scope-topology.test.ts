@@ -4,16 +4,16 @@ import { BugIndicatingError } from '#/_base/errors/errors';
 import { createAppScope, setScopeTopology } from '#/_base/di/scope';
 
 describe('Scope topology (kernel)', () => {
-  it('skips the createChild order check while no topology is declared', () => {
+  it('skips the createChild order check while no topology is declared', async () => {
     const app = createAppScope();
     const child = app.createChild('zzz', 'c1');
     const grandchild = child.createChild('app', 'g1');
     expect(child.kind).toBe('zzz');
     expect(grandchild.kind).toBe('app');
-    app.dispose();
+    await app.dispose();
   });
 
-  it('enforces the declared order once setScopeTopology runs', () => {
+  it('enforces the declared order once setScopeTopology runs', async () => {
     setScopeTopology(['app', 'mid', 'leaf']);
     const app = createAppScope();
     const mid = app.createChild('mid', 'm1');
@@ -21,7 +21,7 @@ describe('Scope topology (kernel)', () => {
     expect(() => mid.createChild('mid', 'm2')).toThrow(/greater/);
     expect(() => mid.createChild('app', 'a2')).toThrow(/greater/);
     expect(() => app.createChild('unknown', 'u1')).toThrow(/greater/);
-    app.dispose();
+    await app.dispose();
   });
 
   it('treats an equal redeclaration as a no-op and rejects a different one', () => {

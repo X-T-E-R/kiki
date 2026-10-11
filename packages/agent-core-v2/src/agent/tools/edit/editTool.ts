@@ -8,9 +8,9 @@ import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { IFileEditService } from '#/app/edit/fileEdit';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ToolAccesses,
@@ -37,10 +37,7 @@ export class EditTool implements IEditTool {
   ) {}
 
   private workspaceConfig(runtime: Runtime): WorkspaceConfig {
-    const view = new RuntimeWorkspaceView(runtime, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     return { workspaceDir: view.workDir, additionalDirs: view.additionalDirs };
   }
 
@@ -51,7 +48,7 @@ export class EditTool implements IEditTool {
     const generation = inspected.identity.generation;
     const env = inspected.environment;
     const workspace = this.workspaceConfig(inspected);
-    const pathOptions = { env, workspace, operation: 'write' as const };
+    const pathOptions = { env, workspace, operation: 'write' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let external = false;

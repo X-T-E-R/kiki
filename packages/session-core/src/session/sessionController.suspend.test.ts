@@ -130,14 +130,15 @@ describe('SessionController suspend / resume', () => {
     controller.suspend();
     read.mockResolvedValueOnce(snapshot({ as_of_seq: 14, session: { ...session, title: 'Renamed' } }));
 
-    controller.resume();
+    const resumed = controller.resume();
     expect(controller.suspended).toBe(false);
     expect(attachments).toHaveLength(2);
     expect(attachments[1]!.input.sessionCursor).toEqual({ seq: 10, epoch: 'epoch-1' });
     expect(attachments[1]!.input.transcriptSince).toEqual({ main: { seq: 3, epoch: 'epoch-canonical' } });
     // The retained window is visible before any server round trip completes.
     expect(controller.getState().blocks.length).toBeGreaterThan(0);
-    await vi.waitFor(() => { expect(controller.getState().session?.title).toBe('Renamed'); });
+    await resumed;
+    expect(controller.getState().session?.title).toBe('Renamed');
     expect(read).toHaveBeenCalledTimes(2);
     controller.close();
   });

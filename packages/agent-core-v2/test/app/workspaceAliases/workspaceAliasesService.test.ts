@@ -45,6 +45,7 @@ function emptySessionIndex(): ISessionIndex {
     onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
     status: () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
     get: async () => undefined,
+    archiveFamily: async () => [],
     listRecent: async () => ({ items: [] }),
     count: async () => 0,
     remove: async () => {},
@@ -82,7 +83,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
   });
 
   afterEach(async () => {
-    currentHost?.dispose();
+    await currentHost?.dispose();
     currentHost = undefined;
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });

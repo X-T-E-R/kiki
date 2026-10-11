@@ -3,15 +3,19 @@ import * as fs from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { IConfigService, ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2';
-import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, type TranscriptTurn } from '@kiki/transcript';
+import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, applyContentSegment, projectPresentedText, TRANSCRIPT_COVERAGE_VERSION, type ContentSegment, type TranscriptResponse, type TranscriptTurn } from '@kiki/transcript';
+import Fastify from 'fastify';
+import { registerSessionViewHttp, SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
+import type { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
+import { sessionHistoryBudgetRecords } from './fixtures/sessionHistoryBudget';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../src/services/history/historyLocatorStore';
-import { CanonicalEntityPreparingError } from '../src/services/history/historyCanonicalReader';
+import { CanonicalEntityPreparingError, HistoryCanonicalReader } from '../src/services/history/historyCanonicalReader';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
-import { readSessionViewTranscriptContent } from '../src/transport/klient/sessionViewReads';
+import { readSessionViewTranscriptContent, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
 vi.mock('node:fs/promises', { spy: true });
 
@@ -208,6 +212,122 @@ describe('source-backed canonical detail', () => {
     } finally { await f.close(); }
   });
 
+  it('reads segmented refs from a cold page while canonical navigation prepares in the background', async () => {
+    const records = [...Array.from({ length: 32 }, (_, id) => turnRecords(id, 'x'.repeat(350000))).flat(),
+      ...turnRecords(100, 'target '.repeat(100000))];
+    expect(Buffer.byteLength(records.map(line).join(''))).toBeGreaterThan(8 << 20);
+    const f = await fixture(records);
+    const controller = new AbortController();
+    const coldRead = vi.spyOn(f.service, 'readColdSnapshot');
+    try {
+      const page = await readSessionViewTranscriptPage(f.service, 's', { agentId: 'main', pageSize: 1, signal: controller.signal });
+      const turn = page?.items.find((item) => item.kind === 'turn' && item.turnId === 't100');
+      if (turn?.kind !== 'turn') throw new Error('missing cold page turn');
+      const ref = turn.steps.flatMap((step) => step.frames).flatMap((frame) => frame.contentRefs ?? [])
+        .find((value) => value.source.kind === 'frame' && value.path[0] === 'output');
+      if (ref === undefined) throw new Error('missing cold page content ref');
+      const before = coldRead.mock.calls.length;
+      const first = await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref, signal: controller.signal });
+      expect(first).toBeDefined();
+      expect(first?.ref).toEqual(ref);
+      expect(coldRead.mock.calls.length).toBe(before);
+      const next = first?.next;
+      expect(next).toBeDefined();
+      expect(await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref: next!, signal: controller.signal })).toBeDefined();
+      expect(coldRead.mock.calls.length).toBe(before);
+      await vi.waitFor(() => expect(f.nav.canonicalReadReport().projectionRecords).toBe(records.length), { timeout: 30_000 });
+    } finally { coldRead.mockRestore(); controller.abort(); await f.close(); }
+  }, 60_000);
+
+  it('replays an accepted canonical range during append then incorporates the later result on the next read', async () => {
+    const body = 'typed body '.repeat(1000);
+    const generated = '\n\n<thread_refs>generated context</thread_refs>';
+    const raw = `${body}${generated}`;
+    const presentation = { spans: [{ start: body.length, end: raw.length, kind: 'context' as const }] };
+    const records = turnRecords(100, 'saved response');
+    records[0] = { ...records[0], input: [{ type: 'text', text: raw, presentation }] };
+    const f = await fixture(records);
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    let appended = false;
+    const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      if (args[0] !== f.wirePath) return handle;
+      const read = handle.read.bind(handle);
+      Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const result = await read(buffer, offset, length, position);
+        if (!appended) {
+          appended = true;
+          await actual.appendFile(f.wirePath, line(event({ type: 'tool.result', toolCallId: 'call-100', result: { output: 'later result', isError: false } })));
+        }
+        return result;
+      } });
+      return handle;
+    });
+    try {
+      expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { output: 'saved response' } });
+      gate.mockRestore();
+      expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { output: 'later result' } });
+      expect(f.nav.canonicalReadReport()).toMatchObject({ replays: 2, replayRecords: 17 });
+      const source = { kind: 'turn' as const, id: 't100' };
+      const turn = await f.service.readCanonicalEntity('s', 'main', source) as TranscriptTurn;
+      expect(turn).toMatchObject({ prompt: raw, presentation });
+      let ref = boundedEntity(turn, source, 4096).contentRefs?.find((item) => item.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt continuation');
+      const revision = ref.revision;
+      const visible: string[] = [projectPresentedText(raw.slice(0, ref.offset), presentation)];
+      while (ref !== undefined) {
+        const offset = ref.offset;
+        const segment = await readSessionViewTranscriptContent(f.service, 's', { agentId: 'main', ref, range: true });
+        if (typeof segment?.value !== 'string') throw new Error('missing raw prompt range');
+        expect(segment.ref.revision).toBe(revision);
+        expect(segment.value).toBe(raw.slice(offset, offset + segment.value.length));
+        visible.push(projectPresentedText(segment.value, presentation, offset));
+        ref = segment.next;
+      }
+      expect(visible.join('')).toBe(body);
+    } finally { gate.mockRestore(); await f.close(); }
+  });
+
+  it('keeps a cold detail prefix valid during a live append without caching it as the newer source', async () => {
+    const f = await fixture(turnRecords(100, 'saved response'));
+    const read = f.service.readColdSnapshot.bind(f.service);
+    const cold = vi.spyOn(f.service, 'readColdSnapshot').mockImplementationOnce(async (...args) => {
+      const snapshot = await read(...args);
+      await appendFile(f.wirePath, turnRecords(101, 'live appended response').map(line).join(''));
+      return snapshot;
+    });
+    let scans = 0;
+    const reader = new HistoryCanonicalReader(f.db, f.service, async () => {
+      if (++scans % 2 === 0) throw new Error('background unavailable');
+      return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
+    });
+    try {
+      const source = { kind: 'turn' as const, id: 't100' };
+      expect(await reader.readEntity('s', 'main', source, new AbortController().signal)).toMatchObject({ status: 'found' });
+      expect(cold).toHaveBeenCalledTimes(1);
+      expect(await reader.readEntity('s', 'main', source, new AbortController().signal)).toMatchObject({ status: 'found' });
+      expect(cold).toHaveBeenCalledTimes(2);
+    } finally { reader.invalidate(); cold.mockRestore(); await f.close(); }
+  });
+
+  it.each(['failure', 'cancel'] as const)('settles background preparation %s without certifying its incomplete projection', async mode => {
+    const f = await fixture(turnRecords(100, 'target response'));
+    let scans = 0;
+    const reader = new HistoryCanonicalReader(f.db, f.service, async (_session, _agent, signal) => {
+      scans += 1;
+      if (scans === 1) return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
+      if (mode === 'failure') throw new Error('source read failed');
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    try {
+      expect(await reader.readEntity('s', 'main', { kind: 'turn', id: 't100' }, new AbortController().signal)).toMatchObject({ status: 'found' });
+      if (mode === 'cancel') reader.invalidate();
+      await vi.waitFor(() => expect(reader.report()).toMatchObject({ preparationsActive: 0, preparationsCompleted: 0, preparationsFailed: mode === 'failure' ? 1 : 0, preparationsCancelled: mode === 'cancel' ? 1 : 0 }));
+      expect(reader.report().projectionRecords).toBe(1);
+      expect(scans).toBe(2);
+    } finally { reader.invalidate(); await f.close(); }
+  });
+
   it.each([9, 31])('advances a supported %i MiB record and locates the following small call without replaying the large turn', async (mib) => {
     const large = 'x'.repeat(mib << 20);
     const target = turnRecords(101, 'small independent output');
@@ -269,7 +389,10 @@ describe('source-backed canonical detail', () => {
         const stat = handle.stat.bind(handle);
         let streamingHandle = 0;
         Object.assign(handle, {
-          stat: async () => { streamingHandle = ++streamingHandles; return stat(); },
+          stat: async (options?: { bigint?: boolean }) => {
+            if (options?.bigint !== true) streamingHandle = ++streamingHandles;
+            return stat(options);
+          },
           read: async (buffer: Buffer, offset: number, length: number, position: number) => {
             const result = await read(buffer, offset, length, position);
             if (streamingHandle === 2) {
@@ -412,4 +535,144 @@ describe('source-backed canonical detail', () => {
       spy.mockRestore();
     } finally { await f.close(); }
   });
+});
+
+
+it('opens a cold HTTP view and reads first, middle and last canonical history exactly past old header budgets', async () => {
+  const records = sessionHistoryBudgetRecords();
+  const f = await fixture(records);
+  const app = Fastify();
+  const core = { accessor: { get: () => ({ get: () => undefined }) } } as unknown as Scope;
+  const broadcaster = { getCursor: async () => ({ seq: 0, epoch: 'cold:s' }), unsubscribe: () => undefined } as unknown as SessionEventBroadcaster;
+  const frames: unknown[] = [];
+  const errors: unknown[] = [];
+  const connection = new SessionViewHttpConnection(broadcaster, (frame) => frames.push(frame), (_id, error) => errors.push(error), { core, service: f.service });
+  registerSessionViewHttp(app, core, { sessionViewTranscriptService: f.service });
+  try {
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    connection.receive({ type: 'view_attach', id: 'view', sessionId: 's', data: { generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
+    await vi.waitFor(() => expect(frames.some((frame) => (frame as { data?: { type?: string } }).data?.type === 'ready')).toBe(true));
+    expect(errors).toEqual([]);
+    const draft = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(draft);
+    const adapter = new TranscriptWireAdapter('main', { turn: (id) => draft.getTurn(id), tool: (id) => draft.getToolCall(id) });
+    for (const record of records) reducer.apply(adapter.add(record as { type: string }));
+    reducer.apply(adapter.finish());
+    const expected = draft.snapshot();
+    const all: TranscriptResponse['items'][number][] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const reply = await fetch(`${endpoint}/api/klient/session-view/s/transcript?agent_id=main&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}&page_size=7${cursor === undefined ? '' : `&before_item=${encodeURIComponent(cursor)}`}`);
+      expect(reply.status).toBe(200);
+      const envelope = await reply.json() as { code: number; data: TranscriptResponse };
+      expect(envelope.code).toBe(0);
+      expect(envelope.data.items.length).toBeGreaterThan(0);
+      all.unshift(...envelope.data.items);
+      expect(++pages).toBeLessThan(100);
+      if (envelope.data.next_cursor === undefined) break;
+      expect(envelope.data.next_cursor).not.toBe(cursor);
+      cursor = envelope.data.next_cursor;
+    }
+    expect(all.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(expected!.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind));
+    for (const ordinal of [0, 22, 44]) {
+      const preview = all.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+      if (preview?.kind !== 'turn') throw new Error('Missing turn');
+      let turn = preview;
+      const hydrate = async <T extends import('@kiki/transcript').ContentWindow>(value: T): Promise<T> => {
+        let current = value;
+        let count = 0;
+        while (current.contentRefs?.length) {
+          const ref = current.contentRefs[0]!;
+          const reply = await fetch(`${endpoint}/api/klient/session-view/s/transcript/content`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'main', ref }) });
+          expect(reply.status).toBe(200);
+          const envelope = await reply.json() as { code: number; data: ContentSegment };
+          if (envelope.code === 40923) { expect(++count).toBeLessThan(1000); continue; }
+          expect(envelope.code).toBe(0);
+          expect(envelope.data.next === undefined || envelope.data.next.offset > ref.offset).toBe(true);
+          current = applyContentSegment(current, envelope.data);
+          expect(++count).toBeLessThan(1000);
+        }
+        return current;
+      };
+      turn = await hydrate(turn);
+      for (const step of turn.steps) for (let index = 0; index < step.frames.length; index += 1) step.frames[index] = await hydrate(step.frames[index]!);
+      const canonical = expected!.items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+      expect(JSON.parse(JSON.stringify(turn, (key, value) => key === 'contentRefs' ? undefined : value))).toEqual(JSON.parse(JSON.stringify(canonical)));
+    }
+    console.log('session-open-budget-http', JSON.stringify({ turns: all.length, pages, wireBytes: Buffer.byteLength(records.map(line).join('')), canonical: f.nav.canonicalReadReport() }));
+  } finally { connection.dispose(); await app.close(); await f.close(); }
+}, 60_000);
+
+it('rejects real corrupted cold history and recovers after the source is repaired', async () => {
+  const records = turnRecords(100, 'recoverable');
+  const f = await fixture(records);
+  try {
+    await appendFile(f.wirePath, 'not-json\n');
+    await expect(f.service.readColdSnapshot('s', 'main')).rejects.toThrow('corrupted line');
+    await writeFile(f.wirePath, records.map(line).join(''));
+    expect(await f.service.readColdSnapshot('s', 'main')).toMatchObject({ items: [{ turnId: 't100', steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output: 'recoverable' }] }] }] });
+  } finally { await f.close(); }
+});
+
+
+it('continues canonical target replay past the old 64 MiB total budget and retains the exact final fact', async () => {
+  const records = turnRecords(100, 'initial');
+  const large = 'x'.repeat(22 << 20);
+  records.splice(6, 0, ...[0, 1, 2].map((index) => event({ type: 'tool.result', toolCallId: 'call-100', result: { output: `${index}:${large}`, isError: false } })), event({ type: 'tool.result', toolCallId: 'call-100', result: { output: 'EXACT FINAL 汉😀', isError: false } }));
+  const f = await fixture(records);
+  try {
+    let lookup = await f.service.lookupToolCall('s', 'main', 'call-100');
+    for (let attempts = 0; lookup.status === 'preparing'; attempts += 1) {
+      expect(attempts).toBeLessThan(20);
+      lookup = await f.service.lookupToolCall('s', 'main', 'call-100');
+    }
+    expect(lookup).toMatchObject({ status: 'found', frame: { output: 'EXACT FINAL 汉😀', state: 'done' } });
+    expect(f.nav.canonicalReadReport().replayBytes).toBeGreaterThan(64 << 20);
+    expect(f.nav.canonicalReadReport()).toMatchObject({ replays: 1, replayRecords: records.length });
+  } finally { await f.close(); }
+}, 60_000);
+
+
+it('continues HTTP content through a legal own key larger than the default request body budget', async () => {
+  const original = { output: { ['k'.repeat(1100 * 1024)]: 'exact '.repeat(1000) } };
+  const service = { readCanonicalEntity: async () => original } as unknown as TranscriptService;
+  const app = Fastify();
+  registerSessionViewHttp(app, {} as Scope, { sessionViewTranscriptService: service });
+  let current = boundedEntity(original, { kind: 'frame', id: 'f', turnId: 't', stepId: 's' });
+  try {
+    let requests = 0;
+    while (current.contentRefs?.length) {
+      const reply = await app.inject({ method: 'POST', url: '/api/klient/session-view/s/transcript/content', payload: { agentId: 'main', ref: current.contentRefs[0]! } });
+      expect(reply.statusCode).toBe(200);
+      const envelope = reply.json<{ code: number; data: ContentSegment }>();
+      expect(envelope.code).toBe(0);
+      current = applyContentSegment(current, envelope.data);
+      expect(++requests).toBeLessThan(10);
+    }
+    expect(current.output).toEqual(original.output);
+  } finally { await app.close(); }
+});
+
+
+it('applies configurable detail retention at the next read without turning zero into an access limit', async () => {
+  const output = 'x'.repeat(3 << 20) + 'EXACT-END';
+  let budget = 0;
+  const f = await fixture(turnRecords(100, output), () => budget);
+  try {
+    const first = await f.service.lookupToolCall('s', 'main', 'call-100');
+    expect(first).toMatchObject({ status: 'found', frame: { output } });
+    expect(f.nav.canonicalReadReport()).toMatchObject({ oversizedCacheEntries: 0, cacheBudgetBytes: 4 << 20, replays: 1 });
+    budget = 16 << 20;
+    expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toEqual(first);
+    expect(f.nav.canonicalReadReport()).toMatchObject({ oversizedCacheEntries: 1, replays: 2 });
+    expect(f.nav.canonicalReadReport().oversizedCacheBytes).toBeLessThanOrEqual(budget);
+    await f.service.lookupToolCall('s', 'main', 'call-100');
+    expect(f.nav.canonicalReadReport().replays).toBe(2);
+    budget = 0;
+    expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toEqual(first);
+    expect(f.nav.canonicalReadReport()).toMatchObject({ oversizedCacheEntries: 0, replays: 3 });
+    expect(await f.service.readCanonicalEntity('s', 'main', { kind: 'turn', id: 't100' })).toMatchObject({ steps: [{ frames: [{ kind: 'thinking' }, { kind: 'tool', output }] }] });
+    expect(f.nav.canonicalReadReport().oversizedCacheEntries).toBe(0);
+  } finally { await f.close(); }
 });

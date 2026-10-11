@@ -158,9 +158,12 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       case 'context.apply_compaction':
         applyCompaction(record);
         break;
-      case 'context.undo':
+      case 'context.undo': {
         applyUndo(record['count'] as number);
+        const prompt = record['replacementPrompt'] as import('#/agent/prompt/promptService').PromptEnqueuedPayload | undefined;
+        if (prompt !== undefined) fold.appendMessage(prompt.message, record.time);
         break;
+      }
       case 'context.clear':
         logical = [];
         resetOpenState();

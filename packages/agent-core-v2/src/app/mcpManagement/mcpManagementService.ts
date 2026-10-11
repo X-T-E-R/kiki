@@ -375,13 +375,13 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     await active.flow.cancel();
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const active of this.authFlows.values()) {
       clearTimeout(active.idleTimer);
-      void active.flow.cancel();
+      await active.flow.cancel();
     }
     this.authFlows.clear();
-    super.dispose();
+    await super.dispose();
   }
 
   async resetServerAuth(locator: McpServerLocator, query: McpRegistryQuery = {}, expectedCanonicalUrl?: string): Promise<void> {

@@ -3,65 +3,91 @@
  * marketplace (sections, recommendations, search) and the plugin detail
  * (what a plugin contributes, what it needs).
  *
- * The catalog carries no category field, so categories are derived: official
- * entries and workspace matches lead as "Featured", every other entry is
- * placed by its keywords into a small fixed category set, and anything
- * unplaced falls into "More". The order is the product order; an empty
- * category never renders.
+ * The catalog is data, not code. Every grouping rule below reads a field the
+ * catalog states about an entry (its declared sub-group, then its tier, then
+ * its author), never a package name. Adding a package to
+ * `plugins/marketplace.json` is therefore enough for it to appear, be
+ * searched and be installable, with no change to this file: the market must
+ * not need a client release to learn about a new plugin.
  */
 
 import type { PluginMarketplaceEntry, PluginSummary, PluginUpdateStatus } from './client';
 
-export type CatalogShelfId = 'featured' | 'productivity' | 'coding' | 'web' | 'data' | 'more';
+export type CatalogShelfId = 'recommended' | 'official' | 'community' | 'more';
 
-export const CATALOG_SHELF_ORDER: readonly CatalogShelfId[] = [
-  'featured',
-  'productivity',
-  'coding',
-  'web',
-  'data',
-  'more',
-];
+/** The language the UI is reading in, as a catalog localization key. */
+export type CatalogLocale = 'en' | 'zh';
 
-export function isCatalogShelf(value: string | null): value is CatalogShelfId {
-  return value !== null && (CATALOG_SHELF_ORDER as readonly string[]).includes(value);
+/**
+ * The entry's own text for the reader's language, field by field.
+ *
+ * A catalog entry may translate its name, its description or its search words,
+ * in any combination, and may translate nothing at all. Each field falls back
+ * to the top-level value, so a third-party entry with no localization reads
+ * exactly as it was written, and a name the catalog did not translate keeps
+ * its original spelling — brand names are not the catalog's to rewrite.
+ */
+export function localizeEntry(
+  entry: PluginMarketplaceEntry,
+  locale: CatalogLocale,
+): { readonly displayName: string; readonly description?: string; readonly keywords: readonly string[] } {
+  const localized = entry.localizations?.[locale];
+  return {
+    displayName: localized?.displayName ?? entry.displayName,
+    description: localized?.description ?? entry.description,
+    keywords: localized?.keywords ?? entry.keywords ?? [],
+  };
 }
 
-/** Keyword → category for non-featured entries. First hit wins. */
-const SHELF_KEYWORDS: readonly (readonly [CatalogShelfId, readonly string[]])[] = [
-  ['productivity', ['office', 'docx', 'xlsx', 'pptx', 'pdf', 'writing', 'manuscript', 'fiction', 'notes', 'notion', 'calendar', 'email']],
-  ['coding', ['skills', 'planning', 'tdd', 'debugging', 'code-review', 'agents', 'git']],
-  ['web', ['web', 'browser', 'css', 'frontend', 'vercel', 'deployment', 'nextjs', 'automation']],
-  ['data', ['data', 'mcp', 'sql', 'analytics', 'datasource']],
+export const CATALOG_SHELF_ORDER: readonly CatalogShelfId[] = [
+  'recommended',
+  'official',
+  'community',
+  'more',
 ];
 
 export interface CatalogShelf {
   readonly id: CatalogShelfId;
+  /**
+   * A catalog-declared sub-group, drawn as its own block inside the shelf. A
+   * package family (the media entry and its providers) declares one string
+   * and reads as a block without the client naming any member.
+   */
+  readonly group?: string;
   readonly entries: readonly PluginMarketplaceEntry[];
 }
 
-/** Category by keywords alone (the Featured lift happens in `shelveCatalog`). */
-export function shelfOf(entry: PluginMarketplaceEntry): CatalogShelfId {
-  if (entry.tier === 'official') return 'featured';
-  const keywords = (entry.keywords ?? []).map((word) => word.toLowerCase());
-  for (const [shelf, words] of SHELF_KEYWORDS) {
-    if (keywords.some((word) => words.includes(word))) return shelf;
-  }
+/** Where an entry belongs, by what the catalog says about it. */
+function shelfKey(entry: PluginMarketplaceEntry): CatalogShelfId {
+  if (entry.tier === 'official') return 'official';
+  if (entry.tier === 'curated') return 'community';
   return 'more';
 }
 
-export function catalogMatches(entry: PluginMarketplaceEntry, rawQuery: string): boolean {
-  const query = rawQuery.trim().toLowerCase();
-  if (query === '') return true;
-  return [entry.displayName, entry.id, entry.description ?? '', ...(entry.keywords ?? [])]
-    .some((field) => field.toLowerCase().includes(query));
+/** One block per declared sub-group; entries without one stay together. */
+function groupParts(shelf: CatalogShelf): readonly CatalogShelf[] {
+  const groups = new Map<string, PluginMarketplaceEntry[]>();
+  for (const entry of shelf.entries) {
+    const key = entry.group ?? '';
+    const existing = groups.get(key);
+    if (existing === undefined) groups.set(key, [entry]);
+    else existing.push(entry);
+  }
+  // A tier whose entries all declare one group is still that group, and says
+  // so; a tier with no declared group keeps the tier's own heading. Either
+  // way the heading is read off the entries themselves, never assumed.
+  return [...groups.entries()].map(([group, entries]) => ({
+    id: shelf.id,
+    ...(group === '' ? {} : { group }),
+    entries,
+  }));
 }
 
 /**
- * The public catalog in categories. Featured holds the official entries plus
- * any official/curated entry the server matched to the workspace (`relevant`
- * ids, which lead); every entry appears in exactly one category.
- * Third-party entries are never lifted into Featured.
+ * The public catalog, grouped. Workspace matches lead as their own shelf, then
+ * the rest by tier, and a tier that declares sub-groups breaks into blocks. An
+ * empty shelf never renders, and a searching reader sees one flat list rather
+ * than the same handful split under four headings.
  */
 export function shelveCatalog(
   entries: readonly PluginMarketplaceEntry[],
@@ -69,18 +95,43 @@ export function shelveCatalog(
   relevant: ReadonlySet<string> = new Set(),
 ): readonly CatalogShelf[] {
   const visible = entries.filter((entry) => catalogMatches(entry, query));
-  const featured = (entry: PluginMarketplaceEntry) =>
-    entry.tier === 'official' || (relevant.has(entry.id) && entry.tier !== 'third-party');
-  const lead = [
-    ...visible.filter((entry) => featured(entry) && relevant.has(entry.id)),
-    ...visible.filter((entry) => featured(entry) && !relevant.has(entry.id)),
-  ];
-  return CATALOG_SHELF_ORDER
-    .map((id) => ({
-      id,
-      entries: id === 'featured' ? lead : visible.filter((entry) => !featured(entry) && shelfOf(entry) === id),
-    }))
-    .filter((shelf) => shelf.entries.length > 0);
+  const recommended = visible.filter((entry) => relevant.has(entry.id) && entry.tier !== 'third-party');
+  const recommendedIds = new Set(recommended.map((entry) => entry.id));
+  const shelves: CatalogShelf[] = recommended.length > 0 ? [{ id: 'recommended', entries: recommended }] : [];
+
+  const buckets = new Map<CatalogShelfId, PluginMarketplaceEntry[]>();
+  for (const entry of visible) {
+    if (recommendedIds.has(entry.id)) continue;
+    const key = shelfKey(entry);
+    const existing = buckets.get(key);
+    if (existing === undefined) buckets.set(key, [entry]);
+    else existing.push(entry);
+  }
+  for (const id of CATALOG_SHELF_ORDER) {
+    const entries = buckets.get(id);
+    if (entries === undefined) continue;
+    shelves.push(...groupParts({ id, entries }));
+  }
+  return shelves;
+}
+
+export function catalogMatches(entry: PluginMarketplaceEntry, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase();
+  if (query === '') return true;
+  // Every language the catalog declares is searchable, not only the one on
+  // screen. A reader who knows a package by the name they have always seen
+  // finds it even while the window is in another language, and vice versa.
+  const words = (texts: readonly (string | undefined)[]): readonly string[] => texts
+    .filter((text): text is string => text !== undefined)
+    .flatMap((text) => (text === '' ? [] : [text]));
+  return [
+    ...words([entry.displayName, entry.id, entry.description, entry.author, ...(entry.keywords ?? [])]),
+    ...Object.values(entry.localizations ?? {}).flatMap((localized) => words([
+      localized?.displayName,
+      localized?.description,
+      ...(localized?.keywords ?? []),
+    ])),
+  ].some((field) => field.toLowerCase().includes(query));
 }
 
 /** Where an installed plugin came from, as the Installed list labels it. */
@@ -249,6 +300,19 @@ export function hasAnyPermission(permissions: PluginPermissionsView | undefined)
     || permissions.uiPanel === true;
 }
 
+/**
+ * The extra management surface a plugin contributes, read from its own
+ * manifest (`x-kiki.mediaSurface`). A plugin asks for a surface by declaring
+ * it, so a new one is a package change rather than a client change, and the
+ * detail page can offer it without naming any plugin.
+ */
+export function pluginSurface(
+  manifest: Readonly<Record<string, unknown>> | undefined,
+): { readonly view: 'media' } | undefined {
+  const surface = record(extensionOf(manifest)['mediaSurface']);
+  return surface?.['view'] === 'media' ? { view: 'media' } : undefined;
+}
+
 export function pluginPrerequisites(
   info: { readonly prerequisites?: { readonly items: { readonly items: readonly Readonly<Record<string, unknown>>[] } } } | undefined,
   manifest: Readonly<Record<string, unknown>> | undefined,
@@ -309,11 +373,12 @@ export function planContributionGroups(contributions: readonly string[]): readon
 // Updates: one answer per installed plugin, whichever channel knows.
 
 /**
- * An available update and where it comes from. Catalog updates reinstall the
- * catalog entry's source; GitHub updates reinstall the plugin's own recorded
- * source, which resolves the tracked branch or default ref again. Either way
- * the install sheet previews first and asks again when anything changed —
- * nothing here installs on its own.
+ * An available update and where it comes from. A catalog update reinstalls
+ * that entry's published source, carrying its digest so a published archive
+ * can actually be verified; a GitHub update reinstalls the plugin's own
+ * recorded source, which resolves the tracked branch or default ref again.
+ * Either way the install sheet previews first and asks again when anything
+ * changed, and nothing here installs on its own.
  */
 export interface PluginUpdateView {
   readonly via: 'catalog' | 'github';
@@ -322,15 +387,19 @@ export interface PluginUpdateView {
   readonly version?: string;
   /** Set when a GitHub branch moved: the branch whose head is newer. */
   readonly branch?: string;
+  /** The published archive's digest, when the catalog ships one. */
+  readonly sha256?: string;
 }
 
 export function pluginUpdate(
   plugin: Pick<PluginSummary, 'id' | 'source' | 'originalSource'> | undefined,
-  entry: Pick<PluginMarketplaceEntry, 'source' | 'version' | 'updateAvailable'> | undefined,
+  entry: Pick<PluginMarketplaceEntry, 'source' | 'version' | 'updateAvailable' | 'sha256'> | undefined,
   github: readonly PluginUpdateStatus[] | undefined,
 ): PluginUpdateView | undefined {
   if (plugin === undefined) return undefined;
-  if (entry?.updateAvailable === true) return { via: 'catalog', source: entry.source, version: entry.version };
+  if (entry?.updateAvailable === true) {
+    return { via: 'catalog', source: entry.source, version: entry.version, sha256: entry.sha256 };
+  }
   if (plugin.source !== 'github' || plugin.originalSource === undefined) return undefined;
   const status = github?.find((item) => item.id === plugin.id);
   if (status?.updateAvailable !== true) return undefined;

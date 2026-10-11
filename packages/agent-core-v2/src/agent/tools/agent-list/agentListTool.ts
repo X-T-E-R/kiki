@@ -56,9 +56,11 @@ export class AgentListTool implements IAgentListTool {
             const execution = this.lifecycle.get(child.agentId)?.accessor.get(IAgentExecutionService).status();
             const status = execution?.state === 'broken'
               ? 'errored'
-              : execution !== undefined && execution.state !== 'idle'
-                ? 'running'
-                : statusOf(latestRuns.get(child.agentId)?.status);
+              : execution?.state === 'closed'
+                ? 'interrupted'
+                : execution !== undefined && execution.state !== 'idle'
+                  ? 'running'
+                  : statusOf(latestRuns.get(child.agentId)?.status);
             return toEntry(child, status);
           })
           .filter((entry) => includeFinished || !FINISHED_STATUSES.has(entry.status))

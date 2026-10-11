@@ -22,6 +22,7 @@ export const GENERIC_SUBAGENT_PROFILE: AgentProfile = normalizeAgentProfile({
     'TodoList',
     'TaskList',
     'TaskOutput',
+    'TaskWait',
     'TaskStop',
   ],
   canSpawnSubagents: false,

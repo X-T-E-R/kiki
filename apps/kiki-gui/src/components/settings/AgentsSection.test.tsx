@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
@@ -75,9 +76,39 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
-async function render(bucket: 'main' | 'sub' = 'main') {
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider><NamedAgentProfilesCard bucket={bucket} /></I18nProvider></QueryClientProvider>));
+/** Every render goes through one router: the card reads `?workspace=`. */
+async function renderAt(entry: string, node: ReactNode) {
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={[entry]}>
+        <QueryClientProvider client={queries}><I18nProvider>{node}</I18nProvider></QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
   await settle();
+}
+
+/** Renders the card at `?workspace=` so a link from a workspace page can be tested. */
+async function render(bucket: 'main' | 'sub' = 'main', workspace?: string) {
+  await renderAt(
+    workspace === undefined ? '/' : `/?workspace=${encodeURIComponent(workspace)}`,
+    <NamedAgentProfilesCard bucket={bucket} />,
+  );
+}
+
+/**
+ * Address moves performed while the card is already mounted, which is the case
+ * a first-render-only read of `?workspace=` cannot follow: a link to another
+ * workspace, and Back.
+ */
+function AddressDriver() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" data-drive-to="ws-three" onClick={() => { void navigate('/?workspace=ws-three'); }} />
+      <button type="button" data-drive-back onClick={() => { void navigate(-1); }} />
+    </>
+  );
 }
 async function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -91,12 +122,7 @@ describe('agent runtime identity settings', () => {
   it('saves the Kimi Code compatibility switch in the identity section', async () => {
     client.getConfig.mockResolvedValue({ identity: { advertiseAsKimiCode: false } });
     client.patchConfig.mockResolvedValue({ identity: { advertiseAsKimiCode: true } });
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}>
-        <I18nProvider><AgentRuntimeCard /></I18nProvider>
-      </QueryClientProvider>,
-    ));
-    await settle();
+    await renderAt('/', <AgentRuntimeCard />);
 
     const card = container.querySelector('#st-card-agent-runtime')!;
     expect(card.textContent).toContain('Identify as Kimi Code to upstream services');
@@ -122,12 +148,7 @@ describe('agent runtime identity settings', () => {
       };
       return config;
     });
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}>
-        <I18nProvider><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></I18nProvider>
-      </QueryClientProvider>,
-    ));
-    await settle();
+    await renderAt('/', <><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></>);
     const card = container.querySelector('#st-card-agent-runtime')!;
     const identityInput = [...card.querySelectorAll('input')].find((input) => input.value === 'Example')!;
     await setInputValue(identityInput, 'Edited name');
@@ -149,10 +170,7 @@ describe('agent runtime identity settings', () => {
 
   it('leaves the server-wide disabled-profile list to the agent list, and keeps identity saving independent of it', async () => {
     client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
-    ));
-    await settle();
+    await renderAt('/', <AgentRuntimeCard />);
     // The agent list is the one place that writes this list, by row or by name,
     // so the identity card does not carry a second copy of it.
     expect(container.textContent).not.toContain('Disabled built-in agents');
@@ -161,10 +179,7 @@ describe('agent runtime identity settings', () => {
   it('keeps the extra agent directory nodes, focus and caret across typing, paste and preceding-row removal', async () => {
     const label = 'Extra agent directories';
     client.getConfig.mockResolvedValue({ extra_agent_dirs: ['first', 'second'], disabled_named_profiles: ['first', 'second'] });
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}><I18nProvider><AgentRuntimeCard /></I18nProvider></QueryClientProvider>,
-    ));
-    await settle();
+    await renderAt('/', <AgentRuntimeCard />);
     const getSecond = () => container.querySelector<HTMLInputElement>(`input[aria-label="${label} 2"]`)!;
     const input = getSecond();
     input.focus();
@@ -191,12 +206,7 @@ describe('agent runtime identity settings', () => {
       return { disabled_named_profiles: disabled };
     });
     queries.setQueryData(['agentProfiles', 'cwd', '/fixture', 'effective'], { items: [profile] });
-    await act(async () => root.render(
-      <QueryClientProvider client={queries}>
-        <I18nProvider><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></I18nProvider>
-      </QueryClientProvider>,
-    ));
-    await settle();
+    await renderAt('/', <><AgentRuntimeCard /><NamedAgentProfilesCard bucket="main" /></>);
     const checkbox = container.querySelector<HTMLInputElement>('[data-agent-profile="agent"] input[type="checkbox"]')!;
     expect(checkbox.checked).toBe(true);
     const before = client.listNamedAgentProfiles.mock.calls.length;
@@ -213,7 +223,7 @@ describe('agent runtime identity settings', () => {
 
 describe('default main profile settings', () => {
   it('shows the board controls without a duplicate Todo explanation', async () => {
-    await act(async () => root.render(<I18nProvider><AgentTaskSettings boardContent={<p>Real board owner slot</p>} /></I18nProvider>));
+    await renderAt('/', <AgentTaskSettings boardContent={<p>Real board owner slot</p>} />);
     expect(container.querySelector('#st-card-agent-todo')).toBeNull();
     expect(container.querySelector('[data-board-settings-slot]')?.textContent).toContain('Real board owner slot');
     expect(client.patchConfig).not.toHaveBeenCalled();
@@ -879,4 +889,84 @@ it('previews menu permission changes in the legacy profile dialog before saving'
   await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')!.click());
   await settle();
   expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({ restrict_models_to_menu: true, pinned_model_alias: 'fixture/model-b' }));
+});
+
+/**
+ * A workspace's own page links here with `?workspace=<id>`, so the page has to
+ * load THAT workspace's profiles. Falling back to the most recently opened
+ * workspace would edit a different one while looking correct, and falling back
+ * to the global catalog would show profiles the workspace does not own.
+ */
+describe('the workspace a profile page was linked to', () => {
+  beforeEach(() => {
+    client.listWorkspaces.mockResolvedValue({ items: [
+      // Most recently opened: the fallback this must NOT silently take.
+      { id: 'ws-recent', root: '/fixture/recent', name: 'Recent', last_opened_at: '2026-09-30T00:00:00Z' },
+      { id: 'ws-two', root: '/fixture/two', name: 'Two', last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-three', root: '/fixture/three', name: 'Three', last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+  });
+
+  it('requests the workspace the link named, not the most recent one', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, workspace_id: 'ws-three' }] });
+    await render('main', 'ws-three');
+    // The actual request, not the href: this is what proves the scope.
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({ workspace_id: 'ws-three', effective: true });
+    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith(expect.objectContaining({ workspace_id: 'ws-recent' }));
+    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith({ mode: 'global' });
+  });
+
+  it('keeps a second workspace from leaking into the first one’s page', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, workspace_id: 'ws-two' }] });
+    await render('main', 'ws-two');
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({ workspace_id: 'ws-two', effective: true });
+    const calls = client.listNamedAgentProfiles.mock.calls.map((call) => JSON.stringify(call[0]));
+    expect(calls.every((call) => !call.includes('ws-three'))).toBe(true);
+  });
+
+  it('says so when the linked workspace is not in this server’s list, and still reads it', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    await render('main', 'ws-gone');
+    // The link is followed as written — no fallback to recency, no fallback to
+    // the global catalog — and the page states the fact the reader needs to
+    // explain the empty rows instead of showing a blank picker.
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({ workspace_id: 'ws-gone', effective: true });
+    expect(client.listNamedAgentProfiles).not.toHaveBeenCalledWith({ mode: 'global' });
+    expect(container.querySelector('[data-named-agents-workspace-missing]')?.textContent)
+      .toContain('Not in this server’s workspace list');
+  });
+
+  it('keeps the note off a page whose workspace is in the list', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    await render('main', 'ws-two');
+    expect(container.querySelector('[data-named-agents-workspace-missing]')).toBeNull();
+  });
+
+  it('follows a query-only move on the page it is already mounted in', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    await renderAt('/?workspace=ws-two', <><NamedAgentProfilesCard bucket="main" /><AddressDriver /></>);
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledWith({ workspace_id: 'ws-two', effective: true });
+    // The picker's own data attribute is the page's answer to "which workspace
+    // am I on", so it is read here rather than a request that a cached query
+    // would not repeat.
+    const on = () => container.querySelector('[data-named-agents-workspace]')?.getAttribute('data-named-agents-workspace');
+    expect(on()).toBe('ws-two');
+
+    // An explicit new address that names another workspace. A copy of the
+    // selection in state would survive this move and keep reading — and
+    // editing — ws-two while the address said ws-three.
+    const mark = client.listNamedAgentProfiles.mock.calls.length;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-drive-to="ws-three"]')!.click(); });
+    await settle();
+    expect(on()).toBe('ws-three');
+    const afterMove = client.listNamedAgentProfiles.mock.calls.slice(mark).map((call) => JSON.stringify(call[0]));
+    expect(afterMove.some((call) => call.includes('ws-three'))).toBe(true);
+    expect(afterMove.every((call) => !call.includes('ws-two'))).toBe(true);
+
+    // Back is the same move in reverse: it lands where the address lands, not
+    // where the picker was last left.
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-drive-back]')!.click(); });
+    await settle();
+    expect(on()).toBe('ws-two');
+  });
 });

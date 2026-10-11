@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 import {
   Error2,
   ErrorCodes,
@@ -6,27 +8,26 @@ import {
   IAgentConversationUndoService,
   IAgentFullCompactionService,
   IAgentLifecycleService,
-  IAgentPermissionModeService,
-  IAgentPlanService,
   IAgentProfileService,
   IAgentPromptService,
-  IAgentToolPolicyService,
   IEventService,
   ISessionActivityView,
   ISessionHistoryMutationService,
   ISessionInteractionService,
   ISessionMetadata,
-  IWireService,
-  ProfileError,
   applyPromptMetadataUpdate,
+  bundledSkillActivations,
   isUndoAnchor,
   promptMetadataTextFromContentParts,
+  promptRetryFor,
+  type PromptRetryReceipt,
   type ContextMessage,
   type IAgentScopeHandle,
   type ISessionScopeHandle,
   type PromptHandle,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 
 import type {
   EditMessageRequest,
@@ -48,13 +49,6 @@ export interface MessageActionDeps {
   readonly transcriptService: TranscriptService;
 }
 
-/** Edits and resends a user message (see `regenerateMessage` for the sibling flow). Performs
- *  media/auth/control preflight before taking the Session-scoped core mutation lease, then validates
- *  cursor + complete-idle state, commits the undo cut and the replacement user message, flushes wire
- *  state, invalidates the live transcript, emits the durable rewrite fact, and only then admits the
- *  replacement turn. Linearization is process-local rather than crash-atomic, and search-index
- *  deletion for the removed suffix is deferred, so the next index sync may retain stale hits until a
- *  rebuild. */
 export async function editAndResendMessage(
   deps: MessageActionDeps,
   session: ISessionScopeHandle,
@@ -63,46 +57,7 @@ export async function editAndResendMessage(
   body: EditMessageRequest,
   resolvedContent: PromptSubmission['content'],
 ): Promise<PromptHandle> {
-  await ensurePromptAuthReady(session, agent.accessor, body);
-  const gate = session.accessor.get(ISessionHistoryMutationService);
-  const lease = await gate.acquire();
-  try {
-    await assertCursor(deps.broadcaster, session.id, body.expected_cursor);
-    assertSessionIdle(session);
-    const entries = await loadMessageHistoryEntries(deps.core, session.id);
-    const target = requireTarget(entries, session.id, targetMessageId);
-    assertEditableUser(target, 'edit_resend', targetMessageId);
-    const original = locateLiveUser(agent, target);
-    const turns = undoCountFrom(agent, original);
-    await applyExecutionOverrides(agent, body);
-    const replacement: ContextMessage = {
-      role: 'user',
-      content: contentToCoreParts(resolvedContent),
-      toolCalls: [],
-      origin: original.origin,
-      id: targetMessageId,
-    };
-    await agent.accessor.get(IAgentConversationUndoService).undo(turns, lease);
-    agent.accessor.get(IAgentContextMemoryService).append(replacement);
-    await agent.accessor.get(IWireService).flush();
-    await updateLastPrompt(deps.core, session, replacement);
-    await deps.transcriptService.reconcileAfterRewrite(session.id);
-    deps.broadcaster.refreshTranscriptAfterHistoryRewrite(session.id);
-    const cursor = await deps.broadcaster.publishHistoryRewritten(
-      session.id,
-      'edit_resend',
-      targetMessageId,
-    );
-    deps.broadcaster.broadcastHistoryResync(session.id, cursor);
-    return await agent.accessor.get(IAgentPromptService).enqueue({
-      id: targetMessageId,
-      message: replacement,
-      historyMutationLease: lease,
-      alreadyMaterialized: true,
-    });
-  } finally {
-    lease.dispose();
-  }
+  return rewriteMessage(deps, session, agent, targetMessageId, body, resolvedContent);
 }
 
 export async function regenerateMessage(
@@ -112,41 +67,88 @@ export async function regenerateMessage(
   targetMessageId: string,
   body: RegenerateMessageRequest,
 ): Promise<PromptHandle> {
-  await ensurePromptAuthReady(session, agent.accessor, body);
-  const gate = session.accessor.get(ISessionHistoryMutationService);
-  const lease = await gate.acquire();
+  return rewriteMessage(deps, session, agent, targetMessageId, body);
+}
+
+export async function replayMessageOperation(
+  agent: IAgentScopeHandle,
+  targetMessageId: string,
+  body: EditMessageRequest,
+): Promise<PromptHandle | undefined> {
+  if (body.operation_id === undefined) return undefined;
+  const prompt = agent.accessor.get(IAgentPromptService);
+  const receipt = await promptRetryFor(prompt).lookup(body.operation_id, actionFingerprint('edit_resend', targetMessageId, body));
+  return receipt === undefined ? undefined : replayHandle(prompt, body.operation_id, receipt);
+}
+
+async function rewriteMessage(
+  deps: MessageActionDeps,
+  session: ISessionScopeHandle,
+  agent: IAgentScopeHandle,
+  targetMessageId: string,
+  body: EditMessageRequest | RegenerateMessageRequest,
+  resolvedContent?: PromptSubmission['content'],
+): Promise<PromptHandle> {
+  const action = resolvedContent === undefined ? 'regenerate' : 'edit_resend';
+  const id = body.operation_id ?? randomUUID();
+  const fingerprint = actionFingerprint(action, targetMessageId, body);
+  const prompt = agent.accessor.get(IAgentPromptService);
+  const lease = await session.accessor.get(ISessionHistoryMutationService).acquire();
   try {
+    const receipt = await promptRetryFor(prompt).lookup(id, fingerprint);
+    if (receipt !== undefined) return await replayHandle(prompt, id, receipt);
+    if (prompt.lookup(id) !== undefined) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This operation ID is already in use.');
+    await ensurePromptAuthReady(session, agent.accessor, body);
     await assertCursor(deps.broadcaster, session.id, body.expected_cursor);
     assertSessionIdle(session);
     const entries = await loadMessageHistoryEntries(deps.core, session.id);
     const target = requireTarget(entries, session.id, targetMessageId);
-    const userEntry = assertRegeneratableAssistant(entries, target, targetMessageId);
+    let userEntry = target;
+    if (action === 'regenerate') userEntry = assertRegeneratableAssistant(entries, target, targetMessageId);
+    else assertEditableUser(target, 'edit_resend', targetMessageId);
     const original = locateLiveUser(agent, userEntry);
     const turns = undoCountFrom(agent, original);
-    await applyExecutionOverrides(agent, body);
-    const id = original.id ?? userEntry.message.id;
-    const replacement = { ...original, id };
-    await agent.accessor.get(IAgentConversationUndoService).undo(turns, lease);
-    agent.accessor.get(IAgentContextMemoryService).append(replacement);
-    await agent.accessor.get(IWireService).flush();
-    await updateLastPrompt(deps.core, session, replacement);
-    await deps.transcriptService.reconcileAfterRewrite(session.id);
-    deps.broadcaster.refreshTranscriptAfterHistoryRewrite(session.id);
-    const cursor = await deps.broadcaster.publishHistoryRewritten(
-      session.id,
-      'regenerate',
-      targetMessageId,
-    );
-    deps.broadcaster.broadcastHistoryResync(session.id, cursor);
-    return await agent.accessor.get(IAgentPromptService).enqueue({
-      id,
-      message: replacement,
-      historyMutationLease: lease,
-      alreadyMaterialized: true,
+    const userMessageId = original.id ?? userEntry.message.id;
+    const execution = await prepareExecutionOverrides(agent, body);
+    validatePromptRuntimeControls(agent.accessor, execution);
+    const replacement: ContextMessage = { ...original, id: userMessageId,
+      content: resolvedContent === undefined ? original.content : [
+        ...original.content.slice(0, bundledSkillActivations(original.origin).length), ...contentToCoreParts(resolvedContent),
+      ] };
+    await prompt.enqueue({
+      id, userMessageId, message: replacement, retryFingerprint: fingerprint,
+      execution, deferredDisabledTools: body.disabled_tools,
+      historyMutationLease: lease, alreadyMaterialized: true,
+      commitHistoryRewrite: async (record) => {
+        await agent.accessor.get(IAgentConversationUndoService).undo(turns, lease, record);
+        await updateLastPrompt(deps.core, session, replacement);
+        await deps.transcriptService.reconcileAfterRewrite(session.id);
+        deps.broadcaster.refreshTranscriptAfterHistoryRewrite(session.id);
+        const cursor = await deps.broadcaster.publishHistoryRewritten(session.id, action, targetMessageId);
+        deps.broadcaster.broadcastHistoryResync(session.id, cursor);
+      },
     });
+    const accepted = await promptRetryFor(prompt).lookup(id, fingerprint);
+    if (accepted === undefined) throw new Error2(ErrorCodes.INTERNAL, 'History rewrite receipt is missing.');
+    return await replayHandle(prompt, id, accepted);
   } finally {
     lease.dispose();
   }
+}
+
+async function replayHandle(prompt: IAgentPromptService, id: string, receipt: PromptRetryReceipt): Promise<PromptHandle> {
+  if (receipt.message === undefined || receipt.userMessageId === undefined) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, 'This operation ID belongs to a different request.');
+  const handle = await prompt.enqueue({ id, userMessageId: receipt.userMessageId, message: receipt.message,
+    execution: receipt.execution, deferredDisabledTools: receipt.deferredDisabledTools,
+    appendTiming: receipt.appendTiming, alreadyMaterialized: true });
+  return { ...handle, state: 'pending', createdAt: receipt.createdAt, appendTiming: receipt.appendTiming, revision: receipt.revision };
+}
+
+function actionFingerprint(action: string, target: string, body: EditMessageRequest | RegenerateMessageRequest): string {
+  const canonical = JSON.stringify({ action, target, body }, (_key, value: unknown) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).toSorted(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : value);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export function assertSessionIdle(session: ISessionScopeHandle): void {
@@ -273,7 +275,7 @@ function assertRegeneratableAssistant(
   }
   for (let index = target.index - 1; index >= 0; index -= 1) {
     const candidate = entries[index];
-    if (candidate === undefined || candidate.contextMessage.role !== 'user') continue;
+    if (candidate === undefined || !isUndoAnchor(candidate.contextMessage)) continue;
     const origin = candidate.contextMessage.origin;
     if (origin === undefined || origin.kind === 'user') return candidate;
     break;
@@ -323,52 +325,29 @@ function undoCountFrom(agent: IAgentScopeHandle, target: ContextMessage): number
   return history.slice(index).filter(isUndoAnchor).length;
 }
 
-async function applyExecutionOverrides(
+async function prepareExecutionOverrides(
   agent: IAgentScopeHandle,
   overrides: PromptExecutionOverrides,
-): Promise<void> {
+): Promise<import('@kiki/agent-core-v2').PromptExecutionBinding | undefined> {
   const profile = agent.accessor.get(IAgentProfileService);
-  let thinkingConsumed = false;
-  if (overrides.profile !== undefined && profile.data().profileName !== overrides.profile) {
-    try {
-      await profile.bind({
-        profile: overrides.profile,
-        model: overrides.model,
-        thinking: overrides.thinking,
-        strictThinking: overrides.thinking !== undefined,
-      });
-      thinkingConsumed = overrides.thinking !== undefined;
-    } catch (error) {
-      if (error instanceof ProfileError) throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
-      throw error;
+  if (overrides.model !== undefined || overrides.thinking !== undefined) {
+    const binding = profile.data();
+    if ((binding.executorId ?? 'native') === 'native') {
+      if (binding.modelAlias !== undefined && (overrides.profile === undefined || overrides.profile === binding.profileName)) {
+        const prepared = await profile.prepareModelSwitchBinding(overrides.model ?? binding.modelAlias, overrides.thinking);
+        prepared.assertCurrent();
+      }
+    } else {
+      const validation = profile.validateBinding({ modelAlias: overrides.model, thinkingEffort: overrides.thinking });
+      if (!validation.ok) throw new Error2(ErrorCodes.REQUEST_INVALID, validation.diagnostic);
     }
   }
-  if (overrides.model !== undefined) await profile.setModel(overrides.model);
-  if (overrides.thinking !== undefined && !thinkingConsumed) profile.setThinking(overrides.thinking);
-  if (overrides.permission_mode !== undefined) {
-    agent.accessor.get(IAgentPermissionModeService).setMode(overrides.permission_mode);
-  }
-  if (overrides.plan_gate !== undefined) {
-    agent.accessor.get(IAgentPlanService).setGate(overrides.plan_gate);
-  }
-  if (overrides.disabled_tools !== undefined) {
-    try {
-      await agent.accessor
-        .get(IAgentToolPolicyService)
-        .setSessionDisabledTools(overrides.disabled_tools);
-    } catch (error) {
-      if (error instanceof ProfileError) throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
-      throw error;
-    }
-  }
-  if (overrides.plan_mode !== undefined) {
-    const plan = agent.accessor.get(IAgentPlanService);
-    const active = (await plan.status()) !== null;
-    if (active !== overrides.plan_mode) {
-      if (overrides.plan_mode) await plan.enter();
-      else plan.exit();
-    }
-  }
+  const execution = {
+    execution: overrides.execution, profile: overrides.profile, model: overrides.model, thinking: overrides.thinking,
+    permissionMode: overrides.permission_mode, planGate: overrides.plan_gate, planMode: overrides.plan_mode,
+    personaGreetingReply: overrides.persona_greeting_reply,
+  };
+  return Object.values(execution).every((value) => value === undefined) ? undefined : execution;
 }
 
 async function updateLastPrompt(

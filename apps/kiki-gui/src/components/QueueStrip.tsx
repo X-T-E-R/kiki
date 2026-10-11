@@ -27,8 +27,17 @@
  *     repaints from the server's authoritative order;
  *   - a header with the count plus Clear all.
  *
- * The parent renders nothing for an empty queue; rows leave by reconcile
- * (promotion, steer, abort) — never by local removal.
+ * Scheduled occurrences remain readable and removable. A `queue` cron record
+ * keeps the person's send-order controls. Idle occurrences share one leading
+ * region, whose label names their timing; different jobs keep their own rows
+ * inside it. A held `steer` row names its timing individually. Neither held
+ * mode offers reordering or Send now. Remove cancels that pending occurrence,
+ * not the recurring job.
+ *
+ * An empty queue keeps its disclosure when prompt coverage is partial. The
+ * continuation reads one canonical entity page per press, including completed
+ * records, without counting them as pending or discarding existing rows.
+ * Queue rows leave by reconcile (promotion, steer, abort), never locally.
  */
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
@@ -36,12 +45,16 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type P
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
-import type { QueuedPromptPreview } from '@kiki/session-core/session';
-import { mergeSessionQueueRows, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
+import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
+import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
+import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
+import { ContinuationRow } from './ContentContinuation';
 import { Icon } from './icons';
+
+export type QueueRuntimeControls = NonNullable<QueuedPromptPreview['runtimeControls']>;
 
 /** The armed remove falls back to idle after this long without the second click. */
 const REMOVE_ARM_TIMEOUT_MS = 5_000;
@@ -67,18 +80,27 @@ export const TIMING_HINT_KEY = {
  */
 export function QueueHeaderSummary({
   count,
+  heldCount = 0,
   first,
 }: {
   readonly count: number;
+  readonly heldCount?: number;
   /** Next prompt in drain order: what the collapsed bar previews, and when it sends. */
   readonly first?: { readonly text: string; readonly timing: DeferredAppendTiming };
 }) {
   const { t, tp } = useI18n();
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
-        {tp('composer.queueStack.count', count)}
-      </span>
+      {count > 0 ? (
+        <span data-queue-count className="shrink-0 font-medium text-section-ink tabular-nums">
+          {tp('composer.queueStack.count', count)}
+        </span>
+      ) : null}
+      {heldCount > 0 ? (
+        <span data-queue-held-count className="shrink-0 font-medium text-ink-soft tabular-nums">
+          {count > 0 ? t('queue.heldSummary', { count: heldCount }) : t('queue.heldOnlySummary', { count: heldCount })}
+        </span>
+      ) : null}
       {first !== undefined ? (
         <>
           <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
@@ -94,9 +116,17 @@ export function QueueHeaderSummary({
   );
 }
 
+/** Canonical prompt collection coverage and one-page read state, separate from the pending queue count. */
+export interface QueuePromptContinuation {
+  readonly coverage: TranscriptGlobalEntityCoverage;
+  readonly status?: TranscriptDetailStatus;
+  readonly onRequest: () => void;
+}
+
 export function QueueStrip({
   items,
   modelSwitches,
+  resolveModelId,
   onSendNow,
   onRemove,
   onRemoveAttachment,
@@ -109,8 +139,10 @@ export function QueueStrip({
   onCancelModelSwitch,
   sendNowDisabled = false,
   timingReady,
+  promptContinuation,
 }: {
   readonly items: readonly QueuedPromptPreview[];
+  readonly promptContinuation?: QueuePromptContinuation;
   /**
    * Queued model-switch control items. They share this list's drain order and
    * never render as messages: each keeps its own row with edit/cancel while
@@ -118,6 +150,7 @@ export function QueueStrip({
    * contract only a pending operation can be cancelled.
    */
   readonly modelSwitches?: readonly QueuedModelSwitch[];
+  readonly resolveModelId?: (value: string) => string;
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
   readonly onRemoveAttachment?: (promptId: string, index: number) => Promise<void> | void;
@@ -190,6 +223,8 @@ export function QueueStrip({
     [items, modelSwitches],
   );
   const itemById = useMemo(() => new Map(items.map((item) => [item.promptId, item])), [items]);
+  const idleIds = useMemo(() => new Set(items.filter((item) => item.originKind === 'cron_job' && item.cronDeliveryMode === 'idle').map((item) => item.promptId)), [items]);
+  const sendOrderIndexes = rows.flatMap((row, index) => row.kind === 'message' && idleIds.has(row.promptId) ? [] : [index]);
   const switchById = useMemo(
     () => new Map((modelSwitches ?? []).map((entry) => [entry.input.operationId, entry])),
     [modelSwitches],
@@ -223,7 +258,9 @@ export function QueueStrip({
     [],
   );
 
-  if (rows.length === 0) return null;
+  const hasPromptContinuation = promptContinuation !== undefined
+    && (promptContinuation.coverage.hasMore || promptContinuation.status !== undefined);
+  if (rows.length === 0 && !hasPromptContinuation) return null;
 
   // An in-flight action locks drag reordering: a second move computed against
   // the pre-move order would land on a stale slot.
@@ -263,8 +300,8 @@ export function QueueStrip({
 
   const moveBy = (promptId: string, index: number, delta: -1 | 1) => {
     if (onMove === undefined || interactionLocked) return;
-    const targetIndex = index + delta;
-    if (targetIndex < 0 || targetIndex >= rows.length) return;
+    const targetIndex = sendOrderIndexes[sendOrderIndexes.indexOf(index) + delta];
+    if (targetIndex === undefined) return;
     run(promptId, (id) => onMove(id, targetIndex));
   };
 
@@ -296,7 +333,7 @@ export function QueueStrip({
       const box = element.getBoundingClientRect();
       return event.clientY < box.top + box.height / 2;
     });
-    return index < 0 ? rowElements.length : index;
+    return index < 0 ? rows.length : Number(rowElements[index]!.dataset['queueIndex']);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
@@ -345,6 +382,7 @@ export function QueueStrip({
   };
 
   const rowNodes: ReactNode[] = [];
+  const idleNodes: ReactNode[] = [];
   rows.forEach((row, index) => {
     if (dropSlot === index) {
       rowNodes.push(<li key={`drop-${index}`} aria-hidden className="pointer-events-none mx-1 h-0.5 rounded-full bg-accent" />);
@@ -354,10 +392,20 @@ export function QueueStrip({
       if (entry === undefined) return;
       const pending = pendingIds.includes(row.operationId);
       const waitsForEdit = editIndex >= 0 && index > editIndex;
+      const change = pendingModelSwitchChange({
+        from: resolveModelId?.(entry.receipt.fromModel) ?? entry.receipt.fromModel,
+        to: resolveModelId?.(entry.input.model) ?? entry.input.model,
+        mode: entry.input.mode,
+        originalThinking: entry.originalBinding.thinking,
+        targetThinking: entry.input.thinking,
+      });
+      const pendingLabel = t(change === 'model' ? 'modelSwitch.pendingLine' : `modelSwitch.pendingLine.${change}` as I18nKey,
+        { model: entry.receipt.toModel, effort: entry.input.thinking ?? '', mode: t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey) });
       rowNodes.push(
         <li
           key={`switch-${row.operationId}`}
           data-queue-model-switch={row.operationId}
+          data-queue-index={index}
           data-model-switch-state={entry.receipt.state}
           data-queue-waits-edit={waitsForEdit ? '' : undefined}
           className="anim-enter group flex min-h-8 items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]"
@@ -366,18 +414,18 @@ export function QueueStrip({
               numbers line up; a control item does not reorder. */}
           {gripsVisible ? <span aria-hidden className={sortMode ? 'h-11 w-11 shrink-0' : 'h-5 w-4 shrink-0'} /> : null}
           <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
-            {index + 1}
+            {sendOrderIndexes.indexOf(index) + 1}
           </span>
           <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft" title={entry.input.model}>
             {entry.receipt.state === 'preparing'
-              ? t(
-                entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
+              ? change === 'effort' ? t('modelSwitch.preparingEffort', { effort: entry.input.thinking ?? '' }) : t(
+                change === 'binding' ? 'transcript.modelSwitch.preparing.binding' : entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
                   ? 'transcript.modelSwitch.preparing.fresh'
                   : 'transcript.modelSwitch.preparing.direct',
                 { from: entry.receipt.fromModel, to: entry.receipt.toModel },
               )
-              : `${t('transcript.modelSwitch.pending', { to: entry.receipt.toModel })} · ${t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey)}`}
+              : pendingLabel}
           </span>
           {waitsForEdit ? (
             <span data-queue-waits-hint className="shrink-0 text-[12px] text-ink-faint">
@@ -418,19 +466,43 @@ export function QueueStrip({
     const isEditing = editingPromptId === item.promptId;
     const editLocked = editingPromptId !== undefined && !isEditing;
     const armed = armedRemoveId === item.promptId;
-    // Queued behind the prompt being edited: holds its place until the edit ends.
-    const waitsForEdit = editIndex >= 0 && index > editIndex;
+    // Priority cron deliveries do not wait for the ordinary queue's edit hold.
+    const waitsForEdit = isOrdinaryQueueItem(item) && editIndex >= 0 && index > editIndex;
     const timing = item.appendTiming ?? 'agent_idle';
-    rowNodes.push(
+    const controls = item.runtimeControls;
+    const controlProfile = controls?.profile ?? controls?.execution?.profile;
+    const controlModel = controls?.model ?? (typeof controls?.execution?.overrides?.model === 'string' ? controls.execution.overrides.model : undefined);
+    const controlThinking = controls?.thinking ?? (typeof controls?.execution?.overrides?.thinking === 'string' ? controls.execution.overrides.thinking : undefined);
+    const controlParts = controls === undefined ? [] : [
+      controlProfile,
+      controlModel === undefined ? undefined : resolveModelId?.(controlModel) ?? controlModel,
+      controlThinking,
+    ].filter((value): value is string => value !== undefined);
+    // A scheduled prompt the engine holds outside the ordinary send order:
+    // `idle` and `steer`. Its row is here so its text is readable, not because
+    // it is one of the messages the user is waiting to send — so it carries
+    // the timing that holds it instead of the per-message timing picker, and
+    // none of the controls that would re-order or rush it. The same predicate
+    // the composer header counts with, so a row and the count cannot disagree.
+    const held = !isOrdinaryQueueItem(item);
+    // Idle timing belongs to the leading region, not to each occurrence row.
+    const idle = idleIds.has(item.promptId);
+    const heldMode = held && !idle ? item.cronDeliveryMode : undefined;
+    // A `queue` cron record really is in the user's send order, so it keeps
+    // the same drag handle, timing picker and Send now as a typed message.
+    const reordering = draggable && !held;
+    (idle ? idleNodes : rowNodes).push(
       <li
         key={item.promptId}
         data-queue-item={item.promptId}
+        data-queue-index={index}
+        data-queue-held={held ? item.cronDeliveryMode : undefined}
         data-queue-waits-edit={waitsForEdit ? '' : undefined}
         className={`anim-enter group flex min-h-8 flex-wrap items-center gap-2 rounded-md px-1.5 py-0.5 transition-colors duration-[var(--kiki-motion-quick)] ${
           isEditing ? 'bg-ink/[0.05]' : 'hover:bg-ink/[0.04] focus-within:bg-ink/[0.04]'
         } ${dragId === item.promptId ? 'opacity-50' : ''}`}
       >
-        {gripsVisible ? (
+        {gripsVisible && reordering ? (
           <button
             type="button"
             onPointerDown={(event) => { handlePointerDown(event, item.promptId); }}
@@ -450,15 +522,34 @@ export function QueueStrip({
             <Icon name="grip" size={sortMode ? 16 : 12} />
           </button>
         ) : null}
-        <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
-          {index + 1}
-        </span>
-        <span
-          title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
-          className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
-        >
-          {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
-        </span>
+        {idle ? null : <span aria-hidden className="w-4 shrink-0 text-right text-[12px] text-ink-faint tabular-nums">
+          {sendOrderIndexes.indexOf(index) + 1}
+        </span>}
+        {item.originKind === 'cron_job' ? (
+          <details className="group/cron min-w-0 flex-1 basis-36 text-[13px] text-ink">
+            <summary className="flex cursor-pointer items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+              <span className="shrink-0 rounded bg-ink/[0.05] px-1.5 py-0.5 text-[11px] text-ink-soft">{t('transcript.marker.cron')}</span>
+              {/* Only a held row is marked, and held means the record carries a
+                  mode; a legacy or `queue` record is in the ordinary FIFO and is
+                  shown as one, because that is still where it is. */}
+              {heldMode === undefined
+                ? null
+                : <span data-queue-held-mode className="shrink-0 text-[11px] text-ink-faint">
+                  {t('queue.scheduledMode', { mode: t(`cron.delivery.${heldMode}`) })}
+                </span>}
+              <span className="min-w-0 truncate">{item.text}</span>
+              <Icon name="chevron" size={12} className="shrink-0 transition-transform group-open/cron:rotate-90" />
+            </summary>
+            <p className="mt-2 whitespace-pre-wrap break-words pl-1 text-ink-soft">{item.text}</p>
+          </details>
+        ) : (
+          <span
+            title={item.text === '' ? undefined : stripThreadRefContext(item.text)}
+            className="min-w-0 flex-1 basis-36 truncate text-[13px] text-ink"
+          >
+            {item.text === '' ? t('sv.queueNoText') : stripThreadRefContext(item.text)}
+          </span>
+        )}
         {item.media?.map((media, mediaIndex) => {
           const label = media.name ?? media.mime ?? t('media.attachment');
           return (
@@ -479,6 +570,11 @@ export function QueueStrip({
             </span>
           );
         })}
+        {controlParts.length > 0 ? (
+          <span data-queue-runtime-controls className="min-w-0 max-w-64 shrink-0 truncate rounded-[4px] bg-accent/[0.08] px-1.5 py-0.5 text-[11px] text-accent-ink" title={controlParts.join(' · ')}>
+            {controlParts.join(' · ')}
+          </span>
+        ) : null}
         {isEditing ? (
           <span data-queue-edit-status className="shrink-0 text-[12px] text-ink-soft">
             {/* The edited prompt's own start condition, so a met condition
@@ -516,7 +612,7 @@ export function QueueStrip({
             data-shown={armed || touchOpenId === item.promptId ? '' : undefined}
             className="dock-reveal ml-auto flex shrink-0 items-center gap-0.5"
           >
-            {onChangeTiming !== undefined ? (
+            {onChangeTiming !== undefined && !held ? (
               <select
                 aria-label={t('queue.timingAria')}
                 data-timing-picker={item.promptId}
@@ -537,7 +633,7 @@ export function QueueStrip({
                 ))}
               </select>
             ) : null}
-            {onEdit !== undefined && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
+            {onEdit !== undefined && !held && item.originKind !== 'cron_job' && (item.text !== '' || (item.media?.length ?? 0) > 0) ? (
               <button
                 type="button"
                 disabled={pending || editLocked}
@@ -549,16 +645,23 @@ export function QueueStrip({
                 {t('sv.queueEdit')}
               </button>
             ) : null}
-            <button
-              type="button"
-              disabled={pending || sendNowDisabled}
-              onClick={() => { run(item.promptId, onSendNow); }}
-              title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
-              aria-label={t('sv.queueSendNow')}
-              className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
-            >
-              {t('sv.queueSendNow')}
-            </button>
+            {/* A held job gets no send now and no note saying why. Its badge
+                and its timing chip already say what it is, and a greyed-out
+                control beside a real one reads as a broken row rather than as
+                a deliberate one. Remove stays: the record is real work that
+                can be withdrawn. */}
+            {held ? null : (
+              <button
+                type="button"
+                disabled={pending || sendNowDisabled}
+                onClick={() => { run(item.promptId, onSendNow); }}
+                title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
+                aria-label={t('sv.queueSendNow')}
+                className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+              >
+                {t('sv.queueSendNow')}
+              </button>
+            )}
             <button
               type="button"
               disabled={pending}
@@ -595,9 +698,18 @@ export function QueueStrip({
       data-queue-strip
       data-queue-sort-mode={sortMode ? '' : undefined}
       data-queue-edit-hold={editIndex >= 0 ? '' : undefined}
-      aria-label={t('sv.queueAria')}
+      aria-label={t(rows.length === 0 ? 'queue.records' : 'sv.queueAria')}
       aria-describedby={editIndex >= 0 ? noticeId : undefined}
     >
+      {idleNodes.length > 0 ? (
+        <div data-queue-idle-region className="mb-1 rounded-md bg-ink/[0.025] px-1 py-1">
+          <div className="flex min-h-7 items-center gap-2 px-1.5 text-[12px] font-medium text-ink-soft">
+            <Icon name="clock" size={12} />
+            {t('queue.scheduledMode', { mode: t('cron.delivery.idle') })}
+          </div>
+          <ol className="flex flex-col gap-0.5">{idleNodes}</ol>
+        </div>
+      ) : null}
       <header className="flex min-h-7 items-center gap-2 pl-1.5">
         {/* The row already names the count; the header reads as drain order. */}
         <span className="min-w-0 flex-1 text-[12px] text-ink-faint">
@@ -638,6 +750,17 @@ export function QueueStrip({
       <ol ref={listRef} className="flex flex-col gap-0.5 pb-1">
         {rowNodes}
       </ol>
+      {hasPromptContinuation && promptContinuation !== undefined ? (
+        <ContinuationRow
+          kind="prompt"
+          state={promptContinuation.status?.status ?? 'idle'}
+          progress={t('queue.recordsLoaded', { shown: promptContinuation.coverage.returned, total: promptContinuation.coverage.total })}
+          error={t('queue.recordsFailed')}
+          label={t('queue.records')}
+          onRequest={promptContinuation.onRequest}
+          className="px-1.5 py-1"
+        />
+      ) : null}
     </section>
   );
 }

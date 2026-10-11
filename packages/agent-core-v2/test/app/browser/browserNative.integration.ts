@@ -69,7 +69,7 @@ describe.skipIf(driver === undefined || process.platform !== 'win32')('real mana
       expect((await control.disconnect('controlled')).state).toBe('disconnected');
       expect(child.exitCode).toBe(0);
     } finally {
-      ix.dispose();
+      await ix.dispose();
       await client.close();
       if (child.exitCode === null) { const exited = new Promise<void>((resolve) => child.once('exit', () => resolve())); child.kill(); await exited; }
       await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

@@ -1,6 +1,7 @@
 import type {
   HttpRestConfigPatch,
   HttpRestCronTask,
+  HttpRestCronTaskDetail,
   HttpRestCronTaskQuery,
   HttpRestFacade,
   HttpRestListSessionsQuery,
@@ -45,6 +46,7 @@ import type {
   PersonaSnapshot,
   PersonaSummary,
 } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -120,6 +122,11 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     browser: {
+      setupPresets: () => transport.json('/browser/setup'),
+      setupStatus: (preset) => transport.json(`/browser/setup/${encodeURIComponent(preset)}`),
+      prepare: (preset, input) => transport.json(`/browser/setup/${encodeURIComponent(preset)}:prepare`, { method: 'POST', body: input }),
+      connectPreset: (preset, input = {}) => transport.json(`/browser/setup/${encodeURIComponent(preset)}:connect`, { method: 'POST', body: input }),
+      cancelSetup: (preset) => transport.json(`/browser/setup/${encodeURIComponent(preset)}:cancel`, { method: 'POST', body: {} }),
       list: () => transport.json('/browser/connections'),
       upsert: (id, input) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: input }),
       remove: (id) => transport.json(`/browser/connections/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -189,6 +196,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           include_archive: query.include_archive,
           include_ephemeral: query.include_ephemeral,
           archived_only: query.archived_only,
+          q: query.q,
           exclude_empty: query.exclude_empty,
           workspace_id: query.workspace_id,
           persona: query.persona,
@@ -226,12 +234,16 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       applyPersonaSettings: (sessionId: string, input = {}) => transport.json<import('@kiki/protocol').SessionPersonaSettings>(
         `/sessions/${encodeURIComponent(sessionId)}/persona-settings`, { method: 'POST', body: input },
       ),
-      archive: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
-        method: 'POST', body: {},
+      archive: (sessionId: string, options: import('@kiki/protocol').ArchiveSessionRequest = {}) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':archive', {
+        method: 'POST', body: options,
       }),
       restore: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + ':restore', {
         method: 'POST', body: {},
       }),
+      deleteArchived: async (sessionId: string, options = {}) => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions/' + encodeURIComponent(sessionId) + ':delete-archived', {
+        method: 'POST', body: deleteArchivedSessionRequestSchema.parse(options), timeoutMs: 0,
+      })),
+      deleteAllArchived: async () => deleteArchivedSessionsResponseSchema.parse(await transport.json('/sessions:delete-archived', { method: 'POST', body: {}, timeoutMs: 0 })),
       goal: (sessionId: string) => transport.json('/sessions/' + encodeURIComponent(sessionId) + '/goal'),
       listMessages: (sessionId: string, query = {}) => transport.json<PageResponse<Message>>(
         `/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -292,7 +304,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       mediaPreview: async (sessionId: string, fileId: string, options) => readBinary(
         transport, `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}/preview`,
-        { query: { media_type: options?.mediaType }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options) }, 64 * 1024,
+        { query: { media_type: options?.mediaType }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options) }, MEDIA_PREVIEW_MAX_BYTES,
       ),
       downloadMedia: (sessionId, fileId, sink, options) => transport.raw(
         `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
@@ -384,8 +396,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     skills: {
       list: (cwd) => transport.json<ListSkillsResponse>('/skills', { query: { cwd } }),
-      readBuiltinContent: (name: string) => transport.json<import('@kiki/protocol').BuiltinSkillContentResponse>(
-        `/skills/${encodeURIComponent(name)}:content`,
+      readBuiltinContent: (name: string, options?: HttpRestRequestOptions) => transport.json<import('@kiki/protocol').BuiltinSkillContentResponse>(
+        `/skills/${encodeURIComponent(name)}:content`, { signal: options?.signal, timeoutMs: options?.timeoutMs },
       ),
       previewHostInstall: (host: 'claude' | 'codex' | 'grok' | 'agents', skill: 'kiki-as-subagent' | 'kiki-ops') => transport.json<{
         skill: string; host: string; directory: string; path: string; overwrites: boolean; revision: string;
@@ -408,6 +420,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     workspaces: {
       list: () => transport.json('/workspaces'),
+      trust: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/trust`),
+      setTrust: (workspaceId: string, trusted: boolean) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/${trusted ? 'trust' : 'untrust'}`, { method: 'POST' }),
       inspect: (root: string) => transport.json('/workspaces:inspect', {
         method: 'POST', body: { root },
       }),
@@ -428,10 +442,6 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       ),
       getTrust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
         `/workspaces/${encodeURIComponent(workspaceId)}/trust`,
-      ),
-      trust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
-        `/workspaces/${encodeURIComponent(workspaceId)}/trust`,
-        { method: 'POST' },
       ),
       untrust: (workspaceId: string) => transport.json<import('@kiki/protocol').WorkspaceTrustResponse>(
         `/workspaces/${encodeURIComponent(workspaceId)}/untrust`,
@@ -536,6 +546,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     notifications: {
+      listCompletions: () => transport.json('/notifications/completions'),
       getSettings: () => transport.json('/notifications/settings'),
       updateSettings: (settings) => transport.json('/notifications/settings', { method: 'PUT', body: settings }),
       listProviders: () => transport.json('/notifications/providers'),
@@ -555,6 +566,19 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     executors: {
       list: () => transport.json('/executors'),
+      listInstallations: (options) => transport.json('/executors/installations', options),
+      install: (executorId, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/install`, { ...options, method: 'POST', body: {} },
+      ),
+      rollback: (executorId, options) => transport.json(
+        `/executors/${encodeURIComponent(executorId)}/rollback`, { ...options, method: 'POST', body: {} },
+      ),
+      getModels: (executorId, options) => transport.json<import('@kiki/protocol').GetExecutorModelsResponse>(
+        `/executors/${encodeURIComponent(executorId)}/models`, options,
+      ),
+      refreshModels: (executorId, options) => transport.json<import('@kiki/protocol').RefreshExecutorModelsResponse>(
+        `/executors/${encodeURIComponent(executorId)}/models:refresh`, { ...options, method: 'POST', body: {} },
+      ),
       listLocalSessions: (executorId, query, options) => transport.json(
         `/executors/${encodeURIComponent(executorId)}/local-sessions`, { ...options, query },
       ),
@@ -597,16 +621,16 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     filesystem: {
-      openHtmlPreview: (input, options) => transport.json('/fs:html-preview', { ...options, method: 'POST', body: input }),
-      closeHtmlPreview: (previewId, options) => transport.json(`/fs:html-preview/${encodeURIComponent(previewId)}`, { ...options, method: 'DELETE' }),
-      readHostFile: (path: string) => transport.raw(
+      openHtmlPreview: (input: import('@kiki/protocol').HtmlPreviewRequest, options?: HttpRestRequestOptions) => transport.json<import('@kiki/protocol').HtmlPreviewResponse>('/fs:html-preview', { ...options, method: 'POST', body: input }),
+      closeHtmlPreview: async (previewId: string, options?: HttpRestRequestOptions) => { await transport.json<null>(`/fs:html-preview/${encodeURIComponent(previewId)}`, { ...options, method: 'DELETE' }); },
+      readHostFile: (path: string, options?: HttpRestRequestOptions) => transport.raw(
         '/fs:content',
-        { method: 'GET', query: { path } },
+        { method: 'GET', query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs },
         (response) => response.text(),
       ),
-      previewHostFile: (path: string, maxBytes: number) => transport.raw(
+      previewHostFile: (path: string, maxBytes: number, options?: HttpRestRequestOptions) => transport.raw(
         '/fs:content',
-        { method: 'GET', query: { path }, headers: { range: `bytes=0-${maxBytes - 1}` } },
+        { method: 'GET', query: { path }, headers: { range: `bytes=0-${maxBytes - 1}` }, signal: options?.signal, timeoutMs: options?.timeoutMs },
         async (response) => ({
           text: await response.text(),
           truncated: response.status === 206 &&
@@ -618,7 +642,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
       readHostMediaPreview: (path, options) => readBinary(transport, '/fs:content', {
         query: { path, preview: 'media' }, signal: options?.signal, timeoutMs: options?.timeoutMs, headers: mediaHeaders(options),
-      }, 64 * 1024),
+      }, MEDIA_PREVIEW_MAX_BYTES),
       downloadHostFile: (path, sink, options) => transport.raw('/fs:content', {
         method: 'GET', expectBinary: true, query: { path }, signal: options?.signal, timeoutMs: options?.timeoutMs ?? 0, headers: mediaHeaders(options),
       }, (response) => consumeMedia(response, sink, options?.signal)),
@@ -648,6 +672,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     cron: {
+      get: (taskId, query = {}) => transport.json<{ readonly task: HttpRestCronTaskDetail }>(
+        `/cron/${encodeURIComponent(taskId)}`, { query: { session_id: query.session_id } },
+      ),
+      create: (input) => transport.json<{ readonly task: HttpRestCronTaskDetail }>(
+        '/cron', { method: 'POST', body: input },
+      ),
+      update: (taskId, input, query = {}) => transport.json<{ readonly task: HttpRestCronTaskDetail }>(
+        `/cron/${encodeURIComponent(taskId)}`, { method: 'PATCH', body: input, query: { session_id: query.session_id } },
+      ),
       list: (query: HttpRestCronTaskQuery = {}) => transport.json<{
         readonly items: readonly HttpRestCronTask[];
         readonly has_more?: boolean;
@@ -687,6 +720,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     plugins: {
       navigation: () => transport.json('/plugins/navigation'),
+      usage: (target) => transport.json('/plugins/usage', { query: target }),
+      setUsage: (input) => transport.json('/plugins/usage', { method: 'POST', body: input }),
       marketplace: () => transport.json('/plugins/marketplace'),
       preview: (input) => transport.json('/plugins:preview', {
         method: 'POST',
@@ -717,15 +752,15 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
         `/plugins/${encodeURIComponent(id)}:install-prerequisite`,
         { method: 'POST', body: input, timeoutMs: 0 },
       ),
-      panels: () => transport.json('/plugins/panels'),
-      panelDocument: (id: string, panelId: string) => transport.json(
-        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/document`,
+      panels: (target) => transport.json('/plugins/panels', { query: target }),
+      panelDocument: (id: string, panelId: string, target) => transport.json(
+        `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/document`, { query: target },
       ),
       panelBridge: (id: string, panelId: string, input) => transport.json(
         `/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panelId)}/bridge`,
         { method: 'POST', body: input },
       ),
-      commands: () => transport.json('/plugins/commands'),
+      commands: (target) => transport.json('/plugins/commands', { query: target }),
       recommend: (input) => transport.json('/plugins/recommendations/match', { method: 'POST', body: input }),
       dismissRecommendation: (id: string) => transport.json(
         `/plugins/${encodeURIComponent(id)}:dismiss-recommendation`, { method: 'POST', body: {} },

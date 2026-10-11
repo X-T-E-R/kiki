@@ -163,7 +163,7 @@ describe('McpManagementService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await oauth.dispose();
     vi.unstubAllEnvs();
     await Promise.all(httpServers.map((server) => server.close()));

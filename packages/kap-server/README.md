@@ -16,13 +16,20 @@ the commands below run from a Kiki install, not from an npm dependency.
 
 Both endpoints authenticate with the KAP bearer token. HTTP sends `Authorization: Bearer <token>`; a browser WebSocket sends it as the `kimi-code.bearer.<token>` subprotocol.
 
-## Usage sync credentials
+Ordered session views use `/api/klient/session-view/{sessionId}`. Transcript pages target 1 MiB and content segments target 256 KiB. These are scheduling targets, not access limits: an indivisible identity, object key or reference header may exceed them. Follow `next_cursor`, `next` and newly returned `contentRefs` until complete; clients must not reject successful reading responses merely because they exceed a local page budget. A changed content revision returns `40922`; refresh the preview before continuing. `40923` means canonical navigation is still preparing and can be read again. Source corruption and IO failures remain errors rather than empty history, and disconnecting cancels the current reader.
 
-Official VibeCafe device sign-in accepts `{}` and defaults to automatic credential storage. See the [REST login contract](../../docs/en/server/rest-api.md#login-and-usage) for the flow and explicit-storage compatibility. `src/usage/export/secrets.ts` owns the keyring/private-file boundary; automatic saving tries the keyring write first and returns the actual backend. Private files reuse the atomic `writePrivateFile` helper with POSIX 0600/0700 or Windows user ACLs. Directory ACLs include child inheritance so the temporary file is protected before its atomic rename.
+A windowed baseline is a continuous suffix of the available timeline. When resident turns have been released, historical standalone markers before that suffix remain recoverable through pages but must not become the baseline's `olderCursor`. Continue from the first emitted item after both turn and byte windowing; a marker is a valid boundary only when it belongs to that suffix.
 
-`UsageExportService` persists the actual `credential_storage` together with a `credential-cleanup:{id}` metadata entry in the export SQLite store before removing the obsolete backend copy. A cleanup failure does not invalidate a saved credential: the pending entry is retried on another save or server start, including after the destination has been removed. Cold reads use only the recorded backend, never a stale alternate copy. Do not rewrite that field to `auto` or clear a pending cleanup entry to hide a storage failure.
+Cold page previews share a 4 MiB, 15-second source-verified cache; canonical bodies stay in source-backed detail reads. Large detail retention uses one expiring slot, configured in `config.toml`:
 
-`test/usageExport.integration.ts` covers keyring success, a failing keyring write followed by a real private-file write, cold recovery, repeated sign-in, dual-store failure with an unchanged destination, obsolete-copy cleanup after recovery, and loopback bearer delivery after export consent. The auth exchange and keyring are synthetic; private-file writes and the loopback sink are real. These tests do not prove live VibeCafe approval or access to a user's OS keyring.
+```toml
+[transcript_memory]
+tail_turns = 20
+max_agent_bytes = 16777216
+max_detail_cache_bytes = 268435456
+```
+
+`max_detail_cache_bytes` is a nonnegative integer byte budget, defaulting to 256 MiB. `0` disables the large-detail slot, not reading; the ordinary 4 MiB detail cache remains. Raising it can avoid replaying a large target repeatedly. Changes apply on the next cache admission or eviction check and do not cancel an active read. The resident settings govern the live tail, not how much saved history can be opened.
 
 ## Browser HTML documents
 
@@ -37,6 +44,14 @@ Document responses carry `Content-Security-Policy: sandbox allow-scripts allow-s
 The resource listener binds only to `127.0.0.1` and is created by open, not as a global service. A nonlocal client receives `40301` / `html_preview_document_origin_requires_local_connection`; use a GUI on the server host or keep source/download available. Capabilities expire after 30 minutes. Close, expiry, server shutdown and remote connection loss stop active streams and close the listener; already loaded JavaScript continues until the consumer removes the frame. A closed listener produces a network error, while the broker resource endpoint reports `404` / `html_preview_expired`; reopen to recover. A single file without workspace/input context needs the user to choose a resource root; do not silently grant a drive or omit sibling dependencies.
 
 Remote clients use the same typed call and the existing authenticated connection broker. The URL is a local broker capability, never a remote bearer token, and resources are fetched from the selected remote host. A peer connection currently cannot mint a host-root grant: `40301` / `html_preview_target_owner_grant_required` means the target owner must authorize the document's resource root. Treat that as unavailable remote preview authorization, not malformed HTML, and keep source/download available. This slice does not provide that target-owner grant exchange and must not fall back to reading a similarly named local file.
+
+## Usage sync credentials
+
+Official VibeCafe device sign-in accepts `{}` and defaults to automatic credential storage. See the [REST login contract](../../docs/en/server/rest-api.md#login-and-usage) for the flow and explicit-storage compatibility. `src/usage/export/secrets.ts` owns the keyring/private-file boundary; automatic saving tries the keyring write first and returns the actual backend. Private files reuse the atomic `writePrivateFile` helper with POSIX 0600/0700 or Windows user ACLs. Directory ACLs include child inheritance so the temporary file is protected before its atomic rename.
+
+`UsageExportService` persists the actual `credential_storage` together with a `credential-cleanup:{id}` metadata entry in the export SQLite store before removing the obsolete backend copy. A cleanup failure does not invalidate a saved credential: the pending entry is retried on another save or server start, including after the destination has been removed. Cold reads use only the recorded backend, never a stale alternate copy. Do not rewrite that field to `auto` or clear a pending cleanup entry to hide a storage failure.
+
+`test/usageExport.integration.ts` covers keyring success, a failing keyring write followed by a real private-file write, cold recovery, repeated sign-in, dual-store failure with an unchanged destination, obsolete-copy cleanup after recovery, and loopback bearer delivery after export consent. The auth exchange and keyring are synthetic; private-file writes and the loopback sink are real. These tests do not prove live VibeCafe approval or access to a user's OS keyring.
 
 ## Connecting an external tool to Kiki
 
@@ -84,6 +99,11 @@ permission mode, tools, or profile definitions. `kiki_profiles` is the
 cacheable catalog, and `kiki_list` returns only owned children and
 continuations. This edge does not configure the external executors or harnesses
 Kiki itself uses to run subagents.
+
+Context tools advertise their original JSON Schema in `tools/list`, including
+root unions and local references. Tool calls still use the same registered
+validator before reaching the context procedure; a complete catalog is not
+permission to omit required arguments or bypass the bound session's policy.
 
 ## Launcher operations
 

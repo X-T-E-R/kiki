@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { useOptionalConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { FilePathLink } from '../mediaParts';
-import { SkillPreviewButton } from '../capabilities/SkillPreviewButton';
+import { SkillMarkdownBody } from './SkillMarkdownBody';
 import { CapabilityStateBadge } from './CapabilityStateBadge';
 import { ProfileDetailSections, type ProfileDetailSectionsProps } from './ProfileDetailSections';
 import { ToolDetailBody } from './ToolDetailBody';
@@ -362,12 +362,18 @@ export const AgentDetailDrawer = memo(function AgentDetailDrawer({
               ) : null}
             </dl>
 
+            {/* Keyed by the skill itself: a new skill is a new read, so the
+                previous skill's text and any read still in flight for it
+                cannot survive into the sheet that replaced it. */}
             {currentTarget.skill.path ? (
-              <SkillPreviewButton skill={{
-                name: currentTarget.skill.name,
-                source: currentTarget.skill.source,
-                path: currentTarget.skill.path,
-              }} onOpen={onClose} />
+              <SkillMarkdownBody
+                key={`${currentTarget.skill.source ?? ''}:${currentTarget.skill.path}:${currentTarget.skill.name}`}
+                skill={{
+                  name: currentTarget.skill.name,
+                  source: currentTarget.skill.source,
+                  path: currentTarget.skill.path,
+                }}
+              />
             ) : null}
           </div>
         )}

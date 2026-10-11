@@ -22,6 +22,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 
 import type { PersonaSummary, Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
+import { cronScheduleLabel } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import type { CronTask } from '../../lib/client';
@@ -213,7 +214,9 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                      <span className="text-[13px] font-medium text-ink">{task.human_schedule}</span>
+                      <span data-persona-cron-schedule className="text-[13px] font-medium text-ink">
+                        {cronScheduleLabel(locale, task.cron, task.human_schedule, t)}
+                      </span>
                       <span data-cron-status={task.paused ? 'paused' : 'running'} className={`text-[12px] ${task.paused ? 'text-ink-faint' : 'text-ink-soft'}`}>
                         {task.paused ? t('cron.status.paused') : t('cron.status.running')}
                       </span>

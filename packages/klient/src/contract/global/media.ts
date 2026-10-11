@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import { mediaSourceSchema, mediaSourcesInputSchema, mediaCatalogSchema, mediaProvidersSchema, mediaCapabilityQuerySchema, mediaCapabilitiesSchema, mediaVoiceQuerySchema, mediaVoicePageSchema, mediaJobsInputSchema, mediaJobSchema } from '@kiki/protocol';
 import type { ServiceContract } from '../types.js';
+import { mediaManagedSourceSchema, mediaSourceSettingsInputSchema, mediaSourceUpdateSchema, mediaScriptSourceInputSchema } from '@kiki/protocol';
 
 export const mediaContract = {
+  managedSources: { input: z.tuple([]), output: z.array(mediaManagedSourceSchema) },
+  sourceSettings: { input: z.tuple([mediaSourceSettingsInputSchema]), output: mediaManagedSourceSchema },
+  updateSource: { input: z.tuple([mediaSourceUpdateSchema]), output: mediaManagedSourceSchema },
+  addScriptSource: { input: z.tuple([mediaScriptSourceInputSchema]), output: mediaManagedSourceSchema },
   sources: { input: z.tuple([]), output: z.array(mediaSourceSchema) },
   setSources: { input: z.tuple([mediaSourcesInputSchema]), output: z.array(mediaSourceSchema) },
   catalog: { input: z.tuple([z.object({ id: z.string().min(1) }).strict()]), output: mediaCatalogSchema },

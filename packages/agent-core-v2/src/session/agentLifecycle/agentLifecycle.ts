@@ -4,6 +4,7 @@ import type { Event } from '#/_base/event';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { BindAgentInput } from '#/agent/profile/profile';
 import type { DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 
 export const MAIN_AGENT_ID = 'main';
 
@@ -11,11 +12,14 @@ export interface CreateAgentOptions {
   readonly agentId?: string;
   readonly binding?: BindAgentInput;
   readonly runtimeId?: string;
+  readonly workspaceRoots?: RuntimeWorkspaceRoots;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly delegator?: DelegatorRef;
   readonly userLabel?: string;
   readonly restoreBinding?: AgentRestoreBinding;
+  /** Internal session-fork hook: copied journals belong to a new entity, not a restored identity. */
+  readonly copiedIdentity?: boolean;
   /** Internal transaction hook: publish onDidCreate only after the caller commits. */
   readonly deferCreateEvent?: boolean;
 }
@@ -39,6 +43,27 @@ export interface AgentListFilter {
   readonly prefix?: string;
 }
 
+export type AgentRemovalMode = 'cancel' | 'preserve-pending';
+export type AgentCallerOutcome = 'resolved' | 'rejected';
+export type AgentCleanupOutcome = 'closed' | 'cleanup_failed';
+export type AgentFailureDomain = 'persistence' | 'cleanup';
+
+export interface AgentCleanupReceipt {
+  readonly operationId: string;
+  readonly agentId: string;
+  readonly mode: AgentRemovalMode;
+  readonly callerOutcome: AgentCallerOutcome;
+  readonly terminalOwner: 'agent';
+  readonly cleanupOutcome: AgentCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly failureDomain?: AgentFailureDomain;
+  readonly errorCode?: string;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly settledAt: number;
+}
+
 export interface IAgentLifecycleService {
   readonly _serviceBrand: undefined;
 
@@ -47,6 +72,7 @@ export interface IAgentLifecycleService {
   /** Fires after restore, binding, activation, and durable identity registration complete. */
   readonly onDidCreate: Event<IAgentScopeHandle>;
   readonly onDidDispose: Event<string>;
+  readonly onDidCleanup?: Event<AgentCleanupReceipt>;
 
   /** Generated identities never reuse an existing wire journal; explicit agentId enables restoration. */
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;
@@ -65,7 +91,7 @@ export interface IAgentLifecycleService {
   countPendingBackgroundTasks(): number;
   /** Suppress terminal notifications and drain live tasks within the supplied deadline. */
   drainBackgroundTasks(timeoutMs: number): Promise<void>;
-  remove(agentId: string): Promise<void>;
+  remove(agentId: string, mode?: AgentRemovalMode): Promise<void>;
 }
 
 export const IAgentLifecycleService: ServiceIdentifier<IAgentLifecycleService> =

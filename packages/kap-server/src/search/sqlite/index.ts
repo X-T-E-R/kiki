@@ -555,20 +555,22 @@ export class SqliteSearchIndex {
     }
     if (q.workspaceId !== undefined) { filters.push('s.workspace_id=?'); filterValues.push(q.workspaceId); }
     if (q.role !== undefined) { filters.push('d.role=?'); filterValues.push(q.role); }
-    else if (q.includeToolOutput !== true) filters.push("d.role!='tool'");
     if (q.historyPlan !== undefined) filters.push("d.role!='title'");
     if (q.startTime !== undefined) { filters.push('d.time>=?'); filterValues.push(q.startTime); }
     if (q.endTime !== undefined) { filters.push('d.time<=?'); filterValues.push(q.endTime); }
+    const ranked = q.mode === 'terms' && q.sort === 'score' && filters.length === 0;
+    if (q.role === undefined && q.includeToolOutput !== true) filters.push("d.role!='tool'");
     const joins = (table: string) => `JOIN docs d ON d.id=${table}.rowid
       JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id`;
     const scopedWhere = filters.length ? ` AND ${filters.join(' AND ')}` : '';
-    const ranked = q.mode === 'terms' && q.sort === 'score' && filters.length === 0;
     if (q.mode === 'terms') {
       if (!terms.length) matchedIds = [];
       else {
         const expression = terms.map(quoteTerm).join(q.op === 'OR' ? ' OR ' : ' AND ');
         if (ranked) {
-          matchedIds = db.prepare('SELECT rowid, rank FROM docs_terms WHERE docs_terms MATCH ? ORDER BY rank LIMIT ?')
+          matchedIds = db.prepare(`SELECT docs_terms.rowid, docs_terms.rank FROM docs_terms
+            ${scopedWhere ? "JOIN docs d ON d.id=docs_terms.rowid" : ''}
+            WHERE docs_terms MATCH ?${scopedWhere} ORDER BY rank LIMIT ?`)
             .all(expression, Math.min(budgets.maxTextHits, 64) + 1) as { rowid: number; rank: number }[];
         } else if (q.sort === 'time_desc' && page.kind === 'first' && q.historyPlan === undefined) {
           matchedIds = db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}

@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { IFlagService as importFlags } from '@kiki/agent-core-v2/app/flag/flag';
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -23,7 +24,7 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
-import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IEventService, PluginChanged } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
@@ -67,6 +68,16 @@ export function defineKlientConformance(
 
     afterAll(async () => {
       await target.cleanup();
+    });
+
+    it('forwards plugin changes on the global bus without requiring a plugin reload', async () => {
+      const received: Record<string, never>[] = [];
+      const sub = target.klient.events.on('plugins.changed', (event) => { received.push(event); });
+      try {
+        await sub.ready;
+        target.app.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
+        await vi.waitFor(() => { expect(received).toEqual([{}]); });
+      } finally { sub.dispose(); }
     });
 
     it.skipIf(transport !== 'memory' && transport !== 'ipc')('explicitly rejects the HTTP-only terminal capability', async () => {
@@ -953,6 +964,22 @@ export function defineKlientConformance(
       expect(await target.klient.session('missing-resume-session').resume()).toBe(false);
     });
 
+    it('shuts down only one local agent execution while preserving the session and records', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      await session.agent('main').getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const main = await ensureMainAgent(live);
+      const child = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'shutdown-child' });
+      try {
+        await session.agent(child.id).shutdownExecution('failed-external-cleanup');
+        expect(child.accessor.get(IAgentExecutionService).status().state).toBe('closed');
+        expect(main.accessor.get(IAgentExecutionService).status().state).toBe('idle');
+        expect((await session.agents())[child.id]).toBeDefined();
+        expect((await session.get()).id).toBe(created.id);
+      } finally { await session.close(); }
+    });
+
     it('keeps local permission changes local and default changes broadcast', async () => {
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const session = target.klient.session(created.id);
@@ -1023,6 +1050,16 @@ export function defineKlientConformance(
           name: 'RPCError',
           code: 40404,
         });
+        await session.agent('main').setModel(initialModel);
+        await session.close();
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').getModel()).rejects.toMatchObject({ name: 'RPCError', code: 40404 });
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').setModel(targetModel)).resolves.toMatchObject({ model: targetModel });
+        await expect(session.agent('main').getModel()).resolves.toBe(targetModel);
+        await session.close();
+        await expect(session.agent(child.id).setEffort('off')).resolves.toEqual({ effort: 'off' });
+        await expect(session.agent(child.id).getModel()).resolves.toBe(targetModel);
       } finally {
         await session.close();
         await kosong.removeProvider(initialModel);
@@ -1117,7 +1154,7 @@ export function defineKlientConformance(
         expect(receipt.turnId).toBeUndefined();
         await waitFor(() => seen.includes('terminal-wire'), 2_000);
       } finally {
-        sub.dispose(); hook.dispose();
+        sub.dispose(); await hook.dispose();
         await target.klient.session(created.id).close();
       }
     });
@@ -1137,7 +1174,7 @@ export function defineKlientConformance(
           message: 'launch failed', cause: { message: 'underlying cause' },
         } } });
       } finally {
-        hook.dispose(); await target.klient.session(created.id).close();
+        await hook.dispose(); await target.klient.session(created.id).close();
       }
     });
 
@@ -1256,7 +1293,7 @@ export function defineKlientConformance(
           }),
         ).rejects.toMatchObject({ name: 'RPCError', code: 40938 });
       } finally {
-        reservation.dispose();
+        await reservation.dispose();
         await target.klient.session(created.id).close();
       }
     });

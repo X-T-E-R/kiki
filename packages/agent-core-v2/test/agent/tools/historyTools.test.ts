@@ -6,6 +6,7 @@ import {
   HistorySearchTool,
   IHistoryArchive,
   IHistorySearchTool,
+  IHistoryReadTool,
 } from '../../../src/agent/tools/history/historyTools';
 import { SyncDescriptor } from '../../../src/_base/di/descriptors';
 import { TestInstantiationService } from '../../../src/_base/di/test';
@@ -55,7 +56,7 @@ interface HistoryToolData {
   };
 }
 
-async function run(tool: HistorySearchTool | HistoryReadTool, input: Record<string, unknown>) {
+async function run(tool: { resolveExecution(input: never): import('../../../src/tool/toolContract').ToolExecution | Promise<import('../../../src/tool/toolContract').ToolExecution> }, input: Record<string, unknown>) {
   const execution = await tool.resolveExecution(input as never);
   if (!('execute' in execution)) throw new Error('Expected executable tool');
   const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'c' });
@@ -97,7 +98,7 @@ describe('history tools', () => {
       expect(conflicting.result.isError).toBe(true);
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', include_subagents: true })).rejects.toThrow('peer searches');
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', sort: 'oldest' })).rejects.toThrow('peer searches');
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('uses the existing profile tool-group gate', () => {
     expect(toolGroupForName('HistorySearch')).toBe('history');
@@ -160,6 +161,33 @@ describe('history tools', () => {
     const wrongScope = await run(tool, { cursor: first.data.next_cursor, include_tool_output: false });
     expect(wrongScope.result.isError).toBe(true);
     expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
+  });
+
+  it('returns a cursor-free recovery call after a captured source range changes', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    const search = vi.fn(source.search);
+    source.search = search;
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistorySearchTool, new SyncDescriptor(HistorySearchTool));
+    try {
+      const tool = ix.get(IHistorySearchTool);
+      const input = { query: 'needle', source: 'transcript', session_id: 'older' };
+      search.mockRejectedValueOnce(new Error('history_source_changed'));
+      const failed = await run(tool, input);
+      expect(failed.result.isError).toBe(true);
+      const data = JSON.parse(failed.result.output as string);
+      expect(data).toMatchObject({ target: { session_id: 'older', agent_id: 'main' }, error: {
+        code: 'source_changed', message: 'The transcript was replaced or its captured range changed; restart the query without cursor.',
+        retryable: true, next_call: { tool: 'HistorySearch', arguments: input },
+      } });
+      expect(data.error.next_call.arguments).not.toHaveProperty('cursor');
+      expect((await run(tool, data.error.next_call.arguments)).result.isError).not.toBe(true);
+    } finally { await ix.dispose(); }
   });
 
   it('surfaces an unavailable index alongside bounded fallback metadata', async () => {
@@ -245,5 +273,43 @@ describe('history tools', () => {
     expect('accesses' in search && search.accesses).toEqual([{
       kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,
     }]);
+  });
+
+  it('binds preparation cursors to their target and never advises replaying a stale directory ref', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    source.lookupDirectory = vi.fn(async () => ({ status: 'navigation_building' as const,
+      next: { offset: 8000, incarnation: 'incarnation' }, scanned: { bytes: 8000, records: 2 } }));
+    source.readDirectory = vi.fn(async () => ({ status: 'stale_ref' as const }));
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+    const tool = ix.get(IHistoryReadTool);
+    const execute = async (input: Record<string, unknown>) => {
+      const execution = await tool.resolveExecution(input as never);
+      if (!('execute' in execution)) throw new Error('Expected execute');
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'read' });
+      return { result, data: JSON.parse(result.output as string) };
+    };
+    try {
+      const first = await execute({ step_id: 't782.14', max_chars: 10_000 });
+      expect(first.data).toMatchObject({ status: 'partial', has_more: true, continuation: 'scan' });
+      await execute({ cursor: first.data.next_cursor });
+      expect(source.lookupDirectory).toHaveBeenLastCalledWith('ws-a', 'current', 'main', 782, 't782.14',
+        { offset: 8000, incarnation: 'incarnation' }, expect.any(AbortSignal));
+      const wrong = await execute({ cursor: first.data.next_cursor, turn: 1 });
+      expect(wrong.data.error.code).toBe('cursor_mismatch');
+      const foreign = await execute({ cursor: first.data.next_cursor, max_chars: 1000 });
+      expect(foreign.data.error.code).toBe('cursor_mismatch');
+      const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+      const stale = await execute({ ref });
+      expect(stale.data).toMatchObject({ error: { code: 'stale_ref', retryable: false,
+        next_call: { tool: 'HistoryList', arguments: { session_id: 'current', agent_id: 'main' } } } });
+      expect(stale.data.error.next_call.arguments).not.toHaveProperty('ref');
+      expect(source.readTurn).not.toHaveBeenCalled();
+    } finally { await ix.dispose(); }
   });
 });

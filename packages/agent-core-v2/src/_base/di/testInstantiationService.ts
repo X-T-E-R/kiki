@@ -256,11 +256,9 @@ export class TestInstantiationService extends InstantiationService implements ID
     return new TestInstantiationService(services, false, this);
   }
 
-  public override dispose(): void {
+  public override dispose(): void | Promise<void> {
     sinon.restore();
-    if (this._properDispose) {
-      super.dispose();
-    }
+    if (this._properDispose) return super.dispose();
   }
 }
 
@@ -326,7 +324,7 @@ export function createServices(
   const instantiationService = disposables.add(
     new TestInstantiationService(serviceCollection, options.strict ?? false),
   );
-  disposables.add(toDisposable(() => {
+  disposables.add(toDisposable(async () => {
     const serviceDisposables: IDisposable[] = [];
     for (const id of instanceIds) {
       const instance = serviceCollection.get(id);
@@ -334,7 +332,7 @@ export function createServices(
         serviceDisposables.push(instance);
       }
     }
-    dispose(serviceDisposables);
+    await dispose(serviceDisposables);
   }));
   return instantiationService;
 }

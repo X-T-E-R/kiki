@@ -49,7 +49,7 @@ it('stores heterogeneous script secrets in the existing shared credential docume
     expect(await readFile(path.join(home, 'credentials', 'credentials.toml'), 'utf8')).not.toContain('fixture-own-secret');
     expect(await settings.forExecution('other-script')).toEqual({ alienCredential: 'fixture-sibling-secret' });
   } finally {
-    ix.dispose();
+    await ix.dispose();
     await storage.close();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
@@ -80,5 +80,5 @@ it.each([false, true])('merges renamed settings with current conflicts winning i
     expect(Object.keys(config.get<Record<string, unknown>>('pluginSettings'))).toEqual(['kiki-extract']);
     await settings.clear('kiki-documents');
     expect(await settings.forExecution('kiki-extract')).toEqual({});
-  } finally { ix.dispose(); }
+  } finally { await ix.dispose(); }
 });

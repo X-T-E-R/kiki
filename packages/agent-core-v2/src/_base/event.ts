@@ -5,6 +5,7 @@ import {
   combinedDisposable,
   type IDisposable,
   type IDisposableDebugLabel,
+  type ISyncDisposable,
 } from './di/lifecycle';
 import { LinkedList } from './di/util/linkedList';
 
@@ -13,7 +14,7 @@ export interface Event<T> {
     listener: (e: T) => unknown,
     thisArg?: unknown,
     disposables?: IDisposable[] | DisposableStore,
-  ): IDisposable;
+  ): ISyncDisposable;
 }
 
 interface ListenerEntry<T> {

@@ -29,7 +29,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { shiftTextPresentation, type TextPresentation, type ContentRef } from '@kiki/transcript';
+import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -171,7 +171,7 @@ import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaParts';
 import { RelativeTime } from './RelativeTime';
-import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
+import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
@@ -1298,6 +1298,60 @@ function SubagentCompactCard({
   );
 }
 
+/**
+ * The descendants this dispatch did not create: one quiet line carrying how
+ * many they are and whether any still run or failed, opened by the reader. It
+ * says nothing about their age and removes nothing — it exists only so a
+ * whole subtree does not fill the timeline before it is asked for. It sits
+ * inside the card that owns them rather than beside it, because it groups that
+ * card's own children — the same hairline spine the history fold and the
+ * subagent group use — rather than introducing a new event. Its open state is
+ * the reader's for the rest of the view: a descendant that starts running
+ * later does not unfold a group they closed.
+ */
+function OtherDescendantGroup({
+  groupKey,
+  members,
+  renderMember,
+}: {
+  groupKey: string;
+  members: readonly AgentTreeNode[];
+  renderMember: (member: AgentTreeNode) => ReactNode;
+}) {
+  const { t, tp } = useI18n();
+  const { open, toggle } = useDispatchGroup(groupKey);
+  const counts = countFoldedDescendants(members);
+  const summary = [
+    tp('subagent.otherGroupCount', counts.total),
+    counts.running > 0 ? t('subagent.otherGroupRunning', { count: counts.running }) : null,
+    counts.failed > 0 ? t('subagent.otherGroupFailed', { count: counts.failed }) : null,
+  ].filter((part): part is string => part !== null).join(' · ');
+  return (
+    <ActivityRow
+      className="ml-4"
+      attrs={{ 'data-other-descendants': counts.total, 'data-other-descendants-open': open || undefined }}
+      glyph={<DisclosureChevron open={open} className="text-ink-faint" />}
+      chevronInGlyph
+      label={t('subagent.otherGroup')}
+      detail={<span className="text-ink-faint">{summary}</span>}
+      status={counts.failed > 0
+        ? <OutcomeMark state="failed" labels={activityOutcomeLabels(t)} />
+        : counts.running > 0
+          ? <OutcomeMark state="running" labels={activityOutcomeLabels(t)} />
+          : undefined}
+      expanded={open}
+      onToggle={toggle}
+      ariaLabel={t('subagent.otherGroupAria', { summary })}
+    >
+      {open ? (
+        <div className="space-y-1">
+          {members.map((member) => renderMember(member))}
+        </div>
+      ) : undefined}
+    </ActivityRow>
+  );
+}
+
 const SubagentCard = memo(function SubagentCard({
   block,
   forest,
@@ -1350,6 +1404,35 @@ const SubagentCard = memo(function SubagentCard({
   }, [active]);
   const childCount = node?.childIds.length ?? children.length;
   const toolCalls = resolveSubagentToolCalls(block, node);
+    // Membership is a DESCENDANT's immutable birth against THIS CARD's own run
+  // window, and the card supplies both ends of that window. The live node is
+  // deliberately NOT consulted: it tracks the agent's newest run, so filling a
+  // missing window from it would slide this card's boundary onto a later
+  // resume and reopen exactly the descendants it must fold. Nothing here is a
+  // confirmed same-dispatch record, so it is not a substitute. A card with no
+  // window of its own therefore folds every descendant.
+  const descendantGroups = groupDescendantsByDispatch(
+    { startedAt: block.startedAt, endedAt: block.endedAt, status: block.status },
+    children,
+  );
+  // This card is one AgentRun call, so the call that dispatched it identifies
+  // the fold group's open/closed state. Keying on the agent would make two
+  // cards for one resumed agent share a single choice, and opening the older
+  // card's group would open the newer one's too. The block id is derived from
+  // the agent and cannot separate them, so the dispatch call is used, with the
+  // block id as the fallback for a card that never recorded one.
+  const dispatchGroupKey = `${block.parentToolCallId ?? block.id}`;
+  const renderChildCard = (child: AgentTreeNode): ReactNode => (
+    <SubagentCard
+      key={child.agentId}
+      block={childBlocks?.get(child.agentId) ?? syntheticChildBlock(child)}
+      forest={forest}
+      depth={depth + 1}
+      childBlocks={childBlocks}
+      onOpenAgent={onOpenAgent}
+      displayStatus={child.status}
+    />
+  );
   if (!full) {
     return (
       <SubagentCompactCard
@@ -1455,20 +1538,18 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
           {expanded && children.length > 0 ? (
             <div className="mt-1 space-y-1">
-              {children.map((child) => {
-                const nested = childBlocks?.get(child.agentId) ?? syntheticChildBlock(child);
-                return (
-                  <SubagentCard
-                    key={child.agentId}
-                    block={nested}
-                    forest={forest}
-                    depth={depth + 1}
-                    childBlocks={childBlocks}
-                    onOpenAgent={onOpenAgent}
-                    displayStatus={child.status}
-                  />
-                );
-              })}
+              {/* The descendants this dispatch provably created lay out; every
+                  other one folds into one line, including any this view cannot
+                  place. Folding is a default, not a deletion and not a claim
+                  about age — the reader opens it and finds the same subtree. */}
+              {descendantGroups.current.map((child) => renderChildCard(child))}
+              {descendantGroups.other.length > 0 ? (
+                <OtherDescendantGroup
+                  groupKey={dispatchGroupKey}
+                  members={descendantGroups.other}
+                  renderMember={renderChildCard}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1576,6 +1657,20 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
   };
 }
 
+// A goal notice names the actual change (set, paused, resumed, blocked,
+// completed, cleared) instead of flattening every lifecycle event into
+// "goal updated". The engine's reason, when present, rides on the hover
+// title only, so the timeline line itself never grows a wall.
+const GOAL_CHANGE_I18N_KEY: Record<GoalMarkerChange['kind'], I18nKey> = {
+  created: 'transcript.marker.goal.created',
+  updated: 'transcript.marker.goal.updated',
+  paused: 'transcript.marker.goal.paused',
+  resumed: 'transcript.marker.goal.resumed',
+  blocked: 'transcript.marker.goal.blocked',
+  completed: 'transcript.marker.goal.completed',
+  cleared: 'transcript.marker.goal.cleared',
+};
+
 /**
  * A notice is a boundary, not an event: compaction, a marker, the start of a
  * plan. It gets the divider rule so the log reads as regions. A danger notice
@@ -1586,7 +1681,9 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
-  const baseText = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
+  const baseText = block.goalChange !== undefined
+    ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
+    : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
   const text = block.reasonCodes?.includes('notes_directives_budget') ? t('transcript.marker.reason.notes_directives_budget') : baseText;
   // Why a compaction took the path it did (e.g. summary instead of a fresh
   // window): one sentence per engine reason code; an unknown code reads as-is.
@@ -1608,7 +1705,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
       <TimelineDivider
         tone={block.tone === 'danger' ? 'warn' : 'plain'}
         title={title}
-        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
+        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key, 'data-goal-change': block.goalChange?.kind }}
       >
         {expandable ? (
           <button
@@ -2475,11 +2572,6 @@ type PendingResetRestore = {
   frame: number | null;
 };
 
-/** A superseded request must stop before it pages history nobody is waiting for. */
-function signalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
 /**
  * Converge on the reader's row after an offset restore. A freshly mounted
  * timeline resolves the row's start from estimates until the rows are
@@ -2488,16 +2580,19 @@ function signalAborted(signal: AbortSignal | undefined): boolean {
  */
 async function settleRestoredAnchor(
   scroll: HTMLDivElement | null,
-  index: number,
+  resolveAnchor: () => { index: number; blockId?: string } | undefined,
   offset: number,
-  blockId: string | undefined,
-  signal: AbortSignal,
-  requireBlock: boolean,
+  cancelled: () => boolean,
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  settledFrames = 1,
 ): Promise<void> {
-  for (let frame = 0; frame < 12; frame += 1) {
+  let requestedIndex: number | undefined;
+  let stableFrames = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
     await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
-    if (signal.aborted || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    if (cancelled() || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    const hit = resolveAnchor();
+    if (hit === undefined) continue;
     const needsMeasurement = [...virtualizer.elementsCache].some(([key, element]) => {
       const rowIndex = virtualizer.indexFromElement(element);
       return element.isConnected && rowIndex >= 0 && rowIndex < virtualizer.options.count
@@ -2508,16 +2603,27 @@ async function settleRestoredAnchor(
     // measurement still compensates scroll and positions on the following
     // frame; drain that existing measurement path before accepting geometry.
     reconcileMountedRows(virtualizer);
-    if (needsMeasurement) continue;
-    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${index}"]`);
-    if (row === null) continue;
+    if (needsMeasurement) { stableFrames = 0; continue; }
+    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
+    if (row === null) {
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'start' });
+      }
+      continue;
+    }
     const block = [...row.querySelectorAll<HTMLElement>('[data-block-id]')]
-      .find((candidate) => candidate.dataset['blockId'] === blockId);
-    if (block === undefined && requireBlock) continue;
+      .find((candidate) => candidate.dataset['blockId'] === hit.blockId);
+    if (block === undefined && hit.blockId !== undefined) continue;
     const element = block ?? row;
     // offset = scrollTop - blockStart, so the block belongs at -offset.
     const delta = element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + offset;
-    if (Math.abs(delta) < 2) return;
+    if (Math.abs(delta) < 2) {
+      stableFrames += 1;
+      if (stableFrames >= settledFrames) return;
+      continue;
+    }
+    stableFrames = 0;
     // Replace the estimate-based command as well as the DOM position, so its
     // pending reconcile cannot later undo an exact fold-member correction.
     virtualizer.scrollToOffset(scroll.scrollTop + delta, { align: 'start' });
@@ -2745,9 +2851,10 @@ const TranscriptRow = memo(
 
 /** Jump-to-bottom pill driven by the virtualizer's end state. */
 function JumpToBottom({
-  virtualizer,
+  virtualizer, onJump,
 }: {
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  onJump: () => void;
 }) {
   const { t } = useI18n();
   if (virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD)) return null;
@@ -2755,7 +2862,7 @@ function JumpToBottom({
     <button
       type="button"
       data-jump-to-latest
-      onClick={() => { virtualizer.scrollToEnd(); }}
+      onClick={onJump}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
@@ -2777,7 +2884,7 @@ function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; tur
 
 function TopEdge({ state, onLoadOlder }: {
   state: SessionViewState;
-  onLoadOlder: () => Promise<boolean>;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   // Unverified coverage says one thing: the top of what loaded cannot be
@@ -3092,7 +3199,7 @@ export function Transcript({
    * place (or the latest message) instead of whatever the hidden box kept.
    */
   visible?: boolean;
-  onLoadOlder: () => Promise<boolean>;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -3118,6 +3225,23 @@ export function Transcript({
 }) {
   const { t } = useI18n();
   const { blocks } = state;
+  const controller = useTranscriptController();
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const readSeekStructure = useCallback(async (signal: AbortSignal): Promise<boolean | undefined> => {
+    const ref = stateRef.current.contentRefs?.findLast((candidate) => candidate.source.kind === 'turn' &&
+      candidate.path[0] === 'steps' && (candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames'));
+    if (ref === undefined || controller === undefined) return undefined;
+    const key = JSON.stringify(ref);
+    const lease = controller.beginContentRead(agentId, ref.source, ['steps']);
+    try {
+      while (stateRef.current.contentRefs?.some((candidate) => JSON.stringify(candidate) === key)) {
+        if (signal.aborted || stateRef.current.detailLoads[`content:${key}`]?.status === 'error') return false;
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+      }
+      return !signal.aborted;
+    } finally { lease.release(); }
+  }, [controller, agentId]);
   const loaded = state.loaded && state.transcriptReady;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
@@ -3524,27 +3648,90 @@ export function Transcript({
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
   const olderInflightRef = useRef(false);
+  const readingIntentRef = useRef(0);
+  const seekRequestRef = useRef<AbortController | null>(null);
+  const olderRequestRef = useRef<AbortController | null>(null);
   const loadOlderRef = useRef(onLoadOlder);
+  const loadOlderAtReadingAnchor = useCallback(async (signal: AbortSignal) => {
+    const instance = virtualizerRef.current;
+    const intent = readingIntentRef.current;
+    const firstKey = instance?.options.getItemKey(0);
+    let anchor = instance === null ? undefined : captureTranscriptAnchor(instance, true);
+    const scroll = scrollRef.current;
+    const capture = () => {
+      if (instance !== null && readingIntentRef.current === intent && instance.options.getItemKey(0) === firstKey) anchor = captureTranscriptAnchor(instance, true);
+    };
+    scroll?.addEventListener('scroll', capture, { passive: true });
+    let frame: number;
+    const captureFrame = () => {
+      capture();
+      frame = requestAnimationFrame(captureFrame);
+    };
+    frame = requestAnimationFrame(captureFrame);
+    let loaded: boolean;
+    try {
+      loaded = await loadOlderRef.current(signal);
+    } finally {
+      scroll?.removeEventListener('scroll', capture);
+      cancelAnimationFrame(frame);
+    }
+    if (olderRequestRef.current?.signal === signal) olderInflightRef.current = false;
+    if (loaded && instance !== null && anchor?.key !== undefined && !anchor.atEnd) {
+      const key = anchor.key;
+      try {
+        await settleRestoredAnchor(scrollRef.current, () => {
+          const index = nodeIndexesRef.current.get(key);
+          return index === undefined ? undefined : { index, blockId: key };
+        }, anchor.offset, () => signal.aborted || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
+      } catch {
+        return loaded;
+      }
+    }
+    return loaded;
+  }, []);
+  const requestOlderPage = useCallback(() => {
+    readingIntentRef.current += 1;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    olderRequestRef.current = request;
+    olderInflightRef.current = true;
+    return loadOlderAtReadingAnchor(request.signal).finally(() => {
+      if (olderRequestRef.current !== request) return;
+      olderRequestRef.current = null;
+      olderInflightRef.current = false;
+    });
+  }, [loadOlderAtReadingAnchor]);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
     let touchY: number | undefined;
     let pointerY: number | undefined;
     const recordIntent = (upward: boolean) => {
+      readingIntentRef.current += 1;
+      seekRequestRef.current?.abort();
+      if (!upward) olderRequestRef.current?.abort();
       olderIntentRef.current = upward;
       if (upward) olderIntentAtRef.current = Date.now();
     };
     const loadAtTop = () => {
-      if (!olderIntentRef.current) return;
+      if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
       if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
         olderIntentRef.current = false;
         return;
       }
       if (olderInflightRef.current || state.loadingOlder || state.olderError !== undefined ||
-          !state.hasMoreHistory || element.scrollTop > 48) return;
+          !state.hasMoreHistory || element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
       olderIntentRef.current = false;
       olderInflightRef.current = true;
-      void loadOlderRef.current().finally(() => { olderInflightRef.current = false; });
+      const request = new AbortController();
+      olderRequestRef.current = request;
+      void loadOlderAtReadingAnchor(request.signal).finally(() => {
+        if (olderRequestRef.current !== request) return;
+        olderRequestRef.current = null;
+        olderInflightRef.current = false;
+      });
     };
     const onWheel = (event: WheelEvent) => {
       recordIntent(event.deltaY < 0);
@@ -3581,7 +3768,9 @@ export function Transcript({
     element.addEventListener('pointermove', onPointerMove);
     element.addEventListener('pointerup', onPointerUp);
     element.addEventListener('scroll', loadAtTop, { passive: true });
+    const frame = requestAnimationFrame(loadAtTop);
     return () => {
+      cancelAnimationFrame(frame);
       element.removeEventListener('wheel', onWheel);
       element.removeEventListener('keydown', onKeyDown);
       element.removeEventListener('touchstart', onTouchStart);
@@ -3591,7 +3780,7 @@ export function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError]);
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, loadOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -3819,18 +4008,25 @@ export function Transcript({
     target: TimelineTarget,
     options?: { quiet?: boolean; signal?: AbortSignal },
   ): Promise<LocateOutcome> => {
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = options?.signal === undefined ? request.signal : AbortSignal.any([request.signal, options.signal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
     for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
-      if (wait > 120) return { status: 'no-timeline' };
+      if (cancelled() || wait > 120) return { status: 'no-timeline' };
       await nextFrame();
     }
-    // A superseded request (the reader already moved to another visit) stops
-    // here, before it pages history for a position nobody is waiting on.
-    if (signalAborted(options?.signal)) return { status: 'no-timeline' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (target.kind === 'latest') {
       if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
       landAtEnd(virtualizer);
       locateTargetRef.current = { key: timelineTargetKey(target), anchor: { ...viewportAnchorRef.current } };
       return { status: 'found' };
@@ -3860,23 +4056,22 @@ export function Transcript({
       }
     };
     let hit = resolve();
-    // Not on the page: page older history in until it shows up or the
-    // beginning is reached. Each page re-renders before the next lookup.
-    for (let page = 0; hit === undefined && page < 40; page += 1) {
-      if (!liveRef.current.hasMore) break;
-      const loadedMore = await loadOlderRef.current();
-      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+    while (hit === undefined) {
+      if (cancelled()) return { status: 'no-timeline' };
+      const structure = await readSeekStructure(signal);
+      if (cancelled()) return { status: 'no-timeline' };
+      if (structure === undefined && !liveRef.current.hasMore) {
+        return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
+      }
+      const loadedMore = structure ?? await loadOlderRef.current(signal);
+      for (let frame = 0; frame < 4; frame += 1) {
+        await nextFrame();
+        if (cancelled()) return { status: 'no-timeline' };
+      }
       if (liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
-      if (!loadedMore && hit === undefined && liveRef.current.hasMore) {
-        for (let frame = 0; frame < 20 && hit === undefined; frame += 1) {
-          await nextFrame();
-          hit = resolve();
-        }
-        if (hit === undefined) return { status: 'load-failed' };
-      }
+      if (!loadedMore && hit === undefined) return { status: 'load-failed' };
     }
-    if (hit === undefined) return { status: 'not-found' };
     if (hit.foldId !== undefined) {
       const foldId = hit.foldId;
       setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
@@ -3884,28 +4079,41 @@ export function Transcript({
     }
     // Row first (virtualized: it may not be mounted), then the exact element
     // (a fold member or an annotation mark inside a tall row).
-    virtualizer.scrollToIndex(hit.index, { align: 'center' });
+    if (cancelled()) return { status: 'no-timeline' };
+    hit = resolve();
+    if (hit === undefined) return { status: 'load-failed' };
+    let requestedIndex = hit.index;
+    virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
     let element: HTMLElement | null = null;
-    for (let frame = 0; frame < 12 && element === null; frame += 1) {
+    for (let frame = 0; frame < 120 && element === null; frame += 1) {
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
+      hit = resolve();
       const scroll = scrollRef.current;
-      if (scroll === null) break;
+      if (scroll === null || hit === undefined) return { status: 'load-failed' };
+      // Let the virtualizer settle its existing scroll; only a changed row
+      // index needs a new request, not a reset of its reconciliation each frame.
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
+      }
       const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
       if (row === null) continue;
+      const blockId = hit.blockId;
       element =
         target.kind === 'annotation'
           ? ([...row.querySelectorAll<HTMLElement>('[data-annotation-ref]')].find(
             (mark) => mark.dataset['annotationRef'] === target.annotationId && mark.tagName === 'MARK',
           ) ?? null)
-          : hit.blockId === undefined
+          : blockId === undefined
             ? row
             : ([...row.querySelectorAll<HTMLElement>('[data-block-id]')].find(
-              (candidate) => candidate.dataset['blockId'] === hit.blockId,
+              (candidate) => candidate.dataset['blockId'] === blockId,
             ) ?? row);
     }
-    if (element === null) return { status: 'not-found' };
+    if (element === null) return { status: 'load-failed' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (options?.quiet === true) return { status: 'found' };
-    if (options?.signal !== undefined && signalAborted(options.signal)) return { status: 'no-timeline' };
     element.scrollIntoView?.({ block: 'center' });
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     if (target.kind === 'annotation') element.focus({ preventScroll: true });
@@ -3914,7 +4122,7 @@ export function Transcript({
     flashed.classList.add('settings-card-flash');
     window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
     return { status: 'found' };
-  }, [virtualizer]);
+  }, [virtualizer, readSeekStructure]);
   useEffect(() => {
     if (sessionIdForLocate === undefined) return undefined;
     return registerTimelineLocator(sessionIdForLocate, agentId, {
@@ -3954,8 +4162,17 @@ export function Transcript({
     const hit = locateIndexRef.current.blocks.get(key);
     return hit === undefined ? undefined : { ...hit, blockId: key };
   }, []);
-  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, signal: AbortSignal): Promise<void> => {
+  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, restoreSignal: AbortSignal): Promise<void> => {
     setReadingRestoreFailed(null);
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = AbortSignal.any([request.signal, restoreSignal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
+      (scrollRef.current !== null && !scrollRef.current.isConnected);
     const adapter: TimelineReadingAdapter = {
       applyFolds: async (value) => {
         setOpenFolds(new Set(value.openFolds));
@@ -3966,8 +4183,13 @@ export function Transcript({
         await nextFrame();
       },
       hasAnchor: (key) => resolveAnchorRow(key) !== undefined,
-      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined,
-      loadOlder: () => loadOlderRef.current(),
+      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined ||
+        stateRef.current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true,
+      loadOlder: async () => {
+        const structure = await readSeekStructure(signal);
+        if (cancelled()) return false;
+        return structure ?? loadOlderRef.current(signal);
+      },
       hasLoadError: () => liveRef.current.olderError !== undefined,
       nextFrame,
       restoreAnchor: async (anchor) => {
@@ -3988,22 +4210,25 @@ export function Transcript({
           setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
           await nextFrame();
         }
-        const offset = virtualizer.getOffsetForIndex(hit.index, 'start')?.[0];
+        if (cancelled()) return;
+        const resolve = () => anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
+        const current = resolve();
+        const offset = current === undefined ? undefined : virtualizer.getOffsetForIndex(current.index, 'start')?.[0];
         if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
-        await settleRestoredAnchor(scrollRef.current, hit.index, anchor.offset, anchor.key, signal, hit.blockId !== undefined, virtualizer);
+        await settleRestoredAnchor(scrollRef.current, resolve, anchor.offset, cancelled, virtualizer);
       },
       beginRestore: () => { navRestorePendingRef.current = true; },
       endRestore: (outcome) => {
-        if (signal.aborted || outcome.status !== 'found') return;
+        if (restoreSignal.aborted || (outcome.status !== 'found' && intent === readingIntentRef.current)) return;
         navRestorePendingRef.current = false;
         navRestoredVisitRef.current = navVisitRef.current;
         initialScrollDoneRef.current = true;
         measuredResetRef.current = state.transcriptResetVersion;
       },
-      isCancelled: () => signal.aborted || (scrollRef.current !== null && !scrollRef.current.isConnected),
+      isCancelled: cancelled,
     };
     const outcome = await restoreTimelineReading(snapshot, adapter);
-    if (signal.aborted) return;
+    if (cancelled()) return;
     if (outcome.status === 'found') {
       // Focus returns to the reading surface when the control that started the
       // jump is gone (a removed trigger leaves focus on <body>).
@@ -4020,7 +4245,7 @@ export function Transcript({
       setReadingRestoreFailed(failure ?? t('locate.failedLoad'));
       throw new Error(failure ?? 'Reading restore is not ready');
     }
-  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer]);
+  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure]);
   const reading = useNavSnapshotAdapter<TimelineReadingSnapshot>(readingKey, {
     // Reading a place back only makes sense once this transcript has rows: a
     // not-yet-loaded timeline would page history for an anchor it cannot see.
@@ -4039,11 +4264,17 @@ export function Transcript({
   // Freeze source geometry before the virtualizer's layout cleanup detaches
   // its scroll element and publishes a temporary end anchor.
   useInsertionEffect(() => () => {
+    readingIntentRef.current += 1;
+    olderIntentRef.current = false;
     departingReadingAnchorRef.current = visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
       ? captureTranscriptAnchor(virtualizer, true) : navViewportAnchorRef.current;
   }, [reading.visitId, virtualizer]);
   useLayoutEffect(() => { departingReadingAnchorRef.current = null; }, [reading.visitId]);
   useEffect(() => { setReadingRestoreFailed(null); }, [reading.visitId]);
+  useEffect(() => () => {
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+  }, [reading.visitId, visible]);
   useTimelineVisitLocator(sessionIdForLocate, agentId);
 
   // ---- find in this conversation (Ctrl/⌘+F; lib/timelineFind.ts) ----
@@ -4054,8 +4285,10 @@ export function Transcript({
   const [findReveal] = useState(createFindRevealStore);
   const [findOwner] = useState(() => Symbol('transcript-find'));
   const findOpen = findRequest !== null;
-  // Find reads what the rows show; a message-view activity summary is one
-  // collapsed line whose members stay in the process view.
+  // Find reads what the rows show. A message-view activity summary is one
+  // collapsed line, but the tool output inside it is loaded and the tool
+  // checkbox selects it: it is searched here too, and the items carry the
+  // "process view only" mark that routes their landing below.
   const findItems = useMemo(
     () => (findOpen
       ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'), true)
@@ -4308,7 +4541,14 @@ export function Transcript({
 
   if (!loaded) return <TranscriptLoading />;
 
-  if (timelineBlocks.length === 0 && !state.busy) {
+  // An unknown cold read and a failed anchor restore keep their existing
+  // Retry action in the blank shell. Known tail coverage, an in-flight older
+  // read, and an older-page failure otherwise let TopEdge own the state.
+  const showTopEdgeForEmptyHistory =
+    readingRestoreFailed === null &&
+    (state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) &&
+    (state.historyCoverageKind !== 'unknown' || state.loadingOlder || state.olderError !== undefined);
+  if (timelineBlocks.length === 0 && !state.busy && !showTopEdgeForEmptyHistory) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
@@ -4317,7 +4557,11 @@ export function Transcript({
             {t(state.historyCoverageKind === 'unknown' ? 'transcript.historyPartial' : 'transcript.blank')}
           </p>
         )}
-        <SessionRemainder />
+        {/* The session's own remainder is offered from the composer's footer
+            now, so the reader sees what is missing from where they are typing
+            rather than having to scroll back through a transcript that is not
+            there. The blank-state sentence above still yields to it, so an
+            unread session is never announced as an empty one. */}
         {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
           <button type="button" data-reading-restore-retry={readingRestoreFailed !== null || undefined}
             onClick={() => { if (readingRestoreFailed !== null) reading.retryRestore(); else if (onRetryLoad !== undefined) onRetryLoad(); else void onLoadOlder(); }}
@@ -4468,10 +4712,11 @@ export function Transcript({
                       />
                     </div>
                   ) : null}
-                  {/* The session's own remainder belongs after the last row the
-                      reader has: it is not a virtual row of its own, so the
-                      existing measurement of this cell carries it. */}
-                  {last ? <SessionRemainder /> : null}
+                  {/* The session's own remainder moved to the composer's footer,
+                      which is where a reader looking at the input sees it and
+                      where it does not perturb this cell's measurement: it used
+                      to be rendered here, after the last row, and that is no
+                      longer part of what this cell measures. */}
                 </div>
               </div>
             );
@@ -4500,13 +4745,17 @@ export function Transcript({
         scrollRef={scrollRef}
         virtualizer={virtualizer}
       />
-      <JumpToBottom virtualizer={virtualizer} />
+      <JumpToBottom virtualizer={virtualizer} onJump={() => { void locate({ kind: 'latest' }); }} />
       {findRequest !== null ? (
         <FindBar
           items={findItems}
           onIncludeToolOutputChange={setFindIncludeToolOutput}
           sessionId={sessionIdForLocate}
           agentId={agentId}
+          surface={view}
+          onOpenProcessView={view === 'message' && sessionIdForLocate !== undefined
+            ? (match) => { openProcessAt(match.item.turnId, match.item.blockId); }
+            : undefined}
           hasMoreHistory={state.hasMoreHistory}
           loadedTurns={loadedTurns}
           request={findRequest}

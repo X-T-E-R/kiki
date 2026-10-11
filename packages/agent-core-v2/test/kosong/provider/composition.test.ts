@@ -8,6 +8,12 @@ import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
 import { generate } from '#/kosong/contract/generate';
+import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
+import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
+import { createTestAgent, permissionModeServices, appService } from '../../harness';
 
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
@@ -2361,6 +2367,14 @@ describe('Responses finalized text', () => {
     expect(result.finishReason).toBe('completed');
     expect(result.rawFinishReason).toBe('completed');
     expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalTextParts: 1,
+      terminalTextChars: 'Contract fixture text'.length, terminalToolCalls: 0,
+      emittedTextChars: 'Contract fixture text'.length, emittedToolHeaders: 0,
+      eventCount: events.length, textDeltaCount: mode === 'prefilled' ? 0 : 1,
+      textDoneCount: 1, contentPartAddedCount: 1, outputItemAddedCount: 1, outputItemDoneCount: 1,
+      terminalEventCount: 1, errorEventCount: 0,
+    });
   });
 
   it('isolates finalized text by output item and content identity', async () => {
@@ -2402,9 +2416,10 @@ describe('Responses finalized text', () => {
     expect(result.message.content).toEqual([]);
     expect(result.finishReason).toBe('completed');
     expect(result.usage?.output).toBe(2);
+    expect(result.diagnostics).toMatchObject({ terminalTextParts: 0, terminalTextChars: 0, terminalToolCalls: 1, emittedTextChars: 0, emittedToolHeaders: 1 });
   });
 
-  it('still rejects completed reasoning-only responses', async () => {
+  it('accepts completed reasoning-only responses without inventing text', async () => {
     const item = { id: 'rs_finalized', type: 'reasoning' as const, summary: [] };
     const events: ResponseStreamEvent[] = [
       { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
@@ -2412,6 +2427,255 @@ describe('Responses finalized text', () => {
       { type: 'response.output_item.done', sequence_number: 2, output_index: 0, item },
       { type: 'response.completed', sequence_number: 3, response: finalizedResponse([item], 'completed') },
     ];
-    await expect(generateFinalizedFixture(events)).rejects.toMatchObject({ name: 'APIEmptyResponseError', finishReason: 'completed' });
+    const result = await generateFinalizedFixture(events);
+    expect(result.message.content).toEqual([{ type: 'think', think: '' }]);
+    expect(result.message.toolCalls).toEqual([]);
+    expect(result.finishReason).toBe('completed');
+    expect(result.usage?.output).toBe(2);
+  });
+});
+
+function diagnosticFixtureProvider(events: readonly unknown[], convertError?: ConstructorParameters<typeof OpenAIResponsesChatProvider>[0]['convertError']) {
+  const body = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+  return new OpenAIResponsesChatProvider({
+    apiKey: 'fixture-only', model: 'gpt-5', convertError,
+    clientFactory: () => new OpenAI({
+      apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
+      fetch: async () => new Response(body, { status: 200, headers: {
+        'content-type': 'text/event-stream', 'x-request-id': 'request-fixture', 'x-trace-id': 'trace-fixture',
+        authorization: 'Bearer header-secret',
+      } }),
+    }),
+  });
+}
+
+async function diagnosticFailure(events: readonly unknown[]) {
+  try {
+    await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], []);
+  } catch (error) {
+    return toErrorPayload(error);
+  }
+  throw new Error('expected diagnostic fixture failure');
+}
+
+describe('Responses safe stream diagnostics', () => {
+  it.each(['empty', 'reasoning'] as const)('retains the real %s counts on normal completion', async mode => {
+    const output: OpenAIResponse['output'] = mode === 'empty' ? [] : [{ id: 'rs_fixture', type: 'reasoning', summary: [] }];
+    const events = mode === 'empty' ? [] : [{ type: 'response.output_item.done', output_index: 0, item: output[0] }];
+    const result = await generate(diagnosticFixtureProvider([...events, { type: 'response.completed', response: finalizedResponse(output, 'completed') }]), 'synthetic fixture', [], []);
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.message.content).toEqual(mode === 'empty' ? [] : [{ type: 'think', think: '' }]);
+    expect(result.message.toolCalls).toEqual([]);
+    expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalTextParts: 0, terminalTextChars: 0,
+      terminalToolCalls: 0, emittedTextChars: 0, emittedToolHeaders: 0, terminalEventCount: 1, errorEventCount: 0,
+    });
+  });
+
+  it('rejects EOF even after a text delta instead of accepting a truncated answer', async () => {
+    const error = await generate(diagnosticFixtureProvider([{ type: 'response.output_text.delta', delta: 'partial' }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(error)).toBe(true);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'eof', emittedTextChars: 7, terminalEventCount: 0 });
+  });
+
+  it.each(['incomplete', 'max_output_tokens'] as const)('still rejects no-text output on %s', async reason => {
+    const response = { ...finalizedResponse([], 'incomplete'), incomplete_details: reason === 'incomplete' ? null : { reason } };
+    const error = await generate(diagnosticFixtureProvider([{ type: 'response.incomplete', response }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(error)).toBe(true);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe('APIEmptyResponseError');
+    expect(payload.details).toMatchObject({ finishReason: reason === 'incomplete' ? 'other' : 'truncated', streamDiagnostics: { endSource: 'terminal', terminalStatus: 'incomplete', terminalTextChars: 0 } });
+  });
+
+  it('does not accept a completed body carried by an incomplete event', async () => {
+    const payload = await diagnosticFailure([{ type: 'response.incomplete', response: finalizedResponse([], 'completed') }]);
+    expect(payload.name).toBe('APIEmptyResponseError');
+    expect(payload.details).toMatchObject({ finishReason: 'completed', streamDiagnostics: { terminalStatus: 'incomplete' } });
+  });
+
+  it('does not hide an explicit error after a completed event', async () => {
+    const payload = await diagnosticFailure([
+      { type: 'response.completed', response: finalizedResponse([], 'completed') },
+      { type: 'error', code: 'stream_failed', message: 'fixture failure' },
+    ]);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'event_error', errorEventCount: 1 });
+  });
+
+  it('keeps unknown terminal counts distinct from zero when EOF has no terminal event', async () => {
+    const payload = await diagnosticFailure([]);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: 'eof', terminalStatus: null,
+      terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
+    });
+  });
+
+  it('accepts an explicitly completed empty response even when terminal statistics are unknown', async () => {
+    const { output: _output, ...withoutOutput } = finalizedResponse([], 'completed');
+    const provider = diagnosticFixtureProvider([{ type: 'response.completed', response: withoutOutput }]);
+    const generateSpy = vi.spyOn(provider, 'generate');
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(result.message).toEqual({ role: 'assistant', content: [], toolCalls: [] });
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1,
+      terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
+    });
+  });
+
+  it.each(['error', 'response.failed'] as const)('retains direct %s classification and safe event identifiers', async type => {
+    const response = finalizedResponse([], 'failed');
+    const event = type === 'error'
+      ? { type, code: 'stream_failed', message: 'fixture failure', param: null, request_id: 'event-request', api_key: 'body-secret', text: 'private body' }
+      : { type, response: { ...response, error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure', thinking: 'private reasoning' } } };
+    const payload = await diagnosticFailure([event]);
+    expect(payload).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error' });
+    expect(payload.details).toMatchObject({
+      errorSource: 'provider_event', upstreamErrorCode: 'stream_failed',
+      streamDiagnostics: { endSource: 'event_error', errorEventCount: 1, eventCount: 1, emittedTextChars: 0 },
+    });
+    expect(payload.details?.['streamDiagnostics']).toMatchObject(type === 'error'
+      ? { terminalStatus: null, terminalTextChars: null, terminalEventCount: 0 }
+      : { terminalStatus: 'failed', terminalTextChars: 0, terminalEventCount: 1 });
+    expect(JSON.stringify(payload)).not.toMatch(/body-secret|private body|private reasoning|header-secret/);
+    expect(fromErrorPayload(payload).details).toEqual(payload.details);
+  });
+
+  it('distinguishes an SDK SSE exception before the converter receives an event', async () => {
+    const payload = await diagnosticFailure([{ error: {
+      type: 'internal_server_error', code: 'stream_failed', message: 'fixture SDK failure', api_key: 'sdk-secret', text: 'private SDK body',
+    } }]);
+    expect(payload.details).toMatchObject({
+      errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      requestId: 'request-fixture', traceId: 'trace-fixture',
+      streamDiagnostics: { endSource: 'sdk_error', eventCount: 0, errorEventCount: 0, terminalTextChars: null },
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/sdk-secret|private SDK body|header-secret/);
+    expect(safeProviderFailureDetails(payload.details)).toEqual({
+      errorSource: 'provider_stream', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      requestId: 'request-fixture', traceId: 'trace-fixture', streamDiagnostics: payload.details?.['streamDiagnostics'],
+    });
+  });
+
+  it('keeps event request IDs when status classification has no SDK request ID', async () => {
+    const payload = await diagnosticFailure([{ type: 'error', code: 'rate_limit_exceeded', message: 'fixture limit', request_id: 'event-request' }]);
+    expect(payload).toMatchObject({ name: 'APIProviderRateLimitError', code: 'provider.rate_limit', details: { requestId: 'event-request', upstreamErrorCode: 'rate_limit_exceeded' } });
+  });
+
+  it('marks a local text mismatch without exposing either text value', async () => {
+    const events = finalizedTextEvents([['private final text']], 'delta');
+    const delta = events.find(event => event.type === 'response.output_text.delta');
+    if (delta?.type !== 'response.output_text.delta') throw new Error('expected delta');
+    delta.delta = 'private different text';
+    const payload = await diagnosticFailure(events);
+    expect(payload.message).toBe('OpenAI Responses final text does not match the streamed text deltas.');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'local_error', emittedTextChars: delta.delta.length, terminalTextChars: null });
+    expect(JSON.stringify(payload)).not.toMatch(/private final text|private different text/);
+  });
+
+  it('preserves hook precedence and existing rate-limit classification', async () => {
+    const hooked = new APIProviderRateLimitError('hook fixture', 'hook-request');
+    const provider = diagnosticFixtureProvider([{ type: 'error', code: 'stream_failed', message: 'fixture failure' }], () => hooked);
+    let failure: unknown;
+    try { await generate(provider, 'synthetic fixture', [], []); } catch (error) { failure = error; }
+    expect(failure).toBe(hooked);
+    expect(toErrorPayload(failure)).toMatchObject({
+      name: 'APIProviderRateLimitError', code: 'provider.rate_limit',
+      details: { streamDiagnostics: { endSource: 'event_error' }, errorSource: 'provider_event', requestId: 'hook-request' },
+    });
+  });
+
+  it('records cancellation instead of a normal empty terminal and keeps AbortError semantics', async () => {
+    const controller = new AbortController();
+    const events = finalizedTextEvents([['private cancellation text']], 'delta');
+    let failure: unknown;
+    try {
+      await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], [], {
+        onMessagePart: () => { controller.abort(); },
+      }, { signal: controller.signal });
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(DOMException);
+    expect((failure as Error).name).toBe('AbortError');
+    const payload = toErrorPayload(failure);
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: 'cancelled', terminalStatus: null, terminalTextChars: null,
+      emittedTextChars: 'private cancellation text'.length, terminalEventCount: 0,
+    });
+    expect(JSON.stringify(payload)).not.toContain('private cancellation text');
+    expect(fromErrorPayload(payload).details).toEqual(payload.details);
+  });
+
+  it('filters untrusted extra fields using the shared room projection', async () => {
+    const payload = await diagnosticFailure([{ type: 'response.incomplete', response: finalizedResponse([], 'incomplete') }]);
+    const safe = safeProviderFailureDetails({
+      ...payload.details, requestId: 'sk-secret-value', traceId: 'Authorization: Bearer secret', headers: { authorization: 'secret' }, body: 'private body',
+      streamDiagnostics: { ...(payload.details?.['streamDiagnostics'] as object), text: 'private text', thinking: 'private thinking', arbitrary: 'secret' },
+    });
+    expect(safe).toEqual({ streamDiagnostics: payload.details?.['streamDiagnostics'] });
+    expect(safeProviderFailureDetails({ streamDiagnostics: { ...(payload.details?.['streamDiagnostics'] as object), terminalTextChars: -1 } })).toEqual({});
+    expect(JSON.stringify(safe)).not.toMatch(/private|secret|headers|body|thinking/);
+  });
+});
+
+
+describe('Responses completed silence through the agent loop', () => {
+  it.each(['empty', 'reasoning', 'unknown-statistics'] as const)('finishes after a tool result and %s completion without retrying', async mode => {
+    const call = { id: 'fc_lookup', type: 'function_call' as const, call_id: 'call_lookup', name: 'Lookup', arguments: '{}', status: 'completed' as const };
+    const reasoning = { id: 'rs_lookup', type: 'reasoning' as const, summary: [] };
+    const finalResponse = finalizedResponse(mode === 'reasoning' ? [reasoning] : [], 'completed');
+    const { output: _output, ...withoutOutput } = finalResponse;
+    const fixtures = [
+      [{ type: 'response.output_item.added', output_index: 0, item: call }, { type: 'response.completed', response: finalizedResponse([call], 'completed') }],
+      [...(mode === 'reasoning' ? [{ type: 'response.output_item.done', output_index: 0, item: reasoning }] : []), { type: 'response.completed', response: mode === 'unknown-statistics' ? withoutOutput : finalResponse }],
+    ];
+    let requests = 0;
+    const provider = new OpenAIResponsesChatProvider({
+      apiKey: 'fixture-only', model: 'gpt-5',
+      clientFactory: () => new OpenAI({
+        apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
+        fetch: async () => {
+          const events = fixtures[requests++];
+          if (events === undefined) throw new Error('unexpected fixture retry');
+          return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        },
+      }),
+    });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const execute = vi.fn(async () => ({ output: 'lookup-result' }));
+    try {
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+      ctx.get(IAgentToolRegistryService).register({
+        name: 'Lookup', description: 'Fixture lookup', parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({ approvalRule: 'Lookup', execute }),
+      });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Check; stay silent when nothing changed.' }] });
+      await ctx.untilTurnEnd();
+      expect(requests).toBe(2);
+      expect(execute).toHaveBeenCalledTimes(1);
+      const wire = ctx.allEvents.filter(entry => entry.type === '[wire]');
+      expect(wire.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'completed' });
+      expect(wire.filter(entry => entry.event === 'turn.step.retrying')).toEqual([]);
+      const loopEvents = wire.filter(entry => entry.event === 'context.append_loop_event').map(entry => (entry.args as { event: Record<string, unknown> }).event);
+      expect(loopEvents).toContainEqual(expect.objectContaining({ type: 'tool.result', toolCallId: 'call_lookup', result: { output: 'lookup-result' } }));
+      expect(loopEvents.filter(event => event['type'] === 'step.end')).toMatchObject([
+        { finishReason: 'tool_use', providerFinishReason: 'completed' },
+        { finishReason: 'end_turn', providerFinishReason: 'completed', rawFinishReason: 'completed', usage: { inputOther: 3, output: 2 } },
+      ]);
+      expect(loopEvents.filter(event => event['type'] === 'content.part').some(event => (event['part'] as { type: string }).type === 'text')).toBe(false);
+      expect(wire.filter(entry => entry.event === 'usage.record')).toHaveLength(2);
+    } finally {
+      await ctx.dispose();
+    }
   });
 });

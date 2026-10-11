@@ -76,6 +76,8 @@ const V1_RECORD_TYPES: ReadonlySet<string> = new Set([
 const V2_ONLY_RECORD_TYPES: ReadonlySet<string> = new Set([
   'tools.reset_active_tools',
   'profile.bind',
+  'external.activity',
+  'external.text',
 ]);
 
 const V2_RECORD_TYPES: ReadonlySet<string> = new Set([

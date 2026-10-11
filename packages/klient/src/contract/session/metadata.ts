@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { executionBindingWireSchema as executionBindingSchema } from '../execution.js';
 
 import { tokenUsageSchema } from '../agent/schemas.js';
 import { maybe, noResult } from '../helpers.js';
@@ -19,6 +20,7 @@ export const negotiatedExecutorSchema = z.object({
 });
 
 export const agentMetaSchema = z.object({
+  execution: executionBindingSchema.optional(),
   homedir: z.string().optional(),
   type: z.enum(['main', 'sub', 'independent']).optional(),
   parentAgentId: z.union([z.string(), z.null()]).optional(),

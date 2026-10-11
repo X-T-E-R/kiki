@@ -17,6 +17,8 @@ use desktop_update_state::DesktopUpdateState;
 mod space_badge;
 mod space_shortcut;
 mod remote_space;
+mod work_mode;
+use work_mode::WindowModeDescriptor;
 mod clipboard_files;
 mod plugin_focus;
 use clipboard_files::read_clipboard_file_paths;
@@ -89,7 +91,7 @@ const STDERR_TAIL_LINES: usize = 100;
 /// Frontend event carrying a waiting phase or structured recovery failure.
 const BACKEND_STAGE_EVENT: &str = "kiki://desktop-backend-stage";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopConnection {
     url: String,
@@ -138,6 +140,10 @@ struct MetaEnvelope {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct BackendIdentity {
     server_version: String,
+    #[serde(default)]
+    server_id: String,
+    #[serde(default)]
+    desktop_managed: bool,
     #[serde(default)]
     build_id: Option<String>,
     #[serde(default)]
@@ -456,10 +462,97 @@ impl OwnedBackendOperation {
     }
 }
 
+struct SharedUpdateLock { path: PathBuf, owner: String }
+
+impl SharedUpdateLock {
+    fn acquire(home: &Path) -> Result<Self, String> {
+        Self::try_acquire(home)?.ok_or_else(|| "This space is already starting or updating; retry when it finishes".to_string())
+    }
+
+    fn try_acquire(home: &Path) -> Result<Option<Self>, String> {
+        let path = home.join("server").join("ensure.lock");
+        fs::create_dir_all(path.parent().ok_or("The service lock directory is unavailable")?).map_err(|error| error.to_string())?;
+        let owner = std::process::id().to_string();
+        let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // Same PID lease used by CLI ensure. A starting child owns the
+                // lease before registry publication, even if its launcher exits.
+                if let Ok(value) = fs::read_to_string(&path) {
+                    let pid = value.trim().parse::<u32>().ok().filter(|pid| *pid > 0);
+                    let stale = match pid {
+                        Some(pid) => !pid_alive(pid),
+                        None => fs::metadata(&path).and_then(|metadata| metadata.modified()).ok()
+                            .and_then(|time| time.elapsed().ok()).is_some_and(|age| age >= Duration::from_secs(65)),
+                    };
+                    if stale && fs::read_to_string(&path).is_ok_and(|current| current == value) {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+                return Ok(None);
+            }
+            Err(error) => return Err(format!("Cannot acquire the service startup lease: {error}")),
+        };
+        let lease = Self { path, owner };
+        file.write_all(lease.owner.as_bytes()).map_err(|error| error.to_string())?;
+        Ok(Some(lease))
+    }
+
+    fn transfer_to(&mut self, pid: u32) -> Result<(), String> {
+        if fs::read_to_string(&self.path).map_err(|error| error.to_string())? != self.owner {
+            return Err("The service startup lease changed ownership".to_string());
+        }
+        let owner = pid.to_string();
+        let mut file = fs::OpenOptions::new().write(true).truncate(true).open(&self.path).map_err(|error| error.to_string())?;
+        file.write_all(owner.as_bytes()).map_err(|error| error.to_string())?;
+        self.owner = owner;
+        Ok(())
+    }
+}
+
+impl Drop for SharedUpdateLock {
+    fn drop(&mut self) {
+        if fs::read_to_string(&self.path).is_ok_and(|value| value == self.owner) { let _ = fs::remove_file(&self.path); }
+    }
+}
+
+#[derive(Default)]
+struct DiscoveryFlight {
+    cancelled: AtomicBool,
+    result: Mutex<Option<Result<DesktopConnection, DesktopStartupFailure>>>,
+    ready: std::sync::Condvar,
+}
+
+impl DiscoveryFlight {
+    fn ensure_current(&self) -> Result<(), DesktopStartupFailure> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            Err(DesktopStartupFailure::plain("Desktop startup was cancelled".to_string()))
+        } else { Ok(()) }
+    }
+
+    fn wait(&self) -> Result<DesktopConnection, DesktopStartupFailure> {
+        let mut result = self.result.lock().map_err(|_| DesktopStartupFailure::plain("Startup result lock was poisoned".to_string()))?;
+        loop {
+            if let Some(result) = result.as_ref() { return result.clone(); }
+            result = self.ready.wait(result).map_err(|_| DesktopStartupFailure::plain("Startup result lock was poisoned".to_string()))?;
+        }
+    }
+
+    fn complete(&self, result: Result<DesktopConnection, DesktopStartupFailure>) {
+        if let Ok(mut slot) = self.result.lock() {
+            if slot.is_none() { *slot = Some(result); }
+            self.ready.notify_all();
+        }
+    }
+}
+
 #[derive(Default)]
 struct BackendState {
+    update_lock: Option<SharedUpdateLock>,
     backend: Option<OwnedBackend>,
     attached: Option<DesktopConnection>,
+    discovery: Option<Arc<DiscoveryFlight>>,
+    stopping: bool,
     recovery: RuntimeRecoveryState,
 }
 
@@ -480,6 +573,7 @@ struct BackendManager {
     inner: Arc<Mutex<BackendState>>,
     home: Option<PathBuf>,
     idle_exit: bool,
+    shared_service: bool,
 }
 
 fn desktop_backend_args(log_level: &str, idle_exit: bool) -> Vec<&str> {
@@ -488,7 +582,7 @@ fn desktop_backend_args(log_level: &str, idle_exit: bool) -> Vec<&str> {
 
 impl BackendManager {
     fn for_home(home: PathBuf, idle_exit: bool) -> Self {
-        Self { inner: Arc::new(Mutex::new(BackendState::default())), home: Some(home), idle_exit }
+        Self { inner: Arc::new(Mutex::new(BackendState::default())), home: Some(home), idle_exit, shared_service: true }
     }
 
     fn ownership(&self) -> Result<BackendOwnership, String> {
@@ -531,11 +625,43 @@ impl BackendManager {
         self.connection_impl(app, Some(recovery_generation))
     }
 
+    fn begin_discovery(&self) -> Result<(Arc<DiscoveryFlight>, bool), DesktopStartupFailure> {
+        let mut state = self.inner.lock().map_err(|_| DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string()))?;
+        if state.stopping { return Err(DesktopStartupFailure::plain("The desktop window is closing".to_string())); }
+        if let Some(flight) = &state.discovery { return Ok((flight.clone(), false)); }
+        let flight = Arc::new(DiscoveryFlight::default());
+        state.discovery = Some(flight.clone());
+        Ok((flight, true))
+    }
+
+    fn finish_discovery(&self, flight: &Arc<DiscoveryFlight>, result: Result<DesktopConnection, DesktopStartupFailure>) -> Result<DesktopConnection, DesktopStartupFailure> {
+        let mut state = self.inner.lock().map_err(|_| DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string()))?;
+        let result = flight.ensure_current().and(result);
+        flight.complete(result.clone());
+        if state.discovery.as_ref().is_some_and(|current| Arc::ptr_eq(current, flight)) {
+            state.discovery = None;
+        }
+        result
+    }
+
     fn connection_impl(
         &self,
         app: &AppHandle,
         recovery_generation: Option<u64>,
     ) -> Result<DesktopConnection, DesktopStartupFailure> {
+        let (flight, leader) = self.begin_discovery()?;
+        if !leader { return flight.wait(); }
+        let result = self.resolve_connection(app, recovery_generation, &flight);
+        self.finish_discovery(&flight, result)
+    }
+
+    fn resolve_connection(
+        &self,
+        app: &AppHandle,
+        recovery_generation: Option<u64>,
+        flight: &Arc<DiscoveryFlight>,
+    ) -> Result<DesktopConnection, DesktopStartupFailure> {
+        flight.ensure_current()?;
         let home = self.home.as_ref().map_or_else(kiki_home_dir, |home| Ok(home.clone()))?;
         let runtime = resolve_runtime_paths_with_homes(&read_desktop_prefs_for(&home), &kimi_home_dir()?, &home)?;
         let current_workspace = env::current_dir().ok();
@@ -561,16 +687,41 @@ impl BackendManager {
         if let Some(connection) =
             discover_running_backend(&runtime.kiki_home, current_workspace.as_deref())?
         {
-            if let Some(connection) = self.publish_attached(connection) {
+            if let Some(connection) = self.publish_attached(connection, flight) {
                 return Ok(connection);
             }
         }
+
+        // Cross-window/CLI admission precedes process creation, including asset
+        // bootstrap. Do not run an ensure helper which forks an untracked child.
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        let mut startup_lease = if self.shared_service {
+            emit_backend_waiting(app);
+            loop {
+                flight.ensure_current()?;
+                if let Some(connection) = discover_running_backend(&runtime.kiki_home, current_workspace.as_deref())? {
+                    return self.publish_attached(connection, flight).ok_or_else(|| DesktopStartupFailure::plain("Shared service connection was cancelled".to_string()));
+                }
+                if let Some(lease) = SharedUpdateLock::try_acquire(&runtime.kiki_home)? {
+                    // A lease alone cannot authorize a second process while a
+                    // registered daemon is booting, draining or unreachable.
+                    if !read_instance_records(&runtime.kiki_home)?.iter().any(|record| pid_alive(record.pid)) {
+                        break Some(lease);
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err(DesktopStartupFailure::plain("This space still has a starting, draining or unreachable service. No second service was started; keep its owner running or stop it explicitly before retrying.".to_string()));
+                }
+                thread::sleep(STARTUP_POLL_INTERVAL);
+            }
+        } else { None };
 
         let pending = {
             let mut state = self.inner.lock().map_err(|_| {
                 DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string())
             })?;
-            if recovery_generation.is_some_and(|generation| !state.recovery.is_current(generation))
+            flight.ensure_current()?;
+            if state.stopping || recovery_generation.is_some_and(|generation| !state.recovery.is_current(generation))
             {
                 return Err(DesktopStartupFailure::plain(
                     "Kiki backend runtime recovery was cancelled".to_string(),
@@ -604,7 +755,7 @@ impl BackendManager {
                     let launched_at_ms = unix_epoch_millis()?;
                     let home = runtime.kiki_home.clone();
                     let level = read_desktop_prefs_for(&home).log_level;
-                    let args = desktop_backend_args(level.as_str(), self.idle_exit);
+                    let args = desktop_backend_args(level.as_str(), !self.shared_service && self.idle_exit);
                     let command = app
                         .shell()
                         .sidecar("kiki-server")
@@ -626,7 +777,7 @@ impl BackendManager {
                     })?;
                     let pid = child.pid();
                     let monitor = Arc::new(BackendMonitor::open(&home));
-                    *slot = Some(OwnedBackend {
+                    let backend = OwnedBackend {
                         child,
                         pid,
                         launched_at_ms,
@@ -634,16 +785,16 @@ impl BackendManager {
                         ready_at: None,
                         monitor: monitor.clone(),
                         home: home.clone(),
-                    });
-                    spawn_backend_event_pump(
-                        events,
-                        monitor.clone(),
-                        self.clone(),
-                        app.clone(),
-                        pid,
-                        launched_at_ms,
-                    );
-                    emit_backend_waiting(app);
+                    };
+                    spawn_backend_event_pump(events, monitor.clone(), self.clone(), app.clone(), pid, launched_at_ms);
+                    if let Some(lease) = startup_lease.as_mut() {
+                        if let Err(error) = lease.transfer_to(pid) {
+                            if !force_stop(backend) { lease.owner.clear(); }
+                            return Err(error.into());
+                        }
+                    }
+                    *slot = Some(backend);
+                    if !self.shared_service { emit_backend_waiting(app); }
                     PendingBackend {
                         pid,
                         launched_at_ms,
@@ -654,61 +805,38 @@ impl BackendManager {
             }
         };
 
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        loop {
-            if let Some(record) =
-                find_instance_for_pid(&pending.home, pending.pid, pending.launched_at_ms)?
-            {
-                if let Some(token) = read_token(&pending.home)? {
-                    let connection = DesktopConnection {
-                        url: format!("http://127.0.0.1:{}", record.port),
-                        token,
-                    };
-                    if let Ok(identity) =
-                        authenticated_backend_identity(record.port, &connection.token)
-                    {
-                        if !backend_identity_matches(&identity) {
-                            self.discard_backend(&pending);
-                            return Err(pending.monitor.startup_failure(
-                                pending.pid,
-                                format!(
-                                    "reported backend identity {} / {} / {}, but this desktop bundle expects {} / {} / {}. The packaged backend is stale or belongs to a different build; run `pnpm desktop:prepare` and rebuild Kiki.",
-                                    identity.server_version,
-                                    identity.build_id.as_deref().unwrap_or("missing build id"),
-                                    identity.build_channel.as_deref().unwrap_or("missing channel"),
-                                    EXPECTED_SIDECAR_SERVER_VERSION,
-                                    EXPECTED_SIDECAR_BUILD_ID,
-                                    EXPECTED_SIDECAR_BUILD_CHANNEL,
-                                ),
-                            ));
-                        }
-                        if let Some(connection) =
-                            self.publish_owned_connection(&pending, &connection)
-                        {
-                            return Ok(connection);
+        let result = (|| {
+            loop {
+                flight.ensure_current()?;
+                if let Some(record) = find_instance_for_pid(&pending.home, pending.pid, pending.launched_at_ms)? {
+                    if let Some(token) = read_token(&pending.home)? {
+                        let connection = DesktopConnection { url: format!("http://127.0.0.1:{}", record.port), token };
+                        if let Ok(identity) = authenticated_backend_identity(record.port, &connection.token) {
+                            if !backend_identity_matches(&identity) {
+                                return Err(pending.monitor.startup_failure(pending.pid, "reported a different build identity; the packaged sidecar must match this desktop bundle".to_string()));
+                            }
+                            if let Some(connection) = self.publish_owned_connection(&pending, &connection, flight) {
+                                return Ok(connection);
+                            }
                         }
                     }
                 }
+                if let Some(exit) = pending.monitor.exit() {
+                    return Err(pending.monitor.startup_failure(pending.pid, format!("exited during startup ({})", describe_exit(&exit))));
+                }
+                if Instant::now() >= deadline {
+                    return Err(pending.monitor.startup_failure(pending.pid, format!("did not become ready within {} seconds", STARTUP_TIMEOUT.as_secs())));
+                }
+                thread::sleep(STARTUP_POLL_INTERVAL);
             }
-            if let Some(exit) = pending.monitor.exit() {
-                self.discard_backend(&pending);
-                return Err(pending.monitor.startup_failure(
-                    pending.pid,
-                    format!("exited during startup ({})", describe_exit(&exit)),
-                ));
-            }
-            if Instant::now() >= deadline {
-                self.discard_backend(&pending);
-                return Err(pending.monitor.startup_failure(
-                    pending.pid,
-                    format!(
-                        "did not become ready within {} seconds",
-                        STARTUP_TIMEOUT.as_secs()
-                    ),
-                ));
-            }
-            thread::sleep(STARTUP_POLL_INTERVAL);
+        })();
+        // Errors (including registry/token IO and cancellation) stop only this
+        // pre-ready child. Unconfirmed cleanup retains the PID lease.
+        if result.is_err() && !self.discard_backend(&pending) {
+            if let Some(lease) = startup_lease.as_mut() { lease.owner.clear(); }
+            return Err(pending.monitor.startup_failure(pending.pid, "could not be confirmed stopped; its startup PID lease was retained".to_string()));
         }
+        result
     }
 
     fn clear_attached(&self, connection: &DesktopConnection) {
@@ -719,16 +847,13 @@ impl BackendManager {
         }
     }
 
-    fn publish_attached(&self, connection: DesktopConnection) -> Option<DesktopConnection> {
-        let Ok(mut state) = self.inner.lock() else {
-            return None;
-        };
-        if let Some(connection) = state.attached.as_ref() {
-            return Some(connection.clone());
-        }
-        if state.backend.is_some() {
-            return None;
-        }
+    fn publish_attached(&self, connection: DesktopConnection, flight: &Arc<DiscoveryFlight>) -> Option<DesktopConnection> {
+        let Ok(mut state) = self.inner.lock() else { return None; };
+        if state.stopping || flight.ensure_current().is_err()
+            || !state.discovery.as_ref().is_some_and(|current| Arc::ptr_eq(current, flight))
+        { return None; }
+        if let Some(connection) = state.attached.as_ref() { return Some(connection.clone()); }
+        if state.backend.is_some() { return None; }
         state.attached = Some(connection.clone());
         Some(connection)
     }
@@ -737,24 +862,25 @@ impl BackendManager {
         &self,
         pending: &PendingBackend,
         connection: &DesktopConnection,
+        flight: &Arc<DiscoveryFlight>,
     ) -> Option<DesktopConnection> {
-        let Ok(mut state) = self.inner.lock() else {
-            return None;
-        };
-        let Some(backend) = state.backend.as_mut() else {
-            return None;
-        };
-        if backend.pid != pending.pid
-            || backend.launched_at_ms != pending.launched_at_ms
-            || backend.monitor.exit().is_some()
-        {
+        let Ok(mut state) = self.inner.lock() else { return None; };
+        if state.stopping || flight.ensure_current().is_err()
+            || !state.discovery.as_ref().is_some_and(|current| Arc::ptr_eq(current, flight))
+        { return None; }
+        let backend = state.backend.as_mut()?;
+        if backend.pid != pending.pid || backend.launched_at_ms != pending.launched_at_ms || backend.monitor.exit().is_some() {
             return None;
         }
-        if let Some(connection) = backend.connection.as_ref() {
-            return Some(connection.clone());
+        if self.shared_service {
+            // Ready is the ownership boundary. Window cancellation/exit may
+            // stop a pre-ready child, never this authenticated shared daemon.
+            state.backend.take();
+            state.attached = Some(connection.clone());
+        } else {
+            backend.connection = Some(connection.clone());
+            backend.ready_at = Some(Instant::now());
         }
-        backend.connection = Some(connection.clone());
-        backend.ready_at = Some(Instant::now());
         Some(connection.clone())
     }
 
@@ -830,7 +956,12 @@ impl BackendManager {
                     return;
                 }
                 match manager.connection_for_recovery(&app, recovery_generation) {
-                    Ok(_) => return,
+                    Ok(connection) => {
+                        // Recovery owns startup; consumers receive the endpoint
+                        // rather than invoking discovery from a progress event.
+                        let _ = app.emit(BACKEND_STAGE_EVENT, serde_json::json!({"stage": "ready", "connection": connection}));
+                        return;
+                    }
                     Err(failure) => {
                         if !manager
                             .inner
@@ -864,33 +995,31 @@ impl BackendManager {
     /// Kill the spawned backend iff the slot still holds this exact,
     /// not-yet-ready launch (another caller may have already discarded,
     /// cancelled, or replaced it).
-    fn discard_backend(&self, pending: &PendingBackend) {
+    fn discard_backend(&self, pending: &PendingBackend) -> bool {
         if let Some(backend) = self.take_backend_if(|candidate| {
             candidate.pid == pending.pid
                 && candidate.launched_at_ms == pending.launched_at_ms
                 && candidate.connection.is_none()
         }) {
-            force_stop(backend);
-        }
+            force_stop(backend)
+        } else { pending.monitor.exit().is_some() }
     }
 
     /// Kill a spawned-but-not-ready backend — the user cancelled the wait.
     fn cancel_startup(&self) {
-        let backend = self.inner.lock().ok().and_then(|mut state| {
+        let (flight, backend) = self.inner.lock().ok().map(|mut state| {
             state.recovery.reset();
-            if state
-                .backend
-                .as_ref()
-                .is_some_and(|candidate| candidate.connection.is_none())
-            {
+            let flight = state.discovery.clone();
+            if let Some(flight) = &flight { flight.cancelled.store(true, Ordering::SeqCst); }
+            // The leader retains its child and PID lease until cleanup ends;
+            // a retry must not race a separate cancellation thread's kill.
+            let backend = if flight.is_none() && state.backend.as_ref().is_some_and(|candidate| candidate.connection.is_none()) {
                 state.backend.take()
-            } else {
-                None
-            }
-        });
-        if let Some(backend) = backend {
-            force_stop(backend);
-        }
+            } else { None };
+            (flight, backend)
+        }).unwrap_or_default();
+        if let Some(backend) = backend { force_stop(backend); }
+        if let Some(flight) = flight { let _ = flight.wait(); }
     }
 
     fn take_backend_if(&self, matches: impl Fn(&OwnedBackend) -> bool) -> Option<OwnedBackend> {
@@ -903,7 +1032,11 @@ impl BackendManager {
         })
     }
 
-    fn shutdown(&self) {
+    fn shutdown(&self) { self.stop_backend(true); }
+
+    fn stop_backend(&self, closing: bool) {
+        if let Ok(mut state) = self.inner.lock() { state.stopping = closing; }
+        self.cancel_startup();
         let backend = self.inner.lock().ok().and_then(|mut state| {
             state.recovery.reset();
             state.attached = None;
@@ -932,12 +1065,50 @@ impl BackendManager {
         force_stop(backend);
     }
 
+    fn shared_identity(&self) -> Result<Option<(DesktopConnection, BackendIdentity)>, String> {
+        if !self.shared_service { return Ok(None); }
+        let Some(connection) = self.hot_connection() else { return Ok(None); };
+        let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token)?;
+        if !backend_identity_matches(&identity) || !identity.desktop_managed || identity.server_id.is_empty() {
+            return Err("This service is externally managed or belongs to another build; stop it through its owner before restarting or updating".to_string());
+        }
+        Ok(Some((connection, identity)))
+    }
+
+    fn stop_shared(&self, app: &AppHandle, action: &str, confirmed: bool) -> Result<(), String> {
+        let Some((connection, identity)) = self.shared_identity()? else { return Ok(()); };
+        if !confirmed && !app.dialog().message("Restarting affects every window connected to this space. Unfinished sessions and tasks will be cancelled and drained before the service restarts. Other spaces keep running. Continue?")
+            .title("Kiki · Restart shared service")
+            .buttons(MessageDialogButtons::OkCancelCustom("Restart space".into(), "Keep running".into())).blocking_show() {
+            return Err("Restart cancelled; running work continues".to_string());
+        }
+        let body = serde_json::json!({"action": action, "server_id": identity.server_id, "consent": true, "interrupt_work": true}).to_string();
+        let response = http_json_body(connection_port(&connection)?, "/api/desktop-lifecycle", &connection.token, &body, 64 * 1024)?;
+        let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("The lifecycle response is incomplete")?;
+        let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|error| error.to_string())?;
+        if envelope.get("code").and_then(serde_json::Value::as_i64) != Some(0) {
+            return Err(envelope.get("msg").and_then(serde_json::Value::as_str).unwrap_or("The service refused the lifecycle request").to_string());
+        }
+        let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while read_instance_records(home)?.iter().any(|record| record.server_id.as_deref() == Some(&identity.server_id) && pid_alive(record.pid)) {
+            if Instant::now() >= deadline { return Err("The space is still draining. Keep its windows open and retry after work settles; no process was forcibly stopped".to_string()); }
+            thread::sleep(Duration::from_millis(100));
+        }
+        self.clear_attached(&connection);
+        Ok(())
+    }
+
     fn restart(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
+        if self.shared_service && self.hot_connection().is_some() {
+            self.stop_shared(app, "restart", false).map_err(DesktopStartupFailure::plain)?;
+            return self.connection(app);
+        }
         let owned = self
             .owned_backend_for(OwnedBackendOperation::Restart)
             .map_err(DesktopStartupFailure::plain)?;
         if owned {
-            self.shutdown();
+            self.stop_backend(false);
         }
         self.connection(app)
     }
@@ -967,7 +1138,8 @@ struct SpaceBackendState {
     attention: HashMap<String, HashSet<String>>,
     busy_counts: HashMap<String, usize>,
     restarting: HashSet<String>,
-    unread_count: usize,
+    unread_counts: HashMap<(String, String), (usize, HashSet<String>)>,
+    unread_scope: Option<(String, String)>,
     stopping: bool,
 }
 
@@ -991,7 +1163,7 @@ impl SpaceBackendManager {
         } else { "main".to_string() };
         Ok(Self { inner: Arc::new(Mutex::new(SpaceBackendState {
             main, mode, active, epoch: 0, slots,
-            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), unread_count: 0, stopping: false,
+            attention: HashMap::new(), busy_counts: HashMap::new(), restarting: HashSet::new(), unread_counts: HashMap::new(), unread_scope: None, stopping: false,
         })) })
     }
 
@@ -1089,7 +1261,7 @@ impl SpaceBackendManager {
         if state.epoch != epoch {
             return Err(DesktopStartupFailure::plain("A newer space switch replaced this request".to_string()));
         }
-        if state.active != id { state.unread_count = 0; }
+        if state.active != id { state.unread_scope = None; }
         state.active = id.to_string();
         Ok(space)
     }
@@ -1181,6 +1353,9 @@ impl SpaceBackendManager {
             }
         }
         let result = (|| {
+            if backend.shared_service && backend.hot_connection().is_some() {
+                return backend.restart(app).map(|_| ()).map_err(|error| error.message);
+            }
             if !backend.owned_backend_for(OwnedBackendOperation::Restart)? {
                 return Err("The space backend is not running".to_string());
             }
@@ -1212,6 +1387,38 @@ impl SpaceBackendManager {
         Ok(names)
     }
 
+    fn shared_space_names(&self) -> Result<Vec<String>, String> {
+        let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
+            .map(|(space, backend)| (space.name.clone(), backend.clone())).collect::<Vec<_>>();
+        let mut names = Vec::new();
+        for (name, backend) in slots { if backend.shared_identity()?.is_some() { names.push(name); } }
+        Ok(names)
+    }
+
+    fn shutdown_for_update(&self, app: &AppHandle) -> Result<(), String> {
+        let slots = self.inner.lock().map_err(|_| "Space manager lock was poisoned")?.slots.values()
+            .map(|(_, backend)| backend.clone()).collect::<Vec<_>>();
+        let mut locks = Vec::new();
+        for backend in &slots {
+            if backend.shared_identity()?.is_some() {
+                let home = backend.home.as_ref().ok_or("The managed service home is unavailable")?;
+                locks.push((backend.clone(), SharedUpdateLock::acquire(home)?));
+            }
+        }
+        for backend in &slots {
+            if backend.shared_service { backend.stop_shared(app, "update", true)?; }
+            else { backend.shutdown(); }
+        }
+        for (backend, lock) in locks { backend.inner.lock().map_err(|_| "Service lifecycle lock was poisoned")?.update_lock = Some(lock); }
+        Ok(())
+    }
+
+    fn release_update_locks(&self) {
+        if let Ok(state) = self.inner.lock() {
+            for (_, backend) in state.slots.values() { if let Ok(mut slot) = backend.inner.lock() { slot.update_lock = None; } }
+        }
+    }
+
     fn shutdown(&self) {
         let slots = self.inner.lock().ok().map(|mut state| {
             state.stopping = true;
@@ -1231,6 +1438,15 @@ fn restart_space_readiness(busy: usize, pending: usize) -> Result<(), String> {
 
 // This is called off the UI thread: the native dialog must never block the event loop.
 fn confirm_backend_shutdown(app: &AppHandle, manager: &SpaceBackendManager, action: &str) -> bool {
+    if action == "Installing the update" {
+        match manager.shared_space_names() {
+            Ok(spaces) if !spaces.is_empty() => return app.dialog().message(format!("Updating will disconnect every window in these spaces: {}. Unfinished work will be cancelled and drained before their managed services stop. External services are never stopped. Continue?", spaces.join(", ")))
+                .title("Kiki · Update shared services")
+                .buttons(MessageDialogButtons::OkCancelCustom("Continue update".into(), "Keep running".into())).blocking_show(),
+            Err(error) => { app.dialog().message(error).title("Kiki · Cannot update this service").blocking_show(); return false; }
+            _ => {}
+        }
+    }
     let prompt = match manager.owned_spaces_with_work() {
         Ok(spaces) if spaces.is_empty() => return true,
         Ok(spaces) => format!(
@@ -1645,16 +1861,33 @@ fn desktop_active_space(manager: State<'_, SpaceBackendManager>) -> Result<Deskt
 }
 
 #[tauri::command]
+fn desktop_window_mode(mode: State<'_, WindowModeDescriptor>) -> WindowModeDescriptor {
+    mode.inner().clone()
+}
+
+#[tauri::command]
+fn open_mode_window(preset_id: String, home_id: Option<String>, manager: State<'_, SpaceBackendManager>) -> Result<(), String> {
+    if !work_mode::valid_preset(&preset_id) { return Err("Select a valid work mode".to_string()); }
+    let space = match home_id { Some(id) => manager.find_space(&id)?, None => manager.active_space()? };
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    std::process::Command::new(exe).arg("--home").arg(&space.path).arg("--preset").arg(preset_id).spawn()
+        .map_err(|error| format!("Cannot open work mode window: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 fn desktop_space_statuses(manager: State<'_, SpaceBackendManager>) -> Result<Vec<DesktopSpaceStatus>, String> {
     manager.space_statuses()
 }
 
 #[tauri::command]
-fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32) -> Result<(), String> {
+fn set_unread_count(app: AppHandle, manager: State<'_, SpaceBackendManager>, n: u32, home_id: Option<String>, scope_id: Option<String>, session_ids: Option<Vec<String>>) -> Result<(), String> {
     let total = {
         let mut state = manager.inner.lock().map_err(|_| "Space manager lock was poisoned")?;
-        state.unread_count = n as usize;
-        combined_space_attention(state.unread_count, &state.active, &state.attention)
+        let key = (home_id.unwrap_or_else(|| state.active.clone()), scope_id.unwrap_or_else(|| "local".to_string()));
+        state.unread_scope = Some(key.clone());
+        state.unread_counts.insert(key, (n as usize, session_ids.unwrap_or_default().into_iter().collect()));
+        combined_space_attention(&state.unread_counts, state.unread_scope.as_ref(), &state.active, &state.attention)
     };
     set_unread_overlay(&app, total);
     Ok(())
@@ -1666,9 +1899,15 @@ fn unread_overlay_icon(pending: usize) -> Option<Image<'static>> {
     Some(Image::new_owned(rgba, space_badge::OVERLAY_SIZE, space_badge::OVERLAY_SIZE))
 }
 
-fn combined_space_attention(current: usize, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
-    attention.iter().filter(|(id, _)| id.as_str() != active)
-        .fold(current, |sum, (_, sessions)| sum.saturating_add(sessions.len()))
+fn combined_space_attention(unread: &HashMap<(String, String), (usize, HashSet<String>)>, current: Option<&(String, String)>, active: &str, attention: &HashMap<String, HashSet<String>>) -> usize {
+    let total = unread.iter().fold(0usize, |sum, (scope, (count, sessions))| {
+        sum.saturating_add(if current == Some(scope) { *count } else { sessions.len() })
+    });
+    attention.iter().filter(|(id, _)| id.as_str() != active).fold(total, |sum, (home, sessions)| {
+        let observed = unread.get(&(home.clone(), "local".to_string()));
+        let additional = sessions.iter().filter(|id| !observed.is_some_and(|(_, seen)| seen.contains(*id))).count();
+        sum.saturating_add(additional)
+    })
 }
 
 fn set_unread_overlay(app: &AppHandle, total: usize) {
@@ -1686,7 +1925,7 @@ fn set_space_identity(app: &AppHandle, space: &DesktopSpace) {
         let _ = window.set_title(&title);
         if let Some(manager) = app.try_state::<SpaceBackendManager>() {
             if let Ok(state) = manager.inner.lock() {
-                let total = combined_space_attention(state.unread_count, &state.active, &state.attention);
+                let total = combined_space_attention(&state.unread_counts, state.unread_scope.as_ref(), &state.active, &state.attention);
                 set_unread_overlay(app, total);
             }
         }
@@ -2509,6 +2748,7 @@ async fn install_desktop_update(app: AppHandle, manager: State<'_, SpaceBackendM
     let home = PathBuf::from(manager.active_space()?.path);
     validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &update.version)?;
     let manager = manager.inner().clone();
+    let update_lock_manager = manager.clone();
     let available_version = update.version.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if !confirm_backend_shutdown(&app, &manager, "Installing the update") {
@@ -2516,10 +2756,12 @@ async fn install_desktop_update(app: AppHandle, manager: State<'_, SpaceBackendM
         }
         // A channel may have changed in another window while the confirmation was open.
         validate_desktop_update_identity(channel, read_desktop_prefs_for(&home).update_channel, &version, &available_version)?;
-        manager.shutdown();
+        manager.shutdown_for_update(&app)?;
         Ok(())
     }).await.map_err(|error| error.to_string())??;
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string())
+    let result = update.download_and_install(|_, _| {}, || {}).await.map_err(|error| error.to_string());
+    update_lock_manager.release_update_locks();
+    result
 }
 
 #[tauri::command]
@@ -2529,7 +2771,7 @@ async fn prepare_for_update(app: AppHandle, manager: State<'_, SpaceBackendManag
         if !confirm_backend_shutdown(&app, &manager, "Installing the update") {
             return Err("Update cancelled; running sessions continue".to_string());
         }
-        manager.shutdown();
+        manager.shutdown_for_update(&app)?;
         Ok(())
     }).await.map_err(|error| error.to_string())?
 }
@@ -2658,9 +2900,10 @@ fn read_discoverable_instance_records(
             let record = fs::read_to_string(&path)
                 .ok()
                 .and_then(|raw| serde_json::from_str::<InstanceRecord>(&raw).ok());
-            let valid = record
-                .as_ref()
-                .is_some_and(|record| instance_candidate(record.clone()).is_some());
+            let valid = record.as_ref().is_some_and(|record| {
+                instance_candidate(record.clone()).is_some()
+                    || (record.pid > 0 && record.started_at > 0 && record.port.is_none_or(|port| port == 0))
+            });
             let alive = record.as_ref().is_some_and(|record| is_alive(record.pid));
             if !valid || !alive {
                 if let Err(error) = fs::remove_file(&path) {
@@ -2938,6 +3181,14 @@ fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdent
 /// Authenticated GET against the loopback backend; returns the raw response
 /// (status line through body), capped at `max_bytes`.
 fn http_get_body(port: u16, path: &str, token: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    http_body(port, "GET", path, token, "", max_bytes)
+}
+
+fn http_json_body(port: u16, path: &str, token: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    http_body(port, "POST", path, token, body, max_bytes)
+}
+
+fn http_body(port: u16, method: &str, path: &str, token: &str, body: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
         .map_err(|error| format!("Cannot connect to Kiki backend on port {port}: {error}"))?;
@@ -2949,7 +3200,7 @@ fn http_get_body(port: u16, path: &str, token: &str, max_bytes: usize) -> Result
         .map_err(|error| format!("Cannot configure Kiki backend request: {error}"))?;
 
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()
     );
     stream
         .write_all(request.as_bytes())
@@ -3138,10 +3389,16 @@ fn parse_http_status_line(bytes: &[u8]) -> StatusLineParse {
     }
 }
 
-fn force_stop(backend: OwnedBackend) {
-    let _ = kill_tree::blocking::kill_tree(backend.pid);
+fn force_stop(backend: OwnedBackend) -> bool {
+    let tree_stopped = kill_tree::blocking::kill_tree(backend.pid).is_ok();
     let _ = backend.child.kill();
-    remove_owned_instance_records(&backend.home, backend.pid, backend.launched_at_ms);
+    let deadline = Instant::now() + SHUTDOWN_GRACE;
+    while backend.monitor.exit().is_none() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let stopped = backend.monitor.exit().is_some() && (tree_stopped || !pid_alive(backend.pid));
+    if stopped { remove_owned_instance_records(&backend.home, backend.pid, backend.launched_at_ms); }
+    stopped
 }
 
 struct TrayLabels {
@@ -3307,7 +3564,11 @@ fn request_confirmed_exit(
 pub fn run() {
     let startup_home = kiki_home_dir().unwrap_or_else(|error| panic!("Cannot resolve Kiki home: {error}"));
     let main_home = main_home_for(&startup_home).unwrap_or_else(|error| panic!("Cannot resolve main space: {error}"));
-    let mode = read_main_desktop_prefs(&main_home).window_mode;
+    let selected_preset = work_mode::requested_preset(&env::args().collect::<Vec<_>>())
+        .unwrap_or_else(|error| panic!("Cannot select work mode: {error}"));
+    let mode = if selected_preset.is_some() { WindowMode::Windows } else { read_main_desktop_prefs(&main_home).window_mode };
+    let preset_id = selected_preset.clone().unwrap_or_else(|| "kiki".to_string());
+    let window_mode = WindowModeDescriptor { window_id: work_mode::window_identity(&startup_home, &preset_id), preset_id };
     let remote_connection = remote_space::requested_connection(&env::args().collect::<Vec<_>>())
         .unwrap_or_else(|error| panic!("Cannot select remote space: {error}"));
     if let Some(id) = &remote_connection {
@@ -3352,11 +3613,25 @@ pub fn run() {
         }
     }
 
+    if selected_preset.is_some() {
+        let identifier = format!("{}.mode.{}", context.config().identifier, window_mode.window_id);
+        context.config_mut().identifier = identifier.clone();
+        #[cfg(windows)]
+        {
+            let wide = wide_null(std::ffi::OsStr::new(&identifier));
+            let result = unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+            if result < 0 { eprintln!("Kiki could not set the work mode taskbar identity: 0x{:x}", result); }
+        }
+    }
+    let window_mode_script = format!("window.__KIKI_WINDOW_MODE__ = {};", serde_json::to_string(&window_mode).expect("window mode is serializable"));
+    let preset_window = selected_preset.is_some();
+
     let app = tauri::Builder::default()
+        .manage(window_mode)
         // Register first so a second launch focuses the original window
         // without starting another backend.
         .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
-            if let Ok(Some(home)) = requested_home(&args) {
+            if let Ok(Some(home)) = requested_home(&args).map(|home| if preset_window { None } else { home }) {
                 if let Ok(id) = read_desktop_space(&home).map(|space| space.map(|space| space.home_id)) {
                     let manager = second_launch_manager.clone();
                     let app = app.clone();
@@ -3440,6 +3715,7 @@ pub fn run() {
             let main_window = WebviewWindowBuilder::from_config(app.handle(), main_config)
                 .map_err(std::io::Error::other)?
                 .enable_clipboard_access()
+                .initialization_script(&window_mode_script)
                 .build()
                 .map_err(std::io::Error::other)?;
             #[cfg(windows)]
@@ -3518,6 +3794,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_update_lock_is_home_local_and_released_without_stopping_services() {
+        let root = env::temp_dir().join(format!("kiki-update-lock-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let a = root.join("a");
+        let b = root.join("b");
+        let first = SharedUpdateLock::acquire(&a).unwrap();
+        assert!(SharedUpdateLock::acquire(&a).is_err());
+        let second = SharedUpdateLock::acquire(&b).unwrap();
+        assert_eq!(fs::read_to_string(a.join("server/ensure.lock")).unwrap(), std::process::id().to_string());
+        drop(first);
+        assert!(!a.join("server/ensure.lock").exists());
+        assert!(b.join("server/ensure.lock").exists());
+        drop(second);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn desktop_update_selection_rejects_channel_and_version_drift() {
@@ -3700,15 +3992,28 @@ mod tests {
     }
 
     #[test]
-    fn unread_overlay_adds_only_other_spaces_and_clears_at_zero() {
+    fn unread_overlay_retains_other_homes_and_scopes_and_deduplicates_pending_sessions() {
         let attention = HashMap::from([
             ("main".to_string(), HashSet::from(["a".to_string()])),
             ("child".to_string(), HashSet::from(["b".to_string(), "c".to_string()])),
         ]);
-        assert_eq!(combined_space_attention(3, "main", &attention), 5);
-        assert_eq!(combined_space_attention(0, "child", &attention), 1);
-        assert_eq!(combined_space_attention(0, "main", &HashMap::new()), 0);
-        assert_eq!(combined_space_attention(usize::MAX, "main", &attention), usize::MAX);
+        let mut unread = HashMap::from([
+            (("main".to_string(), "local".to_string()), (1usize, HashSet::from(["a".to_string()]))),
+            (("child".to_string(), "local".to_string()), (1usize, HashSet::from(["b".to_string()]))),
+            (("main".to_string(), "ssh:example".to_string()), (1usize, HashSet::from(["a".to_string()]))),
+        ]);
+        assert_eq!(combined_space_attention(&unread, None, "main", &attention), 4);
+        assert_eq!(combined_space_attention(&unread, None, "child", &attention), 3);
+        let child = ("child".to_string(), "local".to_string());
+        unread.insert(child.clone(), (2, HashSet::from(["b".to_string()])));
+        assert_eq!(combined_space_attention(&unread, Some(&child), "child", &HashMap::new()), 4);
+        assert_eq!(combined_space_attention(&unread, None, "main", &HashMap::new()), 3);
+        unread.insert(child, (0, HashSet::new()));
+        assert_eq!(combined_space_attention(&unread, None, "child", &HashMap::new()), 2);
+        assert_eq!(combined_space_attention(&HashMap::new(), None, "main", &HashMap::new()), 0);
+        let main = ("main".to_string(), "local".to_string());
+        unread.insert(main.clone(), (usize::MAX, HashSet::new()));
+        assert_eq!(combined_space_attention(&unread, Some(&main), "main", &attention), usize::MAX);
     }
 
     #[test]
@@ -3922,11 +4227,15 @@ mod tests {
         )
         .unwrap();
         fs::write(&invalid, "{broken").unwrap();
+        let starting = instances.join("starting.json");
+        fs::write(&starting, r#"{"pid":42,"host":"127.0.0.1","port":0,"started_at":100}"#).unwrap();
 
         let records = read_discoverable_instance_records(&home, |pid| pid == 42).unwrap();
 
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].pid, 42);
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.pid == 42));
+        assert!(records.iter().any(|record| record.port == Some(0)));
+        assert!(starting.exists());
         assert!(live.exists());
         assert!(!dead.exists());
         assert!(!remote.exists());
@@ -4007,6 +4316,88 @@ mod tests {
             .expect("the live daemon should be discoverable");
         assert_eq!(connection.url, expected_url);
         assert_eq!(connection.token, read_token(&home).unwrap().unwrap());
+    }
+
+    #[test]
+    fn discovery_followers_share_one_leader_and_the_exact_result() {
+        let manager = BackendManager::default();
+        let (leader, admitted) = manager.begin_discovery().unwrap();
+        assert!(admitted);
+        let (follower, admitted) = manager.begin_discovery().unwrap();
+        assert!(!admitted);
+        assert!(Arc::ptr_eq(&leader, &follower));
+        let connection = DesktopConnection { url: "http://127.0.0.1:43123".into(), token: "fixture-token".into() };
+        manager.finish_discovery(&leader, Ok(connection.clone())).unwrap();
+        assert_eq!(follower.wait().unwrap(), connection);
+        assert!(manager.inner.lock().unwrap().discovery.is_none());
+    }
+
+    #[test]
+    fn discovery_failure_reaches_followers_and_releases_admission_for_explicit_retry() {
+        let manager = BackendManager::default();
+        let (leader, _) = manager.begin_discovery().unwrap();
+        let (follower, admitted) = manager.begin_discovery().unwrap();
+        assert!(!admitted);
+        assert!(manager.finish_discovery(&leader, Err(DesktopStartupFailure::plain("fixture failure".into()))).is_err());
+        assert_eq!(follower.wait().unwrap_err().message, "fixture failure");
+        let (retry, admitted) = manager.begin_discovery().unwrap();
+        assert!(admitted);
+        assert!(!Arc::ptr_eq(&retry, &leader));
+        manager.finish_discovery(&retry, Err(DesktopStartupFailure::plain("finished".into()))).unwrap_err();
+    }
+
+    #[test]
+    fn cancelled_or_foreign_flight_cannot_publish_a_late_connection() {
+        let manager = BackendManager::default();
+        let (flight, _) = manager.begin_discovery().unwrap();
+        let connection = DesktopConnection { url: "http://127.0.0.1:43123".into(), token: "fixture-token".into() };
+        let foreign = Arc::new(DiscoveryFlight::default());
+        assert!(manager.publish_attached(connection.clone(), &foreign).is_none());
+        flight.cancelled.store(true, Ordering::SeqCst);
+        assert!(manager.publish_attached(connection.clone(), &flight).is_none());
+        assert!(manager.finish_discovery(&flight, Ok(connection)).unwrap_err().message.contains("cancelled"));
+        assert!(manager.hot_connection().is_none());
+    }
+
+    #[test]
+    fn cancellation_waits_for_the_leader_to_finish_before_retry_admission() {
+        let manager = BackendManager::default();
+        let (flight, _) = manager.begin_discovery().unwrap();
+        let cancelling = manager.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || { cancelling.cancel_startup(); sent.send(()).unwrap(); });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !flight.cancelled.load(Ordering::SeqCst) && Instant::now() < deadline { thread::yield_now(); }
+        assert!(flight.cancelled.load(Ordering::SeqCst));
+        assert!(received.try_recv().is_err());
+        let (joined, admitted) = manager.begin_discovery().unwrap();
+        assert!(!admitted);
+        assert!(Arc::ptr_eq(&joined, &flight));
+        manager.finish_discovery(&flight, Err(DesktopStartupFailure::plain("leader cleanup finished".into()))).unwrap_err();
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+        let (retry, admitted) = manager.begin_discovery().unwrap();
+        assert!(admitted);
+        manager.finish_discovery(&retry, Err(DesktopStartupFailure::plain("finished".into()))).unwrap_err();
+    }
+
+    #[test]
+    fn shutdown_closes_startup_admission_without_spawning() {
+        let manager = BackendManager::default();
+        manager.shutdown();
+        assert!(manager.begin_discovery().is_err());
+    }
+
+    #[test]
+    fn shared_startup_pid_lease_is_exclusive_and_transfers_before_registration() {
+        let home = env::temp_dir().join(format!("kiki-startup-lease-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let mut lease = SharedUpdateLock::try_acquire(&home).unwrap().unwrap();
+        assert!(SharedUpdateLock::try_acquire(&home).unwrap().is_none());
+        lease.transfer_to(424242).unwrap();
+        assert_eq!(fs::read_to_string(home.join("server/ensure.lock")).unwrap(), "424242");
+        drop(lease);
+        assert!(!home.join("server/ensure.lock").exists());
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -4094,6 +4485,8 @@ mod tests {
         assert!(backend_identity_matches(&identity));
 
         let same_version_other_build = BackendIdentity {
+            server_id: "example-server".to_string(),
+            desktop_managed: false,
             server_version: EXPECTED_SIDECAR_SERVER_VERSION.to_string(),
             build_id: Some("different-build".to_string()),
             build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.to_string()),

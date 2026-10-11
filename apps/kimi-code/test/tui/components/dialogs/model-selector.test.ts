@@ -470,6 +470,24 @@ describe('ModelSelectorComponent', () => {
     expect(onSelect).toHaveBeenLastCalledWith({ alias: 'kimi', thinking: 'max' });
   });
 
+  it('sorts thinking segments but keeps the current selection and raw middle default', () => {
+    const support = ['high', 'max', 'low', 'medium', 'xhigh'];
+    const onSelect = vi.fn();
+    const configured = effortModel('Example', support);
+    const picker = new ModelSelectorComponent({ models: { example: configured }, currentValue: 'example', currentThinkingEffort: 'high', onSelect, onCancel: vi.fn() });
+    const row = picker.render(140).map(strip).find((line) => line.includes('[ High ]'))!;
+    const labels = ['Off', 'Low', 'Medium', 'High', 'Xhigh', 'Max'];
+    expect(labels.map((label) => row.indexOf(label))).toEqual(labels.map((label) => row.indexOf(label)).toSorted((a, b) => a - b));
+    picker.handleInput('\r');
+    expect(onSelect).toHaveBeenLastCalledWith({ alias: 'example', thinking: 'high' });
+    picker.handleInput(RIGHT);
+    picker.handleInput('\r');
+    expect(onSelect).toHaveBeenLastCalledWith({ alias: 'example', thinking: 'xhigh' });
+    const defaultPicker = new ModelSelectorComponent({ models: { example: configured }, currentValue: 'other', currentThinkingEffort: 'off', onSelect: vi.fn(), onCancel: vi.fn() });
+    expect(text(defaultPicker)).toContain('[ Low ]');
+    expect(support).toEqual(['high', 'max', 'low', 'medium', 'xhigh']);
+  });
+
   it('defaults an effort model without a current level to its defaultEffort', () => {
     const onSelect = vi.fn();
     const picker = new ModelSelectorComponent({

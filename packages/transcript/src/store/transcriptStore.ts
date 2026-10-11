@@ -14,6 +14,7 @@ export interface AgentDescriptor {
     | { readonly kind: 'agent'; readonly agentId: AgentId }
     | { readonly kind: 'external'; readonly delegationId: string };
   readonly label?: string;
+  /** Immutable entity birth as a UTC ISO timestamp; absent for legacy identities, never a run/attach time. */
   readonly createdAt?: string;
   readonly disposedAt?: string;
 }

@@ -1,5 +1,11 @@
 # @kiki/gui
 
+## 0.3.2
+
+### Patch Changes
+
+- [`685ef24`](https://github.com/X-T-E-R/kiki/commit/685ef2445d29ec5cf9e37580a928ce20167efb74) Thanks [@X-T-E-R](https://github.com/X-T-E-R)! - Browser control settings now open on the three named ways Kiki can drive a browser, and set one up with Set up and Connect instead of a component list and a raw CDP form.
+
 ## 0.3.0
 
 ### Minor Changes

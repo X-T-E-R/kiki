@@ -336,6 +336,12 @@ export const transcriptTaskSchema = z.object({
 });
 
 export const goalMetaSchema = z.object({
+  goalId: z.string().optional(),
+  turnsUsed: z.number().optional(),
+  wallClockMs: z.number().optional(),
+  turnBudget: z.number().optional(),
+  wallClockBudgetMs: z.number().optional(),
+  terminalReason: z.string().optional(),
   objective: z.string(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
   completionCriterion: z.string().optional(),
@@ -567,6 +573,7 @@ export const transcriptPromptRuntimeControlsSchema = z.object({
   execution: z.object({
     executor: z.string().min(1),
     profile: z.string().min(1).optional(),
+    profile_file: z.string().min(1).optional(),
     overrides: z.object({
       model: z.string().min(1).nullable().optional(),
       thinking: z.string().min(1).nullable().optional(),
@@ -591,6 +598,8 @@ export const transcriptPromptSchema = z.object({
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
   userMessageId: z.string().optional(),
   content: z.unknown().optional(),
+  originKind: z.literal('cron_job').optional(),
+  originDeliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   createdAt: z.string(),
   finishedAt: z.string().optional(),
   queuePosition: z.number().int().nonnegative().optional(),
@@ -665,6 +674,8 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     op: z.literal('frame.upsert'),
     turnId: turnIdSchema,
     stepId: stepIdSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
     frame: transcriptFrameSchema,
   }),
   z.object({
@@ -680,6 +691,8 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('append'),
     target: appendTargetSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
     offset: z.number().int().nonnegative(),
     text: z.string(),
   }),

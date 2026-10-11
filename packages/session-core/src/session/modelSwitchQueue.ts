@@ -62,3 +62,17 @@ export function mergeSessionQueueRows(
   }
   return rows;
 }
+
+export interface PendingModelSwitch {
+  readonly from?: string;
+  readonly to: string;
+  readonly mode: 'direct' | 'compact' | 'fresh';
+  readonly originalThinking?: string;
+  readonly targetThinking?: string;
+}
+
+export function pendingModelSwitchChange(input: PendingModelSwitch): 'model' | 'effort' | 'fresh' | 'compact' | 'binding' {
+  if (input.from === undefined || input.from !== input.to) return 'model';
+  if (input.targetThinking !== undefined && input.originalThinking !== undefined && input.targetThinking !== input.originalThinking) return 'effort';
+  return input.mode === 'direct' ? 'binding' : input.mode;
+}

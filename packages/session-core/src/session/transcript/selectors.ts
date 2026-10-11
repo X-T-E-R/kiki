@@ -4,6 +4,7 @@ import type { AgentTranscriptSnapshot, TranscriptItem } from '@kiki/transcript';
 import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
 import { isModelSwitchQueueId } from '../modelSwitchQueue';
+import { classifyTranscriptText, projectMessageContent } from './classify';
 import { bump, type ApprovalBlock, type ApprovalResolution, type Block, type FloorEntry, type QueuedPromptPreview, type QuestionBlock, type QuestionOutcome, type SessionViewState, type SubagentBlock, type UserBlock } from './types';
 
 export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPromptPreview[] {
@@ -16,16 +17,37 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
     );
     const meta = state.queuedPromptMeta[promptId];
+    const scheduled = meta?.originKind === 'cron_job' ? projectMessageContent(meta.content ?? []) : undefined;
     return {
       promptId,
-      text: block?.text ?? '',
-      media: block?.media,
-      content: block?.queuedContent,
+      originKind: meta?.originKind,
+      cronDeliveryMode: meta?.cronDeliveryMode,
+      text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
+      media: scheduled?.media ?? block?.media,
+      content: meta?.content ?? block?.queuedContent,
+      runtimeControls: meta?.runtimeControls ?? block?.runtimeControls,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
       queuePosition: meta?.queuePosition,
     };
   });
+}
+
+/**
+ * Whether a queued prompt is one of the ordinary messages the queue strip
+ * speaks for: something the person typed, or a scheduled prompt set to queue
+ * (`queue`), which joins their send order. A cron record with no mode is a
+ * legacy admission that already sits in that order, so it counts too.
+ *
+ * `idle` and `steer` records are not: the engine holds them ahead of ordinary
+ * pending messages and the user never queued them here, so showing them among
+ * the user's own messages — in the pending count, in a drag handle, or behind
+ * Send now — would describe a send order they are not part of.
+ */
+export function isOrdinaryQueueItem(item: QueuedPromptPreview): boolean {
+  return item.originKind !== 'cron_job'
+    || item.cronDeliveryMode === undefined
+    || item.cronDeliveryMode === 'queue';
 }
 
 export function pendingApprovalCount(state: SessionViewState): number {

@@ -30,7 +30,7 @@ export function ModelEditScopeSwitch({ scope, summary, differences, onScopeChang
 }) {
   const { t } = useI18n();
   return (
-    <div className="min-w-0 space-y-1.5" data-model-edit-scope={scope}>
+    <div className="min-w-0 space-y-1.5 border-t border-hairline pt-4" data-model-edit-scope={scope}>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
         <SettingsSegmented<EditScope>
           ariaLabel={t('st.modelScope.scopeAria')}

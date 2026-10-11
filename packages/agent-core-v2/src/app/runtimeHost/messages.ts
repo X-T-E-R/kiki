@@ -119,6 +119,39 @@ export interface RuntimeHostStatus {
   readonly hostId: string;
 }
 
+export type RuntimeCallerOutcome = 'resolved' | 'rejected' | 'cancelled' | 'unknown';
+export type RuntimeCleanupOutcome = 'closed' | 'already_closed' | 'cleanup_failed';
+
+/** A direct call's admitted epoch and caller result, emitted only after its handler releases the request fence. Resource counts cover tracked direct invocations, not process-wide resources. */
+export interface RuntimeCallReceipt {
+  readonly kind: 'call';
+  readonly operationId: string;
+  readonly requestId: string;
+  readonly owner: 'runtime';
+  readonly epoch: number;
+  readonly callerOutcome: RuntimeCallerOutcome;
+  readonly cleanupOutcome: RuntimeCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly errorCode?: string;
+  readonly errorName?: string;
+  readonly settledAt: number;
+}
+
+export interface RuntimeExitReceipt {
+  readonly kind: 'exit';
+  readonly operationId: string;
+  readonly owner: 'runtime';
+  readonly epoch: number;
+  readonly exitReason: 'normal' | 'owner_lost' | 'connection_lost';
+  readonly cleanupOutcome: RuntimeCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly settledAt: number;
+}
+
+export type RuntimeReceipt = RuntimeCallReceipt | RuntimeExitReceipt;
+
 export function newRequestId(): string {
   return randomUUID();
 }

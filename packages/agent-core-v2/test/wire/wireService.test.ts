@@ -186,6 +186,74 @@ describe('WireService seal', () => {
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
   });
 
+  it('coalesces concurrent live epoch proofs but rechecks subsequent reads and external changes', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY) reads++;
+      yield* original(...args);
+    };
+    expect(await Promise.all(Array.from({ length: 8 }, () => wire.verifyTranscriptLiveEpoch!())))
+      .toEqual(Array.from({ length: 8 }, () => true));
+    expect(reads).toBe(1);
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(reads).toBe(2);
+    log.append(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, { type: 'wire.test.external' });
+    await log.flush();
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    expect(reads).toBe(3);
+  });
+
+  it('does not share live epoch proofs across an append or discard a newer accepted fence', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let reachedFirst!: () => void;
+    const reached = new Promise<void>((resolve) => { reachedFirst = resolve; });
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY && ++reads === 1) {
+        reachedFirst();
+        await gate;
+      }
+      yield* original(...args);
+    };
+    const older = wire.verifyTranscriptLiveEpoch!();
+    await reached;
+    try {
+      wire.appendRecord({ type: 'turn.prompt', turnId: 0 });
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    } finally {
+      releaseFirst();
+    }
+    expect(await older).toBe(false);
+    expect(reads).toBe(2);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(true);
+  });
+
+  it('releases a failed shared live epoch proof so the next read can retry', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    const failure = new Error('proof stream failed');
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY && ++reads === 1) throw failure;
+      yield* original(...args);
+    };
+    const results = await Promise.allSettled([wire.verifyTranscriptLiveEpoch!(), wire.verifyTranscriptLiveEpoch!()]);
+    expect(results).toEqual([{ status: 'rejected', reason: failure }, { status: 'rejected', reason: failure }]);
+    expect(reads).toBe(1);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(reads).toBe(2);
+  });
+
   it('never upgrades a legacy wire or an interrupted epoch to complete', async () => {
     log.append(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, { type: 'turn.prompt', turnId: 0 });
     await log.flush();

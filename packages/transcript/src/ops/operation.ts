@@ -56,6 +56,9 @@ export interface FrameUpsertOp {
   readonly op: 'frame.upsert';
   readonly turnId: TurnId;
   readonly stepId: StepId;
+  /** Canonical positions for bounded clients to distinguish omitted older content from a newly appended frame. */
+  readonly stepIndex?: number;
+  readonly frameIndex?: number;
   readonly frame: TranscriptFrame;
 }
 
@@ -81,6 +84,8 @@ export type AppendTarget =
 export interface AppendOp {
   readonly op: 'append';
   readonly target: AppendTarget;
+  readonly stepIndex?: number;
+  readonly frameIndex?: number;
   readonly offset: number;
   readonly text: string;
 }

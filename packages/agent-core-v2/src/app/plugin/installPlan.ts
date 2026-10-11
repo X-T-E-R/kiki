@@ -13,6 +13,7 @@ export interface PluginInstallPlan {
   readonly consentRequired: boolean;
   readonly permissions?: PluginPermissions;
   readonly contributions: readonly string[];
+  readonly appService?: boolean;
   readonly contextTokens: number;
   readonly unsupported: readonly string[];
 }
@@ -88,10 +89,11 @@ export function buildInstallPlan(
     fingerprint,
     changes,
     consentRequired: previous === undefined
-      ? contributions.some((item) => !item.startsWith('theme:')) || Object.keys(manifest.kiki?.permissions ?? {}).length > 0
+      ? manifest.kiki?.entry !== undefined || contributions.some((item) => !item.startsWith('theme:')) || Object.keys(manifest.kiki?.permissions ?? {}).length > 0
       : previous.kiki?.entry === undefined && manifest.kiki?.entry !== undefined,
     permissions: manifest.kiki?.permissions,
     contributions,
+    appService: manifest.kiki?.activation === 'app',
     contextTokens: Math.ceil((
       (manifest.systemPrompt?.length ?? 0) +
       (manifest.skillInstructions?.length ?? 0) +

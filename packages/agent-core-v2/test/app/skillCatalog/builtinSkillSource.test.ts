@@ -334,8 +334,8 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
     expect(profile?.content).toContain('Both templates set `model_alias: inherit`');
     expect(profile?.content).toContain('leave `thinking_effort` unset');
-    expect(ops?.content).toContain('Ask whether to create `implementer`');
-    expect(ops?.content).toContain('ask separately about `reviewer`');
+    expect(ops?.content).toContain('`implementer` for an engineering task');
+    expect(ops?.content).toContain('`reviewer` for a decision that needs an independent read-only check');
     expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
   });
 
@@ -348,6 +348,28 @@ describe('BuiltinSkillSource product-skill switch', () => {
     for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(listing).toContain(trigger);
     }
+  });
+
+  it('runs the first-run request around the user\'s first task, with setup as a side effect', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('The first-run request is not a configuration interview');
+    expect(ops).toContain('Do that first thing, for real');
+    expect(ops).toContain('only when the first run shows the need');
+    expect(ops).toContain('The test is the task in front of them, not whether they code');
+    expect(ops).toContain('offer a profile shaped to what they are actually doing, or none');
+    expect(ops).toContain('only when the work needs read-only research');
+    expect(ops).toContain('or the sources and material a task has to check');
+    expect(ops).toContain('Never open with roles');
+    expect(ops).toContain('not a question to ask unprompted');
+  });
+
+  it('guides first-run web search without a credential gate or silent fallback', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('keyless general-web `duckduckgo.search`');
+    expect(ops).toContain('no registration, API key or lane selection is needed');
+    expect(ops).toContain('check it directly when requested instead of asking for a key');
+    expect(ops).toContain('failures never silently switch providers');
+    expect(ops).not.toContain('General web search needs a provider lane, its credential');
   });
 
   it('routes request-limit operations through installed docs and keeps reload timing specific', () => {
@@ -421,7 +443,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
     });
   });
 
-  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', (locale) => {
+  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', async (locale) => {
     const registry = new ConfigRegistry();
     try {
       const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
@@ -435,7 +457,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       expect(raw).toEqual({ loop_control: { continuity_cadence: { memory_maintenance: false } } });
       expect(LoopControlSchema.parse(transformTomlData(raw, registry)[LOOP_CONTROL_SECTION])).toEqual(values[1]);
     } finally {
-      registry.dispose();
+      await registry.dispose();
     }
   });
 

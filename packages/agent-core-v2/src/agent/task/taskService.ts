@@ -176,7 +176,7 @@ interface ManagedTask extends BufferedTaskOutput {
   timeoutHandle?: ReturnType<typeof setTimeout>;
   timedOut: boolean;
   readonly waiters: Array<() => void>;
-  handleSubscription?: { dispose(): void };
+  handleSubscription?: { dispose(): void | Promise<void> };
   visible: boolean;
 }
 
@@ -541,7 +541,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.endedAt = Date.now();
       entry.terminalFired = true;
       entry.foregroundSignalCleanup?.();
-      entry.handleSubscription?.dispose();
+      await entry.handleSubscription?.dispose();
       if (entry.timeoutHandle !== undefined) clearTimeout(entry.timeoutHandle);
       entry.abortController.abort(reason);
       entry.foregroundRelease?.resolve('terminal');
@@ -621,9 +621,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     });
 
     entry.handleSubscription = {
-      dispose() {
-        outputSub.dispose();
-        stateSub.dispose();
+      async dispose() {
+        await outputSub.dispose();
+        await stateSub.dispose();
       },
     };
 
@@ -682,6 +682,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     return result;
+  }
+
+  hasUnfinishedWork(): boolean {
+    for (const entry of this.tasks.values()) {
+      if (entry.options.lifetime === 'service') continue;
+      if (!TERMINAL_STATUSES.has(entry.status)) return true;
+      if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
+        !this.deliveredNotificationKeys.has(entry.taskId)) return true;
+    }
+    for (const info of this.ghosts.values()) {
+      if (this.localTaskIds.has(info.taskId) && info.lifetime !== 'service' && info.detached !== false &&
+        !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId)) return true;
+    }
+    return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
+      this.pendingWaitDeliveries.size > 0;
   }
 
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
@@ -1087,7 +1102,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return this.stopAll(reason);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.exitSuppressionArmed = true;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
@@ -1106,7 +1121,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         this.forceStopOnDispose(entry);
       }
     }
-    super.dispose();
+    return super.dispose();
   }
 
   private forceStopOnDispose(entry: ManagedTask): void {
@@ -1466,7 +1481,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       settlement.stopReason ?? (settlement.status === 'killed' ? entry.stopReason : undefined);
     entry.foregroundSignalCleanup?.();
     entry.foregroundSignalCleanup = undefined;
-    entry.handleSubscription?.dispose();
+    await entry.handleSubscription?.dispose();
     entry.handleSubscription = undefined;
     if (entry.timeoutHandle !== undefined) {
       clearTimeout(entry.timeoutHandle);

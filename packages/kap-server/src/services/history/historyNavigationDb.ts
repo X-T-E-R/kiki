@@ -298,8 +298,10 @@ export class HistoryNavigationDb implements NavigationStore {
     if (input.role !== undefined) {
       where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
       values.push(input.role);
-    } else if (input.includeToolOutput !== true) {
-      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='tool'");
+    } else if (input.includeToolOutput === true) {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='record'");
+    } else {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user') NOT IN ('tool','record')");
     }
     if (input.startTime !== undefined) { where.push('r.time>=?'); values.push(input.startTime); }
     if (input.endTime !== undefined) { where.push('r.time<?'); values.push(input.endTime); }

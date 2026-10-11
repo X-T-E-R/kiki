@@ -5,13 +5,13 @@
  * focus return, selection prefill, and the route rule for Ctrl+F.
  */
 
-import { act, type ReactNode } from 'react';
+import { act, useSyncExternalStore, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { createViewState, type Block, type SessionViewState } from '@kiki/session-core/session';
+import { createViewState, type ActivitySummary, type Block, type SessionViewState, SessionController } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import type { SearchMessageHit } from '../../lib/client';
@@ -24,8 +24,10 @@ import {
   resetFindHostsForTests,
   selectionPrefill,
 } from '../../lib/timelineFind';
+import { useTimelineView } from '../message/messageViewMode';
 import { Transcript } from '../Transcript';
-import { classifyOutsideHits, setFindSearchForTests } from './FindBar';
+import { FindBar, classifyOutsideHits, setFindSearchForTests } from './FindBar';
+import { TranscriptDetailProvider } from '../transcriptDetail';
 import { buildFindItems } from './findItems';
 
 vi.mock('../markdown/streamdown-plugins', async (importOriginal) => {
@@ -206,6 +208,35 @@ describe('find matching', () => {
     expect(buildFindItems([message])).toEqual([expect.objectContaining({ blockId: 'm1', text: '证书那边还差一步' })]);
   });
 
+  it('searches the tool output a message-view summary folds away, only with the tool option', () => {
+    const pattern = buildFindPattern('needle', { caseSensitive: false, wholeWord: false });
+    const count = (items: ReturnType<typeof buildFindItems>) => {
+      const byBlock = new Map<string, number>();
+      for (const match of collectMatches(items, pattern)) byBlock.set(match.item.blockId, (byBlock.get(match.item.blockId) ?? 0) + 1);
+      return Object.fromEntries(byBlock);
+    };
+    const group: ActivitySummary = {
+      kind: 'activity-summary', id: 'activity-tool1', turnId: 't1',
+      members: [think('th1', 'the needle is probably in config', 't1'), tool('tool1', 'grep needle', 'src/needle.ts: export const needle = 1', 't1')],
+      counts: { tools: 1, reads: 0, commands: 1, thinking: 1, subagents: 0, memories: 0 },
+      running: false, failed: 0,
+    };
+    const nodes = [user('u1', 'check the cache', 't1'), group];
+    // The message view keeps its own scope: the folded activity is not searched
+    // unless the tool option asks for its tool output.
+    expect(count(buildFindItems(nodes))).toEqual({});
+    const withTools = buildFindItems(nodes, true);
+    expect(count(withTools)).toEqual({ tool1: 2 });
+    // The member belongs to the process view: it is marked, and its reveal
+    // opens the summary and the tool leaf on the way in.
+    expect(withTools.find((item) => item.blockId === 'tool1')).toMatchObject({
+      processViewOnly: true, reveal: ['activity-tool1', 'tool1'], toolCallId: 'tool1',
+    });
+    // Neither the summary's thinking member nor the tool's own input is searched.
+    expect(withTools.some((item) => item.text.includes('config'))).toBe(false);
+    expect(withTools.some((item) => item.text.includes('grep needle'))).toBe(false);
+  });
+
   it('splits server hits into still-loadable and compacted history', () => {
     const hit = (turn: number, snippet: string): SearchMessageHit => ({
       session_id: 's', workspace_id: 'w', session_title: '', agent_id: 'main', role: 'assistant', snippet, time: 0, turn, score: 1,
@@ -268,6 +299,41 @@ describe('find bar in the timeline', () => {
     await typeQuery(input, 'haystack');
     expect(count()).toBe('No results');
     expect(container.querySelector<HTMLButtonElement>('[data-find-next]')?.disabled).toBe(true);
+    off();
+  });
+
+  it('keeps the tool-output scope on the option row as an icon toggle, off by default', async () => {
+    const off = installSessionShortcut();
+    const { container } = await mount(timeline(foldedSession()));
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    const tools = container.querySelector<HTMLButtonElement>('[data-find-tools]')!;
+    const count = () => container.querySelector('[data-find-count]')?.textContent;
+    // One control row: a small icon button beside Aa / ab, not a checkbox with a
+    // row of its own.
+    expect(container.querySelectorAll('[data-find-bar] input[type="checkbox"]')).toHaveLength(0);
+    expect(tools.tagName).toBe('BUTTON');
+    expect(tools.type).toBe('button');
+    expect(tools.querySelector('svg')).not.toBeNull();
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
+    expect(tools.getAttribute('aria-label')).toBe('Include tool output');
+    expect(tools.getAttribute('title')).toBe('Include tool output');
+    expect(container.querySelector('[data-find-bar] > div:first-child [data-find-tools]')).toBe(tools);
+    await typeQuery(input, 'export const needle');
+    await settle(120);
+    // Off by default: the tool output holding the needle is out of scope.
+    expect(count()).toBe('No results');
+    tools.focus();
+    expect(document.activeElement).toBe(tools);
+    await act(async () => { tools.click(); });
+    await settle(120);
+    expect(tools.getAttribute('aria-pressed')).toBe('true');
+    expect(count()).toBe('1 / 1');
+    await act(async () => { tools.click(); });
+    await settle(120);
+    expect(tools.getAttribute('aria-pressed')).toBe('false');
+    expect(count()).toBe('No results');
     off();
   });
 
@@ -383,5 +449,192 @@ describe('find bar in the timeline', () => {
     // F3 on settings is not ours.
     expect(press(document.body, { key: 'F3' }).defaultPrevented).toBe(false);
     offSettings();
+  });
+});
+
+it('keeps a server tail hit in an already loaded but incomplete turn even when older history is complete', () => {
+  const hit = { role: 'assistant', turn: 7, snippet: 'hidden output tail needle' } as SearchMessageHit;
+  const outside = classifyOutsideHits({ hits: [hit], loadedTurns: new Set([7]), incompleteTurns: new Set([7]), hasMoreHistory: false, pattern: /needle/gu, more: false });
+  expect(outside).toMatchObject({ earlier: 1, compacted: 0, nearestTurn: 7, known: true });
+  expect(classifyOutsideHits({ hits: [hit], loadedTurns: new Set([7]), incompleteTurns: new Set(), hasMoreHistory: false, pattern: /needle/gu, more: false }).earlier).toBe(0);
+});
+
+
+it('clears the prior query failure and ignores an old read failing after the query changes', async () => {
+  setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 7, snippet: query } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  let failOld!: (error: Error) => void;
+  const find = vi.fn().mockRejectedValueOnce(new Error('first read failed')).mockImplementationOnce(() => new Promise((_resolve, reject) => { failOld = reject; }));
+  const controller = { incompleteTurnOrdinals: () => new Set([7]), findTurnContentRange: find } as unknown as SessionController;
+  const { container } = await mount(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}}><FindBar items={[]} sessionId="s" agentId="main" hasMoreHistory={false} loadedTurns={new Set([7])} request={{ prefill: 'needle', nonce: 1 }} onLand={async () => true} onClear={() => {}} startIndex={() => 0} onLoadOlder={async () => false} onLocateTurn={async () => true} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>);
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  expect(container.textContent).toContain('Could not read the matching content');
+  await typeQuery(container.querySelector<HTMLInputElement>('[data-find-input]')!, 'other');
+  expect(container.textContent).not.toContain('Could not read the matching content');
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  await typeQuery(container.querySelector<HTMLInputElement>('[data-find-input]')!, 'fresh');
+  await act(async () => { failOld(new Error('late old read failure')); });
+  expect(find).toHaveBeenCalledTimes(2);
+  expect(container.textContent).not.toContain('Could not read the matching content');
+});
+
+
+it('lands a large non-tool frame by its actual projected source and passes the range offset', async () => {
+  setFindSearchForTests({ searchMessages: vi.fn(async () => ({ items: [{ role: 'assistant', turn: 7, snippet: 'range needle' } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  const ref = { source: { kind: 'frame' as const, id: 'answer-frame', turnId: 't7', stepId: 's7' }, revision: 'answer-range', kind: 'text' as const, path: ['text'], offset: 3, total: 600_000 };
+  const controller = { incompleteTurnOrdinals: () => new Set([7]), findTurnContentRange: async () => ({ ref, offset: 12345 }), getAgentState: () => ({ blocks: [{ kind: 'assistant', id: 'answer-row', frameId: 'answer-frame' }] }) } as unknown as SessionController;
+  const land = vi.fn(async () => true);
+  const item = { blockId: 'answer-row', turnId: 't7', text: 'prefix', reveal: [] };
+  const { container } = await mount(<TranscriptDetailProvider controller={controller} load={async () => false} loads={{}}><FindBar items={[item]} sessionId="s" agentId="main" hasMoreHistory={false} loadedTurns={new Set([7])} request={{ prefill: 'needle', nonce: 1 }} onLand={land} onClear={() => {}} startIndex={() => 0} onLoadOlder={async () => false} onLocateTurn={async () => true} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>);
+  await settle(350);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+  expect(land).toHaveBeenCalledWith(expect.objectContaining({ item, start: 12345 }), expect.any(RegExp), expect.objectContaining({ ref, offset: 12345 }));
+});
+
+
+async function coldFindHarness(range: boolean, waitForPage?: Promise<void>) {
+  const text = range ? 'a'.repeat(8190) + ' cold needle ' + 'b'.repeat(600_000) : 'ordinary cold needle';
+  const ref = { source: { kind: 'frame' as const, id: 'cold-frame', turnId: 't1', stepId: 's1' }, path: ['output'], revision: 'cold-body', kind: 'text' as const, offset: 3, total: text.length };
+  const turn = (ordinal: number, output: string, pending = false) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [{ kind: 'step' as const, stepId: `s${ordinal}`, turnId: `t${ordinal}`, ordinal: 1, state: 'completed' as const, frames: [{ kind: 'tool' as const, frameId: ordinal === 1 ? 'cold-frame' : 'new-frame', toolCallId: ordinal === 1 ? 'cold-call' : 'new-call', name: 'ExampleTool', state: 'done' as const, output, ...(pending ? { contentRefs: [ref] } : {}) }] }] });
+  const read = vi.fn(async ({ ref: request }: { ref: typeof ref }) => ({ ref: request, value: text.slice(request.offset, request.offset + 4097), contentRefs: [] }));
+  const page = vi.fn(async () => { await waitForPage; return { session_id: 'cold-test', agent_id: 'main', items: [turn(1, range ? 'aaa' : text, range)], has_more: false }; });
+  const view = { snapshot: async () => ({ session: { id: 'cold-test', title: 'Cold find' }, as_of_seq: 1, epoch: 'cold', in_flight_turn: null }), transcript: { page, content: read }, subscribe: () => ({ updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, restart() {}, nudge() {}, close() {} }) } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'cold-test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  controller.handleTranscript({ type: 'transcript.reset', session_id: 'cold-test', agent_id: 'main', grade: 'delta', cursor: { seq: 1, epoch: 'cold' }, coverage: { kind: 'tail', hasMoreOlder: true, fromTurnId: 't2', throughTurnId: 't2' }, snapshot: { items: [turn(2, 'newest preview')], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {}, hasMoreOlder: true } });
+  controller.flushFrames();
+  const land = vi.fn(async () => true);
+  const locate = vi.fn(async () => { const loaded = await controller.loadOlderMessages(); await new Promise((resolve) => setTimeout(resolve, 0)); return loaded; });
+  function ColdHarness() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    const items = state.blocks.filter((block) => block.kind === 'tool').map((block) => ({ blockId: block.id, toolCallId: block.toolCallId, turnId: block.turnId, text: typeof block.output === 'string' ? block.output : '', reveal: [] }));
+    return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="cold-test" agentId="main"><FindBar items={items} sessionId="cold-test" agentId="main" hasMoreHistory={state.hasMoreHistory} loadedTurns={new Set(items.map((item) => Number(item.turnId?.slice(1))))} request={{ prefill: 'needle', nonce: 1 }} onLand={land} onClear={() => {}} startIndex={() => 0} onLoadOlder={() => controller.loadOlderMessages()} onLocateTurn={locate} onClose={() => {}} stepRef={{ current: null }} /></TranscriptDetailProvider>;
+  }
+  setFindSearchForTests({ searchMessages: vi.fn(async ({ query }) => ({ items: [{ role: 'assistant', turn: 1, snippet: `cold ${query}` } as SearchMessageHit], has_more: false, index_state: { state: 'ready' } } as never)) });
+  const mounted = await mount(<ColdHarness />);
+  await act(async () => { mounted.container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+  await settle(350);
+  return { ...mounted, controller, read, page, locate, land, ref };
+}
+
+it.each([true, false])('one cold-turn intent uses the newly loaded real controller and rendered items (range: %s)', async (range) => {
+  const fixture = await coldFindHarness(range);
+  try {
+    expect(fixture.controller.incompleteTurnOrdinals('main').has(1)).toBe(false);
+    expect(fixture.controller.getState().blocks.some((block) => 'turnId' in block && block.turnId === 't1')).toBe(false);
+    await act(async () => { fixture.container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+    await settle(100);
+    expect(fixture.page).toHaveBeenCalledTimes(1);
+    expect(fixture.locate).toHaveBeenCalledTimes(1);
+    if (range) {
+      expect(fixture.read).toHaveBeenCalled();
+      expect(fixture.land).toHaveBeenCalledWith(expect.objectContaining({ item: expect.objectContaining({ toolCallId: 'cold-call' }) }), expect.any(RegExp), expect.objectContaining({ ref: fixture.ref, offset: 8196 }));
+    } else {
+      expect(fixture.read).not.toHaveBeenCalled();
+      expect(fixture.land).toHaveBeenCalledWith(expect.objectContaining({ item: expect.objectContaining({ toolCallId: 'cold-call' }) }), expect.any(RegExp), undefined);
+    }
+    expect(fixture.container.textContent).not.toContain('Could not read the matching content');
+  } finally { fixture.controller.close(); }
+});
+
+it('a query change while locating a cold turn prevents its late arrival from starting the old range read', async () => {
+  let arrive!: () => void;
+  const pageReady = new Promise<void>((resolve) => { arrive = resolve; });
+  const fixture = await coldFindHarness(true, pageReady);
+  try {
+    await act(async () => { fixture.container.querySelector<HTMLButtonElement>('[data-find-look-back]')!.click(); });
+    await typeQuery(fixture.container.querySelector<HTMLInputElement>('[data-find-input]')!, 'different');
+    await act(async () => { arrive(); });
+    await settle(80);
+    expect(fixture.page).toHaveBeenCalledTimes(1);
+    expect(fixture.read).not.toHaveBeenCalled();
+    expect(fixture.land).not.toHaveBeenCalled();
+    expect(fixture.container.textContent).not.toContain('Could not read the matching content');
+  } finally { fixture.controller.close(); }
+});
+
+/** Bot delivery draws the message view: speech rows, and one collapsed activity
+ * line per stretch of internal work (its tool output stays in the process view). */
+function messageViewSession(): Block[] {
+  return [
+    user('u1', 'please check the cache', 't1'),
+    tool('tool1', 'grep cache', 'cache.ts: export const needle = 1', 't1'),
+    answer('a1', 'Found it.', 't1'),
+    user('u2', 'thanks', 't2'),
+    answer('a2', 'You are welcome.', 't2'),
+  ];
+}
+
+/** The session view owns the message/process choice; the find bar flips it. */
+function MessageViewTimeline({ sessionId, blocks }: { sessionId: string; blocks: Block[] }) {
+  const [view] = useTimelineView(sessionId, { delivery: 'message' });
+  return (
+    <Transcript
+      state={state(blocks, { sessionId })}
+      view={view}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => Promise.resolve()}
+      onAnswerQuestion={() => Promise.resolve()}
+      onDismissQuestion={() => Promise.resolve()}
+    />
+  );
+}
+
+describe('find in the message view', () => {
+  it('counts a folded tool output once the tool option is on, and its note shows the hit in the process view', async () => {
+    const off = installSessionShortcut();
+    const registry = new Map<string, { items: Range[] }>();
+    vi.stubGlobal('CSS', {
+      highlights: {
+        set: (name: string, value: { items: Range[] }) => { registry.set(name, value); },
+        delete: (name: string) => { registry.delete(name); },
+      },
+    });
+    vi.stubGlobal('Highlight', class { readonly items: Range[]; constructor(...items: Range[]) { this.items = items; } });
+    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message" blocks={messageViewSession()} />);
+    expect(container.querySelector('[data-message-view-row="activity-summary"]')).not.toBeNull();
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    await typeQuery(input, 'needle');
+    await settle(120);
+    // Only the tool output holds the needle, and it is out of scope by default.
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('No results');
+    expect(container.querySelector('[data-find-process]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+    await settle(120);
+    // The loaded tool hit counts now, and the bar says where it can be shown.
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
+    const open = container.querySelector<HTMLButtonElement>('[data-find-process-open]')!;
+    expect(open.textContent).toContain('process');
+    await act(async () => { open.click(); });
+    await settle(200);
+    // The process view is on screen, opened at the call that holds the hit.
+    expect(container.querySelector('[data-message-view-row]')).toBeNull();
+    const card = container.querySelector('[data-tool-id="tool1"]');
+    expect(card?.textContent).toContain('export const needle = 1');
+    expect(card?.querySelector('[aria-expanded="true"]')).not.toBeNull();
+    expect(registry.get('kiki-find-current')?.items.map((range) => range.toString())).toContain('needle');
+    vi.unstubAllGlobals();
+    vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+    off();
+  });
+
+  it('steps onto a folded tool match by opening the process view', async () => {
+    const off = installSessionShortcut();
+    const { container } = await mount(<MessageViewTimeline sessionId="session_find_message_step" blocks={messageViewSession()} />);
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const input = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    await typeQuery(input, 'needle');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-find-tools]')!.click(); });
+    await settle(120);
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1');
+    await act(async () => { press(input, { key: 'F3' }); });
+    await settle(200);
+    expect(container.querySelector('[data-message-view-row]')).toBeNull();
+    expect(container.querySelector('[data-tool-id="tool1"]')?.textContent).toContain('export const needle = 1');
+    off();
   });
 });

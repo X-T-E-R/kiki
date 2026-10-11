@@ -56,9 +56,9 @@ export const WIRE_COLD_READ_MAX_LINE_BYTES = 64 << 20;
  * `byte_budget`, `record_budget` and `line_budget` mean the file continues
  * beyond what was returned; `partial_tail` means the file itself ends in an
  * unterminated, unparseable record (the historical cold-read tail). The
- * `WIRE_COLD_READ_MAX_*` fences belong to the cold transcript reader: healthy
- * wires stay far below them, and that reader treats a tripped fence as a
- * failed read instead of serving a shorter history.
+ * The cold transcript reader uses `WIRE_COLD_READ_MAX_*` as scheduling slices
+ * and resumes at complete record boundaries. Explicitly bounded readers return
+ * the slice receipt so their callers can continue or report incomplete coverage.
  */
 export async function streamWireRecords(
   wirePath: string,

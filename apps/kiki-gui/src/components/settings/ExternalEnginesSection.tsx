@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ExecutorCatalogItem } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -10,10 +10,18 @@ import type { ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { localSessionEngine } from '../../lib/localSessions';
 import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
-import { EXECUTORS_QUERY_KEY, useExecutorCatalogQuery } from './profileEditor/engines';
+import {
+  engineDisplayOf,
+  engineOverridesOf,
+  engineVisibilityOf,
+  engineVisibilityPatch,
+  EXECUTORS_QUERY_KEY,
+  useExecutorCatalogQuery,
+} from './profileEditor/engines';
+import { EngineDefaults } from './EngineDefaults';
 import { ANTIGRAVITY_ID, AntigravitySetup } from './AntigravitySetup';
 import { HARNESS_CAPABILITIES } from '../harness/HarnessMark';
 
@@ -68,6 +76,114 @@ export function protocolLabel(protocol: string): string {
 }
 
 /**
+ * Whether one engine is offered in the profile / execution pickers, and the
+ * switch that changes it.
+ *
+ * Display only, and the label says so: hiding an engine removes it from the
+ * list a new conversation starts from. It does not uninstall it, does not
+ * disable it, and does not stop a session that already runs it — an engine the
+ * user stopped wanting to choose is still installed and still runs whatever is
+ * bound to it. Stating that here is the point of the row: without it, "hide"
+ * reads as "remove", and the recovery (turn it back on) looks unnecessary.
+ */
+function EngineVisibilityToggle({ item, overrides, display }: {
+  item: ExecutorCatalogItem;
+  overrides: Readonly<Record<string, unknown>> | undefined;
+  display: Readonly<Record<string, unknown>> | undefined;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const prefs = engineVisibilityOf(overrides, display);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const visible = prefs.externalsVisible && !prefs.hidden.has(item.id);
+
+  const toggle = async (next: boolean) => {
+    const patch = engineVisibilityPatch(prefs, { engine: { id: item.id, visible: next } });
+    if (patch === undefined) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await client.patchConfig(patch);
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div data-engine-visible={item.id} data-visible={visible ? 'true' : 'false'}
+      className="space-y-1 border-t border-hairline pt-3">
+      <Toggle
+        layout="row"
+        label={t('st.engines.showInList', { engine: item.label })}
+        checked={visible}
+        disabled={saving || !prefs.externalsVisible}
+        onChange={(next) => { void toggle(next); }}
+      />
+      <p className="text-[12px] leading-4 text-ink-faint">
+        {prefs.externalsVisible ? t('st.engines.showInListHint') : t('st.engines.hiddenByGlobal')}
+      </p>
+      <FeedbackLine feedback={feedback} />
+    </div>
+  );
+}
+
+/**
+ * The one switch for every external engine. Kept as its own row above the
+ * per-engine toggles because it changes what they all mean at once, and
+ * leaving N rows unexplained is how a preference becomes a puzzle.
+ */
+function ExternalEnginesVisibilityCard({ overrides, display, engineCount }: {
+  overrides: Readonly<Record<string, unknown>> | undefined;
+  display: Readonly<Record<string, unknown>> | undefined;
+  engineCount: number;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const prefs = engineVisibilityOf(overrides, display);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+
+  const toggle = async (next: boolean) => {
+    const patch = engineVisibilityPatch(prefs, { externals: next });
+    if (patch === undefined) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await client.patchConfig(patch);
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div data-external-visibility className="space-y-1.5 border-t border-hairline pt-3">
+      <Toggle
+        layout="row"
+        label={t('st.engines.showAllInList')}
+        checked={prefs.externalsVisible}
+        disabled={saving}
+        onChange={(next) => { void toggle(next); }}
+      />
+      <p className="text-[12px] leading-4 text-ink-faint">
+        {prefs.externalsVisible
+          ? t('st.engines.showAllInListHint', { count: engineCount })
+          : t('st.engines.showAllInListOffHint')}
+      </p>
+      <FeedbackLine feedback={feedback} />
+    </div>
+  );
+}
+
+/**
  * External engines as a connection kind. Same list family as the API /
  * account rows above it (one bordered list, a disclosure row per entry,
  * health in words, an explicit test action), but the facts are an engine's:
@@ -77,7 +193,11 @@ export function protocolLabel(protocol: string): string {
  */
 export function ExternalEnginesList() {
   const { t } = useI18n();
+  const { client } = useConnection();
   const query = useExecutorCatalogQuery();
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
+  const overrides = engineOverridesOf(configQuery.data);
+  const display = engineDisplayOf(configQuery.data);
   const engines = (query.data?.items ?? []).filter((item) => item.id !== 'native')
     .toSorted((a, b) => a.label.localeCompare(b.label));
   return (
@@ -85,7 +205,7 @@ export function ExternalEnginesList() {
       <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.engines.intro')}</p>
       {engines.length > 0 ? (
         <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-          {engines.map((item) => <EngineRow key={item.id} item={item} />)}
+          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} />)}
         </div>
       ) : null}
       {query.isSuccess && engines.length === 0 ? (
@@ -95,7 +215,12 @@ export function ExternalEnginesList() {
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
-      {engines.length > 0 ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p> : null}
+      {engines.length > 0 ? (
+        <>
+          <ExternalEnginesVisibilityCard overrides={overrides} display={display} engineCount={engines.length} />
+          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -434,7 +559,28 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
 }
 
 
-function EngineRow({ item }: { item: ExecutorCatalogItem }) {
+/**
+ * One engine's saved `defaults` block, read from the config's raw record.
+ * The wire keeps launch keys and defaults under the same executor entry, so
+ * only the `defaults` sub-object is this editor's business.
+ */
+export function engineDefaultsOf(raw: Readonly<Record<string, unknown>> | undefined, executorId: string): Record<string, unknown> | null | undefined {
+  const overrides = raw?.['agent_executor_overrides'];
+  if (typeof overrides !== 'object' || overrides === null) return undefined;
+  const entry = (overrides as Record<string, unknown>)[executorId];
+  if (typeof entry !== 'object' || entry === null) return undefined;
+  const defaults = (entry as Record<string, unknown>)['defaults'];
+  if (defaults === null) return null;
+  return typeof defaults === 'object' && !Array.isArray(defaults) ? defaults as Record<string, unknown> : undefined;
+}
+
+function EngineRow({ item, overrides, display }: {
+  item: ExecutorCatalogItem;
+  /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
+  overrides: Readonly<Record<string, unknown>> | undefined;
+  /** The config's `agent_executor_display` record, for the global switch. */
+  display: Readonly<Record<string, unknown>> | undefined;
+}) {
   const { client } = useConnection();
   const { t, time, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -442,7 +588,17 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
   const [checkedAt, setCheckedAt] = useState<string | undefined>();
   const [checking, setChecking] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  // The saved per-engine defaults live in the config's raw record, keyed by
+  // executor id. A config that does not echo the section simply has none.
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const refetchConfig = useCallback(async () => { await configQuery.refetch(); }, [configQuery]);
   const connection = item.connection;
+  const config = configQuery.data;
   const health = engineHealth(item, check);
   const healthText = t(HEALTH_KEY[health]);
   const login: LoginStatus = check?.login_status ?? connection?.login_status ?? 'unknown';
@@ -615,6 +771,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           </dl>
           <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
         </div>
+        <EngineVisibilityToggle item={item} overrides={overrides} display={display} />
         {localSessionEngine(item.id) !== undefined ? (
           <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
             <div className="min-w-0 flex-1">
@@ -644,6 +801,7 @@ function EngineRow({ item }: { item: ExecutorCatalogItem }) {
           {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
         <EngineOverrides item={item} program={program} onCheck={runCheck} />
         </div>
+        <EngineDefaults item={item} saved={engineDefaultsOf(config?.raw, item.id)} onSaved={refetchConfig} />
         <FeedbackLine feedback={feedback} />
       </div>
     </details>

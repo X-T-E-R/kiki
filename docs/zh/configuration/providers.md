@@ -101,6 +101,10 @@ api_key = "sk-xxxxx"
 
 > 使用 Kimi Code 托管服务时，`/login` 登录后会自动配置 `base_url` 和凭证，无需手动填写。
 
+对于标准的 Kimi Code 托管凭证槽，如果 Kiki 自己的凭证槽没有 token，也可以复用已有的 Kimi Code 登录。默认读取 `~/.kimi-code`，也可以用 `KIMI_CODE_HOME` 指定原版目录，并遵循该目录的 `credentials_store` 设置。这里选择的是凭证槽，不会虚构已核实的账号身份。显式连接的原版来源会保持选中；从 Kiki 断开时不会删除原版凭证。
+
+当 `credentials_store = "keyring"` 时，keyring 不可用会报告存储错误，而不是把账号标成已登出；恢复 keyring 后再重试。`auto` 模式可以使用可读的文件副本。复用原版来源时，Kiki 会原地读取凭证，不会复制到自己的凭证目录。
+
 ## `anthropic`
 
 用于对接 Claude API。标准 Claude 模型自动启用视觉、工具调用及 Thinking（如支持）；自定义或未覆盖的模型需在 `[models.<alias>]` 里显式声明 `capabilities`。
@@ -131,6 +135,8 @@ api_key = "sk-ant-xxxxx"
 用于对接 OpenAI Chat Completions 协议，也可连接任何兼容该协议的第三方服务（覆盖 `base_url` 即可）。
 
 第三方推理模型（DeepSeek、Qwen、One API 等）开箱即用：CLI 自动处理 `reasoning_content` 字段和 `reasoning_effort` 注入。如果你的网关用非标准字段名返回推理内容，在模型别名上设 `reasoning_key` 覆盖。
+
+对 `openai` 和 `openai_responses`，当你没有设过输出上限、模型能力也未知时，Kiki 不再自己发输出长度限制——请求里不会带 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`，由服务端自己的默认决定。你自己设的上限、已知的模型输出能力、session 或 profile 上更紧的限制，以及剩余窗口预算都照常生效；上下文窗口大小本身不被当作输出上限。这个最大值是天花板，不是对回答长度的保证——模型实际返回多少还取决于任务本身和它何时停止——费用按你实际得到的响应计算。
 
 - 默认 `base_url`：`https://api.openai.com/v1`
 - 凭证键名：`OPENAI_API_KEY`、`OPENAI_BASE_URL`

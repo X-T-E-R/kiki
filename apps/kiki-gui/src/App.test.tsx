@@ -1,7 +1,8 @@
 import { QueryClient } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, SESSION_INDEX_RETRY_LIMIT, isEditableTarget, retryRootReadModelDelay, retryRootReadModelQuery, runStartupUpdateCheck } from './App';
+import { SESSION_FIRST_PAGE_POLL_INTERVAL_MS, isEditableTarget } from './App';
+import { SESSION_INDEX_RETRY_LIMIT, retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
@@ -66,69 +67,6 @@ describe('isEditableTarget', () => {
   });
 });
 
-describe('startup desktop update check', () => {
-  const createUpdate = () => ({
-    currentVersion: '1.0.0',
-    version: '1.1.0',
-    install: vi.fn(async () => undefined),
-  });
-
-  it('does not query update support when automatic updates are off', async () => {
-    const host = {
-      supportsDesktopUpdates: vi.fn(async () => true),
-      checkDesktopUpdate: vi.fn(async () => createUpdate()),
-    };
-    await expect(runStartupUpdateCheck(host, 'off', vi.fn(), vi.fn())).resolves.toBe('disabled');
-    expect(host.supportsDesktopUpdates).not.toHaveBeenCalled();
-    expect(host.checkDesktopUpdate).not.toHaveBeenCalled();
-  });
-
-  it('does not check when the distribution has no update channel', async () => {
-    const host = {
-      supportsDesktopUpdates: vi.fn(async () => false),
-      checkDesktopUpdate: vi.fn(async () => createUpdate()),
-    };
-    await expect(runStartupUpdateCheck(host, 'notify', vi.fn(), vi.fn())).resolves.toBe('unsupported');
-    expect(host.checkDesktopUpdate).not.toHaveBeenCalled();
-  });
-
-  it.each(['notify', 'install'] as const)('does nothing when %s mode finds no update', async (mode) => {
-    const host = {
-      supportsDesktopUpdates: vi.fn(async () => true),
-      checkDesktopUpdate: vi.fn(async () => null),
-    };
-    const available = vi.fn();
-    const installed = vi.fn();
-    await expect(runStartupUpdateCheck(host, mode, available, installed)).resolves.toBe('up-to-date');
-    expect(available).not.toHaveBeenCalled();
-    expect(installed).not.toHaveBeenCalled();
-  });
-
-  it('notifies without installing when notify mode finds an update', async () => {
-    const update = createUpdate();
-    const available = vi.fn();
-    const host = {
-      supportsDesktopUpdates: vi.fn(async () => true),
-      checkDesktopUpdate: vi.fn(async () => update),
-    };
-    await expect(runStartupUpdateCheck(host, 'notify', available, vi.fn())).resolves.toBe('notified');
-    expect(available).toHaveBeenCalledWith(update);
-    expect(update.install).not.toHaveBeenCalled();
-  });
-
-  it('installs and requests a restart toast when install mode finds an update', async () => {
-    const update = createUpdate();
-    const installed = vi.fn();
-    const host = {
-      supportsDesktopUpdates: vi.fn(async () => true),
-      checkDesktopUpdate: vi.fn(async () => update),
-    };
-    await expect(runStartupUpdateCheck(host, 'install', vi.fn(), installed)).resolves.toBe('installed');
-    expect(update.install).toHaveBeenCalledOnce();
-    expect(installed).toHaveBeenCalledWith(update);
-  });
-});
-
 describe('session first-page polling', () => {
   it('spaces first-page refreshes to a 15-second visible interval', () => {
     expect(SESSION_FIRST_PAGE_POLL_INTERVAL_MS).toBe(15_000);
@@ -160,6 +98,39 @@ describe('app navigation dirty guard', () => {
     expect(shouldGuardNavigation(current, '/s/example', true)).toBe(true);
     expect(shouldGuardNavigation(current, '/settings/providers', true)).toBe(false);
     expect(shouldGuardNavigation(current, '/capabilities', false)).toBe(false);
+  });
+});
+
+describe('discovery route and dirty guard navigation', () => {
+  it('guards transitions to /discover when dirty form is active', () => {
+    const current = { pathname: '/settings/providers', search: '', hash: '' };
+    expect(shouldGuardNavigation(current, '/discover', true)).toBe(true);
+    expect(shouldGuardNavigation(current, '/discover', false)).toBe(false);
+  });
+
+  it('preserves discovery state and prevents route advance when dirty guard rejects', async () => {
+    const { navigateDiscovery } = await import('@kiki/session-core/discovery');
+    const state = {
+      version: 1 as const,
+      contentVersion: 1,
+      lifecycle: 'active' as const,
+      route: 'overview' as const,
+      station: 'workspace' as const,
+      collapsed: false,
+      progress: {},
+    };
+    const context = {
+      online: true,
+      currentHref: '/new',
+      anchors: ['workspace-picker' as const],
+    };
+    const cancelledPort = {
+      navigate: vi.fn(async () => 'cancelled' as const),
+    };
+    const result = await navigateDiscovery(state, { type: 'next' }, context, cancelledPort);
+    expect(result.outcome).toBe('cancelled');
+    expect(result.state.station).toBe('workspace');
+    expect(cancelledPort.navigate).toHaveBeenCalled();
   });
 });
 

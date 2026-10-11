@@ -163,6 +163,32 @@ describe('external client access and session binding', () => {
     expect(mode.setModeCeiling).toHaveBeenCalledWith('yolo');
   });
 
+  it('keeps an explicit manual choice when it equals the old connection mode, and follows only an unset mode', async () => {
+    const { connection } = await host.createConnection({ name: 'Example client', mode: 'manual', workspace, tools: ['Read'] });
+    await host.prepareOwnerSession(connection.id, 'session_explicit', workspace, 'manual');
+    await create({ sessionId: 'session_explicit', workDir: workspace, mainAgentBinding: { driver: 'external' } });
+    const grant = (await host.resolveGrant(connection.id))!;
+    const inherited = await host.call(grant, 'kiki_session', { action: 'new', _kiki: { idempotency_key: 'inherit' } }, { requestId: 'request_inherit' }, new AbortController().signal);
+    expect(inherited.structuredContent?.['permissionMode']).toBeUndefined();
+    expect(mode.setMode).toHaveBeenCalledWith('manual');
+    expect(mode.setModeCeiling).toHaveBeenCalledWith('manual');
+    await host.patchConnection(connection.id, { mode: 'yolo' });
+    const records = await host.store.sessions(connection.id);
+    const explicit = records.find((record) => record.sessionId === 'session_explicit');
+    const followed = records.find((record) => record.sessionId !== 'session_explicit');
+    expect(explicit?.permissionMode).toBe('manual');
+    expect(followed?.permissionMode).toBeUndefined();
+    mode.setMode.mockClear();
+    const inheritedAgain = await host.call(grant, 'kiki_session', { action: 'new', session_ref: followed!.sessionRef, _kiki: { idempotency_key: 'inherit-again' } }, { requestId: 'request_inherit_again' }, new AbortController().signal);
+    expect(inheritedAgain.structuredContent?.['permissionMode']).toBeUndefined();
+    expect(mode.setMode).toHaveBeenCalledWith('yolo');
+    mode.setMode.mockClear();
+    const kept = await host.call(grant, 'kiki_session', { action: 'new', session_ref: explicit!.sessionRef, _kiki: { idempotency_key: 'keep-manual' } }, { requestId: 'request_keep_manual' }, new AbortController().signal);
+    expect(kept.structuredContent).toMatchObject({ permissionMode: 'manual' });
+    expect(mode.setMode).toHaveBeenCalledWith('manual');
+    expect(mode.setMode).not.toHaveBeenCalledWith('yolo');
+  });
+
   it.each(['workspaces', 'bots', 'worktrees'])('allows bound managed %s roots without opening the rest of home', async folder => {
     const root = join(home, folder, 'example');
     await mkdir(root, { recursive: true });

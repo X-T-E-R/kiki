@@ -478,8 +478,7 @@ export function UserMessageEditor({
         }}
       />
       <div className="mt-2 flex items-center justify-between gap-3 px-1">
-        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> :
-          <span className="text-[11px] leading-snug text-ink-faint">{t('transcript.editAttachmentsNote')}</span>}
+        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> : null}
         <button type="button" data-edit-cancel disabled={submitting} onClick={cancel} className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft hover:border-hairline-strong disabled:opacity-40">{t('common.cancel')}</button>
       </div>
     </div>

@@ -35,6 +35,7 @@ import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -184,6 +185,26 @@ describe('AgentTaskService', () => {
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
   });
   afterEach(() => disposables.dispose());
+
+  it('unfinished work excludes resident services but includes terminal results until delivered', async () => {
+    const svc = ix.get(IAgentTaskService);
+    let settle!: Parameters<AgentTask['start']>[0]['settle'];
+    const finite = svc.registerTask({ ...fakeProcessTask(), start: (sink) => { settle = sink.settle; } });
+    const resident = svc.registerTask(fakeProcessTask(), { lifetime: 'service' });
+    await Promise.resolve();
+    expect(svc.hasUnfinishedWork()).toBe(true);
+    await settle({ status: 'completed' });
+    expect(svc.hasUnfinishedWork()).toBe(true);
+    const loop = ix.get(IAgentLoopService) as StubLoop;
+    await vi.waitFor(() => { expect(loop.queue.hasPendingRequests()).toBe(true); });
+    loop.drainNextBatch(ix.get(IAgentContextMemoryService));
+    await runWillBeginStepHooks(loop);
+    await ix.get(IEventDispatcher).flush();
+    expect(svc.getTask(finite)?.status).toBe('completed');
+    expect(svc.hasUnfinishedWork()).toBe(false);
+    await svc.suppressTerminalNotification(resident);
+    await svc.stop(resident);
+  });
 
   it('registerTask / list / readOutput / stop', async () => {
     const svc = ix.get(IAgentTaskService);
@@ -902,6 +923,31 @@ describe('AgentTaskService', () => {
     expect(loop.hasPendingRequests()).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('records external-main task notifications without enqueueing a model step', async () => {
+    ix.stub(ISessionMetadata, {
+      read: async () => ({
+        id: 'test-session',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        custom: { externalClient: {
+          connectionId: 'conn-1', clientName: 'Example Client', sessionRef: 'session-1', driver: 'external' as const,
+        } },
+      }),
+    });
+    const notified: string[] = [];
+    disposables.add(eventBus.subscribe(TaskNotified, (event) => notified.push(event.sourceId)));
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('done\n'));
+
+    await svc.wait(taskId, 1000);
+    await waitForCondition(() => notified.includes(taskId));
+
+    expect(notified).toEqual([taskId]);
+    expect(stubLoop().hasPendingRequests()).toBe(false);
+    expect((ix.get(IAgentContextMemoryService) as StubContextMemory).messages).toEqual([]);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('injects and records only one terminal notification when the same task changes from failed to lost', async () => {
     const notified: string[] = [];
     disposables.add(eventBus.subscribe(TaskNotified, (event) => notified.push(event.sourceId)));
@@ -1302,7 +1348,7 @@ describe('AgentTaskService', () => {
       timeoutMs: 60_000,
     });
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(abortReason).toBe('Session closed');
@@ -1335,7 +1381,7 @@ describe('AgentTaskService', () => {
     svc.registerTask(new ProcessTask(proc, 'ignore-term', 'long-running process'));
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
@@ -1353,7 +1399,7 @@ describe('AgentTaskService', () => {
     });
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
 
     expect(aborted).toBe(false);
     expect(forceStop).not.toHaveBeenCalled();
@@ -1381,7 +1427,7 @@ describe('AgentTaskService', () => {
     svc.registerTask(new ProcessTask(proc, 'keep-running', 'long-running process'));
     await Promise.resolve();
 
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.resolve();
 
     expect(proc.kill).not.toHaveBeenCalled();
@@ -2107,9 +2153,9 @@ describe('Agent task notification XML', () => {
 });
 
 describe('running subagent status', () => {
-  it('counts live direct children and running task fallback, not idle, broken, or grandchildren', () => {
+  it('counts live direct children and running task fallback, not idle, broken, closed, or grandchildren', async () => {
     const disposables = new DisposableStore();
-    const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken') => {
+    const child = (id: string, parentAgentId: string, state: 'running' | 'idle' | 'broken' | 'closed') => {
       const accessor = disposables.add(new TestInstantiationService());
       accessor.stub(IAgentScopeContext, makeAgentScopeContext({
         agentId: id, agentScope: `agents/${id}`, parentAgentId,
@@ -2121,6 +2167,7 @@ describe('running subagent status', () => {
       child('agent-live', 'main', 'running'),
       child('agent-idle', 'main', 'idle'),
       child('agent-broken', 'main', 'broken'),
+      child('agent-closed', 'main', 'closed'),
       child('agent-grandchild', 'agent-live', 'running'),
     ] };
     const tasks = { list: () => [
@@ -2134,13 +2181,18 @@ describe('running subagent status', () => {
         kind: 'agent' as const, description: 'broken', status: 'running' as const,
         startedAt: 1, endedAt: null,
       },
+      {
+        taskId: 'agent-task-closed', agentId: 'agent-closed',
+        kind: 'agent' as const, description: 'closed', status: 'running' as const,
+        startedAt: 1, endedAt: null,
+      },
     ] };
 
     expect(runningSubagentStatus(tasks, lifecycle, 'main', undefined, 'en'))
       .toBe('2 subagents still running: agent-live, named');
     expect(runningSubagentStatus(tasks, lifecycle, 'main', 'agent-live', 'en'))
       .toBe('1 subagent still running: named');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('truncates long name lists in both English and Chinese', () => {

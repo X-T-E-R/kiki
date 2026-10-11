@@ -24,6 +24,7 @@ const { opened, fixture } = vi.hoisted(() => ({
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
+    klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({}),
     listModels: () => Promise.resolve({ items: [] }),

@@ -34,6 +34,8 @@ import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
@@ -277,12 +279,11 @@ function pluginStub(
     setPluginMcpServerEnabled: async () => {},
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-    getPluginInfo: async () => {
-      throw new Error('getPluginInfo is not used by these tests');
-    },
+    getPluginInfo: async ({ id }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => agentRoots,
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],
@@ -400,6 +401,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IWorkspaceContext, workspaceContext],
       [IWorkspaceTrust, opts?.workspaceTrust ?? workspaceTrustStub(opts?.workspaceTrusted ?? true)],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
+      [IPluginUsageService, new SyncDescriptor(PluginUsageService)],
       [IFlagService, flags],
       [IBuiltinSkillSource, new SyncDescriptor(BuiltinSkillSource)],
       [IAgentExecutorRegistry, opts?.executors ?? new SyncDescriptor(AgentExecutorRegistryService)],
@@ -480,9 +482,9 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       ]);
       await catalog.ready;
     },
-    dispose(): void {
-      catalog.dispose();
-      container.dispose();
+    async dispose(): Promise<void> {
+      await catalog.dispose();
+      await container.dispose();
     },
   };
 }
@@ -498,7 +500,7 @@ async function withStack(
   try {
     await run(stack);
   } finally {
-    stack.dispose();
+    await stack.dispose();
   }
 }
 
@@ -596,7 +598,7 @@ describe('agent profile loaders + session catalog', () => {
           expect(deletes).not.toHaveBeenCalled();
           if (legacyKey !== canonicalKey) expect(await documents.get('workspace-trust', canonicalKey)).toBeUndefined();
         } finally {
-          draft.dispose();
+          await draft.dispose();
         }
       });
     });
@@ -2265,7 +2267,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(watch.handles.length).toBeGreaterThanOrEqual(4);
         expect(watch.handles.some((handle) => handle.disposed)).toBe(false);
       } finally {
-        stack.dispose();
+        await stack.dispose();
       }
 
       expect(watch.handles.every((handle) => handle.disposed)).toBe(true);

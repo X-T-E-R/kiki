@@ -94,6 +94,8 @@ export interface ISessionIndex {
   readonly onDidChangeStatus: Event<SessionIndexStatus>;
   status(): SessionIndexStatus;
   get(id: string, workspaceId?: string): Promise<SessionSummary | undefined>;
+  /** Fresh authoritative metadata discovery; exclusions cut whole attached subtrees, never the root. */
+  archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]>;
   /** Recency-ordered keyset page over the persisted session set. */
   listRecent(query: SessionListQuery): Promise<Page<SessionSummary>>;
   /** Materialized count over the given workspace-id set. */

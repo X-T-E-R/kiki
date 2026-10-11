@@ -57,6 +57,15 @@ If the machine cannot be used, the page says why in terms you can act on — no 
 
 **Stop using it** lets go of the machine's sign-in for this connection. It removes Kiki's reference and the models it provisioned; the sign-in itself is still there, and the other app is unaffected.
 
+### Timeouts
+
+Open **Settings → Connection** (`/settings/connection?tab=current`), then **HTTP requests**. These settings govern requests from this interface to the Kiki server, not the model-provider connections above:
+
+- **Request timeout (seconds)** — the default deadline for ordinary requests this interface makes to the Kiki server.
+- **Reading timeout (seconds)** — how long a history or content read may wait before Kiki gives up on it. The default is `0`, meaning no deadline: a large or slow conversation loads as long as it takes. Set a number of seconds if you would rather a stalled read fail quickly.
+
+A reading timeout only bounds waiting; it never limits how much can be read. A changed value applies to the **next** read — it does not interrupt one already running, and it does not reconnect anything. Leave it at `0` unless you specifically want a ceiling. These are GUI settings, not keys in `config.toml`; the server-side memory budgets that govern how much history is kept in memory are separate — see [`transcript_memory`](../configuration/config-files.md#transcript-memory).
+
 ## Models and Recipes
 
 **Settings → Models & providers → Available models** opens each model's editor. Change its request settings and prompt text here, then **Save** once. The identity selector keeps common, main-agent and independent-agent drafts separate; saving includes edits made in all three. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. Advanced fields edit the same model rather than a second form.
@@ -88,6 +97,14 @@ The dialog's three choices are saved rather than repeated each time: **Remind me
 
 The periodic long-term memory reminders run on their own schedule. To stop just those while keeping the new standing-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml`; memory tools, approval and task notes stay available. See [Continuity reminder settings](../configuration/config-files.md#continuity-reminder-settings).
 
+## Notifications & messages
+
+Under **Settings → Notifications & messages → System notifications**, **Allow system notifications** controls session notifications and pending-input reminders from other spaces on this device. The default-on **Notify when the conversation finishes** switch notifies when you are not viewing that conversation, including when another conversation or Settings is open in Kiki. Completion means the assigned work has settled: the main agent has finished, finite background tasks and subagents have settled, and their results and any automatic continuation have been handled. A turn ending alone does not notify. Resident servers, watchers and future schedules do not keep work unfinished; approvals, questions, failures and user stops are not completion notices. In a browser, allow this site to send notifications; if you previously denied permission, restore it in the address bar’s site permissions.
+
+Open the notified conversation to clear its unread badge. Focusing Kiki, visiting Home or Settings, or opening another conversation does not mark it read. Notification clicks open the same conversation in its original home and connection; other conversations remain unread. A conversation left open in a hidden or unfocused window is not marked read until you return to it. After a brief disconnect or app reopen, Kiki catches up completion receipts retained by the running server for ten minutes, without repeating receipts already observed on this device. The first launch does not replay historical completions.
+
+For configured phone or team-chat channels, enable **The conversation finishes** on each channel; it uses the same work-completion decision. **Send notifications** remains their separate master switch; previously disabled masters, connections and channels stay disabled. New configurations default to on with **Skip short work** at `0` seconds, so short replies qualify too. Raising it filters short-work notices for those channels, without changing what completion means. System-notification switches are saved on this device; channel rules are saved by the connected server.
+
 ## Search & retrieval
 
 **Settings → Search & retrieval → Overview & source** inspects the built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools — showing which configuration source is in effect and whether the server reuses the local search configuration. The equivalent configuration lives in `config.toml` — see [Configuration files](../configuration/config-files.md#nb-search).
@@ -96,20 +113,46 @@ The same section's **Advanced & diagnostics** tab carries a **Full-text index** 
 
 ## Browser control
 
-**Settings → Browser control** (`/settings/browser-control`) manages saved browser connections. One connection is one controllable browser location; opening the page reads and edits them and starts no browser.
+**Settings → Browser control** (`/settings/browser-control`) opens on three named routes. Pick one, set it up, connect it — usually two actions.
 
-A connection has a fixed id, a display name, and one of two styles, which point at different targets:
+- **Kimi Browser Extension**: drives the browser you already use, with your own sign-ins. Kiki installs the plugin and the local bridge; the extension is added once from your browser's store, and only you can click through that approval.
+- **Independent browser**: Kiki starts and keeps a browser of its own, with its own sign-ins that never touch your everyday browser. **Set up** downloads and verifies the components it needs; **Connect** then starts it.
+- **Codex / ChatGPT browser extension**: driven by the Codex / ChatGPT desktop app. Kiki neither installs nor controls this one, so the row carries its official instructions and nothing else.
 
-- **Profile (Independent agent browser):** Kiki starts and manages a browser of its own on the server, with a profile (sign-in state) of its own — your everyday browser cookies are not copied. Optional extras: an installed Chrome or Edge instead of the bundled one, and **Show the browser window** (off by default, so it starts headless).
-- **CDP (Existing or remote browser):** attaches to a browser that already exposes a CDP address and starts nothing new. That address names the machine the browser runs on, which may be a different machine.
+Each row states its own status and **what it still needs**, and puts the next action on that same line: **Set up** while a component is missing, the store link while only the approval is left, and **Turn on browser control** while only the switch is. Once everything Kiki can install is in place, the row stops asking you to install and tells you it is ready to connect. The detector's own sentences — which parts are merely reported rather than verified — sit in the **What this server checked** fold, off the first screen.
 
-The driver, and any browser Kiki starts, run on the Kiki server — not on the device showing this window. **Check components** starts the managed driver and reads its session and tab state; **Check connection** handshakes with the CDP endpoint and lists its targets. Neither opens a page. **Start browser** and **Attach browser** are the separate actions that connect. Saving writes configuration only and ends that connection's current running session first. **Disconnect** releases the connection, and what happens to the browser depends on who started it: a borrowed CDP browser stays, an instance Kiki started is closed.
+**Turn on browser control** is the same consented action, on this page. When the switch is the only thing missing, that one confirmation installs whatever is still missing — nothing at all when the components are already in place — enables the plugin, and turns browser control on for the server. The confirmation says all three before you accept. Browser control is available by default; components still need consented setup and a connection starts only when requested. The action also restores a saved off choice when you explicitly confirm it.
 
-**Preparing the components is a step of its own**, and it comes first. **Prepare browser components** reports the managed driver and an independent Chrome as **Ready** or **Not prepared**; **Install components** downloads and verifies the ones that are missing, and **Recheck** reads the state again. On a host that cannot install them, automatic setup is not offered and you point the connection at a driver and a browser you already have. The page keeps the order visible: prepare the components, add and save the connection below, then check it and connect. The components are stored under `<Kiki home>/browser/resources` on the machine that runs them.
+If something outside this page holds browser control off — an environment variable, or a runtime override on that host — no action here can change it. The row says exactly that instead of offering a button, and **See what holds it off** names the override responsible.
 
-Agents use these connections through the [browser tools](../reference/tools.md#browser-tools), naming a connection by its id — never by display name. **Default connection** applies to sessions created afterwards; turning a connection off never swaps in another one.
+The **Advanced: edit connections, or connect a browser you already run** fold holds what you type rather than pick. A connection has a fixed id, a display name, an enable switch, and one of two styles that point at different targets:
 
-Browser control is off by default. Turn on `native_browser` under **Settings → Developer → Experimental**, or set it under [`[experimental]`](../configuration/config-files.md#experimental), before connecting. While it is off, the page still reads and edits saved connections, but connecting is refused and agents get no browser tools. The connections themselves live in [`[browser_control]`](../configuration/config-files.md#browser-control).
+- **Profile (Independent agent browser)**: Kiki starts and manages a browser of its own on the server, with a profile (sign-in state) of its own — your everyday browser cookies are not copied. Optional extras: an installed Chrome or Edge instead of the bundled one, and **Show the browser window** (off by default, so it starts headless).
+- **CDP (Existing or remote browser)**: attaches to a browser that already exposes a CDP address and starts nothing new. That address names the machine the browser runs on, which may be a different machine.
+
+Each connection can be checked, connected and disconnected on its own. A check starts the managed driver and reads its session and tab state; a CDP connection handshakes with the endpoint and lists its targets. Neither opens a page. Saving writes configuration only and ends that connection's current running session first. **Disconnect** releases the connection: a borrowed CDP browser stays, an instance Kiki started is closed. **Default connection** applies to sessions created afterwards; turning a connection off never swaps in another one.
+
+The driver, and any browser Kiki starts, run on the Kiki server — not on the device showing this window; the components live under `<Kiki home>/browser/resources` on the machine that runs them.
+
+Agents use these connections through the [browser tools](../reference/tools.md#browser-tools), naming a connection by its id — never by display name. The switch and the connections themselves live under [`[experimental]`](../configuration/config-files.md#experimental) and [`[browser_control]`](../configuration/config-files.md#browser-control) respectively.
+
+The **WebBridge readiness** card sits on this page too, below the routes. It states whether the Kimi Browser Extension bridge is working, offers **Check again**, and — while a component is missing — the consented **Set up WebBridge** action.
+
+## Plugins
+
+**Settings → Plugins** (`/settings/plugins`) lists the plugins installed on the connected server. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
+
+Selecting a plugin opens **its own settings page** (`/settings/plugins?plugin=<id>`): the plugin's name and state, a way back to the list, the settings its manifest declares, and a switch to turn it on or off. Save and Discard appear once a field has changed; leaving with an unsaved change asks first. **Remove plugin** is at the bottom of the page, and it asks first and names what it takes with it, as the [plugin manager](../customization/plugins.md#install-and-manage) does.
+
+A plugin whose manifest declares no settings still gets its page: the fields are simply absent, and the switch and Remove plugin still work.
+
+The page has its own address, so you can copy it, refresh, or use the browser's back button and come back to the same plugin. The plugin's **Plugin settings** entry on the Capabilities page leads to it, and so does the package button on a [media source](../customization/plugins.md#configuring-a-source).
+
+## Workspaces
+
+**Settings → Workspaces** lists the folders known to this server. Open a row to configure that workspace on its own page (`/settings/workspaces?workspace=<id>`): rename it, pin it, choose its [plugin defaults](../customization/plugins.md#choose-where-a-plugin-is-used), or set memory to inherit, on or off. Its root path is shown for identification, not edited here.
+
+**Workspace trust** controls whether Kiki loads that project's configuration, MCP servers and hooks, and permits its project profiles to name external executors. Trust changes only when you explicitly use the switch; opening the page grants nothing and does not change tool approval mode. The **Agents**, **MCP servers** and **Skills** links keep this workspace as their target. Profiles retain their file source and write scope. MCP entries from plugins or project files are read-only here; editable user entries still save to the user configuration, not a new workspace copy. A missing workspace is reported rather than silently switching to another one.
 
 ## Computer control
 
@@ -133,6 +176,12 @@ Open **Dispatch capabilities** — next to the new-session workspace selector, o
 
 ## Session controls
 
+**Settings → Sessions → Import history** opens Kiki's built-in importer, also available from **New session**. No plugin installation or activation is needed for the built-in formats; see [Session history import](../customization/plugins.md#session-history-import).
+
+**Settings → Sessions → Manage archived conversations** opens a separate page for browsing, searching and reading archived conversations. It also offers permanent deletion of one conversation or all archives in the current connection's home, with confirmation and per-item failure recovery. See [Archive management](./sessions.md#gui-session-recovery-and-activity) for deletion scope.
+
+**Settings → Sessions → Session titles** also edits the instruction used to write automatic titles. The card names whether the built-in or custom instruction is active; **Show** reveals the server's built-in text as a read-only reference. Edit **Your instruction** and save, or choose **Restore the built-in default** to remove your override. Saving an empty instruction also restores the default. A failed save keeps your draft. These actions preserve the title model, selected moments and automatic-title switch, affect the next title request, and leave existing titles unchanged. See [`session_title`](../configuration/config-files.md#session-title).
+
 ### Effective prompts
 
 In a session, open the header's **⋯ → Effective prompts**. The drawer opens independently of the right rail, including on narrow screens, and shows the current agent identity, profile, model and executor, the prompt channels and their source order, field overrides with the reason for each, file locations, and the cognition-anchor scope.
@@ -147,19 +196,25 @@ On desktop-width screens, **Standard / Cockpit** in the right-panel header switc
 
 Open **Usage** in the sidebar (`/usage`). It has three tabs and opens **History** by default:
 
-- **History:** token usage and estimated cost for a date range, defaulting to today. Token usage and cost have separate completeness indicators; **Data reliability** distinguishes unknown providers from empty ranges. Existing filtered usage links open History. See [Usage statistics](./sessions.md#gui-usage-statistics).
+- **History:** costs and token usage for a date range, defaulting to today. Follow a trend bar to its consumption sources, then open session records and recorded turns on demand; filters stay with the view. Previous-period comparisons are read only when requested. Token usage and cost have separate completeness indicators; **Data reliability** distinguishes unknown accounting from empty ranges. Existing filtered usage links open History. See [Usage statistics](./sessions.md#gui-usage-statistics).
 - **Live:** running and queued native-request counts across this service. Expand **Request details** for the breakdown by model, provider, and role, and waiting rows with blocking rule IDs and elapsed queue time. If the connection fails, the last counts are marked stale. On the same tab, **Concurrency limits** lets you add or edit rules, choose a model or provider target, and set a shared or per-session cap. The switch pauses a rule without deleting it. Saving applies the rule to new and queued requests without stopping active streams.
 - **External sync:** destinations that receive this server's own usage. Three kinds are available: **vibecafe.ai**, **Kiki webhook**, and **Script**. Only the model, the UTC half-hour, the four token counts, quality and cost go out — never a prompt, answer, title, workspace name or path.
 
-  A **vibecafe.ai** destination signs in from the page itself: press **Sign in to VibeCafe**, approve it in your browser with the code it shows, and the page confirms the connection on its own. There is no authorization code to copy, and no address, client id, or key to fill in — the destination is `https://vibecafe.ai`. A custom address, or a key you supply yourself, is the advanced path instead.
+  A **vibecafe.ai** destination signs in from the page itself: press **Sign in to VibeCafe**, approve it in your browser with the code it shows, and the page reports the result. There is no authorization code to copy, and no address, client id, or key to fill in — the destination is `https://vibecafe.ai`. A custom address, or a key you supply yourself, is the advanced path instead. The flow has not been exercised against the live service: if it does not complete, the destination stays as the page left it and nothing has been sent.
+
+A **Kiki webhook** destination takes your own HTTPS endpoint, with `none`, `bearer`, or `hmac` authentication and optional gzip. A secret is stored either in the system keyring or, if you choose that explicitly, in a private file on the server — the keyring is not silently substituted if it fails, and the file is protected by filesystem permissions rather than encrypted at rest.
 
 Existing `/usage?panel=limits` links open Live and focus the concurrency-rule section; there is no separate Limits tab.
 
-External sync stays off until the server enables the `usage_export` flag. Signing in does not change that: an approved credential is stored, the destination stays **disabled**, and no consent has been given — so the order still holds, choose a destination, preview the exact payload, agree once, then enable. A destination that has not been agreed to sends nothing. Widening the range, changing the endpoint, or changing a credential to a different identity asks again, while shrinking the range or changing the interval does not. Pausing keeps the queue and the signed-in account. **Pause**, and **Disable sync** on a vibecafe.ai destination, turn sending off (`enabled` false, state `disabled`, no next time) and leave the account on the page. Removing asks whether to discard the queued batches and is the action that deletes the stored credential. Asking the service to delete what it already holds is a separate action. See [`kiki usage-export`](../reference/command.md#kiki-usage-export) for the command-side equivalent.
+External sync needs no experimental switch; without a destination nothing is sent. Signing in only stores an approved credential: the destination stays **disabled** and no consent has been given. Choose a destination, preview the exact payload, agree once, then enable.
+
+A destination that has not been agreed to sends nothing. Widening the range, changing the endpoint, or changing a credential to a different identity asks again, while shrinking the range or changing the interval does not. **Pause**, and **Disable sync** on a vibecafe.ai destination, turn sending off (`enabled` false, state `disabled`, no next time) while keeping the queue and signed-in account. Removing asks whether to discard queued batches and deletes the stored credential; asking the service to delete what it already holds is a separate action.
+
+On upgrade, an explicit off choice for the retired `usage_export` flag pauses existing destinations once, keeping their consent and queued data; resume each destination when you want it to send again. See [`kiki usage-export`](../reference/command.md#kiki-usage-export) for the command-side equivalent.
 
 A **Script** destination runs your command as your own OS user with your ordinary permissions — it can read files and reach the network on its own, and this is not a sandbox. Kiki writes only the content-free batch to its stdin and reads a receipt from its output.
 
-For a request that looks stuck, open **Live → Request details** before changing a limit. A queued row names the local rule blocking it, and a provider HTTP 429 is diagnosed from the provider's own error — a full local queue, a timeout and a rejection each need a different fix. [`request_governance`](../configuration/config-files.md#request-governance) has the fields, examples and error codes. External executors are not counted here.
+For a request that looks stuck, open **Live → Request details** before changing a limit. A queued row names the local rule blocking it, and a provider HTTP 429 is diagnosed from the provider's own error — a full local queue, a timeout and a rejection each need a different fix. [`request_governance`](../configuration/config-files.md#request-governance) has the fields, examples and error codes. The rules cover the model requests this service sends itself: when you run a turn on Codex, Claude Code, or Grok Build as the engine, those requests are the engine's own and are not counted here, while an external tool calling back into Kiki for a native request is.
 
 ## CLI counterpart
 

@@ -28,6 +28,8 @@ interface Fixture {
   setWire(scope: string, records: readonly WireRecord[]): void;
   restart(): UsageAggregationService;
   setAgentIds(ids: string[]): void;
+  setPrice(price: number | undefined): void;
+  persistedRecordCounts(): number[];
 }
 
 function summary(id: string, workspaceId: string): SessionSummary {
@@ -102,6 +104,7 @@ function fixture(
   onCheckpointRead: (bytes: number) => void = () => {},
   ephemeral: readonly EphemeralUsageTotal[] = [],
   beforeWireRead: () => Promise<void> = async () => {},
+  beforeMetadataRead: () => Promise<void> = async () => {},
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
@@ -134,15 +137,16 @@ function fixture(
       };
     },
     get: async (id) => sessions.find((session) => session.id === id),
+    archiveFamily: async () => [],
     count: async () => sessions.length,
     remove: async () => {},
   };
   let agentIds = ['main'];
   const storage = {
     _serviceBrand: undefined,
-    list: async () => agentIds,
-    size: async (wireScope: string) => wires.get(wireScope)?.length,
-    mtime: async (wireScope: string) => wireMtimes.get(wireScope),
+    list: async () => { await beforeMetadataRead(); return agentIds; },
+    size: async (wireScope: string) => { await beforeMetadataRead(); return wires.get(wireScope)?.length; },
+    mtime: async (wireScope: string) => { await beforeMetadataRead(); return wireMtimes.get(wireScope); },
     read: async (storageScope: string, key: string) => {
       const value = persisted.get(`${storageScope}/${key}`);
       if (value !== undefined) {
@@ -180,13 +184,14 @@ function fixture(
       scannedRecords: ephemeral.length,
     }),
   };
+  let price: number | undefined = 1;
   const pricing: IModelPricingService = {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     getPricing: async () => ({ items: [], overrides: {} }),
     setPricing: async () => ({ items: [], overrides: {} }),
     resolve: () => undefined,
-    calculate: () => 1,
+    calculate: () => price,
     refreshNow: async () => false,
     status: () => ({ source: 'empty', keys: 0 }),
   };
@@ -210,6 +215,11 @@ function fixture(
     setWire,
     restart: () => new UsageAggregationService(core, now, limits),
     setAgentIds: (ids) => { agentIds = ids; },
+    setPrice: (value) => { price = value; },
+    persistedRecordCounts: () => [...persisted.values()].flatMap((bytes) => {
+      const document = JSON.parse(Buffer.from(bytes).toString('utf8')) as { records?: unknown[] };
+      return document.records === undefined ? [] : [document.records.length];
+    }),
   };
 }
 
@@ -220,6 +230,260 @@ function scope(workspaceId: string, sessionId: string): string {
 async function query(service: UsageAggregationService, input: UsageQuery = {}) {
   return service.query(input);
 }
+
+describe('UsageAggregationService record-level sources', () => {
+  it('separates providers sharing an alias and profiles sharing an agent in each bucket', async () => {
+    const day = Date.UTC(2026, 9, 4);
+    const records = [
+      { ...usageRecord(day, 1), modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'explore' },
+      { ...usageRecord(day + 1, 2), modelAlias: 'shared', provider: 'provider-b', agentId: 'same-agent', profileName: 'general' },
+      { ...usageRecord(day + 2, 3), modelAlias: 'shared', provider: 'provider-b', agentId: 'same-agent', profileName: 'general' },
+      { ...usageRecord(day + 3, 4), modelAlias: 'shared', agentId: 'same-agent' },
+      { ...usageRecord(day + 4, 5), modelAlias: 'shared', provider: 'unknown', agentId: 'same-agent', profileName: 'unknown' },
+      { ...usageRecord(day + 86_400_000, 6), modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'general' },
+    ];
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: records }, () => day + 2 * 86_400_000);
+    const provider = await query(f.service, { dimension: 'provider' });
+    expect(provider.summary).toMatchObject({ cost_usd_estimated: 6, session_count: 1, cost_unknown: false });
+    expect(provider.trend[0]?.groups.map((group) => [group.key, group.provider, group.cost_usd_estimated])).toEqual([
+      ['provider:"provider-b"', 'provider-b', 2], ['provider:"provider-a"', 'provider-a', 1],
+      ['provider:"unknown"', 'unknown', 1], ['provider:null', null, 1],
+    ]);
+    expect(provider.trend[1]?.groups).toEqual([expect.objectContaining({ key: 'provider:"provider-a"', cost_usd_estimated: 1 })]);
+    const profile = await query(f.service, { dimension: 'profile' });
+    expect(profile.summary).toEqual(provider.summary);
+    expect(profile.trend[0]?.groups.map((group) => [group.key, group.profile_name, group.cost_usd_estimated])).toEqual([
+      ['profile:"general"', 'general', 2], ['profile:"explore"', 'explore', 1],
+      ['profile:"unknown"', 'unknown', 1], ['profile:null', null, 1],
+    ]);
+    expect(profile.trend[1]?.groups).toEqual([expect.objectContaining({ key: 'profile:"general"', cost_usd_estimated: 1 })]);
+    for (const dimension of ['agent', 'model', 'project', 'session'] as const) {
+      const old = await query(f.service, { dimension });
+      expect(old.summary).toEqual(provider.summary);
+      expect(old.sessions).toEqual(provider.sessions);
+      expect(old.trend[0]?.groups).toEqual([expect.objectContaining({
+        key: { agent: 'same-agent', model: 'shared', project: 'w', session: 's' }[dimension],
+        cost_usd_estimated: 5, provider: null, profile_name: null,
+      })]);
+    }
+  });
+
+  it('filters records, bucket drilldown and session money by exact profiles and intersects other filters', async () => {
+    const matching = { modelAlias: 'shared', provider: 'provider-a', agentId: 'same-agent', profileName: 'explore' };
+    const f = fixture([summary('s-a', 'w'), summary('s-b', 'w'), summary('s-other', 'other-w')], {
+      [scope('w', 's-a')]: [
+        { ...usageRecord(99, 0), ...matching }, { ...usageRecord(100, 1), ...matching },
+        { ...usageRecord(101, 2), ...matching, profileName: 'general' },
+        { ...usageRecord(102, 3), ...matching, provider: 'provider-b' },
+        { ...usageRecord(103, 4), ...matching, modelAlias: 'other' },
+        { ...usageRecord(104, 5), ...matching, agentId: 'other-agent' },
+        { ...usageRecord(105, 6), ...matching, profileName: undefined },
+        { ...usageRecord(106, 7), ...matching, profileName: 'Explore' },
+        { ...usageRecord(200, 8), ...matching },
+      ],
+      [scope('w', 's-b')]: [{ ...usageRecord(100, 9), ...matching }],
+      [scope('other-w', 's-other')]: [{ ...usageRecord(100, 10), ...matching }],
+    }, () => 1000);
+    const input: UsageQuery = {
+      range: 'custom', start_at: 100, end_at: 200, dimension: 'profile',
+      profile: ['explore', 'explore'], model: 'shared', provider: 'provider-a',
+      'agent.id': 'same-agent', 'workspace.id': 'w', timezone_offset_minutes: 480,
+    };
+    const result = await query(f.service, input);
+    expect(result.query).toMatchObject({ profiles: ['explore'], timezone_offset_minutes: 480 });
+    expect(result.summary).toMatchObject({ cost_usd_estimated: 2, session_count: 2 });
+    expect(result.sessions.items.map((session) => [session.id, session.usage.cost_usd_estimated, session.profile_names])).toEqual([
+      ['s-b', 1, ['explore']], ['s-a', 1, ['explore']],
+    ]);
+    expect(result.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'profile:"explore"', cost_usd_estimated: 2 })]);
+    expect(result.trend[0]?.drilldown.sessions).toEqual([
+      expect.objectContaining({ session_id: 's-a', turn_ids: [1] }),
+      expect.objectContaining({ session_id: 's-b', turn_ids: [9] }),
+    ]);
+    const repeated = await query(f.service, { ...input, profile: ['general', 'explore', 'general'] });
+    expect(repeated.query.profiles).toEqual(['explore', 'general']);
+    expect(repeated.summary.cost_usd_estimated).toBe(3);
+    expect(repeated.sessions.items.find((item) => item.id === 's-a')?.usage.cost_usd_estimated).toBe(2);
+    const byProvider = await query(f.service, { ...input, dimension: 'provider' });
+    expect(byProvider.summary).toEqual(result.summary);
+    expect(byProvider.sessions).toEqual(result.sessions);
+    expect(byProvider.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'provider:"provider-a"', cost_usd_estimated: 2 })]);
+  });
+
+  it('binds pagination to normalized profile filters without changing old unfiltered cursor fingerprints', async () => {
+    const f = fixture([summary('a', 'w'), summary('b', 'w')], {
+      [scope('w', 'a')]: [{ ...usageRecord(1), profileName: 'explore' }, { ...usageRecord(2), profileName: 'general' }],
+      [scope('w', 'b')]: [{ ...usageRecord(1), profileName: 'explore' }, { ...usageRecord(2), profileName: 'general' }],
+    }, () => 100);
+    const input: UsageQuery = { dimension: 'profile', profile: ['general', 'explore', 'general'], page_size: 1 };
+    const first = await query(f.service, input);
+    expect(first.sessions.items.map((item) => item.id)).toEqual(['b']);
+    const pageToken = first.sessions.next_page_token ?? '';
+    const second = await query(f.service, { ...input, profile: ['explore', 'general'], page_token: pageToken });
+    expect(second.sessions.items.map((item) => item.id)).toEqual(['a']);
+    expect(second.summary).toEqual(first.summary);
+    await expect(query(f.service, { ...input, profile: 'explore', page_token: pageToken })).rejects.toThrow('does not match the query conditions');
+    await expect(query(f.service, { page_size: 1, page_token: pageToken })).rejects.toThrow('does not match the query conditions');
+    const legacy = await query(f.service, { page_size: 1 });
+    expect(JSON.parse(Buffer.from(legacy.sessions.next_page_token ?? '', 'base64url').toString('utf8'))).toEqual({
+      v: 1, f: 'jx3eMhelCpunxj2P', k: [2, 'b'],
+    });
+  });
+
+  it('keeps unknown sources and usage knowledge across wire, deleted history, ephemeral totals and checkpoint restart', async () => {
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      usageRecord(10),
+      { ...usageRecord(11), provider: 'provider-a', profileName: 'explore' },
+      { ...usageRecord(12), provider: 'provider-b', profileName: 'general', usageKnown: false },
+    ] }, () => 100, {}, {
+      items: [retainedSession('deleted', 'w', [retainedRecord(13), retainedRecord(14, { provider: 'provider-a', profileName: 'explore' })])],
+      complete: true, scannedRecords: 3,
+    }, undefined, [{ workspaceId: 'w', model: 'priced-model', time: 15, usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 } }]);
+    for (const dimension of ['provider', 'profile'] as const) {
+      const response = await query(f.service, { dimension });
+      expect(response.summary).toMatchObject({ cost_usd_estimated: 5, cost_unknown: true, tokens_unknown: true, session_count: 2 });
+      expect(response.reliability).toMatchObject({ includes_deleted_sessions: true, usage_coverage: { known_records: 5, missing_records: 1, legacy_zero_records: 0 } });
+      expect(response.trend[0]?.groups.find((group) => group.key === `${dimension}:null`)).toMatchObject({
+        cost_usd_estimated: 3, provider: null, profile_name: null, tokens: { output: 3 },
+      });
+      const missing = response.trend[0]?.groups.find((group) => group.key === (dimension === 'provider' ? 'provider:"provider-b"' : 'profile:"general"'));
+      expect(missing).toMatchObject({ cost_usd_estimated: 0, cost_unknown: true, tokens_unknown: true });
+      expect(await query(f.restart(), { dimension })).toEqual(response);
+    }
+    const filtered = await query(f.service, { dimension: 'profile', profile: 'explore' });
+    expect(filtered.summary).toMatchObject({ cost_usd_estimated: 2, tokens_unknown: false, cost_unknown: false });
+    expect(filtered.sessions.items.map((item) => item.id)).toEqual(['s', 'deleted']);
+    expect(filtered.trend[0]?.groups).toEqual([expect.objectContaining({ key: 'profile:"explore"', cost_usd_estimated: 2 })]);
+  });
+
+  it('does not attribute anonymous totals to a known auxiliary source in an unknown group', async () => {
+    const ephemeral = [{ workspaceId: 'w', model: 'priced-model', time: 11, usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 } }];
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(10), profileName: 'explore', agentId: 'same-agent' },
+    ] }, () => 100, {}, undefined, undefined, ephemeral);
+    const provider = await query(f.service, { dimension: 'provider' });
+    expect(provider.trend[0]?.groups).toEqual([expect.objectContaining({
+      key: 'provider:null', provider: null, profile_name: null, agent_id: null, cost_usd_estimated: 2,
+    })]);
+    const g = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(10), provider: 'provider-a', agentId: 'same-agent' },
+    ] }, () => 100, {}, undefined, undefined, ephemeral);
+    const profile = await query(g.service, { dimension: 'profile' });
+    expect(profile.trend[0]?.groups).toEqual([expect.objectContaining({
+      key: 'profile:null', provider: null, profile_name: null, agent_id: null, cost_usd_estimated: 2,
+    })]);
+  });
+
+  it('uses exact clipped bucket and previous-period windows rather than whole five-hour buckets', async () => {
+    const day = Date.UTC(2026, 9, 4);
+    const offset = 480;
+    const fiveHours = 5 * 60 * 60 * 1000;
+    const bucketStart = Math.floor((day + offset * 60_000) / fiveHours) * fiveHours - offset * 60_000;
+    const start = bucketStart + 100;
+    const end = start + 200;
+    const previousStart = start - 86_400_000;
+    const matching = { modelAlias: 'shared', provider: 'provider-a', profileName: 'explore', agentId: 'same-agent' };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [
+      { ...usageRecord(start - 1, 0), ...matching },
+      { ...usageRecord(start, 1), ...matching }, { ...usageRecord(end - 1, 2), ...matching },
+      { ...usageRecord(end, 3), ...matching }, { ...usageRecord(start + 1, 4), ...matching, profileName: 'general' },
+      { ...usageRecord(previousStart - 1, 5), ...matching },
+      { ...usageRecord(previousStart, 6), ...matching },
+      { ...usageRecord(previousStart + 200, 7), ...matching },
+    ] }, () => day + 86_400_000);
+    const input: UsageQuery = {
+      range: 'custom', start_at: start, end_at: end, granularity: 'five_hour', dimension: 'profile',
+      profile: 'explore', provider: 'provider-a', timezone_offset_minutes: offset,
+    };
+    const current = await query(f.service, input);
+    expect(current.summary.cost_usd_estimated).toBe(2);
+    expect(current.trend[0]).toMatchObject({ start_at: bucketStart, end_at: bucketStart + fiveHours });
+    expect(current.trend[0]?.groups[0]?.cost_usd_estimated).toBe(2);
+    expect(current.sessions.items[0]?.usage.cost_usd_estimated).toBe(2);
+    expect(current.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([1, 2]);
+    const previous = await query(f.service, { ...input, start_at: previousStart, end_at: previousStart + 200 });
+    expect(previous.summary.cost_usd_estimated).toBe(1);
+    expect(previous.sessions.items[0]?.usage.cost_usd_estimated).toBe(1);
+    expect(previous.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([6]);
+  });
+});
+
+describe('UsageAggregationService first load', () => {
+  it('measures checkpoint validation without dropping old long sessions or filtered details', async () => {
+    const now = Date.UTC(2026, 8, 2, 12);
+    const today = Date.UTC(2026, 8, 1, 16);
+    const sessions = Array.from({ length: 285 }, (_, i) => summary(`session-${i}`, 'workspace-example'));
+    const records = Object.fromEntries(sessions.map((session, i) => [scope(session.workspaceId, session.id), [
+      usageRecord(today - 1, 0),
+      { ...usageRecord(today, 1), modelAlias: i % 2 === 0 ? 'target' : 'other', provider: 'provider-example' },
+    ]]));
+    let delay = false;
+    let metadataReads = 0;
+    const source = fixture(sessions, records, () => now, {}, undefined, undefined, [], undefined, async () => {
+      metadataReads++;
+      if (delay) await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    });
+    await query(source.service);
+    delay = true;
+    metadataReads = 0;
+    const input = { range: 'today', timezone_offset_minutes: 480, page_size: 25 } as const;
+    const start = performance.now();
+    const result = await query(source.restart(), input);
+    console.log(JSON.stringify({ usageFirstLoad: { elapsedMs: performance.now() - start, metadataReads, sessions: sessions.length, records: 570, checkpointBytes: [...source.checkpointReads.values()].reduce((a, b) => a + b, 0) } }));
+    expect(result.reliability.complete).toBe(true);
+    expect(result.summary.tokens).toEqual({ input_other: 285, output: 285, input_cache_read: 285, input_cache_creation: 285 });
+    expect(result.trend[0]?.request_count).toBe(285);
+    expect(result.sessions.items).toHaveLength(25);
+    const next = await query(source.service, { ...input, page_token: result.sessions.next_page_token! });
+    expect(next.sessions.items).toHaveLength(25);
+    expect(next.sessions.items.some((item) => result.sessions.items.some((first) => first.id === item.id))).toBe(false);
+    const filtered = await query(source.service, { ...input, model: 'target', provider: 'provider-example' });
+    expect(filtered.summary.tokens.output).toBe(143);
+    expect(filtered.trend[0]?.drilldown.sessions[0]?.turn_ids).toEqual([1]);
+    expect(filtered.summary.cost_unknown).toBe(false);
+  });
+});
+
+describe('UsageAggregationService recovery', () => {
+  it('retries a transient source read without poisoning its durable checkpoint', async () => {
+    let unavailable = true;
+    const source = fixture([summary('session-example', 'workspace-example')], {
+      [scope('workspace-example', 'session-example')]: [usageRecord(10, 1)],
+    }, () => 0, {}, undefined, undefined, [], async () => {
+      if (unavailable) throw new Error('temporary fixture IO failure');
+    });
+    const failed = await query(source.service);
+    expect(failed.reliability.complete).toBe(false);
+    expect(failed.summary.tokens.output).toBe(0);
+    unavailable = false;
+    const recovered = await query(source.restart());
+    expect(recovered.reliability.complete).toBe(true);
+    expect(recovered.summary.tokens.output).toBe(1);
+  });
+
+  it('yields during ordinary wire reads and warmed aggregation without losing tokens', async () => {
+    const records = Array.from({ length: 20_000 }, () => usageRecord(10, 1));
+    const source = fixture([summary('session-example', 'workspace-example')], {
+      [scope('workspace-example', 'session-example')]: records,
+    }, () => 0);
+    let loopProgress = 0;
+    let running = true;
+    const tick = () => { if (running) { loopProgress++; setImmediate(tick); } };
+    setImmediate(tick);
+    try {
+      const cold = await query(source.service);
+      expect(cold.summary.tokens.output).toBe(20_000);
+      expect(cold.reliability.complete).toBe(true);
+      expect(loopProgress).toBeGreaterThan(0);
+      loopProgress = 0;
+      const warm = await query(source.service);
+      expect(warm.summary).toEqual(cold.summary);
+      expect(loopProgress).toBeGreaterThan(0);
+    } finally {
+      running = false;
+    }
+  });
+});
 
 describe('UsageAggregationService accounting evidence', () => {
   it('adds temporary usage to daily totals without exposing a session or drilldown', async () => {
@@ -306,6 +570,88 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
+  it('retains bounded fleet views above the per-entry cap while validating every source', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    let metadataReads = 0;
+    const records = [usageRecord(day - 8 * 86_400_000), ...Array.from({ length: 5 }, (_, index) => ({
+      ...usageRecord(day - index * 86_400_000, index), provider: index % 2 ? 'b' : 'a', profileName: index % 2 ? 'explore' : 'general',
+    }))];
+    const f = fixture([summary('s', 'w'), summary('empty-a', 'w'), summary('empty-b', 'w')], {
+      [scope('w', 's')]: records,
+    }, () => day, { cacheMaxEntryRecords: 2, cacheMaxRecords: 5, cacheMaxEntries: 6 }, undefined, undefined, undefined, undefined, async () => { metadataReads++; });
+    const input: UsageQuery = { range: 'last_7_days' };
+    const cold = await query(f.service, input);
+    const checkpoints = [...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0);
+    const wireReads = [...f.reads.values()].reduce((sum, value) => sum + value, 0);
+    const metadata = metadataReads;
+    const warm = await query(f.service, input);
+    expect(warm).toEqual(cold);
+    expect(warm.reliability.complete).toBe(true);
+    expect(warm.summary.tokens.output).toBe(5);
+    expect(f.service.cacheStatus()).toEqual({ entries: 6, records: 5 });
+    expect([...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0)).toBe(checkpoints);
+    expect([...f.reads.values()].reduce((sum, value) => sum + value, 0)).toBe(wireReads);
+    expect(metadataReads - metadata).toBe(9);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(1);
+    expect((await query(f.service, { ...input, provider: 'a', profile: 'general' })).summary.tokens.output).toBe(3);
+    f.setPrice(2);
+    expect((await query(f.service, input)).summary.cost_usd_estimated).toBe(10);
+    f.setPrice(undefined);
+    expect((await query(f.service, input)).reliability.unknown_price_models).toEqual(['priced-model']);
+    expect(f.persistedRecordCounts()).toEqual([6, 0, 0]);
+  });
+
+  it('does not persist a range view when appending, rewriting or changing the agent inventory', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const old = usageRecord(day - 10 * 86_400_000);
+    const current = usageRecord(day);
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [old, current] }, () => day);
+    await query(f.service, { range: 'today' });
+    f.setWire(scope('w', 's'), [old, current, usageRecord(day + 1)]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(2);
+    expect(f.persistedRecordCounts()).toEqual([3]);
+    expect((await query(f.restart())).summary.tokens.output).toBe(3);
+    const rewritten = { ...usageRecord(day + 2), usage: { inputOther: 2, output: 2, inputCacheRead: 2, inputCacheCreation: 2 } };
+    f.setWire(scope('w', 's'), [old, current, rewritten]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(3);
+    f.setAgentIds(['main', 'child']);
+    f.setWire('sessions/w/s/agents/child', [usageRecord(day + 3)]);
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(4);
+    expect(f.persistedRecordCounts()).toEqual([4]);
+    const exported: number[] = [];
+    expect((await f.service.readExportSources(async (source) => { exported.push(source.records.length); })).complete).toBe(true);
+    expect(exported).toEqual([4]);
+    f.service.startFullRescan();
+    expect((await finishRescan(f.service)).state).toBe('completed');
+    expect(f.persistedRecordCounts()).toEqual([4]);
+    expect((await query(f.restart())).summary.tokens.output).toBe(5);
+  });
+
+  it('reloads complete checkpoints on uncovered ranges and after range parts are evicted', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(day), usageRecord(day - 86_400_000), usageRecord(day - 9 * 86_400_000)] }, () => day, { cacheMaxEntryRecords: 1, cacheMaxEntries: 2 });
+    await query(f.service, { range: 'today' });
+    expect((await query(f.service, { range: 'last_7_days' })).summary.tokens.output).toBe(2);
+    const before = [...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0);
+    const warm = await query(f.service, { range: 'last_7_days' });
+    expect(warm.reliability.complete).toBe(true);
+    expect(warm.summary.tokens.output).toBe(2);
+    expect([...f.checkpointReads.values()].reduce((sum, value) => sum + value, 0)).toBeGreaterThan(before);
+    expect((await query(f.service)).summary.tokens.output).toBe(3);
+    expect(f.persistedRecordCounts()).toEqual([3]);
+    expect(f.service.cacheStatus().entries).toBeLessThanOrEqual(2);
+  });
+
+  it('preserves invalid historical records in otherwise empty warm range views', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    const invalid = { ...usageRecord(day - 9 * 86_400_000), usage: { inputOther: -1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [invalid] }, () => day);
+    const cold = await query(f.service, { range: 'today' });
+    expect(cold.reliability).toMatchObject({ complete: false, incomplete_sessions: 1 });
+    expect(await query(f.service, { range: 'today' })).toEqual(cold);
+    expect(f.persistedRecordCounts()).toEqual([1]);
+  });
+
   it('serves warmed cache entries without spending the wire-read budget', async () => {
     const sessionA = summary('session-a', 'workspace-a');
     const sessionB = summary('session-b', 'workspace-b');

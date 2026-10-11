@@ -28,7 +28,7 @@ import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const input: AskUserQuestionInput = { questions: [{ question: 'Choose the release target', header: 'Release', options: [{ label: 'Staging', description: 'Test rollout' }, { label: 'Production', description: 'Public rollout' }], multi_select: false }] };
 const hosts: TestInstantiationService[] = [];
-afterEach(() => { for (const host of hosts.splice(0)) host.dispose(); vi.useRealTimers(); });
+afterEach(async () => { for (const host of hosts.splice(0)) await host.dispose(); vi.useRealTimers(); });
 
 function fixture(config: InteractionConfig = { askUserQuestion: 'background', askUserQuestionGuard: { enabled: true } }) {
   const ix = new TestInstantiationService();

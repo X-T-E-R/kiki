@@ -124,12 +124,11 @@ function pluginStub(
     setPluginMcpServerEnabled: async () => {},
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-    getPluginInfo: async () => {
-      throw new Error('getPluginInfo is not used by these tests');
-    },
+    getPluginInfo: async ({ id }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => skillRoots,
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => [],
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],
@@ -189,9 +188,9 @@ function makeHost(
     seeds: [stubPair(IWorkspaceContext, ws)],
   });
   const disposeHost = host.dispose.bind(host);
-  host.dispose = () => {
-    workspaceHandle.dispose();
-    disposeHost();
+  host.dispose = async () => {
+    await workspaceHandle.dispose();
+    await disposeHost();
   };
   return { host, workspace: workspaceHandle, config };
 }
@@ -273,7 +272,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(names).toContain('project-only');
     expect(names).toContain('shared');
     expect(catalog.catalog.getSkill('shared')?.description).toBe('from project');
-    host.dispose();
+    await host.dispose();
   });
 
   it('registers contributions and the merged view into the workspace state container', async () => {
@@ -290,7 +289,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect([...contributions.keys()]).toContain('workspace');
     expect(states.get(workspaceSkillCatalogMergedKey)).toBe(catalog.catalog);
     expect(states.snapshot()['workspaceSkillCatalog.merged']).toBe('(InMemorySkillCatalog)');
-    host.dispose();
+    await host.dispose();
   });
 
   it('orders project, user and plugin skills as project > user > plugin', async () => {
@@ -337,7 +336,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(catalog.catalog.getSkill('shared')?.description).toBe('from project');
     expect(catalog.catalog.getSkill('user-plugin')?.description).toBe('from user');
     expect(catalog.catalog.getSkill('extra-plugin')?.description).toBe('from extra');
-    host.dispose();
+    await host.dispose();
   });
 
   it('replaces default user and project discovery with explicitDirs', async () => {
@@ -368,7 +367,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(catalog.catalog.getSkill('project-only')).toBeUndefined();
     expect(catalog.catalog.getSkill('extra-only')?.description).toBe('from extra');
     expect(catalog.catalog.getSkill('plugin-only')?.description).toBe('from plugin');
-    host.dispose();
+    await host.dispose();
   });
 
   it('uses one selected user skill root without disabling project discovery', async () => {
@@ -412,7 +411,7 @@ describe('WorkspaceSkillCatalogService', () => {
           (await realpath(selectedUserRoot)).replaceAll('\\', '/'),
         ]);
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
   });
@@ -460,7 +459,7 @@ describe('WorkspaceSkillCatalogService', () => {
     await loading;
 
     expect(catalog.catalog.getSkill('extra-only')?.description).toBe('from extra');
-    host.dispose();
+    await host.dispose();
   });
 
   it('reloads user and workspace sources when mergeAllAvailableSkills changes', async () => {
@@ -494,7 +493,7 @@ describe('WorkspaceSkillCatalogService', () => {
     await reloaded;
 
     expect(store.calls).toBe(afterLoad + 2);
-    host.dispose();
+    await host.dispose();
   });
 
   it('reload re-scans every source and replaces the merged view', async () => {
@@ -518,7 +517,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(catalog.catalog.getSkill('global-only')).toBeDefined();
     expect(changes).toEqual(['catalog']);
     subscription.dispose();
-    host.dispose();
+    await host.dispose();
   });
 
   it('does not rescan on subsequent load calls without change events', async () => {
@@ -535,7 +534,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
     expect(catalog.catalog.getSkill('first')).toBeDefined();
     expect(catalog.catalog.getSkill('second')).toBeUndefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('passes plugin skill roots to the store so plugin skills are discoverable', async () => {
@@ -567,7 +566,7 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(store.receivedRoots).toEqual([pluginRoot]);
     expect(catalog.catalog.getSkill('demo-skill')?.plugin?.id).toBe('demo');
     expect(catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('feeds scanned roots from file sources into the merged catalog', async () => {
@@ -594,7 +593,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
         expect(catalog.catalog.getSkillRoots()).toEqual([skillRoot]);
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
   });
@@ -627,7 +626,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
         expect(catalog.catalog.getSkippedByPolicy()).toEqual([skippedEntry]);
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
   });
@@ -664,7 +663,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
       await expect(refreshed).resolves.toBe('plugin');
     } finally {
-      host.dispose();
+      await host.dispose();
       reloadEmitter.dispose();
     }
   });
@@ -744,7 +743,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(catalog.catalog.getPluginSkill('demo', 'stale-skill')).toBeUndefined();
       expect(catalog.catalog.getPluginSkill('demo', 'fresh-skill')).toBeDefined();
     } finally {
-      host.dispose();
+      await host.dispose();
       sourceChanges.dispose();
     }
   });
@@ -785,7 +784,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(seen).toEqual([receiver]);
       subscription?.dispose();
     } finally {
-      host.dispose();
+      await host.dispose();
       reloadEmitter.dispose();
     }
   });
@@ -862,7 +861,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
       expect(catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
     } finally {
-      host.dispose();
+      await host.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -955,7 +954,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(scans).toBe(2);
       expect(contribution.skills.map((skill) => skill.description)).toEqual(['fresh']);
     } finally {
-      host.dispose();
+      await host.dispose();
       await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -999,7 +998,7 @@ describe('WorkspaceSkillCatalogService', () => {
       await expect(Promise.race([refreshed, timedOut])).resolves.toBe('workspace');
       expect(catalog.catalog.getSkill('watched-skill')?.description).toBe('from watch');
     } finally {
-      host.dispose();
+      await host.dispose();
       await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
@@ -1043,7 +1042,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(ignored?.(join(watchedSkillDir, 'SKILL.md'))).toBe(false);
       expect(ignored?.(watchedRuntimeFile)).toBe(true);
     } finally {
-      host.dispose();
+      await host.dispose();
       await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
@@ -1088,7 +1087,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeUndefined();
       expect(catalog.catalog.getSkill('project-skill')).toBeDefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1108,7 +1107,7 @@ describe('WorkspaceSkillCatalogService', () => {
 
       expect(fired).toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1143,7 +1142,7 @@ describe('WorkspaceSkillCatalogService', () => {
       await refreshed;
       expect(catalog.catalog.getSkill('dot-skill')?.description).toBe('under dot dir');
     } finally {
-      host.dispose();
+      await host.dispose();
       await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);

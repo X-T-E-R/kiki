@@ -21,9 +21,9 @@ describe('App MCP OAuth bootstrap', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('starts the proactive refresh sweep only after identity resolution', async () => {

@@ -195,6 +195,7 @@ describe('agent_config read and write shapes', () => {
 
   it('echoes only the fields the server projects', () => {
     expect(Object.keys(sessionAgentConfigSchema.shape).sort()).toEqual([
+      'execution',
       'model',
       'permission_mode',
       'persona',

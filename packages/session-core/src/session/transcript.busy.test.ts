@@ -55,6 +55,20 @@ function replay(agentId: string, ops: readonly TranscriptOperation[]): AgentTran
 }
 
 describe('one busy signal for a turn opened after a terminal phase', () => {
+  it('keeps cold historical running evidence without presenting a live loop and restores busy after live attachment', () => {
+    const snapshot = replay('main', staleEndedPhaseOps());
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot, { cold: true });
+    expect(cold.busy).toBe(false);
+    expect(cold.abortableTurnId).toBeUndefined();
+    expect(snapshot.items.at(-1)).toMatchObject({ state: 'running' });
+    const snapshots = new Map([['main', snapshot]]);
+    const coldForest = sessionAgentForestFromAgentSnapshots(snapshots, undefined, new Set(['main']));
+    expect(coldForest.byId['main']).toMatchObject({ busy: false, status: 'unknown' });
+    const live = projectAgentTranscriptView(cold, 'main', snapshot);
+    expect(live.busy).toBe(true);
+    expect(live.abortableTurnId).toBe(314);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId['main']).toMatchObject({ busy: true, status: 'running' });
+  });
   it.each([
     { name: 'task notification', origin: { kind: 'other' as const, payload: { kind: 'task_notification' } } },
     { name: 'agent message', origin: { kind: 'other' as const, payload: { kind: 'agent_message', senderAgentId: 'ops_m1' } } },

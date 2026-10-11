@@ -166,7 +166,9 @@ export function register(api) {
 ## 返回值
 
 - `output` 是字符串，或 part 数组：`{ type: 'text', text }` / `{ type: 'image_url', imageUrl: { url } }`。
-- 图片 URL 必须是 `data:image/png|jpeg|webp;base64,` dataURL，≤12 MiB；写远程 URL 或 SVG dataURL 会被判为 invalid tool result，工具直接失败。SVG 要先转 PNG。
+- 图片 URL 必须是 `data:image/png|jpeg|webp;base64,` dataURL；写远程 URL 或 SVG dataURL 会被判为 invalid tool result，工具直接失败。SVG 要先转 PNG。
+- 大文本和图像仍按同一返回格式交给宿主，无需插件分块。宿主自动把完整原件保存为会话附件：文本保留预览、原件路径和 `kimi-file://` 引用，图像改为可显示的会话附件引用并附上原件路径。用 `Read` 分页读完整文本，用 `ReadMediaFile` 读取原图；预览大小不是原件大小上限。
+- 原件存储不可用或写入失败只会报这次工具调用的错误，不终止同一插件的其他调用。错误提示没有可读原件时，不要自动重跑可能有副作用的工具；先检查会话存储或恢复原文件。
 - 失败用 `isError: true` 加可读 `output`，不要 throw 后让宿主只显示一个字符串化错误。
 - 宿主子进程里 `console.log` 被改写到 stderr（stdout 是 RPC 通道），调试输出用 `console.error`。
 - 类型来自公开的 `@kiki/plugin-sdk`：`PluginToolDefinition`、`PluginContentPart`、`PluginExecutionContext`、`PluginRegistrationApi`、`definePlugin`。

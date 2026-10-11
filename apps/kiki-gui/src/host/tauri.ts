@@ -8,11 +8,13 @@ import {
 
 import type {
   DesktopLogInfo,
+  DesktopWindowMode,
   DesktopSpaceStatus,
   DesktopUpdate,
   TauriHostAdapter,
   HostFileDrop,
   HostSelectedFile,
+  LocalConnection,
 } from './host';
 import type { DesktopNativePrefs } from '@kiki/session-core/settings';
 import type { ConnectionConfig } from '../state/connectionConfig';
@@ -129,13 +131,24 @@ function onFileDrop(callback: (drop: HostFileDrop) => void): () => void {
   };
 }
 
+let desktopDiscovery: Promise<LocalConnection> | null = null;
+let desktopCancellation: Promise<void> | null = null;
+
+async function discoverDesktop(): Promise<LocalConnection> {
+  if (desktopCancellation !== null) await desktopCancellation;
+  if (desktopDiscovery === null) {
+    const flight = invoke<ConnectionConfig>('desktop_connection').then((config): LocalConnection => ({ config, persist: false }));
+    desktopDiscovery = flight;
+    const release = () => { if (desktopDiscovery === flight) desktopDiscovery = null; };
+    void flight.then(release, release);
+  }
+  return desktopDiscovery;
+}
+
 export const tauriHost: TauriHostAdapter = {
   kind: 'tauri',
   connection: {
-    async discover() {
-      const config = await invoke<ConnectionConfig>('desktop_connection');
-      return { config, persist: false };
-    },
+    discover: discoverDesktop,
     listSshProfiles: () => invoke('list_ssh_profiles'),
     saveSshProfile: (profile) => invoke('save_ssh_profile', { profile }),
     removeSshProfile: (id) => invoke('remove_ssh_profile', { id }),
@@ -148,7 +161,12 @@ export const tauriHost: TauriHostAdapter = {
     disconnectSshProfile: (id, tunnelId) => invoke('disconnect_ssh_profile', { id, tunnelId }),
     setWorkspaceScope: (scope) => { remoteWorkspaceActive = scope === 'ssh'; },
     async cancelStartup() {
-      await invoke('cancel_desktop_startup');
+      if (desktopCancellation !== null) return desktopCancellation;
+      const pending = desktopDiscovery;
+      const cancellation = invoke<void>('cancel_desktop_startup').then(async () => { await pending?.catch(() => undefined); });
+      desktopCancellation = cancellation;
+      try { await cancellation; }
+      finally { if (desktopCancellation === cancellation) desktopCancellation = null; }
     },
     async onBackendStage(callback) {
       return listen<unknown>('kiki://desktop-backend-stage', (event) => {
@@ -161,9 +179,9 @@ export const tauriHost: TauriHostAdapter = {
     await invoke('send_desktop_notification', { title: options.title, body: options.body, route: options.route, scope: notificationScope(options.scope) });
   },
   onNotificationClick,
-  async setUnreadBadge(count) {
+  async setUnreadBadge(count, homeId, scopeId, sessionIds) {
     try {
-      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))) });
+      await invoke('set_unread_count', { n: Math.max(0, Math.min(0xffffffff, Math.trunc(count))), homeId, scopeId, sessionIds });
     } catch {
       return;
     }
@@ -241,6 +259,13 @@ export const tauriHost: TauriHostAdapter = {
         finally { await remove(temporary, { baseDir: BaseDirectory.AppLocalData }); }
       },
     };
+  },
+  async pickFilePath(): Promise<string | null> {
+    requireLocalWorkspace();
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ directory: false, multiple: false });
+    if (selected === null) return null;
+    return typeof selected === 'string' ? selected : selected[0] ?? null;
   },
   async pickFiles(): Promise<HostSelectedFile[] | null> {
     const [{ open }, { readFile, stat }] = await Promise.all([
@@ -367,6 +392,17 @@ export const tauriHost: TauriHostAdapter = {
    * pre-space key names; it must not fail the launch.
    */
   activeSpace: () => invoke<unknown>('desktop_active_space'),
+  // A build without work modes has no such command; that reads as "this
+  // window has no mode of its own" rather than failing the boot.
+  async windowMode() {
+    try {
+      const mode = await invoke<{ preset_id?: unknown; window_id?: unknown }>('desktop_window_mode');
+      if (typeof mode.preset_id !== 'string' || typeof mode.window_id !== 'string') return null;
+      return { presetId: mode.preset_id, windowId: mode.window_id } satisfies DesktopWindowMode;
+    } catch {
+      return null;
+    }
+  },
   takeNavigationIntent: () => invoke('take_navigation_intent'),
   async spaceStatuses() {
     try {

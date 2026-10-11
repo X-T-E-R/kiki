@@ -6,7 +6,7 @@ import type { AgentTool } from '#/tool/toolContract';
 export const CronDeleteInputSchema = z.object({
   id: z
     .string()
-    .describe('The cron job id (ULID) returned by CronCreate / CronList.'),
+    .describe('The cron job id (ULID) returned by Cron with action=create or action=list.'),
 });
 export type CronDeleteInput = z.infer<typeof CronDeleteInputSchema>;
 

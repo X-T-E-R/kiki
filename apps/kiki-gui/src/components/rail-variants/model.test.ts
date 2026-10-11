@@ -46,8 +46,11 @@ describe('fleetUnder', () => {
   });
 
   it('preserves all status mappings and separates user waits from dependency suspension', () => {
+    // 'unknown' stays unknown: a status the session never reported is not a
+    // finished agent, and mapping it onto 'done' is what let a partial read
+    // look like a completed session.
     const mappings: readonly [AgentTreeNode['status'], FleetState][] = [
-      ['unknown', 'done'], ['running', 'running'], ['suspended', 'waiting'], ['completed', 'done'],
+      ['unknown', 'unknown'], ['running', 'running'], ['suspended', 'waiting'], ['completed', 'done'],
       ['failed', 'failed'], ['cancelled', 'stopped'], ['background', 'running'],
     ];
     const ids = mappings.map(([status]) => status);

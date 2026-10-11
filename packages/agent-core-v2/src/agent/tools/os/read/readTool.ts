@@ -1,8 +1,8 @@
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { basename, dirname } from 'pathe';
 import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -230,14 +230,11 @@ export class ReadTool implements IReadTool {
     args = { ...args, path: target.path ?? args.path };
     const inspected = await prepareToolRuntime(this.runtime, target.host);
     const generation = inspected.identity.generation;
-    const view = new RuntimeWorkspaceView(inspected, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog.catalog.getSkillRoots();
     const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
-    const pathOptions = { env, workspace, operation: 'read' as const };
+    const pathOptions = { env, workspace, operation: 'read' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let implicitExternal: boolean;

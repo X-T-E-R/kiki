@@ -9,6 +9,7 @@ import {
   IAgentBlobService,
   MISSING_MEDIA_PLACEHOLDER,
 } from './agentBlobService';
+import { parseMediaBlobRef } from '#/agent/media/mediaRef';
 import { ByteLruCache } from './byteLruCache';
 
 const DEFAULT_THRESHOLD = 4096;
@@ -139,13 +140,8 @@ function formatBlobRef(mimeType: string, hash: string): string {
 }
 
 function parseBlobRef(url: string): { mimeType: string; hash: string } | undefined {
-  if (!url.startsWith(BLOBREF_PROTOCOL)) return undefined;
-  const rest = url.slice(BLOBREF_PROTOCOL.length);
-  const semiIdx = rest.indexOf(';');
-  if (semiIdx === -1) return undefined;
-  const hash = rest.slice(semiIdx + 1);
-  if (hash.length === 0) return undefined;
-  return { mimeType: rest.slice(0, semiIdx), hash };
+  const ref = parseMediaBlobRef(url);
+  return ref?.kind === 'mime' ? { mimeType: ref.mime, hash: ref.hash } : undefined;
 }
 
 function formatDataUri(mimeType: string, payload: Buffer): string {

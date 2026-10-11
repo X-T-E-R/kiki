@@ -12,11 +12,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { ErrorCode } from '../src/protocol/error-codes';
 import {
   readThreadRequestSchema as publicReadThreadRequestSchema,
+  readThreadResponseSchema as publicReadThreadResponseSchema,
   sendThreadMessageRequestSchema as publicSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as publicWaitThreadsRequestSchema,
 } from '../../protocol/src/rest/thread';
 import {
   readThreadRequestSchema as serverReadThreadRequestSchema,
+  readThreadResponseSchema as serverReadThreadResponseSchema,
   sendThreadMessageRequestSchema as serverSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as serverWaitThreadsRequestSchema,
 } from '../src/protocol/rest-thread';
@@ -128,6 +130,34 @@ describe('peer-thread routes', () => {
         publicSendThreadMessageRequestSchema.safeParse(value).success,
       );
     }
+  });
+
+  it('preserves all produced thread origins in the public and server response schemas', async () => {
+    const origins = ['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created'] as const;
+    const service = makeService();
+    vi.mocked(service.readThread).mockResolvedValue({
+      thread: targetCore,
+      turns: origins.map((origin, turnId) => ({
+        turnId,
+        endedAt: 2,
+        reason: 'completed' as const,
+        origin,
+        input: 'request',
+        output: 'response',
+      })),
+    });
+    const { route } = setup(service);
+    const response = reply();
+    await route('post', '/threads::read').handler(
+      request({ body: { thread: targetWire } }),
+      response,
+    );
+    const data = publicReadThreadResponseSchema.parse(response.send.mock.calls[0]?.[0]?.data);
+    expect(data.turns.map((turn) => turn.origin)).toEqual(origins);
+    expect(serverReadThreadResponseSchema.parse(data)).toEqual(data);
+    const invalid = { ...data, turns: [{ ...data.turns[0], origin: 'not-an-origin' }] };
+    expect(publicReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
+    expect(serverReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('registers all operations and preserves cross-workspace references', async () => {

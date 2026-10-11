@@ -10,19 +10,20 @@
  *   /board, /cron    → task board / scheduled tasks (`?workspace=` scopes them)
  *   /memory          → memory console, or its turn-on guide while memory is off
  *   /usage           → usage dashboard
+ *   /archived        → archived conversations: read one, or clear the archive
  *
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
- * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most
- * recent other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
+ * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab / Ctrl+Shift+Tab
+ * cycle running threads, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
  * Those are the shipped chords; the saved shortcut table (lib/shortcuts) can
- * remap each one. Ctrl+N and Ctrl+Tab register only in the desktop runtime.
+ * remap each one. Browser-owned chords are not intercepted on the web.
  * `document.title` follows the active route; toasts mount at the root.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { Workspace } from '@kiki/protocol';
+import type { WorkPresetItem, Workspace } from '@kiki/protocol';
 import {
   Navigate,
   Route,
@@ -47,6 +48,7 @@ import {
   subscribeOnboardingOpenRequests,
 } from './components/OnboardingWizard';
 import { ActivityPage, useSessionSeen } from './components/ActivityPage';
+import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
@@ -67,8 +69,14 @@ import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
-import { useHost, type DesktopUpdate } from './host';
+import { WorkPage } from './components/WorkPage';
+import { WorkSetupSheet } from './components/WorkSetupSheet';
+import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
+import { readWindowModeId } from './lib/workModes';
+import { landingRouteFor } from './lib/workModeStartup';
+import { useHost } from './host';
 import {
+  adjacentRunningSession,
   arrangePinnedFirst,
   buildConversationInbox,
   dedupeSessions,
@@ -82,11 +90,9 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   isOnboardingCompleted,
-  readDesktopPrefs,
   readLastSessionId,
   writeDesktopPrefs,
   writeLayoutPreferences,
-  type AutoUpdateMode,
 } from '@kiki/session-core/settings';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences, useMediaQuery, useVisualViewportHeightVar } from './lib/layoutHooks';
@@ -94,7 +100,11 @@ import { useLayerHistory } from './lib/layerHistory';
 import { useAppearancePacks } from './lib/skins/useAppearancePacks';
 import { useUserSkins } from './lib/skins/useUserSkins';
 import { pushToast } from './lib/toasts';
-import { isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { useDesktopUpdateScheduler } from './lib/useDesktopUpdateScheduler';
+import { hydrateUpdatePrefs } from './lib/desktopUpdates';
+import { UpdateAvailableDialog } from './components/UpdateAvailableDialog';
+import { browserOwnsShortcut, isEditableTarget, matchesShortcutAction } from './lib/shortcuts';
+import { useNavigationComposerFocus } from './lib/navigationComposerFocus';
 import { useShortcutPreferencesSync } from './lib/useShortcutPreferences';
 import { handleFindShortcut, QUICK_SWITCHER_EVENT, type FindRoute } from './lib/timelineFind';
 import { anyOverlayOpen } from './lib/uiBusy';
@@ -116,45 +126,9 @@ import {
 import { requestScopeNavigation } from './lib/navScope';
 import { activeSpace, parseActiveSpacePayload } from './lib/spaceStorage';
 import { NavHistoryBridge } from './components/NavBackButton';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
-export const SESSION_INDEX_RETRY_LIMIT = 4;
-
-/** Retry the cold-home read model only a bounded number of times. */
-export function retryRootReadModelQuery(failureCount: number, error: Error): boolean {
-  return failureCount < SESSION_INDEX_RETRY_LIMIT && isSessionIndexBuildingError(error);
-}
-
-/** Keep cold-index retries responsive without hammering a new home. */
-export function retryRootReadModelDelay(attempt: number): number {
-  return Math.min(250 * 2 ** attempt, 2_000);
-}
-
-interface StartupUpdateHost {
-  supportsDesktopUpdates(): Promise<boolean>;
-  checkDesktopUpdate(): Promise<DesktopUpdate | null>;
-}
-
-export type StartupUpdateResult = 'disabled' | 'unsupported' | 'up-to-date' | 'notified' | 'installed';
-
-export async function runStartupUpdateCheck(
-  host: StartupUpdateHost,
-  mode: AutoUpdateMode,
-  onUpdateAvailable: (update: DesktopUpdate) => void,
-  onUpdateInstalled: (update: DesktopUpdate) => void,
-): Promise<StartupUpdateResult> {
-  if (mode === 'off') return 'disabled';
-  if (!(await host.supportsDesktopUpdates())) return 'unsupported';
-  const update = await host.checkDesktopUpdate();
-  if (update === null) return 'up-to-date';
-  if (mode === 'notify') {
-    onUpdateAvailable(update);
-    return 'notified';
-  }
-  await update.install();
-  onUpdateInstalled(update);
-  return 'installed';
-}
 
 async function showDesktopWindow(): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -194,11 +168,19 @@ async function applyConnectionPluginFocus(input: {
 function RootRedirect() {
   const host = useHost();
   const { scopeId } = useConnection();
+  const { pathname } = useLocation();
   const target = useMemo(() => {
     const saved = host.kind === 'tauri' ? readSpaceViewRoute(scopeId) : undefined;
+    if (saved !== undefined) return saved;
+    // A window launched into a mode opens on that mode's landing page, so its
+    // first frame is the surface the user asked for. The current path is
+    // excluded: a route that landed here only because its mode is unavailable
+    // has to move on rather than redirect to itself.
+    const landing = landingRouteFor(readWindowModeId());
+    if (landing !== pathname) return landing;
     const lastSessionId = readLastSessionId();
-    return saved ?? (lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new');
-  }, [host.kind, scopeId]);
+    return lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new';
+  }, [host.kind, pathname, scopeId]);
   return <Navigate to={target} replace />;
 }
 
@@ -278,6 +260,14 @@ export function App() {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  // Work setup is one sheet, reached from the mode menu on any page and from
+  // the Work surface itself, so a user who is mid-conversation can add the
+  // missing piece without losing where they were.
+  const [workSetup, setWorkSetup] = useState<WorkPresetItem | null>(null);
+  const openWorkSetup = useCallback((mode: WorkPresetItem) => { setWorkSetup(mode); }, []);
+  // One catalog read per client, shared by the Work surface and the setup
+  // sheet so a completed setup refreshes both without a second fetch.
+  const workModeCatalog = useWorkModes(client, workPresetsEnabled(meta));
   // Decided exactly once per app run, the moment both probes have answered:
   // a "configured" answer latches too, so a later catalog hiccup can never
   // pop the wizard over an established session.
@@ -313,8 +303,8 @@ export function App() {
     [],
   );
   const performNavigation = useCallback((target: To | number, options?: NavigateOptions) => {
-    if (typeof target === 'number') void rawNavigate(target);
-    else void rawNavigate(target, options);
+    if (typeof target === 'number') return rawNavigate(target);
+    return rawNavigate(target, options);
   }, [rawNavigate]);
   const { value: dirtyGuardValue, navigate, pending: pendingNavigation, confirm: confirmNavigation, cancel: cancelNavigation } =
     useDirtyGuardState(location, performNavigation);
@@ -441,6 +431,32 @@ export function App() {
     return () => { closed = true; clearTimeout(timer); };
   }, [client, localClient, connectionSource, host, navigate]);
 
+  useEffect(() => {
+    let closed = false;
+    let initialized = false;
+    let seen = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const read = async () => {
+      try {
+        const { request } = await client.pluginNavigation();
+        if (closed) return;
+        if (initialized && request !== undefined && request.id > seen) {
+          navigate(`/s/${encodeURIComponent(request.sessionId)}`);
+          if (host.kind === 'tauri') {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            const window = getCurrentWindow();
+            await window.show(); await window.unminimize(); await window.setFocus();
+          }
+        }
+        initialized = true;
+        if (request !== undefined) seen = Math.max(seen, request.id);
+      } catch {}
+      if (!closed) timer = setTimeout(() => { void read(); }, 1500);
+    };
+    void read();
+    return () => { closed = true; clearTimeout(timer); };
+  }, [client, host, navigate]);
+
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
   useEffect(() => {
@@ -451,36 +467,22 @@ export function App() {
     return host.onTrayNewSession(() => navigate(newSessionPath));
   }, [host, navigate, newSessionPath]);
 
+  // Keep the native side (tray menu labels) on the active UI locale. The tray
+  // is a native surface, so a failed write leaves it labelled in the old
+  // language while the window is in the new one; that is worth one quiet toast
+  // rather than a rejected promise nobody handles.
   useEffect(() => {
-    if (host.kind !== 'tauri') return;
-    const timer = window.setTimeout(() => {
-      void host.readDesktopPrefs()
-        .then((nativePrefs) => {
-          if (nativePrefs !== null) writeDesktopPrefs(nativePrefs);
-          const mode = (nativePrefs ?? readDesktopPrefs()).autoUpdate;
-          return runStartupUpdateCheck(
-            host,
-            mode,
-            (update) => {
-              pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
-            },
-            () => {
-              pushToast({ tone: 'success', text: t('st.about.installedRestart') });
-            },
-          );
-        })
-        .catch(() => {});
-    }, 1_500);
-    return () => { window.clearTimeout(timer); };
-  }, [host, t]);
-
-  // Keep the native side (tray menu labels) on the active UI locale.
-  useEffect(() => {
-    void host.writeDesktopPrefs?.({ locale });
-  }, [host, locale]);
+    const write = host.writeDesktopPrefs?.({ locale });
+    if (write === undefined) return;
+    void write.catch(() => {
+      pushToast({ tone: 'error', text: t('app.trayLocaleSaveFailed') });
+    });
+  }, [host, locale, t]);
 
   const sessionMatch = useMatch('/s/:id/*');
   const activeSessionId = sessionMatch?.params.id;
+  const composerAgentMatch = useMatch('/s/:id/agent/:agentId');
+  useNavigationComposerFocus(scopeId, activeSessionId, composerAgentMatch?.params.agentId);
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
@@ -539,8 +541,8 @@ export function App() {
     [workspacesQuery.data],
   );
 
-  // The canonical session order powers QuickSwitcher / Ctrl+Tab hopping and the
-  // /new recent chips, so it stays pinned-first + newest-first regardless of
+  // The canonical session order powers QuickSwitcher and the /new recent
+  // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
   const sessions = useMemo(
     () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
@@ -707,26 +709,24 @@ export function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [isSettingsRoute, sidebarOpen, quickSwitcherOpen, shortcutsOpen, navigate]);
 
-  // Ctrl+Tab jumps to the most recent other session. Browser tab switching
-  // owns Ctrl+Tab (preventDefault cannot intercept it), so the binding only
-  // registers in the desktop runtime — the shortcuts panel marks it
-  // desktop-only. While focus sits in an editable surface the keystroke stays
-  // with it: hopping sessions here would silently rip focus from the draft.
+  // Modified navigation chords remain usable from the composer. Browser-owned
+  // Ctrl+Tab is left alone; a web user can bind either action to another chord.
   useEffect(() => {
-    if (!desktop) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!matchesShortcutAction(event, 'next-session')) return;
-      if (isEditableTarget(event.target)) return;
+      if (event.defaultPrevented || anyOverlayOpen() || quickSwitcherOpen || shortcutsOpen) return;
+      if (!desktop && browserOwnsShortcut(event)) return;
+      if (event.target instanceof Element && event.target.closest('.xterm')) return;
+      if (isEditableTarget(event.target) && !event.ctrlKey && !event.metaKey && !event.altKey) return;
+      const direction = matchesShortcutAction(event, 'next-session') ? 1
+        : matchesShortcutAction(event, 'previous-session') ? -1 : undefined;
+      if (direction === undefined) return;
       event.preventDefault();
-      const next = sessions.find((session) => session.id !== activeSessionId);
-      if (next !== undefined) {
-        setQuickSwitcherOpen(false);
-        navigate(`/s/${next.id}`);
-      }
+      const next = adjacentRunningSession(sessions, activeSessionId, direction);
+      if (next !== undefined && next !== activeSessionId) navigate(`/s/${next}`);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [sessions, activeSessionId, navigate, desktop]);
+  }, [sessions, activeSessionId, navigate, desktop, quickSwitcherOpen, shortcutsOpen]);
 
   // Close mobile sidebar on route change.
   useEffect(() => {
@@ -820,6 +820,12 @@ export function App() {
               path="/new"
               element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
             />
+            <Route
+              path="/work"
+              element={workPresetsEnabled(meta)
+                ? <SpaceViewState><WorkPage onSetupMode={openWorkSetup} enabled /></SpaceViewState>
+                : <RootRedirect />}
+            />
             {/* The persona's stable address lives in the shell too: it hands
                 over to /s/:id on the same mount when a daily conversation
                 already exists, and renders the daily draft when it does not. */}
@@ -900,6 +906,10 @@ export function App() {
             }
           />
           <Route
+            path="/archived"
+            element={<ArchivedSessionsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
+          <Route
             path="/personas"
             element={<PersonasPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
@@ -961,6 +971,15 @@ export function App() {
         {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
         {onboardingOpen ? (
           <OnboardingWizard onClose={() => { setOnboardingOpen(false); }} />
+        ) : null}
+        {workSetup !== null && client !== null ? (
+          <WorkSetupSheet
+            mode={workSetup}
+            client={client}
+            onClose={() => { setWorkSetup(null); }}
+            onEnabled={() => { workModeCatalog.reload(); }}
+            onPickFile={() => { setWorkSetup(null); }}
+          />
         ) : null}
         <Toasts />
       </div>

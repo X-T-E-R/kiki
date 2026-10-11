@@ -260,6 +260,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         delegator: input.delegator,
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
+        workspaceRoots: input.workspaceRoots,
       });
       reservation.bind(child.id);
       const permissionMode = child.accessor.get(IAgentPermissionModeService);
@@ -849,7 +850,10 @@ export class SessionDispatchService implements ISessionDispatchService {
   private requireIdle(child: IAgentScopeHandle, policy: DispatchIdlePolicy): void {
     const idle =
       policy === 'execution'
-        ? child.accessor.get(IAgentExecutionService).status().state === 'idle'
+        ? (() => {
+            const state = child.accessor.get(IAgentExecutionService).status().state;
+            return state === 'idle' || state === 'broken';
+          })()
         : quiescent(child.accessor.get(IAgentLoopService).status());
     if (idle) return;
     throw new Error2(

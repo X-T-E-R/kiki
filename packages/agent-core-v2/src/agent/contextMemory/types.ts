@@ -87,6 +87,7 @@ export interface TaskOrigin {
 
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
+  readonly deliveryMode?: import('@kiki/protocol').CronDeliveryMode;
   readonly jobId: string;
   readonly cron: string;
   readonly recurring: boolean;

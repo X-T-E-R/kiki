@@ -100,6 +100,6 @@ describe('ExternalHooksFeature — assembly (src/features/externalHooks)', () =>
     expect(sessionUnits.items).toHaveLength(0);
     expect(agentUnits.items).toHaveLength(0);
 
-    host.dispose();
+    await host.dispose();
   });
 });

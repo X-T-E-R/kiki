@@ -16,6 +16,8 @@ import {
   projectedProfileModelState,
   projectedProfileModelRuleSource,
   resolveCatalogModel,
+  resolveSelectedEffort,
+  sortThinkingEffortsForDisplay,
   shippedEntryForProfile,
   subagentDefaultTargetFromConfig,
   subagentDefaultTargetPatch,
@@ -31,6 +33,39 @@ import type { NamedAgentProfile, NamedAgentSubagentLease } from '@kiki/protocol'
 const validDraft: SubagentGovernanceDraft = {
   denyModels: 'provider/blocked\nprovider/legacy',
 };
+
+describe('thinking effort display order', () => {
+  it('orders common tiers on a new array without changing fallback or explicit selection', () => {
+    const raw = Object.freeze(['high', 'max', 'low', 'medium', 'xhigh']);
+    expect(sortThinkingEffortsForDisplay(raw)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(raw).toEqual(['high', 'max', 'low', 'medium', 'xhigh']);
+    expect(resolveSelectedEffort(raw, undefined, undefined)).toBe('high');
+    expect(resolveSelectedEffort(raw, 'xhigh', 'low')).toBe('xhigh');
+    expect(resolveSelectedEffort(raw, undefined, 'max')).toBe('max');
+  });
+
+  it('places existing disabled and minimal values before stronger tiers without deduping', () => {
+    expect(sortThinkingEffortsForDisplay(['max', 'none', 'low', 'off', 'minimal', 'low']))
+      .toEqual(['none', 'off', 'minimal', 'low', 'low', 'max']);
+  });
+
+  it('preserves unknown values verbatim, stable and in their original slots', () => {
+    expect(sortThinkingEffortsForDisplay(['high', 'vendor-ULTRA', 'max', ' low ', 'low', 'Vendor-Fast', 'medium']))
+      .toEqual(['low', 'vendor-ULTRA', 'medium', ' low ', 'high', 'Vendor-Fast', 'max']);
+  });
+
+  it.each([['on', 'off'], ['off', 'on'], ['inherit', 'auto', 'adaptive', 'on']])('keeps semantic mode order (%s)', (...efforts) => {
+    expect(sortThinkingEffortsForDisplay(efforts)).toEqual(efforts);
+  });
+
+  it('leaves semantic mode positions outside the intensity ladder', () => {
+    expect(sortThinkingEffortsForDisplay(['high', 'auto', 'low', 'adaptive', 'none', 'on']))
+      .toEqual(['none', 'auto', 'low', 'adaptive', 'high', 'on']);
+    const empty: string[] = [];
+    expect(sortThinkingEffortsForDisplay(empty)).toEqual([]);
+    expect(sortThinkingEffortsForDisplay(empty)).not.toBe(empty);
+  });
+});
 
 describe('subagent settings projection', () => {
   it('reads the deny list from the config echo', () => {

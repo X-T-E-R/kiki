@@ -1,6 +1,6 @@
 import { daemonFileRefFromPart, type ContentPart } from '@kiki/agent-core-v2';
 import type { MessageContent } from '@kiki/protocol';
-import { readTextPresentation } from '@kiki/transcript';
+import { readTextPresentation, sessionMediaIdFromBlobUrl } from '@kiki/transcript';
 
 /**
  * Prompt content (engine kosong parts) → the v1 wire `messageContentSchema`
@@ -13,6 +13,13 @@ import { readTextPresentation } from '@kiki/transcript';
 export function projectPromptContentParts(content: readonly ContentPart[]): MessageContent[] {
   const parts: MessageContent[] = [];
   for (const part of content) {
+    const media = part.type === 'image_url' ? { kind: 'image' as const, ref: part.imageUrl }
+      : part.type === 'video_url' ? { kind: 'video' as const, ref: part.videoUrl } : undefined;
+    const blobId = media === undefined ? undefined : sessionMediaIdFromBlobUrl(media.ref.url);
+    if (media !== undefined && blobId !== undefined) {
+      parts.push({ type: media.kind, source: { kind: 'session_media', file_id: blobId }, name: media.ref.name });
+      continue;
+    }
     const daemonRef = daemonFileRefFromPart(part);
     if (daemonRef !== undefined) {
       parts.push({

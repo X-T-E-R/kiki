@@ -7,7 +7,7 @@ import { constrainPermissionMode, IAgentPermissionModeService } from '#/agent/pe
 import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { resolveRealPathAccess } from '#/tool/path-access';
@@ -128,7 +128,7 @@ async function resolveExternalExecution(context: AgentExecutorContext, tool: Ext
   const lease = runtime.acquire(['fs']);
   try {
     if (lease.runtime.fs === undefined) return undefined;
-    const roots = lease.runtime.workspace.mapRoots({ workDir: workspace.workDir, additionalDirs: workspace.additionalDirs });
+    const roots = lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(runtime, workspace));
     const env = lease.runtime.environment;
     const paths = await Promise.all(rawPaths.map((path) => resolveRealPathAccess(path as string, { env, operation,
       workspace: { workspaceDir: roots.workDir, additionalDirs: roots.additionalDirs ?? [] },

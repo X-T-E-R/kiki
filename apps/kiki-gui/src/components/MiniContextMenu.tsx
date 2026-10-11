@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
-import { nextModalDepth, registerOverlay } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 
 export type MiniMenuEntry =
   | {
@@ -93,8 +93,12 @@ export function MiniContextMenu({
       data-modal-escape={modalOwnerId}
       role="menu"
       aria-label={ariaLabel}
-      className="anim-enter fixed z-50 w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      style={{ left: position.left, top: position.top, zIndex: modalOwnerId === undefined ? undefined : 50 + nextModalDepth() }}
+      className="anim-enter fixed w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+      // Above whatever dialog is up: a context menu opened from inside one is
+      // drawn under that dialog's own panel otherwise, and reads as a menu that
+      // opened and then vanished. The shared helper resolves the owning modal's
+      // own depth, and lands on the page-level layer outside one.
+      style={{ left: position.left, top: position.top, zIndex: floatingSurfaceZIndex(null) }}
     >
       {entries.map((entry, index) =>
         'separator' in entry ? (

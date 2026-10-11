@@ -111,6 +111,11 @@ const client = {
 
 const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({
+    client,
+    config: { url: connectionMock.url, token: connectionMock.token },
+    scopeId: 'direct:http://127.0.0.1:8080',
+  }),
   useConnection: () => ({
     client,
     klient,
@@ -302,6 +307,27 @@ describe('SettingsPage panel scopes', () => {
     expect(general.querySelector('[data-settings-remote-line]')).toBeNull();
   });
 
+  it('keeps the remote-server and unsaved lines on a single plugin page', async () => {
+    // The plugin page drops the section's orientation sentence because the card
+    // heading already says it. It must not drop the two facts that are not
+    // restated anywhere else: where a change is written, and whether one is
+    // waiting to be saved.
+    connectionMock.url = 'https://kiki.example.net';
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes', { guarded: true });
+    await flush();
+    expect(container.querySelector('[data-settings-intro]')).toBeNull();
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-page-status]')).not.toBeNull();
+
+    (container.querySelector('[data-test-dirty]') as HTMLButtonElement).click();
+    await flush();
+    const unsaved = container.querySelector('[data-settings-unsaved]');
+    expect(unsaved).not.toBeNull();
+    expect(unsaved?.textContent).toContain('Unsaved changes');
+    // Both facts still stand together: the line is not replaced by the other.
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
+  });
+
   it('drops a page intro that would only restate a card title', async () => {
     const mcp = await renderSettings('/settings/mcp');
     expect(mcp.querySelector('[data-settings-intro]')).toBeNull();
@@ -420,7 +446,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Request timeout (seconds)');
 
     // The field saves itself on Enter; there is no separate Save button.
-    expect(card.querySelector('button')).toBeNull();
+    expect(card.querySelector('button:not([data-setting-help])')).toBeNull();
     await commitText(input, '120');
     await flush();
 
@@ -433,6 +459,22 @@ describe('SettingsPage batch-3 leaves', () => {
     await commitText(input, '2');
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ requestTimeoutSeconds: 120 });
+  });
+
+  it('saves an unlimited reading timeout independently of ordinary request timeouts', async () => {
+    localStorage.removeItem('kiki.settings');
+    const container = await renderSettings('/settings/connection');
+    const input = container.querySelector<HTMLInputElement>('#st-conn-reading-timeout')!;
+    expect(input.value).toBe('0');
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '3600');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '-1');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    await commitText(input, '0');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 0 });
   });
 
   it('reveals, edits, and overwrites the saved connection token', async () => {
@@ -788,8 +830,13 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-capability-link-open="plugins"]')?.getAttribute('href')).toBe('/capabilities');
-    expect(container.querySelector('#st-card-plugins [data-plugins-view]')).toBeNull();
+    // The list is the leaf's subject; the market is reached by one link, and no
+    // configuration form opens in place.
+    expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
+    // The browser runtime card is a browser fact, not a plugin one.
+    expect(container.querySelector('#st-card-webbridge')).toBeNull();
     expect(client.listPlugins).toHaveBeenCalled();
   });
 

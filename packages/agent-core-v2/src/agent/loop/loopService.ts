@@ -104,6 +104,7 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
+const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000] as const;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -131,7 +132,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     readonly result: ReturnType<typeof createControlledPromise<void>>;
   }> = [];
   private activeRequestTrace: LLMRequestTrace | undefined;
-  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; error?: unknown } | undefined;
+  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
+  private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -177,9 +179,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.states.set(loopDisposingKey, value);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     if (this.disposing) return;
     this.disposing = true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     const reason = abortError('Agent loop disposed');
     for (const job of this.pendingTurns.slice()) this.cancel(job.turn.id, reason);
     this.activeTurnJob?.turn.cancel(reason);
@@ -192,7 +196,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       this.rejectAssignment(request, reason);
     }
     this.maybeSettle();
-    super.dispose();
+    return super.dispose();
   }
 
   enqueue(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt {
@@ -204,6 +208,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (this.quiescenceDepth > 0 || this.finalization !== undefined) {
       if (options?.at === 'head') this.heldAdmissions.unshift({ request, options });
       else this.heldAdmissions.push({ request, options });
+      if (this.finalization?.error !== undefined) void this.recoverPersistence();
     } else {
       this.admit(request, options);
     }
@@ -669,9 +674,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     } catch (error) {
       finalization.error = error;
       onUnexpectedError(error);
+      this.schedulePersistenceRecovery(finalization);
       return false;
     }
     if (this.finalization !== finalization) return true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     this.finalization = undefined;
     if (this.activeTurnJob?.turn === finalization.turn) {
       this.activeRequestTrace = undefined;
@@ -681,6 +689,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.releaseActiveTurn(finalization.turn, finalization.result);
     this.releaseQuiescence();
     return true;
+  }
+
+  private schedulePersistenceRecovery(finalization: NonNullable<AgentLoopService['finalization']>): void {
+    if (this.disposing || this.finalization !== finalization || this.persistenceRecoveryTimer !== undefined) return;
+    const attempt = finalization.recoveryAttempts ?? 0;
+    const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    finalization.recoveryAttempts = attempt + 1;
+    this.persistenceRecoveryTimer = setTimeout(() => {
+      this.persistenceRecoveryTimer = undefined;
+      if (!this.disposing && this.finalization === finalization) void this.recoverPersistence();
+    }, delay);
+    this.persistenceRecoveryTimer.unref?.();
   }
 
   private resultFromTurnError(turn: Turn, error: unknown): TurnResult {
@@ -1016,6 +1037,36 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       }
       this.lastRequestTraceId = request.trace.traceId;
       this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      if (
+        this.scope.parentAgentId !== undefined &&
+        response.providerFinishReason === 'completed' &&
+        response.message.content.length === 0 &&
+        response.message.toolCalls.length === 0
+      ) {
+        markStepStarted();
+        this.context.appendLoopEvent({
+          type: 'step.end',
+          uuid: stepUuid,
+          turnId: String(turnId),
+          step: currentStep,
+          finishReason: 'error',
+          usage: response.usage,
+          messageId: response.providerMessageId,
+          providerFinishReason: response.providerFinishReason,
+          rawFinishReason: response.rawFinishReason,
+        });
+        stepEndAppended = true;
+        throw new Error2(ErrorCodes.LOOP_EMPTY_COMPLETION,
+          'The subagent provider completed without content or tool calls; no task receipt was produced. Inspect preserved work before resuming with a new prompt ID.',
+          { details: {
+            turnId,
+            step: currentStep,
+            messageId: response.providerMessageId,
+            providerFinishReason: response.providerFinishReason,
+            rawFinishReason: response.rawFinishReason,
+            usage: response.usage,
+          } });
+      }
       const finishReason = await this.executeStepTools(
         turnId,
         signal,
@@ -1403,8 +1454,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
           case 'image_url':
           case 'audio_url':
-          case 'video_url':
+          case 'video_url': {
+            onResponseEvent();
+            const partId = accumulate(part);
+            void this.dispatcher.dispatch(
+              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part }),
+            );
             return;
+          }
           case 'function': {
             onResponseEvent();
             forceContentPartBoundary = true;
@@ -1449,7 +1506,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         const unused = partialContent.filter((entry) => entry.responseInstanceId === responseInstanceId);
         return content.map((part) => {
           const index = unused.findIndex((entry) => entry.part.type === part.type);
-          if (index === -1) return { id: randomUUID(), part, responseInstanceId };
+          if (index === -1) {
+            const id = randomUUID();
+            if (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') {
+              void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: id, delta: '', part }));
+            }
+            return { id, part, responseInstanceId };
+          }
           const [entry] = unused.splice(index, 1);
           return { id: entry!.id, part, responseInstanceId: entry!.responseInstanceId };
         });

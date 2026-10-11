@@ -799,6 +799,9 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     getState: () => sessionState,
     getAgentState: () => childState,
     getForest: () => forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
   function MountedWorkspace() {
     const state = useSyncExternalStore(subscribe, () => sessionState);
@@ -1224,6 +1227,9 @@ function controllerStub(input: {
     subscribeAgent: () => () => {},
     getAgentState: (agentId: string) => input.agentStates[agentId] ?? EMPTY_AGENT_STATE,
     getForest: () => input.forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
 }
 
@@ -1496,7 +1502,10 @@ it('renders the agent context meter in the preview-tab dock slots', async () => 
 
 it('hosts main in the shared timeline and chrome without child commands or another preview provider', async () => {
   const sessionState = { ...createViewState('session'), loaded: true };
+  const retainHistoryRead = vi.fn(() => () => {});
+  const controller = Object.assign(controllerStub({ forest: testForest(), agentStates: {} }), { retainHistoryRead });
   await renderWorkspace({
+    controller,
     target: { sessionId: 'session', agentId: 'main' },
     sessionState,
     forest: testForest(),
@@ -1523,6 +1532,8 @@ it('hosts main in the shared timeline and chrome without child commands or anoth
   expect(dock.querySelector('[data-composer-variant="subagent"]')).toBeNull();
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.mediaProviderProps).toHaveLength(0);
+  expect(retainHistoryRead).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-temporary-history-limit]')).toBeNull();
 });
 
 

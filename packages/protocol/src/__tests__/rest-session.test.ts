@@ -630,8 +630,13 @@ describe('archiveSessionResponseSchema', () => {
     expect(archiveSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
   });
 
-  it('rejects { archived: false }', () => {
-    expect(archiveSessionResponseSchema.safeParse({ archived: false }).success).toBe(false);
+  it('preserves failed family members without claiming the whole family was archived', () => {
+    const response = { archived: false, outcomes: [
+      { id: 'session-a', ok: true as const },
+      { id: 'session-b', ok: false as const, reason: 'error' as const, message: 'Archive failed' },
+    ] };
+    expect(archiveSessionResponseSchema.parse(response)).toEqual(response);
+    expect(archiveSessionResponseSchema.safeParse({ archived: 'false' }).success).toBe(false);
   });
 });
 
@@ -670,7 +675,13 @@ describe('deleteSessionResponseSchema (deprecated alias)', () => {
     expect(deleteSessionResponseSchema.parse({ archived: true })).toEqual({ archived: true });
   });
 
-  it('rejects { archived: false }', () => {
-    expect(deleteSessionResponseSchema.safeParse({ archived: false }).success).toBe(false);
+  it('uses the same family outcome contract as the canonical archive response', () => {
+    expect(deleteSessionResponseSchema).toBe(archiveSessionResponseSchema);
+    expect(deleteSessionResponseSchema.parse({ archived: false, outcomes: [
+      { id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' },
+    ] })).toEqual({ archived: false, outcomes: [
+      { id: 'session-b', ok: false, reason: 'not_found', message: 'Session not found' },
+    ] });
+    expect(deleteSessionResponseSchema.safeParse({ archived: null }).success).toBe(false);
   });
 });

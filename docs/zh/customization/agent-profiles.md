@@ -6,6 +6,8 @@ Kiki 里每个 agent（包括 main agent 和每个 subagent）都由一份 **pro
 
 一份 profile 就是一个 Markdown 文件：顶部的 **Frontmatter**（YAML 元数据块）声明名字、描述、工具白名单、模型绑定等，正文就是这个 agent 的**系统提示词**。
 
+在输入区直接选中的 profile 文件是只作用于本次会话的来源，不会进入发现目录；控件与恢复方式见[选择引擎与它的 profile](./agents.md#选择引擎与它的-profile)。
+
 Kiki 内置了几份 profile：驱动会话的 main `agent`、默认 subagent `general`、只读探索用的 `explore`。自定义 agent 不需要写代码——照这个样子写一份 Markdown 文件，就会被自动发现，与内置 profile 并列。
 
 ## 文件放在哪里

@@ -6,6 +6,8 @@ Every agent in Kiki — the main agent and each subagent — is defined by a **p
 
 A profile is a single Markdown file. The **frontmatter** (the YAML metadata block at the top) declares its name, description, tool allowlist, model binding and more; the file body **is** the agent's system prompt.
 
+A profile file selected directly in the composer is a session-scoped source rather than a discovered catalog entry; its controls and recovery are described in [Choosing the engine and its profile](./agents.md#choosing-the-engine-and-its-profile).
+
 Kiki ships a few built-in profiles: the main `agent` that drives sessions, the default subagent `general`, and `explore` for read-only exploration. Creating your own agent needs no code — write a Markdown file in the same shape and it is discovered automatically, alongside the built-ins.
 
 ## Where the files live

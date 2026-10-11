@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from
 import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { deflateSync } from 'node:zlib';
+import { paddedPng, pngDimensions, solidPng } from './helpers/png';
 
 import {
   IAgentTitlePromptSource,
@@ -10,6 +10,9 @@ import {
   IAgentLoopService,
   IAgentContextMemoryService,
   IAgentExecutionService,
+  IAgentExecutorRegistry,
+  type AgentExecutorProvider,
+  type ProfileBindingSnapshot,
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentTaskService,
@@ -26,6 +29,7 @@ import {
   IFileService,
   IModelCatalogMutationService,
   IConfigService,
+  ISessionIndex,
   ISessionContext,
   ISessionMetadata,
   ISessionDispatchService,
@@ -38,10 +42,17 @@ import {
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
 import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { TaskNotificationStepRequest } from '@kiki/agent-core-v2/agent/task/taskService';
+import { createHooks } from '@kiki/agent-core-v2/hooks';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
-import { resolveControlledSkillSubmission } from '../../../apps/kiki-gui/src/components/SessionView';
+import { buildNewSessionCreate } from '../../../apps/kiki-gui/src/components/NewSessionDraft';
+import { resolveProfileSwitchSubmission, resolveControlledSkillSubmission } from '../../../apps/kiki-gui/src/components/SessionView';
+import { executionChoice } from '../../session-core/src/composer/executionSelection';
 import { SessionController } from '../../session-core/src/session/sessionController';
-import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
+import { applyCompactionProgress, type CompactionProgress } from '../../../apps/kiki-gui/src/components/useCompactionProgress';
+import { compactSessionContext } from '../../session-core/src/commands/sessionActions';
+import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '@kiki/agent-core-v2/agent/llmRequester/llmRequester';
+import { IAgentFullCompactionService } from '@kiki/agent-core-v2/agent/fullCompaction/fullCompaction';
+import { agentTranscriptToBlocks, createViewState, isOrdinaryQueueItem, projectAgentTranscriptView, queuedPromptPreviews } from '../../session-core/src/session/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -53,6 +64,9 @@ import {
 import { modelSwitchActionSchema } from '../src/protocol/rest-model-switch';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
+
+vi.mock('../../../apps/kiki-gui/src/components/TerminalPanel', () => ({ TerminalPanel: () => null }));
+vi.mock('../../../apps/kiki-gui/src/components/preview/DocumentTabView', () => ({ DocumentTabView: () => null }));
 
 interface Envelope<T> {
   code: number;
@@ -66,6 +80,7 @@ interface PromptItemWire {
   prompt_id: string;
   user_message_id: string;
   status: 'running' | 'queued';
+  origin?: unknown;
   content: unknown;
   created_at: string;
 }
@@ -91,6 +106,7 @@ const PROMPT_TOML = [
   'max_context_size = 1000',
   'capabilities = ["thinking"]',
   'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
   '',
   '[models.stub-alt]',
   'provider = "stub"',
@@ -98,89 +114,15 @@ const PROMPT_TOML = [
   'max_context_size = 1000',
   'capabilities = ["thinking"]',
   'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
+  '',
+  '[search]',
+  'enabled = false',
+  '',
+  '[cron]',
+  'manualTick = true',
   '',
 ].join('\n');
-
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const CRC32_TABLE = makeCrc32Table();
-
-function makeCrc32Table(): Uint32Array {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) {
-      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    }
-    table[i] = c >>> 0;
-  }
-  return table;
-}
-
-function crc32(bytes: Buffer): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc = CRC32_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const typeBytes = Buffer.from(type, 'ascii');
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 0);
-  return Buffer.concat([length, typeBytes, data, crc]);
-}
-
-function solidPng(width: number, height: number): Buffer {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-
-  const row = Buffer.alloc(1 + width * 4);
-  for (let x = 0; x < width; x++) {
-    const offset = 1 + x * 4;
-    row[offset] = 0x33;
-    row[offset + 1] = 0x66;
-    row[offset + 2] = 0xcc;
-    row[offset + 3] = 0xff;
-  }
-  const raw = Buffer.alloc(row.length * height);
-  for (let y = 0; y < height; y++) {
-    row.copy(raw, y * row.length);
-  }
-
-  return Buffer.concat([
-    PNG_SIGNATURE,
-    pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', deflateSync(raw)),
-    pngChunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
-function pngDimensions(bytes: Buffer): { width: number; height: number } {
-  if (!bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-    throw new Error('expected PNG data');
-  }
-  if (bytes.subarray(12, 16).toString('ascii') !== 'IHDR') {
-    throw new Error('expected IHDR as first PNG chunk');
-  }
-  return {
-    width: bytes.readUInt32BE(16),
-    height: bytes.readUInt32BE(20),
-  };
-}
-
-function paddedPng(extraBytes: number, marker: number): Buffer {
-  const keyword = Buffer.from(`kiki-${String(marker)}`, 'ascii');
-  const text = Buffer.concat([keyword, Buffer.from([0]), Buffer.alloc(extraBytes, 0x41 + marker)]);
-  const base = solidPng(10, 10);
-  const iend = base.subarray(base.length - 12);
-  return Buffer.concat([base.subarray(0, base.length - 12), pngChunk('tEXt', text), iend]);
-}
 
 async function readFileEventually(path: string): Promise<Buffer> {
   return vi.waitFor(() => readFile(path));
@@ -246,7 +188,7 @@ describe('server-v2 /api prompts', () => {
   });
 
   async function call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH',
     path: string,
     arg?: unknown,
   ): Promise<{ status: number; body: Envelope<T> }> {
@@ -332,13 +274,17 @@ describe('server-v2 /api prompts', () => {
       const prompts = main.accessor.get(IAgentPromptService);
       if (source === 'onboarding-welcome-skill') {
         const args = 'Say in two or three sentences what you can do, then ask what I most want to get done and take me through doing it once: set up whatever that step needs and leave what already works alone. One question at a time.';
+        const requestBody = { args, user_input: `/kiki-ops ${args}`, prompt_id: 'welcome-helper-retry' };
         const startedAt = Date.now();
-        const activated = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, { args, user_input: `/kiki-ops ${args}` });
+        const activated = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, requestBody);
         expect(activated.body.code, activated.body.msg).toBe(0);
         const acceptedAt = Date.now();
         const loop = main.accessor.get(IAgentLoopService);
         await loop.settled();
         expect(loop.status()).toMatchObject({ state: 'idle', lastTurnResult: 'completed' });
+        const replay = await call('POST', `/api/sessions/${session.id}/skills/kiki-ops:activate`, requestBody);
+        expect(replay.body.code, JSON.stringify(replay.body)).toBe(0);
+        expect(replay.body.data).toMatchObject({ activated: true, skill_name: 'kiki-ops', prompt_id: 'welcome-helper-retry' });
         console.log(JSON.stringify({ route: 'skills/kiki-ops:activate', request_id: activated.body.request_id, remote_model: requests[0], bound_model: main.accessor.get(IAgentProfileService).getModel(), turn_result: loop.status().lastTurnResult, accepted_ms: acceptedAt - startedAt, finished_ms: Date.now() - startedAt }));
       } else {
         const userInput = '/kiki-ops Help me start.';
@@ -347,11 +293,12 @@ describe('server-v2 /api prompts', () => {
           pendingProfile: undefined, boundProfile: 'agent', modelTouched: true, effortTouched: true,
           model: 'stub', thinking: 'high', permissionTouched: false,
         }) : undefined;
-        const startedAt = Date.now();
-        const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, {
+        const requestBody = {
           ...(controlled ?? { content: [{ type: 'text', text: 'Introduce Kiki and help me choose my first task.' }] }),
-          prompt_id: controlled === undefined ? 'welcome-first-use' : undefined,
-        });
+          prompt_id: controlled === undefined ? 'welcome-first-use' : 'welcome-controlled-retry',
+        };
+        const startedAt = Date.now();
+        const submitted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, requestBody);
         const acceptedAt = Date.now();
         expect(submitted.body.code, JSON.stringify(submitted.body)).toBe(0);
         const submittedId = submitted.body.data.prompt_id;
@@ -366,6 +313,9 @@ describe('server-v2 /api prompts', () => {
           await vi.waitFor(() => expect(prompts.lookup(submittedId)?.phase).toBe('terminal'));
           expect(prompts.lookup(submittedId)?.terminal).toMatchObject({ state: 'completed' });
         }
+        const replay = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, requestBody);
+        expect(replay.body.code, JSON.stringify(replay.body)).toBe(0);
+        expect(replay.body.data).toMatchObject({ prompt_id: submittedId, user_message_id: submittedId });
       }
       expect(requests).toEqual(['stub']);
       expect(main.accessor.get(IAgentProfileService).getModel()).toBe(expectedModel);
@@ -373,6 +323,221 @@ describe('server-v2 /api prompts', () => {
       await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
     }
   });
+
+  it('rejects a welcome first message without a model before enqueue and accepts the preserved prompt after model selection', async () => {
+    await writeConfigToml(home!, PROMPT_TOML.replace('default_model = "stub"', ''));
+    const created = await call<{ id: string }>('POST', '/api/sessions', {});
+    expect(created.body.code, created.body.msg).toBe(0);
+    const session = getLiveSessionById(server!.core.accessor, created.body.data.id)!;
+    const main = await ensureMainAgent(session);
+    const content = [{ type: 'text', text: 'Keep this welcome draft.' }];
+    const rejected = await call('POST', `/api/sessions/${session.id}/prompts`, { prompt_id: 'welcome-preserved', content });
+    expect(rejected.body.code).toBe(40113);
+    expect(main.accessor.get(IAgentPromptService).lookup('welcome-preserved')).toBeUndefined();
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe('');
+    main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-selected-welcome', async ctx => {
+      await new Promise<void>(resolve => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const accepted = await call<PromptItemWire>('POST', `/api/sessions/${session.id}/prompts`, { prompt_id: 'welcome-preserved', content, model: 'stub' });
+    expect(accepted.body.code, accepted.body.msg).toBe(0);
+    expect(main.accessor.get(IAgentProfileService).getModel()).toBe('stub');
+    main.accessor.get(IAgentPromptService).abort('welcome-preserved');
+  });
+
+  it('creates a direct executor over HTTP and commits queued execution overrides only at the next user turn', async () => {
+    const bindings: ProfileBindingSnapshot[] = [];
+    const runs: Array<{ generation: number; prompt: string }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider: AgentExecutorProvider = {
+      id: 'example-provider', protocol: 'acp-v1', validateOptions: () => ({}),
+      validateBinding: (binding) => ({ ok: true, binding }),
+      create: (context) => {
+        bindings.push(structuredClone(context.binding));
+        let running = false;
+        let current = Promise.resolve();
+        return {
+          hooks: createHooks(['onWillRun']),
+          status: () => ({ state: running ? 'running' : 'idle' }),
+          run: async (request, options) => {
+            running = true;
+            runs.push({ generation: context.binding.execution!.generation, prompt: request.kind === 'retry' ? '' : request.prompt });
+            const id = runs.length;
+            current = (id === 1 ? gate : Promise.resolve()).then(() => { running = false; });
+            const completion = current.then(() => ({ summary: 'Done' }));
+            options.onReady?.();
+            return { agentId: context.agent.id, completion, turn: {
+              id, signal: options.signal, ready: Promise.resolve(), cancel: () => false,
+              result: current.then(() => ({ type: 'completed' as const, steps: 1, truncated: false })),
+            } };
+          },
+          cancel: () => false, settled: () => current, shutdown: async () => {},
+        };
+      },
+    };
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue({ descriptor: {
+      id: 'example-acp', protocol: 'acp-v1', command: 'fixture', args: [], revision: 'fixture',
+    }, options: {}, provider });
+    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!), transport: {
+      eventsUrl: `${base.replace(/^http/, 'ws')}/api/klient/events`,
+      fetch: (input, init) => {
+        if (init?.method === 'POST' && typeof init.body === 'string') {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          requests.push({ path: new URL(url).pathname, body: JSON.parse(init.body) });
+        }
+        return fetch(input, init);
+      },
+    } });
+    let controller: SessionController | undefined;
+    try {
+      const configured = await call<{ agent_executor_overrides: unknown }>('POST', '/api/config', {
+        agent_executor_overrides: { 'example-acp': { defaults: { model_alias: 'settings-model', thinking_effort: 'low',
+          kiki_context: [], allow_kiki_subagents: false, executor_prompt: { delivery: 'preamble', include: [] } } } },
+      });
+      expect(configured.body.code, configured.body.msg).toBe(0);
+      expect(configured.body.data.agent_executor_overrides).toMatchObject({ 'example-acp': { defaults: {
+        model_alias: 'settings-model', thinking_effort: 'low', kiki_context: [], allow_kiki_subagents: false,
+      } } });
+      const cleared = await call<{ agent_executor_overrides: unknown }>('POST', '/api/config', {
+        agent_executor_overrides: { 'example-acp': { defaults: { model_alias: null, thinking_effort: null, executor_prompt: null } } },
+      });
+      expect(cleared.body.code, cleared.body.msg).toBe(0);
+      expect(cleared.body.data.agent_executor_overrides).toEqual({ 'example-acp': { defaults: { kiki_context: [], allow_kiki_subagents: false } } });
+      const chosen = executionChoice({ executor: 'example-acp', overrides: { model: 'vendor-model', thinking: 'high' } });
+      const created = await client.createSession(buildNewSessionCreate({ cwd: home!, profile: 'agent', execution: chosen,
+        model: 'stub', thinking: 'low', modelTouched: true, effortTouched: true,
+        permissionMode: 'manual', permissionTouched: false, planMode: false }));
+      const id = created.id;
+      expect(requests.find((request) => request.path === '/api/sessions')?.body['agent_config']).toEqual({
+        execution: chosen, plan_mode: false,
+      });
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      const main = await ensureMainAgent(session);
+      const profile = main.accessor.get(IAgentProfileService);
+      const before = structuredClone(profile.data().execution!);
+      expect(before).toMatchObject({ selection: { executor: 'example-acp' }, effective: { model: 'vendor-model', thinking: 'high' },
+        sources: { kiki_context: 'harness-settings', allow_kiki_subagents: 'harness-settings', permission_mode: 'harness-default' } });
+      expect(before.selection.profile).toBeUndefined();
+      expect(before.effective.permission_mode).toBeUndefined();
+      const first = await controller.sendPrompt({ promptId: 'direct-first', text: 'FIRST_USER' });
+      expect(first.status).toBe('running');
+      const nextChoice = executionChoice({ executor: 'example-acp', overrides: { model: null, thinking: null, permission_mode: null,
+        kiki_context: [], allow_kiki_subagents: false } });
+      const nextSelection = resolveProfileSwitchSubmission({ pendingProfile: undefined, boundProfile: 'agent',
+        pendingExecution: nextChoice, boundExecution: executionChoice(before.selection),
+        modelTouched: true, effortTouched: true, model: 'stub', thinking: 'low', permissionTouched: true, permissionMode: 'manual' });
+      const next = await controller.sendPrompt({ ...nextSelection, promptId: 'direct-next', text: 'NEXT_USER' });
+      expect(next.status).toBe('queued');
+      expect(requests.find((request) => request.body['prompt_id'] === 'direct-next')?.body).toEqual({
+        prompt_id: 'direct-next', content: [{ type: 'text', text: 'NEXT_USER' }], execution: nextChoice,
+      });
+      expect(profile.data().execution).toEqual(before);
+      expect(bindings).toHaveLength(1);
+      release();
+      await vi.waitFor(() => { expect(runs).toHaveLength(2); }, { timeout: 5000 });
+      await main.accessor.get(IAgentExecutionService).settled();
+      await vi.waitFor(() => { expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined(); });
+      const after = structuredClone(profile.data().execution!);
+      expect(after.generation).toBe(before.generation + 1);
+      expect(after.selection.overrides).toEqual({ kiki_context: [], allow_kiki_subagents: false });
+      expect(after.effective.model).toBeUndefined();
+      expect(after.effective.thinking).toBeUndefined();
+      expect(after.sources).toMatchObject({ model: 'harness-default', thinking: 'harness-default',
+        kiki_context: 'session', allow_kiki_subagents: 'session', permission_mode: 'harness-default' });
+      expect(bindings).toHaveLength(2);
+      expect(bindings[1]).toMatchObject({ execution: after, systemPrompt: '', kikiContext: [], allowKikiSubagents: false });
+      expect(bindings[1]?.profileName).toBeUndefined();
+      const inherited = resolveProfileSwitchSubmission({ pendingProfile: undefined, boundProfile: 'agent',
+        pendingExecution: undefined, boundExecution: executionChoice(after.selection),
+        modelTouched: false, effortTouched: false, model: undefined, thinking: profile.data().thinkingLevel,
+        permissionTouched: false, permissionMode: 'manual' });
+      await controller.sendPrompt({ ...inherited, promptId: 'direct-inherit', text: 'INHERIT_USER' });
+      expect(requests.find((request) => request.body['prompt_id'] === 'direct-inherit')?.body).toEqual({
+        prompt_id: 'direct-inherit', content: [{ type: 'text', text: 'INHERIT_USER' }],
+      });
+      await main.accessor.get(IAgentExecutionService).settled();
+      expect(profile.data().execution).toEqual(after);
+      expect(bindings).toHaveLength(2);
+      expect(runs).toEqual([{ generation: before.generation, prompt: 'FIRST_USER' },
+        { generation: after.generation, prompt: 'NEXT_USER' }, { generation: after.generation, prompt: 'INHERIT_USER' }]);
+      const warm = await client.getSession(id);
+      expect(warm.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await client.getSession(id);
+      expect(cold.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      const coldProfile = await call<{ agent_config: { execution: unknown } }>('GET', `/api/sessions/${id}/profile`);
+      expect(coldProfile.body.data.agent_config.execution).toEqual(JSON.parse(JSON.stringify(after)));
+      expect(getLiveSessionById(server!.core.accessor, id)).toBeUndefined();
+    } finally { release(); controller?.close(); await client.klient.close(); }
+  });
+
+  it('queues a GUI manual compaction over HTTP and publishes manual execution and completion after a held request', async () => {
+    await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 256000 });
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const context = main.accessor.get(IAgentContextMemoryService);
+    for (const [role, text] of [['user', 'Old request.'], ['assistant', 'Old response.']] as const) {
+      context.append({ role, content: [{ type: 'text', text }], toolCalls: [] });
+    }
+    let release!: () => void;
+    let requestStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const held = new Promise<void>((resolve) => { requestStarted = resolve; });
+    const finish = (text: string): AgentLLMRequestFinish => ({
+      message: { role: 'assistant', content: [{ type: 'text', text }], toolCalls: [] },
+      usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+      providerFinishReason: 'completed',
+    });
+    const requester = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation((input) => ({
+      trace: { traceId: 'fixture-manual-compaction' },
+      result: input?.source?.type === 'turn'
+        ? (async () => { requestStarted(); await gate; return finish('Held final answer.'); })()
+        : Promise.resolve(finish('Manual summary over HTTP.')),
+    }));
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let progress: CompactionProgress | undefined;
+    const phases: string[] = [];
+    const events = client.klient.session(id).agent('main').events;
+    const update = (event: Parameters<typeof applyCompactionProgress>[1]) => {
+      progress = applyCompactionProgress(progress, event);
+      if (progress !== undefined) phases.push(`${progress.source}:${progress.phase}`);
+    };
+    const subscriptions = [events.on('compaction.started', update), events.on('compaction.completed', update), events.on('compaction.cancelled', update)];
+    try {
+      await Promise.all(subscriptions.map((subscription) => subscription.ready));
+      await client.submitPrompt(id, { content: [{ type: 'text', text: 'Held request.' }] });
+      await held;
+      const record = await client.getSession(id);
+      const action = { client, host: {}, refreshSessions: vi.fn(), navigate: vi.fn() };
+      const receipt = await compactSessionContext(action, record);
+      expect(receipt).toEqual({ accepted: true, source: 'manual', status: 'queued' });
+      expect(await compactSessionContext(action, record)).toEqual({ accepted: false, source: 'manual', status: 'queued' });
+      await expect.poll(() => progress?.phase).toBe('queued');
+      expect(requester).toHaveBeenCalledTimes(1);
+      release();
+      await expect.poll(() => progress?.phase).toBe('completed');
+      expect(phases).toEqual(['manual:queued', 'manual:running', 'manual:completed']);
+      expect(requester).toHaveBeenCalledTimes(2);
+      expect(main.accessor.get(IAgentFullCompactionService).queuedManualCompaction).toBe(false);
+      expect(context.get().some((message) => message.origin?.kind === 'compaction_summary')).toBe(true);
+      await main.accessor.get(IAgentLoopService).settled();
+    } finally {
+      release();
+      for (const subscription of subscriptions) subscription.dispose();
+      await client.klient.close();
+      requester.mockRestore();
+    }
+  }, 30_000);
 
   async function createHeldMainAgent(sessionId: string): Promise<void> {
     await createMainAgent(sessionId);
@@ -386,6 +551,66 @@ describe('server-v2 /api prompts', () => {
       ctx.signal.throwIfAborted();
     }, { before: 'context-injector' });
   }
+
+  it('round-trips scheduled delivery modes over HTTP and projects fired queue text with its origin', async () => {
+    const sessionId = await createSession(home!);
+    await createHeldMainAgent(sessionId);
+    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const provider = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'request');
+    const client = createHttpKlient({ endpoint: base, token: bearerToken(server!) });
+    type Task = { id: string; prompt: string; delivery_mode: 'queue' | 'steer' | 'idle'; paused: boolean };
+    const tasks: Task[] = [];
+    try {
+      for (const deliveryMode of ['queue', 'steer', 'idle', undefined] as const) {
+        const response = await call<{ task: Task }>('POST', '/api/cron', {
+          session_id: sessionId, cron: '0 9 * * *', paused: true,
+          prompt: `Read the release checklist\nKeep existing work running: ${deliveryMode ?? 'default'}`,
+          delivery_mode: deliveryMode,
+        });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task).toMatchObject({ delivery_mode: deliveryMode ?? 'idle', paused: true });
+        tasks.push(response.body.data.task);
+      }
+      for (const task of tasks) {
+        const response = await call<{ task: Task }>('PATCH', `/api/cron/${task.id}?session_id=${sessionId}`, {
+          cron: '15 9 * * *', prompt: `${task.prompt}\nUpdated schedule without changing timing.`,
+        });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task.delivery_mode).toBe(task.delivery_mode);
+        task.prompt = response.body.data.task.prompt;
+      }
+      for (const deliveryMode of ['steer', 'idle', 'queue'] as const) {
+        const response = await call<{ task: Task }>('PATCH', `/api/cron/${tasks[0]!.id}?session_id=${sessionId}`, { delivery_mode: deliveryMode });
+        expect(response.body.code, response.body.msg).toBe(0);
+        expect(response.body.data.task.delivery_mode).toBe(deliveryMode);
+      }
+      const listed = await call<{ items: Task[] }>('GET', `/api/cron?session_id=${sessionId}`);
+      expect(listed.body.code).toBe(0);
+      expect(new Map(listed.body.data.items.map((task) => [task.id, task.delivery_mode]))).toEqual(new Map(tasks.map((task) => [task.id, task.delivery_mode])));
+      const busy = await call<PromptItemWire>('POST', `/api/sessions/${sessionId}/prompts`, { content: [{ type: 'text', text: 'Synthetic held turn.' }] });
+      expect(busy.body.code, busy.body.msg).toBe(0);
+      expect(busy.body.data.status).toBe('running');
+      for (const task of [tasks[0]!, tasks[2]!]) {
+        const fired = await call<{ triggered: true }>('POST', `/api/cron/${task.id}:run?session_id=${sessionId}`);
+        expect(fired.body.code, fired.body.msg).toBe(0);
+        expect(fired.body.data.triggered).toBe(true);
+      }
+      const page = await client.session(sessionId).view.transcript.page({ agentId: 'main' });
+      const state = projectAgentTranscriptView(createViewState(sessionId), 'main', page);
+      const previews = queuedPromptPreviews(state);
+      expect(previews).toHaveLength(2);
+      const ordinary = previews.find(isOrdinaryQueueItem)!;
+      expect(ordinary).toMatchObject({ originKind: 'cron_job', cronDeliveryMode: 'queue', text: tasks[0]!.prompt, media: [] });
+      expect(ordinary.content).toEqual([expect.objectContaining({ type: 'text', text: expect.stringContaining(tasks[0]!.prompt) })]);
+      expect(previews.find((item) => item.cronDeliveryMode === 'idle')).toMatchObject({ originKind: 'cron_job', text: tasks[2]!.prompt });
+      expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+      expect(provider).not.toHaveBeenCalled();
+    } finally {
+      await main.accessor.get(IAgentPromptService).drain(new Error('test cleanup'));
+      provider.mockRestore();
+      await client.close();
+    }
+  });
 
   async function createHeldChild(sessionId: string) {
     await createMainAgent(sessionId);
@@ -459,6 +684,65 @@ describe('server-v2 /api prompts', () => {
     expect(modelSwitchActionSchema.parse({ action: 'cancel' })).toEqual({ action: 'cancel' });
     expect(modelSwitchActionSchema.safeParse({ action: 'keep_original', mode: 'fresh' }).success).toBe(false);
     expect(modelSwitchActionSchema.safeParse({ action: 'cancel', mode: 'fresh' }).success).toBe(false);
+  });
+
+  it.each(['model', 'effort'] as const)('GUI client Send now applies a pending %s at the first safe HTTP request boundary', async change => {
+    const bodies: Record<string, unknown>[] = [];
+    let entered!: () => void;
+    const firstRequest = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(JSON.parse(body));
+        const send = () => {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.end(`data: ${JSON.stringify({ id: 'safe-boundary-response', choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+        };
+        if (bodies.length === 1) { entered(); void gate.then(send); }
+        else send();
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    try {
+      const mutations = server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      for (const model of ['stub', 'stub-alt']) await mutations.updateModel(model, { max_context_size: 100000 });
+      await server!.core.accessor.get(ISessionIndex).prepare();
+      const id = await createSession(home as string);
+      await createMainAgent(id);
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'low' });
+      await client.submitPrompt(id, { prompt_id: 'safe-http-active', content: [{ type: 'text', text: 'Work already in progress.' }] });
+      await firstRequest;
+      const selected = await client.klient.session(id).agent('main').switchModel({ operationId: 'safe-http-choice', model: change === 'model' ? 'stub-alt' : 'stub', thinking: 'high', mode: 'direct' });
+      expect(selected.state).toBe('pending');
+      const dependent = await client.submitPrompt(id, { prompt_id: 'safe-http-original', after_model_switch: 'safe-http-choice', content: [{ type: 'text', text: 'Unique original GUI question after selection.' }] });
+      expect(dependent.status).toBe('queued');
+      await client.steerPrompt(id, dependent.prompt_id);
+      expect(bodies).toHaveLength(1);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({ modelAlias: 'stub', thinkingLevel: 'low' });
+      release();
+      await main.accessor.get(IAgentLoopService).settled();
+      expect(bodies).toHaveLength(2);
+      expect(bodies.map(body => body['model'])).toEqual(['stub', change === 'model' ? 'stub-alt' : 'stub']);
+      expect(bodies.map(body => body['reasoning_effort'])).toEqual(['low', 'high']);
+      expect(JSON.stringify(bodies[1])).toContain('Unique original GUI question after selection.');
+      const journal = [];
+      for await (const record of main.accessor.get(IWireService).readJournal()) journal.push(record);
+      expect(journal.filter(record => record.type === 'turn.steer' && record['promptId'] === 'safe-http-original')).toHaveLength(1);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+      expect(main.accessor.get(IAgentPromptService).list().pending).toEqual([]);
+    } finally {
+      release();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('switches through REST and klient events at idle with dependent delivery and one live/cold timeline identity', async () => {
@@ -847,7 +1131,7 @@ describe('server-v2 /api prompts', () => {
     expect(submitted.body.data.status).toBe('blocked');
     expect(await main.accessor.get(IAgentPlanService).status()).toBeNull();
     expect(main.accessor.get(IAgentGoalService).getGoal().goal).toBeNull();
-    hook.dispose();
+    await hook.dispose();
   });
 
   it.each([false, true])('reports failed launch consistently, skills=%s', async (skills) => {
@@ -1059,7 +1343,7 @@ describe('server-v2 /api prompts', () => {
       .accessor.get(IAgentLifecycleService)
       .get('main')!
       .accessor.get(IAgentPromptService)
-      .drain();
+      .drain(new Error('test cleanup'));
   });
 
   it('rejects Send now when a queued model or thinking selection differs from the active turn', async () => {
@@ -1214,7 +1498,7 @@ describe('server-v2 /api prompts', () => {
       .accessor.get(IAgentLifecycleService)
       .get('main')!
       .accessor.get(IAgentPromptService)
-      .drain();
+      .drain(new Error('test cleanup'));
   });
 
   it('honors a client-chosen prompt_id on submit', async () => {
@@ -1599,19 +1883,62 @@ describe('server-v2 /api prompts', () => {
     expect(session!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
   });
 
-  it('rejects a bundled prompt_id combination before any override or agent materialization', async () => {
+  it('accepts a bundled prompt_id and replays the matching receipt without another model request', async () => {
+    await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
     const id = await createSession(home as string, false);
-
-    const submitted = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+    await createMainAgent(id);
+    const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub' });
+    await main.accessor.get(IAgentLoopService).settled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const hold = main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-bundled-retry', async ({ signal }) => {
+      await gate;
+      signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const requester = vi.spyOn(main.accessor.get(IAgentLLMRequesterService), 'start').mockImplementation(() => ({
+      trace: { traceId: 'bundled-prompt-retry' },
+      result: Promise.resolve({
+        message: { role: 'assistant', content: [{ type: 'text', text: 'bundled completion' }], toolCalls: [] },
+        usage: { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 },
+        providerFinishReason: 'completed',
+      }),
+    }));
+    const payload = {
       content: [{ type: 'text', text: 'Review this change.' }],
-      permission_mode: 'yolo',
       prompt_id: 'submission-1',
       skills: [{ name: 'kiki-ops' }],
-    });
-    expect(submitted.body.code).toBe(40001);
+    };
 
-    const session = getLiveSessionById(server!.core.accessor, id);
-    expect(session!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    const submittedPromise = call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    await vi.waitFor(() => {
+      const list = main.accessor.get(IAgentPromptService).list();
+      expect(list.pending.length + (list.active === undefined ? 0 : 1)).toBeGreaterThan(0);
+    });
+    release();
+    const submitted = await submittedPromise;
+    expect(submitted.body.code, submitted.body.msg).toBe(0);
+    expect(submitted.body.data).toMatchObject({ prompt_id: payload.prompt_id, content: payload.content });
+    expect(submitted.body.data.origin).toMatchObject({
+      kind: 'user',
+      skillActivations: [{ skillName: 'kiki-ops' }],
+    });
+    await vi.waitFor(() => expect(requester).toHaveBeenCalledTimes(1));
+    await main.accessor.get(IAgentLoopService).settled();
+
+    const retry = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, payload);
+    expect(retry.body.code, retry.body.msg).toBe(0);
+    expect(retry.body.data).toEqual(submitted.body.data);
+    expect(requester).toHaveBeenCalledTimes(1);
+
+    const changed = await call<null>('POST', `/api/sessions/${id}/prompts`, {
+      ...payload,
+      content: [{ type: 'text', text: 'Changed bundled content.' }],
+    });
+    expect(changed.body.code).toBe(40938);
+    expect(requester).toHaveBeenCalledTimes(1);
+    hold.dispose();
+    requester.mockRestore();
   });
 
   it('cleans bundled staging through the settlement tracker', async () => {
@@ -1632,12 +1959,14 @@ describe('server-v2 /api prompts', () => {
     handlers[0]!({ type: 'turn.started' });
     expect(discard).not.toHaveBeenCalled();
     handlers[0]!({ type: 'prompt.completed', promptId: 'msg_1' });
+    await tracker.dispose();
     expect(discard).toHaveBeenCalledTimes(1);
 
     const blockedDiscard = vi.fn();
     const blockedTracker = watchPromptSettlements(events as never);
     handlers[1]!({ type: 'prompt.completed', promptId: 'msg_blocked' });
     blockedTracker.settle('msg_blocked', blockedDiscard);
+    await blockedTracker.dispose();
     expect(blockedDiscard).toHaveBeenCalledTimes(1);
 
     const steered = vi.fn();
@@ -1648,18 +1977,20 @@ describe('server-v2 /api prompts', () => {
     handlers[2]!({ type: 'prompt.completed', promptId: 'msg_other' });
     expect(steered).not.toHaveBeenCalled();
     handlers[2]!({ type: 'prompt.completed', promptId: 'msg_parent' });
+    await steeredTracker.dispose();
     expect(steered).toHaveBeenCalledTimes(1);
 
     const aborted = vi.fn();
     const abortedTracker = watchPromptSettlements(events as never);
     abortedTracker.settle('msg_4', aborted);
     handlers[3]!({ type: 'prompt.aborted', promptId: 'msg_4' });
+    await abortedTracker.dispose();
     expect(aborted).toHaveBeenCalledTimes(1);
 
     const rejected = vi.fn();
     const rejectedTracker = watchPromptSettlements(events as never);
     rejectedTracker.settle('msg_5', rejected);
-    rejectedTracker.dispose();
+    await rejectedTracker.dispose();
     handlers[4]!({ type: 'prompt.completed', promptId: 'msg_5' });
     expect(rejected).not.toHaveBeenCalled();
   });
@@ -2785,7 +3116,7 @@ describe('server-v2 /api prompts', () => {
     await tasks.stopByUser(runTasks[1]!);
     await lifecycle.get(child.id)!.accessor.get(IAgentExecutionService).settled();
     onCreate.dispose();
-    subscription.dispose();
+    await subscription.dispose();
   });
 
   it('accepts a prompt for a live agent after its previous turn settled', async () => {
@@ -2920,7 +3251,7 @@ describe('server-v2 /api prompts', () => {
         expect(observed).toEqual(expect.arrayContaining(['task.terminated', 'subagent.failed']));
       });
       createSubscription.dispose();
-      eventSubscription.dispose();
+      await eventSubscription.dispose();
     } finally {
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error === undefined) resolve();

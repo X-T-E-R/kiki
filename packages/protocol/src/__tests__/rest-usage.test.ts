@@ -99,6 +99,21 @@ describe('usage REST schemas', () => {
     expect(usageResponseSchema.safeParse({ ...enriched, trend: [{ ...enriched.trend[0], turn_count: -1 }] }).success).toBe(false);
   });
 
+  it('accepts native source dimensions and additive profile filters while retaining old responses', () => {
+    for (const dimension of ['agent', 'model', 'project', 'session', 'provider', 'profile']) {
+      expect(usageQuerySchema.parse({ dimension, profile: ['explore', 'general'] })).toEqual({
+        dimension, profile: ['explore', 'general'],
+      });
+      const baseline = response();
+      expect(usageResponseSchema.parse({ ...baseline, query: { ...baseline.query, dimension, profiles: ['explore'] } }).query.profiles).toEqual(['explore']);
+    }
+    expect(usageQuerySchema.parse({ profile: 'explore' }).profile).toBe('explore');
+    expect(usageResponseSchema.parse(response()).query.profiles).toBeUndefined();
+    for (const profile of ['', [], ['']]) {
+      expect(usageQuerySchema.safeParse({ profile }).success).toBe(false);
+    }
+  });
+
   it('parses repeated attribution and workspace filters', () => {
     expect(
       usageQuerySchema.parse({

@@ -85,8 +85,8 @@ describe('sessionExport', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exports a v2 session directory with per-agent wire activity and optional global log', async () => {
@@ -884,6 +884,7 @@ function registerSessionExportServices(
     status: () => ({ source: 'authoritative' as const, state: 'uninitialized' as const, degradedCount: 0 }),
     listRecent: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
+    archiveFamily: async () => [],
     count: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),
     remove: async () => {},
   });
@@ -898,7 +899,7 @@ function registerSessionExportServices(
     withLifecycleSerialization: async <T>(
       _sessionId: string,
       work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
-    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined }),
+    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }),
     list: () => (options.lifecycleHandle === undefined ? [] : [options.lifecycleHandle]),
     listEphemeral: () => [],
     isEphemeral: () => false,
@@ -935,6 +936,7 @@ function registerSessionExportServices(
     }),
     update: async () => undefined,
     delete: async () => {},
+    findRegisteredByRoot: async () => undefined,
   });
   reg.define(ISessionExportService, SessionExportService);
 }

@@ -223,7 +223,7 @@ The [thread tools](./tools.md#collaboration-tools) use these policies and preser
 
 ### `kiki usage-export`
 
-Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. This experimental feature is off by default: start the backend with `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`. Setting it only in a later CLI process does not enable an already-running backend. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
+Export content-free usage from one local Kiki home to vibe-usage/vibecafe, a standard Webhook, or an approved script. The command is available without an experimental switch; an unconfigured or disabled destination sends nothing. Management requires this home's local-owner credential; remote connection tokens and dangerous authentication-bypass mode do not grant access.
 
 Save a draft, inspect its exact range and fields, then approve that destination once:
 
@@ -272,6 +272,12 @@ To hand a home over from an existing vibe collector, use `handoff plan <id>` on 
 The collector stays responsible for `<T` and native for `>=T`; offline catch-up keeps T rather than using ACK time. `handoff refresh <id>` reads the collector's safe final receipt, and completion requires both that receipt and a real native ACK. `handoff rollback <id> --cutoff <new_future_R> --agree` keeps native responsible for `[T,R)` and resumes the collector at `>=R`, never an unbounded old scan.
 
 Receiver developers can run the repository's local example with `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts` (Node 24). It binds only `127.0.0.1:9080`, persists replacements and deletion tombstones in `usage-receiver.sqlite`, and exposes `POST /usage`. Approve the exact loopback HTTP grant when testing it. A production receiver needs TLS, durable storage, and authentication; the example is not a hosted dashboard.
+
+### `kiki agents` and delegation commands
+
+`kiki agents --json` reads the workspace's effective profile catalog and returns `items` and `complete` without creating a conversation or registering a workspace. Use `--workspace <dir>` to inspect another directory.
+
+`kiki dispatch <message>` creates or reuses the CLI delegation seat when starting work. Other delegation commands, including `list`, `interactions`, `status`, `wait`, `result`, `events`, and `transcript`, require an existing seat; if none exists, they return exit code `3` without creating one. Start work with `dispatch` or explicitly create a seat with `--principal kiki-cli` before using them.
 
 ### `kiki seat`
 

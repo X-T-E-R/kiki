@@ -94,7 +94,14 @@ export function patchAgentTranscriptContent(store: AgentTranscript, segment: Con
 export function replaceAgentContentEntity(store: AgentTranscript, source: ContentSource, patched: ContentWindow): boolean {
   let ops: TranscriptOperation[];
   switch (source.kind) {
-    case 'turn': ops = turnContentOps(carryContentHydration(patched, rebindTurnContentRefs(patched as TranscriptTurn))); break;
+    case 'turn': {
+      const turn = carryContentHydration(patched, rebindTurnContentRefs(patched as TranscriptTurn));
+      const snapshot = store.snapshot();
+      ops = [{ op: 'reset', agentId: store.agentId, snapshot: {
+        ...snapshot, items: snapshot.items.map((item) => item.kind === 'turn' && item.turnId === source.id ? turn : item),
+      } }];
+      break;
+    }
     case 'frame': ops = [{ op: 'frame.upsert', turnId: source.turnId!, stepId: source.stepId!, frame: patched as import('@kiki/transcript').TranscriptFrame }]; break;
     case 'task': ops = [{ op: 'task.upsert', task: patched as import('@kiki/transcript').TranscriptTask }]; break;
     case 'attachment': ops = [{ op: 'attachment.upsert', attachment: patched as import('@kiki/transcript').TranscriptAttachment }]; break;

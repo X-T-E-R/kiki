@@ -94,10 +94,16 @@ export async function createPrintClient(
       klient,
       osHomeDir: app.accessor.get(IBootstrapService).osHomeDir,
       flushWires: () => flushPrintWires(app),
-      dispose: () => disposing ??= klient.close().finally(() => app.dispose()),
+      dispose: () => disposing ??= (async () => {
+        try {
+          await klient.close();
+        } finally {
+          await app.dispose();
+        }
+      })(),
     };
   } catch (error) {
-    app.dispose();
+    await app.dispose();
     throw error;
   }
 }

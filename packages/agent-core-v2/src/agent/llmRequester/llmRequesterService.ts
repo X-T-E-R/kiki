@@ -100,6 +100,8 @@ import {
 } from '#/session/requestIdentity/requestIdentityRegistry';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { AnthropicResponseCapture, type AnthropicResponseCaptureInput, type AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
 
 import {
   IAgentLLMRequesterService,
@@ -220,6 +222,31 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
   private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
   private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
+  private responseCapture: AnthropicResponseCapture | undefined;
+
+  armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus {
+    if (input?.sessionId !== this.sessionContext.sessionId || input?.agentId !== this.agentContext.agentId) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Response capture identity must match the addressed session and agent.');
+    }
+    if (this.responseCapture?.status().enabled) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Stop the existing response capture before arming another.');
+    this.responseCapture = new AnthropicResponseCapture(this.captureLogs, this.bootstrap.scope('logs'), {
+      sessionId: input.sessionId, agentId: input.agentId, providerId: input.providerId, model: input.model,
+      thinkingEffort: input.thinkingEffort, expiresAt: input.expiresAt, maxResponses: input.maxResponses,
+    });
+    return this.responseCapture.status();
+  }
+
+  async anthropicResponseCaptureStatus(): Promise<AnthropicResponseCaptureStatus | null> {
+    return this.responseCapture?.flush() ?? null;
+  }
+
+  async stopAnthropicResponseCapture(captureId: string): Promise<AnthropicResponseCaptureStatus> {
+    if (this.responseCapture === undefined || this.responseCapture.status().captureId !== captureId) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Response capture id does not match the current lease.');
+    }
+    this.responseCapture.stop();
+    return this.responseCapture.flush();
+  }
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -246,6 +273,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IRequestIdentityRegistry private readonly requestIdentities: IRequestIdentityRegistry,
     @IRequestIdentityCatalog private readonly identityCatalog: IRequestIdentityCatalog,
+    @IAppendLogStore private readonly captureLogs: IAppendLogStore,
   ) {
     this.states.contributeState(llmRequestTraceKey);
     this.states.contributeState(llmRequesterLastConfigLogSignatureKey);
@@ -475,6 +503,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         onRequestTrace(normalized);
       };
 
+      const rawResponseObserver = this.responseCapture?.observe({ providerId: request.model.providerName, model: request.model.name,
+        thinkingEffort: request.thinkingEffort, protocol: request.model.protocol,
+        turnId: request.source?.turnId, step: request.source?.type === 'turn' ? request.source.step : undefined, cacheKey: params.cacheKey });
       try {
         for await (const event of request.requester.request(input, signal, {
           ...params,
@@ -483,6 +514,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
             isUnchangedModelHistory(this.context.get(), request.messages) &&
             isUnchangedModelHistory(request.messages, input.messages),
           onTraceId: setTraceId,
+          rawResponseObserver,
           attribution,
         })) {
           switch (event.type) {
@@ -532,6 +564,8 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       } catch (error) {
         toolCallIds.rollback();
         throw error;
+      } finally {
+        rawResponseObserver?.end('request-finished-without-raw-eof');
       }
 
       this.usage.record(request.modelAlias, usage ?? emptyUsage(), request.source, {
@@ -825,29 +859,35 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
     const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
+    const requester = this.modelCatalog.getRequester(resolved.modelAlias,
+      turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
+    const useServerOutputDefault = (requester.model.protocol === 'openai' || requester.model.protocol === 'openai_responses') &&
+      !isKimiProviderFamily(requester.model.providerType);
+    const usedContextTokens = overrides.messages === undefined ? this.tokenCounting.get().measured : undefined;
     const globalCompletionCap = this.config.get<ModelOverrides>('modelOverrides')?.maxCompletionTokens;
-    const completionCap = Math.min(
+    const outputCap = Math.min(
       globalCompletionCap !== undefined && globalCompletionCap <= 0 && (baseParams.maxCompletionTokens !== undefined || baseParams.maxContextTokens !== undefined)
         ? Infinity : globalCompletionCap ?? Infinity,
       baseParams.maxCompletionTokens ?? Infinity,
-      resolved.maxOutputSize ?? Infinity,
-      overrides.maxOutputSize ?? Infinity,
-      resolved.modelCapabilities.max_context_tokens > 0 ? resolved.modelCapabilities.max_context_tokens : Infinity,
+      resolved.maxOutputSize !== undefined && (!useServerOutputDefault || resolved.maxOutputSize > 0) ? resolved.maxOutputSize : Infinity,
+      overrides.maxOutputSize !== undefined && (!useServerOutputDefault || overrides.maxOutputSize > 0) ? overrides.maxOutputSize : Infinity,
+    );
+    const constrainToContext = !useServerOutputDefault || (Number.isFinite(outputCap) && outputCap > 0) ||
+      (baseParams.maxContextTokens ?? 0) > 0;
+    const completionCap = Math.min(outputCap,
+      constrainToContext && resolved.modelCapabilities.max_context_tokens > 0 ? resolved.modelCapabilities.max_context_tokens : Infinity,
+      useServerOutputDefault && (baseParams.maxContextTokens ?? 0) > 0 ? baseParams.maxContextTokens! : Infinity,
     );
     const budgetParams = completionBudgetParams({
       budget: resolveCompletionBudget({
         maxOutputSize: overrides.maxOutputSize ?? resolved.maxOutputSize,
         reservedContextSize: resolved.reservedContextSize,
         maxCompletionTokensCap: Number.isFinite(completionCap) ? completionCap : undefined,
+        allowFallback: !useServerOutputDefault,
       }),
       capability: resolved.modelCapabilities,
-      usedContextTokens:
-        overrides.messages === undefined
-          ? this.tokenCounting.get().measured
-          : undefined,
+      usedContextTokens,
     });
-    const requester = this.modelCatalog.getRequester(resolved.modelAlias,
-      turnConfig?.cognition?.modelSettings ?? turnConfig?.cognition?.recipe?.resolved.model ?? this.profile.getRecipeModelSettings(resolved.modelAlias));
     await this.identityCatalog.ready;
     const providerConfig =
       turnConfig?.providerConfig ??
@@ -902,6 +942,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           identityProjection.params,
         ),
         ...budgetParams,
+        usedContextTokens: useServerOutputDefault ? usedContextTokens : budgetParams?.usedContextTokens,
         usedContextTokensTrusted: overrides.messages === undefined && this.tokenCounting.isCurrentContextMeasured(),
         headers: identityProjection.headers,
         requestIdentity: identityProjection.wire,

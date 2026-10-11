@@ -151,14 +151,14 @@ describe('RequestIdentityCatalog profiles', () => {
     expect((await catalog.usage()).every((row) => row.effective_profile === 'none')).toBe(true);
     expect(sections['providers']).toEqual({ codex: { oauth: { storage: 'file', key: 'oauth/openai-codex' } },
       grok: { oauth: { storage: 'file', key: 'oauth/grok-build' } }, api: { apiKey: 'YOUR_API_KEY' } });
-    catalog.dispose();
+    await catalog.dispose();
   });
 
   it('lets config validation outside DI resolve custom profiles once the catalog is loaded', async () => {
     const { catalog } = createCatalog();
     const copy = await catalog.duplicateProfile('grok_build');
     expect(resolveRequestIdentityLayers({ profile: copy.id }).profile).toBe(copy.id);
-    catalog.dispose();
+    await catalog.dispose();
     expect(() => resolveRequestIdentityLayers({ profile: copy.id })).toThrow('does not exist');
   });
 });

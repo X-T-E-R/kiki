@@ -48,6 +48,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
     _providerType: string | undefined,
     private readonly alreadyMaterialized = false,
     deliveryOrigin?: MessageDeliveryOrigin,
+    private readonly promptId?: string,
   ) {
     super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin });
   }
@@ -56,7 +57,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
     return {
       input: this.message.content,
       origin: this.message.origin ?? { kind: 'unknown' },
-      promptId: this.message.id,
+      promptId: this.promptId ?? this.message.id,
     };
   }
 

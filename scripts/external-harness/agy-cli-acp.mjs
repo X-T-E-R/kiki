@@ -340,6 +340,11 @@ export class AgyBridge {
     if (event.event === 'init') {
       if (session.init) throw new Error('AGY sent duplicate init');
       const init = event.init;
+      const sameWorkspace = typeof init?.cwd === 'string' &&
+        (process.platform === 'win32'
+          ? resolve(init.cwd).toLowerCase() === resolve(session.cwd).toLowerCase()
+          : resolve(init.cwd) === resolve(session.cwd));
+      if (!sameWorkspace) throw new Error('AGY init cwd does not match the frozen workspace binding; do not run tools in another project');
       if (session.model !== DEFAULT && init?.model !== session.model) throw new Error('AGY init model does not match the explicit binding');
       if (session.conversationId && event.conversation_id !== session.conversationId) throw new Error('AGY init conversation does not match the exact native resume binding');
       session.init = event;

@@ -270,6 +270,42 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getAttachment('media-step.media-tool.att1')).toMatchObject({ mediaType: 'application/octet-stream', source: { kind: 'session_media', fileId: 'f_live_resource' } });
   });
 
+  it('keeps provider image references distinct from managed files in live and cold, with idempotent media frames', () => {
+    const live = new AgentTranscript('main');
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    live.apply(adapter.map(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } })));
+    live.apply(adapter.map(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'image-step' })));
+    const parts = [
+      { type: 'image_url', imageUrl: { url: 'https://example.test/answer.png', id: 'provider-reference', name: 'answer.png', mimeType: 'image/png' } },
+      { type: 'image_url', imageUrl: { url: 'kimi-file://stored-image', id: 'provider-reference', name: 'saved.png', mimeType: 'image/png' } },
+      { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' }, name: 'inline.png' },
+    ];
+    const cold = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(cold);
+    const wire = new TranscriptWireAdapter('main');
+    reducer.apply(wire.add({ type: 'turn.prompt', turnId: 0, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Draw' }] }));
+    reducer.apply(wire.add({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '0', step: 1, uuid: 'image-step' } }));
+    parts.forEach((part, index) => {
+      const partId = `image-${index}`;
+      const event = ev({ type: 'assistant.delta', turnId: 0, step: 1, stepId: 'image-step', partId, delta: '', part });
+      live.apply(adapter.map(event));
+      live.apply(adapter.map(event));
+      reducer.apply(wire.add({ type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', step: 1, stepUuid: 'image-step', uuid: partId, part } }));
+      expect(live.getAttachment(`${partId}.att1`)).toMatchObject({
+        name: ['answer.png', 'saved.png', 'inline.png'][index],
+        source: [
+          { kind: 'url', url: 'https://example.test/answer.png' },
+          { kind: 'session_media', fileId: 'stored-image' },
+          { kind: 'url', url: 'data:image/png;base64,iVBORw0KGgo=' },
+        ][index],
+      });
+      expect(cold.getAttachment(`${partId}.att1`)?.source).toEqual(live.getAttachment(`${partId}.att1`)?.source);
+      expect(cold.getAttachment(`${partId}.att1`)?.name).toEqual(live.getAttachment(`${partId}.att1`)?.name);
+    });
+    expect(turnOps('t0', live.getItems()).steps[0]?.frames).toHaveLength(3);
+    expect(turnOps('t0', cold.getItems()).steps[0]?.frames).toHaveLength(3);
+  });
+
   it('joins recorder media through the real session store into matching live and cold attachments', async () => {
     const home = await mkdtemp(join(tmpdir(), 'acp-media-joined-'));
     try {
@@ -1139,6 +1175,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(frame(live)?.frameId).toBe(frame(cold)?.frameId);
   });
 
+
   it('does not assign native todo writers to same-named external calls', () => {
     const adapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
@@ -1147,6 +1184,19 @@ describe('AgentTranscriptLiveAdapter', () => {
     const tools = turnOps('t1', tx.getItems()).steps.flatMap((step) => step.frames).filter((frame) => frame.kind === 'tool');
     expect(tools.find((frame) => frame.toolCallId === 'external:session:todo')?.todoId).toBeUndefined();
     expect(tools.find((frame) => frame.toolCallId === 'native-todo')?.todoId).toBe('todo');
+  });
+
+  it('adopts the canonical frame when a Grok tool delta is followed by its call start', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main', { toolFrame: (id) => id === 'grok-call' ? {
+      turnId: 't1', stepId: 't1.1', frame: { kind: 'tool', frameId: 't1.1.grok-call', toolCallId: 'grok-call',
+        name: 'Shell', state: 'running', inputText: '{"command":"pwd"}' },
+    } : undefined });
+    liveAdapter.map(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    liveAdapter.map(ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
+    const ops = liveAdapter.map(ev({ type: 'tool.call.started', turnId: 1, toolCallId: 'grok-call', name: 'Shell', args: { command: 'pwd' } }));
+    expect(ops).toContainEqual(expect.objectContaining({ op: 'frame.upsert', frame: expect.objectContaining({
+      name: 'Shell', input: { command: 'pwd' }, inputText: '{"command":"pwd"}',
+    }) }));
   });
 
   it('overwrites tool frame progress and drops progress for unknown calls', () => {
@@ -1769,7 +1819,10 @@ describe('AgentTranscriptLiveAdapter', () => {
     const ops = liveAdapter.map(ev({ type: 'goal.updated', snapshot, change: { kind: 'lifecycle' } }));
     tx.apply(ops);
 
-    expect(tx.getMeta().goal).toEqual({
+    expect(tx.getMeta().goal).toMatchObject({
+      goalId: 'g1',
+      turnsUsed: 3,
+      wallClockMs: 5000,
       objective: 'ship it',
       status: 'active',
       completionCriterion: 'tests green',
@@ -1779,12 +1832,73 @@ describe('AgentTranscriptLiveAdapter', () => {
       budgetLimit: 50000,
     });
     const marker = tx.getItems().find((item) => item.kind === 'marker');
-    expect(marker).toMatchObject({ marker: 'goal', payload: { snapshot } });
+    expect(marker).toMatchObject({ marker: 'goal', payload: { change: { kind: 'created' }, snapshot: tx.getMeta().goal } });
 
     const clearedOps = liveAdapter.map(ev({ type: 'goal.updated', snapshot: null }));
     expect(clearedOps[0]).toEqual({ op: 'meta.merge', meta: { goal: null } });
     tx.apply(clearedOps);
     expect(tx.getMeta().goal).toBeUndefined();
+  });
+
+  it('aligns goal semantics across wire, live snapshots and seeded accounting without duplicate notices', () => {
+    const records: TranscriptWireRecord[] = [
+      { type: 'goal.create', goalId: 'example-goal', objective: 'Complete the experiment', completionCriterion: 'Verified results', time: 1 },
+      { type: 'context.append_message', message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Run the checks' }] }, time: 1.1 },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Checking results' }],
+        toolCalls: [{ id: 'example-tool', name: 'Read', arguments: '{"path":"example.txt"}' }] }, time: 1.2 },
+      { type: 'goal.update', tokensUsed: 100, time: 2 },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Results received' }], toolCalls: [] }, time: 2.1 },
+      { type: 'goal.update', tokensUsed: 200, turnsUsed: 1, wallClockMs: 50, time: 3 },
+      { type: 'goal.update', objective: 'Complete the experiment', controlRevision: 2, time: 4 },
+      { type: 'goal.update', objective: 'Use the revised requirements', completionCriterion: null, time: 5 },
+      { type: 'goal.update', budgetLimits: { tokenBudget: 500, turnBudget: 3, wallClockBudgetMs: 1000 }, time: 6 },
+      { type: 'goal.update', budgetLimits: {}, time: 7 },
+      { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', wallClockMs: 100, time: 8 },
+      { type: 'goal.update', status: 'active', actor: 'user', time: 9 },
+      { type: 'goal.update', status: 'blocked', reason: 'Needs input', actor: 'model', time: 10 },
+      { type: 'goal.update', status: 'active', time: 11 },
+      { type: 'goal.update', status: 'complete', reason: 'Verified', time: 12 },
+      { type: 'goal.clear', time: 13 },
+      { type: 'goal.update', tokensUsed: 999, time: 14 },
+    ];
+    const wireTx = new AgentTranscript('main');
+    const liveTx = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(wireTx);
+    const live = new AgentTranscriptLiveAdapter('main');
+    const seeded = new AgentTranscriptLiveAdapter('main', { goal: () => wireTx.getMeta().goal });
+    for (const record of records) {
+      reducer.apply(adapter.add(record));
+      const goal = wireTx.getMeta().goal;
+      const snapshot = goal === undefined ? null : {
+        goalId: goal.goalId, objective: goal.objective, status: goal.status,
+        completionCriterion: goal.completionCriterion, followUpTiming: goal.followUpTiming,
+        controlRevision: goal.controlRevision, terminalReason: goal.terminalReason,
+        tokensUsed: goal.budgetUsed, turnsUsed: goal.turnsUsed, wallClockMs: goal.wallClockMs,
+        budget: { tokenBudget: goal.budgetLimit ?? null, turnBudget: goal.turnBudget ?? null,
+          wallClockBudgetMs: goal.wallClockBudgetMs ?? null },
+      };
+      const event = ev({ type: 'goal.updated', snapshot,
+        change: { reason: record['reason'], actor: record['actor'] } });
+      liveTx.apply(live.map(event));
+      expect(liveTx.getMeta().goal).toEqual(goal);
+      expect(seeded.map(event).filter((op) => op.op === 'marker.upsert')).toEqual([]);
+      if (record.time === 2 || record.time === 3 || record.time === 4 || record.time === 14) {
+        expect(adapter.add({ ...record, time: Number(record.time) + 100 }).flatMap((fact) => fact.operations)
+          .filter((op) => op.op === 'marker.upsert')).toEqual([]);
+      }
+    }
+    expect(wireTx.getItems().flatMap((item) => item.kind === 'turn' ? item.steps.flatMap((step) => step.frames) : []))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'tool', name: 'Read' }),
+        expect.objectContaining({ kind: 'text', text: 'Results received' })]));
+    const kinds = (tx: AgentTranscript) => tx.getItems().flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
+      ? [(item.payload as { change: { kind: string } }).change.kind] : []);
+    expect(kinds(wireTx)).toEqual(['created', 'updated', 'updated', 'updated', 'paused', 'resumed', 'blocked', 'resumed', 'completed']);
+    expect(kinds(liveTx)).toEqual(kinds(wireTx));
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(adapter.checkpoint());
+    expect(restored.add({ type: 'goal.update', tokensUsed: 1000 }).flatMap((fact) => fact.operations)
+      .filter((op) => op.op === 'marker.upsert')).toEqual([]);
   });
 
   it('mirrors plan mode slices into meta.modes (only when provided)', () => {
@@ -1837,6 +1951,18 @@ describe('AgentTranscriptLiveAdapter', () => {
 
     feed(ev({ type: 'agent.status.updated', model: 'k3' }));
     expect(tx.getMeta().agent).toMatchObject({ model: 'k3', thinkingEffort: 'high' });
+  });
+
+  it('projects external executor usage into shared context metadata without a marker', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const operations = liveAdapter.map(ev({
+      type: 'executor.runtime.update', executorId: 'claude-acp', turnId: 0, kind: 'usage',
+      value: { type: 'usage', used: 109_786, size: 200_000 },
+    }));
+    expect(operations).toEqual([{
+      op: 'meta.merge',
+      meta: { agent: { contextTokens: 109_786, maxContextTokens: 200_000, contextUsage: 0.54893 } },
+    }]);
   });
 
   it('maps agent.activity.updated into meta.agent.phase', () => {
@@ -2173,6 +2299,37 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.listPendingInteractions()).toEqual([]);
   });
 
+  it('restores question request time and identity from durable facts without inventing missing time', () => {
+    const createdAt = Date.parse('2026-01-01T00:00:01.000Z');
+    const payload = { questions: [{ question: 'Pick', options: [{ label: 'Appendix' }] }] };
+    const response = { answers: { q_0: { kind: 'other', text: 'Read the complete appendix.' } } };
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const live = new AgentTranscript('main');
+    live.apply(liveAdapter.mapInteractionRequested({ id: 'question-time', kind: 'question', payload,
+      origin: { agentId: 'main' }, createdAt,
+    }));
+    live.apply(liveAdapter.mapInteractionResolved('question-time', response));
+    const replay = (time: number | undefined, request: unknown = payload) => {
+      const transcript = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main');
+      const reducer = new TranscriptFactReducer(transcript);
+      reducer.apply(adapter.add({ type: 'interaction.request', id: 'question-time', kind: 'question',
+        origin: { agentId: 'main' }, request, time,
+      }));
+      reducer.apply(adapter.add({ type: 'interaction.resolved', id: 'question-time', response, time: createdAt + 500 }));
+      return transcript.getInteraction('question-time');
+    };
+    const requestOf = (interaction: ReturnType<AgentTranscript['getInteraction']>) => interaction?.request as Record<string, unknown>;
+    expect(requestOf(replay(createdAt))['created_at']).toBe(requestOf(live.getInteraction('question-time'))['created_at']);
+    expect(replay(createdAt)).toMatchObject({ interactionId: 'question-time', state: 'answered', origin: { agentId: 'main' }, response });
+    expect(requestOf(replay(createdAt, { ...payload, created_at: '2026-01-01T00:00:00.000Z' }))['created_at']).toBe('2026-01-01T00:00:00.000Z');
+    expect(requestOf(replay(createdAt, { ...payload, createdAt: '2026-01-01T00:00:00.000Z' }))['created_at']).toBe('2026-01-01T00:00:00.000Z');
+    expect(requestOf(replay(createdAt))).toMatchObject({ question_id: 'question-time',
+      questions: [{ id: 'q_0', question: 'Pick', options: [{ id: 'opt_0_0', label: 'Appendix' }] }],
+    });
+    expect(requestOf(replay(undefined))['created_at']).toBeUndefined();
+  });
+
   it('projects prompt submitted/completed/aborted/steered as global queue entities', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');
@@ -2274,6 +2431,15 @@ describe('AgentTranscriptLiveAdapter', () => {
       createdAt: '2026-01-01T00:00:04.000Z',
       finishedAt: '2026-01-01T00:00:04.000Z',
     });
+  });
+
+  it('settles prompts from the durable outcome receipt', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    tx.apply(liveAdapter.map(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:01.000Z'), terminal: { promptId: 'p-outcome', state: 'cancelled' } })));
+    expect(tx.getPrompt('p-outcome')).toMatchObject({ status: 'aborted', finishedAt: '2026-01-01T00:00:01.000Z' });
+    tx.apply(liveAdapter.map(ev({ type: 'prompt.outcome_committed', time: Date.parse('2026-01-01T00:00:02.000Z'), terminal: { promptId: 'p-outcome-blocked', state: 'blocked' } })));
+    expect(tx.getPrompt('p-outcome-blocked')).toMatchObject({ status: 'blocked', finishedAt: '2026-01-01T00:00:02.000Z' });
   });
 
   it('projects prompt moves as queue positions and preserves before-start aborts', () => {
@@ -2459,10 +2625,10 @@ describe('AgentTranscript transcript task vocabulary', () => {
 });
 
 it('preserves subagent task effort and provenance through live spawn and attach seed', () => {
-  const facts = { thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' };
+  const facts = { model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' };
   const adapter = new AgentTranscriptLiveAdapter('main');
   const spawned = adapter.map(ev({ type: 'subagent.spawned', time: 1, subagentId: 'child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, taskId: 'task', ...facts }));
-  expect(spawned.find((op) => op.op === 'task.upsert')).toMatchObject({ task: facts });
+  expect(spawned.find(op => op.op === 'task.upsert')).toMatchObject({ task: facts });
   const seeded = new AgentTranscriptLiveAdapter('main').seedSubagentTask({ taskId: 'task', agentId: 'child', description: 'work', status: 'running', detached: true, startedAt: 1, ...facts });
-  expect(seeded.find((op) => op.op === 'task.upsert')).toMatchObject({ task: facts });
+  expect(seeded.find(op => op.op === 'task.upsert')).toMatchObject({ task: facts });
 });

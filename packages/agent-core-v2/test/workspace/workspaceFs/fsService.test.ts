@@ -332,8 +332,8 @@ beforeEach(() => {
 
 let host: ReturnType<typeof createScopedTestHost> | undefined;
 
-afterEach(() => {
-  host?.dispose();
+afterEach(async () => {
+  await host?.dispose();
   host = undefined;
 });
 

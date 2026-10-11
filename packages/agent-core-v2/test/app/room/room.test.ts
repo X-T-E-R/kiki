@@ -18,6 +18,8 @@ import { renderRoomPrompt, RoomService } from '#/app/room/roomService';
 import { IRoomService, type RoomDocument, type RoomLogEntry, type RoomMessage } from '#/app/room/room';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { ISessionMetadata as SessionMetadataId } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionActivityView, type SessionActivityState } from '#/session/sessionActivity/sessionActivity';
 
 class MemoryDocuments implements IAtomicDocumentStore {
@@ -115,12 +117,20 @@ function fakeMeta(id: string): ISessionMetadata {
   };
 }
 
-function setup(enabled = true, wakeError?: Error, flatListing = false): {
+function setup(enabled = true, wakeError?: Error, flatListing = false, personaReadDelayMs = 0): {
   service: IRoomService;
   calls: Array<{ target: ThreadRef; content: string; id: string }>;
   release(messageId: string): void;
+  fail(messageId: string, error: Error): void;
+  deletePointer(roomId: string, messageId: string): Promise<void>;
   closeMember(sessionId: string): void;
   setActivity(sessionId: string, state: SessionActivityState): void;
+  setActivePrompt(sessionId: string, promptId: string | undefined): void;
+  personaReads(): number;
+  sessionIndexReads(): number;
+  readonly roomDeliveryCancellations: readonly (number | undefined)[];
+  readonly archivedSessions: readonly string[];
+  readonly abortedPrompts: readonly string[];
   legacyReads(): number;
   botEnabled(): boolean;
   seedRoom(room: RoomDocument): Promise<void>;
@@ -130,25 +140,36 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   const logs = new MemoryAppendLog();
   const sessions = new Map<string, FakeSession>();
   const activities = new Map<string, SessionActivityState>();
+  const activePrompts = new Map<string, string>();
+  const abortedPrompts: string[] = [];
+  const archivedSessions: string[] = [];
+  const roomDeliveryCancellations: Array<number | undefined> = [];
+  let personaReadCount = 0;
+  let sessionIndexReadCount = 0;
   const summaries = new Map<string, { id: string; workspaceId: string; cwd: string; createdAt: number; updatedAt: number; archived: boolean; usage: { total: { inputOther: number; inputCacheRead: number; inputCacheCreation: number; output: number } } }>();
   const calls: Array<{ target: ThreadRef; content: string; id: string }> = [];
-  const waiters = new Map<string, () => void>();
+  const waiters = new Map<string, { resolve(): void; reject(error: Error): void }>();
   const released = new Set<string>();
+  const failures = new Map<string, Error>();
   let sequence = 0;
   const personaStates = new Map(['alpha', 'bravo', 'charlie'].map((id) => [id, { version: 1 as const, archived: false }]));
   const personas = {
     _serviceBrand: undefined,
     onDidChange: Event.None,
-    get: async (id: string) => ({
-      definition: {
-        id,
-        name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '阿澈',
-        greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '阿澈 原始开场白。' : undefined,
-        job: `${id} job`,
-        description: `${id} persona`,
-      },
-      revision: 'r1',
-    }),
+    get: async (id: string) => {
+      personaReadCount++;
+      if (personaReadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, personaReadDelayMs));
+      return {
+        definition: {
+          id,
+          name: id === 'alpha' ? 'Alpha' : id === 'bravo' ? 'Bravo' : '阿澈',
+          greeting: id === 'alpha' ? 'Alpha 原始开场白。' : id === 'charlie' ? '阿澈 原始开场白。' : undefined,
+          job: `${id} job`,
+          description: `${id} persona`,
+        },
+        revision: 'r1',
+      };
+    },
     list: async () => [],
     getState: async (id: string) => personaStates.get(id) ?? { version: 1 as const, archived: false },
     updateState: async (id: string, patch: { readonly archived?: boolean }) => {
@@ -162,11 +183,27 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
     create: async (options: { sessionId?: string }): Promise<ISessionScopeHandle> => {
       const id = options.sessionId!;
       const metadata = fakeMeta(id);
+      const prompt = {
+        list: () => ({ active: activePrompts.has(id) ? { id: activePrompts.get(id)! } : undefined }),
+        abort: (promptId: string) => {
+          abortedPrompts.push(`${id}:${promptId}`);
+          activePrompts.delete(id);
+          return true;
+        },
+      } as unknown as IAgentPromptService;
+      const agent = { accessor: { get: <T>(service: unknown) => service === IAgentPromptService ? prompt as T : undefined as T } };
+      const lifecycle = { list: () => activePrompts.has(id) ? [agent] : [] } as unknown as IAgentLifecycleService;
       const session: FakeSession = {
         id,
         kind: 'session',
         metadata,
-        accessor: { get: <T>(service: unknown) => (service === SessionMetadataId ? metadata : service === ISessionActivityView ? { state: () => activities.get(id) ?? { busy: false, mainTurnActive: false, pendingInteraction: 'none' } } : undefined as T) },
+        accessor: {
+          get: <T>(service: unknown) => service === SessionMetadataId
+            ? metadata as T
+            : service === ISessionActivityView
+              ? { state: () => activities.get(id) ?? { busy: false, mainTurnActive: false, pendingInteraction: 'none' } } as T
+              : service === IAgentLifecycleService ? lifecycle as T : undefined as T,
+        },
         dispose: () => {},
       } as unknown as FakeSession;
       sessions.set(id, session);
@@ -181,7 +218,7 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
       });
       return session;
     },
-    archive: async (id: string) => { sessions.delete(id); },
+    archive: async (id: string) => { archivedSessions.push(id); sessions.delete(id); },
     close: async (id: string) => { sessions.delete(id); },
     delete: async (id: string) => { sessions.delete(id); },
     get: (id: string) => sessions.get(id),
@@ -198,10 +235,12 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
     },
     waitRoomDelivery: async (input: { messageId: string }) => {
       if (wakeError !== undefined) throw wakeError;
+      const failure = failures.get(input.messageId);
+      if (failure !== undefined) throw failure;
       if (released.delete(input.messageId)) return;
-      await new Promise<void>((resolve) => waiters.set(input.messageId, resolve));
+      await new Promise<void>((resolve, reject) => waiters.set(input.messageId, { resolve, reject }));
     },
-    cancelRoomDeliveries: async () => {},
+    cancelRoomDeliveries: async (input: { generation?: number }) => { roomDeliveryCancellations.push(input.generation); },
   } as unknown as IThreadCommunicationService;
   const config = {
     _serviceBrand: undefined,
@@ -214,13 +253,16 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
   ix.set(IPersonaStore, personas);
   ix.set(ISessionManager, sessionManager);
   ix.stub(ISessionIndex, {
-    get: async (id: string) => summaries.get(id) ?? {
-      id,
-      workspaceId: 'workspace',
-      createdAt: 1,
-      updatedAt: 1,
-      archived: false,
-      usage: { total: { inputOther: 50, inputCacheRead: 20, inputCacheCreation: 0, output: 10 } },
+    get: async (id: string) => {
+      sessionIndexReadCount++;
+      return summaries.get(id) ?? {
+        id,
+        workspaceId: 'workspace',
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        usage: { total: { inputOther: 50, inputCacheRead: 20, inputCacheCreation: 0, output: 10 } },
+      };
     },
   });
   ix.set(IThreadCommunicationService, thread);
@@ -238,17 +280,35 @@ function setup(enabled = true, wakeError?: Error, flatListing = false): {
     calls,
     closeMember: (sessionId) => { sessions.delete(sessionId); },
     setActivity: (sessionId, state) => { activities.set(sessionId, state); },
+    setActivePrompt: (sessionId, promptId) => {
+      if (promptId === undefined) activePrompts.delete(sessionId);
+      else activePrompts.set(sessionId, promptId);
+    },
+    personaReads: () => personaReadCount,
+    sessionIndexReads: () => sessionIndexReadCount,
+    roomDeliveryCancellations,
+    archivedSessions,
+    abortedPrompts,
     legacyReads: () => logs.reads,
     botEnabled: () => enabled,
     seedRoom: (value) => documents.set(`rooms/${value.id}`, 'room.json', value),
     release: (messageId) => {
-      const resolve = waiters.get(messageId);
-      if (resolve === undefined) released.add(messageId);
+      const waiter = waiters.get(messageId);
+      if (waiter === undefined) released.add(messageId);
       else {
         waiters.delete(messageId);
-        resolve();
+        waiter.resolve();
       }
     },
+    fail: (messageId, error) => {
+      const waiter = waiters.get(messageId);
+      if (waiter === undefined) failures.set(messageId, error);
+      else {
+        waiters.delete(messageId);
+        waiter.reject(error);
+      }
+    },
+    deletePointer: (roomId, messageId) => documents.delete(`rooms/${roomId}`, `log-pointers/${encodeURIComponent(messageId)}.json`),
     room,
   };
 }
@@ -273,6 +333,40 @@ describe('RoomService', () => {
     await expect(service.update(created.id, { name: ' ' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     await expect(service.update('missing', { pinned: true })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     expect(legacyReads()).toBe(0);
+  });
+
+  it('skips persona card loading and member materialization for metadata-only archive updates', async () => {
+    const fixture = setup(true, undefined, false, 5);
+    const created = await fixture.room;
+    const before = { personaReads: fixture.personaReads(), sessionIndexReads: fixture.sessionIndexReads() };
+    await fixture.service.update(created.id, { name: 'Archived release', pinned: true, archived: true });
+    expect({ personaReads: fixture.personaReads(), sessionIndexReads: fixture.sessionIndexReads() }).toEqual(before);
+    expect(fixture.roomDeliveryCancellations).toEqual([0]);
+    expect((await fixture.service.get(created.id))?.members).toEqual(created.members);
+  });
+
+  it('cancels and stops an archived room without archiving members, then allows a fresh wake after restore', async () => {
+    const fixture = setup();
+    const created = await fixture.room;
+    await fixture.service.postUserMessage(created.id, { text: 'Start the current turn.' });
+    await eventually(() => fixture.calls.length === 1);
+    const member = created.members[0]!;
+    fixture.setActivePrompt(member.sessionId, 'room-prompt');
+    const archived = await fixture.service.update(created.id, { archived: true });
+    expect(archived.members).toEqual(created.members);
+    expect(fixture.roomDeliveryCancellations).toEqual([0, 1]);
+    expect(fixture.abortedPrompts).toEqual([`${member.sessionId}:room-prompt`]);
+    expect(fixture.archivedSessions).toEqual([]);
+    fixture.release(fixture.calls[0]!.id);
+    await fixture.service.drain(created.id);
+    await fixture.service.update(created.id, { archived: false });
+    await fixture.service.postUserMessage(created.id, { text: 'Resume after restore.' });
+    await eventually(() => fixture.calls.length === 2);
+    fixture.release(fixture.calls[1]!.id);
+    await fixture.service.drain(created.id);
+    const independent = await fixture.service.createFromThreads({ id: 'independent-thread-room', name: 'Independent', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await fixture.service.update(independent.id, { archived: true });
+    expect(fixture.archivedSessions).toEqual([]);
   });
 
   it('returns only the observed page high-water and does not count metadata as new activity', async () => {
@@ -345,12 +439,190 @@ describe('RoomService', () => {
     const failure = entries.find((entry) => entry.kind === 'system' && entry.event === 'wake_failed');
     expect(failure).toMatchObject({
       text: expect.stringContaining(error.message),
-      data: { memberId: 'alpha', sourceMessageId: source.id, reason_code: code, reason: error.message, retryable },
+      data: { memberId: 'alpha', sourceMessageId: source.id, reason_code: code, reason: error.message, name: error.name, retryable },
     });
     if (code === 'auth.login_required') expect(failure).toMatchObject({ data: { provider: 'example-provider' } });
     expect((await service.get(created.id))?.cursors).toEqual(created.cursors);
     expect((await service.get(created.id))?.pendingWakes).toHaveLength(1);
     expect((await service.listItems())[0]).toMatchObject({ failed: true, busy: false });
+  });
+
+  it.each(['APIEmptyResponseError', 'APIStreamError'])('keeps the %s identity and only safe provider diagnostics', async (name) => {
+    const streamDiagnostics = {
+      schemaVersion: 1, protocol: 'openai_responses', endSource: 'sdk_error', terminalStatus: null,
+      terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
+      emittedTextChars: 0, emittedToolHeaders: 0, eventCount: 1, textDeltaCount: 0, textDoneCount: 0,
+      contentPartAddedCount: 0, outputItemAddedCount: 0, outputItemDoneCount: 0, terminalEventCount: 0, errorEventCount: 1,
+    };
+    const error = new Error2(ErrorCodes.PROVIDER_API_ERROR, 'Request failed', { name, details: {
+      provider: 'example-provider', errorSource: 'provider_stream', upstreamErrorType: 'server_error',
+      upstreamErrorCode: 'stream_failed', requestId: 'request-1', traceId: null,
+      streamDiagnostics: { ...streamDiagnostics, responseBody: 'private body', headers: { authorization: 'private' } },
+      body: 'private body', headers: { authorization: 'private' }, responseHash: 'private hash',
+    } });
+    const { service, room } = setup(true, error);
+    const created = await room;
+    await service.postUserMessage(created.id, { text: 'Review' });
+    await service.drain(created.id);
+    const failure = (await service.log(created.id)).entries.find((entry) => entry.kind === 'system' && entry.event === 'wake_failed');
+    expect(failure?.kind).toBe('system');
+    if (failure?.kind !== 'system') throw new Error('Expected wake failure');
+    expect(failure.data).toMatchObject({ name, reason_code: 'provider.api_error', provider: 'example-provider' });
+    expect(failure.data?.['providerFailure']).toEqual({
+      errorSource: 'provider_stream', upstreamErrorType: 'server_error', upstreamErrorCode: 'stream_failed',
+      requestId: 'request-1', traceId: null, streamDiagnostics,
+    });
+    expect(JSON.stringify(failure.data)).not.toContain('private');
+    expect((await service.get(created.id))!.cursors).toEqual(created.cursors);
+    expect((await service.get(created.id))!.pendingWakes).toHaveLength(1);
+  });
+
+  it('does not confirm or retire a previous generation after it completes', async () => {
+    const { service, calls, release, seedRoom, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'generation-room', name: 'Generation', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    const a = await service.postUserMessage(room.id, { text: '@thread-b A' });
+    await eventually(() => calls.length === 1);
+    const latest = (await service.get(room.id))!;
+    await seedRoom({ ...latest, generation: room.generation + 1 });
+    release(calls[0]!.id);
+    await service.drain(room.id);
+    expect((await service.get(room.id))!.cursors['thread-b']).toBeUndefined();
+    expect((await service.get(room.id))!.pendingWakes).toEqual([{ sessionId: 'thread-b', sourceMessageId: a.id, generation: room.generation }]);
+    const b = await service.postUserMessage(room.id, { text: '@thread-b B in new generation' });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.content).toContain(a.id);
+    expect(calls[1]!.content).toContain(b.id);
+    release(calls[1]!.id);
+    await service.drain(room.id);
+  });
+
+  it.each([false, true])('retires covered notifications without another turn when a system tail exists=%s', async (systemTail) => {
+    const { service, calls, release, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'coverage-room', name: 'Coverage', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await service.postUserMessage(room.id, { text: '@thread-b Blocker' });
+    await eventually(() => calls.length === 1);
+    const a = await service.postUserMessage(room.id, { text: '@thread-b A' });
+    const b = await service.postUserMessage(room.id, { text: '@thread-b B' });
+    const c = await service.postUserMessage(room.id, { text: '@thread-b C' });
+    release(calls[0]!.id);
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.content).toContain(`selected for room message ${a.id}`);
+    expect(calls[1]!.content).toContain(b.id);
+    expect(calls[1]!.content).toContain(c.id);
+    expect((await service.get(room.id))!.pendingWakes).toHaveLength(3);
+    if (systemTail) await service.update(room.id, { name: 'Coverage renamed' });
+    for (let index = 2; index <= 4; index++) release(`delivery-${index}`);
+    await service.drain(room.id);
+    expect(calls).toHaveLength(2);
+    expect((await service.get(room.id))!.pendingWakes).toEqual([]);
+    expect((await service.get(room.id))!.cursors['thread-b']).toBe(c.id);
+    const d = await service.postUserMessage(room.id, { text: '@thread-b D after the snapshot' });
+    await eventually(() => calls.length === 3);
+    expect(calls[2]!.content).toContain(d.id);
+    expect(calls[2]!.content).not.toContain(b.id);
+    if (systemTail) expect(calls[2]!.content).toContain('[system room_renamed]');
+    release(calls[2]!.id);
+    await service.drain(room.id);
+    expect((await service.get(room.id))!.cursors['thread-b']).toBe(d.id);
+  });
+
+  it('keeps a new mention queued after an in-flight snapshot', async () => {
+    const { service, calls, release, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'fresh-room', name: 'Fresh', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    const a = await service.postUserMessage(room.id, { text: '@thread-b A' });
+    await eventually(() => calls.length === 1);
+    const d = await service.postUserMessage(room.id, { text: '@thread-b D' });
+    expect(calls[0]!.content).not.toContain(d.id);
+    release(calls[0]!.id);
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.content).toContain(`since="${a.id}"`);
+    expect(calls[1]!.content).toContain(d.id);
+    release(calls[1]!.id);
+    await service.drain(room.id);
+  });
+
+  it.each([
+    new Error2(ErrorCodes.PROVIDER_CONNECTION_ERROR, 'Provider offline'),
+    new Error2(ErrorCodes.EXECUTOR_CANCELLED, 'Prompt cancelled'),
+  ])('does not confirm a failed or cancelled batch (%s)', async (error) => {
+    const { service, calls, release, fail, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'failed-batch-room', name: 'Failure', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await service.postUserMessage(room.id, { text: '@thread-b Blocker' });
+    await eventually(() => calls.length === 1);
+    const a = await service.postUserMessage(room.id, { text: '@thread-b A' });
+    const b = await service.postUserMessage(room.id, { text: '@thread-b B' });
+    release(calls[0]!.id);
+    await eventually(() => calls.length === 2);
+    const confirmed = (await service.get(room.id))!.cursors['thread-b'];
+    expect(calls[1]!.content).toContain(b.id);
+    fail(calls[1]!.id, error);
+    await eventually(() => calls.length === 3);
+    const afterFailure = (await service.get(room.id))!;
+    expect(afterFailure.cursors['thread-b']).toBe(confirmed);
+    expect(afterFailure.pendingWakes?.map((wake) => wake.sourceMessageId)).toEqual([a.id, b.id]);
+    expect(calls[2]!.content).toContain(a.id);
+    expect(calls[2]!.content).toContain(b.id);
+    expect(calls[2]!.content).toContain('[system wake_failed]');
+    release(calls[2]!.id);
+    await service.drain(room.id);
+  });
+
+  it.each(['source', 'cursor'] as const)('delivers conservatively when the %s pointer is unknown', async (missing) => {
+    const { service, calls, release, deletePointer, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'unknown-pointer-room', name: 'Unknown', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await service.postUserMessage(room.id, { text: '@thread-b Blocker' });
+    await eventually(() => calls.length === 1);
+    await service.postUserMessage(room.id, { text: '@thread-b A' });
+    const b = await service.postUserMessage(room.id, { text: '@thread-b B' });
+    const c = await service.postBotMessage(room.id, { sessionId: 'thread-a', toolCallId: 'tail', text: 'Unmentioned tail' });
+    release(calls[0]!.id);
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.content).toContain(b.id);
+    await deletePointer(room.id, missing === 'source' ? b.id : c!.id);
+    release(calls[1]!.id);
+    await eventually(() => calls.length === 3);
+    expect(calls[2]!.content).toContain(`selected for room message ${b.id}`);
+    release(calls[2]!.id);
+    await service.drain(room.id);
+  });
+
+  it('retires only the covered member and generation notification', async () => {
+    const { service, calls, release, seedRoom, room: personas } = setup();
+    await personas;
+    const room = await service.createFromThreads({ id: 'scoped-coverage-room', name: 'Scoped', workspace: '/workspace', sessionIds: ['thread-a', 'thread-b'] });
+    await service.postUserMessage(room.id, { text: '@thread-b Blocker' });
+    await eventually(() => calls.length === 1);
+    await service.postUserMessage(room.id, { text: '@thread-b A' });
+    const b = await service.postUserMessage(room.id, { text: '@thread-a @thread-b B' });
+    await eventually(() => calls.length === 2);
+    expect(calls[1]!.target.sessionId).toBe('thread-a');
+    release(calls[0]!.id);
+    await eventually(() => calls.length === 3);
+    expect(calls[2]!.target.sessionId).toBe('thread-b');
+    const latest = (await service.get(room.id))!;
+    const otherGeneration = { sessionId: 'thread-b', sourceMessageId: b.id, generation: room.generation + 1 };
+    await seedRoom({ ...latest, pendingWakes: [...latest.pendingWakes!, otherGeneration] });
+    release(calls[2]!.id);
+    release('delivery-4');
+    let retired = false;
+    const listener = service.onDidChange((event) => { if (event.roomId === room.id && event.room.pendingWakes?.length === 2) retired = true; });
+    onTestFinished(() => { listener.dispose(); });
+    await eventually(() => retired);
+    expect(calls).toHaveLength(3);
+    const after = (await service.get(room.id))!;
+    expect(after.pendingWakes).toEqual([
+      { sessionId: 'thread-a', sourceMessageId: b.id, generation: room.generation },
+      otherGeneration,
+    ]);
+    expect(after.cursors['thread-a']).toBeUndefined();
+    release(calls[1]!.id);
+    await service.drain(room.id);
+    expect((await service.get(room.id))!.pendingWakes).toEqual([otherGeneration]);
   });
 
   it('wakes the thread host for a message that mentions no one and keeps other threads for their next wake', async () => {
@@ -374,6 +646,9 @@ describe('RoomService', () => {
     expect(calls[1]!.content).toContain('Member broadcast');
     expect(calls[1]!.content).toContain('Ordinary assistant text is NOT posted');
     expect(calls[1]!.content).toContain('ThreadSend({room: "thread-room"');
+    expect(calls[1]!.content).toContain('Your room send without mentions is logged but wakes no one');
+    expect(calls[1]!.content).toContain('Only a user room message without mentions wakes the host');
+    expect(calls[1]!.content).toContain('Your existing workspace and permissions are unchanged');
     release(calls[1]!.id);
     await service.drain(room.id);
     const cursor = (await service.get(room.id))!.cursors['thread-b'];
@@ -396,7 +671,7 @@ describe('RoomService', () => {
     await service.postUserMessage(room.id, { text: '@thread-b second' });
     await eventually(() => calls.length === 2);
     expect(calls.map((call) => call.target.sessionId)).toEqual(['thread-a', 'thread-b']);
-    expect(calls[1]!.content).toContain('mentions use member ids: thread-a');
+    expect(calls[1]!.content).toContain('mentions must use these exact member IDs, not display names: [&quot;thread-a&quot;]');
     await service.addMember(room.id, { kind: 'thread', sessionId: 'thread-c' });
     await service.removeMember(room.id, 'thread-a');
     const events = (await service.log(room.id)).entries.flatMap((entry) => entry.kind === 'system' ? [[entry.event, entry.data?.['memberId']]] : []);

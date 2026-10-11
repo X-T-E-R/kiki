@@ -22,6 +22,8 @@ import type { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import type { AgentErrorEvent } from '@kiki/agent-core-v2/agent/mcp/mcpEvents';
 import type { PluginCommandActivated } from '@kiki/agent-core-v2/agent/pluginCommand/pluginCommand';
 import type { WarningIssued } from '@kiki/agent-core-v2/agent/profile/profileOps';
+import type { PromptTerminalResult } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import type { PromptOutcomeCommitted } from '@kiki/agent-core-v2/agent/prompt/promptReplay';
 import type {
   PromptAborted,
   PromptCompleted,
@@ -51,6 +53,7 @@ import type {
   ToolResultEvent,
 } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import type { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
+import type { ExecutorRuntimeUpdate } from '@kiki/agent-core-v2/agent/execution/externalExecutorOps';
 import type { PlanRevision } from '@kiki/agent-core-v2/features/plan/planOps';
 import type { SubagentSuspended } from '@kiki/agent-core-v2/session/subagent/subagentSuspended';
 import type { CronFired } from '@kiki/agent-core-v2/session/cron/cronOps';
@@ -62,6 +65,11 @@ import type {
 } from '@kiki/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  projectGoalChange,
+  type GoalMeta,
+  mediaUrlFromPart,
+  parseDaemonFileRefFileId,
+  sessionMediaIdFromBlobUrl,
   releaseToolFramePayload,
   taskNotificationFrameId,
   type AgentRef,
@@ -111,6 +119,7 @@ type PromptSubmittedEvent = { readonly type: 'prompt.submitted' } & PromptSubmit
 type PromptStartedEvent = { readonly type: 'prompt.started' } & PromptStarted;
 type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptCompleted;
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
+type PromptOutcomeCommittedEvent = { readonly type: 'prompt.outcome_committed'; readonly terminal: PromptTerminalResult; readonly time?: number } & PromptOutcomeCommitted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued & PromptSchedulingFields;
 type PromptQueueHoldChangedEvent = {
@@ -163,11 +172,13 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'subagent.suspended' } & SubagentSuspended)
   | ({ readonly type: 'goal.updated' } & GoalUpdated)
   | ({ readonly type: 'agent.status.updated' } & AgentStatusUpdated)
+  | ({ readonly type: 'executor.runtime.update' } & ExecutorRuntimeUpdate)
   | AgentActivityUpdatedEvent
   | PromptSubmittedEvent
   | PromptStartedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
+  | PromptOutcomeCommittedEvent
   | PromptSteeredEvent
   | PromptQueuedEvent
   | PromptQueueHoldChangedEvent
@@ -219,6 +230,7 @@ export interface LiveAdapterLookups {
   readonly turn?: LiveAdapterTurnLookup;
   readonly turnDetails?: LiveAdapterTurnDetailsLookup;
   readonly task?: (taskId: string) => TranscriptTask | undefined;
+  readonly goal?: () => GoalMeta | undefined;
 }
 
 interface OpenTextFrame {
@@ -266,6 +278,7 @@ export class AgentTranscriptLiveAdapter {
     readonly agentId: string;
     readonly name?: string;
     readonly subagentName?: string;
+    readonly model?: string;
     readonly thinkingEffort?: string;
     readonly thinkingEffortExplicit?: boolean;
     readonly executorId?: string;
@@ -284,6 +297,7 @@ export class AgentTranscriptLiveAdapter {
       detached: info.detached,
       name: info.name,
       subagentName: info.subagentName,
+      model: info.model ?? prev?.model,
       thinkingEffort: info.thinkingEffort ?? prev?.thinkingEffort,
       thinkingEffortExplicit: info.thinkingEffortExplicit ?? prev?.thinkingEffortExplicit,
       executorId: info.executorId ?? prev?.executorId,
@@ -387,6 +401,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onGoalUpdated(event);
       case 'agent.status.updated':
         return this.onAgentStatusUpdated(event);
+      case 'executor.runtime.update':
+        return this.onExecutorRuntimeUpdate(event);
       case 'agent.activity.updated':
         return this.onAgentActivityUpdated(event);
       case 'prompt.submitted':
@@ -405,6 +421,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onPromptTimingChanged(event);
       case 'prompt.completed':
         return this.onPromptCompleted(event);
+      case 'prompt.outcome_committed':
+        return this.onPromptOutcomeCommitted(event);
       case 'prompt.aborted':
         return this.onPromptAborted(event);
       case 'prompt.steered':
@@ -1063,7 +1081,7 @@ export class AgentTranscriptLiveAdapter {
     const step = this.ensureStep(turnId, ops);
     const frameId = `${step.stepId}.${event.toolCallId}`;
     const input = parseToolArgs(event.args);
-    const previous = this.toolFrames.get(event.toolCallId)?.frame;
+    const previous = (this.toolFrames.get(event.toolCallId) ?? this.adoptToolFrame(event.toolCallId))?.frame;
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId,
@@ -1078,7 +1096,7 @@ export class AgentTranscriptLiveAdapter {
       name: event.name,
       state: 'running',
       input,
-      inputText: this.toolFrames.get(event.toolCallId)?.frame.inputText,
+      inputText: previous?.inputText,
       display: event.display,
       startedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
       todoId: !event.toolCallId.startsWith('external:') && event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,
@@ -1371,6 +1389,7 @@ export class AgentTranscriptLiveAdapter {
     description?: string;
     runInBackground: boolean;
     taskId?: string;
+    model?: string;
     thinkingEffort?: string;
     thinkingEffortExplicit?: boolean;
     executorId?: string;
@@ -1402,6 +1421,7 @@ export class AgentTranscriptLiveAdapter {
         detached: event.runInBackground,
         name: event.name,
         subagentName: event.subagentName,
+        model: event.model ?? previous?.model,
         thinkingEffort: event.thinkingEffort ?? previous?.thinkingEffort,
         thinkingEffortExplicit: event.thinkingEffortExplicit ?? previous?.thinkingEffortExplicit,
         executorId: event.executorId ?? previous?.executorId,
@@ -1499,40 +1519,43 @@ export class AgentTranscriptLiveAdapter {
     return [{ op: 'task.upsert', task }];
   }
 
-  private onGoalUpdated(event: {
-    readonly type: string;
-    snapshot: {
-      objective: string;
-      status: 'active' | 'paused' | 'blocked' | 'complete';
-      completionCriterion?: string;
-      followUpTiming?: 'subagents_done' | 'tasks_done';
-      controlRevision?: number;
-      tokensUsed: number;
-      budget: { tokenBudget: number | null };
-    } | null;
-  }): TranscriptOperation[] {
-    const ops: TranscriptOperation[] = [];
+  private goal: GoalMeta | undefined;
+
+  private onGoalUpdated(event: Pick<GoalUpdated, 'snapshot' | 'change'>): TranscriptOperation[] {
     const snapshot = event.snapshot;
-    if (snapshot === null) {
-      ops.push({ op: 'meta.merge', meta: { goal: null } });
-    } else {
-      ops.push({
-        op: 'meta.merge',
-        meta: {
-          goal: {
-            objective: snapshot.objective,
-            status: snapshot.status,
-            completionCriterion: snapshot.completionCriterion,
-            followUpTiming: snapshot.followUpTiming,
-            controlRevision: snapshot.controlRevision,
-            budgetUsed: snapshot.tokensUsed,
-            budgetLimit: snapshot.budget.tokenBudget ?? undefined,
-          },
-        },
-      });
-    }
-    ops.push(this.markerOp('goal', restOf(event)));
+    const before = this.lookups?.goal === undefined ? this.goal : this.lookups.goal();
+    const goal: GoalMeta | undefined = snapshot === null ? undefined : {
+      goalId: snapshot.goalId,
+      objective: snapshot.objective,
+      status: snapshot.status,
+      completionCriterion: snapshot.completionCriterion,
+      followUpTiming: snapshot.followUpTiming,
+      controlRevision: snapshot.controlRevision,
+      budgetUsed: snapshot.tokensUsed,
+      turnsUsed: snapshot.turnsUsed,
+      wallClockMs: snapshot.wallClockMs,
+      budgetLimit: snapshot.budget.tokenBudget ?? undefined,
+      turnBudget: snapshot.budget.turnBudget ?? undefined,
+      wallClockBudgetMs: snapshot.budget.wallClockBudgetMs ?? undefined,
+      terminalReason: snapshot.terminalReason,
+    };
+    this.goal = goal;
+    const change = projectGoalChange(before, goal, event.change);
+    const ops: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: goal ?? null } }];
+    if (change !== undefined) ops.push(this.markerOp('goal', { change, snapshot: goal ?? null }));
     return ops;
+  }
+
+  private onExecutorRuntimeUpdate(event: ExecutorRuntimeUpdate): TranscriptOperation[] {
+    if (event.kind !== 'usage' || typeof event.value !== 'object' || event.value === null || Array.isArray(event.value)) return [];
+    const value = event.value as { readonly used?: unknown; readonly size?: unknown };
+    if (typeof value.used !== 'number' || !Number.isFinite(value.used)) return [];
+    const size = typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : undefined;
+    return [{ op: 'meta.merge', meta: { agent: {
+      contextTokens: value.used,
+      maxContextTokens: size,
+      contextUsage: size !== undefined && size > 0 ? value.used / size : undefined,
+    } } }];
   }
 
   private onAgentStatusUpdated(event: {
@@ -1655,6 +1678,7 @@ export class AgentTranscriptLiveAdapter {
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
       status: prev !== undefined && isTerminalPromptStatus(prev.status) ? prev.status : event.status,
+      runtimeControls: prev?.runtimeControls,
       userMessageId: event.userMessageId,
       content: projectPromptContentParts(event.content),
       createdAt: prev?.createdAt ?? event.createdAt,
@@ -1779,6 +1803,25 @@ export class AgentTranscriptLiveAdapter {
     return [{ op: 'prompt.upsert', prompt }];
   }
 
+  private onPromptOutcomeCommitted(event: PromptOutcomeCommittedEvent): TranscriptOperation[] {
+    const terminal = event.terminal;
+    const status: TranscriptPrompt['status'] = terminal.state === 'cancelled' ? 'aborted' : terminal.state;
+    const finishedAt = epochMsToIso(event.time ?? Date.now());
+    const prompt = this.upsertPrompt(terminal.promptId, (prev) => ({
+      promptId: terminal.promptId,
+      status,
+      userMessageId: prev?.userMessageId,
+      content: prev?.content,
+      createdAt: prev?.createdAt ?? finishedAt,
+      finishedAt,
+      abortedBeforeStart: status === 'aborted' ? prev?.abortedBeforeStart : undefined,
+      steeredAt: prev?.steeredAt,
+      appendTiming: prev?.appendTiming,
+      revision: prev?.revision,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
   private onPromptAborted(event: PromptAbortedEvent): TranscriptOperation[] {
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
@@ -1838,7 +1881,15 @@ export class AgentTranscriptLiveAdapter {
     promptId: string,
     build: (prev: TranscriptPrompt | undefined) => TranscriptPrompt,
   ): TranscriptPrompt {
-    const prompt = build(this.prompts.get(promptId));
+    const previous = this.prompts.get(promptId);
+    const built = build(previous);
+    const next = built.runtimeControls !== undefined || previous?.runtimeControls === undefined
+      ? built : { ...built, runtimeControls: previous.runtimeControls };
+    const prompt = previous?.originKind === undefined ? next : {
+      ...next,
+      originKind: previous.originKind,
+      originDeliveryMode: previous.originDeliveryMode,
+    };
     this.prompts.set(promptId, prompt);
     return prompt;
   }
@@ -2046,13 +2097,13 @@ function contentPartMedia(value: unknown): LiveContentMedia | undefined {
   const type = typeof part['type'] === 'string' ? part['type'] : undefined;
   const attachment = objectRecord(part['attachment']);
   const nestedKey = type === 'image_url' ? 'imageUrl' : type === 'video_url' ? 'videoUrl' : type === 'audio_url' ? 'audioUrl' : undefined;
-  const nested = nestedKey === undefined ? undefined : objectRecord(part[nestedKey]);
+  const nested = nestedKey === undefined ? objectRecord(part['source']) : objectRecord(part[nestedKey]);
   const nestedAttachment = objectRecord(nested?.['attachment']);
   const metadata = nestedAttachment ?? attachment;
   const fileId = stringValue(metadata?.['fileId']) ?? stringValue(metadata?.['file_id'])
-    ?? stringValue(nested?.['id']) ?? stringValue(part['fileId']);
+    ?? stringValue(nested?.['fileId']) ?? stringValue(nested?.['file_id']) ?? stringValue(part['fileId']);
   const mimeType = stringValue(metadata?.['mimeType']) ?? stringValue(metadata?.['mediaType'])
-    ?? stringValue(nested?.['mimeType']);
+    ?? stringValue(nested?.['mimeType']) ?? stringValue(nested?.['media_type']);
   const kind = type === 'image_url' || type === 'image' ? 'image'
     : type === 'video_url' || type === 'video' ? 'video'
       : type === 'audio_url' || type === 'audio' ? 'audio' : undefined;
@@ -2065,14 +2116,15 @@ function contentPartMedia(value: unknown): LiveContentMedia | undefined {
     };
   }
   if (kind === undefined) return undefined;
-  const url = stringValue(nested?.['url']);
-  const source = fileId === undefined
+  const url = mediaUrlFromPart(part)?.url ?? stringValue(nested?.['url']);
+  const managedId = fileId ?? (url === undefined ? undefined : sessionMediaIdFromBlobUrl(url) ?? parseDaemonFileRefFileId(url));
+  const source = managedId === undefined
     ? url === undefined ? undefined : { kind: 'url' as const, url }
-    : { kind: 'session_media' as const, fileId };
+    : { kind: 'session_media' as const, fileId: managedId };
   return {
     mediaType: mimeType ?? `${kind}/*`,
     source,
-    name: stringValue(metadata?.['name']) ?? stringValue(nested?.['name']),
+    name: stringValue(metadata?.['name']) ?? stringValue(nested?.['name']) ?? stringValue(part['name']),
     size: numberValue(metadata?.['size']) ?? numberValue(nested?.['size']),
   };
 }

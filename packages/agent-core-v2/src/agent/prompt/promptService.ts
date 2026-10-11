@@ -1,9 +1,11 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { castDraft } from 'immer';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { RefCountedDisposable, toDisposable } from '#/_base/di/lifecycle';
+import { renderCronFireXml } from '#/app/cron/format';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -12,6 +14,7 @@ import { abortable, abortError, userCancellationReason } from '#/_base/utils/abo
 import { toErrorPayload, type ErrorPayload } from '#/_base/errors/serialize';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { ContextUndo } from '#/agent/contextMemory/contextEvents';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { USER_PROMPT_ORIGIN, type BundledSkillActivation, type ContextMessage, type PromptOrigin } from '#/agent/contextMemory/types';
@@ -33,6 +36,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IFileService } from '#/app/file/fileService';
+import { resolveOriginalImagePart } from '#/agent/media/originalImage';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IEventService } from '#/app/event/event';
 import { IEventBus } from '#/app/event/eventBus';
@@ -50,6 +54,7 @@ import { ISessionHistoryMutationService } from '#/session/historyMutation/histor
 import { KeyReservationRegistry } from '#/session/dispatch/reservation';
 import type { PartsTransformer, WireRecord } from '#/wire/record';
 import { IWireService } from '#/wire/wire';
+import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import {
   IAgentPromptService,
@@ -75,13 +80,19 @@ import {
 } from './prompt';
 import { IAgentModelSwitchService, type ModelSwitchInput, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { ModelSwitchQueued, ModelSwitchQueueStatus, modelSwitchQueueKey } from './modelSwitchQueueOps';
-import { promptFingerprint, PromptOutcomeCommitted, type PromptLookup } from './promptReplay';
+import { matchesPromptIdentity, promptFingerprint, promptRequestFingerprint, updatePromptRequestFingerprint, PromptOutcomeCommitted, type PromptIdentity, type PromptLookup } from './promptReplay';
 import { promptMetadataTextFromContentParts } from './promptMetadataText';
 import { promptLaunchFailure } from './promptFailure';
 import { capturePromptGoalId, hasPromptRuntimeControls, preparePromptRuntimeControls, readPromptRuntimeControlChanges, validatePromptRuntimeControls } from './runtimeControls';
 import { PromptStepRequest, RetryStepRequest, SteerStepRequest } from './promptStepRequests';
 import { PromptAccepted, PromptRetryCommitted, promptAdmissionKey, promptRetryReceiptKey, type PromptRetryReceipt } from './promptOps';
 import { daemonFileRefFromPart } from '#/agent/media/mediaRef';
+import {
+  INVALID_IMAGE_DATA_URL_MESSAGE,
+  isDataUrl,
+  matchesKnownTruncatedImageDataUrl,
+  parseCompleteImageDataUrl,
+} from '#/agent/media/image-format-policy';
 import { materializePromptDaemonRefs } from '#/agent/media/promptMediaIntake';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 
@@ -204,6 +215,8 @@ export interface PromptEnqueuedPayload {
   readonly appendTiming: DeferredAppendTiming;
   readonly revision: number;
   readonly queueIndex: number;
+  readonly retryFingerprint?: string;
+  readonly retryStatus?: 'running' | 'queued';
 }
 
 const promptEnqueuedSchema = z.object({
@@ -219,6 +232,8 @@ const promptEnqueuedSchema = z.object({
   appendTiming: appendTimingSchema,
   revision: z.number().int().nonnegative(),
   queueIndex: z.number().int().nonnegative(),
+  retryFingerprint: z.string().optional(),
+  retryStatus: z.enum(['running', 'queued']).optional(),
 });
 
 export class PromptEnqueued extends Event2<PromptEnqueuedPayload> {
@@ -228,6 +243,18 @@ export class PromptEnqueued extends Event2<PromptEnqueuedPayload> {
   static override readonly schema = promptEnqueuedSchema;
 }
 export interface PromptEnqueued extends PromptEnqueuedPayload {}
+
+promptAdmissionKey.on(PromptEnqueued, (state, event) => {
+  state.set(event.promptId, true);
+});
+promptRetryReceiptKey.on(PromptEnqueued, (state, event) => {
+  if (event.retryFingerprint === undefined || state.has(event.promptId)) return;
+  state.set(event.promptId, { fingerprint: event.retryFingerprint, receipt: {
+    status: event.retryStatus ?? 'queued', createdAt: event.createdAt, appendTiming: event.appendTiming,
+    revision: event.revision, userMessageId: event.userMessageId, message: castDraft(event.message),
+    execution: castDraft(event.execution), deferredDisabledTools: castDraft(event.deferredDisabledTools),
+  } });
+});
 
 export interface PromptReplacedPayload {
   readonly promptId: string;
@@ -349,6 +376,10 @@ export class PromptStarted extends Event2<PromptStartedPayload> {
 }
 export interface PromptStarted extends PromptStartedPayload {}
 
+interface PersistedPromptQueueEntry extends PromptEnqueuedPayload {
+  readonly originalMessage?: ContextMessage;
+}
+
 interface PersistedPromptQueueState {
   readonly entries: Map<string, unknown>;
   readonly order: string[];
@@ -373,7 +404,7 @@ async function transformPromptQueueState(
   let changed = false;
   const entries = new Map<string, unknown>();
   for (const [promptId, raw] of state.entries) {
-    const entry = raw as PromptEnqueuedPayload;
+    const entry = raw as PersistedPromptQueueEntry;
     const content = await transform(entry.message.content);
     if (content === entry.message.content) {
       entries.set(promptId, entry);
@@ -399,29 +430,35 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
   },
 })
   .on(PromptEnqueued, (state, event) => {
-    state.entries.set(event.promptId, Object.assign({}, event));
+    state.entries.set(event.promptId, Object.assign({}, event, { originalMessage: event.message }));
+    const existing = state.order.indexOf(event.promptId);
+    if (existing >= 0) state.order.splice(existing, 1);
+    state.order.splice(Math.min(event.queueIndex, state.order.length), 0, event.promptId);
+  })
+  .on(ContextUndo, (state, { replacementPrompt: event }) => {
+    if (event === undefined) return;
+    state.entries.set(event.promptId, Object.assign({}, event, { originalMessage: event.message }));
     const existing = state.order.indexOf(event.promptId);
     if (existing >= 0) state.order.splice(existing, 1);
     state.order.splice(Math.min(event.queueIndex, state.order.length), 0, event.promptId);
   })
   .on(PromptReplaced, (state, event) => {
-    const entry = state.entries.get(event.promptId) as PromptEnqueuedPayload | undefined;
+    const entry = state.entries.get(event.promptId) as PersistedPromptQueueEntry | undefined;
     if (entry === undefined) return;
-    state.entries.set(event.promptId, {
-      ...entry,
+    state.entries.set(event.promptId, Object.assign({}, entry, {
+      originalMessage: entry.originalMessage ?? entry.message,
       message: event.message,
       execution: event.execution ?? entry.execution,
       revision: event.revision,
-    });
+    }));
   })
   .on(PromptTimingChanged, (state, event) => {
-    const entry = state.entries.get(event.promptId) as PromptEnqueuedPayload | undefined;
+    const entry = state.entries.get(event.promptId) as PersistedPromptQueueEntry | undefined;
     if (entry === undefined) return;
-    state.entries.set(event.promptId, {
-      ...entry,
+    state.entries.set(event.promptId, Object.assign({}, entry, {
       appendTiming: event.appendTiming,
       revision: event.revision,
-    });
+    }));
   })
   .on(ModelSwitchQueued, (state, event) => {
     const id = modelSwitchQueueId(event.entry.input.operationId);
@@ -465,10 +502,27 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
     }
   });
 
-export const promptIdentityKey = defineState('prompt.identity', (): Map<string, PromptLookup & { readonly fingerprint: string }> => new Map())
-  .replayable({ schema: z.custom<Map<string, PromptLookup & { readonly fingerprint: string }>>() })
+export const promptIdentityKey = defineState('prompt.identity', (): Map<string, PromptIdentity> => new Map())
+  .replayable({ schema: z.custom<Map<string, PromptIdentity>>().refine((value) =>
+    value instanceof Map && [...value.values()].every((identity) => identity.currentRequest !== undefined)) })
   .on(PromptEnqueued, (state, event) => {
-    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending', fingerprint: promptFingerprint(event) });
+    if (!state.has(event.promptId)) state.set(event.promptId, { promptId: event.promptId, phase: 'pending',
+      fingerprint: promptFingerprint(event), currentRequest: promptRequestFingerprint(event) });
+  })
+  .on(ContextUndo, (state, { replacementPrompt: event }) => {
+    if (event === undefined || state.has(event.promptId)) return;
+    state.set(event.promptId, { promptId: event.promptId, phase: 'pending',
+      fingerprint: promptFingerprint(event), currentRequest: promptRequestFingerprint(event) });
+  })
+  .on(PromptReplaced, (state, event) => {
+    const entry = state.get(event.promptId);
+    if (entry?.currentRequest === undefined || entry.phase !== 'pending') return;
+    state.set(event.promptId, { ...entry, currentRequest: updatePromptRequestFingerprint(entry.currentRequest, event) });
+  })
+  .on(PromptTimingChanged, (state, event) => {
+    const entry = state.get(event.promptId);
+    if (entry?.currentRequest === undefined || entry.phase !== 'pending') return;
+    state.set(event.promptId, { ...entry, currentRequest: updatePromptRequestFingerprint(entry.currentRequest, event) });
   })
   .on(PromptLaunchCommitted, (state, event) => {
     const entry = state.get(event.promptId);
@@ -492,6 +546,7 @@ interface Record extends PromptSnapshot {
   state: PromptState;
   error?: ErrorPayload;
   message: ContextMessage;
+  originalMessage: ContextMessage;
   appendTiming: DeferredAppendTiming;
   revision: number;
   execution?: PromptExecutionBinding;
@@ -709,6 +764,7 @@ export class AgentPromptService implements IAgentPromptService {
   private steering = 0;
   private waitingForLoop = false;
   private recoveryHold = false;
+  private recoveryFlight: Promise<void> | undefined;
   /** The single queued prompt a client is editing; it and everything after it wait. */
   private editHold: { readonly promptId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   private fullCompactionService: IAgentFullCompactionService | undefined;
@@ -736,6 +792,7 @@ export class AgentPromptService implements IAgentPromptService {
     @ISessionHistoryMutationService
     private readonly historyMutation: ISessionHistoryMutationService,
     @IWireService private readonly wire: IWireService,
+    @IBlobStore private readonly blobs: IBlobStore,
   ) {
     this.states.contributeState(promptLaunchingKey);
     this.states.contributeState(promptAdmissionKey);
@@ -745,7 +802,7 @@ export class AgentPromptService implements IAgentPromptService {
     this.states.contributeState(modelSwitchQueueKey);
     this.states.contributeState(promptIdentityKey);
     this.dispatcher.hooks.onDidRestore.register('prompt-queue', async (_ctx, next) => {
-      this.restorePendingQueue();
+      await this.restorePendingQueue();
       await next();
     });
     eventBus.subscribe(TaskSettlementReady, () => {
@@ -784,7 +841,7 @@ export class AgentPromptService implements IAgentPromptService {
     const entry = this.states.get(modelSwitchQueueKey).get(operationId);
     if (entry === undefined) return undefined;
     if (this.switchFlight?.operationId === operationId) return this.switchFlight.receipt;
-    if (entry.receipt.state === 'preparing') return entry.receipt;
+    if (entry.receipt.state === 'preparing' || entry.receipt.state === 'completed') return entry.receipt;
     return this.switchEngine.get(operationId) ?? entry.receipt;
   }
 
@@ -998,7 +1055,7 @@ export class AgentPromptService implements IAgentPromptService {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' is already in use`);
       }
       await this.wire.flush();
-      return committed.receipt;
+      return committed.receipt as PromptRetryReceipt;
     },
     commit: async (promptId: string, fingerprint: string, receipt: PromptRetryReceipt): Promise<void> => {
       const existing = this.states.get(promptRetryReceiptKey).get(promptId);
@@ -1039,7 +1096,7 @@ export class AgentPromptService implements IAgentPromptService {
     },
   };
 
-  [promptAdmission](promptId?: string, durableAcceptance = false): PromptReservation {
+  [promptAdmission](promptId?: string, durableAcceptance = false, retryFingerprint?: string): PromptReservation {
     if (promptId !== undefined && promptId.length === 0) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_id must not be empty');
     }
@@ -1075,10 +1132,12 @@ export class AgentPromptService implements IAgentPromptService {
         submitted = true;
         reservation.commit(id);
         if (signal?.aborted) throw submissionCancelled(id);
-        await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
-        if (durableAcceptance) await this.wire.flush();
+        if (retryFingerprint === undefined) {
+          await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
+          if (durableAcceptance) await this.wire.flush();
+        }
         if (signal?.aborted) throw submissionCancelled(id);
-        return this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal });
+        return this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint });
       },
       dispose: () => {
         reservation.release();
@@ -1087,13 +1146,14 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private readonly promptHandles = new Map<string, PromptHandle>();
+  private readonly originalPromptMessages = new Map<string, ContextMessage>();
   private readonly enqueueFlights = new Map<string, { fingerprint: string; promise: Promise<PromptHandle> }>();
   private readonly retryFlights = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
 
   lookup(promptId: string, input?: PromptInput): PromptLookup | undefined {
     const persisted = this.states.get(promptIdentityKey).get(promptId);
     const identity = persisted ?? this.enqueueFlights.get(promptId);
-    if (input !== undefined && identity !== undefined && identity.fingerprint !== promptFingerprint(input)) {
+    if (input !== undefined && identity !== undefined && !matchesPromptIdentity(identity, input)) {
       throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${promptId}' already belongs to another request`);
     }
     if (persisted === undefined) return undefined;
@@ -1101,7 +1161,39 @@ export class AgentPromptService implements IAgentPromptService {
     return { promptId, phase: persisted.phase, turnId, terminal: persisted.terminal };
   }
 
+  async enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle> {
+    const handle = await this.historyMutation.runAdmission(undefined, async () => {
+      let origin = input.origin;
+      const existing = origin.deliveryMode === 'idle'
+        ? this.pending.find((item) => item.message.origin?.kind === 'cron_job' &&
+          item.message.origin.jobId === origin.jobId && item.message.origin.deliveryMode === 'idle' &&
+          !this.steeringPromptIds.has(item.id))
+        : undefined;
+      if (existing?.message.origin?.kind === 'cron_job') {
+        origin = { ...origin, coalescedCount: existing.message.origin.coalescedCount + origin.coalescedCount,
+          stale: existing.message.origin.stale || origin.stale };
+      }
+      const message: ContextMessage = { role: 'user', content: [{ type: 'text', text: renderCronFireXml(origin, input.prompt) }], toolCalls: [], origin };
+      if (existing === undefined) return this.enqueueNow({ message });
+      existing.message = { ...message, id: existing.id };
+      existing.revision++;
+      await this.dispatcher.dispatch(new PromptReplaced({ promptId: existing.id, content: [...existing.message.content],
+        message: existing.message, revision: existing.revision, replacedAt: new Date().toISOString() }));
+      return existing.handle;
+    });
+    await this.wire.flush();
+    if (input.origin.deliveryMode === 'steer' && handle.state === 'pending') {
+      void this.steer([handle.id]).catch(() => {
+        if (!this.pending.some((item) => item.id === handle.id)) return;
+        this.immediatePromptIds.add(handle.id);
+        void this.startNext();
+      });
+    }
+    return handle;
+  }
+
   async enqueue(input: PromptInput): Promise<PromptHandle> {
+    if (this.loop.status().persistenceFailure !== undefined) void this.loop.recoverPersistence();
     if (input.execution?.afterModelSwitch !== undefined && this.getModelSwitch(input.execution.afterModelSwitch) === undefined) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unknown model switch dependency.');
     }
@@ -1116,13 +1208,13 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const identity = this.states.get(promptIdentityKey).get(id);
     if (identity !== undefined) {
-      if (identity.fingerprint !== fingerprint) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' already belongs to another request`);
+      if (!matchesPromptIdentity(identity, input)) throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' already belongs to another request`);
       const handle = this.promptHandles.get(id);
       if (handle !== undefined) { await this.wire.flush(); return handle; }
       if (identity.terminal !== undefined) {
         await this.wire.flush();
-        return { id, userMessageId: id, createdAt: new Date(0).toISOString(), state: identity.terminal.state,
-          message: { ...input.message, id }, execution: input.execution, appendTiming: input.appendTiming ?? 'agent_idle', revision: 0,
+        return { id, userMessageId: input.userMessageId ?? id, createdAt: new Date(0).toISOString(), state: identity.terminal.state,
+          message: { ...input.message, id: input.userMessageId ?? id }, execution: input.execution, appendTiming: input.appendTiming ?? 'agent_idle', revision: 0,
           launched: Promise.resolve(undefined), completion: Promise.resolve({ promptId: id, state: identity.terminal.state, result: identity.terminal.result }) };
       }
       throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' was already launched; its result is not confirmed. Inspect lookup before recovery.`);
@@ -1144,7 +1236,8 @@ export class AgentPromptService implements IAgentPromptService {
     const id = input.id ?? input.message.id ?? newMessageId();
     const signal = input.signal;
     if (signal?.aborted || this.closing !== undefined) throw submissionCancelled(id);
-    const message = { ...input.message, id };
+    const userMessageId = input.userMessageId ?? id;
+    const message = { ...input.message, id: userMessageId };
     const launchedDeferred = deferred<Turn | undefined>();
     const completionDeferred = deferred<PromptCompletion>();
     const goalId = this.instantiation.invokeFunction((accessor) => capturePromptGoalId(accessor, input.execution));
@@ -1152,10 +1245,11 @@ export class AgentPromptService implements IAgentPromptService {
     const record = {} as Record;
     Object.assign(record, {
       id,
-      userMessageId: id,
+      userMessageId,
       createdAt: new Date().toISOString(),
       state: 'pending',
       message,
+      originalMessage: message,
       execution: input.execution,
       goalId,
       appendTiming,
@@ -1166,7 +1260,14 @@ export class AgentPromptService implements IAgentPromptService {
       completionDeferred,
     });
     record.handle = this.createHandle(record);
-    await this.dispatcher.dispatch(new PromptEnqueued({
+    await this.rememberOriginalPromptMessage(id, message);
+    if (signal?.aborted || this.closing !== undefined) {
+      this.detachPendingForClose(record);
+      throw submissionCancelled(id);
+    }
+    const idle = this.active === undefined && !this.launching && this.switchFlight === undefined;
+    const queued = !this.isDependencyReady(record.execution) || this.recoveryHold || this.isEditHeld(this.pending.length) || !idle || !this.isTimingReady(record.appendTiming) || this.loop.status().state === 'running' || this.fullCompaction.compacting !== null;
+    const enqueued: PromptEnqueuedPayload = {
       schemaVersion: 1,
       promptId: record.id,
       userMessageId: record.userMessageId,
@@ -1179,7 +1280,18 @@ export class AgentPromptService implements IAgentPromptService {
       appendTiming: record.appendTiming,
       revision: record.revision,
       queueIndex: this.queueOrder.length,
-    }));
+      retryFingerprint: input.retryFingerprint,
+      retryStatus: queued ? 'queued' : 'running',
+    };
+    if (input.commitHistoryRewrite === undefined) {
+      await this.dispatcher.dispatch(new PromptEnqueued(enqueued));
+    } else {
+      try { await input.commitHistoryRewrite(enqueued); }
+      catch (error) {
+        if (!this.states.get(promptIdentityKey).has(id)) throw error;
+        onUnexpectedError(error);
+      }
+    }
     if (signal?.aborted) {
       this.cancelUnlaunched(record, true);
       throw submissionCancelled(record.id);
@@ -1192,8 +1304,6 @@ export class AgentPromptService implements IAgentPromptService {
     }
     this.pending.push(record);
     this.bindSubmissionSignal(record, signal);
-    const idle = this.active === undefined && !this.launching && this.switchFlight === undefined;
-    const queued = !this.isDependencyReady(record.execution) || this.recoveryHold || this.isEditHeld(this.pending.length - 1) || !idle || !this.isTimingReady(record.appendTiming) || this.loop.status().state === 'running' || this.fullCompaction.compacting !== null;
     this.publishSubmitted(record, queued ? 'queued' : 'running');
     if (queued) {
       this.publishQueued(record);
@@ -1259,10 +1369,11 @@ export class AgentPromptService implements IAgentPromptService {
     const handle = await this.submitPrompt(payload);
     if (handle.state === 'pending') return undefined;
     const turn = await handle.launched;
-    if (turn === undefined && handle.state !== 'blocked') {
+    const turnId = turn?.id ?? this.lookup(handle.id)?.turnId;
+    if (turnId === undefined && handle.state !== 'blocked') {
       throw promptLaunchFailure(handle);
     }
-    return turn === undefined ? undefined : { turn_id: turn.id };
+    return turnId === undefined ? undefined : { turn_id: turnId };
   }
 
   async submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult> {
@@ -1273,7 +1384,7 @@ export class AgentPromptService implements IAgentPromptService {
     const result = completion.result;
     return {
       promptId: completion.promptId,
-      turnId: turn?.id,
+      turnId: turn?.id ?? this.lookup(handle.id)?.turnId,
       state: completion.state,
       result: result?.type === 'failed'
         ? { ...result, error: toErrorPayload(result.error) }
@@ -1284,34 +1395,38 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async submitPrompt(payload: PromptPayload): Promise<PromptHandle> {
-    const reservation = this[promptAdmission](payload.promptId);
-    try {
-      this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, payload.execution));
-      let deferredDisabledTools: readonly string[] | undefined;
-      if (payload.disabledTools !== undefined) {
-        if (payload.execution !== undefined && !this.profile.isRunnable()) {
-          deferredDisabledTools = payload.disabledTools;
-        } else {
-          try {
-            await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
-          } catch (error) {
-            throw new Error2(
-              ErrorCodes.REQUEST_INVALID,
-              error instanceof Error ? error.message : String(error),
-            );
+    const message: ContextMessage = { role: 'user', content: [...payload.input], toolCalls: [], origin: { kind: 'user' } };
+    const fingerprint = payload.promptId === undefined ? undefined : promptFingerprint({ message,
+      execution: payload.execution, deferredDisabledTools: payload.disabledTools, appendTiming: payload.appendTiming });
+    const submit = async (): Promise<PromptHandle> => {
+      if (payload.promptId !== undefined && fingerprint !== undefined) {
+        const receipt = await this[promptRetry].lookup(payload.promptId, fingerprint);
+        if (receipt?.message !== undefined) return this.enqueue({ id: payload.promptId, message: receipt.message,
+          execution: receipt.execution, deferredDisabledTools: receipt.deferredDisabledTools, appendTiming: receipt.appendTiming });
+      }
+      const reservation = this[promptAdmission](payload.promptId, fingerprint !== undefined, fingerprint);
+      try {
+        this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, payload.execution));
+        let deferredDisabledTools: readonly string[] | undefined;
+        if (payload.disabledTools !== undefined) {
+          if (payload.execution !== undefined && !this.profile.isRunnable()) {
+            deferredDisabledTools = payload.disabledTools;
+          } else {
+            try {
+              await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
+            } catch (error) {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, error instanceof Error ? error.message : String(error));
+            }
           }
         }
+        await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
+        return await reservation.submit(message, payload.execution, deferredDisabledTools, payload.appendTiming);
+      } finally {
+        await reservation.dispose();
       }
-      await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
-      return await reservation.submit({
-        role: 'user',
-        content: [...payload.input],
-        toolCalls: [],
-        origin: { kind: 'user' },
-      }, payload.execution, deferredDisabledTools, payload.appendTiming);
-    } finally {
-      reservation.dispose();
-    }
+    };
+    return payload.promptId === undefined || fingerprint === undefined ? submit()
+      : this[promptRetry].run(payload.promptId, fingerprint, submit);
   }
 
   async submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined> {
@@ -1364,17 +1479,25 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private nextReadyQueueId(): string | undefined {
-    return this.queueOrder.find((id) => {
+    const priority = this.queueOrder.find((id) => {
+      const prompt = this.pending.find((item) => item.id === id);
+      return prompt?.message.origin?.kind === 'cron_job' &&
+        (prompt.message.origin.deliveryMode === 'idle' || prompt.message.origin.deliveryMode === 'steer') &&
+        this.isReadyPending(prompt, this.pending.indexOf(prompt));
+    });
+    return priority ?? this.queueOrder.find((id) => {
       const prompt = this.pending.find((item) => item.id === id);
       if (prompt !== undefined) return this.isReadyPending(prompt, this.pending.indexOf(prompt));
-      return id.startsWith(MODEL_SWITCH_QUEUE_PREFIX) && (this.immediateModelSwitchIds.has(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) || (!this.recoveryHold && !this.isQueueSlotEditHeld(id)));
+      return this.isQueuedModelSwitch(id) && (this.immediateModelSwitchIds.has(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length)) || (!this.recoveryHold && !this.isQueueSlotEditHeld(id)));
     });
   }
 
   private isReadyPending(item: Record, index: number): boolean {
     if (!this.isDependencyReady(item.execution)) return false;
     if (this.immediatePromptIds.has(item.id)) return true;
-    return !this.recoveryHold && !this.isEditHeld(index) && this.isTimingReady(item.appendTiming);
+    const cronPriority = item.message.origin?.kind === 'cron_job' &&
+      (item.message.origin.deliveryMode === 'idle' || item.message.origin.deliveryMode === 'steer');
+    return !this.recoveryHold && (cronPriority || !this.isEditHeld(index)) && this.isTimingReady(item.appendTiming);
   }
 
   private isQueueSlotEditHeld(id: string): boolean {
@@ -1424,14 +1547,29 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   resumeRecoveredQueue(): void {
+    if (this.recoveryFlight !== undefined) {
+      void this.recoveryFlight.then(() => this.resumeRecoveredQueue(), onUnexpectedError);
+      return;
+    }
     if (!this.recoveryHold) return;
     this.recoveryHold = false;
     this.publishQueueHoldChanged();
     void this.startNext();
   }
 
+  private isQueuedModelSwitch(id: string): boolean {
+    if (!id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)) return false;
+    const entry = this.states.get(modelSwitchQueueKey).get(id.slice(MODEL_SWITCH_QUEUE_PREFIX.length));
+    return entry?.receipt.state === 'pending' || entry?.receipt.state === 'preparing';
+  }
+
+  private recoveryQueueCount(): number {
+    return this.pending.length + this.queueOrder.filter((id) => this.isQueuedModelSwitch(id)).length;
+  }
+
   private queueHold(): PromptQueueHold | undefined {
-    return this.recoveryHold ? { reason: 'recovery', count: this.pending.length + this.queueOrder.filter((id) => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)).length } : undefined;
+    const count = this.recoveryQueueCount();
+    return this.recoveryHold && count > 0 ? { reason: 'recovery', count } : undefined;
   }
 
   private isTimingReady(timing: DeferredAppendTiming): boolean {
@@ -1476,13 +1614,28 @@ export class AgentPromptService implements IAgentPromptService {
     void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
   }
 
-  private restorePendingQueue(): void {
-    if (this.closing !== undefined) return;
-    if (this.pending.length > 0 || this.active !== undefined) return;
+  private restorePendingQueue(): Promise<void> {
+    if (this.closing !== undefined) return Promise.resolve();
+    this.recoveryFlight ??= this.restorePendingEntries().finally(() => {
+      this.recoveryFlight = undefined;
+      this.syncRecoveryHold();
+    });
+    return this.recoveryFlight;
+  }
+
+  private async restorePendingEntries(): Promise<void> {
     const persisted = this.states.get(promptQueueKey);
+    const identities = this.states.get(promptIdentityKey);
+    const liveIds = new Set(this.pending.map((item) => item.id));
+    if (this.active !== undefined) liveIds.add(this.active.id);
+    if (this.launchingPrompt !== undefined) liveIds.add(this.launchingPrompt.record.id);
+    let recovered = 0;
     for (const promptId of persisted.order) {
-      const entry = persisted.entries.get(promptId) as PromptEnqueuedPayload | undefined;
-      if (entry === undefined) continue;
+      if (liveIds.has(promptId)) continue;
+      const entry = persisted.entries.get(promptId) as PersistedPromptQueueEntry | undefined;
+      const identity = identities.get(promptId);
+      if (entry === undefined || entry.promptId !== promptId || identity?.promptId !== promptId ||
+          identity.phase !== 'pending' || identity.currentRequest === undefined) continue;
       const launchedDeferred = deferred<Turn | undefined>();
       const completionDeferred = deferred<PromptCompletion>();
       const record = {
@@ -1490,7 +1643,8 @@ export class AgentPromptService implements IAgentPromptService {
         userMessageId: entry.userMessageId,
         createdAt: entry.createdAt,
         state: 'pending' as const,
-        message: { ...entry.message, id: entry.promptId },
+        message: { ...entry.message, id: entry.userMessageId },
+        originalMessage: { ...(entry.originalMessage ?? entry.message), id: entry.userMessageId },
         execution: entry.execution,
         goalId: entry.goalId,
         deferredDisabledTools: entry.deferredDisabledTools,
@@ -1500,12 +1654,81 @@ export class AgentPromptService implements IAgentPromptService {
         launchedDeferred,
         completionDeferred,
       } as Record;
+      this.recoveryHold = true;
+      await this.rememberOriginalPromptMessage(record.id, record.originalMessage);
+      if (this.closing !== undefined) {
+        if (this.closing === 'preserve-pending') this.detachPendingForClose(record);
+        else this.cancelUnlaunched(record, true);
+        continue;
+      }
+      const current = this.states.get(promptIdentityKey).get(record.id);
+      if (current?.phase !== 'pending' || current.currentRequest !== identity.currentRequest) continue;
       record.handle = this.createHandle(record);
       this.pending.push(record);
       this.recoveryPendingIds.add(record.id);
+      liveIds.add(record.id);
+      recovered += 1;
     }
-    this.recoveryHold = persisted.order.length > 0;
+    const queueIndex = new Map(persisted.order.map((id, index) => [id, index]));
+    this.pending.sort((left, right) =>
+      (queueIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (queueIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+    const hasQueuedModelSwitch = persisted.order.some((id) => this.isQueuedModelSwitch(id));
+    if (recovered > 0 || hasQueuedModelSwitch) this.recoveryHold = true;
+    else if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
     if (this.recoveryHold) this.publishQueueHoldChanged();
+  }
+
+  private async rememberOriginalPromptMessage(
+    promptId: string,
+    message: ContextMessage,
+  ): Promise<void> {
+    const content: ContentPart[] = [];
+    let changed = false;
+    for (const part of message.content) {
+      const canonical = await this.canonicalStableImage(part);
+      content.push(canonical ?? part);
+      changed ||= canonical !== undefined;
+    }
+    if (changed) this.originalPromptMessages.set(promptId, { ...message, content });
+  }
+
+  private canonicalStableImage(part: ContentPart): Promise<ContentPart | undefined> {
+    return resolveOriginalImagePart(part, this.scopeContext.agentId,
+      (hash) => this.blobs.get(this.scopeContext.scope('blobs'), hash));
+  }
+
+  private repairKnownTruncatedImages(
+    promptId: string,
+    content: readonly ContentPart[],
+  ): ContentPart[] {
+    const original = this.originalPromptMessages.get(promptId);
+    if (original === undefined) {
+      for (const part of content) {
+        if (part.type === 'image_url' && isDataUrl(part.imageUrl.url) && parseCompleteImageDataUrl(part.imageUrl.url) === null) {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, INVALID_IMAGE_DATA_URL_MESSAGE);
+        }
+      }
+      return [...content];
+    }
+    const originalImages = original.content.filter(
+      (part): part is Extract<ContentPart, { type: 'image_url' }> => part.type === 'image_url',
+    );
+    return content.map((part) => {
+      if (part.type !== 'image_url' || !isDataUrl(part.imageUrl.url)) return part;
+      const matches = originalImages.filter((source) =>
+        matchesKnownTruncatedImageDataUrl(part.imageUrl.url, source.imageUrl.url),
+      );
+      if (matches.length === 1) {
+        return {
+          type: 'image_url',
+          imageUrl: { ...part.imageUrl, url: matches[0]!.imageUrl.url },
+        };
+      }
+      if (matches.length > 1 || parseCompleteImageDataUrl(part.imageUrl.url) === null) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, INVALID_IMAGE_DATA_URL_MESSAGE);
+      }
+      return part;
+    });
   }
 
   replace(promptId: string, content: readonly ContentPart[], replaceAttachments = false): PromptHandle {
@@ -1513,10 +1736,14 @@ export class AgentPromptService implements IAgentPromptService {
     if (item === undefined || this.steeringPromptIds.has(promptId)) {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} is not replaceable`);
     }
+    const nextContent = this.repairKnownTruncatedImages(
+      item.id,
+      replacePromptContent(item.message, content, replaceAttachments),
+    );
     item.message = {
       ...item.message,
       id: item.id,
-      content: replacePromptContent(item.message, content, replaceAttachments),
+      content: nextContent,
     };
     item.revision += 1;
     const execution = this.syncGoalCreationObjective(item, content);
@@ -1798,6 +2025,7 @@ export class AgentPromptService implements IAgentPromptService {
           }
         });
       }
+      for (const item of selected) this.originalPromptMessages.delete(item.id);
       void this.dispatcher.dispatch(
         new PromptSteered({ activePromptId: activeAtEntry?.id ?? selected[0]!.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
       );
@@ -1838,6 +2066,7 @@ export class AgentPromptService implements IAgentPromptService {
           this.steeredTurnIds.set(item.id, active.turn.id);
         }
         this.steered.set(active.id, [...(this.steered.get(active.id) ?? []), ...selected]);
+        for (const item of selected) this.originalPromptMessages.delete(item.id);
         await this.dispatcher.dispatch(new PromptSteered({
           activePromptId: active.id, promptIds: selected.map((item) => item.id),
           content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString(),
@@ -1903,7 +2132,7 @@ export class AgentPromptService implements IAgentPromptService {
   private syncRecoveryHold(): void {
     this.syncEditHold();
     if (!this.recoveryHold) return;
-    if (this.pending.length === 0 && !this.queueOrder.some((id) => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX))) this.recoveryHold = false;
+    if (this.recoveryQueueCount() === 0 && this.recoveryFlight === undefined) this.recoveryHold = false;
     this.publishQueueHoldChanged();
   }
 
@@ -1932,7 +2161,7 @@ export class AgentPromptService implements IAgentPromptService {
     item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'cancelled' });
   }
 
-  async drain(reason: Error = userCancellationReason(), mode: 'cancel' | 'preserve-pending' = 'cancel'): Promise<void> {
+  async drain(reason: Error, mode: 'cancel' | 'preserve-pending' = 'cancel'): Promise<void> {
     this.closing = mode;
     for (const controller of this.promptSwitchControllers.values()) controller.abort(reason);
     this.releaseEditHold();
@@ -1957,6 +2186,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.abort(active.id, reason);
       await active.turn.result;
     }
+    await this.recoveryFlight;
   }
 
   async inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined> {
@@ -1979,6 +2209,8 @@ export class AgentPromptService implements IAgentPromptService {
         appendTiming: 'agent_idle',
         revision: 0,
         queueIndex: this.queueOrder.length,
+        retryFingerprint: options.retryFingerprint,
+        retryStatus: 'running',
       }));
       await this.wire.flush();
       await this.dispatcher.dispatch(new PromptLaunchCommitted({
@@ -2071,6 +2303,10 @@ export class AgentPromptService implements IAgentPromptService {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
         controller.signal.throwIfAborted();
       }
+      item.message = {
+        ...item.message,
+        content: this.repairKnownTruncatedImages(item.id, item.message.content),
+      };
       const { message, captions } = this.extractCompressionCaptions(item.message);
       await this.materializeDaemonRefs(message);
       controller.signal.throwIfAborted();
@@ -2104,15 +2340,15 @@ export class AgentPromptService implements IAgentPromptService {
       let turn: Turn | undefined;
       if ((this.profile.data().executorId ?? 'native') === 'native') {
         const receipt = this.loop.enqueue(
-          new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined),
+          new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined, item.id),
           { at: 'head' },
         );
         launching.receipt = receipt;
-        admission.dispose();
+        await admission.dispose();
         turn = (await receipt.assigned).turn;
       } else {
         const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
-        admission.dispose();
+        await admission.dispose();
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
         turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: message.content, origin: message.origin }, { signal: controller.signal })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
@@ -2351,6 +2587,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
   private publishCompleted(record: Record, reason: 'completed' | 'failed' | 'blocked'): void {
     this.acceptedBoundaryPromptIds.delete(record.id);
+    this.originalPromptMessages.delete(record.id);
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptCompleted({ promptId: record.id, finishedAt: new Date().toISOString(), reason, error: record.error }));
   }
@@ -2386,6 +2623,7 @@ export class AgentPromptService implements IAgentPromptService {
   }
   private publishAborted(record: Record, beforeStart: boolean): void {
     this.acceptedBoundaryPromptIds.delete(record.id);
+    this.originalPromptMessages.delete(record.id);
     if ((record.message.origin ?? USER_PROMPT_ORIGIN).kind !== 'user') return;
     void this.dispatcher.dispatch(new PromptAborted({ promptId: record.id, abortedAt: new Date().toISOString(), beforeStart }));
   }

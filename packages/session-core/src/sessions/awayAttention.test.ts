@@ -4,6 +4,7 @@ import type { Session } from '@kiki/protocol';
 
 import {
   ATTENTION_COOLDOWN_MS,
+  CompletionObserver,
   EMPTY_ATTENTION_RATE,
   detectAttentionEvents,
   planAttentionNotifications,
@@ -98,6 +99,22 @@ describe('detectAttentionEvents', () => {
   });
 });
 
+describe('CompletionObserver', () => {
+  it('baselines first startup and preserves episode cursors across disconnects and reopening', () => {
+    const observer = new CompletionObserver();
+    const rows = [session({ id: 'a' })];
+    const completion = (episode_id: string) => [{ session_id: 'a', episode_id, completed_at: START }];
+    expect(observer.observe(completion('old'), rows)).toEqual([]);
+    expect(observer.observe(completion('new'), rows)).toEqual([{ sessionId: 'a', kind: 'completed', title: 'a', episodeId: 'new' }]);
+    expect(observer.observe([], rows)).toEqual([]);
+    expect(observer.observe(completion('new'), rows)).toEqual([]);
+    expect(observer.observe(completion('offline'), rows)).toHaveLength(1);
+    const reopened = new CompletionObserver(observer.checkpoint());
+    expect(reopened.observe(completion('offline'), rows)).toEqual([]);
+    expect(reopened.observe(completion('later'), rows)).toHaveLength(1);
+  });
+});
+
 describe('planAttentionNotifications', () => {
   const event = (sessionId: string, kind: AttentionEvent['kind']): AttentionEvent => ({ sessionId, kind, title: sessionId });
 
@@ -118,6 +135,13 @@ describe('planAttentionNotifications', () => {
     expect(urgent.notification).toEqual({ type: 'single', event: event('a', 'question') });
     const later = planAttentionNotifications([event('a', 'completed')], ALL_ON, first.state, START + ATTENTION_COOLDOWN_MS);
     expect(later.notification?.type).toBe('single');
+  });
+
+  it('deduplicates the same completed episode without suppressing a different short episode', () => {
+    const first = { ...event('a', 'completed'), episodeId: 'episode-one' };
+    const delivered = planAttentionNotifications([first], ALL_ON, EMPTY_ATTENTION_RATE, START);
+    expect(planAttentionNotifications([first], ALL_ON, delivered.state, START + 1).notification).toBeUndefined();
+    expect(planAttentionNotifications([{ ...first, episodeId: 'episode-two' }], ALL_ON, delivered.state, START + 2).notification?.type).toBe('single');
   });
 
   it('keeps the most urgent event per session and merges several sessions into one', () => {

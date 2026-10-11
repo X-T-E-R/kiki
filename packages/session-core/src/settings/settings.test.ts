@@ -1,9 +1,13 @@
+import { globSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch } from './computerControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
+  DEFAULT_MODEL_CAPABILITIES,
   EXPERIMENTAL_FLAG_HOMES,
   EXPERIMENTAL_FALLBACK_SECTION,
   experimentalFlagHome,
@@ -38,6 +42,7 @@ import {
   hooksConfigPatch,
   parseRemoteModels,
   providerDraftFromCatalog,
+  providerModelDraftFromCatalog,
   providerDefaultRow,
   providerCreateBody,
   providerPatchBody,
@@ -55,6 +60,7 @@ import {
   requestIdentityPolicyFromDraft,
   resourceLimitPatch,
   sessionTitleModelPatch,
+  sessionTitlePromptPatch,
   sessionTitleSettingsPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
@@ -62,6 +68,9 @@ import {
   resolveModelSource,
   resolveSessionModelOverride,
   resolveSettingsRoute,
+  installedPluginsPath,
+  pluginSettingsIdFromQuery,
+  pluginSettingsPath,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   searchSettings,
@@ -74,6 +83,7 @@ import {
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   settingsSectionIsDeviceOnly,
+  settingsSectionSupportsSpace,
   settingsGroupForSection,
   settingsSectionForCard,
   settingsServerSnapshot,
@@ -94,6 +104,8 @@ import {
 } from './settings';
 import { clearStoredDrafts, flushDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
 import { translate, type I18nKey } from '../i18n/locale';
+import { en } from '../i18n/en';
+import { zh } from '../i18n/zh';
 import { parseNamedAgentTools } from './agentSettings';
 import { mcpConfigFromDraft } from './mcp';
 
@@ -1020,6 +1032,48 @@ describe('provider templates, chips, and dirty tracking', () => {
   });
 });
 
+describe('model capability defaults', () => {
+  /**
+   * The default exists for a model nothing has been decided about. It is not a
+   * correction: a model whose capabilities were explicitly configured to
+   * something narrower keeps exactly that, including an empty list, which is a
+   * decision and must survive a round trip rather than being re-defaulted.
+   */
+  const catalogModel = (capabilities: string[] | undefined) => ({
+    id: 'kimi-code/kimi-k2',
+    provider_id: 'kimi-code',
+    remote_id: 'kimi-k2',
+    max_context_size: 200_000,
+    support_efforts: [],
+    capabilities,
+  }) as unknown as Parameters<typeof providerModelDraftFromCatalog>[0];
+
+  it('defaults a model that carries no capabilities at all', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(undefined)).capabilities)
+      .toEqual([...DEFAULT_MODEL_CAPABILITIES]);
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('thinking');
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('tool_use');
+  });
+
+  it('keeps an explicitly empty capability list, which is a decision', () => {
+    expect(providerModelDraftFromCatalog(catalogModel([])).capabilities).toEqual([]);
+  });
+
+  it('keeps a narrower explicit list without adding to it', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(['image_in'])).capabilities)
+      .toEqual(['image_in']);
+  });
+
+  it('lets a saved empty list round-trip instead of being re-defaulted', () => {
+    const draft = providerModelDraftFromCatalog(catalogModel([]));
+    // Reading the model back gives an empty list, not the default; and an
+    // unchanged draft produces no patch at all, so nothing re-adds the default
+    // on save. Clearing a non-empty stored list is still an explicit `[]`.
+    const emptied = providerModelDraftFromCatalog(catalogModel(['thinking', 'tool_use']));
+    expect(modelPatchBody(draft, emptied)).toEqual({ capabilities: [] });
+  });
+});
+
 describe('remote /models probe', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -1098,7 +1152,83 @@ describe('remote /models probe', () => {
   });
 });
 
+function registeredBuiltinFlags(): { id: string; defaultEnabled: boolean; owner: string }[] {
+  const root = new URL('../../../../', import.meta.url);
+  const flags: { id: string; defaultEnabled: boolean; owner: string }[] = [];
+  for (const owner of globSync('packages/{agent-core-v2,kap-server}/src/**/*.ts', { cwd: fileURLToPath(root) })) {
+    const source = readFileSync(new URL(owner.replaceAll('\\', '/'), root), 'utf8');
+    if (!source.includes('registerFlagDefinition')) continue;
+    const file = ts.createSourceFile(owner, source, ts.ScriptTarget.Latest, true);
+    const variables = new Map<string, ts.Expression>();
+    const registrations = new Set<string>(['registerFlagDefinition']);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+        variables.set(node.name.text, node.initializer);
+      }
+      if (ts.isImportSpecifier(node) && node.propertyName?.text === 'registerFlagDefinition') registrations.add(node.name.text);
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const resolve = (expression: ts.Expression | undefined): ts.Expression | undefined => {
+      if (expression === undefined) return undefined;
+      if (ts.isIdentifier(expression)) {
+        const value = variables.get(expression.text);
+        return value === expression ? undefined : resolve(value);
+      }
+      if (ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isParenthesizedExpression(expression)) return resolve(expression.expression);
+      return expression;
+    };
+    for (const call of calls.filter((node) => registrations.has((node.expression as ts.Identifier).text))) {
+      const definition = resolve(call.arguments[0]);
+      if (definition === undefined || !ts.isObjectLiteralExpression(definition)) throw new Error(`Cannot inspect flag registration in ${owner}`);
+      const property = (name: string) => resolve(definition.properties.find((node): node is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === name)?.initializer);
+      const id = property('id');
+      const defaultEnabled = property('default');
+      if (id === undefined || !ts.isStringLiteral(id) || defaultEnabled === undefined ||
+        (defaultEnabled.kind !== ts.SyntaxKind.TrueKeyword && defaultEnabled.kind !== ts.SyntaxKind.FalseKeyword)) throw new Error(`Cannot inspect flag id/default in ${owner}`);
+      flags.push({ id: id.text, defaultEnabled: defaultEnabled.kind === ts.SyntaxKind.TrueKeyword, owner });
+    }
+  }
+  return flags;
+}
+
 describe('experimental flag homes', () => {
+  it('covers every distributed builtin registration with bilingual copy and a default-on capability', () => {
+    const flags = registeredBuiltinFlags();
+    expect(flags.length).toBeGreaterThan(0);
+    expect(new Set(flags.map((flag) => flag.id)).size).toBe(flags.length);
+    expect(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id).toSorted()).toEqual(flags.map((flag) => flag.id).toSorted());
+    for (const flag of flags) {
+      const home = experimentalFlagHome(flag.id)!;
+      expect(flag.defaultEnabled, `${flag.id} in ${flag.owner}: default off needs an explicit human requirement`).toBe(true);
+      for (const locale of ['en', 'zh'] as const) {
+        for (const key of [home.labelKey, home.descriptionKey]) {
+          expect(Object.hasOwn(locale === 'en' ? en : zh, key), `${locale}: ${flag.id} ${key}`).toBe(true);
+          const text = translate(locale, key);
+          expect(text, `${locale}: ${flag.id}`).not.toBe(key);
+          expect(text.trim(), `${locale}: ${flag.id}`).not.toBe('');
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.name'));
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.desc'));
+        }
+      }
+    }
+  });
+
+  it('describes indexing and Recipes without promising replay, role permissions or a fixed build time', () => {
+    for (const locale of ['en', 'zh'] as const) {
+      const search = translate(locale, 'st.exp.desktopSearch.desc');
+      expect(search).toContain('2 GiB');
+      expect(search).not.toMatch(/20[–-]30/);
+      expect(translate(locale, 'st.exp.readModel.name')).toBe(locale === 'en' ? 'Session list index' : '会话列表索引');
+      expect(translate(locale, 'st.exp.readModel.desc')).not.toMatch(/replay|回放/);
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'model prompts and parameters' : '模型提示与参数');
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'confirmation once during installation' : '安装时确认一次');
+    }
+  });
+
   it('homes each flag on a real settings page, with the owners the IA asked for', () => {
     const sections = new Set(SETTINGS_SECTIONS.map((section) => section.id));
     for (const home of EXPERIMENTAL_FLAG_HOMES) {
@@ -1112,26 +1242,17 @@ describe('experimental flag homes', () => {
     expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
   });
 
-  it('names the one feature flag the app still ships and keeps the unknown fallback for the rest', () => {
-    // History import is a shipped capability, not an experiment: it has no
-    // switch to draw, so it must not appear in the flag list at all. A server
-    // that still reports the old id is treated as an unknown flag.
+  it('localizes local session continuation in Sessions while keeping the unknown fallback', () => {
+    expect(experimentalFlagHome('usage_export')).toBeUndefined();
     expect(experimentalFlagHome('plugin_import')).toBeUndefined();
     expect(experimentalSectionForFlag('plugin_import')).toBe(EXPERIMENTAL_FALLBACK_SECTION);
-
-    const home = experimentalFlagHome('usage_export');
-    expect(home).toBeDefined();
-    // The switch rides the existing Developer rows; it does not invent a page.
-    expect(home?.section).toBe('developer');
-    expect(home?.cardId).toBeUndefined();
-    expect(home?.labelKey).not.toBe('st.exp.unknown.name');
-    expect(home?.descriptionKey).not.toBe('st.exp.unknown.desc');
-    // Both strings must be real copy in both languages, not the fallback.
-    expect(translate('en', home!.labelKey)).not.toBe(home!.labelKey);
-    expect(translate('zh', home!.labelKey)).not.toBe(home!.labelKey);
-    // kap-server reads usage_export while booting, so the routes only exist
-    // after a restart.
-    expect(home?.effect).toBe('restart');
+    const home = experimentalFlagHome('local_session_resume')!;
+    expect(home.section).toBe('sessions');
+    expect(home.effect).toBe('now');
+    expect(translate('en', home.labelKey)).toBe('Continue local external sessions');
+    expect(translate('en', home.descriptionKey)).toBe('Continue existing Claude Code and Codex sessions on this machine.');
+    expect(translate('zh', home.labelKey)).toBe('接续本机外部会话');
+    expect(translate('zh', home.descriptionKey)).toBe('接续本机已有的 Claude Code 和 Codex 会话。');
     expect(experimentalFlagHome('some_vendor_flag')).toBeUndefined();
   });
 });
@@ -1152,6 +1273,11 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'permission mode').some((hit) => hit.section === 'permissions' && hit.cardId === 'st-card-permission-defaults')).toBe(true);
     // A flag is found on its feature page's Experimental rows, not only in Labs.
     expect(searchSettings(index, 'task_wait').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-exp-tasks')).toBe(true);
+    expect(searchSettings(index, 'local_session_resume').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'Continue local external sessions').some((hit) => hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    const chinese = buildSettingsSearchIndex({}, (key) => translate('zh', key));
+    expect(searchSettings(chinese, '接续本机外部会话').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'usage_export')).toEqual([]);
     expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'subagents' && hit.cardId === 'st-card-exp-subagents')).toBe(true);
     expect(searchSettings(index, 'search_worker').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
     expect(searchSettings(index, 'AgentNotify')[0]?.cardId).toBe('st-card-agent-messaging');
@@ -1239,6 +1365,8 @@ describe('settings nav groups (IA v2)', () => {
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('general')).toBe(false);
     expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
@@ -1255,6 +1383,8 @@ describe('settings nav groups (IA v2)', () => {
     // Workspaces sit with the sessions that run in them: where work happens.
     expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
     expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
+    expect(settingsGroupForSection('external-clients')).toBeUndefined();
     // The group that only held workspaces and spaces no longer exists: each
     // page joined the group that answers its own question.
     expect(settingsGroupForSection('workspaces')?.id).toBe('work');
@@ -1295,6 +1425,7 @@ describe('settings nav groups (IA v2)', () => {
         .toBe(settingsGroupForSection(section.id)?.id === 'device' || section.id === 'connection');
     }
     expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
+    expect(SETTINGS_SECTION_META['appearance']?.scopes).toEqual(['app', 'space']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
@@ -1302,6 +1433,33 @@ describe('settings nav groups (IA v2)', () => {
     expect(SETTINGS_SECTION_META['labs']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']).toBeUndefined();
     expect(SETTINGS_SECTION_META['advanced']).toBeUndefined();
+  });
+});
+
+describe('installed-plugin settings pages', () => {
+  it('addresses one plugin\'s own page inside the plugins section', () => {
+    // A copy of this link, a refresh, and the browser's back button all have to
+    // land on the same plugin, so the id travels in the query of one section.
+    expect(pluginSettingsPath('kiki-writing'))
+      .toBe('/settings/plugins?plugin=kiki-writing');
+    expect(resolveSettingsRoute('plugins', '')).toMatchObject({ status: 'ok', section: 'plugins' });
+    expect(pluginSettingsIdFromQuery('?plugin=kiki-writing')).toBe('kiki-writing');
+    expect(installedPluginsPath()).toBe('/settings/plugins');
+  });
+
+  it('round-trips an id that needs escaping and treats an empty one as the list', () => {
+    const odd = 'vendor/plugin one';
+    expect(pluginSettingsIdFromQuery(pluginSettingsPath(odd))).toBe(odd);
+    // A link built from an unset id resolves to the list, not to a dead page.
+    expect(pluginSettingsIdFromQuery('?plugin=')).toBeNull();
+    expect(pluginSettingsIdFromQuery('')).toBeNull();
+    expect(pluginSettingsIdFromQuery('?server=https%3A%2F%2Fexample.test')).toBeNull();
+  });
+
+  it('follows the WebBridge readiness card to the browser page it moved to', () => {
+    expect(resolveSettingsRoute('plugins', '#st-card-webbridge'))
+      .toMatchObject({ status: 'ok', section: 'browser-control', cardId: 'st-card-webbridge' });
+    expect(settingsSectionForCard('st-card-webbridge')).toBe('browser-control');
   });
 });
 
@@ -1625,22 +1783,23 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     });
   });
 
-  it('scopes the session-title model patch to the session_title replace-domain', () => {
-    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({
-      session_title: { model: 'kimi-for-coding' },
-      replace_domains: ['session_title'],
-    });
-    expect(sessionTitleModelPatch('   ')).toEqual({
-      session_title: { model: undefined },
-      replace_domains: ['session_title'],
-    });
+  it('merges only the title model and explicitly clears an empty model', () => {
+    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({ session_title: { model: 'kimi-for-coding' } });
+    expect(sessionTitleModelPatch('   ')).toEqual({ session_title: { model: null } });
+  });
+
+  it('preserves the complete title prompt and deletes the override for default or blank', () => {
+    const prompt = '  标题要求\n保留 {content} 和 ${name}\n  ';
+    expect(sessionTitlePromptPatch(prompt)).toEqual({ session_title: { prompt } });
+    expect(sessionTitlePromptPatch(null)).toEqual({ session_title: { prompt: null } });
+    expect(sessionTitlePromptPatch(' \n\t ')).toEqual({ session_title: { prompt: null } });
   });
 
   it('persists the selected title moments, including the manual-only empty set', () => {
     expect(sessionTitleSettingsPatch(' model ', ['first_user_message', 'context_compacted'])).toEqual({
-      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] }, replace_domains: ['session_title'],
+      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] },
     });
-    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: undefined, triggers: [] }, replace_domains: ['session_title'] });
+    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: null, triggers: [] } });
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model' } }).sessionTitleTriggers).toEqual(['first_turn_completed']);
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model', triggers: [] } }).sessionTitleTriggers).toEqual([]);
   });

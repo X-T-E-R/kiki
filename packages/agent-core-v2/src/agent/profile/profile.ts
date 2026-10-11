@@ -54,6 +54,7 @@ export type AgentConfigUpdateData = Partial<{
 }>;
 
 export interface SystemPromptContext extends AgentProfileContext {
+  readonly pluginBlocks?: Readonly<Record<string, string>>;
   readonly agentsMdWarning?: string;
   readonly agentsMdPaths?: readonly string[];
   readonly agentsMdFiles?: readonly import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[];
@@ -316,6 +317,7 @@ export interface IAgentProfileService {
   refreshSystemPrompt(): Promise<void>;
   refreshMemorySnapshot(): Promise<void>;
   reconcileMemorySnapshot(): Promise<void>;
+  reconcilePluginUsage?(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;

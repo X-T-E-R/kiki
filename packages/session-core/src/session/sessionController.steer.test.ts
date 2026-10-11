@@ -13,7 +13,7 @@ import { SendNowError, SessionController } from './sessionController';
 import type { SessionViewState, UserBlock } from './transcript';
 import { withPendingSteers } from './transcript/steer';
 import { createViewState } from './transcript';
-import { opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 const CHILD = 'agent-research';
 const STEER_TEXT = 'also check the lockfile';
@@ -119,6 +119,34 @@ function deliveredOps(promptId: string): TranscriptOperation[] {
   ];
 }
 
+describe('submission preservation degradation', () => {
+  it.each(['QuotaExceededError', 'SecurityError'])('still submits complete media when backup fails with %s and accepts an ack despite failed cleanup', async (name) => {
+    const { controller, client } = await open();
+    const storage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => { throw new DOMException('unavailable', name); }),
+      removeItem: vi.fn(() => { throw new DOMException('unavailable', name); }),
+    };
+    vi.stubGlobal('localStorage', storage);
+    try {
+      const content = [{ type: 'text' as const, text: 'keep this image' },
+        { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: 'AAAA' } }];
+      const receipt = deferred<Omit<ReturnType<typeof queuedReceipt>, 'content'> & { content: typeof content }>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const onPreservation = vi.fn();
+      const onAcknowledged = vi.fn();
+      const sent = controller.sendPrompt({ text: 'keep this image', content, promptId: 'media-degraded', onPreservation, onAcknowledged });
+      expect(onPreservation).toHaveBeenCalledWith(false);
+      expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', expect.objectContaining({ content, prompt_id: 'media-degraded' }));
+      expect(onAcknowledged).not.toHaveBeenCalled();
+      receipt.resolve({ ...queuedReceipt('media-degraded'), content });
+      await expect(sent).resolves.toMatchObject({ prompt_id: 'media-degraded', status: 'queued' });
+      expect(onAcknowledged).toHaveBeenCalledTimes(1);
+      expect(controller.getState().blocks.find(block => block.kind === 'user' && block.promptId === 'media-degraded')).toMatchObject({ queuedContent: content, text: 'keep this image', media: [{ kind: 'image', url: 'data:image/png;base64,AAAA', mime: 'image/png' }] });
+    } finally { controller.close(); vi.unstubAllGlobals(); }
+  });
+});
+
 describe('send now (steer) — main agent', () => {
   it('promotes a queued prompt on the same row through sending → waiting → delivery', async () => {
     const { controller, client } = await open();
@@ -146,6 +174,53 @@ describe('send now (steer) — main agent', () => {
     expect(steerRows(controller.getState())[0]!.steerStatus).toBeUndefined();
     expect(controller.getPendingSteers()).toEqual([]);
     expect(client.submitPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it.each([false, true])('confirms every consecutive send at one response boundary with merged=%s, preserving media and reload order', async (merged) => {
+    const { controller } = await open();
+    const ids = ['send-a', 'send-b', 'send-c'];
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } };
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', ids.map((id, index) => {
+      const op = queuedOp(id);
+      return op.op === 'prompt.upsert' ? { ...op, prompt: { ...op.prompt,
+        content: [{ type: 'text', text: `message ${index}` }, ...(index === 1 ? [image] : [])] } } : op;
+    }), 2));
+    await Promise.all(ids.map((id) => controller.steerQueued(id)));
+    expect(controller.getPendingSteers()).toHaveLength(3);
+    const receipts = ids.map((id, index): TranscriptOperation => {
+      const op = steeredOp(id);
+      return op.op === 'prompt.upsert' ? { ...op, prompt: { ...op.prompt,
+        content: [{ type: 'text', text: `message ${index}` }, ...(index === 1 ? [image] : [])] } } : op;
+    });
+    await deliver(controller, opsEvent('main', receipts, 3));
+    const ops: TranscriptOperation[] = [{ ...deliveredOps(ids[0]!)[0]! }, {
+      op: 'attachment.upsert', attachment: { attachmentId: 'image-b', mediaType: 'image/png',
+        source: { kind: 'url', url: 'https://example.test/photo.png' }, owner: { kind: 'frame', turnId: 't1', stepId: 't1.2', frameId: ids[1]! } },
+    }, ...(merged ? ids.slice(0, 1) : ids).map((id, index): TranscriptOperation => ({ op: 'frame.upsert', turnId: 't1', stepId: 't1.2', frame: {
+      kind: 'text', frameId: id, role: 'user', text: merged ? 'message 0message 1message 2' : `message ${index}`, origin: { kind: 'user' },
+      part: { partId: id, messageId: id, revision: 0, provenance: { source: 'engine' } },
+      attachmentIds: index === 1 ? ['image-b'] : undefined,
+    } }))];
+    await deliver(controller, opsEvent('main', ops, 4));
+    const rows = visibleUsers(controller.getState()).filter((row) => ids.includes(row.userMessageId ?? ''));
+    expect(rows.map((row) => [row.userMessageId, row.text, row.steerStatus, row.turnId]))
+      .toEqual(ids.map((id, index) => [id, `message ${index}`, undefined, 't1']));
+    expect(rows[1]?.media).toMatchObject([{ kind: 'image', url: 'https://example.test/photo.png' }]);
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    const snapshot = userTurnSnapshot({ streaming: true });
+    const currentTurn = snapshot.items.find((item) => item.kind === 'turn')!;
+    expect(currentTurn.kind).toBe('turn');
+    if (currentTurn.kind === 'turn') {
+      const reload = { ...snapshot, prompts: receipts.flatMap((op) => op.op === 'prompt.upsert' ? [op.prompt] : []), items: [{ ...currentTurn, steps: [...currentTurn.steps,
+        { kind: 'step' as const, stepId: 't1.2', turnId: 't1', ordinal: 2, state: 'running' as const,
+          frames: ops.flatMap((op) => op.op === 'frame.upsert' ? [op.frame] : []) }] }],
+        attachments: ops.flatMap((op) => op.op === 'attachment.upsert' ? [op.attachment] : []) };
+      await deliver(controller, resetEvent('main', reload, 5));
+      expect(visibleUsers(controller.getState()).filter((row) => ids.includes(row.userMessageId ?? '')).map((row) => row.userMessageId)).toEqual(ids);
+    }
     controller.close();
   });
 
@@ -225,6 +300,26 @@ describe('send now (steer) — main agent', () => {
     const { promptId } = await controller.sendPromptNow({ text: STEER_TEXT });
     expect(client.submitPrompt.mock.calls[0]![1]).not.toHaveProperty('agent_id');
     expect(client.steerPrompt).toHaveBeenCalledWith('session_test', promptId, 'main');
+    controller.close();
+  });
+
+  it('captures profile and execution controls with the send-now message identity', async () => {
+    const { controller, client } = await open();
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
+      ...queuedReceipt(body.prompt_id), status: 'running' as const,
+    }));
+    const execution = { executor: 'external-example', profile: 'selected-runtime' };
+    await expect(controller.sendPromptNow({ text: STEER_TEXT, promptId: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual', planMode: true, planGate: 'gated' }))
+      .resolves.toEqual({ promptId: 'selected-message', outcome: 'started' });
+    expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', {
+      content: [{ type: 'text', text: STEER_TEXT }], prompt_id: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permission_mode: 'manual', plan_mode: true, plan_gate: 'gated',
+    });
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
     controller.close();
   });
 
@@ -364,5 +459,60 @@ describe('withPendingSteers', () => {
     expect(next.blocks).toHaveLength(1);
     expect(next.blocks[0]).toMatchObject({ id: 'user-p1', steerStatus: 'sending', presentation });
     expect(next.blocks[0]).not.toHaveProperty('promptStatus');
+  });
+});
+
+
+describe('queued submit acknowledgement before transcript recovery', () => {
+  it('does not let an older empty reset erase a queued ack, and canonical abort prevents resurrection', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('new-message'), revision: 0 });
+    await controller.sendPrompt({ promptId: 'new-message', text: STEER_TEXT });
+    expect(controller.getState().queuedPromptIds).toEqual(['new-message']);
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['new-message']);
+    expect(controller.getState().queuedPromptMeta['new-message']).toMatchObject({ revision: 0 });
+    expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.promptId === 'new-message')).toHaveLength(1);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
+      promptId: 'new-message', status: 'aborted', userMessageId: 'new-message', abortedBeforeStart: true,
+      content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03Z', finishedAt: '2026-01-01T00:00:04Z',
+    } }], 3));
+    await deliver(controller, resetEvent('main', emptySnapshot(), 4));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'new-message')).toBe(false);
+    controller.close();
+  });
+  it('removes a held cron occurrence by prompt id and reconciles without removing ordinary drafts', async () => {
+    const { controller, client } = await open();
+    const prompts = ['first-draft', 'cron-fire', 'second-draft'].map((promptId, queuePosition) => ({
+      promptId, userMessageId: promptId, status: 'queued' as const, queuePosition,
+      originKind: promptId === 'cron-fire' ? 'cron_job' as const : undefined,
+      originDeliveryMode: promptId === 'cron-fire' ? 'idle' as const : undefined,
+      content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:03.000Z',
+    }));
+    await deliver(controller, resetEvent('main', emptySnapshot({ prompts }), 1));
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toMatchObject({ cronDeliveryMode: 'idle' });
+    await controller.abortPrompt('cron-fire');
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'cron-fire');
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'cron-fire', 'second-draft']);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
+      ...prompts[1]!, status: 'aborted', abortedBeforeStart: true, queuePosition: undefined, finishedAt: '2026-01-01T00:00:04.000Z',
+    } }], 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'second-draft']);
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toBeUndefined();
+    expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'cron-fire')).toBe(false);
+    controller.close();
+  });
+
+  it('explicit removal before its transcript upsert is not replayed by an empty reset', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue(queuedReceipt('remove-me'));
+    await controller.sendPrompt({ promptId: 'remove-me', text: STEER_TEXT });
+    await controller.abortPrompt('remove-me');
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    controller.close();
   });
 });

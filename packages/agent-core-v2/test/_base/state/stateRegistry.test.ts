@@ -54,12 +54,12 @@ describe('StateRegistry', () => {
     expect(() => registry.contributeState(countKey)).toThrow(BugIndicatingError);
   });
 
-  it('removes the key and value when its registration is disposed', () => {
+  it('removes the key and value when its registration is disposed', async () => {
     const registry = new StateRegistry();
     const registration = registry.contributeState(countKey);
     registry.set(countKey, 42);
 
-    registration.dispose();
+    await registration.dispose();
 
     expect(registry.has(countKey)).toBe(false);
     expect(registry.entries()).toEqual([]);
@@ -67,28 +67,28 @@ describe('StateRegistry', () => {
     expect(() => registry.set(countKey, 1)).toThrow(BugIndicatingError);
   });
 
-  it('re-registers with the initial value and ignores stale disposal', () => {
+  it('re-registers with the initial value and ignores stale disposal', async () => {
     const registry = new StateRegistry();
     const first = registry.contributeState(countKey);
     registry.set(countKey, 42);
-    first.dispose();
+    await first.dispose();
 
     const second = registry.contributeState(countKey);
     expect(registry.get(countKey)).toBe(0);
 
-    first.dispose();
+    await first.dispose();
     expect(registry.has(countKey)).toBe(true);
-    second.dispose();
+    await second.dispose();
     expect(registry.has(countKey)).toBe(false);
   });
 
-  it('isolates listeners between registrations', () => {
+  it('isolates listeners between registrations', async () => {
     const registry = new StateRegistry();
     const first = registry.contributeState(countKey);
     const oldSeen: number[] = [];
     registry.onDidChange(countKey)((value) => oldSeen.push(value));
     registry.set(countKey, 1);
-    first.dispose();
+    await first.dispose();
 
     const second = registry.contributeState(countKey);
     const newSeen: number[] = [];
@@ -97,7 +97,7 @@ describe('StateRegistry', () => {
 
     expect(oldSeen).toEqual([1]);
     expect(newSeen).toEqual([2]);
-    second.dispose();
+    await second.dispose();
   });
 
   it('rejects get and set on an unregistered key', () => {
@@ -132,12 +132,12 @@ describe('StateRegistry', () => {
     ]);
   });
 
-  it('silences change events after dispose', () => {
+  it('silences change events after dispose', async () => {
     const registry = new StateRegistry();
     registry.contributeState(countKey);
     const seen: StateChange[] = [];
     registry.onDidChangeAny((change) => seen.push(change));
-    registry.dispose();
+    await registry.dispose();
     registry.set(countKey, 1);
     expect(seen).toEqual([]);
     expect(registry.get(countKey)).toBe(1);
@@ -346,7 +346,7 @@ describe('state services (scoped)', () => {
       expect(agentState.replayableKeys().map((key) => key.name)).toEqual(['test.replayable']);
     });
 
-    it('notifies replayable contributions synchronously', () => {
+    it('notifies replayable contributions synchronously', async () => {
       const agentState = new AgentStateService();
       const seen: string[] = [];
       const subscription = agentState.onDidContributeReplayable((key) => {
@@ -354,7 +354,7 @@ describe('state services (scoped)', () => {
       });
       agentState.contributeState(replayableKey);
       expect(seen).toEqual(['test.replayable']);
-      subscription.dispose();
+      await subscription.dispose();
       const otherKey = defineState('test.replayable.other', () => 0).replayable({
         schema: z.custom<number>(),
       });
@@ -362,11 +362,11 @@ describe('state services (scoped)', () => {
       expect(seen).toEqual(['test.replayable']);
     });
 
-    it('drops a replayable key from the list when its contribution is disposed', () => {
+    it('drops a replayable key from the list when its contribution is disposed', async () => {
       const agentState = new AgentStateService();
       const registration = agentState.contributeState(replayableKey);
       expect(agentState.replayableKeys()).toHaveLength(1);
-      registration.dispose();
+      await registration.dispose();
       expect(agentState.replayableKeys()).toHaveLength(0);
       expect(agentState.has(replayableKey)).toBe(false);
     });

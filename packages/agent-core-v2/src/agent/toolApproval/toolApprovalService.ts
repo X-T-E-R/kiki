@@ -1,13 +1,14 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
 
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isUserCancellation } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -78,6 +79,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @IAgentPermissionRulesService private readonly rulesService: IAgentPermissionRulesService,
     @ISessionContext private readonly session: ISessionContext,
+    @ref(ISessionWorkspaceContext) private readonly workspace: LiveRef<ISessionWorkspaceContext>,
+    @ref(IAgentRuntimeService) private readonly runtime: LiveRef<IAgentRuntimeService>,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -342,12 +345,15 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       }
       if (this.consecutiveDenials >= 3 || context.signal.aborted) return undefined;
       let verdict: ReviewerVerdict | undefined;
+      const workspace = this.workspace.current;
+      if (workspace === undefined) return undefined;
+      const runtime = this.runtime.current;
       try {
         verdict = await this.instantiation.invokeFunction((accessor) => reviewPermission({
           config: accessor.get(IConfigService),
           catalog: accessor.get(IModelCatalog),
           memory: accessor.get(IAgentContextMemoryService),
-          workspace: accessor.get(ISessionWorkspaceContext),
+          workspace: runtime === undefined ? workspace : inspectAgentWorkspaceRoots(runtime, workspace),
           owner: { sessionId: this.session.sessionId, agentId: this.scopeContext.agentId, parentAgentId: this.scopeContext.parentAgentId },
           log: this.log,
         }, context, policyName, policyReason));

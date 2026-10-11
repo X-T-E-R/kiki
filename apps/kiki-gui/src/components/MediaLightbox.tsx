@@ -13,6 +13,7 @@ import { useI18n } from '../i18n';
 import { Dialog } from './Dialog';
 import { MiniContextMenu } from './MiniContextMenu';
 import { Icon } from './icons';
+import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan } from './ImageViewport';
 
 export function MediaLightbox({
@@ -27,6 +28,9 @@ export function MediaLightbox({
   const { t } = useI18n();
   const [actualSize, setActualSize] = useState(false);
   const [naturalWidth, setNaturalWidth] = useState<number | undefined>();
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setFailed(false); setNaturalWidth(undefined); setActualSize(false); }, [src]);
   const dpr = useDevicePixelRatio();
   const pan = useDragPan(actualSize);
   const label = name ?? t('media.viewImage');
@@ -84,7 +88,11 @@ export function MediaLightbox({
             : 'flex items-center justify-center'
         }
       >
-        <img
+        {failed ? <div role="alert" className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-shell-ink">
+          <span>{t('media.unavailable', { name: label })}</span>
+          <button type="button" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }} className={controlClass}>{t('transcript.detail.retry')}</button>
+        </div> : <img
+          key={attempt}
           src={src}
           alt={label}
           tabIndex={0}
@@ -100,6 +108,8 @@ export function MediaLightbox({
             setMenu({ x: rect.left, y: rect.top });
           }}
           draggable={false}
+          decoding="async"
+          onError={() => { setFailed(true); }}
           onLoad={(event) => { setNaturalWidth(event.currentTarget.naturalWidth); }}
           onClick={() => {
             if (pan.consumePan()) return;
@@ -111,7 +121,7 @@ export function MediaLightbox({
               ? 'max-w-none'
               : 'max-h-[80vh] max-w-[92vw] cursor-zoom-in rounded-lg object-contain'
           }
-        />
+        />}
       </div>
       {menu === null ? null : <MiniContextMenu x={menu.x} y={menu.y} entries={[{ key: 'save-image', label: t('media.download'), run: download }]} onClose={() => { setMenu(null); }} ariaLabel={label} overlayId="lightbox-image-menu" dataAttribute="data-lightbox-image-menu" modalOwnerId="media-lightbox" />}
     </Dialog>

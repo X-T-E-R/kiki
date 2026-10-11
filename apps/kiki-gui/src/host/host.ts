@@ -28,7 +28,13 @@ export interface HostNotification {
    * a native click can be routed back through `onNotificationClick`.
    */
   readonly route?: string;
-  /** Credential-free identity captured when the notification is produced, not clicked. */
+  /**
+   * The scope this notification was produced in. `scope` is the credential-free
+   * identity the native shell routes back; the flat `homeId`/`scopeId` pair is
+   * the same identity for hosts that only read the two strings.
+   */
+  readonly homeId?: string;
+  readonly scopeId?: string;
   readonly scope?: NavScopeIdentity;
   /** Same tag replaces the previous notification where the platform supports it. */
   readonly tag?: string;
@@ -55,6 +61,17 @@ export interface HostFileDrop {
    * the cursor. Undefined means "somewhere in the window".
    */
   readonly position?: { readonly x: number; readonly y: number };
+}
+
+/**
+ * The work mode this native window was opened in (`desktop_window_mode`).
+ * `presetId` is what `--preset work` asked for, and `windowId` is this window's
+ * own identity — the two together are what let two windows on one home be in
+ * different modes without overwriting each other.
+ */
+export interface DesktopWindowMode {
+  readonly presetId: string;
+  readonly windowId: string;
 }
 
 /** One entry of `desktop_space_statuses`. */
@@ -140,7 +157,7 @@ interface HostCapabilities {
    * The unread count for the taskbar / dock icon (0 clears it). Best effort:
    * a platform without badges ignores it.
    */
-  setUnreadBadge?: (count: number) => Promise<void>;
+  setUnreadBadge?: (count: number, homeId?: string, scopeId?: string, sessionIds?: readonly string[]) => Promise<void>;
   /**
    * Open an http(s) URL in the system browser. Present where `window.open`
    * cannot be trusted (desktop webviews reject pop-ups, VS Code webviews have
@@ -151,6 +168,8 @@ interface HostCapabilities {
   isWindowVisibleAndFocused?: () => Promise<boolean>;
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
   openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
+  /** Pick a host path without reading or uploading its contents. */
+  pickFilePath?: () => Promise<string | null>;
   pickFiles?: () => Promise<HostSelectedFile[] | null>;
   /** OS file-copy clipboard, distinct from text and screenshot clipboard data. */
   readClipboardFiles?: () => Promise<{
@@ -196,6 +215,11 @@ interface HostCapabilities {
   prepareSpace?: (homeId: string) => Promise<{ readonly homeId: string }>;
   /** Windows mode: open (or focus) the space's own window (`open_space`). */
   openSpace?: (homeId: string) => Promise<void>;
+  /**
+   * The work mode this window was launched in. Absent on a build without modes,
+   * which the boot reads as "this window has no mode of its own".
+   */
+  windowMode?: () => Promise<DesktopWindowMode | null>;
   /** Windows mode: source-home broker window; only a registered connection id crosses the bridge. */
   openRemoteSpace?: (connectionId: string) => Promise<void>;
   /** Windows-only. Rejects with `{ code, message }`; never overwrites an existing shortcut. */

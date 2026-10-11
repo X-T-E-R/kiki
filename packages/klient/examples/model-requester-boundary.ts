@@ -122,7 +122,7 @@ async function probeRealConfig(): Promise<void> {
       }
     }
   } finally {
-    app.dispose();
+    await app.dispose();
   }
 }
 

@@ -90,7 +90,7 @@ it('keeps real ThreadCreate bindings on GUI entry, running continuation and cold
     await open(manual.id, 'high');
   } finally {
     for (const controller of controllers) controller.close();
-    registration.dispose();
+    await registration.dispose();
     if (pending !== undefined && !pending.writableEnded) {
       pending.writeHead(200, { 'content-type': 'text/event-stream' });
       pending.end(`data: ${JSON.stringify({ id: 'fixture-response', choices: [{ index: 0, delta: { content: 'Fixture reply.' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);

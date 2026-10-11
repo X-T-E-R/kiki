@@ -1,3 +1,5 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +8,7 @@ import {
   applyManagedKimiCodeConfig,
   KIMI_CODE_PROVIDER_NAME,
   KimiOAuthToolkit,
+  KimiOriginalOAuthService,
   resolveKimiCodeOAuthKey,
   resolveKimiTokenStorageName,
   type ManagedKimiConfigShape,
@@ -106,6 +109,28 @@ describe('resolveKimiTokenStorageName', () => {
 });
 
 describe('KimiOAuthToolkit', () => {
+  it('reuses an existing original Kimi Code sign-in through the managed provider without copying credentials', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-original-kimi-'));
+    const originalHome = join(root, 'original');
+    await mkdir(join(originalHome, 'credentials'), { recursive: true });
+    await writeFile(join(originalHome, 'config.toml'), 'credentials_store = "file"\n');
+    await writeFile(join(originalHome, 'credentials/kimi-code.json'), JSON.stringify({
+      access_token: 'original-access', refresh_token: 'original-refresh', expires_at: 10000,
+      expires_in: 3600, scope: '', token_type: 'Bearer',
+    }));
+    vi.stubEnv('KIMI_CODE_HOME', originalHome);
+    const own = new MemoryTokenStorage();
+    const toolkit = new KimiOAuthToolkit({ homeDir: join(root, 'kiki'), storage: own, now: () => 100,
+      originalKimi: new KimiOriginalOAuthService({ managerOptions: { now: () => 100 } }) });
+    try {
+      await expect(toolkit.tokenProvider(KIMI_CODE_PROVIDER_NAME, { key: 'oauth/kimi-code' }).getAccessToken()).resolves.toBe('original-access');
+      expect(own.tokens.size).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('can be constructed without host identity', async () => {
     const storage = new MemoryTokenStorage();
     storage.tokens.set('kimi-code', token('access-1'));

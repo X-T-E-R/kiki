@@ -4,7 +4,7 @@
 
 ## Execution and configuration
 
-`PluginImportService` supplies source discovery, previews and durable jobs. `PluginHostService.requestSource` executes the built-in entry through the existing `PluginHost`, tracked requests and reload gates. It does not write installation records or scan input folders at startup. The existing `plugin_import` flag defaults to true and still honors explicit false.
+`PluginImportService` supplies source discovery, previews and durable jobs. `PluginHostService.requestSource` executes the built-in entry through the existing `PluginHost`, tracked requests and reload gates. It does not write installation records or scan input folders at startup. History import is a shipped capability with no experimental master switch. Discovery, previews and committing an import remain explicit user actions.
 
 `PluginSettingsService` reads the built-in settings descriptor without looking up an installed manifest. Values stay in the existing on-disk `plugin_settings` section under `kiki-history`; the internal config domain is `pluginSettings`. This dictionary section has identity TOML codecs so plugin ids, setting keys and secret storage keys are not case-converted. Existing credential separation still puts secret values in `credentials/credentials.toml`. The sole setting is `customScript`, an absolute path to a trusted ES module exporting `discover`, `probe` and `parse`; empty uses `builtin/examples/custom-json.mjs`. The existing REST consumer is `client.rest.plugins.settings(id)` / `setSettings(id, { values })`. Custom scripts run with account permissions, not in a sandbox; their bytes and settings join the source revision so editing either requires a new preview.
 
@@ -23,7 +23,7 @@ The Pi/Grok/OpenCode transport limits each file to 64 MiB, validates required so
 Claim-matched coverage lives in the existing tests:
 
 - `test/app/plugin/pluginImport.test.ts`: built-in sources without installation, third-party sources, native conversation selection and Pi/Grok/OpenCode relationship validation.
-- `packages/kap-server/test/pluginImport.integration.ts`: clean-home default availability, existing REST settings, custom script revision changes, canonical native context, provider-backed continuation, archive compatibility and explicit false; earlier native tests cover reopen and publication failure ownership.
+- `packages/kap-server/test/pluginImport.integration.ts`: clean-home availability, existing REST settings, custom script revision changes, canonical native context, provider-backed continuation and archive compatibility; earlier native tests cover reopen and publication failure ownership.
 - `apps/kimi-code/test/native/native-assets.test.ts`: copy and SEA extraction of the complete rule tree followed by loading all six registrations in a fresh Node process.
 
 These checks do not substitute for a complete desktop/SEA build or a cross-platform/source-version matrix.

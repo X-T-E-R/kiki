@@ -21,12 +21,21 @@ export async function panelDocument(root: string, panel: PluginPanel): Promise<s
   if (!info.isFile() || info.size > MAX_PANEL_BYTES) throw new Error('Panel HTML exceeds 256 KiB');
   let html = await readFile(file, 'utf8');
   for (const [name, asset] of Object.entries(panel.assetFiles)) {
-    const bytes = await readFile(asset);
-    const mime = ASSET_MIME[path.extname(asset).toLowerCase()];
-    if (mime === undefined || bytes.byteLength > 512 * 1024) throw new Error('Invalid plugin panel asset');
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    html = html.replace(new RegExp(`(["'])\\./${escaped}\\1`, 'g'),
-      `"data:${mime};base64,${bytes.toString('base64')}"`);
+    const assetFile = await realpath(asset);
+    const assetRelative = path.relative(base, assetFile);
+    if (!assetRelative || assetRelative.startsWith('..') || path.isAbsolute(assetRelative)) throw new Error('Panel asset escaped its installed plugin');
+    const mime = ASSET_MIME[path.extname(assetFile).toLowerCase()];
+    const assetInfo = await stat(assetFile);
+    if (mime === undefined || !assetInfo.isFile() || assetInfo.size > 512 * 1024) throw new Error('Invalid plugin panel asset');
+    const bytes = await readFile(assetFile);
+    if (bytes.byteLength > 512 * 1024) throw new Error('Invalid plugin panel asset');
+    const references = new Set([`./${name}`, path.relative(path.dirname(file), assetFile).replaceAll('\\', '/')]);
+    for (const reference of [...references]) if (!reference.startsWith('.')) references.add(`./${reference}`);
+    for (const reference of references) {
+      const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      html = html.replace(new RegExp(`(["'])${escaped}\\1`, 'g'),
+        `"data:${mime};base64,${bytes.toString('base64')}"`);
+    }
   }
   if (/<(?:script|link|img)\b[^>]*\b(?:src|href)\s*=\s*["'](?!data:)/i.test(html)) {
     throw new Error('Panel references an undeclared external asset');

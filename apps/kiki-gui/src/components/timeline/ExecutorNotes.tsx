@@ -23,8 +23,7 @@ export function executorDisplayName(id: string): string {
  * External-executor provenance opening a turn (`executor.turn.metadata`).
  * `Claude Code · ACP`, plus one quiet line: how the profile instructions were
  * delivered, and — only when the record is partial — a neutral "Partial
- * record". The tooltip keeps every loss, including protocol detail. The
- * spoken label keeps the functional losses only. Loss codes stay in the
+ * record" whose tooltip reads each loss in words. Loss codes stay in the
  * DOM as data for tests and copy-paste, not as visible jargon.
  */
 export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }: { execution: TurnExecutionInfo }) {
@@ -32,23 +31,11 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
   const executor = executorDisplayName(execution.executorId);
   const protocol = PROTOCOL_SHORT[execution.protocol] ?? execution.protocol;
   const degraded = execution.fidelity === 'degraded' || execution.losses.length > 0;
-  const spokenLoss = new Set([
-    'tool_input_partial', 'tool_output_summary_only', 'message_id_missing', 'usage_context_only',
-    'unknown_update_dropped', 'resume_new_session_handoff', 'handoff_truncated', 'prompt_delivery_downgraded',
-    'user_message_attribution_missing', 'permission_mode_unverified', 'additional_directories_dropped',
-    'thought_level_unconfigured',
-  ]);
-  const lossText = (code: string, spokenLine: boolean) => {
-    const key = (spokenLine ? `transcript.lossSpoken.${code}` : `transcript.loss.${code}`) as I18nKey;
+  const lossLines = execution.losses.map((code) => {
+    const key = `transcript.loss.${code}` as I18nKey;
     const text = t(key);
-    if (text !== key) return text;
-    if (!spokenLine) return code;
-    const fallback = `transcript.loss.${code}` as I18nKey;
-    const original = t(fallback);
-    return original === fallback ? code : original;
-  };
-  const lossLines = execution.losses.map((code) => lossText(code, false));
-  const spokenLines = execution.losses.filter((code) => spokenLoss.has(code)).map((code) => lossText(code, true));
+    return text === key ? code : text;
+  });
   const deliveryKey = execution.profileDelivery === undefined ? undefined
     : `transcript.exec.delivery.${execution.profileDelivery}` as I18nKey;
   const delivery = deliveryKey === undefined || t(deliveryKey) === deliveryKey ? undefined : t(deliveryKey);
@@ -64,7 +51,7 @@ export const TurnExecutionBadge = memo(function TurnExecutionBadge({ execution }
       {degraded ? (
         <span data-turn-degraded data-loss-codes={execution.losses.join(' ')} tabIndex={0}
           title={lossLines.length === 0 ? undefined : lossLines.map((line) => `· ${line}`).join('\n')}
-          aria-label={[t('transcript.exec.degradedNote'), ...spokenLines].join('. ')}
+          aria-label={[t('transcript.exec.degradedNote'), ...lossLines].join('. ')}
           className="inline-flex cursor-help items-center gap-1 rounded-[4px] underline decoration-dotted decoration-ink-faint/60 underline-offset-2 outline-none focus-visible:outline-2 focus-visible:outline-selected-ink">
           · {t('transcript.exec.degradedNote')}
         </span>
@@ -163,8 +150,7 @@ export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }
     case 'diff':
       return <EngineDiff diff={note.diff} turnLabel={t('transcript.exec.turnDiff')} />;
     case 'unknown':
-      return <QuietNote kind="unknown" title={note.updateType === undefined ? title : `${note.updateType}${title === undefined ? '' : ` · ${title}`}`}
-        icon="dash" text={t('transcript.exec.unknownUpdate')} />;
+      return <UnknownUpdate note={note} title={title} />;
     case 'hint': {
       const key = note.status === 'delivered'
         ? note.method === 'native_steer' ? HINT_KEY['delivered:native_steer'] : HINT_KEY['delivered:next_turn_preamble']
@@ -172,30 +158,52 @@ export const ExecutorNoteRow = memo(function ExecutorNoteRow({ note, createdAt }
       return <QuietNote kind={`hint-${note.status}`} title={title} text={t(key)}
         icon={note.status === 'delivered' ? 'check' : note.status === 'queued' ? 'clock' : 'cross'} tone={note.status === 'undelivered' ? 'warn' : 'plain'} />;
     }
-    // The engine's own context reading. It is named as the engine's because
-    // Kiki's context meter measures a different window.
+    // The engine's own context reading is routed directly into the native ContextMeter
+    // and the inspector, so we retire the duplicate timeline QuietNote.
     case 'usage':
-      return <QuietNote kind="usage" icon="usage" title={title}
-        text={note.size === undefined
-          ? t('transcript.exec.engineContextUsed', { used: time.formatTokens(note.used) })
-          : t('transcript.exec.engineContextOf', { used: time.formatTokens(note.used), size: time.formatTokens(note.size) })} />;
+      return null;
     case 'session': {
       const dropped = note.droppedImage;
-      const observed = note.observed;
-      const supporting = observed === undefined ? '' : [observed.source, observed.provider, observed.version].filter(Boolean).join(' · ');
-      return <>
-        {dropped === undefined ? null : <QuietNote kind="session" icon="warning" tone="warn"
-          title={[title, ...(dropped.notes ?? [])].filter(Boolean).join('\n') || undefined}
+      if (dropped !== undefined) {
+        const notes = dropped.notes ?? [];
+        return <QuietNote kind="session" icon="warning" tone="warn"
+          title={[title, ...notes].filter(Boolean).join('\n') || undefined}
           text={dropped.reason === undefined
             ? t('transcript.exec.imageDropped')
-            : t('transcript.exec.imageDroppedReason', { reason: dropped.reason })} />}
-        {observed?.model === undefined ? null : <QuietNote kind="session-model" icon="sliders"
-          title={[title, supporting].filter(Boolean).join('\n') || undefined}
-          text={t('transcript.exec.engineModel', { model: observed.model })} />}
-      </>;
+            : t('transcript.exec.imageDroppedReason', { reason: dropped.reason })} />;
+      }
+      // What the engine reports it is running. The observed value is shown as
+      // the engine's own, never as the Kiki model this session requested;
+      // provider and agent version stay in the tooltip as supporting facts.
+      const observed = note.observed;
+      if (observed?.model === undefined) return null;
+      const supporting = [observed.source, observed.provider, observed.version].filter(Boolean).join(' · ');
+      return <QuietNote kind="session-model" icon="sliders"
+        title={[title, supporting].filter(Boolean).join('\n') || undefined}
+        text={t('transcript.exec.engineModel', { model: observed.model })} />;
     }
   }
 });
+
+function UnknownUpdate({ note, title }: { note: Extract<ExecutorNote, { kind: 'unknown' }>; title?: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const detail = useMemo(() => {
+    if (note.payload === undefined) return undefined;
+    try { return JSON.stringify(note.payload, null, 2)?.slice(0, 16_384); }
+    catch { return undefined; }
+  }, [note.payload]);
+  return <ActivityRow attrs={{ 'data-executor-note': 'unknown' }} glyph={<Icon name="dash" size={12} />}
+    label={t('transcript.exec.unknownUpdate')}
+    detail={note.updateType === undefined ? undefined : <code title={note.method ?? title}>{note.updateType}</code>}
+    metaTitle={title} expanded={detail === undefined ? undefined : open}
+    onToggle={detail === undefined ? undefined : () => { setOpen((value) => !value); }}>
+    {open && detail !== undefined ? <div className="space-y-1">
+      {note.method !== undefined ? <p className="font-mono text-[11px] text-ink-faint">{note.method}</p> : null}
+      <pre data-executor-update-payload className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-ink-soft">{detail}</pre>
+    </div> : undefined}
+  </ActivityRow>;
+}
 
 function QuietNote({ kind, text, icon, title, tone = 'plain' }: {
   kind: string; text: string; icon: 'check' | 'clock' | 'cross' | 'dash' | 'sliders' | 'usage' | 'warning'; title?: string; tone?: 'plain' | 'warn';

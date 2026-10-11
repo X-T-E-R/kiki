@@ -114,7 +114,7 @@ describe('KosongConfigService kosong → config persistence', () => {
         kimi: KIMI_PROVIDER,
       });
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -131,7 +131,7 @@ describe('KosongConfigService kosong → config persistence', () => {
       });
       expect(config.get<string>(DEFAULT_MODEL_SECTION)).toBe('k2');
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -144,7 +144,7 @@ describe('KosongConfigService kosong → config persistence', () => {
 
       expect(config.get<string>(DEFAULT_PROVIDER_SECTION)).toBe('openai');
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });
@@ -162,7 +162,7 @@ describe('KosongConfigService awaited-mutation semantics', () => {
       await models.setDefaultModel('k1');
       expect(config.get<string>(DEFAULT_MODEL_SECTION)).toBe('k1');
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -194,7 +194,7 @@ describe('KosongConfigService awaited-mutation semantics', () => {
       });
       expect(log.warnings).toHaveLength(0);
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -227,7 +227,7 @@ describe('KosongConfigService awaited-mutation semantics', () => {
         mistral: { type: 'mistral' },
       });
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });
@@ -246,7 +246,7 @@ describe('KosongConfigService config → kosong sync', () => {
       await config.set(PROVIDERS_SECTION, raw);
       expect(providers.get('gateway')).toMatchObject(published.gateway);
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -268,7 +268,7 @@ describe('KosongConfigService config → kosong sync', () => {
       await flush();
       expect(providers.getDefaultProvider()).toBe('openai');
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });
@@ -294,7 +294,7 @@ describe('KosongConfigService loop termination', () => {
         replaceSpy.mock.calls.filter(([domain]) => domain === DEFAULT_PROVIDER_SECTION),
       ).toHaveLength(1);
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 
@@ -312,7 +312,7 @@ describe('KosongConfigService loop termination', () => {
       expect(models.get('k2')).toEqual({ provider: 'openai', model: 'gpt-5' });
       expect(replaceSpy).not.toHaveBeenCalled();
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });
@@ -336,7 +336,7 @@ describe('KosongConfigService default-provider deletion', () => {
       expect(replaceSpy).toHaveBeenCalledWith(DEFAULT_PROVIDER_SECTION, undefined);
       expect(config.get(DEFAULT_PROVIDER_SECTION)).toBeUndefined();
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });
@@ -373,7 +373,7 @@ describe('KosongConfigService env-pinned default pointer', () => {
       expect(replaceSpy).toHaveBeenCalledWith(DEFAULT_MODEL_SECTION, 'k1');
       expect(models.getDefaultModel()).toBe('env-model');
     } finally {
-      bridge.dispose();
+      await bridge.dispose();
     }
   });
 });

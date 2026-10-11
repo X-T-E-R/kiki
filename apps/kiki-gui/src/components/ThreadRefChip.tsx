@@ -38,15 +38,17 @@ export function RoomRefChip({
   entry,
   onRemove,
   inline = false,
+  href: suppliedHref,
 }: {
   roomId: string;
   entry: RoomRefDirectoryEntry;
   onRemove?: () => void;
   inline?: boolean;
+  href?: string;
 }) {
   const { t, tp } = useI18n();
   const navigate = useGuardedNavigate();
-  const href = conversationRefLink('room', roomId);
+  const href = suppliedHref ?? conversationRefLink('room', roomId);
   const label = entry.name ?? roomId;
   const members = entry.memberCount;
   const tooltip = [
@@ -251,7 +253,7 @@ export function ThreadRefText({
   for (const ref of refs) {
     if (ref.start > cursor) parts.push(<span key={`t-${cursor}`}>{projectSegment(text.slice(cursor, ref.start))}</span>);
     parts.push(ref.kind === 'room'
-      ? <RoomRefChip key={`r-${ref.start}`} roomId={ref.id} entry={rooms.lookup(ref.id)} inline />
+      ? <RoomRefChip key={`r-${ref.start}`} roomId={ref.id} entry={rooms.lookup(ref.id)} href={ref.href} inline />
       : <ThreadRefChip key={`r-${ref.start}`} sessionId={ref.id} entry={directory.lookup(ref.id)} group={group} href={ref.href} inline />);
     cursor = ref.end;
   }

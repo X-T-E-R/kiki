@@ -12,7 +12,7 @@ import { memo, useMemo, useState, type ReactNode } from 'react';
 import type { ToolInputDisplay } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
+import { extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -308,30 +308,51 @@ function externalOutput(output: unknown): { text?: string; rawInput?: unknown; r
   return { text: typeof value['text'] === 'string' ? value['text'] : undefined, rawInput: value['rawInput'], rawOutput: value['rawOutput'], media: Array.isArray(value['media']) ? value['media'] : undefined };
 }
 
-function OutputView(props: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
-  return <div data-tool-record-field="output"><OutputContent {...props} /></div>;
+/**
+ * A foreign engine's result, as the engine handed it over: the preserved body
+ * when the window carried one, the artifacts it names, and an honest note when
+ * the payload was truncated on the way in.
+ */
+function ExternalOutput({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
+  const { locale } = useI18n();
+  if (output === undefined || output === null) return null;
+  const preserved = externalOutput(output);
+  if (preserved === undefined) {
+    return typeof output === 'string'
+      ? <pre className={wellClass(island)}>{output}</pre>
+      : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
+  }
+  const media = extractToolOutputMedia(preserved.media);
+  return <div className="space-y-2">
+    {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
+    {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
+    {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
+    <details>
+      <summary className="text-[12px] text-ink-faint">{toolRecordCopy('artifact', locale)}</summary>
+      <LoadedToolText text={recordText(output)} className={wellClass(island)} />
+    </details>
+  </div>;
 }
 
-function OutputContent({ output, agentId, island = false, external = false }: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
-  const { t, locale } = useI18n();
-  if (output === undefined || output === null) return null;
-  if (external) {
-    const preserved = externalOutput(output);
-    const media = extractToolOutputMedia(preserved?.media);
-    if (preserved === undefined) return typeof output === 'string' ? <pre className={wellClass(island)}>{output}</pre> : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
-    return <div className="space-y-2">
-      {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
-      {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
-      {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
-      <details>
-        <summary className="text-[12px] text-ink-faint">{toolRecordCopy('artifact', locale)}</summary>
-        <LoadedToolText text={recordText(output)} className={wellClass(island)} />
-      </details>
-    </div>;
-  }
+/** The result well: engine content parts, canonical result media, or both. */
+function OutputView({ output, media, agentId, island = false, external = false }: {
+  output: unknown;
+  /** Canonical result media from the frame's own attachment references. */
+  media?: readonly MediaRef[];
+  agentId: string;
+  island?: boolean;
+  /** A foreign engine's payload: it carries its own body and artifacts. */
+  external?: boolean;
+}) {
+  const { t } = useI18n();
+  if (external) return <div data-tool-record-field="output"><ExternalOutput output={output} agentId={agentId} island={island} /></div>;
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
   // arrays; render their images as thumbnails instead of serialized JSON.
-  const mediaOutput = extractToolOutputMedia(output);
+  const mediaOutput = output === undefined || output === null ? undefined : extractToolOutputMedia(output);
+  // A result that carries both the reference and the part reports one file
+  // twice; `toolResultMedia` folds them so the well draws each image once.
+  const resultMedia = toolResultMedia(media, mediaOutput?.media);
+  const resultList = resultMedia.length > 0 ? <MediaPartList media={resultMedia} agentId={agentId} /> : null;
   if (mediaOutput !== undefined) {
     return (
       <div className="space-y-2">
@@ -340,10 +361,26 @@ function OutputContent({ output, agentId, island = false, external = false }: { 
             {mediaOutput.text}
           </pre>
         ) : null}
-        <MediaPartList media={mediaOutput.media} agentId={agentId} />
+        {resultList}
       </div>
     );
   }
+  // A body the window omitted still leaves its media known: the references
+  // name the file, so show it beside whatever text survived.
+  const body = outputBody(output, agentId, island, t);
+  if (body === null) return resultList;
+  if (resultList === null) return <>{body}</>;
+  return (
+    <div className="space-y-2">
+      {body}
+      {resultList}
+    </div>
+  );
+}
+
+/** The text/JSON reading of a result, with its media handled above. */
+function outputBody(output: unknown, agentId: string, island: boolean, t: Translate): ReactNode {
+  if (output === undefined || output === null) return null;
   // The media plugin's `generate` result: .
   // A short generation shows its files right here; a long one shows where it
   // got to, with the same honesty rules the management view uses. Drawn
@@ -501,7 +538,7 @@ ${engineError}`;
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
-  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputContent output={block.output} agentId={agentId} external={external} /></ToolRecordField>;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} external={external} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the
@@ -598,7 +635,7 @@ ${engineError}`;
               <CommandIsland
                 command={block.display.command}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island external={external} /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} island external={external} /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and

@@ -44,6 +44,14 @@ Changing the setting does not move existing cards; they keep pointing at the sto
 
 After a compaction, the handoff can list up to five cards linked to the session, with ids, titles and statuses. That list needs the board feature and `BoardRead` enabled, and is simply absent if the read fails or takes more than 500 ms. Card status is never updated from todo lists or finished agent runs.
 
+## Searching conversations
+
+Use the sidebar search or `Ctrl-K` quick switcher to find conversations by title, workspace or message text. `Ctrl-F` searches within the conversation on screen. Message search includes user and assistant text by default; turn on **Include tool output** (the terminal icon in conversation find) to search saved tool results and Shell output too. Thinking blocks, tool names and tool inputs are excluded in both modes. Text you wrote in quotes or code remains searchable.
+
+Changing **Include tool output** updates matches and counts without mixing pages from the other scope. Conversation find can load an earlier matching turn and open its folded output. In Messages view, a tool-output hit offers **View in process**, which opens and highlights the output while keeping your query. Original history remains available to read whether or not it is included in search.
+
+The sidebar and quick switcher distinguish a failed or unavailable content search from no matches. Use **Retry** when offered; local title matches and your query stay in place.
+
 ## Starting and resuming sessions
 
 On the **New session** page in the desktop app or browser you can pick an existing workspace, type an absolute project directory, or choose **Automatically create a workspace** (the default when nothing is registered yet). With the automatic option, your first send creates a directory under `$KIKI_HOME/workspaces/` (default: `~/.kiki/workspaces/`), registers it, and opens the session there. If you picked a workspace explicitly and it was deleted since, it stays invalid until you choose another one or switch to automatic — Kiki will not quietly open a different workspace. [Data locations](../configuration/data-locations.md#directory-layout) has the layout and what cleanup touches.
@@ -55,6 +63,12 @@ To use a [Profile Markdown file](../customization/agent-profiles.md) directly, o
 Stopping creation keeps the draft and waits for the request's result; it does not undo a session already created on the server. Once creation is confirmed, send again with the same choices to reuse that session, or choose **Open created session** without sending. If a timeout leaves the result unconfirmed, check the session list before trying again — another attempt may create a second session.
 
 Opening a saved session reads its history without waking an inactive session's agents, and selecting a subagent reads that subagent's history without the main agent's conversation. The session activates when you send, edit or regenerate a message, answer an approval or question, or steer a prompt. If activation fails, nothing is sent and the history stays readable. Reading a session never stops work already running in it.
+
+A subagent resumed with the same model reads **Resumed · continuing with…**, not **Switched to…**. Actual model changes, thinking-effort updates and context rebuilds keep their own labels.
+
+The GUI opens with a small window of the latest messages. Scrolling up loads the next earlier page automatically; staying in the conversation does not load its entire history in the background. When earlier pages remain, **Load earlier messages** is available even if the current window has no visible messages. Visible messages and expanded entries load the details they need. Jumping to an older message or returning to a saved reading position continues loading until that place is found; scrolling yourself cancels the old jump. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
+
+If only part of the message records has loaded, the composer header shows **More message records**, even when no loaded message is queued. Open it and choose **Continue loading** to read one more page; a failed read offers **Try again** without removing existing queue rows. The progress counts message records, including completed ones, not just messages waiting to send.
 
 Every time you run `kiki` directly it creates a new session. To resume a previous session, use one of the following:
 
@@ -95,17 +109,38 @@ You can manage sessions without leaving the terminal. The following slash comman
 
 A thread created by another thread nests under its creator by default. **Show at top level** in the row's menu lifts it into its own top-level row, and **Show nested** puts it back. This is display only — the creator relationship stays as it is, and the choice survives a refresh or restart in the same browser or desktop space. Sorting by recent activity uses the most recent activity anywhere in a thread's family, so work in a nested thread moves its parent forward even before the next list refresh; each row still shows its own last-message time, and a thread shown at top level keeps its own position and time group.
 
+The same menu also offers **Copy thread link** and **Add to conversation**, which inserts a reference into the conversation you have open.
+
+Archiving a thread also archives its attached conversations, including deeper descendants and conversations not loaded in the sidebar. A thread explicitly shown at top level, together with its descendants, stays independent when its ancestor is archived; archiving that top-level thread itself still includes its attached conversations. A filter or workspace group that merely displays a child as a top-level row does not make it independent. Archive preserves history and does not remove worktrees. If only some conversations are archived, retry to finish the remaining ones. Restoring a thread restores only that thread, not every previously archived descendant.
+
+Open **Settings → Sessions → Manage archived conversations** to browse saved archives by title, workspace and time. Search matches titles and workspaces across pages; opening a conversation reads its history without restoring it. Return to the archive manager to continue browsing.
+
+**Delete** permanently removes that conversation and its still-attached archived descendants; explicitly top-level threads remain independent, and unarchived conversations are kept. **Delete all archived conversations** covers every archive in the current connection's home, across all pages and regardless of the search. Both actions ask for confirmation; cancelling leaves the data unchanged. Deletion cannot be undone. The page stays pending until the operation finishes, then refreshes the list. If some items fail, it lists those items rather than reporting complete success; check the refreshed list before retrying.
+
+
 If session recovery fails, the GUI keeps whatever history it had already loaded and shows the error, with a request ID when there is one. **Retry now** next to it reruns the recovery.
 
+Editing a queued prompt's text or delivery timing through Kiki keeps its identity on recovery; you do not need to restore the original text or send a duplicate. Messages not yet launched stay pending when Kiki's backend shuts down normally. After recovery, review and resume the saved queue. Already launched messages are not automatically resent if their result is unknown; check the saved result before resending. Explicitly cancelled requests stay cancelled, including those cancelled by archiving or deleting the session.
+
+If a completed turn cannot be saved because storage is temporarily unavailable, Kiki briefly retries saving the same result without running the turn again. A longer outage keeps the turn waiting for persistence; after storage is writable again, submitting the next prompt retries that save before continuing. A pending save is not confirmation that the result is on disk.
+
 Resolved questions, approvals, markers and finished background tasks stay in the timeline as compact entries. Finished work can be grouped under **Worked**; expand it to see the individual entries. Expanding a question shows the full question and, for an answered one, the saved answer — dismissed and expired questions show their original choices too. Output from completed tasks stays in task history. File references can be previewed, opened or revealed in their folder; a preview is generated on demand, and the original file is still there to open or download.
+
+Images in sent attachments and in tool results appear as soon as they scroll into view — you do not click to load them. Clicking one opens it full size, and a real failure offers a retry. The viewer keeps its own **Download**; there is no second download link under each image.
+
 User messages show linked threads, attachments, quotations and notes as their own readable items, without generated prompt instructions in the bubble. Text you write yourself, including XML, code and blockquotes, stays visible. Older messages without recorded display metadata remain unchanged.
 
+Click a file citation such as `src/example.ts:12:7` or `docs/example.md#L12-L20` in a message to open its tab at that source location. References in inline code and ordinary text are clickable too. Markdown line citations open **Source**; a link such as `[section](docs/example.md#heading)` opens the rendered heading. Inside a Markdown document, `#heading` stays in that document and relative links start from its directory. Reopening a citation reuses the tab and keeps unsaved edits. A missing or out-of-range target leaves the file open with a location notice.
 
-Markdown previews open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. Above roughly 512 KB the first view is the beginning of the file and read-only; **Load full file** in either view shows the rest, and still does not enable editing.
+Markdown previews otherwise open rendered. **Source** shows the text, and in the desktop app you can edit it there when a write channel is available. The rendered view handles tables, math, diagrams and images linked relative to the Markdown file. A file above roughly 512 KB starts as its opening portion and keeps loading the rest in the background; it stays read-only at that size, so use **Source** to read it but edit smaller files. If the background read fails, the view says so and offers a retry.
 
 ## GUI usage statistics
 
-**Usage** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
+**Usage → History** opens on today in the browser's local time. A range in the URL overrides that, and a saved all-history view does not replace it. The page keeps its date boundary correct across midnight and when the browser's timezone offset changes.
+
+Start with the cost trend, then select a bar to see the consumption sources for that interval. Group sources by model, provider, agent profile, or workspace; selecting a source narrows that dimension while keeping the date range and other filters. Open its session records on demand and use the recorded turn's link to jump to the original conversation. Returning keeps your usage view. Records without turn attribution say so instead of offering a guessed location.
+
+For a bounded date range, request the previous-period comparison when you need it. Missing prior data is shown as unavailable, not zero; a failed comparison leaves the current period readable. The collapsed live reference remains separate from the selected history.
 
 Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
 
@@ -137,7 +172,7 @@ The context meter under the composer shows the same numbers, lets you set the co
 /fork
 ```
 
-You stay in the original session; the fork is an independent copy you can switch to whenever you like with `/sessions`. A `/goal` you saved does not come along — set one in the fork if you want goal-driven work there. The CLI prints a ready-to-run `kiki --resume` command, also on your clipboard, so you can open the fork from a fresh terminal.
+You stay in the original session; the fork is an independent copy you can switch to whenever you like with `/sessions`. A `/goal` you saved does not come along — set one in the fork if you want goal-driven work there. New forks do not inherit scheduled tasks, whether you copy the full session, fork at a turn boundary, or create a child session. Schedules in the original session and existing copies stay unchanged; create a new task explicitly in the new session if needed. The CLI prints a ready-to-run `kiki --resume` command, also on your clipboard, so you can open the fork from a fresh terminal.
 
 ## Exporting a session
 

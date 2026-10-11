@@ -58,7 +58,15 @@ export interface SpaceStorage {
 }
 
 /** `localStorage` as the active space sees it — the drop-in for namespaced keys. */
-export const spaceStorage: SpaceStorage = {
+export const spaceStorage: SpaceStorage & { capture(): SpaceStorage } = {
+  capture: () => {
+    const prefix = active === null ? '' : `${SPACE_STORAGE_PREFIX}${active.homeId}.`;
+    return {
+      getItem: (key) => localStorage.getItem(`${prefix}${key}`),
+      setItem: (key, value) => { localStorage.setItem(`${prefix}${key}`, value); },
+      removeItem: (key) => { localStorage.removeItem(`${prefix}${key}`); },
+    };
+  },
   getItem: (key) => localStorage.getItem(spaceStorageKey(key)),
   setItem: (key, value) => {
     localStorage.setItem(spaceStorageKey(key), value);

@@ -6,6 +6,7 @@ export const CONTEXT_REBUILD_SURFACES = [
   'skills',
   'instructions',
   'plugins',
+  'mcp',
   'injections',
 ] as const;
 
@@ -17,6 +18,7 @@ export interface ContextRebuildChanges {
   readonly skills: boolean;
   readonly instructions: boolean;
   readonly plugins: boolean;
+  readonly mcp: boolean;
   readonly injections: boolean;
 }
 
@@ -24,6 +26,17 @@ export interface ContextRebuildResult {
   readonly rebuilt: readonly ContextRebuildSurface[];
   readonly changed: boolean;
   readonly changes: ContextRebuildChanges;
+  readonly readiness: {
+    readonly mcp: readonly {
+      readonly runtimeName: string;
+      readonly connection: import('#/agent/mcp/mcp').McpSessionCapability['connection'];
+      readonly error?: string;
+    }[];
+    readonly plugins: {
+      readonly state: 'ready' | 'pending' | 'failed' | 'unavailable';
+      readonly errors: readonly string[];
+    };
+  };
 }
 
 export interface IAgentContextRebuildService {

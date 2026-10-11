@@ -3,6 +3,7 @@ import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/tool
 import type { PermissionPolicy, PermissionPolicyResult } from '#/agent/permissionPolicy/types';
 import { IWorktreeService } from '#/app/git/worktreeModel';
 import { insidePath } from '#/persistence/backends/node-fs/worktreeFiles';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { writeFileAccesses } from './path-utils';
@@ -26,6 +27,7 @@ export class WorktreeIsolationDenyPermissionPolicyService implements PermissionP
   constructor(
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
+    @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @IWorktreeService private readonly worktrees: IWorktreeService,
   ) {}
 
@@ -37,13 +39,14 @@ export class WorktreeIsolationDenyPermissionPolicyService implements PermissionP
     const target = writeFileAccesses(context).find((access) => protectedPaths.some((root) => insidePath(access.path, root)));
     if (target !== undefined) return { kind: 'deny', message: 'This is an isolated worktree session; the source checkout and other Kiki worktrees are read-only here.' };
     if (context.toolCall.name !== 'Bash' || context.args === null || typeof context.args !== 'object') return undefined;
+    const roots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
     const args = context.args as { readonly command?: unknown; readonly cwd?: unknown };
     const bashCwd = args.cwd;
-    if (typeof bashCwd === 'string' && protectedPaths.some((root) => insidePath(resolve(this.workspace.workDir, bashCwd), root))) {
+    if (typeof bashCwd === 'string' && protectedPaths.some((root) => insidePath(resolve(roots.workDir, bashCwd), root))) {
       return { kind: 'deny', message: 'Bash cannot run in the source checkout or another Kiki worktree from this session.' };
     }
     if (typeof args.command === 'string' && commandPaths(args.command).some((path) =>
-      protectedPaths.some((root) => insidePath(resolve(this.workspace.workDir, path), root)))) {
+      protectedPaths.some((root) => insidePath(resolve(roots.workDir, path), root)))) {
       return { kind: 'deny', message: 'Git and shell redirection into the source checkout or another Kiki worktree is denied.' };
     }
     return undefined;

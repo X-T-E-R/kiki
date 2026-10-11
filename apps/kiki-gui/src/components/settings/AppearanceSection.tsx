@@ -10,6 +10,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../../lib/spaceSettings';
 import {
   defaultAppearanceFor,
   isDefaultAppearance,
@@ -32,6 +33,7 @@ import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { SkinFiles, SkinPicker, useSkinPrefs } from './SkinSettings';
 import { SpacePrefOrigin } from './spaces/SpacePrefOrigin';
+import { useConnection } from '../../state/connection';
 
 const DENSITY_CHOICES = [
   { value: 'compact' as const, rem: 0.22 },
@@ -102,6 +104,10 @@ function skinFaceName(variable: '--font-sans' | '--font-mono', tweak: string | u
 export function AppearanceSection() {
   const { t } = useI18n();
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
+  const { client, meta } = useConnection();
+  const spaceTarget = spaceSettingsTargetOf(client, meta);
+  const appearanceScope = spaceSettingsTargetIsSpace(spaceTarget) ? 'space' : 'app';
+  const inSpace = appearanceScope === 'space';
   const skinPrefs = useSkinPrefs();
   const tweaks = skinPrefs.tweaks;
   const [undo, setUndo] = useState<AppearanceSnapshot | null>(null);
@@ -175,7 +181,7 @@ export function AppearanceSection() {
         </div>
       </div>
 
-      <SectionCard id="st-card-appearance" title={t('st.appearance.colorTitle')}>
+      <SectionCard id="st-card-appearance" title={t('st.appearance.colorTitle')} scope={appearanceScope}>
         <div className="space-y-2">
           <SettingField label={t('st.appearance.theme')} labelId="theme-label">
             <SpacePrefOrigin item="theme" label={t('st.appearance.theme')} />
@@ -215,7 +221,7 @@ export function AppearanceSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope="app">
+      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
         <div className="space-y-2">
           <Hint>{t('st.bg.hint')}</Hint>
           <SpacePrefOrigin item="background" label={t('st.bg.title')} />
@@ -223,7 +229,7 @@ export function AppearanceSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')}>
+      <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
         <div className="space-y-2">
           <FontRoleField
             role="sans"
@@ -264,7 +270,7 @@ export function AppearanceSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')}>
+      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
         <div className="space-y-2">
           <SettingField label={t('st.skin.radius')} htmlFor="skin-radius">
             <input
@@ -306,15 +312,16 @@ export function AppearanceSection() {
                 value: choice, label: t(`st.appearance.motion.${choice}`),
               }))}
             />
+            {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
           </SettingField>
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-packs" title={t('st.pack.title')}>
+      <SectionCard id="st-card-appearance-packs" title={t('st.pack.title')} scope={appearanceScope}>
         <AppearancePacks />
       </SectionCard>
 
-      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')}>
+      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope="app">
         <SkinFiles />
       </SectionCard>
     </div>

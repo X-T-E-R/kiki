@@ -19,7 +19,7 @@ export interface ModelSwitchesHandle {
 }
 
 export function useModelSwitches(sessionId: string, agentId: string | undefined): ModelSwitchesHandle {
-  const { client, scopeId } = useConnection();
+  const { client, scopeId, wsStatus } = useConnection();
   // KikiClient owns one stable Klient; a new React wrapper is not a new connection.
   const identity = client.klient;
   const [operations, setOperations] = useState<ReadonlyMap<string, QueuedModelSwitch>>(new Map());
@@ -42,6 +42,12 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
     let disposed = false;
     let readId = 0;
     let reading = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let failureCount = 0;
+    let failed = false;
+    let controller: AbortController | undefined;
+    let subscription: ReturnType<typeof generationClient.subscribeAgentModelSwitches>;
+    let subscriptionFailed = false;
     let current = new Map<string, QueuedModelSwitch>();
     let sinceRead: AgentModelSwitchEvent[] = [];
     const unknownStatuses = new Map<string, Extract<AgentModelSwitchEvent, { kind: 'status' }>>();
@@ -62,12 +68,15 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
     };
     const read = () => {
       if (disposed) return;
+      if (retry !== undefined) clearTimeout(retry);
+      controller?.abort();
+      controller = new AbortController();
       const request = ++readId;
       reading = true;
       sinceRead = [];
       setLoading(true);
       setError(undefined);
-      void generationClient.listAgentModelSwitches(sessionId, agentId).then((list) => {
+      void generationClient.listAgentModelSwitches(sessionId, agentId, controller.signal).then((list) => {
         if (disposed || request !== readId) return;
         current = new Map(list.map((entry) => [entry.input.operationId, entry]));
         for (const event of unknownStatuses.values()) {
@@ -83,34 +92,55 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
         for (const event of sinceRead) apply(event);
         sinceRead = [];
         reading = false;
+        failed = false;
+        failureCount = 0;
         publish();
         setLoading(false);
       }).catch((error: unknown) => {
         if (disposed || request !== readId) return;
         reading = false;
         sinceRead = [];
-        setLoading(false);
-        setError(error instanceof Error ? error : new Error(String(error)));
+        failed = true;
+        const preparing = error instanceof Error && error.message === 'model_switch_queue_preparing';
+        setLoading(preparing);
+        if (!preparing) setError(error instanceof Error ? error : new Error(String(error)));
+        if (preparing || ++failureCount < 3) retry = setTimeout(read, preparing ? 100 : 1000 * failureCount);
       });
     };
-    refreshRef.current = read;
-    const subscription = generationClient.subscribeAgentModelSwitches(sessionId, agentId, (event) => {
-      if (disposed) return;
-      const unknown = event.kind === 'status' && !current.has(event.operationId);
-      if (reading) sinceRead.push(event);
-      apply(event);
-      publish();
-      if (unknown || (event.kind === 'status' && event.receipt.state === 'pending')) read();
-    });
+    const attach = () => {
+      subscriptionFailed = false;
+      subscription = generationClient.subscribeAgentModelSwitches(sessionId, agentId, (event) => {
+        if (disposed) return;
+        const unknown = event.kind === 'status' && !current.has(event.operationId);
+        if (reading) sinceRead.push(event);
+        apply(event);
+        publish();
+        if (failed || unknown || (event.kind === 'status' && event.receipt.state === 'pending')) read();
+      });
+      void subscription.ready.then(() => { if (!disposed) read(); }).catch(() => { subscriptionFailed = true; });
+    };
+    refreshRef.current = () => {
+      failureCount = 0;
+      if (subscriptionFailed) { subscription.dispose(); attach(); }
+      read();
+    };
     // Attach first, read now, then reconcile the gap before the subscription handshake.
+    attach();
     read();
-    void subscription.ready.then(() => { if (!disposed) read(); }).catch(() => undefined);
     return () => {
       disposed = true;
+      controller?.abort();
+      if (retry !== undefined) clearTimeout(retry);
       refreshRef.current = () => {};
       subscription.dispose();
     };
   }, [scopeId, identity, sessionId, agentId]);
+
+  const previousStatus = useRef(wsStatus);
+  useEffect(() => {
+    if (wsStatus === 'open' && previousStatus.current !== 'open') refresh();
+    previousStatus.current = wsStatus;
+  }, [wsStatus, refresh]);
 
   const switches = useMemo<readonly QueuedModelSwitch[]>(() => [...operations.values()].toSorted((left, right) => {
     const leftIndex = left.queueIndex >= 0 ? left.queueIndex : Number.MAX_SAFE_INTEGER;

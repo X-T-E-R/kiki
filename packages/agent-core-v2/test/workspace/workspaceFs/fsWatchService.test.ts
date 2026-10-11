@@ -123,14 +123,14 @@ function collect(sub: { onDidChangeFiles: (l: (e: FsChangeEvent) => void) => unk
   return events;
 }
 
-const disposers: Array<() => void> = [];
+const disposers: Array<() => void | Promise<void>> = [];
 
 describe('WorkspaceFsWatchService', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
-  afterEach(() => {
-    for (const d of disposers.splice(0)) d();
+  afterEach(async () => {
+    await Promise.all(disposers.splice(0).map(async (d) => { await d(); }));
     vi.useRealTimers();
   });
 
@@ -253,7 +253,7 @@ describe('WorkspaceFsWatchService', () => {
     expect(eventsB[0]?.changes).toHaveLength(2);
   });
 
-  it('keeps the shared os watch alive while any subscription still watches', () => {
+  it('keeps the shared os watch alive while any subscription still watches', async () => {
     const { svc, watch } = makeWorkspace();
     const subA = svc.subscribe();
     const subB = svc.subscribe();
@@ -264,7 +264,7 @@ describe('WorkspaceFsWatchService', () => {
     subA.setWatchedPaths([]);
     expect(watch.disposedCount()).toBe(0);
 
-    subB.dispose();
+    await subB.dispose();
     expect(watch.disposedCount()).toBe(1);
   });
 

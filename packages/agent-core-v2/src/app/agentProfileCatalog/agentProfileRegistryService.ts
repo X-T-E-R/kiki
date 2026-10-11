@@ -132,7 +132,7 @@ export class AgentProfileRegistryService
           changed,
         ]);
       } finally {
-        subscription?.dispose();
+        await subscription?.dispose();
       }
       if ((this.sourceReadinessRevision.get(key) ?? 0) === revision) return;
     }

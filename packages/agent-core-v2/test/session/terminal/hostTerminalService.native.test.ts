@@ -19,8 +19,8 @@ import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanc
 describe('native Windows terminal lifecycle', () => {
   let disposables: DisposableStore | undefined;
 
-  afterEach(() => {
-    disposables?.dispose();
+  afterEach(async () => {
+    await disposables?.dispose();
   });
 
   it.runIf(process.platform === 'win32')(

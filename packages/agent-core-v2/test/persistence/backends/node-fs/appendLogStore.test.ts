@@ -111,8 +111,8 @@ describe('AppendLogStore', () => {
 
     releaseBlocked();
     await record.flush();
-    firstOwner.dispose();
-    blockedOwner.dispose();
+    await firstOwner.dispose();
+    await blockedOwner.dispose();
   });
 
   it('treats missing and retired scoped targets as a no-op', async () => {
@@ -123,7 +123,7 @@ describe('AppendLogStore', () => {
     const owner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 });
     await record.flush(SCOPE, KEY);
-    owner.dispose();
+    await owner.dispose();
     await record.drainRetirements();
     expect(logs.size).toBe(0);
 
@@ -215,7 +215,7 @@ describe('AppendLogStore', () => {
     const retiringOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     await appendStarted;
-    retiringOwner.dispose();
+    await retiringOwner.dispose();
     const replacementOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 2 });
     const orderedFlush = record.flush();
@@ -239,7 +239,7 @@ describe('AppendLogStore', () => {
     releaseReplacementAppend();
     await Promise.all([orderedFlush, currentFlush]);
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 2 }]);
-    replacementOwner.dispose();
+    await replacementOwner.dispose();
   });
 
   it('final release retirement is awaited by drainRetirements', async () => {
@@ -261,7 +261,7 @@ describe('AppendLogStore', () => {
     const owner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 });
     await appendStarted;
-    owner.dispose();
+    await owner.dispose();
 
     let drained = false;
     const draining = record.drainRetirements().then(() => {
@@ -344,15 +344,15 @@ describe('AppendLogStore', () => {
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     expect(await reportedFailure).toBe(failure);
 
-    firstOwner.dispose();
+    await firstOwner.dispose();
     await expect(record.flush()).rejects.toBe(failure);
 
-    finalOwner.dispose();
+    await finalOwner.dispose();
     const replacementOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 2 });
     await record.flush();
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 2 }]);
-    replacementOwner.dispose();
+    await replacementOwner.dispose();
   });
 
   it('rewrite atomically replaces the whole log', async () => {

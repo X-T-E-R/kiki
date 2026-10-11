@@ -6,6 +6,7 @@
  */
 
 import { act } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -41,7 +42,14 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(<I18nProvider>{node}</I18nProvider>);
+    root.render(
+      // The navigation reads the installed-plugin cache to name what can be
+      // opened. A harness with no server gives it an empty cache rather than a
+      // missing provider, which is the state it renders in before a connection.
+      <QueryClientProvider client={new QueryClient()}>
+        <I18nProvider>{node}</I18nProvider>
+      </QueryClientProvider>,
+    );
   });
   return container;
 }
@@ -75,18 +83,21 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'workspace', 'advanced']);
+      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Connection & remote', 'Models & agents', 'How work runs', 'Capabilities', 'Workspaces', 'Advanced']);
+      .toEqual(['App', 'Connection & remote', 'Models & agents', 'How work runs', 'Capabilities', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(leaves(1)).toEqual(['connection', 'ssh']);
-    expect(leaves(2)).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
-    expect(leaves(3)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
-    expect(leaves(5)).toEqual(['workspaces', 'spaces']);
-    expect(leaves(6)).toEqual(['developer', 'labs', 'about']);
+    // Spaces sit with the ways of reaching a server; workspaces with the
+    // sessions that run in them.
+    expect(leaves(1)).toEqual(['connection', 'ssh', 'spaces']);
+    expect(leaves(2)).toEqual(['ai', 'identity', 'agents', 'subagents']);
+    expect(leaves(3)).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
+    // External clients sit with MCP: both answer "what else can reach this
+    // server", in opposite directions.
+    expect(leaves(4)).toEqual(['skills', 'mcp', 'external-clients', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
+    expect(leaves(5)).toEqual(['developer', 'labs', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {

@@ -258,19 +258,21 @@ async function runTerminalUpdateGoalResult(
   turn: Turn,
   status: 'complete' | 'blocked',
   output: string,
+  toolName = 'UpdateGoal',
 ): Promise<void> {
+  const args = { status, ...(toolName === 'Goal' ? { action: 'update' } : {}) };
   const toolCall: ToolCall = {
     type: 'function',
     id: 'call_update_goal',
-    name: 'UpdateGoal',
-    arguments: JSON.stringify({ status }),
+    name: toolName,
+    arguments: JSON.stringify(args),
   };
   await toolExecutor.hooks.onDidExecuteTool.run({
     turnId: turn.id,
     signal: turn.signal,
     toolCall,
     toolCalls: [toolCall],
-    args: { status },
+    args,
     outcome: 'executed',
     result: { output, stopTurn: true },
   });
@@ -733,6 +735,19 @@ describe('AgentGoalService', () => {
       expect(goals.getGoal().goal?.budget.turnBudget).toBe(2);
     });
 
+    it.each(['paused', 'cancelled'] as const)('preserves a user %s goal on restart without restarting work', async (status) => {
+      const enqueue = vi.spyOn(ctx.get(IAgentLoopService), 'enqueue');
+      await restoreGoalRecords(ctx, goals, [
+        { type: 'goal.create', goalId: 'g1', objective: 'finish work' },
+        status === 'paused'
+          ? { type: 'goal.update', status: 'paused', reason: 'User paused' }
+          : { type: 'goal.clear' },
+      ]);
+      if (status === 'paused') expect(goals.getGoal().goal).toMatchObject({ status: 'paused', terminalReason: 'User paused' });
+      else expect(goals.getGoal().goal).toBeNull();
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
     it('normalizes active replayed goals to paused', async () => {
       records.length = 0;
       await restoreGoalRecords(ctx, goals, [
@@ -989,10 +1004,22 @@ describe('AgentGoalService core workflow hooks', () => {
     });
   });
 
-  it('preserves a live continuation while preventing future turns when the user pauses the goal', async () => {
+  it('aborts a live continuation and prevents future turns when the user pauses the goal', async () => {
     const abort = await startLiveContinuation();
 
     await goals.pauseGoal();
+
+    expect(abort).toHaveBeenCalledOnce();
+    expect(goals.getGoal().goal?.status).toBe('paused');
+    endTurn(eventBus, makeTurn(41), { reason: 'cancelled' });
+    await Promise.resolve();
+    expect(loopService.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the current turn when the runtime pauses future goal continuation', async () => {
+    const abort = await startLiveContinuation();
+
+    await goals.pauseGoal({ reason: 'runtime hold' }, 'runtime');
 
     expect(abort).not.toHaveBeenCalled();
     expect(goals.getGoal().goal?.status).toBe('paused');
@@ -1125,6 +1152,9 @@ describe('AgentGoalService core workflow hooks', () => {
     { name: 'CreateGoal', args: { objective: 'late task', replace: true } },
     { name: 'UpdateGoal', args: { status: 'complete' } },
     { name: 'SetGoalBudget', args: { value: 5, unit: 'turns' } },
+    { name: 'Goal', args: { action: 'create', objective: 'late task', replace: true } },
+    { name: 'Goal', args: { action: 'update', status: 'complete' } },
+    { name: 'Goal', args: { action: 'set_budget', value: 5, unit: 'turns' } },
   ])('rejects a stale $name call from a replaced goal turn', async ({ name, args }) => {
     await goals.createGoal({ objective: 'old task' });
     const oldTurn = makeTurn(46);
@@ -1149,6 +1179,19 @@ describe('AgentGoalService core workflow hooks', () => {
       turnsUsed: 0,
       tokensUsed: 0,
     });
+  });
+
+  it('allows canonical Goal get from a replaced goal turn without mutating the replacement', async () => {
+    await goals.createGoal({ objective: 'old task' });
+    const oldTurn = makeTurn(46);
+    eventBus.publish(new TurnStarted({ turnId: oldTurn.id, origin: USER_PROMPT_ORIGIN }));
+    const replacement = await goals.createGoal({ objective: 'new task', replace: true });
+    const results = await executeToolCall(toolExecutor, oldTurn, {
+      type: 'function', id: 'read_goal', name: 'Goal', arguments: JSON.stringify({ action: 'get' }),
+    });
+    expect(results).toHaveLength(1);
+    expect(JSON.parse(results[0]!.result.output as string).goal.objective).toBe('new task');
+    expect(goals.getGoal().goal).toMatchObject({ goalId: replacement.goalId, status: 'active' });
   });
 
   it('rejects a stale goal mutation from a turn that predates a definition edit', async () => {
@@ -1376,7 +1419,7 @@ describe('AgentGoalService core workflow hooks', () => {
       kind: 'system_trigger',
       name: 'goal_continuation',
     });
-    expect(JSON.stringify(context.get().at(-1)?.content)).toContain('Continue working toward');
+    expect(JSON.stringify(context.get().at(-1)?.content)).toContain('Continue the active goal from the current state');
     expect(JSON.stringify(context.get().at(-1)?.content)).toContain('TaskWait');
   });
 
@@ -1623,7 +1666,7 @@ describe('AgentGoalService core workflow hooks', () => {
     });
   });
 
-  it('requests one final outcome turn after a terminal UpdateGoal tool result', async () => {
+  it.each(['UpdateGoal', 'Goal'])('requests one final outcome turn after a terminal %s tool result', async (toolName) => {
     await goals.createGoal({ objective: 'finish the task' });
 
     const turn = makeTurn(3);
@@ -1646,7 +1689,7 @@ describe('AgentGoalService core workflow hooks', () => {
     await loopService.hooks.onWillBeginStep.run(step);
 
     await goals.markComplete({}, 'model');
-    await runTerminalUpdateGoalResult(toolExecutor, turn, 'complete', 'outcome prompt');
+    await runTerminalUpdateGoalResult(toolExecutor, turn, 'complete', 'outcome prompt', toolName);
     await loopService.hooks.onDidFinishStep.run(afterStep);
 
     expect(loopService.hasPendingRequests()).toBe(true);
@@ -1701,7 +1744,9 @@ describe('AgentGoalService core workflow hooks', () => {
     });
     const prompt = JSON.stringify(context.get().at(-1)?.content);
     expect(prompt).toContain('per-turn step limit');
-    expect(prompt).toContain('Pick up where that turn stopped');
+    expect(prompt).toContain('Continue from its verified state');
+    expect(prompt).toContain('every explicit requirement is now verified');
+    expect(prompt).not.toContain('slice of work small enough');
   });
 
   it('blocks active goals when the user prompt hook blocks the turn', async () => {
@@ -1964,6 +2009,46 @@ describe('goal pause classification on provider errors', () => {
   });
 });
 
+describe('AgentGoalService user pause recovery', () => {
+  it('interrupts an in-flight goal tool and accepts an ordinary message without cron', async () => {
+    const started = deferred();
+    let toolSignal: AbortSignal | undefined;
+    const ctx = createTestAgent(permissionModeServices('yolo'));
+    try {
+      ctx.get(IAgentToolRegistryService).register({
+        name: 'SlowWork',
+        description: 'Wait for cancellation.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({
+          approvalRule: 'SlowWork', accesses: [],
+          execute: async ({ signal }) => {
+            toolSignal = signal;
+            started.resolve();
+            return waitForAbort(signal);
+          },
+        }),
+      });
+      ctx.configure({ tools: ['SlowWork'] });
+      await ctx.rpc.createGoal({ objective: 'finish work' });
+      ctx.mockNextResponse({ type: 'function', id: 'slow-work', name: 'SlowWork', arguments: '{}' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] });
+      await started.promise;
+      await ctx.rpc.pauseGoal({});
+      expect(toolSignal?.aborted).toBe(true);
+      await ctx.untilTurnEnd();
+      await ctx.get(IAgentLoopService).settled();
+      expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false });
+      ctx.mockNextResponse({ type: 'text', text: 'Ordinary reply' });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'answer this instead' }] });
+      const events = await ctx.untilTurnEnd();
+      expect(events).toContainEqual(expect.objectContaining({ event: 'turn.ended', args: expect.objectContaining({ reason: 'completed' }) }));
+      expect((await ctx.rpc.getGoal({})).goal?.status).toBe('paused');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
 describe('AgentGoalService hard wall-clock deadline', () => {
   it('aborts an in-flight LLM request when the wall-clock budget expires', async () => {
     const clock = new ManualGoalDeadlineScheduler();
@@ -2120,7 +2205,7 @@ describe('GoalDeadlineSchedulerService', () => {
     vi.useRealTimers();
   });
 
-  it('keeps a delay beyond the host timer ceiling from firing immediately', () => {
+  it('keeps a delay beyond the host timer ceiling from firing immediately', async () => {
     vi.useFakeTimers();
     const scheduler = new GoalDeadlineSchedulerService();
     let fired = 0;
@@ -2133,7 +2218,7 @@ describe('GoalDeadlineSchedulerService', () => {
 
     vi.advanceTimersByTime(MAX_TIMER_DELAY_MS);
     expect(fired).toBe(1);
-    scheduled.dispose();
+    await scheduled.dispose();
   });
 });
 
@@ -2373,7 +2458,7 @@ describe('AgentGoalService mid-turn budget stop', () => {
 });
 
 describe('AgentGoalService goal outcome tool result flow', () => {
-  it('lets an automatic continuation explain the blocker after UpdateGoal blocks the goal', async () => {
+  it.each(['UpdateGoal', 'Goal'])('lets an automatic continuation explain the blocker after %s blocks the goal', async (toolName) => {
     const ctx = createTestAgent();
     try {
       ctx.configure({ tools: ['UpdateGoal'] });
@@ -2384,8 +2469,8 @@ describe('AgentGoalService goal outcome tool result flow', () => {
       ctx.mockNextResponse({
         type: 'function',
         id: 'blocked',
-        name: 'UpdateGoal',
-        arguments: JSON.stringify({ status: 'blocked' }),
+        name: toolName,
+        arguments: JSON.stringify({ status: 'blocked', ...(toolName === 'Goal' ? { action: 'update' } : {}) }),
       });
       ctx.mockNextResponse({ type: 'text', text: 'Blocked because credentials are unavailable.' });
 
@@ -2591,7 +2676,7 @@ describe('AgentGoalService TaskWait regression', () => {
       await vi.waitFor(() => expect(continuationTurnIds).toHaveLength(1));
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(4));
       const continuationHistory = JSON.stringify(ctx.llmCalls[2]?.history);
-      expect(continuationHistory).toContain('Continue working toward the active goal');
+      expect(continuationHistory).toContain('Continue the active goal from the current state');
       expect(continuationHistory).toContain('TaskWait');
     } finally {
       await ctx.dispose();
@@ -2897,7 +2982,7 @@ describe('AgentGoalService TaskWait guidance gating', () => {
 
         const reminder = ctx.llmCalls[0]!.history.at(-1);
         const continuation = ctx.llmCalls[1]!.history.find((message) =>
-          JSON.stringify(message).includes('Continue working toward the active goal'),
+          JSON.stringify(message).includes('Continue the active goal from the current state'),
         );
         expect(continuation).toBeDefined();
         for (const message of [reminder, continuation]) {
@@ -3029,7 +3114,7 @@ describe('AgentGoalService TaskWait guidance gating', () => {
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(4));
       const continuationCall = ctx.llmCalls[2]!;
       const continuationPrompt = continuationCall.history.find((message) =>
-        JSON.stringify(message).includes('Continue working toward the active goal'),
+        JSON.stringify(message).includes('Continue the active goal from the current state'),
       );
       expect(continuationPrompt).toBeDefined();
       expect(JSON.stringify(continuationPrompt)).not.toContain('TaskWait');

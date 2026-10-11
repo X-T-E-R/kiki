@@ -6,7 +6,7 @@
 
 import { memo, useState, type ReactNode } from 'react';
 
-import { basenameOf, extractToolOutputMedia, type MediaRef } from '@kiki/session-core/composer/media';
+import { basenameOf, extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import type { AgentForest, MediaRun, SubagentBlock, SubagentEnding, SubagentGroup } from '@kiki/session-core/session';
 import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
@@ -26,7 +26,7 @@ interface MediaItem {
 
 function mediaItems(run: MediaRun): MediaItem[] {
   return run.members.flatMap((tool) => {
-    const media = extractToolOutputMedia(tool.output)?.media ?? [];
+    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
     return media
       .filter((item) => item.kind === 'image')

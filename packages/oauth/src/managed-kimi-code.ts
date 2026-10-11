@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { LocalOriginalOAuthSourceRef } from './local-original-types';
 
 import { readApiErrorMessage } from './api-error';
 import { DEFAULT_KIMI_CODE_OAUTH_HOST } from './constants';
@@ -88,12 +89,14 @@ export interface ManagedKimiOAuthRef {
   readonly storage: 'file' | 'keyring';
   readonly key: string;
   readonly oauthHost?: string | undefined;
+  readonly source?: LocalOriginalOAuthSourceRef;
 }
 
 export interface ManagedKimiOAuthRefInput {
   readonly storage?: 'file' | 'keyring' | undefined;
   readonly key?: string | undefined;
   readonly oauthHost?: string | undefined;
+  readonly source?: LocalOriginalOAuthSourceRef;
 }
 
 export interface ManagedKimiRuntimeAuth {
@@ -290,11 +293,11 @@ function configuredOAuthRef(
   if (oauthRef === undefined) return undefined;
   const key = oauthRef.key;
   if (key === undefined) return undefined;
-  return managedOAuthRef({
+  return { ...managedOAuthRef({
     storage: oauthRef.storage,
     key,
     oauthHost: oauthRef.oauthHost,
-  });
+  }), source: oauthRef.source };
 }
 
 export function kimiCodeEnvBaseUrl(env: ManagedKimiEnv = process.env): string | undefined {

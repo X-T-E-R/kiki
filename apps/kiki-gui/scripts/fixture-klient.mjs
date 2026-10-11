@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { tsImport } from 'tsx/esm/api';
 import { filterOpsForGrade, gradeFor, redactSnapshotForGrade } from './fixture-transcript.mjs';
 import { browseFolder } from './fixture-worktrees.mjs';
@@ -7,6 +8,42 @@ import { callAgentMediaService, callMediaService } from './fixture-media.mjs';
 function now() { return new Date().toISOString(); }
 
 // Load the production wire validators, not the engine/dispatcher or a user home.
+/** Stable digest for the ids and revisions the fixture mints. */
+const fixtureHash = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** The resolved projection a fixture package reports; prose lives in the files map. */
+const fixtureRecipeResolved = (summary) => ({
+  revision: summary.revision,
+  branches: {
+    main: { system: 'Ship the result and name the evidence.', steering: 'Take the next useful step.', steering_on_turn: true, steering_on_input: true, steering_interval_steps: 0, fields: {} },
+    sub: { system: 'Ship the result and name the evidence.', steering: 'Take the next useful step.', fields: {} },
+    independent: { fields: {} },
+  },
+  dependencies: [],
+  origins: [
+    { position: 'main', slot: 'system', source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version, file: 'main.md' },
+    { position: 'main', slot: 'steering', source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version, file: 'steer.md' },
+  ],
+  model: { temperature: 0.2 },
+  model_origins: { temperature: { source: summary.source.locator, manifest_id: summary.manifest_id, version: summary.version } },
+});
+
+/** A minimal canonical manifest, so the author workbench has real TOML to edit. */
+const fixtureRecipeToml = (summary) => [
+  'schema_version = 1',
+  `id = "${summary.manifest_id}"`,
+  `name = "${summary.name}"`,
+  `version = "${summary.version}"`,
+  '',
+  '[prompts]',
+  'system = { file = "main.md" }',
+  'steering = { file = "steer.md" }',
+  '',
+  '[model]',
+  'temperature = 0.2',
+  '',
+].join('\n');
+
 const codec = await tsImport('../../../packages/klient/src/transports/codec.ts', import.meta.url);
 const view = await tsImport('../../../packages/klient/src/contract/session/view.ts', import.meta.url);
 const { globalContract } = await tsImport('../../../packages/klient/src/contract/index.ts', import.meta.url);
@@ -177,7 +214,143 @@ function mergeUsagePolicy(model, patch) {
   model.usage = usage;
 }
 
+/**
+ * The two prompt objects are whole objects with a branch per identity, and the
+ * engine reads four states apart. A patch therefore replaces the object it
+ * names and leaves the other one alone; a `null` clears only what it names.
+ */
+function applyPromptObjects(model, patch) {
+  for (const key of ['cognition', 'prompt_overrides']) {
+    if (patch[key] === undefined) continue;
+    if (patch[key] === null) delete model[key];
+    else model[key] = structuredClone(patch[key]);
+  }
+}
+
+const COGNITION_SLOTS = ['overlay', 'steering', 'anchor'];
+const COGNITION_CHANNELS = {
+  overlay: 'cognition_overlay',
+  steering: 'cognition_steering',
+  anchor: 'cognition_anchor',
+};
+
+/** The author files a fixture model already refers to; a real home reads them. */
+function fixtureCognitionFileSources(model) {
+  return model.__cognition_files ?? {};
+}
+
+function cognitionSlotBody(slot, value, files) {
+  const channel = COGNITION_CHANNELS[slot];
+  if (value === undefined) {
+    return { channel, source: 'unset', writable: true, source_read_only: false };
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    // `{text}` is a body stored on the model; an empty string is an explicit
+    // empty body, not an absent one.
+    return { channel, source: 'inline', text: value.text, writable: true, source_read_only: false };
+  }
+  const refs = Array.isArray(value) ? value : [value];
+  const resolved = refs.map((ref) => {
+    const file = files[ref];
+    return file === undefined
+      ? { path: ref, text: '', error: 'The referenced file could not be read.' }
+      : { path: ref, text: file };
+  });
+  const failed = resolved.some((file) => file.error !== undefined);
+  return {
+    channel,
+    source: 'files',
+    text: resolved.map((file) => file.text).join('\n'),
+    files: resolved,
+    // `writable` means "may be edited into a body stored on the model", not
+    // "the referenced file may be written" — that stays read-only always. A
+    // slot whose file could not be read is never a save target, because an
+    // empty box would look like a decision the person made.
+    writable: !failed,
+    source_read_only: true,
+    ...(failed ? { error: 'The referenced file could not be read.' } : {}),
+  };
+}
+
+/**
+ * The manual prompt bodies, projected from what the model stores.
+ *
+ * This is the saved manual text, not the aggregate a Recipe or a profile
+ * produces: the effective source of a channel is the resolver's answer, not this
+ * projection's. Each identity picks a declared source — its own content, the
+ * shared level, or nothing — and the identity that was actually chosen is what
+ * `source_scope` reports.
+ */
+function projectCognitionBodies(model) {
+  const files = fixtureCognitionFileSources(model);
+  const cognition = model.cognition ?? {};
+  const common = {};
+  for (const slot of COGNITION_SLOTS) {
+    common[slot] = cognitionSlotBody(slot, cognition[slot], files);
+  }
+  const branches = { common: { selection: 'common', source_scope: 'common', slots: common } };
+  for (const position of ['main', 'independent']) {
+    const branch = cognition[position];
+    if (branch === 'off' || branch === undefined && !hasCommonSlot(cognition)) {
+      branches[position] = {
+        selection: 'off',
+        source_scope: position,
+        slots: Object.fromEntries(COGNITION_SLOTS.map((slot) => [slot, cognitionSlotBody(slot, undefined, files)])),
+      };
+      continue;
+    }
+    if (branch === undefined) {
+      branches[position] = { selection: 'common', source_scope: 'common', slots: common };
+      continue;
+    }
+    // A custom branch is a whole object: a slot it does not declare stays unset
+    // rather than quietly falling back to the shared value.
+    branches[position] = {
+      selection: 'custom',
+      source_scope: position,
+      slots: Object.fromEntries(COGNITION_SLOTS.map((slot) => [slot, cognitionSlotBody(slot, branch[slot], files)])),
+    };
+  }
+  return { revision: revisionOf(model), branches };
+}
+
+const hasCommonSlot = (cognition) => COGNITION_SLOTS.some((slot) => cognition[slot] !== undefined);
+
+/**
+ * A Recipe binding is a reference plus the snapshot that reference resolved to.
+ *
+ * `null` removes the reference and the snapshot with it: turning a recipe off
+ * withdraws that package's contribution and nothing else, so any value the model
+ * saved itself is left exactly as it was.
+ */
+function applyRecipeBinding(model, recipe, recipes) {
+  if (recipe === undefined) return;
+  if (recipe === null) {
+    delete model.recipe;
+    delete model.recipe_model_binding;
+    return;
+  }
+  const found = recipes.find((entry) => entry.summary.installation_id === recipe);
+  if (found === undefined) throw invalid('recipe.not_installed', 40414);
+  model.recipe = recipe;
+  model.recipe_model_binding = {
+    installation_id: recipe,
+    revision: found.resolved.revision,
+    model: structuredClone(found.resolved.model),
+    model_origins: structuredClone(found.resolved.model_origins),
+    references: [{ surface: 'model', installation_id: recipe, revision: found.resolved.revision }],
+  };
+}
+
 function revisionOf(value) {
+  // Derived projections are the server's own answer rather than stored state, so
+  // they must not move the revision: two reads of the same model have to produce
+  // the same base_revision or every CAS would conflict with itself.
+  const { usage_effective: _effective, usage_sources: _sources, revision: _revision, ...stored } = value;
+  return revisionOfValue(stored);
+}
+
+function revisionOfValue(value) {
   const canonical = (entry) => {
     if (Array.isArray(entry)) return `[${entry.map(canonical).join(',')}]`;
     if (entry !== null && typeof entry === 'object') {
@@ -205,6 +378,66 @@ function modelSwitchSeed(server, sessionId, agentId) {
     return seeded[agentId] ?? seeded.main ?? [];
   }
   return [];
+}
+
+/**
+ * One conversation's MCP selection, remembered for the life of the fixture the
+ * way the engine remembers it in the session document. The scenario declares what
+ * each choice leads to (`connectionAfter` and `errorAfter`); nothing here
+ * re-derives admission, which belongs to the engine.
+ */
+function mcpSessionOverrides(server, sessionId) {
+  server.mcpOverrides ??= new Map();
+  let store = server.mcpOverrides.get(sessionId);
+  if (store !== undefined) return store;
+  store = new Map();
+  for (const entry of mcpCapabilitySeed(server, sessionId)) {
+    if (entry.override === 'on' || entry.override === 'off') store.set(mcpLocatorKey(entry.locator), entry.override);
+  }
+  server.mcpOverrides.set(sessionId, store);
+  return store;
+}
+
+function mcpLocatorKey(locator) {
+  return locator.source === 'global' ? `global:${locator.name}` : `plugin:${locator.pluginId}:${locator.serverName}`;
+}
+
+function sameMcpLocator(left, right) {
+  return left !== undefined
+    && right !== undefined
+    && left.source === right.source
+    && mcpLocatorKey(left) === mcpLocatorKey(right);
+}
+
+/** The catalog this fixture serves, including what a rebuild would add. */
+function mcpCapabilitySeed(server, sessionId) {
+  const data = server.scenario?.data;
+  const declared = data?.mcpSessionCapabilities?.[sessionId] ?? [];
+  const added = server.mcpRebuilt === true ? data?.mcpSessionCapabilitiesAdded ?? [] : [];
+  return [...declared, ...added];
+}
+
+/** One entry with this conversation's override applied. */
+function mcpCapabilityAnswer(server, sessionId, entry) {
+  const override = mcpSessionOverrides(server, sessionId).get(mcpLocatorKey(entry.locator)) ?? 'inherit';
+  const capability = {
+    ...entry,
+    override,
+    connection: entry.connectionAfter?.[override] ?? entry.connection,
+  };
+  // The declared error describes the source's own state. A choice this
+  // conversation made replaces it, unless the scenario declares one for it.
+  if (override === 'inherit') capability.error = entry.error;
+  else capability.error = entry.errorAfter?.[override];
+  // Fixture-only keys never reach the wire, which is what the contract parses.
+  delete capability.connectionAfter;
+  delete capability.errorAfter;
+  delete capability.refusesOn;
+  return structuredClone(capability);
+}
+
+function mcpCapabilityAnswers(server, sessionId) {
+  return mcpCapabilitySeed(server, sessionId).map((entry) => mcpCapabilityAnswer(server, sessionId, entry));
 }
 
 function modelSwitchStore(server, session, agentId) {
@@ -333,7 +566,24 @@ export class FixtureKlient {
         // that own it, so the agent-scoped pair is admitted here.
         const agentMediaCall =
           procedure.scope === 'agent' && procedure.service === 'agentPluginMediaService';
-        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall) {
+        // What one conversation holds today: the composer's MCP list reads this
+        // session-merged agent view, retries a server through it, and — where the
+        // build has the session port — reads and writes this conversation's own
+        // selection.
+        const agentMcpCall =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentMcpService' &&
+          (procedure.method === 'list'
+            || procedure.method === 'reconnect'
+            || procedure.method === 'listMcpSessionCapabilities'
+            || procedure.method === 'setMcpSessionOverride');
+        // Rebuilding context re-reads what the conversation carries, including the
+        // MCP servers enabled since it started.
+        const contextRebuildCall =
+          procedure.scope === 'agent' &&
+          procedure.service === 'agentContextRebuildService' &&
+          procedure.method === 'rebuild';
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall && !agentMcpCall && !contextRebuildCall) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -343,6 +593,16 @@ export class FixtureKlient {
         }
         const input = parse(contract.input, params);
         const result = this.callGlobal(procedure, input);
+        // A fixture that wants a call to arrive late says so by returning a
+        // marker: the response is written when the timer fires, so the browser
+        // genuinely has an open request. That is the only way a synchronous
+        // fixture can show an in-flight write — and it is the situation a
+        // read-back-as-proof cannot survive.
+        if (result !== null && typeof result === 'object' && result.__deferred === true) {
+          const settled = parse(contract.output, result.settled);
+          setTimeout(() => { server.envelope(res, settled); }, result.delayMs);
+          return true;
+        }
         return server.envelope(res, parse(contract.output, result));
       }
       const contentMatch = /^\/api\/klient\/session-view\/([^/]+)\/transcript\/content$/.exec(url.pathname);
@@ -395,7 +655,7 @@ export class FixtureKlient {
       } };
       return server.route(response, `/sessions/${encodeURIComponent(sessionId)}/${suffix}`, query, undefined, 'GET');
     } catch (error) {
-      return server.envelope(res, null, error.code ?? 50001, error.message);
+      return server.envelope(res, null, error.code ?? 50001, error.message, error.details);
     }
   }
 
@@ -421,6 +681,59 @@ export class FixtureKlient {
     }));
     const key = `${procedure.service}.${procedure.method}`;
     switch (key) {
+      case 'agentMcpService.list':
+        // The conversation's own entries. A scenario that wants a retry to show
+        // a new state rewrites this list the way the engine would.
+        return structuredClone(server.scenario?.data.mcpServerEntries?.[procedure.sessionId] ?? []);
+      case 'agentMcpService.reconnect':
+        return null;
+      case 'agentMcpService.listMcpSessionCapabilities':
+        return mcpCapabilityAnswers(server, procedure.sessionId);
+      case 'agentMcpService.setMcpSessionOverride': {
+        const input = args[0];
+        const entry = mcpCapabilitySeed(server, procedure.sessionId)
+          .find((candidate) => sameMcpLocator(candidate.locator, input.locator));
+        if (entry === undefined) {
+          throw invalid(`MCP server locator ${mcpLocatorKey(input.locator)} is unknown or no longer available`, 40401);
+        }
+        if (input.override === 'on' && entry.refusesOn === true) {
+          // A plugin that turned its own server off owns that decision: the real
+          // engine rejects the locator, so the fixture answers the same way.
+          throw invalid(`MCP server locator ${mcpLocatorKey(input.locator)} does not own runtime name "${entry.runtimeName}"`, 40401);
+        }
+        const store = mcpSessionOverrides(server, procedure.sessionId);
+        if (input.override === 'inherit') store.delete(mcpLocatorKey(input.locator));
+        else store.set(mcpLocatorKey(input.locator), input.override);
+        return mcpCapabilityAnswer(server, procedure.sessionId, entry);
+      }
+      case 'agentContextRebuildService.rebuild': {
+        // A rebuild re-reads the sources the conversation carries. The fixture
+        // answers the visible part of that: servers enabled since the session
+        // started join the list, and every selection the reader made survives.
+        server.mcpRebuilt = true;
+        const capabilities = mcpCapabilityAnswers(server, procedure.sessionId);
+        return {
+          rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
+          changed: true,
+          changes: {
+            profile: false,
+            // The wire spells this one in camel case; the surface list beside it
+            // keeps the engine's snake_case word.
+            promptFields: false,
+            skills: false,
+            instructions: false,
+            plugins: false,
+            mcp: true,
+            injections: false,
+          },
+          readiness: {
+            mcp: capabilities.map(({ runtimeName, connection, error }) => ({ runtimeName, connection, error })),
+            plugins: { state: 'ready', errors: [] },
+          },
+        };
+      }
+      case 'mcpManagementService.listServers':
+        return server.managedMcpServers();
       case 'agentPromptService.listModelSwitches': {
         const session = server.sessions.get(procedure.sessionId);
         if (session === undefined) throw invalid('session not found', 40401);
@@ -613,6 +926,7 @@ export class FixtureKlient {
           issues: [],
           revision: revisionOf(item),
           provider_source: 'provider',
+          cognition_bodies: projectCognitionBodies(item),
         };
       }
       case 'modelCatalogMutation.updateModel': {
@@ -635,6 +949,8 @@ export class FixtureKlient {
           else next.auto_compact = patch.auto_compact;
         }
         mergeUsagePolicy(next, patch.usage);
+        applyPromptObjects(next, patch);
+        applyRecipeBinding(next, patch.recipe, server.recipes);
         // The resolved projection is the server's own answer, so it has to move
         // with the branch that was just saved. Leaving the seeded value in place
         // makes a correct write look like it did not take.
@@ -642,7 +958,7 @@ export class FixtureKlient {
         items[index] = next;
         server.models = items;
         server.modelsDeclared = true;
-        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider' };
+        return { effective_parameters: {}, parameter_sources: {}, ...next, issues: [], revision: revisionOf(next), provider_source: 'provider', cognition_bodies: projectCognitionBodies(next) };
       }
       case 'modelCatalogMutation.createModel': {
         const [input] = args;
@@ -781,6 +1097,306 @@ export class FixtureKlient {
           };
           return base;
         });
+      }
+      // Recipe packages: the installed set is scenario data, and every write
+      // here goes through the same list the GUI reads back, so browsing a
+      // package cannot drift from what a later apply would send.
+      case 'recipeService.list': {
+        return structuredClone(server.recipes.map((entry) => entry.summary));
+      }
+      case 'recipeService.get': {
+        const [installationId] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        /*
+          A read that fails on request. This is the one failure mode a save has
+          to be able to survive on its own: the write landed, and only the read
+          that would bring the editor up to date did not.
+        */
+        if (server.recipeReadFailures > 0) {
+          server.recipeReadFailures -= 1;
+          throw Object.assign(new Error('The recipe could not be read right now.'), { code: 50001 });
+        }
+        const usedBy = server.models.filter((model) => model.recipe === installationId).map((model) => model.id);
+        return { ...structuredClone(found), used_by: usedBy };
+      }
+      case 'recipeService.preview': {
+        const [{ source, installation_id: targetId, expected_revision: expectedRevision, files }] = args;
+        const match = server.recipes.find((entry) => entry.summary.source.locator === source.locator);
+        const shared = match === undefined ? server.sharedHookPackages.get(source.locator) : undefined;
+        // A preview of something not installed yet still resolves: it reports
+        // what the source would provide, which is what the import screen shows.
+        const summary = match?.summary ?? {
+          installation_id: `preview-${fixtureHash(source.locator)}`,
+          manifest_id: source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'recipe',
+          name: shared?.name ?? source.locator.split('/').pop()?.replace(/\.toml$/u, '') ?? 'Recipe',
+          version: '1.0.0',
+          revision: `sha256:${'0'.repeat(64)}`,
+          source,
+          update_mode: 'follow',
+          health: 'ready',
+        };
+        const resolved = match?.resolved ?? {
+          revision: summary.revision,
+          branches: {
+            main: { fields: {}, steering_on_turn: true, steering_on_input: true, steering_interval_steps: 0 },
+            sub: { fields: {} },
+            independent: { fields: {} },
+          },
+          dependencies: [],
+          origins: [],
+          model: {},
+          model_origins: {},
+        };
+        /*
+          Script hooks are the one thing a preview has to decide about. A package
+          whose commands this machine already trusts reports the fingerprint it
+          matched and asks for nothing; anything else reports the commands with
+          their sizes and digests, and asks for consent.
+        */
+        const declared = match?.hooks ?? shared?.hooks;
+        /*
+          A targeted preview carries the edited files, so what it reports has to
+          come from those files rather than from what is installed. Editing a
+          command changes what would run, which is the whole reason this path
+          exists at all — a preview that answered from the installed copy would
+          ask about commands the person is not trying to save.
+        */
+        const targeted = targetId === undefined ? undefined : server.recipes.find((entry) => entry.summary.installation_id === targetId);
+        const baseScripts = targeted?.hooks?.scripts ?? declared?.scripts;
+        const hooks = baseScripts === undefined
+          ? undefined
+          : {
+            // A targeted preview is asking about content that is not installed
+            // yet, so it has no fingerprint to match against this machine's
+            // trust and always asks. Trust is what the install records, not
+            // something a preview can claim on the package's behalf.
+            fingerprint: targetId === undefined ? declared.fingerprint : undefined,
+            // Trust is keyed on the exact execution content. Content this machine
+            // has a fingerprint for and trusts is silent; content it has never
+            // authorized — including a shared package, which arrives with no
+            // fingerprint at all — is what has to ask.
+            consent_required: targetId !== undefined
+              ? true
+              : declared.fingerprint !== undefined
+                ? !server.trustedHookFingerprints.has(declared.fingerprint)
+                : true,
+            scripts: baseScripts,
+          };
+        const candidate = {
+          preview_id: `preview-${fixtureHash(JSON.stringify({ source, targetId, files: files ?? null }))}`,
+          digest: summary.revision,
+          summary: targetId === undefined ? summary : { ...summary, installation_id: targetId },
+          resolved,
+          diagnostics: [],
+          ...(hooks === undefined ? {} : { hooks }),
+        };
+        /*
+          The whole candidate is cached, not just its id: installing publishes
+          the bytes that were previewed, so nothing is re-resolved and no new
+          content is fetched at install time.
+        */
+        server.recipePreviews.set(candidate.preview_id, { candidate, match, files, expectedRevision, targetId });
+        return structuredClone(candidate);
+      }
+      case 'recipeService.install': {
+        const [{ preview_id: previewId, consent }] = args;
+        const cached = server.recipePreviews.get(previewId);
+        // A candidate is consumed when it publishes. Replaying one must fail
+        // rather than resolve: a second publish of the same candidate is exactly
+        // the duplicate authorization this path is shaped to prevent, and an
+        // unknown id must not quietly mint another installation either.
+        if (cached === undefined && previewId.startsWith('preview-')) {
+          throw Object.assign(new Error('That preview is no longer available.'), { code: 40001 });
+        }
+        if (cached?.candidate.hooks?.consent_required === true && consent !== true) {
+          // The rule the whole surface exists for: untrusted execution content is
+          // refused until the same request carries the explicit agreement.
+          throw Object.assign(new Error('Confirm installation to authorize new Recipe scripts'), {
+            code: 40001, details: { code: 'recipe-hook-consent-required', path: 'hooks' },
+          });
+        }
+        // A targeted preview names the installation it publishes into; anything
+        // else resolves through the source the candidate was read from. Looking
+        // the target up by id is what makes an edited local package update in
+        // place instead of appearing as a second installation.
+        const existing = (cached?.targetId === undefined
+          ? cached?.match
+          : server.recipes.find((entry) => entry.summary.installation_id === cached.targetId))
+          ?? server.recipes.find((entry) => entry.summary.revision === previewId || entry.previewId === previewId);
+        const summary = existing?.summary ?? {
+          installation_id: `inst-${fixtureHash(previewId)}`,
+          manifest_id: 'imported-recipe',
+          name: 'Imported recipe',
+          version: '1.0.0',
+          revision: `sha256:${'1'.repeat(64)}`,
+          source: { locator: 'https://example.com/recipes/imported/recipe.toml' },
+          update_mode: 'follow',
+          health: 'ready',
+        };
+        if (existing === undefined) {
+          server.recipes.push({ previewId, summary, resolved: fixtureRecipeResolved(summary), files: { 'recipe.toml': fixtureRecipeToml(summary) }, history: [], editable: true });
+        } else if (cached?.targetId !== undefined) {
+          // A targeted install publishes in place: the same installation, at the
+          // revision the candidate resolved, with the files that were previewed.
+          if (cached.expectedRevision !== undefined && cached.expectedRevision !== existing.summary.revision) {
+            throw Object.assign(new Error('That revision is no longer the installed one.'), { code: 40001 });
+          }
+          if (cached.files !== undefined) {
+            existing.files = structuredClone(cached.files);
+            // Content revision follows the files, exactly as a real publish does:
+            // a save that changed bytes moves the installation to a new revision.
+            const digest = `sha256:${fixtureHash(JSON.stringify(cached.files))}`;
+            existing.summary = { ...existing.summary, revision: digest };
+            existing.resolved = { ...existing.resolved, revision: digest };
+            existing.history = [...new Set([...existing.history, digest])];
+          }
+        }
+        /*
+          Consent is what makes execution content trusted on this machine, so it
+          is recorded for whichever installation the candidate resolved to. A
+          targeted candidate has no fingerprint of its own — it is asking about
+          content that is not installed — so what gets trusted is the fingerprint
+          of the content that was actually published, which is the only thing a
+          later preview of that installation can match against.
+        */
+        if (consent === true) {
+          const fingerprint = cached?.candidate.hooks?.fingerprint
+            ?? (existing !== undefined ? existing.hooks?.fingerprint : undefined);
+          if (fingerprint !== undefined) {
+            server.trustedHookFingerprints.add(fingerprint);
+            if (existing !== undefined && existing.hooks !== undefined) {
+              existing.summary = { ...existing.summary, hooks_fingerprint: fingerprint };
+            }
+          }
+        }
+        server.recipePreviews.delete(previewId);
+        return structuredClone(summary);
+      }
+
+      case 'recipeService.checkUpdates': {
+        return structuredClone(server.recipes.map((entry) => entry.summary));
+      }
+      case 'recipeService.update': {
+        const [input] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === input.installation_id);
+        if (found === undefined) return undefined;
+        // A failed update keeps the accepted copy: the summary stays usable and
+        // records why, which is exactly what the row has to render.
+        if (input.revision !== undefined && input.revision !== found.summary.revision) {
+          found.summary.last_error = { code: 'recipe.update_unavailable', message: 'That revision is not available from the source.' };
+          return structuredClone(found.summary);
+        }
+        if (input.update_mode !== undefined) found.summary.update_mode = input.update_mode;
+        delete found.summary.last_error;
+        return structuredClone(found.summary);
+      }
+      case 'recipeService.fork': {
+        const [{ installation_id: installationId, mode, id, name }] = args;
+        const source = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (source === undefined) return undefined;
+        const summary = {
+          ...structuredClone(source.summary),
+          installation_id: `inst-${fixtureHash(id + mode)}`,
+          manifest_id: id,
+          name,
+          revision: `sha256:${fixtureHash(id + mode)}`,
+          source: { locator: `installation:${fixtureHash(id + mode)}` },
+          copied_from: source.summary.manifest_id,
+        };
+        delete summary.update_available;
+        delete summary.last_error;
+        const resolved = fixtureRecipeResolved(summary);
+        // A copy is self-contained; an extend keeps the parent's chain, which is
+        // the difference a reader has to be able to see. The chain belongs to
+        // the resolved content, matching the detail schema the GUI reads.
+        resolved.dependencies = mode === 'extend'
+          ? [{ source: source.summary.source, manifest_id: source.summary.manifest_id, version: source.summary.version, revision: source.summary.revision }]
+          : [];
+        const forked = {
+          summary,
+          resolved,
+          files: { 'recipe.toml': fixtureRecipeToml(summary) },
+          history: [],
+          editable: true,
+        };
+        server.recipes.push(forked);
+        return { ...structuredClone(forked), used_by: [] };
+      }
+      case 'recipeService.saveLocal': {
+        const [{ installation_id: installationId, files }] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        /*
+          A save that would publish script content this machine has not
+          authorized is refused, exactly as the real service refuses it: the
+          draft is left alone, and the GUI has to come back through the same
+          preview and confirmation rather than writing around the question.
+        */
+        const manifest = files['recipe.toml'];
+        if (typeof manifest === 'string' && found.hooks !== undefined && !server.trustedHookFingerprints.has(found.hooks.fingerprint)) {
+          // Compare decoded commands, not their TOML spelling: `\"` in the file is
+          // one quote in the command, and a refusal that turned on quoting style
+          // would block a save that changed nothing executable.
+          const commands = [...manifest.matchAll(/^command\s*=\s*"((?:[^"\\]|\\.)*)"/gmu)]
+            .map((match) => match[1].replaceAll('\\"', '"').replaceAll('\\\\', '\\'));
+          const unchanged = commands.length === found.hooks.scripts.length
+            && commands.every((command, index) => command === found.hooks.scripts[index].command);
+          if (commands.length > 0 && (!unchanged || server.forceHookConsentRefusal)) {
+            throw Object.assign(new Error('Confirm installation to authorize new Recipe scripts'), {
+              code: 40001, details: { code: 'recipe-hook-consent-required', path: 'hooks' },
+            });
+          }
+        }
+        found.files = structuredClone(files);
+        found.summary.revision = `sha256:${fixtureHash(JSON.stringify(files))}`;
+        found.resolved = fixtureRecipeResolved(found.summary);
+        found.history = [...found.history, found.summary.revision];
+        return { ...structuredClone(found), used_by: [] };
+      }
+      case 'recipeService.remove': {
+        const [{ installation_id: installationId, disable_models: disableModels }] = args;
+        const index = server.recipes.findIndex((entry) => entry.summary.installation_id === installationId);
+        if (index >= 0) server.recipes.splice(index, 1);
+        // Removing a package a model still points at would leave a dangling
+        // reference; the caller says explicitly whether to detach first.
+        if (disableModels === true) {
+          for (const model of server.models) {
+            if (model.recipe === installationId) delete model.recipe;
+          }
+        }
+        return undefined;
+      }
+      case 'recipeService.export': {
+        const [installationId] = args;
+        const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
+        if (found === undefined) return undefined;
+        return {
+          name: `${found.summary.manifest_id}-${found.summary.version}`,
+          revision: found.summary.revision,
+          files: structuredClone(found.files),
+        };
+      }
+      case 'recipeService.listMarkets': {
+        return structuredClone(server.recipeMarkets);
+      }
+      case 'recipeService.addMarket': {
+        const [input] = args;
+        const market = { ...input, offline: false };
+        server.recipeMarkets.push(market);
+        return structuredClone(market);
+      }
+      case 'recipeService.updateMarket': {
+        const [input] = args;
+        const index = server.recipeMarkets.findIndex((entry) => entry.id === input.id);
+        if (index < 0) return undefined;
+        server.recipeMarkets[index] = { ...server.recipeMarkets[index], ...input };
+        return structuredClone(server.recipeMarkets[index]);
+      }
+      case 'recipeService.removeMarket': {
+        const [id] = args;
+        server.recipeMarkets = server.recipeMarkets.filter((entry) => entry.id !== id);
+        return undefined;
       }
       // Config service: only the domains the Defaults card writes directly
       // (`subagent.defaultModel`, `fastModel`), mirrored into the REST config
@@ -1207,14 +1823,19 @@ export class FixtureKlient {
         // in one place rather than ten switch arms.
         return callImportService(server, procedure.method, args).data;
       }
-      // Media: the installed provider list, the discovery roster, and the
-      // on-demand capability/voice reads. The agent-scoped pair is answered
-      // through the job's own session and agent, so the fixture can prove the
-      // GUI reaches them the way the contract requires.
+      // Media: the whole source list and the four writes that change it, the
+      // installed provider list, the discovery roster, and the on-demand
+      // capability/voice reads. The agent-scoped pair is answered through the
+      // job's own session and agent, so the fixture can prove the GUI reaches
+      // them the way the contract requires.
       case 'pluginMediaService.sources':
       case 'pluginMediaService.setSources':
       case 'pluginMediaService.catalog':
       case 'pluginMediaService.providers':
+      case 'pluginMediaService.managedSources':
+      case 'pluginMediaService.sourceSettings':
+      case 'pluginMediaService.updateSource':
+      case 'pluginMediaService.addScriptSource':
       case 'pluginMediaService.capabilities':
       case 'pluginMediaService.voices':
       case 'pluginMediaService.jobs':

@@ -28,13 +28,16 @@ import {
   flushDrafts,
   readDraft,
   readNewSessionDraft,
+  subscribeDraftAppends,
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
   type PersistedNewSessionDraft,
   type SshHostAttachment,
   executionSelectionOf,
+  isNativeExecutor,
   parseExecutionChoice,
+  readExecutionChoice,
   isBareExternalChoice,
   sendsLegacyControl,
   NATIVE_EXECUTOR,
@@ -58,6 +61,7 @@ import {
 import { DEFAULT_AGENT_PROFILE } from './Composer';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 import { useHost } from '../host';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
 import {
   agentProfileCatalogQueryKey,
   loadAgentProfileCatalog,
@@ -90,10 +94,10 @@ function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const record = value as Record<string, unknown>;
     return {
+      execution: readExecutionChoice(record['execution']),
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
-      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -121,10 +125,10 @@ function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const record = value as Record<string, unknown>;
     return {
+      execution: readExecutionChoice(record['execution']),
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
-      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -153,6 +157,24 @@ function clearScopedNewSessionDraft(scopeId: string): void {
 
 export const AUTO_WORKSPACE_ID = '__auto__';
 
+/**
+ * The name the server gives a workspace it had to allocate itself, when a
+ * session is created with no target and nothing to reuse. It is an internal
+ * handle, not something to show: the date and the id fragment exist so the
+ * name is unique on disk, not to be read. A workspace that carries this name
+ * says only "kiki made this one", which the product already has words for.
+ *
+ * A name the user typed is never in this form, so it never matches here — and
+ * the date/id suffix only matters while the workspace is still unnamed, since
+ * the first thing anybody does with it is rename it.
+ */
+const AUTO_WORKSPACE_NAME = /^Untitled workspace \d{4}-\d{2}-\d{2} [0-9a-f]{8}$/;
+
+/** Whether this workspace is one the server allocated rather than one the user named. */
+export function isAutoCreatedWorkspace(workspace: Workspace | undefined): boolean {
+  return workspace !== undefined && AUTO_WORKSPACE_NAME.test(workspace.name);
+}
+
 // The temporary choice survives navigating back to /new, but not a window restart.
 let ephemeralForWindow = false;
 
@@ -167,6 +189,27 @@ export interface DraftSkillHandoff {
   readonly args: string;
   readonly attachments: readonly ComposerAttachment[];
   readonly userInput?: string;
+}
+
+/**
+ * What a send reads, captured on every render and reached through a ref so the
+ * send callback keeps one identity across keystrokes. The engine is part of it
+ * because the create body is where an external engine is bound.
+ */
+interface SendContext {
+  busy: boolean;
+  cwd: string;
+  workspaceId: string | undefined;
+  modelOverride: string | undefined;
+  effectiveEffort: string | undefined;
+  agentProfile: string;
+  execution: ExecutionChoice;
+  permissionMode: PermissionMode;
+  planMode: boolean;
+  goalObjective: string;
+  worktree: boolean;
+  ephemeral: boolean;
+  persona: PersonaSnapshot | undefined;
 }
 
 /** Hosts preselected on /new, split off before anything becomes a message. */
@@ -428,15 +471,19 @@ export function useNewSessionDraft({
   const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
   const permissionTouched = useRef(false);
 
+  // Shares App's `['workspaces']` read, including its bounded cold-index retry,
+  // so /new can tell a failed read from a home with no workspaces yet.
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
-    retry: false,
+    retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
   });
   const workspaces = workspacesQuery.data?.items ?? [];
   const workspacesLoading = workspacesQuery.isPending;
   const workspacesReady = workspacesQuery.isSuccess;
+  const workspacesFailed = workspacesQuery.isError;
   const workspacesError = workspacesQuery.isError ? errorText(locale, workspacesQuery.error) : null;
   const retryWorkspaces = useCallback(() => { void workspacesQuery.refetch(); }, [workspacesQuery.refetch]);
 
@@ -447,6 +494,9 @@ export function useNewSessionDraft({
         : workspaces.find((w) => w.id === workspaceId),
     [dailyPersonaId, workspaces, workspaceId, workspacesReady],
   );
+  // Only a list that answered can be read as "nothing here": a read still in
+  // flight, or one that failed, decides nothing, and automatic allocation then
+  // needs the user's own choice of it.
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
     && (workspaceId === AUTO_WORKSPACE_ID || (workspaceId === '' && workspacesReady));
   const targetReady = cwd.trim() !== ''
@@ -548,6 +598,8 @@ export function useNewSessionDraft({
     name: string,
   ) => {
     const defaults = composerDefaultsForProfile(items, name);
+    const selected = items.find((item) => item.name === name);
+    setExecutionState({ executor: selected?.executor || NATIVE_EXECUTOR, profile: name, profile_file: undefined, overrides: undefined });
     setAgentProfileState(name);
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
@@ -561,6 +613,11 @@ export function useNewSessionDraft({
   useEffect(() => {
     const fromFile = execution.profile_file !== undefined;
     const query = fromFile ? filePreviewQuery : agentProfilesQuery;
+    // A target change blocks only the send that is still holding the previous
+    // context. Once this render has the new target, a pending or failed catalog
+    // must not keep a saved profile from going out.
+    profileCatalogTransitionRef.current = false;
+    setProfileCatalogTransitionPending(false);
     if (agentProfileCatalogMode.mode !== 'disabled' && query.isPending) return;
     const selected = fromFile ? fileProfile : agentProfilesQuery.data?.items.find((item) =>
       item.name === agentProfile && item.main === true && !item.disabled
@@ -576,17 +633,15 @@ export function useNewSessionDraft({
           ? current : { ...current, executor: profileExecutor(selected), profile: undefined, profile_file: selected.source_file });
       }
     }
-    profileCatalogTransitionRef.current = false;
-    setProfileCatalogTransitionPending(false);
   }, [agentProfile, execution.profile_file, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
 
   useEffect(() => {
     if (dailySettingsKey !== undefined) {
       writeDailyDraftSettings(dailySettingsKey, {
+        execution,
         workspaceId: workspaceId || effectiveWorkspace?.id,
         cwd,
         profile: agentProfile,
-        execution,
         modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
         effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
@@ -596,10 +651,10 @@ export function useNewSessionDraft({
       return;
     }
     writeScopedNewSessionDraft(draftScopeId, {
+      execution,
       workspaceId: workspaceId || effectiveWorkspace?.id,
       cwd,
       profile: agentProfile,
-      execution,
       modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
       effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
@@ -610,7 +665,8 @@ export function useNewSessionDraft({
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
-  // user is still choosing from (or one that has failed) decides nothing.
+  // user is still choosing from (or one that has failed) decides nothing, and
+  // neither does a workspace list that has not answered yet.
   const dailyDefaultApplied = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (dailyPersonaId === undefined || persona === undefined) return;
@@ -639,14 +695,14 @@ export function useNewSessionDraft({
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
     || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending : agentProfilesQuery.isPending));
+  const nativeExecution = isNativeExecutor(execution.executor);
   const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
     || (fromFile
       ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined
-      : agentProfilesQuery.isError || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled))
-    || (!(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
-      !modelsQuery.isSuccess
-      || modelProjectionState === 'blocked' || modelProjectionState === 'unknown'
-      || (effectiveModel !== undefined && catalogItem === undefined)
+      : (agentProfilesQuery.isSuccess && !agentProfilesQuery.data.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)))
+    || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
+      modelProjectionState === 'blocked'
+      || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)
       || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
     ));
 
@@ -658,8 +714,8 @@ export function useNewSessionDraft({
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
-    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
-    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
+    modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
     permissionMode,
@@ -674,8 +730,8 @@ export function useNewSessionDraft({
     agentProfileCatalogPending,
     cwd,
     effectiveWorkspace,
-    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
-    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
+    modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
     permissionMode,
@@ -686,7 +742,7 @@ export function useNewSessionDraft({
     persona,
   };
 
-  const selectionReady = !selectionBlocked && !agentProfileCatalogPending && !personaPending;
+  const selectionReady = !selectionBlocked && !personaPending;
   const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
   const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(undefined);
   const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
@@ -709,6 +765,7 @@ export function useNewSessionDraft({
   }, [scopeId]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
+    initialPresentation?: import('@kiki/transcript').TextPresentation;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
     /**
@@ -733,7 +790,7 @@ export function useNewSessionDraft({
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
-    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) return;
+    if (context.busy || profileCatalogTransitionRef.current) return;
     const body = buildNewSessionCreate({
       cwd: trimmedCwd,
       workspaceId: context.effectiveWorkspace?.id,
@@ -812,6 +869,7 @@ export function useNewSessionDraft({
             state: {
               createdSession: { id: session.id, scopeId },
               initialPrompt: handoff.initialPrompt,
+              initialPresentation: handoff.initialPresentation,
               initialAttachments: handoff.initialAttachments,
               initialSkill: handoff.initialSkill,
               // The first message of a bare external engine must reach the
@@ -851,12 +909,13 @@ export function useNewSessionDraft({
   const send = useCallback((
     text: string,
     composerAttachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string },
+    options?: { readonly goalObjective?: string; readonly presentation?: import('@kiki/transcript').TextPresentation },
   ) => {
-    if (buildPromptContent(text, composerAttachments) === null) return;
+    if (buildPromptContent(text, composerAttachments, options?.presentation) === null) return;
     if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
     return createThenNavigate({
-      initialPrompt: text.trim(),
+      initialPrompt: text,
+      initialPresentation: options?.presentation,
       initialAttachments: withoutSsh(composerAttachments),
       sshHosts: sshOf(composerAttachments),
       goalObjectiveOverride: options?.goalObjective,
@@ -1016,8 +1075,6 @@ export function useNewSessionDraft({
     cancelCreation,
     selectionReady,
     targetReady,
-    workspacesError,
-    retryWorkspaces,
     error,
     workspaceId,
     cwd,
@@ -1030,6 +1087,10 @@ export function useNewSessionDraft({
     setExecution,
     workspaces,
     workspacesLoading,
+    workspacesFailed,
+    /** The server's own message, for the failure row instead of a generic one. */
+    workspacesError,
+    retryWorkspaces,
     effectiveWorkspace,
     autoWorkspace,
     worktreeAvailability,
@@ -1083,7 +1144,10 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       },
       ...sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
-        label: workspace.name,
+        // A workspace kiki created for itself keeps the automatic label here
+        // too: the name it was filed under is an internal handle, and the row
+        // is the user's chance to see what they are about to work in.
+        label: isAutoCreatedWorkspace(workspace) ? t('new.autoWorkspace') : workspace.name,
         hint: workspace.root,
         title: workspace.name,
       })),
@@ -1100,6 +1164,19 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>
       {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
+      {state.workspacesFailed ? (
+        <div role="alert" data-new-workspace-failure className="flex flex-wrap items-center gap-2 text-[11.5px] leading-relaxed text-danger">
+          <span>{state.workspacesError ?? t('new.workspacesFailed')}</span>
+          <button
+            type="button"
+            data-new-workspace-retry
+            onClick={() => { state.retryWorkspaces(); }}
+            className="shrink-0 rounded-md border border-hairline bg-paper px-2 py-0.5 text-[11.5px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
       {firstRun ? (
         <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
       ) : null}

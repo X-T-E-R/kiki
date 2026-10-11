@@ -91,6 +91,17 @@ describe('N2 reading snapshots', () => {
     expect(a.restoreAnchor).toHaveBeenCalledWith(reading('old', true).anchor);
   });
 
+  it('returns to a saved visit beyond forty pages, stopping at its exact anchor', async () => {
+    const saved = reading('far-history');
+    let pages = 0;
+    const a = adapter({ hasAnchor: () => pages === 43, hasMore: () => true,
+      loadOlder: vi.fn(async () => { pages += 1; return true; }) });
+    expect(await restoreTimelineReading(saved, a)).toEqual({ status: 'found' });
+    expect(a.loadOlder).toHaveBeenCalledTimes(43);
+    expect(a.restoreAnchor).toHaveBeenCalledWith(saved.anchor);
+    expect(saved.anchor).toEqual({ key: 'far-history', atEnd: false, offset: 17 });
+  });
+
   it('separates deletion from temporary page failure, and permits retry', async () => {
     const missing = adapter({ hasAnchor: () => false });
     expect(await restoreTimelineReading(reading('deleted'), missing)).toEqual({ status: 'not-found' });
@@ -105,10 +116,13 @@ describe('N2 reading snapshots', () => {
     expect(retryable.endRestore).toHaveBeenNthCalledWith(1, { status: 'load-failed' });
   });
 
-  it('page budget exhaustion is retryable, not a false deletion', async () => {
-    const a = adapter({ hasAnchor: () => false, hasMore: () => true, loadOlder: vi.fn(async () => true) });
-    expect(await restoreTimelineReading(reading('far'), a)).toEqual({ status: 'load-failed' });
-    expect(a.loadOlder).toHaveBeenCalledTimes(40);
+  it('stops a cancelled reading intent after its shared page returns, without scrolling or continuing', async () => {
+    let cancelled = false;
+    const a = adapter({ hasAnchor: () => false, hasMore: () => true, isCancelled: () => cancelled,
+      loadOlder: vi.fn(async () => { cancelled = true; return true; }) });
+    expect(await restoreTimelineReading(reading('far'), a)).toEqual({ status: 'no-timeline' });
+    expect(a.loadOlder).toHaveBeenCalledTimes(1);
+    expect(a.restoreAnchor).not.toHaveBeenCalled();
   });
 
   it('nested locateSpawn includes parent agent and this child card', () => {

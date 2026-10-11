@@ -51,6 +51,7 @@ const superpowers = {
   displayName: 'Superpowers',
   version: '5.1.0',
   enabled: true,
+  globalEnabled: true,
   state: 'ok' as const,
   skillCount: 14,
   mcpServerCount: 0,
@@ -127,6 +128,7 @@ describe('plugins selector dialogs', () => {
       id: 'kimi-datasource',
       displayName: 'Kimi Datasource',
       enabled: true,
+      globalEnabled: true,
       state: 'ok',
       skillCount: 0,
       mcpServerCount: 0,
@@ -141,6 +143,7 @@ describe('plugins selector dialogs', () => {
       id: 'superpowers',
       displayName: 'Superpowers',
       enabled: true,
+      globalEnabled: true,
       state: 'ok',
       skillCount: 0,
       mcpServerCount: 0,
@@ -155,6 +158,7 @@ describe('plugins selector dialogs', () => {
       id: 'kimi-cu',
       displayName: 'Kimi Computer Use',
       enabled: true,
+      globalEnabled: true,
       state: 'ok',
       skillCount: 1,
       mcpServerCount: 1,
@@ -169,6 +173,7 @@ describe('plugins selector dialogs', () => {
       id: 'demo',
       displayName: 'Demo',
       enabled: true,
+      globalEnabled: true,
       state: 'ok',
       skillCount: 0,
       mcpServerCount: 0,
@@ -183,6 +188,7 @@ describe('plugins selector dialogs', () => {
       id: 'local',
       displayName: 'Local',
       enabled: true,
+      globalEnabled: true,
       state: 'ok',
       skillCount: 0,
       mcpServerCount: 0,
@@ -201,6 +207,7 @@ describe('plugins selector dialogs', () => {
         id: 'demo',
         displayName: 'Demo',
         enabled: true,
+        globalEnabled: true,
         state: 'ok',
         skillCount: 0,
         mcpServerCount: 0,
@@ -227,6 +234,7 @@ describe('plugins selector dialogs', () => {
       id: 'kimi-datasource',
       displayName: 'Kimi Datasource',
       enabled: true,
+      globalEnabled: true,
       state: 'ok' as const,
       skillCount: 0,
       mcpServerCount: 0,
@@ -388,6 +396,15 @@ describe('plugins selector dialogs', () => {
     const { panel, onSelect } = makePanel({ installed: [superpowers] });
     panel.handleInput(' ');
     expect(onSelect).toHaveBeenCalledWith({ kind: 'toggle', id: 'superpowers', enabled: false });
+  });
+
+  it('shows later-installed plugins as globally disabled and Space enables the global default', () => {
+    const later = { ...superpowers, enabled: true, globalEnabled: false };
+    const { panel, onSelect } = makePanel({ installed: [later] });
+
+    expect(strip(renderRaw(panel))).toContain('? Superpowers  disabled');
+    panel.handleInput(' ');
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'toggle', id: 'superpowers', enabled: true });
   });
 
   it('routes D / M / R / Enter to remove / mcp / reload / details on the Installed tab', () => {
@@ -953,6 +970,7 @@ describe('plugins selector dialogs', () => {
         displayName: 'Kimi Datasource',
         version: '1.0.0',
         enabled: true,
+        globalEnabled: true,
         state: 'ok',
         skillCount: 1,
         mcpServerCount: 1,

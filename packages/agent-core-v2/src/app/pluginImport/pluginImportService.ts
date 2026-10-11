@@ -116,12 +116,12 @@ export class PluginImportService extends Service implements IPluginImportService
     }
     const info = await this.plugins.getPluginInfo({ id: input.pluginId });
     const definition = info.manifest?.kiki?.sessionSources?.find((item) => item.id === input.sourceId);
-    if (!info.enabled || info.state !== 'ok' || !definition) fail('Session source is not enabled');
+    if (!info.globalEnabled || info.state !== 'ok' || !definition) fail('Session source is not enabled');
     return definition;
   }
   async sources(): Promise<ImportSource[]> {
     this.check();
-    const plugins = (await this.plugins.listPlugins()).filter((item) => item.id !== builtinHistory.id && item.enabled && item.state === 'ok');
+    const plugins = (await this.plugins.listPlugins()).filter((item) => item.id !== builtinHistory.id && item.globalEnabled && item.state === 'ok');
     const info = await Promise.all(plugins.map((item) => this.plugins.getPluginInfo({ id: item.id })));
     return [...builtinHistory.sessionSources.map((definition) => ({ ...definition, pluginId: builtinHistory.id })),
       ...info.flatMap((item) => (item.manifest?.kiki?.sessionSources ?? []).map((definition) => ({ ...definition, pluginId: item.id })))];

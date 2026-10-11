@@ -29,6 +29,7 @@ import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
 import { registerShortcutRoutes } from './shortcuts';
 import { registerHomesRoutes } from './homes';
+import { registerWorkPresetRoutes } from './workPresets';
 import { registerMessagesRoutes } from './messages';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
 import { registerDebugRoutes } from '../transport/registerDebugRoutes';
@@ -42,6 +43,7 @@ import { registerNotificationRoutes } from './notifications';
 import type { NotificationService } from '../services/notifications/notificationService';
 import { registerOAuthRoutes } from './oauth';
 import { registerPluginsRoutes } from './plugins';
+import { registerPluginUsageRoutes } from './pluginUsage';
 import { registerPromptsRoutes } from './prompts';
 import { registerQuestionsRoutes } from './questions';
 import { registerRuntimeRoutes } from './runtime';
@@ -49,10 +51,12 @@ import { registerSearchRoutes } from './search';
 import { registerSshRoutes } from './ssh';
 import { registerBrowserRoutes } from './browser';
 import { registerSessionMediaRoutes } from './sessionMedia';
+import { registerDocumentPreviewRoutes } from './documentPreview';
 import { registerSessionExportRoute } from './sessionExport';
 import { registerSessionsRoutes } from './sessions';
 import { registerShippedAgentProfilesRoute } from './shippedAgentProfiles';
 import { registerShutdownRoutes } from './shutdown';
+import { registerDesktopLifecycleRoutes } from './desktopLifecycle';
 import { registerSnapshotRoutes } from './snapshot';
 import { registerSkillsRoutes } from './skills';
 import { registerSkinsRoutes } from './skins';
@@ -151,6 +155,7 @@ export async function registerApiV1Routes(
         buildId: opts.buildId,
         buildChannel: opts.buildChannel,
         serverId: opts.serverId,
+        desktopManaged: core.accessor.get(IBootstrapService).getEnv('KIKI_DESKTOP_BUNDLED') === '1',
         serverHomeId: opts.serverHomeId,
         currentSpaceId: core.accessor.get(IBootstrapService).spaceId ?? 'main',
         startedAt: opts.startedAt,
@@ -186,6 +191,7 @@ export async function registerApiV1Routes(
       registerOAuthRoutes(apiV1 as unknown as Parameters<typeof registerOAuthRoutes>[0], core);
       registerConfigRoutes(apiV1 as unknown as Parameters<typeof registerConfigRoutes>[0], core);
       registerHomesRoutes(apiV1 as unknown as Parameters<typeof registerHomesRoutes>[0], core);
+      registerWorkPresetRoutes(apiV1 as unknown as Parameters<typeof registerWorkPresetRoutes>[0], core, { marketplaceUrl: opts.pluginMarketplaceUrl });
       registerNbSearchRoutes(apiV1 as unknown as Parameters<typeof registerNbSearchRoutes>[0], core);
       registerRequestIdentityRoutes(apiV1 as unknown as Parameters<typeof registerRequestIdentityRoutes>[0], core);
       registerSecretsRoutes(apiV1 as unknown as Parameters<typeof registerSecretsRoutes>[0], core, opts.notifications);
@@ -211,7 +217,7 @@ export async function registerApiV1Routes(
         core,
         { hostIdentity: opts.hostIdentity },
       );
-      registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
+      registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core, opts.transcriptService);
       registerSkinsRoutes(
         apiV1 as unknown as Parameters<typeof registerSkinsRoutes>[0],
         core,
@@ -226,6 +232,7 @@ export async function registerApiV1Routes(
         marketplaceUrl: opts.pluginMarketplaceUrl,
         serverToken: opts.pluginBridgeServerToken,
       });
+      registerPluginUsageRoutes(apiV1 as unknown as Parameters<typeof registerPluginUsageRoutes>[0], core);
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],
         {
@@ -251,6 +258,7 @@ export async function registerApiV1Routes(
       registerPromptsRoutes(
         apiV1 as unknown as Parameters<typeof registerPromptsRoutes>[0],
         core,
+        opts.transcriptService,
       );
       registerWorkspacesRoutes(
         apiV1 as unknown as Parameters<typeof registerWorkspacesRoutes>[0],
@@ -271,6 +279,7 @@ export async function registerApiV1Routes(
         core,
         opts.transcriptService,
       );
+      registerDocumentPreviewRoutes(apiV1 as unknown as Parameters<typeof registerDocumentPreviewRoutes>[0], core);
       registerFsRoutes(apiV1 as unknown as Parameters<typeof registerFsRoutes>[0], core);
       registerGuiStoreRoutes(apiV1 as unknown as Parameters<typeof registerGuiStoreRoutes>[0], opts.guiStore);
       registerShortcutRoutes(apiV1 as unknown as Parameters<typeof registerShortcutRoutes>[0], opts.guiStore);
@@ -299,6 +308,7 @@ export async function registerApiV1Routes(
         opts.shutdownSignal,
       );
       if (opts.enableShutdown !== false) {
+        registerDesktopLifecycleRoutes(apiV1 as unknown as Parameters<typeof registerDesktopLifecycleRoutes>[0], core, { serverId: opts.serverId, onShutdown: opts.onShutdown });
         registerShutdownRoutes(apiV1 as unknown as Parameters<typeof registerShutdownRoutes>[0], {
           onShutdown: opts.onShutdown,
         });

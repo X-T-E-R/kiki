@@ -52,7 +52,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       await window.execute(context);
       expect(connections).toHaveBeenCalledWith({ action: 'connect', browser: 'a' }, signal, context);
       expect(tabs).toHaveBeenCalledWith({ action: 'window', browser: 'a' }, signal, context);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('loads only requested schemas, rejects unobserved refs and transfers only the selected browser artifact through media', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'kiki-browser-agent-'));
@@ -115,7 +115,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       await service.connections({ action: 'tools', unload: ['agent_browser_fill', 'agent_browser_download'] });
       expect(registry.resolve('browser__agent_browser_fill')).toBeUndefined();
       expect(registry.resolve('browser__agent_browser_download')).toBeUndefined();
-    } finally { ix.dispose(); await rm(directory, { recursive: true, force: true }); }
+    } finally { await ix.dispose(); await rm(directory, { recursive: true, force: true }); }
   });
 
   it('consumes the official js catalog with the real caller context and existing media output', async () => {
@@ -162,7 +162,7 @@ describe('native browser agent selection, schema and local file channel', () => 
         ix.get(IEventBus).publish(new TurnEnded({ turnId, reason }));
         expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }, turnId);
       }
-      service.dispose();
+      (service as AgentBrowserService).dispose();
       await vi.waitFor(() => expect(endTurn).toHaveBeenLastCalledWith({ sessionId: 'fixture-session', agentId: 'main' }));
     } finally { ix.dispose(); }
   });

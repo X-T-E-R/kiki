@@ -113,11 +113,41 @@ const TOOLS = [
   plugin('browser_bridge', 'open_tab', 'disconnected', NOT_CONNECTED),
 ];
 
-const SKILLS = [
-  { name: 'release-notes', description: 'Draft release notes from merged changes', source: 'project', source_kind: 'project', scope: 'workspace', path: '.kiki/skills/release-notes/SKILL.md', state: 'enabled' },
-  { name: 'api-diff', description: 'Compare two public API snapshots', source: 'project', source_kind: 'project', scope: 'workspace', path: '.kiki/skills/api-diff/SKILL.md', state: 'enabled' },
-  { name: 'code-review', description: 'Review a diff for correctness and style', source: 'user', source_kind: 'user', scope: 'global', path: '~/.kiki/skills/code-review/SKILL.md', state: 'enabled' },
-];
+// A realistic catalog: a working machine has a few project skills and a long
+// tail of global ones, which is exactly the case the skills tab's fold has to
+// read well — many names, wrapping into more rows than the column shows.
+const PROJECT_SKILLS = [
+  ['release-notes', 'Draft release notes from merged changes'],
+  ['api-diff', 'Compare two public API snapshots'],
+  ['code-review', 'Review a diff for correctness and style'],
+  ['migration-plan', 'Draft a migration plan from a schema change'],
+  ['test-matrix', 'Map a change onto the test matrix it needs'],
+  ['changelog-scan', 'Find every changelog line a commit touches'],
+  ['perf-note', 'Write a short performance note for a diff'],
+  ['doc-drift', 'Report documentation that no longer matches the code'],
+].map(([name, description]) => ({
+  name, description, source: 'project', source_kind: 'project',
+  scope: 'workspace', path: `.kiki/skills/${name}/SKILL.md`, state: 'enabled',
+}));
+
+const GLOBAL_SKILLS = [
+  'code-review', 'absorb-anything', 'ai4s', 'autodl-pro', 'brainstorm-to-decision',
+  'gen-image-via-api', 'github-project-growth', 'handoff-builder', 'image-art-director',
+  'kiki-appearance', 'kiki-as-subagent', 'kiki-hooks', 'kiki-ops', 'kiki-persona',
+  'kiki-plugin', 'kiki-profile', 'my-little-frontend', 'nb-extract', 'nb-skill-creator',
+  'officecli', 'paper-search-cli', 'paperflow', 'reader-first-writing', 'search-layer',
+  'speak-human', 'tool-workflows',
+].map((name, index) => ({
+  name,
+  description: `Global skill ${index + 1}: what it is for and when to reach for it.`,
+  source: 'user',
+  source_kind: 'user',
+  scope: 'global',
+  path: `~/.kiki/skills/${name}/SKILL.md`,
+  state: 'enabled',
+}));
+
+const SKILLS = [...PROJECT_SKILLS, ...GLOBAL_SKILLS];
 
 const TARGETS = [
   { profile: 'explore', caller_profile: 'agent', source: 'builtin', executor: 'native', defaults_available: true, launch_allowed: true, description: 'Bounded read-only evidence gathering' },
@@ -145,5 +175,41 @@ export default {
     targets: TARGETS,
     tools: TOOLS,
     skills: SKILLS,
+  },
+  // The first workspace skill has a real SKILL.md, so the detail sheet proves
+  // it fills itself from the file rather than waiting for a click. The rest are
+  // deliberately absent: an unreadable file is a state the sheet has to answer
+  // for too, not a gap in the fixture.
+  fsFiles: {
+    '.kiki/skills/release-notes/SKILL.md': {
+      mime: 'text/markdown',
+      content: `# Release notes
+
+Turn a merged range into release notes a user can read.
+
+## When to use this
+
+Use it when a change set is on \`main\` and the release needs a description of
+what changed and why it matters. Skip it for a single fix that the changelog
+already covers.
+
+## What it produces
+
+A short heading per change, grouped by the kind of change, with the user-facing
+effect first and the implementation detail last.
+
+## Steps
+
+1. Read the commits in range, newest first.
+2. Drop anything a user cannot observe.
+3. Group what is left by kind: added, changed, fixed, removed.
+4. Write one line per group entry, in the words a user would use.
+
+## Example
+
+> **Fixed**
+> The rail no longer reflows when you preview a tool group.
+`,
+    },
   },
 };

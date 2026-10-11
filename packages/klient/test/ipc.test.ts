@@ -34,7 +34,7 @@ defineKlientConformance('ipc', async () => {
     cleanup: async () => {
       await klient.close();
       await host.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     },
   };
@@ -55,7 +55,7 @@ describe('ipc transport specifics', () => {
   async function teardown(): Promise<void> {
     await host?.close();
     host = undefined;
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   }
 

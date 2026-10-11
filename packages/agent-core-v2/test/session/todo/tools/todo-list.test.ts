@@ -39,10 +39,10 @@ describe('TodoListTool', () => {
     const result = await executeTool(fixture.tool, { turnId: 1, toolCallId: 'identity', args: injected, signal });
     expect(result.isError).toBe(false);
     expect(fixture.getTodos()).toEqual([{ title: 'still child', status: 'done' }]);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
-  it('describes independent updates and exposes every canonical section without defaults', () => {
+  it('describes independent updates and exposes every canonical section without defaults', async () => {
     const fixture = makeTool();
     expect(fixture.tool.name).toBe(TODO_LIST_TOOL_NAME);
     expect(fixture.tool.description).toContain('omit todos to keep the list, omit notes to keep all notes');
@@ -54,7 +54,7 @@ describe('TodoListTool', () => {
     expect(TodoListInputSchema.safeParse({ notes: { nexxt: 'typo' } }).success).toBe(false);
     expect(fixture.tool.parameters).toMatchObject({ type: 'object', additionalProperties: false, properties: { todos: { type: 'array' } } });
     expect(JSON.stringify(fixture.tool.parameters)).toContain('Omit notes to keep them unchanged, including when updating todos');
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('query mode renders the current list without mutating it', async () => {
@@ -63,7 +63,7 @@ describe('TodoListTool', () => {
     expect(result).toMatchObject({ isError: false });
     expect(result.output).toContain('[in_progress] existing');
     expect(fixture.getTodos()).toEqual([{ title: 'existing', status: 'in_progress' }]);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('write mode copies the whole list but returns only counts and changed fields', async () => {
@@ -74,7 +74,7 @@ describe('TodoListTool', () => {
     expect(receipt(result.output)).toMatchObject({ changed: ['todos'], todos: { count: 2, pending: 1, in_progress: 1, done: 0 } });
     expect(result.output).not.toContain('first');
     expect(fixture.getTodos()).toEqual([{ title: 'first', status: 'pending' }, { title: 'second', status: 'in_progress' }]);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('renders a done todo with the status enum marker on explicit read', async () => {
@@ -82,7 +82,7 @@ describe('TodoListTool', () => {
     const result = await executeTool(fixture.tool, { turnId: 1, toolCallId: 'read', args: {}, signal });
     expect(result.output).toContain('[done] shipped');
     expect(result.output).not.toContain('[completed]');
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('patches, reads, and clears both domains independently and reports exact deletion scope', async () => {
@@ -109,7 +109,7 @@ describe('TodoListTool', () => {
     expect(receipt(clearNotes.output).cleared).toEqual(['notes']);
     expect(fixture.getNotes()).toBeUndefined();
     expect(fixture.getTodos()).toEqual([{ title: 'still needed', status: 'pending' }]);
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('keeps small write receipts bounded with a nearly full notebook', async () => {
@@ -121,7 +121,7 @@ describe('TodoListTool', () => {
     expect((result.output as string).length).toBeLessThan(300);
     expect(receipt(result.output)).toMatchObject({ changed: ['notes.next'], section_chars: { next: 9 }, notes_chars: 7409 });
     expect((await invoke({})).output).toContain('d'.repeat(1500));
-    fixture.dispose();
+    await fixture.dispose();
   });
 
   it('rejects section and aggregate budgets before either domain changes', async () => {
@@ -134,15 +134,15 @@ describe('TodoListTool', () => {
       expect(fixture.getNotes()).toEqual({ goal: 'keep' });
       expect(fixture.getTodos()).toEqual([{ title: 'keep', status: 'pending' }]);
     }
-    fixture.dispose();
+    await fixture.dispose();
   });
 
-  it('resolveExecution description reflects the mode', () => {
+  it('resolveExecution description reflects the mode', async () => {
     const fixture = makeTool();
     expect(fixture.tool.resolveExecution({})).toMatchObject({ description: 'Reading todo list' });
     expect(fixture.tool.resolveExecution({ todos: [] })).toMatchObject({ description: 'Clearing todo list' });
     expect(fixture.tool.resolveExecution({ todos: [{ title: 'x', status: 'pending' }] })).toMatchObject({ description: 'Updating todo list' });
     expect(fixture.tool.resolveExecution({ review_handoff: true })).toMatchObject({ description: 'Updating working notes' });
-    fixture.dispose();
+    await fixture.dispose();
   });
 });

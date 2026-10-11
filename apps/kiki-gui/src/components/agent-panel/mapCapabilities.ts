@@ -43,6 +43,19 @@ const AGENT_CAPABILITIES_ERROR_KEYS: Readonly<Record<number, I18nKey>> = {
   [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agentPanel.error.agentProfileNotFound',
 };
 
+/**
+ * Why a skill's own SKILL.md could not be read. The host answers a missing or
+ * forbidden file with the fs wire codes (HTTP 404 / 403 over REST, the same
+ * numbers in process), so they are named here and the reader is never shown a
+ * code or a host message. An unmapped failure falls back to the generic
+ * sentence rather than to its raw text: a transport string is not an
+ * explanation.
+ */
+const SKILL_READ_ERROR_KEYS: Readonly<Record<number, I18nKey>> = {
+  [ErrorCode.FS_PATH_NOT_FOUND]: 'agentPanel.skillMdMissing',
+  [ErrorCode.FS_PERMISSION_DENIED]: 'agentPanel.skillMdForbidden',
+};
+
 /** Resolve a capability reason code to localized copy, retaining legacy raw copy as a fallback. */
 export function capabilityReasonText(
   t: Translate,
@@ -53,6 +66,13 @@ export function capabilityReasonText(
     ? undefined
     : CAPABILITY_REASON_LABEL_KEYS[code as AgentCapabilityReasonCode];
   return key === undefined ? rawReason : t(key);
+}
+
+/** The reader-facing sentence for a failed SKILL.md read. */
+export function skillReadFailureText(t: Translate, error: unknown): string {
+  const code = errorCodeOf(error);
+  const key = code === undefined ? undefined : SKILL_READ_ERROR_KEYS[code];
+  return key === undefined ? t('agentPanel.skillMdReadFailed') : t(key);
 }
 
 function errorCodeOf(error: unknown): number | undefined {

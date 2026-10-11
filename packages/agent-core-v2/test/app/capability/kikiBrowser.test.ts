@@ -7,6 +7,7 @@ import { ZipFile } from 'yazl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKikiBrowserEntry } from '#/app/capability/entries/kikiBrowser';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { BROWSER_DRIVER_FILES, CHROME_METADATA_URL, browserResourcePaths, installedBrowserChrome, installedBrowserDriver, installBrowserChrome, installBrowserDriver } from '#/app/capability/entries/browserResourceStore';
 import type { CapabilityEntryContext } from '#/app/capability/entries/context';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
@@ -50,14 +51,16 @@ describe('browser components in isolated Kiki home', () => {
     fail = false;
     stall = false;
     onRequest = undefined;
-    server = createServer(async (request, response) => {
-      if (fail) { response.writeHead(503); response.end('temporary failure'); return; }
-      if (stall) { onRequest?.(); return; }
-      const key = decodeURIComponent((request.url ?? '/').slice(1));
-      if (key === 'metadata') { response.end(JSON.stringify({ channels: { Stable: { version, downloads: { chrome: [{ platform: 'win64', url: chromeUrl }] } } } })); return; }
-      const bytes = key === 'chrome.zip' ? chromeBytes : await readFile(key === 'agent-browser.exe' ? driverSource : join(donor, key));
-      response.setHeader('content-length', bytes.length);
-      response.end(bytes);
+    server = createServer((request, response) => {
+      Promise.resolve().then(async () => {
+        if (fail) { response.writeHead(503); response.end('temporary failure'); return; }
+        if (stall) { onRequest?.(); return; }
+        const key = decodeURIComponent((request.url ?? '/').slice(1));
+        if (key === 'metadata') { response.end(JSON.stringify({ channels: { Stable: { version, downloads: { chrome: [{ platform: 'win64', url: chromeUrl }] } } } })); return; }
+        const bytes = key === 'chrome.zip' ? chromeBytes : await readFile(key === 'agent-browser.exe' ? driverSource : join(donor, key));
+        response.setHeader('content-length', bytes.length);
+        response.end(bytes);
+      }).catch(onUnexpectedError);
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const address = server.address();
@@ -70,7 +73,7 @@ describe('browser components in isolated Kiki home', () => {
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
   const fetchSource: typeof fetch = (input, init) => {
-    const url = String(input);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const file = url === CHROME_METADATA_URL ? 'metadata' : url === chromeUrl ? 'chrome.zip' : Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === url)?.[0];
     if (file === undefined) throw new Error(`Unexpected install URL: ${url}`);
     return fetch(`${base}/${encodeURIComponent(file)}`, init);

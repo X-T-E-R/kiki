@@ -109,6 +109,50 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## 外部 harness 默认设置
+
+外部 harness（实际运行 Agent 的程序）可以不选 Kiki profile，使用自身配置。main agent 的 `execution` 选择通过 `[agent_executor_overrides.<id>.defaults]` 保存可复用的 Kiki 覆盖值；会话覆盖优先于 profile 显式声明，profile 显式声明优先于这些设置，仍未设置的值由 harness 自己决定。原生执行保持 Kiki 既有的模型与 profile 默认行为。
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# 可选：填写 harness 自己的模型 ID，而非 Kiki 原生模型 alias。
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
+
+`defaults.executor_prompt` 接受 `delivery`（`append`、`replace`、`preamble`）、`body`、`append`、`include` 和 `per_engine.<id>` 覆盖。这些字段与所选 profile 逐项合并，因此只设置 `delivery` 不会抹掉默认正文。省略 `include` 会继承，`include = []` 关闭附加段落。没有有效的 `executor_prompt.body` 时才使用 profile 正文。外部 execution 不会自动添加 Kiki cognition 或共享提示字段；需要哪些字段，在 `include` 中显式选择。
+
+通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
+
+显示偏好与执行设置分开。在 `[agent_executor_overrides.<id>]` 下设置 `show_in_profile_list = false`，可从 profile 与执行选择器中隐藏单个引擎；在 `[agent_executor_display]` 下设置 `externals_visible = false`，可隐藏全部外部引擎。省略字段表示显示，全局开关优先于逐引擎设置。隐藏不会禁用或卸载引擎、修改执行绑定，也不会取消任务。
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = false
+
+[agent_executor_display]
+externals_visible = false
+```
+
+向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有可执行程序就绪，且引擎已确认登录或具有自身可用配置（如它声明的 API 密钥环境变量或匿名本地描述符）时，选择列表才显示裸引擎入口。只有 profile、启动偏好或 Kiki 原生模型，不代表引擎可运行；显式隐藏设置仍优先。设置页保留全部引擎，可继续配置或 Check。已绑定引擎变为不可用时，会话保留原身份并提供配置恢复入口，不会悄悄切换引擎。
+
+自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+使用厂商真实的元数据子命令与参数顺序；print、prompt 或斜杠命令并不保证不会发起模型请求。参数以数组直接传给程序，不经过 Shell。`format` 接受 `lines`（默认）、`tab` 或 `json`；`json_path` 选中由字符串或带 `id` 对象组成的 JSON 数组，保留原始 ID。JSON 无效或数组缺失时，目录保持部分已知，不据此判定已保存的模型 ID 无效。
+
 ## 连续性提醒词表
 
 Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。
@@ -164,6 +208,7 @@ api_key = "YOUR_API_KEY"
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
 | `request_governance` | `table` | 无规则 | 模型请求与 Agent 执行并发和等待预算 → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | 服务端转录历史的内存预算 → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
@@ -181,7 +226,7 @@ api_key = "YOUR_API_KEY"
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`model_switch`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
+以下各节逐一展开上表中的嵌套配置。
 
 ## `providers`
 
@@ -554,6 +599,18 @@ match = '^provider\.'
 retry = false
 ```
 
+## `transcript_memory`
+
+`transcript_memory` 控制服务端把多少转录历史留在内存里。三个字段都是可选的：省略即使用默认值。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `tail_turns` | 正整数 | `20` | 每个 agent 常驻保留多少个已结束的 turn |
+| `max_agent_bytes` | 正整数 | `16777216`（16 MiB） | 每个 agent 的常驻字节预算，即留在内存里的量。更早的 turn 会按需从磁盘读取 |
+| `max_detail_cache_bytes` | 非负安全整数 | `268435456`（256 MiB） | 单次完整正文读取的最大缓存量。`0` 关掉这个额外缓存槽，内容照样读取，只是不留在该缓存里。改动后的值在下一次缓存准入或淘汰时生效；调低会淘汰放不下的内容，不会取消正在进行中的读取 |
+
+这些是服务端内存预算，不是读取上限。调低它们会减少内存占用，可能增加从磁盘重复读取的次数。
+
 ## `token_counting`
 
 `token_counting` 决定对外上报的上下文 token 计数——即上下文大小显示所基于的值。内部逻辑（自动压缩触发、预算、超限退避）始终同时使用供应商实测与估算，不受本配置影响。
@@ -715,8 +772,13 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | --- | --- | --- | --- |
 | `model` | `string` | 未设置 | 用于写会话标题的模型别名。未设置（或留空）时 Kiki 完全不发标题请求：既不回退到 `fast_model`，也不使用托管的 `chat_title` 工具，因此标题生成不消耗任何订阅用量 |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | Kiki 主动写标题的时刻，取值为 `first_user_message`、`first_turn_completed`、`context_compacted` 中的一项或多项。空数组表示关闭自动生成；按需生成标题仍然可用，且仍需配置 `model` |
+| `prompt` | `string` | 内置提示词 | 可选的标题模型系统提示词。多行正文完整发送，不展开模板。删除该字段或留空恢复内置提示词；默认全文不会另存为覆盖 |
 
-选定的模型按原有的标题提示词预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+内置提示词根据当前目的和具体对象生成便于辨认的标题，保留有用的名字与标识符，不虚报尚未证实的成功。修改 `prompt` 会在下一次标题请求生效，已打开的会话也无需重启。保存或删除覆盖不改已有会话标题，也不主动发起标题请求。
+
+选定的模型按原有的会话摘录预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+
+`GET /api/config` 与成功的 `POST /api/config` 响应包含 `session_title.default_prompt` 和 `prompt_source`（`default` 或 `custom`）。它们是只读字段；仅存在非空白覆盖时才返回 `prompt`。发送 `{ "session_title": { "prompt": "你的标题规则" } }` 保存，发送 `{ "session_title": { "prompt": null } }` 删除覆盖。省略的字段保持不变，因此这两种写入保留 `model` 与 `triggers`；`model: null` 只移除模型，保留提示词和生成时机。修改单个字段时不要使用 `replace_domains`。
 
 按需生成对应 `POST /api/sessions/{session_id}/title/generate`，SDK 暴露了这个调用。它同样需要 `model`，没有模型就无从发问；其中 `force` 选项才是替换手写标题的那一个，不传则保留你写的标题。
 
@@ -724,15 +786,15 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 ## `experimental`
 
-`experimental` 以 flag id 为 key，存放实验功能 flag 的持久化覆盖。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、`KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。
+`experimental` 以 flag id 为 key，存放内置功能的发布与回退开关覆盖。内置功能默认可用；显式设为 `false` 仍会关闭。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、真值的 `KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。总开关为假值时视为未设置，不会全局关闭功能。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
-| `usage_export` | `boolean` | `false` | 把不含内容的用量批次发送到「用量 → 外部同步」中配置的目的地；关闭时这些路由根本不注册 |
+| `native_browser` | `boolean` | `true` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
+| `local_session_resume` | `boolean` | `true` | 接续本机已有的 Claude Code 和 Codex 会话；在「设置 → 会话」管理，每次新接续时读取 |
 
-任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。带有自己控件的 flag 在对应功能页开关；没有的会出现在 **Settings → 开发者 → 实验性**，该页按 id 列出服务器上报的 flag。
+任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。每个内置开关都在相关设置页提供名称与说明；**设置 → 实验性**链接到对应页面，并显示更改何时生效。未知的扩展开关按 id 显示在**设置 → 开发者**中。功能可用不代表会安装插件、授权脚本或连接未配置的外部目的端。
 
 ## `browser_control`
 
@@ -762,14 +824,14 @@ usage_preference = "avoid"
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
-默认的 `WebSearch` lane 是 `github.repositories`，不需要凭证或配置，但只检索 GitHub 仓库。查阅代码库文档时可显式选择 `context7.docs`；它返回 typed 文档上下文，不能与结果型 lane 组合。`duckduckgo.search` 是可选的免密钥通用网页 lane，但其公共 HTML 端点可能返回 CAPTCHA；如需更稳定的通用检索，请配置其他 provider 的凭证并覆盖 `defaults.search_lane`。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+默认的 `WebSearch` lane 是 `duckduckgo.search`，无需注册、凭证或配置即可检索通用网页。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果，也不会静默切换到收费 provider。已配置的默认值和显式 lane 选择优先。仓库检索或代码库文档可显式选择 `github.repositories`、`context7.docs`；后者返回 typed 文档上下文，不能与结果型 lane 组合。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`、`key_strategy`（`round-robin` 或 `priority`）、`balance_ttl_ms`（60,000–86,400,000 毫秒）及 provider 专属 `options` |
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
-| `defaults.search_lane` | `string` | 否 | 内置默认值为 `github.repositories`（仅仓库）；通用网页检索需要覆盖。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
+| `defaults.search_lane` | `string` | 否 | 内置默认值为免密钥的 `duckduckgo.search`（通用网页）；已配置的默认值优先。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
 | `defaults.fetch_chain` | `array<table>` | 否 | URL 默认先用 `direct.fetch`，失败时尝试免密钥的 `jina.reader`；直连成功但内容无用时，需显式配置 `execution.fetch.quality` 规则才能触发回退 |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 

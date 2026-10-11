@@ -72,6 +72,27 @@ export interface SessionClosedEvent {
   readonly reason?: 'exit' | 'evict';
 }
 
+export type SessionCleanupReason = 'exit' | 'archive' | 'evict' | 'delete';
+export type SessionCleanupCallerOutcome = 'resolved' | 'rejected';
+export type SessionCleanupOutcome = 'closed' | 'cleanup_failed';
+export type SessionFailureDomain = 'persistence' | 'cleanup';
+
+export interface SessionCleanupReceipt {
+  readonly operationId: string;
+  readonly sessionId: string;
+  readonly reason: SessionCleanupReason;
+  readonly callerOutcome: SessionCleanupCallerOutcome;
+  readonly terminalOwner: 'session';
+  readonly cleanupOutcome: SessionCleanupOutcome;
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly failureDomain?: SessionFailureDomain;
+  readonly errorCode?: string;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly settledAt: number;
+}
+
 export interface SessionWillCloseEvent {
   readonly sessionId: string;
   readonly handle: ISessionScopeHandle;
@@ -120,6 +141,7 @@ export interface ISessionLifecycleService {
   readonly onDidCreateSession: Event<SessionCreatedEvent & IWaitUntil>;
   readonly onWillCloseSession: Event<SessionWillCloseEvent & IWaitUntil>;
   readonly onDidCloseSession: Event<SessionClosedEvent>;
+  readonly onDidCleanup?: Event<SessionCleanupReceipt>;
   readonly onDidArchiveSession: Event<SessionArchivedEvent>;
   readonly onDidForkSession: Event<SessionForkedEvent>;
   create(opts: CreateSessionOptions): Promise<ISessionScopeHandle>;

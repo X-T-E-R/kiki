@@ -629,9 +629,9 @@ function ChildAgentWorkspace({
   );
 
   // Same query key as the session view: one catalog fetch, shared cache.
-  const handleLoadOlder = useCallback(async (): Promise<boolean> => {
+  const handleLoadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (controller === null) return false;
-    return controller.loadOlderMessages(agentId);
+    return controller.loadOlderMessages(agentId, signal);
   }, [controller, agentId]);
   const handleResolveApproval = useCallback(
     (
@@ -1177,8 +1177,11 @@ function ChildAgentWorkspace({
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
           modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
           pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+            from: modelSwitches.active.receipt.fromModel,
             to: modelSwitches.active.receipt.toModel,
             mode: modelSwitches.active.input.mode,
+            originalThinking: modelSwitches.active.originalBinding.thinking,
+            targetThinking: modelSwitches.active.input.thinking,
           }}
           modelSwitchError={modelSwitches.error === undefined ? undefined : {
             detail: modelSwitches.error.message,

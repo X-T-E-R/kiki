@@ -78,6 +78,11 @@ describe('events-zod prompt lifecycle coverage', () => {
 });
 
 describe('events-zod stream identity', () => {
+  it('preserves native assistant image facts and stable part identity', () => {
+    const event = { type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-image', partId: 'part-image', delta: '',
+      part: { type: 'image_url', imageUrl: { url: 'https://example.test/answer.png', id: 'provider-reference', name: 'answer.png' } } };
+    expect(assistantDeltaEventSchema.parse(event)).toEqual(event);
+  });
   it('preserves legacy and step-owned assistant and thinking deltas', () => {
     expect(
       assistantDeltaEventSchema.parse({

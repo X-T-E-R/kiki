@@ -152,7 +152,7 @@ describe('AgentExecutorPreflightService', () => {
     );
   });
 
-  afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
+  afterEach(async () => { vi.restoreAllMocks(); await services.dispose(); });
 
   it('invalidates cached and pending checks when the executor descriptor revision changes', async () => {
     let command = '/fixture/first';

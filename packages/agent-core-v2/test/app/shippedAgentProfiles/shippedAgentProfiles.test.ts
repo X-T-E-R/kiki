@@ -187,12 +187,12 @@ describe('ShippedAgentProfileManagerService', () => {
     const skipped = manager(templates, configStub({ skipInstallation: ['agent'] }));
     await skipped.ready;
     expect(await activeExists('agent')).toBe(false);
-    skipped.dispose();
+    await skipped.dispose();
 
     const installed = manager(templates, configStub({ skipInstallation: [] }));
     await installed.ready;
     expect(await activeText('agent')).toBe(agentText('v1'));
-    installed.dispose();
+    await installed.dispose();
 
     const updated = manager([template('agent', agentText('v2'))], configStub({ skipInstallation: ['agent'] }));
     await updated.ready;
@@ -204,7 +204,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
     const before = await activeText('agent');
 
     const v2 = [template('agent', agentText('v2'))];
@@ -228,7 +228,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     const customized = agentText('my customization');
     await writeFile(join(home, 'agents', 'builtin', 'agent.md'), customized);
@@ -252,7 +252,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     await writeFile(join(home, 'agents', 'builtin', 'agent.md'), agentText('v2'));
 
@@ -268,7 +268,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     await writeFile(join(home, 'agents', 'builtin', 'agent.md'), agentText('rolled back'));
 
@@ -283,7 +283,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText())];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
     expect(await activeExists('general')).toBe(false);
 
     const v2 = [template('agent', agentText()), template('general', '---\nname: general\ndescription: general\n---\n\nGeneral.\n')];
@@ -300,7 +300,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     const customized = agentText('my customization');
     await writeFile(join(home, 'agents', 'builtin', 'agent.md'), customized);
@@ -328,7 +328,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const v1 = [template('agent', agentText('v1'))];
     const first = manager(v1);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     await rm(join(home, 'agents', 'builtin', 'agent.md'));
 
@@ -337,7 +337,7 @@ describe('ShippedAgentProfileManagerService', () => {
     expect((await second.status())[0]!.status).toBe('removed');
     expect(await activeExists('agent')).toBe(false);
 
-    second.dispose();
+    await second.dispose();
     const third = manager(v1);
     await third.ready;
     expect((await third.status())[0]!.status).toBe('removed');
@@ -362,7 +362,7 @@ describe('ShippedAgentProfileManagerService', () => {
     await writeFile(join(home, 'SYSTEM.md'), 'custom main\n');
     const first = manager([template('agent', agentText('v1'))]);
     await first.ready;
-    first.dispose();
+    await first.dispose();
     expect(await activeExists('agent')).toBe(false);
 
     await rm(join(home, 'SYSTEM.md'));
@@ -377,7 +377,7 @@ describe('ShippedAgentProfileManagerService', () => {
     const templates = [template('agent', agentText())];
     const first = manager(templates);
     await first.ready;
-    first.dispose();
+    await first.dispose();
 
     const second = manager(templates);
     await second.ready;

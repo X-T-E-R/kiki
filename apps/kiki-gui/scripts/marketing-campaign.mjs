@@ -32,6 +32,7 @@ import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
 import { WORKBENCH_LONGWORK_SHOTS } from './marketing-workbench-longwork-shots.mjs';
+import USAGE_SHOTS from './marketing-usage-shots.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(ROOT, '..', '..');
@@ -721,6 +722,7 @@ const SHOTS = [
   // than editing the table above. The spread is the whole integration point:
   // the module is standalone and carries its own `run` bodies.
   ...WORKBENCH_LONGWORK_SHOTS,
+  ...USAGE_SHOTS,
 ];
 
 // ---------------------------------------------------------------------------

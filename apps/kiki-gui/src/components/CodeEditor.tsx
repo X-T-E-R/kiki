@@ -177,12 +177,15 @@ export function CodeEditor({
     }
   }, [generation, value]);
 
+  const appliedNavigationRef = useRef<FileReference | undefined>(undefined);
   useEffect(() => {
     const view = viewRef.current;
-    if (view === null || navigation?.line === undefined) return;
+    if (view === null || navigation?.line === undefined || appliedNavigationRef.current === navigation) return;
+    appliedNavigationRef.current = navigation;
     const line = view.state.doc.line(Math.max(1, Math.min(navigation.line, view.state.doc.lines)));
     const anchor = Math.min(line.to, line.from + Math.max(0, (navigation.column ?? 1) - 1));
-    view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) });
+    const head = navigation.endLine === undefined ? anchor : view.state.doc.line(Math.max(line.number, Math.min(navigation.endLine, view.state.doc.lines))).to;
+    view.dispatch({ selection: { anchor, head }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) });
     view.focus();
   }, [navigation, generation]);
 

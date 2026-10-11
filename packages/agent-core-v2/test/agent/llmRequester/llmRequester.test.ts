@@ -178,7 +178,7 @@ describe('LLMRequester service migration coverage', () => {
 
       expect(wireEvents(ctx, 'llm.request')).toHaveLength(1);
       expect(wireEvents(ctx, 'llm.request')[0]?.args).toMatchObject({
-        thinkingEffort: 'on',
+        thinkingEffort: 'high',
         thinkingKeep: 'all',
       });
     });
@@ -200,7 +200,7 @@ describe('LLMRequester service migration coverage', () => {
       });
       const profile = ctx.get(IAgentProfileService);
       profile.update({ thinkingLevel: 'high' });
-      expect(profile.data().thinkingLevel).toBe('on');
+      expect(profile.data().thinkingLevel).toBe('high');
       expect(profile.resolveModelContext().thinkingLevel).toBe('max');
       ctx.mockNextResponse({ type: 'text', text: 'forced thinking response' });
 

@@ -11,7 +11,7 @@ const status: CloudflareStatus = {
 
 function fixture() {
   const info = {
-    id: 'kiki-cloudflare', displayName: 'Cloudflare Tunnel', enabled: true, state: 'ok' as const,
+    id: 'kiki-cloudflare', displayName: 'Cloudflare Tunnel', enabled: true, globalEnabled: true, state: 'ok' as const,
     skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0,
     hasErrors: false, source: 'local-path' as const, originalSource: '/fixture/source', root: '/fixture/managed',
     installedAt: '', mcpServers: [], diagnostics: [],

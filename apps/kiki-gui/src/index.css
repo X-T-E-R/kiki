@@ -826,10 +826,12 @@ body[data-pane-resizing='true'] {
   max-width: none;
 }
 
+/* Floating inspector over a fullscreen preview: it keeps the preview's right
+ * edge but starts below the preview's own header, so both top rows stay clickable. */
 .conversation-shell:has([data-preview-workspace][data-preview-fullscreen]:not([hidden]))
   .conversation-rail-slot:has(.app-rail-shell) {
   position: absolute;
-  top: 0;
+  top: 2.75rem;
   right: 0;
   bottom: 0;
   z-index: 36;
@@ -898,22 +900,10 @@ body[data-pane-resizing='true'] {
   }
 }
 
-/* 1360–1679px with a docked preview open: four docked columns squeeze the
- * conversation under its reading width, so the inspector stops claiming row
- * width and rides as a layer over the preview's right edge — the same lift
- * the fullscreen preview uses above. The open/closed choice is untouched:
- * reopening the inspector shows the layer, and it docks again when the
- * preview closes or the window grows. */
-@media (min-width: 1360px) and (max-width: 1679px) {
-  html:has(.conversation-row .preview-workspace:not([hidden]):not([data-preview-fullscreen]))
-    .app-sheet > .conversation-shell .conversation-rail-slot:has(.app-rail-shell) {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 36;
-  }
-}
+/* 1360–1679px keeps a docked preview and the inspector side by side. The
+ * preview yields width first and the inspector second, so the conversation
+ * keeps its reading minimum and the preview toolbar and body stay reachable.
+ * Fullscreen still lifts the inspector below the preview header. */
 
 /* Room for the preview, between md and 1360px. Sidebar + conversation +
  * preview + inspector cannot all dock at a readable width, so an open docked
@@ -1159,8 +1149,15 @@ body[data-pane-resizing='true'] {
 .composer-header-goal:not(:only-child) {
   margin-inline: 28px;
 }
+/* The goal sheet is tinted with ink, not accent.
+   Accent-soft is the palette's alert wash — the family the "everything is
+   permitted" warning and a blocked goal use — so an ordinary running goal read
+   as something needing attention, which it is not. A goal is work in progress
+   and says so through its mark and its status word; the sheet itself only has
+   to read as the sheet tucked above the queue. Blocked and failed keep their own
+   semantics in the word and the mark, which is where a reader looks for them. */
 .composer-header-goal {
-  background-color: color-mix(in srgb, var(--color-accent-soft) 60%, var(--color-panel));
+  background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-panel));
 }
 /* Slivers: the queued prompts after the first, as thin edges behind it. */
 .composer-header-queue[data-slivers]::before,
@@ -1233,7 +1230,7 @@ body[data-pane-resizing='true'] {
 }
 /* Narrow stacks drop the first prompt's inline actions (the detail has them). */
 @container (max-width: 30rem) {
-  .composer-header-actions {
+  .composer-header-queue .composer-header-actions {
     display: none;
   }
   .composer-header-sheet {

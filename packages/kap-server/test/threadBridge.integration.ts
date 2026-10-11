@@ -41,7 +41,7 @@ async function fixture() {
   let modelRequests = 0;
   const provider = createServer((request, response) => {
     modelRequests++; request.resume(); response.writeHead(200, { 'content-type': 'text/event-stream' });
-    response.end(`data: ${JSON.stringify({ id: 'fixture-response', choices: [{ index: 0, delta: { content: 'Verified bridge reply.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+    response.end(`data: ${JSON.stringify({ id: 'fixture-response', choices: [{ index: 0, delta: { content: `Verified bridge reply.${' bounded reply content'.repeat(5000)}` }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
   }); providers.push(provider); await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const address = provider.address(); if (address === null || typeof address === 'string') throw new Error('provider not listening');
   const config = `default_model = "stub"\n[thread_communication]\nenabled = true\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:${address.port}/v1"\napi_key = "fixture"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 100000\n`;
@@ -104,7 +104,8 @@ describe.each(['local', 'network'] as const)('directed space thread bridge (%s, 
     expect(activity.threads[0]!.activities.some((entry) => entry.kind === 'terminal')).toBe(true);
     const read = await execute<ReadThreadResult>(f.main.accessor.get(IReadThreadTool), { thread: input.thread });
     const transcript = read.view!.transcript!;
-    const refs = transcript.items.flatMap((item) => item.kind === 'turn' ? item.contentRefs ?? [] : []);
+    const refs = transcript.items.flatMap((item) => item.kind === 'turn'
+      ? [...(item.contentRefs ?? []), ...item.steps.flatMap((step) => step.frames.flatMap((frame) => frame.contentRefs ?? []))] : []);
     const contents = await Promise.all(refs.map((ref) => execute<ReadThreadResult>(f.main.accessor.get(IReadThreadTool), { thread: input.thread, content_ref: ref })));
     expect(JSON.stringify([transcript, ...contents.map((result) => result.view?.segment)])).toContain('Verified bridge reply.');
     const blocks = agentTranscriptToBlocks(transcript);

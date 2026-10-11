@@ -5,6 +5,7 @@ import {
   type AgentApp,
   type AgentCapabilities,
   type PermissionOption,
+  type RequestPermissionRequest,
   type SessionConfigOption,
   type StopReason,
 } from '@agentclientprotocol/sdk';
@@ -19,6 +20,8 @@ export interface InProcessAgentScript {
   readonly loadReplay?: readonly unknown[];
   readonly promptUpdates?: readonly unknown[];
   readonly permissionOptions?: readonly PermissionOption[];
+  readonly permissionToolCall?: RequestPermissionRequest['toolCall'];
+  readonly permissionSessionId?: string;
   readonly stopReason?: StopReason;
   readonly hangPrompt?: boolean;
   readonly modeUpdate?: string;
@@ -152,8 +155,8 @@ export function createInProcessScriptedAgent(
       }
       if (script.permissionOptions !== undefined) {
         const response = await client.request(methods.client.session.requestPermission, {
-          sessionId,
-          toolCall: {
+          sessionId: script.permissionSessionId ?? sessionId,
+          toolCall: script.permissionToolCall ?? {
             toolCallId: 'tool-1',
             title: 'Scripted tool',
             status: 'pending',

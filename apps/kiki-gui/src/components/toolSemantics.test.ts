@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { translate, translatePlural } from '@kiki/session-core/i18n';
 import type { ToolBlock } from '@kiki/session-core/session';
 
-import { describeTool, type SemanticContext } from './toolSemantics';
+import { describeTool, type SemanticContext, type ToolSemantics } from './toolSemantics';
 
 const context: SemanticContext = {
   locale: 'en',
@@ -219,5 +219,96 @@ describe('TodoList working note previews', () => {
     expect(view.note).toBe('目标 · 下一步');
     expect(view.fields?.[1]?.value).toBe('已清除');
     expect(view.previewNotice).toContain('原始数据');
+  });
+});
+
+describe('room sends', () => {
+  const roomOut = (delivery: string, messageId: unknown = 'msg_1') =>
+    native({ roomId: 'contract', messageId, delivery });
+  const withRooms = (names: Record<string, string>): SemanticContext => ({
+    ...context,
+    roomName: (roomId) => names[roomId],
+  });
+  /** A send as the engine reports it: args plus a receipt, unless one is given. */
+  const sent = (args: Record<string, unknown>, output: unknown = roomOut('delivered')) =>
+    describeTool(tool('ThreadSend', output, { room: 'contract', ...args }), withRooms({ contract: 'Release contract' }))!;
+  /** The same call with no receipt yet, as a running row carries. */
+  const sending = (args: Record<string, unknown>) => sent(args, null);
+  const field = (view: ToolSemantics, label: string) => view.fields?.find((f) => f.label === label)?.value;
+
+  it('names the room and says who was asked, never that they were woken', () => {
+    const view = sent({ content: 'ship the release', mentions: ['session_a', 'persona_b'] });
+    expect(view.icon).toBe('room');
+    expect(view.verb).toBe('Post to room');
+    expect(view.object).toBe('Release contract');
+    expect(view.note).toBe('ship the release');
+    // The receipt proves the room recorded the line. It carries no wake result,
+    // so the row asks for attention and stops there.
+    expect(view.state?.text).toBe('Logged, 2 members asked');
+    expect(view.state?.text).not.toContain('woken');
+    expect(field(view, 'Asked')).toBe('session_a, persona_b');
+    expect(field(view, 'Message id')).toBe('msg_1');
+    expect(view.link).toEqual({ kind: 'route', path: '/rooms/contract', label: 'Open room' });
+  });
+
+  it('reads a bot send with no mentions as waking nobody', () => {
+    // roomService: only a USER message with no mentions defaults to the host; a
+    // bot send with no mentions wakes nobody at all.
+    const view = sent({ content: 'hi' });
+    expect(view.state?.text).toBe('Logged, no one woken');
+    expect(field(view, 'Asked')).toBe('No one asked');
+  });
+
+  it('does not claim a send is logged before the room has answered', () => {
+    const streaming = sending({ content: 'hi' });
+    expect(streaming.state?.text).toBe('Sending…');
+    expect(streaming.state?.tone).toBe('plain');
+  });
+
+  it('marks an undeliverable send as a failure and claims no attention', () => {
+    const view = sent({ content: 'hi', mentions: ['session_a'] }, roomOut('undeliverable'));
+    expect(view.state).toEqual({ text: 'Not delivered', tone: 'danger' });
+    expect(view.object).toBe('Release contract');
+    // A refused message asked nobody, so no mention row is shown at all.
+    expect(field(view, 'Asked')).toBeUndefined();
+    expect(view.fields?.map((f) => f.label)).toEqual(['Room', 'Message id']);
+  });
+
+  it('never draws a room send as a peer thread target', () => {
+    const view = sent({ content: 'hi' });
+    expect(view.object).not.toContain('session');
+    expect(view.fields?.map((f) => f.label)).not.toContain('Thread');
+    expect(view.link).toEqual({ kind: 'route', path: '/rooms/contract', label: 'Open room' });
+  });
+
+  it('falls back to the room id when the client holds no room record', () => {
+    const view = describeTool(tool('ThreadSend', roomOut('delivered'), { room: 'room_long_identifier', content: 'hi' }), context)!;
+    expect(view.object).toBe('room_long_identi…');
+    expect(field(view, 'Room')).toBe('room_long_identi…');
+  });
+
+  it('reads a long room body whole on expand, with no second show-full inside the preview', () => {
+    const content = Array.from({ length: 40 }, (_, index) => `line ${index} of the room message`).join('\n');
+    const view = sent({ content });
+    expect(view.previewFull).toBe(content);
+    expect(view.preview).not.toBe(view.previewFull);
+    expect(view.preview!.length).toBeLessThan(content.length);
+  });
+
+  it('leaves a peer send exactly as it was, with its queue state', () => {
+    const view = describeTool(tool('ThreadSend', native({ messageId: 'm', delivery: 'pending' }), { thread: { session_id: 'session_peer' }, content: 'ping' }), context)!;
+    expect(view.icon).toBe('thread');
+    expect(view.verb).toBe('Send to');
+    expect(view.state?.text).toBe('Pending delivery');
+    expect(view.link).toEqual({ kind: 'session', sessionId: 'session_peer', turn: undefined, label: 'Open thread' });
+  });
+
+  it('tolerates an unparsed result and a result that carries only an id', () => {
+    const failed = describeTool(tool('ThreadSend', 'not json at all', { room: 'contract', content: 'hi' }), context)!;
+    expect(failed.object).toBe('contract');
+    // An unparseable result is not a receipt, so nothing is claimed as logged.
+    expect(failed.state?.text).toBe('Sending…');
+    const sparse = sent({ content: 'hi' }, native({ messageId: 'm' }));
+    expect(sparse.state?.text).toBe('Sending…');
   });
 });

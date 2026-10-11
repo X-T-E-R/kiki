@@ -59,6 +59,7 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
     @IAgentContextMemoryService context: IAgentContextMemoryService, @IAgentProfileService profile: IAgentProfileService) {
     super();
     this._register(injector.register('runtime_snapshot', async ({ lastDisclosure, injectedPositions }) => {
+      await profile.reconcilePluginUsage?.();
       await profile.reconcileMemorySnapshot();
       const snapshot = states.get(dynamicPromptKey);
       if (snapshot?.enabled !== true) return undefined;

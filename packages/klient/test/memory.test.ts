@@ -3,6 +3,8 @@ import { rm } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { ConfigTarget, IConfigService, ISessionManager } from '@kiki/agent-core-v2';
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
+import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
+import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';
@@ -29,13 +31,41 @@ defineKlientConformance('memory', async () => {
     app,
     cleanup: async () => {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     },
   };
 });
 
 describe('memory dispatcher specifics', () => {
+  it('reads durable model-switch queues without resuming a cold session', async () => {
+    const { homeDir, app } = await makeEngine();
+    const klient = createKlient({ scope: app });
+    try {
+      const created = await klient.global.sessions.create({ workDir: homeDir });
+      const session = klient.session(created.id);
+      await session.close();
+      const manager = app.accessor.get(ISessionManager);
+      const resume = vi.spyOn(manager, 'resume');
+      const summary = await app.accessor.get(ISessionIndex).get(created.id);
+      const logs = app.accessor.get(IAppendLogStore);
+      const scope = `sessions/${summary!.workspaceId}/${created.id}/agents/main`;
+      logs.append(scope, 'wire.jsonl', { type: 'prompt.model_switch_queued', time: 1, queueIndex: 0,
+        entry: { input: { operationId: 'queued-switch', model: 'model/new', mode: 'direct' }, revision: 0,
+          originalBinding: { model: 'model/old', thinking: '' },
+          receipt: { operationId: 'queued-switch', agentId: 'main', state: 'pending', mode: 'direct', fromModel: 'model/old', toModel: 'model/new' } } });
+      await logs.flush(scope, 'wire.jsonl');
+      expect(await session.agent('main').listModelSwitches()).toMatchObject([{ input: { operationId: 'queued-switch' }, queueIndex: 0 }]);
+      await expect(session.agent('missing-child').listModelSwitches()).rejects.toMatchObject({ code: 40404 });
+      const controller = new AbortController(); controller.abort(new Error('cancelled queue read'));
+      await expect(session.agent('main').listModelSwitches({ signal: controller.signal })).rejects.toThrow('cancelled queue read');
+      expect(manager.get(created.id)).toBeUndefined();
+      expect(resume).not.toHaveBeenCalled();
+    } finally {
+      await klient.close(); await app.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
+  });
   it('reads cold session metadata and its agent registry without resuming', async () => {
     const { homeDir, app } = await makeEngine();
     const klient = createKlient({ scope: app });
@@ -61,7 +91,7 @@ describe('memory dispatcher specifics', () => {
       expect(resume).not.toHaveBeenCalled();
     } finally {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -90,7 +120,7 @@ describe('memory dispatcher specifics', () => {
       expect(resume).not.toHaveBeenCalled();
     } finally {
       await klient.close();
-      app.dispose();
+      await app.dispose();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
@@ -152,7 +182,7 @@ describe('memory dispatcher specifics', () => {
     await expect(
       dispatcher.call({}, 'threadCommunicationService', 'sendPeerThreadMessage', []),
     ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -162,7 +192,7 @@ describe('memory dispatcher specifics', () => {
     await expect(dispatcher.call({}, 'bootstrapService', 'platform', [])).resolves.toBe(
       process.platform,
     );
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -172,7 +202,7 @@ describe('memory dispatcher specifics', () => {
     await expect(
       dispatcher.call({ sessionId: 's1' }, 'sessionIndex', 'list', [{}]),
     ).rejects.toBeInstanceOf(RPCError);
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 
@@ -184,7 +214,7 @@ describe('memory dispatcher specifics', () => {
     (list as unknown[]).push({ id: 'polluted' });
     const again = await klient.global.workspaces.list();
     expect(again.some((w) => w.id === 'polluted')).toBe(false);
-    app.dispose();
+    await app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });
 });

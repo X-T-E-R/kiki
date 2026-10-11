@@ -12,6 +12,7 @@ import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { paddedPng } from './helpers/png';
 
 interface ModelRequest {
   model: string;
@@ -64,7 +65,8 @@ describe('GUI shared client against an isolated KAP host', () => {
       '[models.unavailable]', 'provider = "managed:kimi-code"', 'model = "unavailable"', 'max_context_size = 100000',
       ...['first', 'second'].flatMap((model) => [
         `[models.${model}]`, 'provider = "local"', `model = "${model}"`,
-        'max_context_size = 100000', 'capabilities = ["image_in"]',
+        'max_context_size = 100000', 'capabilities = ["image_in", "thinking"]',
+        'support_efforts = ["low", "high"]', 'default_effort = "high"',
       ]),
       '',
     ].join('\n'));
@@ -305,13 +307,24 @@ describe('GUI shared client against an isolated KAP host', () => {
       expect(cold.data.tasks.find((task) => task.agentId === child.id)?.state).toBe('completed');
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
     }
-    const controller = new SessionController(client.sessions, client.sessionView(id), id);
+    const view = client.sessionView(id);
+    let ready = false;
+    const subscribe = view.subscribe.bind(view);
+    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) =>
+      subscribe(options, (signal) => {
+        if (signal.type === 'ready') ready = true;
+        callback(signal);
+      }),
+    );
+    const controller = new SessionController(client.sessions, view, id);
     const mainChanges = vi.fn();
     const childChanges = vi.fn();
     const offMain = controller.subscribe(mainChanges);
     const offChild = controller.subscribeAgent(child.id, childChanges);
     try {
       await controller.open();
+      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
+      controller.flushFrames();
       await vi.waitFor(() => {
         controller.flushFrames();
         expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
@@ -358,6 +371,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     } finally {
       offMain();
       offChild();
+      subscriptionSpy.mockRestore();
       controller.close();
     }
   }, 40000);
@@ -415,9 +429,8 @@ describe('GUI shared client against an isolated KAP host', () => {
 
   it('accepts three uploaded and three inline images through the GUI adapter and downloads session media', async () => {
     const id = await session();
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
-    const image = Buffer.concat([png, Buffer.alloc(600 * 1024)]);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([image], `image-${index}.png`, { type: 'image/png' }))));
+    const image = paddedPng(600 * 1024, 1);
+    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([new Uint8Array(image)], `image-${index}.png`, { type: 'image/png' }))));
     const submission = {
       model: 'first',
       content: uploaded.map((file) => ({ type: 'image' as const, source: { kind: 'file' as const, file_id: file.id } })),

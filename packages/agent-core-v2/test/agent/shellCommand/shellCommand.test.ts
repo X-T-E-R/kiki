@@ -66,7 +66,7 @@ describe('AgentShellCommandService', () => {
       .subscribe((event) => events.push(event as unknown as (typeof events)[number]));
 
     await shell.run({ command: 'echo hello' });
-    subscription.dispose();
+    await subscription.dispose();
 
     const appends = events.filter((event) => event.type === 'context.append_message');
     const [input, output] = context.get();

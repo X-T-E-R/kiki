@@ -216,7 +216,7 @@ describe('AgentGoalService (wire-backed)', () => {
     await svc.createGoal({ objective: 'work' });
     await svc.pauseGoal();
     expect(signals.length).toBeGreaterThanOrEqual(2);
-    sub.dispose();
+    await sub.dispose();
 
     const records = await readRecords();
     const host = buildHost('goal-replay');

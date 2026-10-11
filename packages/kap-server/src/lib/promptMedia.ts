@@ -4,27 +4,17 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-import {
-  buildDaemonFileUrl,
-  buildImageCompressionCaption,
-  compressBase64ForModel,
-  compressImageForModel,
-  decodeBase64Prefix,
-  Error2,
-  fileNotFoundError,
-  isModelAcceptedImageMime,
-  normalizeImageMime,
-  persistOriginalImage,
-  resolveEffectiveImageMime,
-  type ContentPart,
-  type GetResult,
-  type IFileService,
-  type ISessionMediaStore,
-  type ImageCompressionTelemetry,
-  type ITelemetryService,
-} from '@kiki/agent-core-v2';
-
+import { buildDaemonFileUrl } from '@kiki/agent-core-v2/agent/media/mediaRef';
+import { buildImageCompressionCaption, compressBase64ForModel, compressImageForModel, validateImageDataUrl, type ImageCompressionTelemetry } from '@kiki/agent-core-v2/agent/media/image-compress';
+import { decodeBase64Prefix, isModelAcceptedImageMime, normalizeImageMime, resolveEffectiveImageMime } from '@kiki/agent-core-v2/agent/media/image-format-policy';
+import { persistOriginalImage } from '@kiki/agent-core-v2/agent/media/image-originals';
+import { fileNotFoundError, type GetResult, type IFileService } from '@kiki/agent-core-v2/app/file/fileService';
+import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
+import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/telemetry';
+import { Error2 } from '@kiki/agent-core-v2/errors';
 import type { PromptSubmission } from '../protocol/rest-prompt';
+import type { PublishedMediaReader } from '../services/publishedMedia';
 
 type WireContent = PromptSubmission['content'];
 
@@ -56,6 +46,7 @@ export async function assertPromptFileRefs(content: WireContent, store: IFileSer
 export async function resolvePromptSessionMediaRefs(
   content: WireContent,
   store: ISessionMediaStore,
+  readPublishedMedia?: PublishedMediaReader,
 ): Promise<WireContent> {
   const resolved: WireContent = [];
   let changed = false;
@@ -67,8 +58,25 @@ export async function resolvePromptSessionMediaRefs(
       resolved.push(part);
       continue;
     }
-    const file = await store.open(part.source.file_id);
-    if (file === undefined) throw fileNotFoundError(part.source.file_id);
+    const fileId = part.source.file_id;
+    const published = fileId.startsWith('inline:') || fileId.startsWith('inline-content:');
+    const file = published ? await readPublishedMedia?.(fileId) : await store.open(fileId);
+    if (file === undefined) throw fileNotFoundError(fileId);
+    if (published) {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for await (const chunk of file.stream()) { chunks.push(chunk); size += chunk.byteLength; }
+      if (size !== file.size || !file.mediaType.startsWith(`${part.type}/`)) {
+        throw new Error2('validation.failed', 'The original media attachment is invalid. Reattach the original file and retry.');
+      }
+      const data = Buffer.concat(chunks).toString('base64');
+      if (part.type === 'image' && await validateImageDataUrl(`data:${file.mediaType};base64,${data}`) === null) {
+        throw new Error2('validation.failed', 'The original image attachment is invalid. Reattach the original image and retry.');
+      }
+      resolved.push({ ...part, name: part.name ?? file.name, source: { kind: 'base64', media_type: file.mediaType, data } });
+      changed = true;
+      continue;
+    }
     if (part.name === undefined) {
       resolved.push({ ...part, name: file.name });
       changed = true;

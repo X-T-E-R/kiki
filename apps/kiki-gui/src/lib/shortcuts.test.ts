@@ -6,6 +6,8 @@ import { shortcutPreferencesSchema } from '@kiki/session-core/settings/shortcuts
 import {
   applyShortcutPreferences,
   beginShortcutRecording,
+  browserOwnsChord,
+  browserOwnsShortcut,
   chordFromEvent,
   chordKeys,
   matchesShortcutAction,
@@ -28,6 +30,18 @@ describe('runtime shortcut bindings', () => {
     expect(matchesShortcutAction(key('F3'), 'find-previous')).toBe(false);
   });
 
+  it('distinguishes browser-owned Tab chords and keeps navigation usable in the composer without eating plain Tab or IME', () => {
+    const target = document.createElement('textarea');
+    expect(matchesShortcutAction({ ...key('Tab', { ctrlKey: true }), target }, 'next-session')).toBe(true);
+    expect(matchesShortcutAction({ ...key('Tab', { ctrlKey: true, shiftKey: true }), target }, 'previous-session')).toBe(true);
+    expect(matchesShortcutAction({ ...key('Tab'), target }, 'next-session')).toBe(false);
+    expect(matchesShortcutAction({ ...key('Tab', { shiftKey: true }), target }, 'previous-session')).toBe(false);
+    expect(matchesShortcutAction({ ...key('Tab', { ctrlKey: true }), target, isComposing: true }, 'next-session')).toBe(false);
+    expect(browserOwnsShortcut(key('Tab', { ctrlKey: true }))).toBe(true);
+    expect(browserOwnsShortcut(key('Tab', { ctrlKey: true, shiftKey: true }))).toBe(true);
+    expect(browserOwnsShortcut(key('F6', { ctrlKey: true }))).toBe(false);
+    expect(browserOwnsChord({ key: 'F6', modifier: 'ctrl', shift: false, alt: false })).toBe(false);
+  });
   it('applies a saved remap and a disabled action at once', () => {
     resetShortcutRuntime('windows');
     applyShortcutPreferences(shortcutPreferencesSchema.parse({

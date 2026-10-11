@@ -253,27 +253,18 @@ function spaceBackgroundPrefsMemo(): BackgroundPrefs | undefined {
  * space resource yet. The surface next to it offers the way out: keep the file
  * on the device and pick an appearance pack, or drop it here.
  */
-let deviceOnly = false;
-
 export function backgroundIsDeviceOnly(): boolean {
-  return deviceOnly;
-}
-
-function rememberDeviceOnly(active: boolean): void {
-  if (deviceOnly === active) return;
-  deviceOnly = active;
-  for (const listener of listeners) listener();
+  const prefs = backgroundPrefsSnapshot();
+  return spacePreferenceEnabled() && !(slotIsPortable(prefs.light) && slotIsPortable(prefs.dark));
 }
 
 /** Stable-identity snapshot for `useSyncExternalStore`. */
 export function backgroundPrefsSnapshot(): BackgroundPrefs {
-  const fromSpace = spaceBackgroundPrefsMemo();
-  if (fromSpace !== undefined) {
-    stored = fromSpace;
-    return fromSpace;
-  }
   stored ??= readStored();
-  return stored;
+  // Local bytes cannot travel with the space. Keep this device's explicit
+  // choice, including after the space detail arrives or the window reloads.
+  if (!slotIsPortable(stored.light) || !slotIsPortable(stored.dark)) return stored;
+  return spaceBackgroundPrefsMemo() ?? stored;
 }
 
 export function backgroundPrefsServerSnapshot(): BackgroundPrefs {
@@ -290,7 +281,9 @@ export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { r
   // A device-only picture cannot be one, so it stays on this device and the
   // surface says why rather than sending a space value that would lose it.
   if (spacePreferenceEnabled() && slotIsPortable(normalized.light) && slotIsPortable(normalized.dark)) {
-    rememberDeviceOnly(false);
+    // Replacing/removing a device picture also retires its local override;
+    // otherwise it would reappear over the newly selected pack on cold boot.
+    if (stored !== undefined && (!slotIsPortable(stored.light) || !slotIsPortable(stored.dark))) persistBackgroundPrefs(normalized);
     void writeSpacePreferenceItem('background', {
       light: portableSlot(normalized.light),
       dark: portableSlot(normalized.dark),
@@ -299,7 +292,10 @@ export function writeBackgroundPrefs(next: Omit<BackgroundPrefs, 'assist'> & { r
     } satisfies SpacePreferenceValues['background']);
     return;
   }
-  rememberDeviceOnly(spacePreferenceEnabled() && !(slotIsPortable(normalized.light) && slotIsPortable(normalized.dark)));
+  persistBackgroundPrefs(normalized);
+}
+
+function persistBackgroundPrefs(normalized: BackgroundPrefs): void {
   try {
     if (normalized.light === null && normalized.dark === null && normalized.linked && normalized.assist) spaceStorage.removeItem(STORAGE_KEY);
     else spaceStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));

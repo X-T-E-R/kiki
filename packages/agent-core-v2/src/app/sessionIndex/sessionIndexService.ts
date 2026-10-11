@@ -41,6 +41,7 @@ import {
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
 import { SessionIndexBuildingError } from './errors';
+import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
   readSessionSummaryResult,
@@ -405,6 +406,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       (generation) => this.getFromReadModel(generation, id, undefined, workspaceId),
       () => this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]),
     );
+  }
+
+  archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]> {
+    return readSessionArchiveFamily(this.storage, this.docs, this.sessionsScope, id, excludedIds, this.log);
   }
 
   async listRecent(query: SessionListQuery): Promise<Page<SessionSummary>> {

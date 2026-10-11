@@ -9,11 +9,11 @@
  * Anything that changes the world or carries the agent's voice breaks a run:
  * edits, writes, shell commands, thinking, assistant/user text, subagent
  * cards and lifecycle events, approvals, questions, notices, system/skill
- * blocks, and the memory tools. Grouping is a render-time projection — the
- * underlying block list (and its reducer semantics) is untouched.
+ * blocks. Ordinary memory reads follow the same read-run rules. Grouping is a
+ * render-time projection — the underlying block list is untouched.
  */
 
-import { extractToolOutputMedia } from '../composer/media';
+import { extractToolOutputMedia, toolResultMedia } from '../composer/media';
 import { mergeTaskNotifications } from './transcript/project';
 import type { Block, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock } from './transcript';
 
@@ -148,12 +148,13 @@ export function subagentLive(block: SubagentBlock): boolean {
 /**
  * A tool call whose result is an image the agent looked at (ReadMediaFile,
  * a screenshot MCP, a browser capture). Recognised by the result itself, so
- * any image-returning tool qualifies without a name list.
+ * any image-returning tool qualifies without a name list — whether the image
+ * arrives as an engine content part or as the result's own attachment.
  */
 export function isMediaTool(block: Block): block is ToolBlock {
   if (block.kind !== 'tool' || block.status === 'running') return false;
-  const media = extractToolOutputMedia(block.output);
-  return media !== undefined && media.media.some((item) => item.kind === 'image');
+  const media = toolResultMedia(block.media, extractToolOutputMedia(block.output)?.media);
+  return media.some((item) => item.kind === 'image');
 }
 
 /**
@@ -170,7 +171,7 @@ function foldable(node: Row): boolean {
     case 'tool-group':
       return !groupHasRunning(node);
     case 'tool':
-      return node.status !== 'running' && !isMemoryToolName(node.name);
+      return node.status !== 'running';
     case 'shell':
       return node.done;
     case 'thinking':
@@ -377,13 +378,13 @@ function gatherRows(nodes: readonly DisplayNode[], live: string | undefined): Di
 
 /**
  * Fold settled process: each run of ≥2 consecutive process rows of one turn
- * (tools, read runs, shell, thinking, settled subagents, reminders, settled
- * decisions, engine notes), or a single completed shell, becomes one
- * `HistoryFold`. In the latest turn
+ * (tools, including ordinary memory tools, read runs, shell, thinking,
+ * settled subagents, reminders, settled decisions, engine notes), or a single
+ * completed shell, becomes one `HistoryFold`. In the latest turn
  * (`liveTurnId`) the newest process row stays out, as does anything still
  * running or held by `keepOpen`; the next row to arrive folds it in. A run
  * breaks at anything the user reads: messages, dividers, image rows, live
- * subagent groups.
+ * subagent groups, and an interaction that is still open.
  */
 export function foldHistory(
   nodes: readonly DisplayNode[],
@@ -437,9 +438,8 @@ export function foldHistory(
 export const READ_RUN_MIN = 3;
 
 /**
- * The memory tools. Their rows are already one quiet line and carry the
- * write's own actions (view, undo), so folding them would hide an action
- * behind an expand — the same reason approvals are never folded.
+ * Memory tools. The row keeps its record and its view/undo actions; ordinary
+ * settled calls fold with the rest of the process, and a running call stays out.
  */
 const MEMORY_TOOL_NAMES: readonly string[] = ['MemoryWrite', 'MemoryRead', 'MemorySearch'];
 
@@ -542,9 +542,9 @@ export function stepObject(block: ToolBlock): StepObject {
   return { verb, target: target === undefined ? undefined : clip(target) };
 }
 
-/** A pure read: a non-memory tool call that only looks at the world. */
+/** A pure read: a settled tool call that only looks at the world. */
 export function isReadStep(block: Block): block is ToolBlock {
-  if (block.kind !== 'tool' || isMemoryToolName(block.name)) return false;
+  if (block.kind !== 'tool') return false;
   // An image the agent looked at is its own row (see `MediaRun`), not a read.
   return READ_VERBS.has(stepObject(block).verb) && !isMediaTool(block);
 }

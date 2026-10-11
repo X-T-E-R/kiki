@@ -374,6 +374,6 @@ describe('ConfigService key-level writeback', () => {
     expect(parsed['image']).toEqual({ max_edge_px: 2000, extra: 'keep' });
     expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({ maxEdgePx: 2000 });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 });

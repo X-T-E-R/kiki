@@ -145,6 +145,7 @@ function reminderBlocks(
     createdAt,
     turnId,
     variant: origin?.variant,
+    ownerPromptId: origin?.ownerPromptId,
     disclosure: origin?.disclosure,
     category,
   }));
@@ -259,6 +260,7 @@ function classifiedTextToBlocks(input: {
           createdAt: input.createdAt,
           turnId: input.turnId,
           source: producerFromOrigin(classified.origin),
+          ownerPromptId: classified.origin?.kind === 'injection' ? classified.origin.ownerPromptId : undefined,
           taskId: classified.systemVariant === 'task' ? classified.origin?.taskId : undefined,
           hookEvent: classified.systemVariant === 'hook_result' ? classified.origin?.event : undefined,
         } satisfies SystemBlock);
@@ -341,6 +343,22 @@ function shellCommandFromFrame(frame: {
     return inputText;
   }
   return inputText;
+}
+
+/** Assistant text with no body, media, attachment, resource, or unread continuation is not a row. */
+function assistantTextIsDisplay(frame: {
+  readonly kind: string;
+  readonly role?: string;
+  readonly text?: string;
+  readonly attachmentIds?: readonly string[];
+  readonly contentRefs?: readonly unknown[];
+  readonly resourceLink?: unknown;
+}): boolean {
+  if (frame.kind !== 'text' || frame.role !== 'assistant') return false;
+  return (frame.text?.trim() ?? '') !== ''
+    || (frame.attachmentIds?.length ?? 0) > 0
+    || (frame.contentRefs?.length ?? 0) > 0
+    || frame.resourceLink !== undefined;
 }
 
 function isLiveStreamingFrame(
@@ -609,9 +627,12 @@ const SILENT_EXECUTOR_MARKERS: ReadonlySet<string> = new Set(['executor.session'
 function executorNoteOf(marker: string, payload: Record<string, unknown> | undefined): NoticeBlock['executor'] {
   switch (marker) {
     case 'executor.degradation': {
-      const value = payload?.['value'];
-      const updateType = typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['updateType'] : undefined;
-      return { kind: 'unknown', ...(typeof updateType === 'string' ? { updateType } : {}) };
+      const raw = payload?.['value'];
+      const value = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : undefined;
+      return { kind: 'unknown',
+        updateType: typeof value?.['updateType'] === 'string' ? value['updateType'] : undefined,
+        method: typeof value?.['method'] === 'string' ? value['method'] : undefined,
+        payload: value?.['payload'] };
     }
     case 'executor.compaction':
       return { kind: 'compaction' };
@@ -662,6 +683,7 @@ function executorNoteOf(marker: string, payload: Record<string, unknown> | undef
   }
 }
 
+/** An object payload, or undefined for anything else (including arrays). */
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -690,6 +712,8 @@ function externalTextNoteOf(
     || typeof clientName !== 'string' || typeof sessionRef !== 'string') return undefined;
   const title = payload['title'];
   const sourceUrl = payload['sourceUrl'];
+  const clientTime = payload['clientTime'];
+  const turn = payload['turnId'];
   return {
     recordId,
     markerId,
@@ -697,7 +721,9 @@ function externalTextNoteOf(
     text,
     title: typeof title === 'string' ? title : undefined,
     sourceUrl: typeof sourceUrl === 'string' ? sourceUrl : undefined,
-    source: { connectionId, clientName, sessionRef },
+    clientTime: typeof clientTime === 'string' ? clientTime : undefined,
+    source: { driver, connectionId, clientName, sessionRef },
+    turn: typeof turn === 'number' ? turn : undefined,
   };
 }
 
@@ -721,6 +747,20 @@ function markerToBlock(item: {
     turnId: normalizeTurnId(payloadRecord?.['turnId']),
   };
 
+  if (item.marker === 'goal') {
+    const change = payloadRecord?.['change'];
+    if (typeof change === 'object' && change !== null && 'kind' in change &&
+      (change.kind === 'created' || change.kind === 'updated' || change.kind === 'paused' ||
+        change.kind === 'resumed' || change.kind === 'blocked' || change.kind === 'completed' || change.kind === 'cleared')) {
+      return { ...base, text: item.marker, i18n: { key: 'transcript.marker.goal' },
+        goalChange: { kind: change.kind,
+          reason: 'reason' in change && typeof change.reason === 'string' ? change.reason : undefined,
+          actor: 'actor' in change && typeof change.actor === 'string' ? change.actor : undefined } };
+    }
+    if (payloadRecord?.['type'] === 'goal.update' &&
+      !['objective', 'completionCriterion', 'status', 'budgetLimits', 'followUpTiming'].some((key) => key in payloadRecord)) return undefined;
+  }
+
   if (item.marker === 'model.switch') {
     const from = payloadRecord?.['from'];
     const to = payloadRecord?.['to'];
@@ -733,12 +773,16 @@ function markerToBlock(item: {
       (mode === 'direct' || mode === 'compact' || mode === 'fresh') &&
       (state === 'pending' || state === 'preparing' || state === 'completed' || state === 'failed' || state === 'cancelled')
       ? { operationId, mode, state, from, to,
+        change: payloadRecord?.['change'] === 'effort' ? 'effort' : from !== to ? 'model' : mode !== 'direct' ? 'context' : typeof operationId === 'string' && operationId.startsWith('resume:') ? 'resume' : 'binding',
         summaryGenerated: typeof payloadRecord?.['summaryGenerated'] === 'boolean' ? payloadRecord['summaryGenerated'] : undefined,
         windowEpoch: typeof payloadRecord?.['windowEpoch'] === 'number' ? payloadRecord['windowEpoch'] : undefined,
         error: typeof error === 'object' && error !== null && 'code' in error && 'message' in error && typeof error.code === 'string' && typeof error.message === 'string'
           ? { code: error.code, message: error.message } : undefined } : undefined;
     return { ...base, text: item.marker, modelSwitch,
-      i18n: modelSwitch === undefined || modelSwitch.state === 'completed' ? { key: 'transcript.marker.modelSwitch', params: { from, to } } : undefined };
+      i18n: modelSwitch === undefined || modelSwitch.state === 'completed' ? {
+        key: from !== to ? 'transcript.marker.modelSwitch' : modelSwitch?.change === 'effort' ? 'transcript.modelSwitch.done.effort'
+          : modelSwitch?.change === 'resume' ? 'transcript.modelSwitch.done.resume' : 'transcript.modelSwitch.done.binding', params: { from, to },
+      } : undefined };
   }
 
   // Older live snapshots append activation receipts outside the turn. The
@@ -760,6 +804,17 @@ function markerToBlock(item: {
   // `executor.degradation`): a quiet line in the engine's turn, never a banner.
   const executorNote = executorNoteOf(item.marker, payloadRecord);
   if (executorNote !== undefined) return { ...base, text: item.marker, executor: executorNote };
+  // Engine state that repeats (a context reading, a title echo) states nothing
+  // the first time round, so it states nothing here either: the row would only
+  // be its own marker name.
+  if (SILENT_EXECUTOR_MARKERS.has(item.marker)) return undefined;
+
+  // Text the client saved on purpose. It carries its own body, kind and
+  // source, so the row can show the record instead of the marker's name.
+  if (item.marker === 'external.text') {
+    const externalText = externalTextNoteOf(item.markerId, payloadRecord);
+    if (externalText !== undefined) return { ...base, text: externalText.text, externalText };
+  }
 
   // Text the client saved on purpose. It carries its own body, kind and
   // source, so the row can show the record instead of the marker's name.
@@ -897,7 +952,7 @@ export function snapshotSubagentAgentId(subagent: SnapshotSubagent): string {
  * never promotes the block to an active status.
  */
 function mapSnapshotSubagentStatus(subagent: SnapshotSubagent): SubagentBlock['status'] {
-  const status = subagent.subagent_phase === 'suspended' ? 'suspended' : mapTaskState(subagent.status);
+  const status = subagent.activity_status ?? (subagent.subagent_phase === 'suspended' ? 'suspended' : mapTaskState(subagent.status));
   return subagent.live === false && (status === 'running' || status === 'suspended') ? 'unknown' : status;
 }
 
@@ -1216,8 +1271,8 @@ function subagentBlocksFromSnapshot(
         name: task.name ?? task.subagentName ?? task.agentId,
         description: existing?.description ?? task.description,
         instruction: existing?.instruction,
-        model: existing?.model,
-        thinkingEffort: existing?.thinkingEffort,
+        model: task.model ?? existing?.model,
+        thinkingEffort: task.thinkingEffort ?? existing?.thinkingEffort,
         thinkingEffortExplicit: task.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
         executorId: task.executorId ?? existing?.executorId,
         executorProtocol: task.executorProtocol ?? existing?.executorProtocol,
@@ -1305,8 +1360,8 @@ function subagentBlocksFromSnapshot(
             name: task?.name ?? task?.subagentName ?? existing?.name ?? ref.agentId,
             description: existing?.description ?? task?.description ?? instruction,
             instruction: instruction ?? existing?.instruction,
-            model: existing?.model,
-            thinkingEffort: existing?.thinkingEffort,
+            model: task?.model ?? existing?.model,
+            thinkingEffort: task?.thinkingEffort ?? existing?.thinkingEffort,
             thinkingEffortExplicit: task?.thinkingEffortExplicit ?? existing?.thinkingEffortExplicit,
             executorId: task?.executorId ?? existing?.executorId,
             executorProtocol: task?.executorProtocol ?? existing?.executorProtocol,
@@ -1689,11 +1744,9 @@ function insertInteractionBlocks(
         continue;
       }
     }
-    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
-    // A settled interaction whose tool call / turn is not in the loaded page
-    // (older history, compacted away) has nothing to sit next to; placing it
-    // by time would stack stale "Question answered" rows at the tail.
+    // A previous slot is not a history anchor for a settled interaction.
     if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
+    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
     insertByTimeline(blocks, interaction.block);
   }
   return blocks;
@@ -2069,6 +2122,7 @@ function mergeTranscriptPromptBlocks(
   const context = promptOutcomeContext(blocks, items);
   const earlier: TerminalPrompt[] = [];
   for (const prompt of prompts) {
+    if (prompt.originKind === 'cron_job') continue;
     if (prompt.status === 'completed') {
       next = settleCompletedPrompt(next, prompt);
       continue;
@@ -2124,6 +2178,16 @@ function mergeTranscriptPromptBlocks(
       revision: prompt.revision,
     };
     next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
+    const owner = prompt.status === 'running' ? context.turns.get(prompt.promptId) : undefined;
+    if (owner !== undefined) {
+      const userIndex = next.findIndex((block) => block.kind === 'user' && block.turnId === undefined && isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
+      const turnStart = next.findIndex((block) => sameTurnId(blockTurnId(block), owner.turnId));
+      if (userIndex >= 0 && turnStart >= 0 && turnStart < userIndex) {
+        const user = next[userIndex] as UserBlock;
+        next.splice(userIndex, 1);
+        next.splice(turnStart, 0, { ...user, turnId: owner.turnId });
+      }
+    }
   }
   if (earlier.length > 0) next = [earlierPromptOutcomesBlock(earlier), ...next];
   return next;
@@ -2377,6 +2441,7 @@ export function agentTranscriptToBlocks(
 ): Block[] {
   const blocks: Block[] = [];
   const deferredTaskBlocks: Block[] = [];
+  const markerBlocks: Block[] = [];
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
@@ -2403,8 +2468,9 @@ export function agentTranscriptToBlocks(
     if (item.kind === 'marker') {
       const compactionFate = compactionFates.get(item.markerId);
       if (compactionFate === 'hidden') continue;
+      const destination = timestampMs(item.at) === undefined ? blocks : markerBlocks;
       if (compactionFate === 'pending') {
-        blocks.push({
+        destination.push({
           kind: 'notice',
           id: `agent-marker-${item.markerId}`,
           text: item.marker,
@@ -2424,10 +2490,11 @@ export function agentTranscriptToBlocks(
         const text = recordString(payload, 'text');
         const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
-          blocks.push(...classifiedTextToBlocks({
+          destination.push(...classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
             createdAt: item.at ?? '',
+            turnId: normalizeTurnId(payload['turnId']),
             userMessageId: messageId,
             media: mediaWithPresentation(mediaFromAttachmentIds(
               Array.isArray(payload['attachmentIds']) ? payload['attachmentIds'].filter((id): id is string => typeof id === 'string') : undefined,
@@ -2439,7 +2506,7 @@ export function agentTranscriptToBlocks(
         continue;
       }
       const marker = markerToBlock(item);
-      if (marker !== undefined) blocks.push(marker);
+      if (marker !== undefined) destination.push(marker);
       continue;
     }
     if (item.kind === 'taskref') {
@@ -2511,7 +2578,7 @@ export function agentTranscriptToBlocks(
         createdAt: (item as { delivery?: { deliveredAt?: string } }).delivery?.deliveredAt ?? item.startedAt ?? '',
         turnId: item.turnId,
         contentSource: { kind: 'turn', id: item.turnId },
-        promptId: identity.promptId,
+        promptId: (item as { readonly promptId?: string }).promptId ?? identity.promptId,
         userMessageId: turnUserMessageId,
         media: mediaWithPresentation(mediaFromAttachmentIds(
           (item as { attachmentIds?: readonly string[] }).attachmentIds,
@@ -2524,7 +2591,7 @@ export function agentTranscriptToBlocks(
     }
     const lastAssistantFrameId = item.steps
       .flatMap((step) => step.frames)
-      .findLast((frame) => frame.kind === 'text' && frame.role === 'assistant')?.frameId;
+      .findLast((frame) => assistantTextIsDisplay(frame))?.frameId;
     for (const step of item.steps) {
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
@@ -2585,6 +2652,7 @@ export function agentTranscriptToBlocks(
               break;
             }
             {
+              if (!assistantTextIsDisplay(frame)) break;
               const messageId = frameMessageId(frame) ?? turnMessageId(item);
               blocks.push({
                 kind: 'assistant',
@@ -2687,6 +2755,11 @@ export function agentTranscriptToBlocks(
               description: undefined,
               status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
+              media: mediaFromAttachmentIds(
+                (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds,
+                attachmentsById,
+                response.agent_id,
+              ),
               isError: frame.state === 'error',
               errorCode: frame.errorCode,
               startedAt,
@@ -2750,7 +2823,67 @@ export function agentTranscriptToBlocks(
       cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
     }
   }
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(blocks, prompts, previous, response.items)];
+  const deliveredBlocks = blocks.flatMap((block): Block[] => {
+    if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
+    const first = prompts.find((prompt) => prompt.promptId === block.userMessageId && prompt.steeredAt !== undefined);
+    if (first === undefined) return [block];
+    const batch = prompts.filter((prompt) => prompt.steeredAt === first.steeredAt && prompt.status === 'completed');
+    if (batch.length < 2 || batch[0]?.promptId !== first.promptId ||
+      batch.slice(1).some((prompt) => blocks.some((candidate) => candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
+    const parts = batch.map((prompt) => promptContentParts(prompt.content));
+    const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
+    if (combined !== block.text) return [block];
+    return batch.map((prompt, index) => {
+      const projection = projectMessageContent(parts[index]!);
+      return { ...block, id: `user-${prompt.userMessageId ?? prompt.promptId}`,
+        text: projection.text, presentation: projection.presentation, media: projection.media.length > 0 ? projection.media : undefined,
+        userMessageId: prompt.userMessageId ?? prompt.promptId, promptId: prompt.promptId,
+        contentSource: { kind: 'prompt', id: prompt.promptId },
+      };
+    });
+  });
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(deliveredBlocks, prompts, previous, response.items)];
+  const frameTimes = new Map<string, number>();
+  const sourceItems = [...response.items];
+  const turns = sourceItems.filter((item): item is Extract<typeof item, { kind: 'turn' }> => item.kind === 'turn');
+  for (const turn of turns) {
+    for (const step of turn.steps) {
+      for (const frame of step.frames) {
+        const at = timestampMs('startedAt' in frame ? frame.startedAt : step.startedAt) ?? timestampMs(step.startedAt);
+        if (at !== undefined) frameTimes.set(frame.frameId, at);
+      }
+    }
+  }
+  const ordinalOf = (turn: (typeof turns)[number]) => 'ordinal' in turn ? turn.ordinal : Number(turn.turnId.replace(/^t/, ''));
+  const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
+    first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
+  const firstAt = timestampMs(firstTurn?.startedAt);
+  for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
+    const at = blockTimelineMs(marker)!;
+    const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
+    const ownsLoadedPrompt = promptOwner !== undefined && withTaskBlocks.some((block) => isPromptIdentity(block, promptOwner));
+    if (!ownsLoadedPrompt && firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
+    const owner = blockTurnId(marker);
+    const ownerStart = owner === undefined ? -1 : withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), owner));
+    const sourceTime = (block: Block) => 'frameId' in block && block.frameId !== undefined
+      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block);
+    const next = withTaskBlocks.findIndex((block, index) => {
+      if (ownerStart >= 0 && index < ownerStart) return false;
+      const time = sourceTime(block);
+      return time !== undefined && time > at;
+    });
+    const sourceIndex = sourceItems.findIndex((item) => item.kind === 'marker' &&
+      (`agent-marker-${item.markerId}` === marker.id || (marker.kind === 'user' &&
+        typeof item.payload === 'object' && item.payload !== null &&
+        recordString(item.payload as Record<string, unknown>, 'messageId') === marker.userMessageId)));
+    const nextSourceTurn = sourceIndex < 0 ? undefined : sourceItems.slice(sourceIndex + 1).find((item) => item.kind === 'turn');
+    const structural = nextSourceTurn?.kind === 'turn'
+      ? withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), nextSourceTurn.turnId)) : -1;
+    const tied = withTaskBlocks.some((block) => sourceTime(block) === at);
+    const noClock = !withTaskBlocks.some((block) => sourceTime(block) !== undefined);
+    const insertion = (tied || noClock) && structural >= 0 ? structural : next;
+    withTaskBlocks.splice(insertion < 0 ? withTaskBlocks.length : insertion, 0, marker);
+  }
   for (const block of deferredTaskBlocks) {
     if (
       blockTimelineMs(block) === undefined &&
@@ -2780,12 +2913,10 @@ export function agentTranscriptToBlocks(
   });
   const withSubagents = insertSubagentBlocks(navigableBlocks, projectedSubagents.blocks, previous);
   const withSubagentEvents = insertSubagentEventBlocks(withSubagents, projectedSubagents.events, previous);
-  return mergeResponseThinking(foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(insertInteractionBlocks(
-    withSubagentEvents,
-    response.interactions ?? [],
-    response.agent_id,
-    previous,
-  )))));
+  const withInteractions = insertInteractionBlocks(withSubagentEvents, response.interactions ?? [], response.agent_id, previous);
+  return mergeResponseThinking(foldConsecutiveMarkerDividers(keepLatestExecutorReadings(mergeTaskNotifications(
+    placePromptContextAfterUser(withInteractions, response.items),
+  ))));
 }
 
 export function mergeResponseThinking(blocks: readonly Block[]): Block[] {
@@ -2848,6 +2979,65 @@ export function keepLatestExecutorReadings(blocks: readonly Block[]): Block[] {
   });
 }
 
+function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTranscriptProjectionSource['items']): Block[] {
+  const usersByPrompt = new Map<string, number[]>();
+  const usersByMessage = new Map<string, number[]>();
+  const openingUsers = new Map<string, number>();
+  const userTurns = new Set(items.flatMap((item) =>
+    item.kind === 'turn' && originFromTurnItem(item)?.kind === 'user' ? [item.turnId] : []));
+  const obstructedTurns = new Set<string>();
+  for (const [index, block] of blocks.entries()) {
+    const turnId = blockTurnId(block);
+    if (block.kind !== 'user') {
+      if (turnId !== undefined && block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) {
+        obstructedTurns.add(turnId);
+      }
+      continue;
+    }
+    const origin = originFromRecord({ origin: block.sourceOrigin });
+    if (origin !== undefined && origin.kind !== 'user') continue;
+    for (const [id, users] of [[block.promptId, usersByPrompt], [block.userMessageId, usersByMessage]] as const) {
+      if (id === undefined) continue;
+      const indices = users.get(id) ?? [];
+      indices.push(index);
+      users.set(id, indices);
+    }
+    if (turnId !== undefined && userTurns.has(turnId) && !openingUsers.has(turnId) && !obstructedTurns.has(turnId)) {
+      openingUsers.set(turnId, index);
+    }
+  }
+  const afterUser = new Map<number, Block[]>();
+  const moved = new Set<number>();
+  for (const [index, block] of blocks.entries()) {
+    if (block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) continue;
+    let host: number | undefined;
+    if (block.ownerPromptId !== undefined) {
+      const candidates = usersByPrompt.get(block.ownerPromptId) ?? usersByMessage.get(block.ownerPromptId) ?? [];
+      const sameTurn = candidates.filter((candidate) => block.turnId !== undefined && sameTurnId(blockTurnId(blocks[candidate]!), block.turnId));
+      host = candidates.length === 1 ? candidates[0] : sameTurn.length === 1 ? sameTurn[0] : undefined;
+    } else if (block.turnId !== undefined) {
+      host = openingUsers.get(block.turnId);
+    }
+    if (host === undefined || host <= index) continue;
+    const context = afterUser.get(host) ?? [];
+    const turnId = blockTurnId(blocks[host]!);
+    context.push(turnId === block.turnId ? block : { ...block, turnId });
+    afterUser.set(host, context);
+    moved.add(index);
+  }
+  return blocks.flatMap((block, index) => moved.has(index) ? [] : [block, ...(afterUser.get(index) ?? [])]);
+}
+
+/**
+ * The engine reports running state — its context size, the identity it is
+ * actually running — whenever that state changes. Those are readings, not
+ * events: the context number keeps only the newest reading per turn, and the
+ * engine identity keeps only the newest report overall, so neither repeats.
+ * Per-occurrence facts such as a dropped image, and everything else the engine
+ * reported, are left alone.
+ */
+
+
 /** One terminal notification per task execution, preferring its delivered receipt over a summary echo. */
 export function mergeTaskNotifications<T extends { readonly kind: string; readonly id: string; readonly variant?: string; readonly taskId?: string }>(nodes: readonly T[]): T[] {
   const out: T[] = [];
@@ -2878,6 +3068,7 @@ function foldConsecutiveMarkerDividers(blocks: readonly Block[]): Block[] {
   for (const block of blocks) {
     const previous = folded.at(-1);
     if (isMarkerDivider(block) && isMarkerDivider(previous) &&
+      block.goalChange === undefined && previous.goalChange === undefined &&
       (block.compactionPhase === undefined || block.compactionPhase === 'completed' && previous.compactionPhase === 'completed') &&
       block.text === previous.text && block.tone === previous.tone &&
       block.turnId === previous.turnId && block.i18n?.key === previous.i18n?.key &&
@@ -2982,38 +3173,38 @@ export function appendLocalUserMessage(
   });
 }
 
-function projectGoalSnapshot(goal: {
-  readonly objective: string;
-  readonly status: GoalSnapshot['status'];
-  readonly completionCriterion?: string;
-  readonly budgetUsed?: number;
-  readonly budgetLimit?: number;
-  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
-  readonly controlRevision?: number;
-}): GoalSnapshot {
+function projectGoalSnapshot(goal: import('@kiki/transcript').GoalMeta): GoalSnapshot {
   const tokenBudget = goal.budgetLimit ?? null;
+  const turnBudget = goal.turnBudget ?? null;
+  const wallClockBudgetMs = goal.wallClockBudgetMs ?? null;
   const tokensUsed = goal.budgetUsed ?? 0;
+  const turnsUsed = goal.turnsUsed ?? 0;
+  const wallClockMs = goal.wallClockMs ?? 0;
+  const tokenBudgetReached = tokenBudget !== null && tokensUsed >= tokenBudget;
+  const turnBudgetReached = turnBudget !== null && turnsUsed >= turnBudget;
+  const wallClockBudgetReached = wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs;
   return {
-    goalId: 'transcript',
+    goalId: goal.goalId ?? 'transcript',
     objective: goal.objective,
     completionCriterion: goal.completionCriterion,
     status: goal.status,
     followUpTiming: goal.followUpTiming,
     controlRevision: goal.controlRevision,
-    turnsUsed: 0,
+    terminalReason: goal.terminalReason,
+    turnsUsed,
     tokensUsed,
-    wallClockMs: 0,
+    wallClockMs,
     budget: {
       tokenBudget,
-      turnBudget: null,
-      wallClockBudgetMs: null,
+      turnBudget,
+      wallClockBudgetMs,
       remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
-      remainingTurns: null,
-      remainingWallClockMs: null,
-      tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
-      turnBudgetReached: false,
-      wallClockBudgetReached: false,
-      overBudget: tokenBudget !== null && tokensUsed > tokenBudget,
+      remainingTurns: turnBudget === null ? null : Math.max(0, turnBudget - turnsUsed),
+      remainingWallClockMs: wallClockBudgetMs === null ? null : Math.max(0, wallClockBudgetMs - wallClockMs),
+      tokenBudgetReached,
+      turnBudgetReached,
+      wallClockBudgetReached,
+      overBudget: tokenBudgetReached || turnBudgetReached || wallClockBudgetReached,
     },
   };
 }
@@ -3088,7 +3279,7 @@ export function projectAgentTranscriptView(
   previous: SessionViewState,
   agentId: string,
   snapshot: AgentState | AgentTranscriptSnapshot,
-  options: { readonly retainPendingPrompts?: boolean } = {},
+  options: { readonly retainPendingPrompts?: boolean; readonly cold?: boolean } = {},
 ): SessionViewState {
   const source = agentStateToProjectionSource(agentId, snapshot);
   const projected = agentTranscriptToBlocks(source, previous.blocks);
@@ -3110,7 +3301,18 @@ export function projectAgentTranscriptView(
     : withoutRemovedQueuedPrompts.filter((block) =>
       block.kind !== 'user' || block.turnId !== undefined ||
       block.promptId === undefined || !completedSteerIds.has(block.promptId));
-  const blocks = settleCompletedPrompts(deliveredOnly, prompts);
+  const controlsByMessage = new Map<string, NonNullable<TranscriptPrompt['runtimeControls']>>();
+  for (const prompt of prompts) {
+    if (prompt.runtimeControls === undefined) continue;
+    controlsByMessage.set(prompt.promptId, prompt.runtimeControls);
+    if (prompt.userMessageId !== undefined) controlsByMessage.set(prompt.userMessageId, prompt.runtimeControls);
+  }
+  const blocks = settleCompletedPrompts(deliveredOnly, prompts).map((block) => {
+    if (block.kind !== 'user') return block;
+    const runtimeControls = controlsByMessage.get(block.promptId ?? '')
+      ?? controlsByMessage.get(block.userMessageId ?? block.id) ?? block.runtimeControls;
+    return runtimeControls === block.runtimeControls ? block : { ...block, runtimeControls };
+  });
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
@@ -3152,10 +3354,15 @@ export function projectAgentTranscriptView(
     const appendTiming = prompt.appendTiming ?? existing?.appendTiming ?? 'agent_idle';
     const revision = prompt.revision ?? existing?.revision;
     const queuePosition = prompt.queuePosition ?? existing?.queuePosition;
-    queuedPromptMeta[prompt.promptId] =
-      existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition
-        ? existing
-        : { appendTiming, revision, queuePosition };
+    const runtimeControls = prompt.runtimeControls ?? existing?.runtimeControls;
+    if (prompt.originKind === 'cron_job') {
+      queuedPromptMeta[prompt.promptId] = { appendTiming, revision, queuePosition, runtimeControls, originKind: prompt.originKind, content: promptContentParts(prompt.content), cronDeliveryMode: prompt.originDeliveryMode ?? existing?.cronDeliveryMode };
+    } else {
+      queuedPromptMeta[prompt.promptId] =
+        existing !== undefined && existing.appendTiming === appendTiming && existing.revision === revision && existing.queuePosition === queuePosition && existing.runtimeControls === runtimeControls
+          ? existing
+          : { appendTiming, revision, queuePosition, runtimeControls };
+    }
   }
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {
@@ -3185,8 +3392,8 @@ export function projectAgentTranscriptView(
     loaded: true,
     transcriptReady: true,
     loadError: undefined,
-    busy: agentBusyFromMeta(source) === true,
-    turnStartedAt: Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
+    busy: options.cold !== true && agentBusyFromMeta(source) === true,
+    turnStartedAt: options.cold === true || Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
     model: meta?.model ?? previous.model,
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
@@ -3197,11 +3404,11 @@ export function projectAgentTranscriptView(
     queuedPromptIds,
     promptQueueHold: snapshot.meta.promptQueueHold,
     queuedPromptMeta,
-    activePromptId: running?.promptId,
-    abortablePromptId: runningTurn === undefined
+    activePromptId: options.cold === true ? undefined : running?.promptId,
+    abortablePromptId: options.cold === true ? undefined : runningTurn === undefined
       ? running?.promptId
       : runningTurn.promptId ?? (runningTurn.origin.kind === 'user' ? running?.promptId : undefined),
-    abortableTurnId: runningTurn?.ordinal,
+    abortableTurnId: options.cold === true ? undefined : runningTurn?.ordinal,
     pendingInteraction,
     todos: (agentTodo ?? todos.find((todo) => todo.todoId === 'external-plan'))?.items ?? [],
     todoNotes: agentTodo?.notes,
@@ -3209,7 +3416,8 @@ export function projectAgentTranscriptView(
     todoNotesStatus: agentTodo?.notesStatus,
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
-    hasMoreHistory: snapshot.hasMoreOlder === true,
+    hasMoreHistory: snapshot.hasMoreOlder === true || snapshot.items.some((item) => item.kind === 'turn' &&
+      item.contentRefs?.some((ref) => ref.direction === 'backward') === true),
     oldestMessageId: firstTurn?.turnId,
     turnExecutions,
     // A running last turn has no tail yet; never carry the previous turn's.
@@ -3257,6 +3465,7 @@ export function applyTranscriptShell(
     contextTokens: snapshot.context_tokens ?? base.contextTokens,
     maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
     snapshotSubagents: snapshot.subagents ?? base.snapshotSubagents,
+    agentCounts: snapshot.agent_counts,
     loaded: true,
     loadError: undefined,
     resyncFailed: false,
@@ -3275,15 +3484,50 @@ export function prependOlderTranscriptSnapshot(
   current: AgentTranscriptSnapshot,
   older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments' | 'hasMoreOlder'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
 ): AgentTranscriptSnapshot {
-  const existingIds = new Set(current.items.map(transcriptItemId));
-  const prepended = older.items.filter((item) => !existingIds.has(transcriptItemId(item)));
+  const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
+  const insertions = new Map<number, TranscriptItem[]>();
+  let pending: TranscriptItem[] = [];
+  let previousPosition: number | undefined;
+  const insert = (position: number) => {
+    if (pending.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...pending]);
+    pending = [];
+  };
+  for (const item of older.items) {
+    const position = positions.get(transcriptItemId(item));
+    if (position === undefined) pending.push(item);
+    else {
+      insert(position);
+      previousPosition = position;
+    }
+  }
+  if (pending.length > 0) {
+    const firstTurn = pending.find((item) => item.kind === 'turn');
+    const laterTurn = firstTurn === undefined ? -1
+      : current.items.findIndex((item) => item.kind === 'turn' && item.ordinal > firstTurn.ordinal);
+    let position = previousPosition !== undefined ? previousPosition + 1
+      : laterTurn >= 0 ? laterTurn : firstTurn !== undefined && current.items.some((item) => item.kind === 'turn') ? current.items.length : 0;
+    if (previousPosition === undefined && firstTurn !== undefined) {
+      const first = pending[0]!;
+      const at = timestampMs(first.kind === 'turn' ? first.startedAt : first.at) ?? timestampMs(firstTurn.startedAt);
+      while (position > 0) {
+        const preceding = current.items[position - 1]!;
+        if (preceding.kind === 'turn') break;
+        const precedingAt = timestampMs(preceding.at);
+        if (at === undefined || precedingAt === undefined || precedingAt < at) break;
+        position -= 1;
+      }
+    }
+    insert(position);
+  }
+  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], item]);
+  items.push(...insertions.get(current.items.length) ?? []);
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(
     (attachment) => !existingAttachments.has(attachment.attachmentId),
   );
   return {
     ...current,
-    items: [...prepended, ...current.items],
+    items,
     attachments: [...olderAttachments, ...current.attachments],
     hasMoreOlder: older.hasMoreOlder ?? older.hasMore ?? older.has_more ?? current.hasMoreOlder,
   };

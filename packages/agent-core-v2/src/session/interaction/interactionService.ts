@@ -66,11 +66,11 @@ export class SessionInteractionService extends Service implements ISessionIntera
     this.states.contributeState(interactionNextIdKey);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     for (const interaction of this.listPending()) {
       this.respond(interaction.id, { cancelled: true, reason: 'agent_closed' });
     }
-    super.dispose();
+    return super.dispose();
   }
 
   private get pending(): Map<string, Pending> {

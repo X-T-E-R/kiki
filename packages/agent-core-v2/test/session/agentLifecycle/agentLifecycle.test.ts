@@ -122,6 +122,9 @@ import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import '#/agent/media/mediaToolsRegistrar';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { SessionWorkspaceContextService } from '#/session/workspaceContext/workspaceContextService';
+import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import {
   IRuntimeResolver,
@@ -152,9 +155,7 @@ const pluginServiceStub = {
   setPluginMcpServerEnabled: async () => {},
   removePlugin: async () => {},
   reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-  getPluginInfo: async () => {
-    throw new Error('getPluginInfo is not used by these tests');
-  },
+  getPluginInfo: async ({ id }: { id: string }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }),
   listPluginCommands: async () => [],
   checkUpdates: async () => [],
   pluginSkillRoots: async () => [],
@@ -575,11 +576,12 @@ describe('AgentLifecycleService', () => {
       compacting: null,
     } as unknown as IAgentFullCompactionService);
     ix.set(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService));
+    disposables.add(ix.get(IAgentLifecycleService).onWillCreate(handle => { handle.accessor.get(IAgentProfileService); }));
   }
 
   beforeEach(createTestHost);
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
     vi.restoreAllMocks();
   });
@@ -722,6 +724,64 @@ describe('AgentLifecycleService', () => {
     expect(interaction.listPending().map((entry) => entry.id)).toEqual(['main-approval']);
   });
 
+  it('persists birth before publishing a queued child and preserves it across scope restart and fork', async () => {
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    const metadata = ix.get(ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const child = await svc.create({ agentId: 'child', deferCreateEvent: true,
+      delegator: { kind: 'external', delegationId: 'external-example' } });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBe(10_000);
+    expect(atomicDocs.get('test/state.json')).toMatchObject({ agents: { child: { createdAt: 10_000 } } });
+    svc.commitCreate(child.id);
+    vi.spyOn(Date, 'now').mockReturnValue(20_000);
+    expect(await svc.create({ agentId: 'child' })).toBe(child);
+    await svc.remove('child');
+    await svc.create({ agentId: 'child' });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBe(10_000);
+    const fork = await svc.fork('child');
+    expect((await metadata.read()).agents?.[fork.id]?.createdAt).toBe(20_000);
+  });
+
+  it('leaves legacy metadata and orphan restored journals birth unknown but dates copied new identities', async () => {
+    const { metadata } = installStoredTerminalChild('completed');
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    await svc.create({ agentId: 'child' });
+    expect((await metadata.read()).agents?.['child']?.createdAt).toBeUndefined();
+    const storage = ix.get(IFileSystemStorageService);
+    const ctx = ix.get(ISessionContext);
+    await storage.write(ctx.scope('agents/orphan'), AGENT_WIRE_RECORD_KEY, new TextEncoder().encode('{}\n'));
+    await svc.create({ agentId: 'orphan' });
+    expect((await metadata.read()).agents?.['orphan']?.createdAt).toBeUndefined();
+    await storage.write(ctx.scope('agents/copied'), AGENT_WIRE_RECORD_KEY, new TextEncoder().encode('{}\n'));
+    vi.spyOn(Date, 'now').mockReturnValue(30_000);
+    await svc.create({ agentId: 'copied', copiedIdentity: true });
+    expect((await metadata.read()).agents?.['copied']?.createdAt).toBe(30_000);
+  });
+
+  it('dates a fresh ACP entity and keeps its birth on executor scope restoration', async () => {
+    ix.stub(ISessionIndexMirror, { record: () => {} });
+    ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+    ix.stub(IAppendLogStore, recordingAppendLog([createWireMetadataRecord(1), {
+      type: 'profile.bind', modelAlias: 'external-model', profileName: 'explore', thinkingEffort: 'high',
+      executorId: 'example-acp', executorProtocol: 'acp-v1', systemPrompt: '', disallowedTools: [], time: 2,
+    }]).store);
+    const metadata = ix.get(ISessionMetadata);
+    const svc = ix.get(IAgentLifecycleService);
+    disposables.add(svc.onWillCreate((handle) => { handle.accessor.get(IAgentProfileService); }));
+    vi.spyOn(Date, 'now').mockReturnValue(10_000);
+    const child = await svc.create({ agentId: 'acp-child' });
+    expect(child.accessor.get(IAgentProfileService).data().executorProtocol).toBe('acp-v1');
+    expect((await metadata.read()).agents?.[child.id]?.createdAt).toBe(10_000);
+    await svc.remove(child.id);
+    vi.spyOn(Date, 'now').mockReturnValue(20_000);
+    await svc.create({ agentId: child.id });
+    expect((await metadata.read()).agents?.[child.id]?.createdAt).toBe(10_000);
+  });
+
   it('create / getHandle / list / remove', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const main = await svc.create({ agentId: 'main' });
@@ -739,7 +799,75 @@ describe('AgentLifecycleService', () => {
     await svc.remove('main');
 
     expect(stopAllOnExit).toHaveBeenCalledWith('Session closed');
-    expect(promptDrain).toHaveBeenCalledOnce();
+    expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
+  });
+
+  it('publishes a settled cleanup receipt after the agent owner closes its scope', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const receipts: unknown[] = [];
+    disposables.add(svc.onDidCleanup!((receipt) => receipts.push(receipt)));
+    await svc.create({ agentId: 'main' });
+
+    await svc.remove('main', 'preserve-pending');
+
+    expect(receipts).toContainEqual(expect.objectContaining({
+      agentId: 'main', mode: 'preserve-pending', callerOutcome: 'resolved',
+      terminalOwner: 'agent', cleanupOutcome: 'closed', resourcesBefore: 1, resourcesAfter: 0,
+    }));
+  });
+
+  it('rejects the original durable flush error after disposing the agent and reports persistence failure', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
+    const flush = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush').mockRejectedValue(durableFailure);
+    const dispose = vi.spyOn(handle, 'dispose');
+    const receipts: unknown[] = [];
+    disposables.add(svc.onDidCleanup!((receipt) => receipts.push(receipt)));
+
+    await expect(svc.remove('main')).rejects.toBe(durableFailure);
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(receipts).toContainEqual(expect.objectContaining({
+      agentId: 'main', callerOutcome: 'rejected', cleanupOutcome: 'cleanup_failed',
+      failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+    }));
+  });
+
+  it('preserves only pending prompts when removal explicitly requests shutdown mode', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+    await svc.remove('main', 'preserve-pending');
+    expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'preserve-pending');
+    expect(stopAllOnExit).toHaveBeenCalledWith('Session closed');
+    expect(svc.get('main')).toBeUndefined();
+  });
+
+  it('remove awaits asynchronous scope disposal once before emitting onDidDispose', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const disposalStarted = new Promise<void>((resolve) => { started = resolve; });
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    const originalDispose = handle.dispose.bind(handle);
+    const dispose = vi.spyOn(handle, 'dispose').mockImplementation(async () => {
+      started();
+      await gate;
+      await originalDispose();
+    });
+    const disposed: string[] = [];
+    disposables.add(svc.onDidDispose((agentId) => disposed.push(agentId)));
+    const removal = svc.remove('main');
+    const duplicate = svc.remove('main');
+    await disposalStarted;
+    expect(disposed).toEqual([]);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([removal, duplicate]);
+    expect(disposed).toEqual(['main']);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it('remove waits for prompt intake to drain before disposing the agent scope', async () => {
@@ -1102,6 +1230,7 @@ describe('AgentLifecycleService', () => {
 
     expect(child.id).toBe('child');
     expect(registerAgent).toHaveBeenCalledWith('child', {
+      createdAt: expect.any(Number),
       homedir: '/tmp/kimi-agentLifecycle-home/sessions/ws_test/sess_test/agents/child',
       type: 'sub',
       parentAgentId: 'main',
@@ -1450,7 +1579,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as IAgentIdentity);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY }),
+      get: () => ({ providerName: 'test-provider', capabilities: { ...UNKNOWN_CAPABILITY, thinking: true }, defaultEffort: 'high' }),
     } as unknown as IModelCatalog);
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,
@@ -1678,6 +1807,40 @@ describe('AgentLifecycleService', () => {
     await ix.get(IAgentLifecycleService).create({ agentId: 'main' });
 
     expect(permissionModeSetMode).not.toHaveBeenCalled();
+  });
+
+  it('shares approved input roots with new and recreated Agent scopes without admitting sibling roots', async () => {
+    const workDir = resolve('/worktrees/child');
+    const additionalDirs = [resolve('/materials/review'), resolve('/materials/profiles')];
+    ix.stub(ISessionContext, { ...ix.get(ISessionContext), cwd: workDir });
+    ix.stub(ISessionWorkspaceInfo, { _serviceBrand: undefined, ready: Promise.resolve(), additionalDirs,
+      onDidChange: Event.None as Event<void> });
+    ix.set(ISessionWorkspaceContext, new SyncDescriptor(SessionWorkspaceContextService));
+    const runtime = new FakeRuntime({ workspaceId: 'ws_test', runtimeId: 'local', generation: 'input-roots' },
+      { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
+    ix.stub(IRuntimeResolver, { _serviceBrand: undefined, inspect: () => runtime,
+      acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }) });
+    const workspace = ix.get(ISessionWorkspaceContext);
+    const lifecycle = ix.get(IAgentLifecycleService);
+    const parent = await lifecycle.create({ agentId: 'main' });
+    const child = await lifecycle.create({ agentId: 'input-review', delegator: { kind: 'agent', agentId: parent.id } });
+    const checkRoots = (agent: IAgentScopeHandle): void => {
+      expect(agent.accessor.get(ISessionWorkspaceContext)).toBe(workspace);
+      const view = new RuntimeWorkspaceView(agent.accessor.get(IAgentRuntimeService).inspect(), workspace);
+      expect(view.workDir).toBe(runtime.path.resolve(workDir));
+      expect(view.additionalDirs).toEqual(additionalDirs.map((root) => runtime.path.resolve(root)));
+      const inputPath = runtime.path.join(view.additionalDirs[0]!, 'source.txt');
+      expect(view.resolve(inputPath)).toBe(inputPath);
+      expect(() => view.resolve(resolve('/materials/private/source.txt'))).toThrow('outside runtime workspace');
+      expect(() => view.resolve(resolve('/worktrees/other/source.txt'))).toThrow('outside runtime workspace');
+    };
+    checkRoots(parent);
+    checkRoots(child);
+    await lifecycle.remove(child.id);
+    const recreated = await lifecycle.create({ agentId: child.id, delegator: { kind: 'agent', agentId: parent.id } });
+    checkRoots(recreated);
+    expect(workspace.additionalDirs.map((root) => runtime.path.resolve(root)))
+      .toEqual(additionalDirs.map((root) => runtime.path.resolve(root)));
   });
 
   it('restores the runtime binding without persisting a generation', async () => {
@@ -2076,7 +2239,7 @@ describe('AgentLifecycleService', () => {
       for (const handle of lifecycle.list()) await lifecycle.remove(handle.id);
       await ix.get(IAppendLogStore).close();
       await ix.get(IFileSystemStorageService).close();
-      disposables.dispose();
+      await disposables.dispose();
     };
     const bindReadonly = async (child: IAgentScopeHandle): Promise<void> => {
       await child.accessor.get(IEventDispatcher).dispatch(new ProfileBind({

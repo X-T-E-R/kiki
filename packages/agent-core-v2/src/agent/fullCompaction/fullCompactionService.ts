@@ -33,7 +33,7 @@ import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import { compactionDirectivesBudget, renderTodoNotes } from '#/session/todo/todoNotes';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
 import { type LoopControl } from '#/agent/loop/configSection';
@@ -815,7 +815,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       sessionId: this.session.sessionId, epoch: this.states.get(contextWindowEpochKey),
       notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
       estimateText: (text) => this.tokenCounting.estimateText(text),
-      memoryEntries: liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`), memoryReferences, linkedBoardCards,
+      memoryEntries: liveEntries.map((entry) => memoryEntryReference(entry)), memoryReferences, linkedBoardCards,
     };
     const startedAt = Date.now();
     const maxAttempts = model.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
@@ -894,7 +894,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       ]);
       signal.throwIfAborted();
       if (this._compacting !== active) throw compactionCancelledReason(active);
-      const memoryEntries = liveEntries.map((entry) => `- [${entry.id}] ${entry.title}`);
+      const memoryEntries = liveEntries.map((entry) => memoryEntryReference(entry));
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
@@ -1144,6 +1144,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         this.profile.getModelProviderType() ?? 'unknown-provider',
         this.profile.data().modelAlias ?? 'unknown-model',
         requestAttempts,
+        data.source,
       ), { cause: error, details: isError2(error) ? error.details : undefined });
     }
   }

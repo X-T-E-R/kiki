@@ -2,6 +2,10 @@ import type { MediaSource, MediaCatalog, MediaProviderDefinition, MediaCapabilit
 import type { Caller } from './global.js';
 
 export interface GlobalMediaFacade {
+  managedSources(): Promise<import('@kiki/protocol').MediaManagedSource[]>;
+  sourceSettings(input: { provider: string }): Promise<import('@kiki/protocol').MediaManagedSource>;
+  updateSource(input: import('@kiki/protocol').MediaSourceUpdate): Promise<import('@kiki/protocol').MediaManagedSource>;
+  addScriptSource(input: import('@kiki/protocol').MediaScriptSourceInput): Promise<import('@kiki/protocol').MediaManagedSource>;
   sources(): Promise<MediaSource[]>;
   setSources(input: { sources: MediaSource[] }): Promise<MediaSource[]>;
   catalog(input: { id: string }): Promise<MediaCatalog>;
@@ -17,6 +21,10 @@ export interface AgentMediaFacade {
 }
 export function createGlobalMedia(call: Caller): GlobalMediaFacade {
   return {
+    managedSources: () => call('pluginMediaService', 'managedSources', []) as ReturnType<GlobalMediaFacade['managedSources']>,
+    sourceSettings: (input) => call('pluginMediaService', 'sourceSettings', [input]) as ReturnType<GlobalMediaFacade['sourceSettings']>,
+    updateSource: (input) => call('pluginMediaService', 'updateSource', [input]) as ReturnType<GlobalMediaFacade['updateSource']>,
+    addScriptSource: (input) => call('pluginMediaService', 'addScriptSource', [input]) as ReturnType<GlobalMediaFacade['addScriptSource']>,
     sources: () => call('pluginMediaService', 'sources', []) as Promise<MediaSource[]>,
     setSources: (input) => call('pluginMediaService', 'setSources', [input]) as Promise<MediaSource[]>,
     catalog: (input) => call('pluginMediaService', 'catalog', [input]) as Promise<MediaCatalog>,

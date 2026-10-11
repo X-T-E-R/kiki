@@ -1,4 +1,4 @@
-import { AcpClientError } from '@kiki/acp-client';
+import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -17,6 +17,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
@@ -28,7 +29,6 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
-import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -237,6 +237,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       }
       if (event instanceof ExecutorSessionUpdated) {
         state.values.set(externalExecutorKey, {
+          executionGeneration: event.executionGeneration,
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
           bindingFingerprint: event.bindingFingerprint,
@@ -485,6 +486,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     binding: {
       modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'model-a',
       thinkingLevel: options.thinkingEffort ?? 'high',
+      thinkingEffortExplicit: options.thinkingEffort !== undefined || options.unpinModel !== true,
       systemPrompt: 'Frozen profile',
       executorPrompt: options.profileDelivery === 'system_prompt_override'
         ? { delivery: 'replace', include: [] } : undefined,
@@ -659,6 +661,85 @@ describe('ACP external executor', () => {
       .toBe(first.generation + 1);
   });
 
+  it('does not splice old Kiki reminders or pending collaboration mail into a bare user turn', async () => {
+    const harness = createExecutionHarness({ unpinModel: true, thinkingEffort: 'off',
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_CONTEXT' }], origin: { kind: 'injection', variant: 'goal_state' } }],
+      todos: [{ title: 'OLD_TODO', status: 'pending' }],
+    });
+    const profile = harness.ix.get(IAgentProfileService);
+    const original = profile.data();
+    const execution = resolveExecutionBinding({ executor: original.executorId! }, undefined, undefined, undefined);
+    vi.spyOn(profile, 'data').mockReturnValue({ ...original, execution, modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false });
+    const reconcile = vi.spyOn(harness.ix.get(IAgentContextInjectorService), 'reconcileAllAtSafeBoundary');
+    const mailbox = attachExternalMailboxHarness(harness.ix, 'external-agent');
+    try {
+      await mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent', content: 'OLD_MAIL', idempotencyKey: 'old-mail', waitForRunningDelivery: true });
+      await harness.execution.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(mailbox.delivered()).toBe(false);
+    } finally { await mailbox.dispose(); await harness.execution.shutdown(); await harness.ix.dispose(); }
+  });
+
+
+  it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
+    const harness = createHarness({ unpinModel: true, thinkingEffort: 'off',
+      mcpServers: { relay: { transport: 'stdio', command: 'node' } },
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_KIKI_HISTORY' }] }],
+      prior: { executorId: 'old-executor', descriptorRevision: 'old-revision', sessionEpoch: 3,
+        sessionRef: { executorId: 'old-executor', version: 1, ref: { sessionId: 'old-session' } } },
+    });
+    const execution = resolveExecutionBinding({ executor: 'example-acp' }, undefined, undefined, undefined);
+    const context = { ...harness.executorContext, binding: { ...harness.executorContext.binding, execution,
+      modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false } };
+    const session = harness.createSession(context);
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.opens[0]).toMatchObject({ cwd: harness.workspace.workDir, mcpServers: [] });
+      expect(harness.opens[0]?.sessionRef).toBeUndefined();
+      expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+      expect(harness.selections).toEqual([]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(harness.state.get(externalExecutorKey)).toMatchObject({ executionGeneration: 1, sessionEpoch: 4 });
+      const persistedRef = harness.state.get(externalExecutorKey).sessionRef;
+      expect(() => parseExecutorSessionRefEnvelope(persistedRef)).not.toThrow();
+      expect(persistedRef?.ref).not.toHaveProperty('localSource');
+      await session.shutdown();
+      if (persistedRef === undefined) throw new Error('Expected saved remote reference');
+      harness.state.set(externalExecutorKey, { ...harness.state.get(externalExecutorKey),
+        sessionRef: { ...persistedRef, ref: { ...persistedRef.ref, localSource: undefined } } });
+      const cold = harness.createSession(context);
+      try {
+        const next = await cold.run({ kind: 'prompt', prompt: 'COLD_USER' }, { signal: new AbortController().signal });
+        await next.completion;
+        expect(harness.opens[1]?.sessionRef).toMatchObject({ ref: { sessionId: 'remote-2' } });
+        expect(() => parseExecutorSessionRefEnvelope(harness.opens[1]?.sessionRef)).not.toThrow();
+        expect(harness.starts[1]?.prompt).toBe('COLD_USER');
+      } finally { await cold.shutdown(); }
+    } finally { await session.shutdown(); }
+  });
+
+  it('sends only explicitly selected ACP controls without adding a Kiki preamble', async () => {
+    const harness = createHarness();
+    const execution = resolveExecutionBinding({ executor: 'example-acp', overrides: {
+      model: 'model-a', thinking: 'high', permission_mode: 'auto',
+    } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: {
+      ...harness.executorContext.binding, execution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.selections).toEqual([
+        { configId: 'model-id', value: 'model-a' }, { configId: 'thought-id', value: 'high' },
+        { configId: 'auto_approve', value: false },
+      ]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_USER');
+    } finally { await session.shutdown(); }
+  });
+
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
       executorId: 'kimi-acp', executorVersion,
@@ -696,6 +777,22 @@ describe('ACP external executor', () => {
 
   it('accepts an empty closed executor options mapping', () => {
     expect(AcpAgentExecutorProvider.validateOptions({})).toEqual({});
+  });
+
+  it('records Claude ACP negotiated model metadata as a runtime fact', async () => {
+    const harness = createHarness({ executorId: 'claude-acp', modelAlias: 'model-a' });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      type: 'executor.runtime.update',
+      kind: 'session',
+      value: { meta: { source: 'claude-acp', actualModel: 'model-a', agentVersion: undefined } },
+    }));
+    await harness.session.shutdown();
   });
 
   it('keeps the generic recorder free of ACP-specific losses and durable wording', async () => {
@@ -1041,7 +1138,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1080,7 +1177,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1097,7 +1194,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1121,7 +1218,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1150,9 +1247,9 @@ describe('ACP external executor', () => {
       expect(harness.starts[0]?.prompt).toContain('ordinary ACP resume');
       expect(mailbox.delivered()).toBe(true);
     } finally {
-      mailbox.dispose();
+      await mailbox.dispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1330,8 +1427,67 @@ describe('ACP external executor', () => {
     await harness.session.shutdown();
   });
 
+  it('replays observed Grok extension shapes into tool input and interaction facts, not assistant prose', async () => {
+    const extension = (update: unknown) => mapAcpSessionNotification({ sessionId: 'session-1', update }, '_x.ai/session_notification').event;
+    const harness = createHarness({ events: [
+      extension({ sessionUpdate: 'session_summary_generated', session_summary: 'Inspect project' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-1', name: 'Shell' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: '{"command":"echo ' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: 'ok"}' }),
+      extension({ sessionUpdate: 'response_completed', stop_reason: 'tool_use', usage: { output_tokens: 7 } }),
+      { type: 'tool.call', toolCallId: 'call-1', title: 'Shell', kind: 'execute', rawInput: { command: 'echo ok' } },
+      extension({ sessionUpdate: 'pending_interaction', tool_call_id: 'call-1', kind: 'permission' }),
+      extension({ sessionUpdate: 'interaction_resolved', tool_call_id: 'call-1' }),
+      { type: 'tool.update', toolCallId: 'call-1', status: 'completed', rawOutput: 'ok' },
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-2', name: 'Read', arguments_delta: '{"path":"example.ts"}' }),
+      { type: 'tool.call', toolCallId: 'call-2', title: 'Read', rawInput: { path: 'example.ts' } },
+      { type: 'tool.update', toolCallId: 'call-2', status: 'completed', rawOutput: 'contents' },
+      extension({ sessionUpdate: 'turn_completed', prompt_id: 'prompt-1', stop_reason: 'end_turn', usage: { inputTokens: 12 }, elapsed_ms: 100 }),
+      { type: 'message.delta', role: 'assistant', messageId: 'message-1', content: { type: 'text', text: 'Actual answer' } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'unknown')).toEqual([]);
+    expect(runtime.filter((event) => event.kind === 'tool_input').map((event) => event.value)).toMatchObject([
+      { name: 'Shell', inputText: '' }, { inputText: '{"command":"echo ' },
+      { inputText: '{"command":"echo ok"}' }, { name: 'Read', inputText: '{"path":"example.ts"}' },
+    ]);
+    expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(2);
+    expect(runtime.filter((event) => event.kind === 'tool_progress').map((event) => event.value)).toMatchObject([
+      { update: { text: 'Waiting for permission', customData: { interaction: 'pending' } } },
+      { update: { text: 'Interaction resolved', customData: { interaction: 'resolved' } } },
+    ]);
+    expect(harness.events.filter((event) => event instanceof AssistantDelta).map((event) => event.delta)).toEqual(['Actual answer']);
+    expect(runtime).toContainEqual(expect.objectContaining({ kind: 'session', value: expect.objectContaining({ meta: expect.objectContaining({ completion: expect.objectContaining({ stopReason: 'end_turn' }) }) }) }));
+  });
+
+  it('keeps bounded secret-redacted unknown payloads and does not reuse an index after a response boundary', async () => {
+    const harness = createHarness({ events: [
+      { type: 'tool.input.delta', toolIndex: 0, toolCallId: 'old-call', name: 'Read', delta: '{}' },
+      { type: 'response.completed', meta: { stopReason: 'tool_use' } },
+      { type: 'tool.input.delta', toolIndex: 0, delta: 'unattributed' },
+      { type: 'unknown', updateType: 'future_update', method: '_x.ai/session_notification', payload: {
+        api_key: 'YOUR_API_KEY', nested: { password: 'secret-value', text: 'Bearer abcdefghijklmnopqrstuvwxyz' }, facts: '界'.repeat(10000),
+      } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'tool_input')).toHaveLength(1);
+    const diagnostic = runtime.find((event) => event.kind === 'unknown' && (event.value as { updateType: string }).updateType === 'future_update')!;
+    const json = JSON.stringify(diagnostic.value);
+    expect(json).not.toContain('YOUR_API_KEY');
+    expect(json).not.toContain('secret-value');
+    expect(json).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(json).not.toContain('�');
+    expect(Buffer.byteLength(json)).toBeLessThan(9000);
+    expect(diagnostic.value).toMatchObject({ method: '_x.ai/session_notification', payload: { truncated: true } });
+  });
+
   it('maps normalized events to live and canonical durable records with stable losses', async () => {
     const harness = createHarness({
+      permissionMode: 'manual',
       events: mappingEvents,
       approval: async () => ({ decision: 'approved', selectedOptionId: 'allow-once' }),
     });
@@ -2017,7 +2173,7 @@ describe('ACP external executor', () => {
         expect(interaction.listPending()).toEqual([]);
       } finally {
         await harness.session.shutdown();
-        ix.dispose();
+        await ix.dispose();
       }
     },
   );
@@ -2218,7 +2374,7 @@ describe('ACP external executor', () => {
     expect(harness.starts).toHaveLength(1);
   });
 
-  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through the ACP preamble', async (position) => {
+  it.each(['sub', 'independent'] as const)('sends the saved cold %s identity through the ACP preamble', async (position) => {
     const harness = createExecutionHarness();
     const adapter = harness.ix.get(IAgentProfileService);
     const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
@@ -2228,16 +2384,18 @@ describe('ACP external executor', () => {
     try {
       const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
       const sent = JSON.stringify(harness.starts[0]);
-      expect(sent).toContain('Role NEW');
-      expect(sent).not.toContain('Role OLD');
+      expect(harness.starts[0]?.prompt).toContain(cold.before.systemPrompt);
+      expect(sent).toContain('Role OLD');
+      expect(sent).not.toContain('Role NEW');
       expect(sent).not.toContain('SHARED_NEW');
+      expect(cold.profile.data().boundProfile?.promptBase?.inputs).toEqual(cold.before.boundProfile?.promptBase?.inputs);
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
       expect(sent).not.toContain(snippet!);
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
-    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+    } finally { await harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
@@ -2254,7 +2412,7 @@ describe('ACP external executor', () => {
         expect(JSON.stringify(harness.starts[0])).toContain('Frozen profile');
         expect(JSON.stringify(harness.starts[0])).not.toContain('ALL_EXECUTORS_SHARED');
         harness.pendingTurns.add(run.turn.id);
-        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'scope-close') await harness.ix.dispose();
         if (close === 'replacement') {
           harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
           await harness.ix.cascade.whenIdle();
@@ -2278,9 +2436,9 @@ describe('ACP external executor', () => {
         expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'external-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
-        expect(harness.execution.status()).toEqual({ state: 'idle' });
+        expect(harness.execution.status()).toEqual({ state: 'closed' });
       } finally {
-        harness.ix.dispose();
+        await harness.ix.dispose();
         await harness.execution.shutdown();
         expect(errors).not.toHaveBeenCalled();
         errors.mockRestore();
@@ -2429,22 +2587,40 @@ describe('ACP external executor', () => {
     expect(metadata?.losses).toEqual(expect.arrayContaining(['additional_directories_dropped']));
   });
 
-  it('keeps additional directories without a loss once the harness declares support', async () => {
+  it('uses pinned agent roots in ACP open options without changing the parent session cwd', async () => {
     const harness = createHarness({
       capabilities: { sessionCapabilities: { additionalDirectories: {} } },
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
-
-    const run = await harness.session.run(
-      { kind: 'prompt', prompt: 'work' },
-      { signal: new AbortController().signal },
-    );
-    await run.completion;
-
-    const metadata = harness.events.find(
+    Object.assign(harness.workspace, { workDir: 'C:\\parent', additionalDirs: ['C:\\parent-shared'] });
+    Object.assign(harness.runtime, {
+      workspaceRoots: () => ({
+        workDir: 'C:\\worktrees\\child',
+        additionalDirs: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      }),
+    });
+    for (const prompt of ['work', 'continue']) {
+      const run = await harness.session.run({ kind: 'prompt', prompt }, { signal: new AbortController().signal });
+      await run.completion;
+      await harness.session.settled();
+    }
+    expect(harness.workspace.workDir).toBe('C:\\parent');
+    expect(harness.opens).toHaveLength(2);
+    for (const opened of harness.opens) {
+      expect(opened.cwd).toBe('C:\\worktrees\\child');
+      expect(opened.additionalDirectories).toEqual(['C:\\materials\\review', 'C:\\materials\\profiles']);
+      expect(opened.sessionMeta?.['kiki.permission']).toMatchObject({ workspace: {
+        cwd: 'C:\\worktrees\\child', additionalDirectories: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      } });
+    }
+    expect(harness.opens[0]?.sessionRef).toBeUndefined();
+    expect(harness.opens[1]?.sessionRef?.ref).toEqual({ sessionId: 'remote-2' });
+    const metadata = harness.events.filter(
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
-    expect(metadata?.losses).not.toContain('additional_directories_dropped');
+    expect(metadata).toHaveLength(2);
+    for (const event of metadata) expect(event.losses).not.toContain('additional_directories_dropped');
+    await harness.session.shutdown();
   });
 
   it('attributes resumed-session usage as a delta of the persisted cumulative counters', async () => {

@@ -28,6 +28,8 @@ interface InternalEntry {
   readonly name: string;
   readonly config: McpServerConfig;
   attemptId: number;
+  accepting: boolean;
+  readonly calls: Set<Promise<void>>;
   status: McpServerStatus;
   tools?: readonly Tool[];
   rawTools?: readonly MCPToolDefinition[];
@@ -35,7 +37,7 @@ interface InternalEntry {
   error?: string;
   client?: RuntimeMcpClient;
   connectedAt?: number;
-  toolRefresh?: { queued: boolean };
+  toolRefresh?: { queued: boolean; work?: Promise<void> };
 }
 
 export type McpStatusListener = (entry: McpServerEntry) => void;
@@ -59,6 +61,7 @@ export interface McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined;
   getRemoteServerUrl(name: string): string | undefined;
@@ -66,6 +69,7 @@ export interface McpConnectionView {
   reconnect(name: string): Promise<void>;
   readonly connect?: (name: string, config: McpServerConfig) => Promise<void>;
   reconnectAndJoin(name: string): Promise<void>;
+  readonly refreshToolList?: (name: string) => Promise<void>;
   waitForInitialLoad(signal?: AbortSignal): Promise<void>;
   initialLoadDurationMs(): number;
   onStatusChange(listener: McpStatusListener): () => void;
@@ -98,6 +102,7 @@ export interface McpConnectionManagerOptions {
   readonly log?: Logger;
   readonly resolveDefaultTimeouts?: () => McpDefaultTimeouts;
   readonly resolveClientName?: () => string | undefined;
+  readonly allowsCall?: (name: string) => Promise<boolean>;
 }
 
 export class McpConnectionManager implements McpConnectionView {
@@ -157,6 +162,7 @@ export class McpConnectionManager implements McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined {
     const entry = this.entries.get(name);
@@ -173,6 +179,14 @@ export class McpConnectionManager implements McpConnectionView {
       tools: entry.tools,
       rawTools: entry.rawTools,
       enabledNames: entry.enabledNames ?? new Set(entry.tools.map((t) => t.name)),
+      admitCall: async () => {
+        if (this.options.allowsCall !== undefined && !await this.options.allowsCall(name)) return undefined;
+        if (this.entries.get(name) !== entry || !entry.accepting || entry.status === 'removed' || entry.status === 'disabled') return undefined;
+        let release!: () => void;
+        const finished = new Promise<void>((resolve) => { release = resolve; });
+        entry.calls.add(finished);
+        return { release: () => { entry.calls.delete(finished); release(); } };
+      },
     };
   }
 
@@ -198,13 +212,15 @@ export class McpConnectionManager implements McpConnectionView {
       ) {
         return;
       }
-      await this.closeClient(previous);
+      await this.retire(previous);
     }
     const disabled = config.enabled === false;
     const entry: InternalEntry = {
       name,
       config,
       attemptId: 0,
+      accepting: !disabled,
+      calls: new Set(),
       status: disabled ? 'disabled' : 'pending',
     };
     this.entries.set(name, entry);
@@ -214,30 +230,31 @@ export class McpConnectionManager implements McpConnectionView {
     }
   }
 
-  async remove(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
-    entry.status = 'disabled';
-    entry.tools = undefined;
-    entry.enabledNames = undefined;
-    entry.rawTools = undefined;
-    entry.error = undefined;
-    this.emit(entry);
-    this.entries.delete(name);
-    return true;
-  }
-
-  async markRemoved(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
+  private async retire(entry: InternalEntry): Promise<void> {
+    entry.accepting = false;
+    entry.attemptId++;
     entry.status = 'removed';
     entry.tools = undefined;
     entry.enabledNames = undefined;
     entry.rawTools = undefined;
     entry.error = undefined;
     this.emit(entry);
+    await Promise.all(entry.calls);
+    await this.closeClient(entry);
+  }
+
+  async remove(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
+    if (this.entries.get(name) === entry) this.entries.delete(name);
+    return true;
+  }
+
+  async markRemoved(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
     return true;
   }
 
@@ -261,6 +278,8 @@ export class McpConnectionManager implements McpConnectionView {
         name,
         config,
         attemptId: 0,
+        accepting: !disabled,
+        calls: new Set(),
         status: disabled ? 'disabled' : 'pending',
       };
       this.entries.set(name, entry);
@@ -446,34 +465,44 @@ export class McpConnectionManager implements McpConnectionView {
     client: RuntimeMcpClient,
     attemptId: number,
   ): void {
-    client.onToolsListChanged?.(() => this.scheduleToolsRefresh(entry, client, attemptId));
+    client.onToolsListChanged?.(() => {
+      void this.scheduleToolsRefresh(entry, client, attemptId).catch((error: unknown) => {
+        this.log.warn('mcp tool list refresh failed', {
+          server: entry.name,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      });
+    });
+  }
+
+  refreshToolList(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (entry?.client === undefined || entry.status !== 'connected') return Promise.resolve();
+    return this.scheduleToolsRefresh(entry, entry.client, entry.attemptId);
   }
 
   private scheduleToolsRefresh(
     entry: InternalEntry,
     client: RuntimeMcpClient,
     attemptId: number,
-  ): void {
-    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return;
+  ): Promise<void> {
+    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return Promise.resolve();
     const pending = entry.toolRefresh;
     if (pending !== undefined) {
       pending.queued = true;
-      return;
+      return pending.work ?? Promise.resolve();
     }
-    const next = { queued: false };
+    const next: NonNullable<InternalEntry['toolRefresh']> = { queued: false };
     entry.toolRefresh = next;
-    void this.refreshTools(entry, client, attemptId)
-      .catch((error: unknown) => {
-        this.log.warn('mcp tool list refresh failed', {
-          server: entry.name,
-          errorType: error instanceof Error ? error.name : typeof error,
-        });
-      })
-      .finally(() => {
-        if (entry.toolRefresh !== next) return;
-        entry.toolRefresh = undefined;
-        if (next.queued) this.scheduleToolsRefresh(entry, client, attemptId);
-      });
+    next.work = (async () => {
+      do {
+        next.queued = false;
+        await this.refreshTools(entry, client, attemptId);
+      } while (next.queued && this.isCurrent(entry, attemptId) && entry.client === client && entry.status === 'connected');
+    })().finally(() => {
+      if (entry.toolRefresh === next) entry.toolRefresh = undefined;
+    });
+    return next.work;
   }
 
   private async refreshTools(

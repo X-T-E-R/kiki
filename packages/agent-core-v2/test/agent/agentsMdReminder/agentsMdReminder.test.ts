@@ -88,7 +88,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  disposables.dispose();
+  await disposables.dispose();
   await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });

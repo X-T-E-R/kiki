@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   baseUrlRequired,
+  blankModelRow,
   connectionFieldIssue,
   draftForPreset,
   presetById,
@@ -53,6 +54,13 @@ describe('withBaseUrl', () => {
   it('clears a derived id when the address is cleared, so the empty-name hint can show', () => {
     const derived = withBaseUrl(draftForPreset(null, 'openai'), 'https://api.deepseek.com/v1');
     expect(withBaseUrl(derived, '').id).toBe('');
+  });
+});
+
+describe('a new model row', () => {
+  it('offers the two thinking levels most setups want, low to high', () => {
+    expect(draftForPreset(null, 'openai').models[0]!.supportEfforts).toEqual(['low', 'high']);
+    expect(blankModelRow(250000).supportEfforts).toEqual(['low', 'high']);
   });
 });
 

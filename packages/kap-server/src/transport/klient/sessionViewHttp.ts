@@ -39,7 +39,7 @@ export interface SessionViewHttpOptions {
 }
 
 export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts: SessionViewHttpOptions): void {
-  app.post(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/content`, async (req, reply) => {
+  app.post(`${KLIENT_SESSION_VIEW_PATH}/:sessionId/transcript/content`, { bodyLimit: Number.MAX_SAFE_INTEGER }, async (req, reply) => {
     const service = opts.sessionViewTranscriptService;
     if (service === undefined) throw new RPCError(50001, 'session view unavailable');
     const parsed = sessionViewTranscriptContentInputSchema.safeParse(req.body);
@@ -133,6 +133,7 @@ export class SessionViewHttpConnection {
   private readonly views = new Map<string, AttachedView>();
   private readonly tasks = new Map<string, Promise<void>>();
   private readonly frames = new Map<string, KlientFrame>();
+  private readonly pendingDisposals = new Set<Promise<void>>();
   private readonly detached = new Set<string>();
   private readonly activationListener: IDisposable | undefined;
   private closed = false;
@@ -296,7 +297,11 @@ export class SessionViewHttpConnection {
 
   dispose(): void {
     this.closed = true;
-    this.activationListener?.dispose();
+    const activation = this.activationListener?.dispose();
+    if (activation instanceof Promise) {
+      this.pendingDisposals.add(activation);
+      activation.finally(() => this.pendingDisposals.delete(activation)).catch(() => {});
+    }
     for (const id of this.views.keys()) this.detach(id);
     this.frames.clear();
     this.tasks.clear();

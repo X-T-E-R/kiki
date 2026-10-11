@@ -97,7 +97,7 @@ describe('AgentCommandService — CommandContribution fold', () => {
     await commands.run('beta');
     await commands.run('gamma', 'z');
     expect(calls).toEqual(['alpha:x y', 'beta:echo!', 'gamma:z']);
-    host.dispose();
+    await host.dispose();
   });
 
   it('shadows an earlier record with a later one of the same name', async () => {
@@ -120,7 +120,7 @@ describe('AgentCommandService — CommandContribution fold', () => {
     expect(commands.list()).toHaveLength(1);
     await commands.run('dup');
     expect(calls).toEqual(['second']);
-    host.dispose();
+    await host.dispose();
   });
 
   it('fails unknown commands with a coded REQUEST_INVALID error', async () => {
@@ -128,7 +128,7 @@ describe('AgentCommandService — CommandContribution fold', () => {
     await expect(commands.run('nope')).rejects.toMatchObject({
       code: ErrorCodes.REQUEST_INVALID,
     });
-    host.dispose();
+    await host.dispose();
   });
 
   it('withdraws the commands when the provider unit dies', async () => {
@@ -137,11 +137,11 @@ describe('AgentCommandService — CommandContribution fold', () => {
     ]);
     expect(commands.list()).toHaveLength(1);
 
-    handle.dispose();
+    await handle.dispose();
     await host.app.instantiation.cascade.whenIdle();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(commands.list()).toHaveLength(0);
-    host.dispose();
+    await host.dispose();
   });
 });

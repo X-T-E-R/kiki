@@ -11,6 +11,8 @@ import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeCapability, RuntimeStatus } from '#/runtime/runtime';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { EnabledPluginSystemPrompt } from '#/app/plugin/types';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import type { SkillCatalog } from '#/app/skillCatalog/types';
@@ -197,7 +199,7 @@ describe('AgentProfileService.applyProfile', () => {
     const created = await store.put(mutation);
     const edited = await store.put({ ...mutation, action: 'update', id: created.entry.id, expectedRevision: created.entry.revision, body: 'Use the checked-in lockfile.' });
     expect(context.get()).toEqual(original);
-    const scans = vi.spyOn(store, 'list');
+    const scans = vi.spyOn(store, 'inventory');
     await injector.reconcileAllAtSafeBoundary();
     expect(scans).toHaveBeenCalledTimes(2);
     expect(states.get(dynamicPromptKey)?.context.memory).toContain(edited.entry.body);
@@ -221,9 +223,15 @@ describe('AgentProfileService.applyProfile', () => {
     expect(snapshots()).toHaveLength(2);
     expect(scans).toHaveBeenCalledTimes(2);
     scans.mockRestore();
-    const transient = await store.put({ ...mutation, title: 'Transient rule' });
-    await store.delete(mutation.scope, transient.entry.id, transient.entry.revision);
-    await injector.reconcileAllAtSafeBoundary();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const transient = await store.put({ ...mutation, title: 'Transient rule' });
+      await store.delete(mutation.scope, transient.entry.id, transient.entry.revision);
+      clock.mockReturnValue(2_000);
+      await injector.reconcileAllAtSafeBoundary();
+    } finally {
+      clock.mockRestore();
+    }
     expect(snapshots()).toHaveLength(2);
     await store.put({ ...mutation, scope: { kind: 'persona', personaId: 'other' } });
     await injector.reconcileAllAtSafeBoundary();
@@ -247,11 +255,26 @@ describe('AgentProfileService.applyProfile', () => {
     expect(textOf(snapshots().at(-1)!)).toContain('Full snapshot; all sections replace earlier values.');
     const last = await host.get(IAgentMemorySnapshot).get();
     await store.put({ ...mutation, title: 'Post-compaction rule' });
-    vi.spyOn(store, 'list').mockRejectedValue(new Error('render unavailable'));
+    const unavailableInventory = vi.spyOn(store, 'inventory').mockRejectedValue(new Error('render unavailable'));
     await injector.reconcileAllAtSafeBoundary();
     expect(textOf(snapshots().at(-1)!)).toContain('status=stale/degraded');
     expect(last).toContain('status=empty');
     expect(svc.getSystemPrompt()).toBe(system);
+    unavailableInventory.mockRestore();
+
+    const expiryClock = vi.spyOn(Date, 'now').mockReturnValue(3_000);
+    try {
+      await store.put({ ...mutation, title: 'Expiring rule', validity: { check: 'Check this rule before relying on it.', until: new Date(4_000).toISOString() } });
+      await injector.reconcileAllAtSafeBoundary();
+      const beforeExpiry = snapshots().length;
+      expect(textOf(snapshots().at(-1)!)).toContain('Expiring rule');
+      expiryClock.mockReturnValue(5_000);
+      await injector.reconcileAllAtSafeBoundary();
+      expect(snapshots()).toHaveLength(beforeExpiry + 1);
+      expect(textOf(snapshots().at(-1)!)).toContain('[index; expired]');
+    } finally {
+      expiryClock.mockRestore();
+    }
   });
 
   it('leaves legacy memory frozen on commits and explicit memory refresh until its migration boundary', async () => {
@@ -271,7 +294,7 @@ describe('AgentProfileService.applyProfile', () => {
     const before = svc.getSystemPrompt();
     const store = host.get(IMemoryStore);
     await store.put({ action: 'create', scope: { kind: 'global' }, type: 'feedback', title: 'Legacy new rule', body: 'New saved rule.', reason: 'user instruction', source: { writer: 'user' } });
-    const scans = vi.spyOn(store, 'list');
+    const scans = vi.spyOn(store, 'inventory');
     await svc.refreshMemorySnapshot();
     await host.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
     await svc.refreshSystemPrompt();
@@ -373,7 +396,7 @@ describe('AgentProfileService.applyProfile', () => {
     expect(svc.getSystemPrompt()).toBe('BASE\n\nVALID');
   });
 
-  it.each(['file', 'route', 'file-sources'] as const)('refreshes a cold %s from its stored definition without changing its lease or duplicating shared text', async (kind) => {
+  it.each(['file', 'route', 'file-sources'] as const)('keeps a legacy cold %s prompt without adopting new configuration or changing its lease', async (kind) => {
     const { ctx: host, profile: svc } = buildContext();
     const config = host.get(IConfigService);
     const get = config.get.bind(config);
@@ -388,18 +411,18 @@ describe('AgentProfileService.applyProfile', () => {
     const before = { ...svc.data(), routeId: kind === 'route' ? 'frozen-route' : undefined, boundProfile: frozen };
     svc.applyBindingSnapshot(before);
     prompt = { variables: { guidance: 'new ${literal}' }, overrides: { fields: { 'system.shared': 'GLOBAL_NEW' } } };
-    await svc.preparePromptConfiguration();
-    expect(svc.getSystemPrompt()).toContain('Role new ${literal}');
-    if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route new ${literal}');
-    expect(svc.getSystemPrompt().split('GLOBAL_NEW')).toHaveLength(2);
+    expect(await svc.preparePromptConfiguration()).toBe(false);
+    expect(svc.getSystemPrompt()).toContain('Role old');
+    if (kind === 'route') expect(svc.getSystemPrompt()).toContain('Route old');
+    expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
     expect(svc.data().activeToolNames).toEqual(before.activeToolNames);
-    expect({ ...svc.data().boundProfile, promptBase: undefined }).toEqual({ ...frozen, promptBase: undefined });
-    expect(svc.data().boundProfile?.promptBase?.text).toContain('Role new ${literal}');
-    expect(svc.data().systemPrompt).not.toContain('GLOBAL_NEW');
+    expect(svc.data().boundProfile).toEqual(frozen);
+    expect(svc.data().systemPrompt).toBe(before.systemPrompt);
+    expect(svc.data().renderGeneration).toBe(before.renderGeneration);
     svc.applyBindingSnapshot(svc.data());
     prompt = {};
-    await svc.preparePromptConfiguration();
-    expect(svc.getSystemPrompt()).toContain('Role ${guidance}');
+    expect(await svc.preparePromptConfiguration()).toBe(false);
+    expect(svc.getSystemPrompt()).toContain('Role old');
     expect(svc.getSystemPrompt()).not.toContain('GLOBAL_NEW');
   });
 
@@ -437,11 +460,12 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(selected);
     const snapshot = { ...svc.data(), systemPrompt: 'HISTORIC_FROZEN_PROMPT', boundProfile: freezeBoundProfile(selected) };
     svc.applyBindingSnapshot(snapshot);
+    getDefault.mockClear();
 
     await expect(svc.refreshSystemPrompt()).resolves.toBeUndefined();
 
-    expect(svc.getSystemPrompt()).toContain('Stored role');
-    expect(svc.getSystemPrompt()).not.toContain('HISTORIC_FROZEN_PROMPT');
+    expect(svc.getSystemPrompt()).toBe('HISTORIC_FROZEN_PROMPT');
+    expect(getDefault).not.toHaveBeenCalled();
   });
 
   it('reports an unavailable saved source instead of silently keeping stale configured variables', async () => {
@@ -622,6 +646,93 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(profile);
 
     expect(svc.getAgentsMdWarning()).toBeUndefined();
+  });
+
+  it.each([true, false])('reprojects plugin usage at a safe boundary without adopting profile inputs (dynamic=%s)', async (dynamic) => {
+    const change = new Emitter<PluginUsageChange>();
+    const reload = new Emitter<import('#/app/plugin/types').PluginReloadEvent>();
+    const off = new Set<string>();
+    const usage: IPluginUsageService = {
+      _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async (_workspaceId, pluginId) => !off.has(pluginId),
+      set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'],
+    };
+    const sections = { value: [{ pluginId: 'demo', content: 'frozen demo' }, { pluginId: 'other', content: 'frozen other' }] };
+    const plugins = { ...pluginStub(sections), onDidReload: reload.event };
+    const { ctx: host, profile: svc } = buildContext(appService(IPluginService, plugins), appService(IPluginUsageService, usage));
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { profileKey } = await import('#/agent/profile/profileOps');
+    const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+    const states = host.get(IAgentStateService);
+    if (dynamic) states.set(profileKey, { ...states.get(profileKey), renderGeneration: 0 });
+    const base = normalizeAgentProfile({ name: 'plugin-use', tools: [], systemPrompt: (context) => `Role stays frozen\n${context.pluginSections ?? ''}` });
+    await svc.applyProfile(base);
+    const original = svc.data().systemPrompt;
+    const originalContext = states.get(dynamicPromptKey)!.context;
+    const waiters: Promise<unknown>[] = [];
+    const workspaceId = host.get(ISessionContext).workspaceId;
+    sections.value = [{ pluginId: 'demo', content: 'unadopted demo' }, { pluginId: 'other', content: 'unadopted other' }];
+    off.add('demo');
+    change.fire({ workspaceId, pluginId: 'demo', revision: 1, waitUntil: (work) => { waiters.push(work); } });
+    expect(svc.data().systemPrompt).toBe(original);
+    await svc.reconcilePluginUsage!();
+    await Promise.all(waiters);
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toBe('<!-- From: plugin other -->\nfrozen other');
+    expect({ ...states.get(dynamicPromptKey)!.context, pluginSections: originalContext.pluginSections }).toEqual(originalContext);
+    expect(svc.data().systemPrompt).toContain('Role stays frozen');
+    if (dynamic) expect(svc.data().systemPrompt).toBe(original);
+    else expect(svc.data().systemPrompt).not.toContain('frozen demo');
+    off.delete('demo');
+    change.fire({ workspaceId, pluginId: 'demo', revision: 2, waitUntil: () => {} });
+    await svc.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('frozen demo');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).not.toContain('unadopted');
+    reload.fire({ added: [], removed: [], errors: [], affected: ['demo'], signal: new AbortController().signal, waitUntil: () => {} });
+    await svc.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('unadopted demo');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('frozen other');
+    change.dispose(); reload.dispose();
+  });
+
+  it.each([true, false])('restores cold frozen plugin blocks before projecting workspace usage (metadata=%s)', async (metadata) => {
+    const change = new Emitter<PluginUsageChange>();
+    let allowed = true;
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied', errors: [] }),
+      allows: async () => allowed, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const sections = { value: [{ pluginId: 'demo', content: 'saved demo\nwith two lines' }] };
+    const { IAgentStateService } = await import('#/agent/state/agentState');
+    const { dynamicPromptKey } = await import('#/agent/profile/dynamicPrompt');
+    const first = buildContext(appService(IPluginService, pluginStub(sections)), appService(IPluginUsageService, usage));
+    await first.profile.applyProfile(pluginProfile);
+    const saved = structuredClone(first.ctx.get(IAgentStateService).get(dynamicPromptKey)!);
+    await first.ctx.dispose();
+    sections.value = [{ pluginId: 'demo', content: 'current unadopted demo' }];
+    const second = buildContext(appService(IPluginService, pluginStub(sections)), appService(IPluginUsageService, usage));
+    const states = second.ctx.get(IAgentStateService);
+    states.set(dynamicPromptKey, { ...saved, context: { ...saved.context, pluginBlocks: metadata ? saved.context.pluginBlocks : undefined } });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('saved demo\nwith two lines');
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).not.toContain('unadopted');
+    const workspaceId = second.ctx.get(ISessionContext).workspaceId;
+    allowed = false;
+    change.fire({ workspaceId, pluginId: 'demo', revision: 1, waitUntil: () => {} });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toBe('');
+    allowed = true;
+    change.fire({ workspaceId, pluginId: 'demo', revision: 2, waitUntil: () => {} });
+    await second.profile.reconcilePluginUsage!();
+    expect(states.get(dynamicPromptKey)!.context.pluginSections).toContain('saved demo\nwith two lines');
+    change.dispose();
   });
 
   it('injects enabled plugin system-prompt sections into the rendered prompt', async () => {
@@ -857,6 +968,7 @@ function pluginStub(
     enabledHooks: async () => [],
     listPluginCommands: async () => [],
     listPlugins: async () => [],
+    getPluginInfo: async ({ id }: { id: string }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
   } as unknown as IPluginService;
 }
 

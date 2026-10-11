@@ -52,15 +52,18 @@ vi.mock('../state/connection', async (importOriginal) => {
   // per-call fresh object would recreate the controller every render (and
   // leak listeners until the worker OOMs).
   const fakeClient = {
+    readingOptions: () => ({ timeoutMs: 0 }),
     readHostFile: (path: string) =>
       path in FILES ? Promise.resolve(FILES[path]) : Promise.reject(new Error('not found')),
     previewHostFile: (path: string) =>
       path === '/work/docs/long.md' ? Promise.resolve({ text: '# Beginning\n', truncated: true })
         : path in FILES ? Promise.resolve({ text: FILES[path], truncated: false }) : Promise.reject(new Error('not found')),
     readHostFileBytes: (path: string) => {
+      if (path in FILES) return Promise.resolve({ bytes: new TextEncoder().encode(FILES[path]), mime: 'text/plain' });
       const file = {
         '/work/shots/screen.png': { bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png' },
         '/work/clips/intro.mp4': { bytes: new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]), mime: 'video/mp4' },
+        '/work/audio/sample.mp3': { bytes: new Uint8Array([73, 68, 51, 3]), mime: 'audio/mpeg' },
         '/work/bundles/release.zip': { bytes: new Uint8Array([80, 75, 3, 4]), mime: 'application/zip' },
       }[path];
       return file === undefined ? Promise.reject(new Error('not found')) : Promise.resolve(file);
@@ -489,6 +492,51 @@ describe('PreviewWorkspace', () => {
     expect(editor.dataset['line']).toBe('3');
   });
 
+  it('reuses an existing Windows file tab across slash spelling and citation targets', async () => {
+    const path = 'C:\\Example\\notes.md';
+    FILES[path] = '# Example\n\nSource text.\n';
+    const probe = makeRoot();
+    await renderSettled(probe.root, <MediaPreviewProvider cwd="C:/Example">
+      <Markdown text={'See `C:\\Example\\notes.md:3` and `c:/example/notes.md:1`'} />
+    </MediaPreviewProvider>);
+    const links = probe.container.querySelectorAll('a');
+    await act(async () => { links[0]!.click(); });
+    const editor = workspace().querySelector<HTMLElement>('[data-testid="editor"]')!;
+    await act(async () => { links[1]!.click(); });
+    expect(tabs()).toEqual([path]);
+    expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
+    expect(editor.dataset['line']).toBe('1');
+    delete FILES[path];
+  });
+
+  it('switches line citations to source and headings to rendered without discarding the source editor', async () => {
+    const probe = makeRoot();
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      await renderSettled(probe.root, <MediaPreviewProvider cwd="/work">
+        <Markdown text={'[line](docs/design.md:3) [heading](docs/design.md#design) [missing](docs/design.md#absent) [outside](docs/design.md:999) [invalid](docs/design.md:0)'} />
+      </MediaPreviewProvider>);
+      const links = probe.container.querySelectorAll('a');
+      await act(async () => { links[0]!.click(); });
+      const editor = workspace().querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+      await act(async () => { links[1]!.click(); });
+      expect(editor.closest('[hidden]')).not.toBeNull();
+      expect(workspace().querySelector('h1')?.textContent).toBe('Design');
+      expect(workspace().querySelector('h1')!.closest('[hidden]')).toBeNull();
+      await act(async () => { links[2]!.click(); });
+      expect(workspace().textContent).toContain('File opened, but the cited location was not found.');
+      await act(async () => { links[3]!.click(); });
+      expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
+      expect(editor.closest('[hidden]')).toBeNull();
+      expect(workspace().textContent).toContain('Showing the nearest available position.');
+      await act(async () => { links[4]!.click(); });
+      expect(tabs()).toEqual(['/work/docs/design.md']);
+      expect(workspace().textContent).toContain('File opened, but the cited location was not found.');
+    } finally { HTMLElement.prototype.scrollIntoView = original; }
+  });
+
   it('opens files as tabs and activates the newest one', async () => {
     const probe = makeRoot();
     await renderSettled(
@@ -509,7 +557,7 @@ describe('PreviewWorkspace', () => {
     expect(panel?.querySelector('h1')?.textContent).toBe('Design');
   });
 
-  it('discloses a truncated Markdown preview and loads the full file on demand without enabling editing', async () => {
+  it('automatically completes a truncated Markdown preview without enabling editing', async () => {
     FILES['/work/docs/long.md'] = '# Beginning\n\n# Hidden ending\n';
     const probe = makeRoot();
     await renderSettled(probe.root,
@@ -520,11 +568,7 @@ describe('PreviewWorkspace', () => {
     await openFile(probe.container, '/work/docs/long.md');
     const panel = workspace().querySelector('[data-preview-tabpanel="/work/docs/long.md"]')!;
     expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
-    expect(panel.textContent).toContain('preview shows only the beginning');
-    expect(panel.textContent).not.toContain('Hidden ending');
-    await act(async () => {
-      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    expect(panel.textContent).toContain('Hidden ending');
     expect(panel.querySelector('h1')?.textContent).toBe('Beginning');
     expect([...panel.querySelectorAll('h1')].map((heading) => heading.textContent)).toEqual(['Beginning', 'Hidden ending']);
     expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
@@ -546,11 +590,6 @@ describe('PreviewWorkspace', () => {
       panel.querySelector('[data-md-mode="source"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     const editor = () => panel.querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
-    expect(editor().value).not.toContain('Hidden ending');
-    expect(panel.querySelector('[data-load-full-markdown]')).not.toBeNull();
-    await act(async () => {
-      panel.querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
     expect(editor().value).toContain('# Hidden ending');
     expect(editor().readOnly).toBe(true);
     expect(panel.querySelector('[data-load-full-markdown]')).toBeNull();
@@ -563,12 +602,10 @@ describe('PreviewWorkspace', () => {
     const view = () => <MediaPreviewProvider cwd="/work"><OpenButton path="/work/docs/long.md" /></MediaPreviewProvider>;
     await renderSettled(probe.root, view());
     await openFile(probe.container, '/work/docs/long.md');
-    await act(async () => {
-      workspace().querySelector('[data-load-full-markdown]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
     expect(workspace().textContent).toContain('Private ending');
 
     connectionMock.activeClient = {
+      readingOptions: () => ({ timeoutMs: 0 }),
       readHostFile: async () => '# Second host\n',
       previewHostFile: async () => ({ text: '# Second host\n', truncated: true }),
       readHostFileBytes: async () => { throw new Error('not found'); },
@@ -1181,6 +1218,82 @@ describe('PreviewWorkspace media tabs', () => {
     expect(panel.querySelector('[data-download-file]')).not.toBeNull();
     expect(panel.querySelector('[data-open-default-app]')).toBeNull();
     expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+  });
+
+  it('plays common audio files with native controls from the original bytes', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/sample.mp3" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/audio/sample.mp3');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/sample.mp3"]')!;
+    const audio = panel.querySelector<HTMLAudioElement>('audio[data-preview-audio]')!;
+    expect(audio.hasAttribute('controls')).toBe(true);
+    expect(audio.getAttribute('src')).toBe('blob:mock');
+    expect(panel.querySelector('[data-audio-meta]')?.textContent).toBe('4 B');
+    expect(panel.querySelector('[data-download-file]')).not.toBeNull();
+    expect(panel.querySelector('[data-open-default-app]')).toBeNull();
+    expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+  });
+
+  it('keeps a real audio read failure visible and retries the original read', async () => {
+    const readHostFileBytes = vi.fn()
+      .mockRejectedValueOnce(new Error('read failed'))
+      .mockResolvedValue({ bytes: new Uint8Array([1, 2]), mime: 'audio/wav' });
+    connectionMock.activeClient = { readHostFileBytes };
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/retry.wav" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/audio/retry.wav');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/retry.wav"]')!;
+    expect(panel.querySelector('audio[data-preview-audio]')).toBeNull();
+    expect(panel.querySelector('[data-preview-audio-retry]')).not.toBeNull();
+    await act(async () => {
+      panel.querySelector<HTMLButtonElement>('[data-preview-audio-retry]')!.click();
+      await Promise.resolve();
+    });
+    expect(readHostFileBytes).toHaveBeenCalledTimes(2);
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
+  });
+
+  it('drops old audio bytes before a client or scope change resolves', async () => {
+    let resolveSecond!: (value: { bytes: Uint8Array; mime: string }) => void;
+    const firstClient = { readHostFileBytes: vi.fn(async () => ({ bytes: new Uint8Array([1]), mime: 'audio/mpeg' })) };
+    const secondClient = {
+      readHostFileBytes: vi.fn(() => new Promise<{ bytes: Uint8Array; mime: string }>((resolve) => { resolveSecond = resolve; })),
+    };
+    connectionMock.activeClient = firstClient;
+    const probe = makeRoot();
+    const view = () => (
+      <MediaPreviewProvider cwd="/work">
+        <OpenButton path="/work/audio/scope-change.mp3" />
+      </MediaPreviewProvider>
+    );
+    await renderSettled(probe.root, view());
+    await openFile(probe.container, '/work/audio/scope-change.mp3');
+    await act(async () => { await Promise.resolve(); });
+    const panel = workspace().querySelector('[data-preview-tabpanel="/work/audio/scope-change.mp3"]')!;
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
+
+    connectionMock.scopeId = 'ssh:remote-2';
+    connectionMock.activeClient = secondClient;
+    await renderSettled(probe.root, view());
+    expect(panel.querySelector('audio[data-preview-audio]')).toBeNull();
+    expect(panel.querySelector('[data-preview-audio-retry]')).toBeNull();
+    await act(async () => {
+      resolveSecond({ bytes: new Uint8Array([2]), mime: 'audio/mpeg' });
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('audio[data-preview-audio]')).not.toBeNull();
   });
 
   it.each([['local', true], ['ssh:remote-1', false]] as const)(

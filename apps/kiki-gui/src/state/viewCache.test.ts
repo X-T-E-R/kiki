@@ -22,7 +22,7 @@ function fake(sessionId: string, bytes = 1024, patch: Partial<FakeState> = {}): 
   const open = vi.fn(async () => {});
   const close = vi.fn();
   const suspend = vi.fn(() => { suspended = true; });
-  const resume = vi.fn(() => { suspended = false; });
+  const resume = vi.fn(async () => { suspended = false; });
   const controller = {
     sessionId,
     open,
@@ -94,6 +94,26 @@ describe('LiveControllerRegistry view cache', () => {
     expect(registry.parkedCount).toBe(0);
     expect([...registry]).toEqual([a.controller]);
     again.release();
+  });
+
+  it('keeps a cache-hit lease pending until resume refreshes the shell', async () => {
+    const registry = new LiveControllerRegistry();
+    const scope = {};
+    const view = fake('a');
+    registry.acquire('a', scope, () => view.controller).release();
+    let resolveResume!: () => void;
+    const resume = new Promise<void>((resolve) => { resolveResume = resolve; });
+    view.resume.mockImplementation(() => resume);
+
+    const lease = registry.acquire('a', scope, () => view.controller);
+    let settled = false;
+    void lease.ready.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    resolveResume();
+    await lease.ready;
+    expect(settled).toBe(true);
+    lease.release();
   });
 
   it('evicts the least recently used suspended view past the count limit', () => {

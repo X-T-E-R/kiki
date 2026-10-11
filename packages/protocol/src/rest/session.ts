@@ -70,6 +70,7 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
     include_archive: booleanQueryParam,
     include_ephemeral: booleanQueryParam,
     archived_only: booleanQueryParam,
+    q: z.string().max(500).optional(),
     exclude_empty: booleanQueryParam,
   }),
 );
@@ -228,10 +229,31 @@ export const undoSessionResponseSchema = z.object({
 });
 export type UndoSessionResponse = z.infer<typeof undoSessionResponseSchema>;
 
+export const archiveSessionRequestSchema = z.object({
+  include_attached: z.boolean().optional(),
+  exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
+});
+export type ArchiveSessionRequest = z.infer<typeof archiveSessionRequestSchema>;
+
 export const archiveSessionResponseSchema = z.object({
-  archived: z.literal(true),
+  archived: z.boolean(),
+  outcomes: z.array(z.discriminatedUnion('ok', [
+    z.object({ id: z.string(), ok: z.literal(true) }),
+    z.object({ id: z.string(), ok: z.literal(false), reason: z.enum(['not_found', 'error']), message: z.string() }),
+  ])).optional(),
 });
 export type ArchiveSessionResponse = z.infer<typeof archiveSessionResponseSchema>;
+
+export const deleteArchivedSessionRequestSchema = z.object({
+  exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
+}).strict();
+export type DeleteArchivedSessionRequest = z.infer<typeof deleteArchivedSessionRequestSchema>;
+
+export const deleteArchivedSessionsResponseSchema = z.object({
+  deleted_ids: z.array(z.string()),
+  failed: z.array(z.object({ id: z.string(), title: z.string().optional(), message: z.string() })),
+});
+export type DeleteArchivedSessionsResponse = z.infer<typeof deleteArchivedSessionsResponseSchema>;
 
 export const restoreSessionResponseSchema = sessionSchema;
 export type RestoreSessionResponse = z.infer<typeof restoreSessionResponseSchema>;

@@ -136,6 +136,8 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
 
   return (
     <section data-plugin-settings={pluginId} className="space-y-4">
+      {/* The form names itself wherever it renders: on this plugin's own page
+          it is the subject, not a block inside something else's heading. */}
       <h2 className="text-[13px] font-medium text-ink">{t('cap.settings.title')}</h2>
       <fieldset disabled={saving} className="min-w-0 space-y-5 disabled:opacity-60">
         {entries.map(([key, property]) => {

@@ -316,3 +316,26 @@ describe('SessionCronSection', () => {
     expect(head.textContent).toContain('剩余');
   });
 });
+
+describe('SessionCronSection delivery timing', () => {
+  it('names the timing on each row, and reads a task with no recorded timing as the default', async () => {
+    seed([
+      makeTask({ id: 'idle-task', delivery_mode: 'idle' }),
+      makeTask({ id: 'queue-task', delivery_mode: 'queue' }),
+      makeTask({ id: 'steer-task', delivery_mode: 'steer' }),
+      makeTask({ id: 'legacy-task' }),
+    ]);
+    await mount();
+    // The block folds after three rows; the fourth is behind "show more",
+    // and every mode has to be readable without opening anything.
+    const more = container.querySelector<HTMLButtonElement>('[data-rail-cron-more]');
+    if (more !== null) await act(async () => { more.click(); });
+    const text = (id: string) => container.querySelector(`[data-rail-cron-row="${id}"] [data-rail-cron-delivery]`)?.textContent;
+    expect(text('idle-task')).toBe('空闲时插入');
+    expect(text('queue-task')).toBe('排队');
+    expect(text('steer-task')).toBe('立即插入');
+    // No recorded timing: the default the host will apply, never a mode it
+    // never reported.
+    expect(text('legacy-task')).toBe('空闲时插入');
+  });
+});

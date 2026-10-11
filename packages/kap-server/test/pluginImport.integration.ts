@@ -385,7 +385,6 @@ it('offers native rules in a clean home, runs a selected custom script and conti
     await vi.waitFor(async () => expect((await target.client.global.imports.job(archiveStart.id)).status).toBe('completed'));
     expect((await target.client.global.imports.job(archiveStart.id)).archiveId).toBeTruthy();
     expect(await target.client.global.plugins.list()).toEqual([]);
-    vi.stubEnv('KIKI_EXPERIMENTAL_PLUGIN_IMPORT', 'false');
     const settingsHome = await mkdtemp(path.join(scratch, 'native-rule-settings-'));
     const fixtureSettings = { 'kiki-history': { customScript: script }, example_plugin: { some_key: 'kept', plugin_token_secret: 'fixture-not-a-secret' } };
     await writeFile(path.join(settingsHome, 'config.toml'), `[plugin_settings.kiki-history]\ncustomScript = ${JSON.stringify(script)}\n[plugin_settings.example_plugin]\nsome_key = "kept"\nplugin_token_secret = "fixture-not-a-secret"\n`);
@@ -400,7 +399,7 @@ it('offers native rules in a clean home, runs a selected custom script and conti
     const savedFixtureCredentials = await readFile(path.join(settingsHome, 'credentials/credentials.toml'), 'utf8');
     expect(savedFixtureCredentials).toContain('[plugin_settings.example_plugin]');
     expect(savedFixtureCredentials).toContain('plugin_token_secret = "fixture-not-a-secret"');
-    await expect(disabled.client.global.imports.sources()).rejects.toThrow('disabled');
+    expect((await disabled.client.global.imports.sources()).map((item) => item.id)).toEqual(['claude-code', 'codex', 'pi', 'grok', 'opencode', 'custom']);
   } finally {
     await new Promise<void>((resolve, reject) => provider.close((error) => { if (error) reject(error); else resolve(); }));
   }

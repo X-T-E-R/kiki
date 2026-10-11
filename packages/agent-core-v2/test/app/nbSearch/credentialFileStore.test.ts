@@ -24,8 +24,8 @@ beforeEach(() => {
   store = new NbSearchCredentialFileStore(ix.get(IHostFileSystem));
 });
 
-afterEach(() => {
-  disposables.dispose();
+afterEach(async () => {
+  await disposables.dispose();
 });
 
 describe('NbSearchCredentialFileStore', () => {

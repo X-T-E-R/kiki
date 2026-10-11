@@ -155,11 +155,23 @@ describe('groupBlocks', () => {
     expect(mixed.startedAt).toBe(0);
   });
 
-  it('never folds the memory tools — their rows carry view/undo actions', () => {
+  it('folds ordinary memory reads with the read run and keeps the row', () => {
     const memory = tool('MemoryRead');
-    const blocks = [read(), read(), memory, read()];
-    expect(groupBlocks(blocks)).toEqual(blocks);
+    const reads = [read(), read(), memory];
+    const nodes = groupBlocks(reads);
+    expect(nodes).toHaveLength(1);
+    const group = nodes[0] as ToolGroup;
+    expect(group.members[2]).toBe(memory);
+    expect(isReadStep(memory)).toBe(true);
+    expect(isReadStep(tool('MemorySearch', 'done', { args: { query: 'notes' } }))).toBe(true);
+  });
+
+  it('keeps a memory write out of a pure read run', () => {
+    const before = [read(), read()];
+    const memory = tool('MemoryWrite');
+    const after = read();
     expect(isReadStep(memory)).toBe(false);
+    expect(groupBlocks([...before, memory, after])).toEqual([...before, memory, after]);
   });
 
   it('claims exactly the three memory tools', () => {
@@ -254,6 +266,31 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(nodes[2]).toBe(blocks[4]);
   });
 
+  it('folds ordinary memory into the same process run and leaves a running memory row out', () => {
+    const memory = inTurn(tool('MemoryWrite'), 't1');
+    const thought = inTurn(thinking(), 't1');
+    const command = inTurn(shell(), 't1');
+    const running = inTurn(tool('MemoryRead', 'running'), 't1');
+    const nodes = foldHistory([memory, thought, command, running], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'tool']);
+    const fold = nodes[0] as HistoryFold;
+    expect(fold.members).toEqual([memory, thought, command]);
+    expect(fold.members[0]).toBe(memory);
+    expect(nodes[1]).toBe(running);
+  });
+
+  it('keeps a completed shell foldable on its own and with the process beside it', () => {
+    const alone = inTurn(shell(), 't1');
+    expect(foldHistory([alone], 't9')).toMatchObject([{ kind: 'history-fold', steps: 1, members: [alone] }]);
+    const broken = [inTurn(shell(), 't1'), inTurn(text('assistant'), 't1'), inTurn(shell(), 't1')];
+    expect(foldHistory(broken, 't9').map((node) => node.kind)).toEqual(['history-fold', 'assistant', 'history-fold']);
+    const together = [inTurn(thinking(), 't2'), inTurn(shell(), 't2'), inTurn(read('/w/a'), 't2')];
+    const nodes = foldHistory(together, 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold']);
+    expect((nodes[0] as HistoryFold).members).toEqual(together);
+    expect(nodes[0]).toMatchObject({ steps: 2, thoughts: 1 });
+  });
+
   it('folds completed empty shells without moving prose or hiding running shells', () => {
     const before = inTurn(text('assistant'), 't2');
     const thought = inTurn(thinking(), 't2');
@@ -292,6 +329,19 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect((nodes[1] as MediaRun).members).toHaveLength(2);
     expect(nodes[5]).toMatchObject({ latest: true });
     expect(isReadStep(image('t1'))).toBe(false);
+  });
+
+  it('gives an image that arrives as the result’s own attachment the same row', () => {
+    const attached = (turnId: string): ToolBlock => inTurn(tool('external_paint', 'done', {
+      media: [{ kind: 'image', fileId: 'f_acp_2f1a', name: 'answer.png', mime: 'image/png' }],
+    }), turnId);
+    const blocks = [inTurn(read('/w/a'), 't1'), inTurn(shell(), 't1'), attached('t1'), inTurn(text('user'), 't2'), attached('t2')];
+    const nodes = foldHistory(blocks, latestTurnId(blocks));
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'media-run', 'user', 'media-run']);
+    const historical = nodes[1] as MediaRun;
+    expect(historical).toMatchObject({ latest: false });
+    expect(historical.members).toHaveLength(1);
+    expect(nodes[3]).toMatchObject({ latest: true });
   });
 
   it.each([false, true])('merges completion echoes by execution, retaining separate resumes and same-name agents (summaryFirst=%s)', (summaryFirst) => {

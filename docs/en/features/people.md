@@ -60,11 +60,11 @@ The **/memory** page exposes the persona scope alongside global and workspace, i
 
 A room gives two to six members a shared conversation with a host, a budget, and pause and continue. Persona members get their own message-mode sessions inside the room; existing threads can join as themselves, keeping their own sessions, workspaces, and permissions. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link.
 
-Members run in order, so a later speaker sees earlier speakers' results rather than talking past them. Scheduling follows three rules and nothing else:
+Persona turns run in order; existing threads each have their own queue. A member catches up on room messages when it wakes. Older queued notifications already covered by a successfully completed catch-up do not start another turn. Scheduling follows three rules:
 
 1. A user mention wakes the named members; `@everyone` selects all of them.
 2. A user message with no mention goes to the host, whether the host is a persona or a thread.
-3. A persona or Bot message wakes only the members it mentions. A message with no mentions does not continue the discussion.
+3. A persona or thread room message wakes only the members it mentions. A message with no mentions is logged but wakes no one.
 
 The budget limits member messages after each user message — 12 by default. When it runs out the discussion pauses, and **Continue** resets the budget and resumes the retained work. **Pause** cancels queued wakes but lets the active turn finish.
 

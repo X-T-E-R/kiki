@@ -140,6 +140,13 @@ function stubContextMemory(): IAgentContextMemoryService & {
       }
       return cut;
     },
+    undoAndReplace: async (count, replacementPrompt) => {
+      const cut = computeUndoCut(messages, count);
+      if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+        messages.splice(cut.cutIndex, messages.length - cut.cutIndex, replacementPrompt.message);
+      }
+      return cut;
+    },
     applyCompaction: (input: ContextCompactionInput): ContextCompactionResult => {
       const shape = buildContextCompactionShape(messages, input);
       messages.splice(0, messages.length, ...shape.messages);
@@ -437,8 +444,8 @@ describe('IExternalHooksRunnerService integration', () => {
       ]);
       expect(stopInputs).toEqual([{ stopHookActive: false }, { stopHookActive: false }]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -532,8 +539,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -642,8 +649,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -726,8 +733,8 @@ describe('IExternalHooksRunnerService integration', () => {
         }),
       );
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1016,8 +1023,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1190,8 +1197,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1314,8 +1321,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1359,8 +1366,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(fired).toEqual(['SessionHeartbeat', 'SessionHeartbeat']);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1402,8 +1409,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(180_000);
       expect(fired).toEqual([]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1459,8 +1466,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(fired).toEqual(['SessionHeartbeat']);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1521,8 +1528,8 @@ describe('IExternalHooksRunnerService integration', () => {
       });
       expect(context.observableMessages).toEqual([context.messages[0]]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 });

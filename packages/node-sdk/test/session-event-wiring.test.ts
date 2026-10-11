@@ -183,7 +183,7 @@ describe('SessionEventWiring disposal', () => {
 });
 
 describe('SessionEventWiring status snapshot fold', () => {
-  it('folds a consistent usage + context + model snapshot into every status event', () => {
+  it('folds a consistent usage + context + model snapshot into every status event', async () => {
     const sub = new FakeAgentHandle('agent-1');
     bindStatusServices(sub, 'sub-model');
     const { sink, events } = collectingSink();
@@ -217,7 +217,7 @@ describe('SessionEventWiring status snapshot fold', () => {
     expect(events[1]).not.toHaveProperty('model');
   });
 
-  it('passes status events through unchanged when the agent services are incomplete', () => {
+  it('passes status events through unchanged when the agent services are incomplete', async () => {
     const sub = new FakeAgentHandle('agent-1');
     // No profile/usage/context/wire services bound — nothing to fold in.
     const { sink, events } = collectingSink();
@@ -233,7 +233,7 @@ describe('SessionEventWiring status snapshot fold', () => {
     expect(events[0]).not.toHaveProperty('model');
   });
 
-  it('strips the internal promptAttachments field from turn.started', () => {
+  it('strips the internal promptAttachments field from turn.started', async () => {
     const sub = new FakeAgentHandle('agent-1');
     const { sink, events } = collectingSink();
     const wiring = new SessionEventWiring(makeSession([sub]), sink);

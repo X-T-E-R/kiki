@@ -1,6 +1,7 @@
 interface ReplyCloseSource {
   readonly raw: {
     readonly writableFinished: boolean;
+    readonly destroyed?: boolean;
     once(event: 'close', listener: () => void): void;
     off(event: 'close', listener: () => void): void;
   };
@@ -16,6 +17,7 @@ export async function withReplyCloseSignal<T>(
     disconnect.abort();
   };
   reply.raw.once('close', onClose);
+  if (reply.raw.destroyed) onClose();
   try {
     return await call(disconnect.signal);
   } finally {

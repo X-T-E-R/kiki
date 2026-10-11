@@ -1,4 +1,4 @@
-import type { AgentCapabilitiesQuery, AgentPromptDiagnostics } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentPromptDiagnostics, RecipeModelBinding } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { FilePathLink } from '../mediaParts';
 import { PromptFileCheck } from './PromptFileCheck';
@@ -36,6 +36,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
         {value.disk_changed === true ? <p className="pt-1 text-[12px] leading-5 text-amber-ink" data-prompt-disk-changed>{t('agentPanel.prompt.diskChanged')}</p> : null}
         {value.disk_error !== undefined ? <p className="pt-1 text-[12px] leading-5 text-danger" data-prompt-disk-error>{value.disk_error}</p> : null}
         {value.lease_model_prompts !== undefined ? <p className="pt-1 text-[12px] leading-5 text-ink-soft">{t(`agentPanel.prompt.lease.${value.lease_model_prompts}`)}</p> : null}
+        <RecipeSources binding={value.recipe_model_binding} />
       </div>
       {GROUPS.map((group) => {
         const channels = value.channels.filter((entry) => (group.channels as readonly string[]).includes(entry.channel));
@@ -84,6 +85,37 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
     {query !== undefined && 'session_id' in query ? <PromptFileCheck key={`${query.session_id}:${query.agent_id}`}
       sessionId={query.session_id} agentId={query.agent_id} initialChecks={value?.file_checks} /> : null}
   </details>;
+}
+
+/**
+ * Which Recipes produced the words in this binding, and from where.
+ *
+ * A binding can be the work of more than one package — the model names one, a
+ * profile may name another — so the sources are listed rather than reduced to a
+ * single name. When there is more than one, the composite revision is a digest
+ * of all of them and belongs to none, so it is labelled as such instead of
+ * being shown next to whichever package happens to be named first.
+ */
+function RecipeSources({ binding }: { binding: RecipeModelBinding | undefined }) {
+  const { t } = useI18n();
+  if (binding === undefined) return null;
+  const references = binding.references ?? [{ surface: 'model' as const, installation_id: binding.installation_id, revision: binding.revision }];
+  const composite = references.length > 1;
+  return <div className="space-y-1 pt-1" data-prompt-recipe-sources>
+    <p className="text-[11.5px] font-medium text-ink-soft">{t('agentPanel.prompt.recipeSources')}</p>
+    <ul className="space-y-0.5">
+      {references.map((reference) => <li key={`${reference.surface}:${reference.installation_id}`} className="min-w-0 text-[11px] leading-5 text-ink-faint" data-prompt-recipe-source={reference.surface}>
+        <span className="text-ink-soft">{t(`agentPanel.prompt.recipeSurface.${reference.surface}`)}</span>
+        {' · '}
+        <span className="font-mono">{reference.installation_id}</span>
+        {' · '}
+        <span className="font-mono">{reference.revision}</span>
+      </li>)}
+    </ul>
+    {composite ? <p className="text-[11px] leading-5 text-ink-faint" data-prompt-recipe-composite>
+      {t('agentPanel.prompt.recipeCompositeRevision', { revision: binding.revision })}
+    </p> : null}
+  </div>;
 }
 
 function Fact({ label, value }: { label: string; value: string }) {

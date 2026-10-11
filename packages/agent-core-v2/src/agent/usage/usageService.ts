@@ -4,6 +4,9 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 import { defineState } from '#/state/state';
+import { IEventService } from '#/app/event/event';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ILogService } from '#/_base/log/log';
 
 import type { AgentLLMRequestSource } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -13,7 +16,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import type { UsageRecordedContext, UsageRecordContext, UsageStatus } from './usage';
 import { IAgentUsageService } from './usage';
-import { AgentStatusUpdated } from './usageEvents';
+import { AgentStatusUpdated, UsageSettled } from './usageEvents';
 import { panelAccountingKey } from './panelAccounting';
 import {
   copyUsage,
@@ -43,6 +46,9 @@ export class AgentUsageService extends Service implements IAgentUsageService {
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IEventService private readonly events: IEventService,
+    @ISessionContext private readonly session: ISessionContext,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this.states.contributeState(usageKey);
@@ -76,7 +82,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
     const usageScope: UsageRecordScope = source?.type === 'turn' ? 'turn' : 'session';
     const turnId = source?.turnId;
     const profile = this.profile.data();
-    void this.dispatcher.dispatch(new UsageRecord({
+    void this.dispatcher.dispatchDurably(new UsageRecord({
       model,
       usage,
       usageScope,
@@ -88,7 +94,17 @@ export class AgentUsageService extends Service implements IAgentUsageService {
       profileName: profile.profileName,
       executorId: context?.executorId ?? profile.executorId ?? 'native',
       usageKnown: context?.usageKnown ?? true,
-    }));
+    })).then(() => {
+      if (this.session.ephemeral === true) return;
+      this.events.publish(new UsageSettled({ payload: {
+        sessionId: this.session.sessionId, agentId: this.scope.agentId,
+      } }));
+    }).catch((error: unknown) => {
+      this.log.warn('usage settlement failed', {
+        sessionId: this.session.sessionId, agentId: this.scope.agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     const currentTurnId = source?.type === 'turn' ? source.turnId : undefined;
     if (currentTurnId !== undefined) {

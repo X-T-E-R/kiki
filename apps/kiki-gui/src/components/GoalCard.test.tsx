@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -8,7 +12,8 @@ import type { GoalSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
-import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { ComposerHeader } from './ComposerHeader';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -116,6 +121,20 @@ describe('GoalCard', () => {
     expect(card.querySelector('[data-goal-actions] button[title^="Pause the goal"]')).not.toBeNull();
     expect(card.querySelector('.dock-reveal')).toBeNull();
     expect(card.textContent).toContain('follow-up · Subagents done');
+  });
+
+  it('keeps pause usable while the editor waits for its authoritative read', async () => {
+    let finishRead!: (value: GoalSnapshot) => void;
+    const onRefresh = vi.fn(() => new Promise<GoalSnapshot>((resolve) => { finishRead = resolve; }));
+    const onPause = vi.fn(() => Promise.resolve());
+    const { container } = await renderCard({ onRefresh, onPause });
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause).not.toBeNull();
+    expect(pause.disabled).toBe(false);
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { finishRead(goalFixture({ status: 'paused' })); });
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -230,6 +249,38 @@ describe('GoalCard', () => {
   });
 });
 
+describe('GoalPauseButton', () => {
+  it('pauses from the collapsed header and reports a pending or failed request', async () => {
+    let rejectPause!: (error: Error) => void;
+    const onPause = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectPause = reject; }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><ComposerHeader settled={false} goal={{
+        summary: <GoalHeaderSummary goal={goalFixture()} />,
+        ariaLabel: 'Goal',
+        panel: <div>Details</div>,
+        actions: <GoalPauseButton onPause={onPause} />,
+      }} /></I18nProvider>);
+    });
+    expect(container.querySelector('[data-header-toggle]')?.getAttribute('aria-expanded')).toBe('false');
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause.closest('[inert]')).toBeNull();
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(pause.disabled).toBe(true);
+    expect(pause.getAttribute('aria-busy')).toBe('true');
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { rejectPause(new Error('Connection closed')); });
+    expect(pause.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Connection closed');
+    await act(async () => { root.unmount(); });
+  });
+});
+
 describe('GoalHeaderSummary', () => {
   async function renderSummary(goal: GoalSnapshot): Promise<HTMLDivElement> {
     const container = document.createElement('div');
@@ -267,6 +318,19 @@ describe('GoalHeaderSummary', () => {
     expect(goalShowsInHeader(null)).toBe(false);
     expect(goalShowsInHeader(goalFixture())).toBe(true);
   });
+
+  it('keeps an ordinary goal off the alert wash, and only the exception states on it', () => {
+    // The complaint was that a merely-running goal read like the "everything is
+    // permitted" warning. Its sheet is painted once, in CSS, so the rule itself
+    // is what has to stay off `accent-soft` — the wash that warning and a blocked
+    // goal share. The exception states are named in the status word instead.
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../index.css'), 'utf8');
+    const rule = /\.composer-header-goal\s*\{([^}]*)\}/.exec(css);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain('var(--color-panel)');
+    expect(rule![1]).not.toContain('--color-accent-soft');
+    expect(rule![1]).not.toContain('--color-danger');
+  });
 });
 
 describe('RecoveryHoldBar', () => {
@@ -292,9 +356,14 @@ describe('RecoveryHoldBar', () => {
     const { container } = await renderBar({ count: 2, onConfirm });
     const bar = container.querySelector('[data-recovery-hold]')!;
     expect(bar.getAttribute('role')).toBe('status');
-    expect(bar.textContent).toContain('2 queued messages were restored');
+    expect(bar.textContent).toContain('2 queued items (messages or model switches) were restored');
     await click(bar.querySelector('button:not([disabled])')!);
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask to resume an empty authoritative queue', async () => {
+    const { container } = await renderBar({ count: 0 });
+    expect(container.querySelector('[data-recovery-hold-wrapper]')).toBeNull();
   });
 
   it('locks both buttons while confirmation is pending', async () => {

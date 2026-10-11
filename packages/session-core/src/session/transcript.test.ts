@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
 import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
@@ -39,6 +39,7 @@ import {
   EARLIER_PROMPT_OUTCOMES_ID,
   filterBlocksToDirectChildren,
   floorPreview,
+  isOrdinaryQueueItem,
   latestFinalAssistantBlockId,
   liveSourcesFromAgentSnapshots,
   overlayLiveSourcesWithSnapshotSubagents,
@@ -50,7 +51,9 @@ import {
   queuedPromptPreviews,
   resolveActiveFloorId,
   rosterFromSnapshotSubagents,
+  sessionAgentForest,
   sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   splitSystemReminders,
   turnExecutionFromItem,
   type AssistantBlock,
@@ -684,6 +687,17 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('restores message-bound model controls without an independent queue item', () => {
+    const runtimeControls = { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } };
+    const prompt = { promptId: 'bound-message', userMessageId: 'bound-message', status: 'queued' as const, content: [{ type: 'text' as const, text: 'continue' }], createdAt: FIXED_AT, runtimeControls, queuePosition: 0 };
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(state.queuedPromptIds).toEqual(['bound-message']);
+    expect(queuedPromptPreviews(state)).toEqual([expect.objectContaining({ promptId: 'bound-message', text: 'continue', runtimeControls })]);
+    expect(state.blocks.filter(block => block.kind === 'user')).toEqual([expect.objectContaining({ runtimeControls })]);
+    const restored = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(queuedPromptPreviews(restored)[0]?.runtimeControls).toEqual(runtimeControls);
+  });
+
   it('covers a readonly queue lifecycle and reaches the delivered row through an older page', () => {
     const promptId = 'p-queue';
     const userMessageId = 'um-queue';
@@ -767,6 +781,33 @@ describe('transcript authority projection', () => {
     const loadedRows = loaded.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
     expect(loadedRows).toHaveLength(1);
     expect(loadedRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't111', promptId, userMessageId });
+  });
+
+  it('keeps leading marker and taskref page boundaries in source order while prepending', () => {
+    const at = (minute: number) => `2026-10-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: at(ordinal * 10), state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'm4', marker: 'message.delivery', at: at(40) };
+    const ref = { kind: 'taskref' as const, refId: 'r4', taskId: 'task4', at: at(41) };
+    const latest = { ...emptySnapshot(), items: [marker, ref, turn(5)] };
+    const middle = [turn(3), { kind: 'marker' as const, markerId: 'm3', marker: 'message.delivery', at: at(35) }];
+    const first = [turn(0), turn(1)];
+    const merged = prependOlderTranscriptSnapshot(prependOlderTranscriptSnapshot(latest,
+      { items: middle, attachments: [], hasMoreOlder: true }), { items: first, attachments: [], hasMoreOlder: false });
+    expect(merged.items).toEqual([...first, ...middle, ...latest.items]);
+    expect(merged.items.at(-1)).toBe(latest.items.at(-1));
+    expect(prependOlderTranscriptSnapshot(merged, { items: middle, attachments: [], hasMoreOlder: true }).items).toEqual(merged.items);
+  });
+
+  it('places a recovered middle gap before the following turn’s leading activity without moving earlier activity', () => {
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: `2026-10-01T00:0${ordinal}:00.000Z`, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = (ordinal: number) => ({ kind: 'marker' as const, markerId: `m${ordinal}`, marker: 'message.delivery',
+      at: `2026-10-01T00:0${ordinal}:30.000Z` });
+    const current = { ...emptySnapshot(), items: [turn(0), marker(0), turn(1), marker(3), turn(4)] };
+    const gap = [turn(2), marker(2), turn(3)];
+    expect(prependOlderTranscriptSnapshot(current, { items: gap, attachments: [], hasMoreOlder: true }).items)
+      .toEqual([...current.items.slice(0, 3), ...gap, ...current.items.slice(3)]);
   });
 
   it('anchors Agent entries on the real tool frame agentRefs', () => {
@@ -995,6 +1036,54 @@ describe('transcript authority projection', () => {
     ]);
   });
 
+  it('preserves immutable birth through the live-source snapshot overlay', () => {
+    const source = { subagentId: CHILD_AGENT_ID, name: CHILD_AGENT_ID, status: 'running', startedAt: FIXED_AT_2 };
+    const row = compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, started_at: FIXED_AT_2 });
+    const fallback = overlayLiveSourcesWithSnapshotSubagents([source], [row]);
+    expect(fallback[0]).toMatchObject({ createdAt: FIXED_AT, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(fallback).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+
+    const knownSource = { ...source, createdAt: FIXED_AT_1 };
+    for (const created_at of [FIXED_AT, undefined]) {
+      const overlaid = overlayLiveSourcesWithSnapshotSubagents([knownSource], [{ ...row, created_at }]);
+      expect(overlaid[0]).toMatchObject({ createdAt: FIXED_AT_1, startedAt: FIXED_AT_2 });
+      expect(buildAgentForest(overlaid).byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    }
+    expect(overlayLiveSourcesWithSnapshotSubagents([{ ...source, createdAt: '' }], [row])[0]?.createdAt).toBe(FIXED_AT);
+    const inactiveRoster = [{ agentId: CHILD_AGENT_ID, status: 'idle', statusSource: 'runtime' as const }];
+    expect(buildAgentForest(fallback, inactiveRoster).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, status: 'idle', startedAt: undefined,
+    });
+    expect(buildAgentForest(fallback, [{ ...inactiveRoster[0]!, createdAt: FIXED_AT_1 }])
+      .byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    const legacy = overlayLiveSourcesWithSnapshotSubagents([source], [{ ...row, created_at: undefined }]);
+    expect(legacy[0]).toMatchObject({ createdAt: undefined, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(legacy).byId[CHILD_AGENT_ID]?.createdAt).toBeUndefined();
+  });
+
+  it('projects immutable birth from SessionView snapshots without a separate roster', () => {
+    const queued = {
+      ...createViewState('session_test'),
+      blocks: [unknownChildBlock()],
+      snapshotSubagents: [compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, status: undefined, subagent_phase: 'queued' })],
+    };
+    expect(sessionAgentForest(queued).byId[CHILD_AGENT_ID]).toMatchObject({ createdAt: FIXED_AT, startedAt: undefined });
+    const resumed = {
+      ...queued,
+      blocks: [{ ...unknownChildBlock(), status: 'running' as const, startedAt: FIXED_AT_2 }],
+      snapshotSubagents: [{ ...queued.snapshotSubagents[0]!, status: 'running' as const, subagent_phase: 'working' as const, started_at: FIXED_AT_2 }],
+    };
+    expect(sessionAgentForest(resumed).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+    const legacy = { ...resumed, snapshotSubagents: [{ ...resumed.snapshotSubagents[0]!, created_at: undefined }] };
+    expect(sessionAgentForest(legacy).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: undefined, startedAt: FIXED_AT_2,
+    });
+  });
+
   it('stops a retained snapshot row from claiming a live run in the forest', () => {
     const retained = [
       compactSnapshotSubagent({
@@ -1103,6 +1192,88 @@ describe('transcript authority projection', () => {
       status: 'running',
       busy: true,
     });
+  });
+
+  it('preserves detached snapshot activity without needing a materialized task', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot()]]);
+    const rows = [compactSnapshotSubagent({
+      id: CHILD_AGENT_ID,
+      agent_id: CHILD_AGENT_ID,
+      status: 'running',
+      subagent_phase: 'working',
+      live: true,
+      run_in_background: true,
+      started_at: FIXED_AT_1,
+    })];
+    expect(rosterFromSnapshotSubagents(rows)[0]?.detached).toBe(true);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, rows).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...rows[0]!, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it.each(['running', 'suspended'] as const)('keeps a runtime %s child busy before its transcript catches up', (activityStatus) => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', emptySnapshot()],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { phase: { kind: 'idle' } } } })],
+    ]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, parent_agent_id: 'main',
+      status: 'running', activity_status: activityStatus, status_source: 'runtime', live: true,
+      started_at: FIXED_AT_1, subagent_phase: activityStatus === 'suspended' ? 'suspended' : 'working',
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [row]);
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ status: activityStatus, busy: true });
+    expect(forest.byId['main']?.busy).toBe(false);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row, run_in_background: true }]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ status: activityStatus === 'running' ? 'background' : 'suspended', busy: true });
+    for (const status of ['idle', 'completed', 'failed', 'cancelled'] as const) {
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+        status: status === 'idle' ? 'running' : status, activity_status: status,
+        completed_at: FIXED_AT_2, subagent_phase: undefined,
+      }]).byId[CHILD_AGENT_ID]).toMatchObject({ status, busy: false });
+    }
+  });
+
+  it('keeps durable task completion over cold identity-only metadata without locking a later run', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'completed-dispatch', kind: 'subagent', state: 'completed', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '',
+      startedAt: FIXED_AT_1, endedAt: FIXED_AT_2,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'unknown', status_source: 'metadata', live: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed', busy: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'running', status_source: 'runtime', live: true,
+      subagent_phase: 'queued', run_in_background: true,
+      started_at: '2026-01-01T00:00:03.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'idle', status_source: 'runtime', live: true,
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+  });
+
+  it('does not let a pre-launch runtime idle row overwrite the newer detached task', () => {
+    const startedAt = '2026-01-01T00:00:03.000Z';
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'new-dispatch', kind: 'subagent', state: 'running', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '', startedAt,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'idle', status_source: 'runtime', live: true, started_at: FIXED_AT_2,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      started_at: startedAt, completed_at: '2026-01-01T00:00:04.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
   });
 
   it('lets a run that starts after the retained row revive the forest node', () => {
@@ -1323,8 +1494,71 @@ describe('transcript projection cache', () => {
     });
   });
 
-  it('reprojects a settled task-backed shell when the global task entity changes', () => {
-    const item: AgentTranscriptSnapshot['items'][number] = {
+  it('carries a tool result\'s canonical attachments into the tool block media', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media.1', turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-media', toolCallId: 'call-media', name: 'external_paint',
+          state: 'done' as const, output: [{ type: 'text', text: 'painted' }],
+          attachmentIds: ['f-tool-media.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main', items,
+      attachments: [{
+        attachmentId: 'f-tool-media.att1', mediaType: 'image/png', name: 'answer.png', size: 42,
+        source: { kind: 'session_media', fileId: 'f_acp_deadbeef' },
+      }],
+    });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'image', fileId: 'f_acp_deadbeef', name: 'answer.png', mime: 'image/png', size: 42 }],
+    });
+  });
+
+  it('keeps a tool result attachment readable when the window omitted the entity', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media-gone.1', turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-gone', toolCallId: 'call-gone', name: 'external_paint',
+          state: 'done' as const, attachmentIds: ['f-tool-gone.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'file', detail: { agentId: 'main', attachmentId: 'f-tool-gone.att1' } }],
+    });
+  });
+
+  it('leaves a tool block without result media when the frame names none', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'run it',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-plain.1', turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-plain', toolCallId: 'call-plain', name: 'Read',
+          state: 'done' as const, output: 'plain output',
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    expect(blocks.find((block) => block.kind === 'tool')).toMatchObject({ media: undefined });
+  });
+
+  it('reprojects a settled task-backed shell when the global task entity changes', () => {    const item: AgentTranscriptSnapshot['items'][number] = {
       kind: 'turn',
       turnId: 't-task-cache',
       ordinal: 1,
@@ -1738,7 +1972,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const journal = [{ type: 'prompt.model_switch_queued', entry: { receipt: pending }, queueIndex: 0, time: 1000 }];
     const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', journal));
     expect(queued.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending' }, i18n: undefined })]);
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending', change: 'model' }, i18n: undefined })]);
     const committedJournal = [...journal,
       { type: 'agent.model_switch', operationId: 'switch-example', fromModel: 'example/old', toModel: 'example/new', mode: 'fresh', newEpoch: 1, summaryGenerated: false, time: 2000 },
     ];
@@ -1748,7 +1982,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       { type: 'prompt.model_switch_status', operationId: 'switch-example', receipt: { ...pending, state: 'completed', windowEpoch: 1, summaryGenerated: false }, time: 3000 },
     ]));
     expect(completed.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', windowEpoch: 1, summaryGenerated: false },
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', change: 'model', windowEpoch: 1, summaryGenerated: false },
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } } })]);
   });
 
@@ -1763,6 +1997,20 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       kind: 'notice', tone: 'neutral', text: 'model.switch', createdAt: new Date(3000).toISOString(),
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } },
     })]);
+  });
+
+  it('projects same-model resume and actual effort/context changes without claiming an alias switch', () => {
+    const snapshot = replayAgentWire('child', [
+      { type: 'profile.bind', modelAlias: 'example/model', thinkingEffort: 'high', time: 1000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:1', fromModel: 'example/model', toModel: 'example/model', thinking: 'high', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 2000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 3000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:3', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'fresh', oldEpoch: 0, newEpoch: 1, time: 4000 },
+    ]);
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'child', snapshot).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.resume' }, modelSwitch: { change: 'resume' } });
+    expect(blocks[1]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.effort' }, modelSwitch: { change: 'effort' } });
+    expect(blocks[2]).toMatchObject({ modelSwitch: { change: 'context', windowEpoch: 1 } });
   });
 
   it('counts only separate committed compactions and retains every folded time and reason', () => {
@@ -1791,18 +2039,18 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
   });
 
-  it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
+  it('keeps token accounting out of goal notices while preserving canonical budget state', () => {
     const records = [
       { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },
       ...Array.from({ length: 12 }, (_, index) => ({ type: 'goal.update', tokensUsed: index + 1, time: 2000 + index })),
     ];
     const snapshot = replayAgentWire('main', records);
     const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
-    expect(snapshot.items).toHaveLength(13);
+    expect(snapshot.items).toHaveLength(1);
     const latest = snapshot.items.at(-1);
     expect(first.blocks).toEqual([expect.objectContaining({
       id: `agent-marker-${latest?.kind === 'marker' ? latest.markerId : ''}`,
-      kind: 'notice', text: 'goal', markerRepeatCount: 13, createdAt: new Date(2011).toISOString(),
+      kind: 'notice', text: 'goal', goalChange: { kind: 'created' }, createdAt: new Date(1000).toISOString(),
     })]);
     expect(snapshot.meta.goal?.budgetUsed).toBe(12);
     const reset = projectAgentTranscriptView(first, 'main', snapshot);
@@ -1810,7 +2058,21 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const appended = projectAgentTranscriptView(reset, 'main', replayAgentWire('main', [
       ...records, { type: 'goal.update', tokensUsed: 13, time: 3000 },
     ]));
-    expect(appended.blocks).toEqual([expect.objectContaining({ markerRepeatCount: 14, createdAt: new Date(3000).toISOString() })]);
+    expect(appended.blocks).toEqual(first.blocks);
+    const lifecycle = projectAgentTranscriptView(appended, 'main', replayAgentWire('main', [
+      ...records,
+      { type: 'goal.update', budgetLimits: { tokenBudget: 20, turnBudget: 3, wallClockBudgetMs: 1000 }, time: 3000 },
+      { type: 'goal.update', turnsUsed: 1, wallClockMs: 200, time: 3001 },
+      { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', time: 4000 },
+      { type: 'goal.update', status: 'active', time: 5000 },
+      { type: 'goal.update', status: 'blocked', reason: 'Needs input', time: 6000 },
+      { type: 'goal.update', status: 'active', time: 7000 },
+      { type: 'goal.update', status: 'complete', time: 8000 },
+    ]));
+    expect(lifecycle.blocks.filter((block) => block.kind === 'notice').map((block) => block.goalChange?.kind))
+      .toEqual(['created', 'updated', 'paused', 'resumed', 'blocked', 'resumed', 'completed']);
+    expect(lifecycle.goal).toMatchObject({ goalId: 'goal-example', tokensUsed: 12, turnsUsed: 1, wallClockMs: 200,
+      budget: { remainingTokens: 8, remainingTurns: 2, remainingWallClockMs: 800 } });
   });
 
   it('folds live marker operations idempotently and recomputes counts when older history arrives', () => {
@@ -1865,8 +2127,9 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     if (driver === 'external') {
       expect(note).toEqual({
         recordId: 'text_example', markerId: 'marker_example', kind: 'handoff', text: payload.text,
-        title: 'Shared notes', sourceUrl: 'https://example.test/notes',
-        source: { connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' },
+        title: 'Shared notes', sourceUrl: 'https://example.test/notes', clientTime: FIXED_AT_1,
+        source: { driver: 'external', connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' },
+        turn: 3,
       });
       expect(blocks[0]).toMatchObject({ kind: 'notice', createdAt: FIXED_AT, turnId: 't3' });
     } else {
@@ -1884,6 +2147,68 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ] })).blocks;
     expect(blocks).toHaveLength(3);
     expect(blocks.at(-1)).toMatchObject({ id: 'agent-marker-c2', createdAt: FIXED_AT_2, reasonCodes: ['tool_error'], markerRepeatCount: 2 });
+  });
+
+  it('carries an external client saved record as a note with its body, kind and source', () => {
+    const source = {
+      driver: 'external',
+      connectionId: 'xc-1',
+      clientName: 'Example local client',
+      sessionRef: 'ref-1',
+    };
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'marker',
+            markerId: 'external-text:native-ui-save',
+            marker: 'external.text',
+            at: FIXED_AT,
+            payload: {
+              recordId: 'native-ui-save',
+              turnId: 1,
+              text: 'Saved handoff from the real native host.',
+              kind: 'handoff',
+              title: 'Handoff',
+              source,
+            },
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        id: 'agent-marker-external-text:native-ui-save',
+        text: 'Saved handoff from the real native host.',
+        externalText: {
+          recordId: 'native-ui-save',
+          // The marker's own id, not the `agent-marker-…` display id above it: a
+          // cut body is read back through an address the server will reject
+          // unless it names the real marker.
+          markerId: 'external-text:native-ui-save',
+          kind: 'handoff',
+          text: 'Saved handoff from the real native host.',
+          title: 'Handoff',
+          source,
+          turn: 1,
+        },
+      }),
+    ]);
+  });
+
+  it('falls back to the marker name for an external record with no usable payload', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [{ kind: 'marker', markerId: 'external-text:broken', marker: 'external.text', payload: { recordId: 'broken' } }],
+      }),
+    );
+    expect(projected.blocks).toEqual([expect.objectContaining({ kind: 'notice', text: 'external.text' })]);
+    expect(projected.blocks[0]).not.toHaveProperty('externalText');
   });
 
   it('summarizes skill markers even when their payload contains the full loaded document', () => {
@@ -2035,7 +2360,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       'main',
       emptySnapshot({
         items: [
-          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated' } }),
+          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } } }),
           marker('h-1', 'executor.prompt.delivery', { turnId: 2, origin: 'user', method: 'next_turn_preamble', status: 'queued' }),
           marker('h-bad', 'executor.prompt.delivery', { method: 'teleport', status: 'delivered' }),
           marker('c-1', 'executor.compaction', { turnId: 2, kind: 'compaction', value: { threadId: 'thr' } }),
@@ -2045,7 +2370,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     const notes = projected.blocks.map((block) => (block.kind === 'notice' ? [block.turnId, block.executor] : undefined));
     expect(notes).toEqual([
-      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated' }],
+      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } }],
       ['t2', { kind: 'hint', method: 'next_turn_preamble', status: 'queued', origin: 'user' }],
       // An unrecognized delivery shape falls back to a plain marker notice.
       [undefined, undefined],
@@ -2478,6 +2803,121 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(coldBlocks[0]).toMatchObject({ id: firstId, streaming: false });
     const folded = foldHistory([...coldBlocks, { kind: 'shell', id: 'quiet-shell', commandId: 'quiet-shell', turnId: 't0', command: 'true', output: '', done: true, isError: false }], undefined);
     expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
+  });
+
+  it('does not project an empty assistant text frame between same-turn process rows', () => {
+    const command = (ordinal: number, name: 'Read' | 'Bash') => ({
+      kind: 'tool' as const,
+      frameId: `tool-${ordinal}`,
+      toolCallId: `call-${ordinal}`,
+      name,
+      state: 'done' as const,
+      input: name === 'Bash' ? { command: `printf '${ordinal}\\n'` } : { file_path: `/w/${ordinal}.ts` },
+      output: 'ok',
+    });
+    const empty = (ordinal: number) => ({ kind: 'text' as const, frameId: `empty-${ordinal}`, role: 'assistant' as const, text: ordinal === 2 ? '   ' : '' });
+    const snapshot = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'Run the commands.',
+        steps: [
+          { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed', frames: [{ kind: 'thinking', frameId: 'think-1', text: 'look' }, empty(1), command(1, 'Read')] },
+          { kind: 'step', stepId: 's2', turnId: 't1', ordinal: 2, state: 'completed', frames: [empty(2), command(2, 'Bash')] },
+          { kind: 'step', stepId: 's3', turnId: 't1', ordinal: 3, state: 'completed', frames: [empty(3), command(3, 'Bash')] },
+        ],
+      }],
+    });
+    const source = structuredClone(snapshot.items);
+    const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' });
+    expect(snapshot.items).toEqual(source);
+    expect(blocks.filter((block) => block.kind === 'assistant')).toEqual([]);
+    const folded = foldHistory(groupBlocks(blocks), undefined);
+    expect(folded.filter((node) => node.kind === 'history-fold')).toEqual([
+      expect.objectContaining({ steps: 3, thoughts: 1 }),
+    ]);
+  });
+
+  it('keeps a real assistant row and a pending approval as fold boundaries', () => {
+    const bash = (ordinal: number) => ({
+      kind: 'tool' as const, frameId: `tool-${ordinal}`, toolCallId: `call-${ordinal}`, name: 'Bash', state: 'done' as const,
+      input: { command: `printf '${ordinal}\\n'` }, output: 'ok',
+    });
+    const spoken = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+          frames: [
+            { kind: 'text' as const, frameId: 'gap-1', role: 'assistant' as const, text: '' },
+            bash(1),
+            { kind: 'text' as const, frameId: 'said', role: 'assistant' as const, text: 'Between the commands.' },
+            { kind: 'text' as const, frameId: 'gap-2', role: 'assistant' as const, text: '' },
+            bash(2),
+          ],
+        }],
+      }],
+    });
+    const spokenFold = foldHistory(agentTranscriptToBlocks({ ...spoken, agent_id: 'main' }), undefined);
+    expect(spokenFold.map((node) => node.kind)).toEqual(['history-fold', 'assistant', 'history-fold']);
+    expect(spokenFold[1]).toMatchObject({ text: 'Between the commands.' });
+
+    const gated = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+          frames: [bash(1), bash(2)],
+        }],
+      }],
+      interactions: [{
+        interactionId: 'apr-1', interactionKind: 'approval', toolCallId: 'call-1', state: 'pending',
+        anchor: { kind: 'tool_call', toolCallId: 'call-1' },
+        request: { toolName: 'Bash', action: 'Run printf' },
+      }],
+    }));
+    const gatedFold = foldHistory(gated.blocks, undefined);
+    expect(gatedFold.map((node) => node.kind)).toEqual(['history-fold', 'approval', 'history-fold']);
+  });
+
+  it('keeps an empty assistant frame when it still has media or unread text, and shows the first streamed characters', () => {
+    const kept = agentTranscriptToBlocks({
+      ...emptySnapshot({
+        items: [{
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+          steps: [{
+            kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+            frames: [
+              { kind: 'text', frameId: 'continued', role: 'assistant', text: '', contentRefs: [{ source: { kind: 'frame', id: 'continued' }, revision: 'r', path: ['text'], kind: 'text', offset: 0, total: 4 }] },
+              { kind: 'text', frameId: 'picture', role: 'assistant', text: '', attachmentIds: ['att0'] },
+            ],
+          }],
+        }],
+        attachments: [{ attachmentId: 'att0', mediaType: 'image/png', source: { kind: 'session_media', fileId: 'file0' } }],
+      }),
+      agent_id: 'main',
+    });
+    expect(kept.map((block) => block.kind === 'assistant' ? block.frameId : block.kind)).toEqual(['continued', 'picture']);
+    expect(kept[1]).toMatchObject({ media: [expect.objectContaining({ kind: 'image', fileId: 'file0' })] });
+
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 's1', turnId: 't0', ordinal: 1, state: 'running' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 's1', frame: { kind: 'text', frameId: 'body', role: 'assistant', text: '' } },
+    ]);
+    const project = () => {
+      const snapshot = tx.snapshot();
+      const before = structuredClone(snapshot);
+      const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' });
+      expect(snapshot).toEqual(before);
+      return blocks;
+    };
+    expect(project().some((block) => block.kind === 'assistant')).toBe(false);
+    tx.apply([{ op: 'append', target: { type: 'frame', turnId: 't0', stepId: 's1', frameId: 'body' }, offset: 0, text: 'Hi' }]);
+    expect(project()).toEqual([expect.objectContaining({ kind: 'assistant', frameId: 'body', text: 'Hi', streaming: true })]);
+    const turn = tx.snapshot().items.find((item) => item.kind === 'turn');
+    expect(turn?.kind === 'turn' ? turn.steps.flatMap((step) => step.frames) : []).toEqual([
+      expect.objectContaining({ kind: 'text', frameId: 'body', text: 'Hi' }),
+    ]);
   });
 
   it('recovers only explicit successful response associations and respects prose and tool barriers', () => {
@@ -5520,6 +5960,18 @@ describe('queued prompt scheduling projection', () => {
     expect(previews[1]?.appendTiming).toBe('agent_idle');
   });
 
+  it('previews scheduled text from queue content without fabricating user bubbles or attachments', () => {
+    const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check\nKeep existing work running.</prompt></cron-fire>' }];
+    const prompts = ['scheduled-1', 'scheduled-2'].map((promptId, queuePosition) => ({ promptId, userMessageId: promptId, originKind: 'cron_job' as const, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition }));
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts }));
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toEqual([]);
+    expect(queuedPromptPreviews(projected)).toEqual(prompts.map((prompt) => expect.objectContaining({ promptId: prompt.promptId, originKind: 'cron_job', text: 'Controller self-check\nKeep existing work running.', media: [], content })));
+    const settled = projectAgentTranscriptView(projected, 'main', emptySnapshot({ prompts: prompts.map((prompt) => ({ ...prompt, status: 'completed' })) }));
+    expect(queuedPromptPreviews(settled)).toEqual([]);
+    expect(settled.queuedPromptMeta).toEqual({});
+    expect(settled.blocks.filter((block) => block.kind === 'user')).toEqual([]);
+  });
+
   it('shows the media and exact content of an attachment-only queued prompt', () => {
     const content = [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } }];
     const projected = projectAgentTranscriptView(
@@ -5832,11 +6284,165 @@ describe('durable subagent turn outcomes', () => {
   });
 });
 
+describe('resumed agent forest bindings and retained graph reads', () => {
+  const roster = compactSnapshotSubagent({
+    id: CHILD_AGENT_ID, status: 'running', activity_status: 'running', status_source: 'runtime',
+    model: 'example/old', thinking_effort: 'high', live: true,
+  });
+
+  it('uses the child committed binding independently of the parent run status and spawn model', () => {
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const child = emptySnapshot({ meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } });
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    snapshots.set(CHILD_AGENT_ID, { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'low' } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
+  });
+
+  it('does not roll a current roster binding back to a retained cold child binding', () => {
+    const snapshots = new Map([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } })],
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [
+      { ...roster, model: 'example/new', thinking_effort: 'xhigh' },
+    ], new Set([CHILD_AGENT_ID]));
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+  });
+
+  it('reuses retained transcript relation scans without dropping nested nodes or drill-in links', () => {
+    let scans = 0;
+    const source = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const items = source.items.map((item) => item.kind !== 'turn' ? item : {
+      ...item, get steps() { scans += 1; return item.steps; },
+    });
+    const snapshots = new Map([['main', { ...source, items, meta: { agent: { phase: { kind: 'idle' as const } } } }]]);
+    const first = sessionAgentForestFromAgentSnapshots(snapshots);
+    const coldScans = scans;
+    expect(coldScans).toBeGreaterThan(0);
+    const retained = sessionAgentForestFromAgentSnapshots(snapshots);
+    expect(retained).toEqual(first);
+    expect(retained.byId[CHILD_AGENT_ID]?.parentAgentId).toBe('main');
+    expect(retained.byId['main']?.childIds).toContain(CHILD_AGENT_ID);
+    expect(scans).toBe(coldScans);
+    const nested = applyOpsToSnapshot(emptySnapshot(), spawnChildOps().map((op) =>
+      op.op === 'frame.upsert' && op.frame.kind === 'tool'
+        ? { ...op, frame: { ...op.frame, agentRefs: [{ agentId: 'nested', role: 'child' as const }] } }
+        : op));
+    snapshots.set('main', { ...source, items: [...items, ...nested.items], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId['nested']?.parentToolCallId).toBe(TOOL_CALL_ID);
+    expect(scans).toBe(coldScans);
+    snapshots.set('main', { ...source, items: [], tasks: [], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it('retains the whole query until binding, task, inventory, count or cold ownership changes', () => {
+    const query = new SessionAgentForestQuery();
+    const child = emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } });
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    const rows = [roster];
+    const first = query.read(snapshots, rows);
+    expect(query.read(new Map([...snapshots].map(([id, snap]) => [id, { ...snap }])), rows)).toBe(first);
+    const changed = { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } };
+    snapshots.set(CHILD_AGENT_ID, changed);
+    const next = query.read(snapshots, rows);
+    expect(next).not.toBe(first);
+    expect(next.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    const cold = query.read(snapshots, rows, new Set([CHILD_AGENT_ID]));
+    expect(cold.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, rows, new Set([CHILD_AGENT_ID]))).toBe(cold);
+    snapshots.set(CHILD_AGENT_ID, { ...changed, toolCallCount: 7 });
+    expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.toolCallCount).toBe(7);
+    snapshots.set('main', { ...parent, tasks: [...parent.tasks, {
+      taskId: 'nested-task', kind: 'subagent', agentId: 'nested', state: 'completed',
+      detached: false, outputTail: '',
+    }] });
+    expect(query.read(snapshots, rows).byId['nested']?.parentAgentId).toBe('main');
+    snapshots.delete(CHILD_AGENT_ID);
+    const afterRemoval = query.read(snapshots, rows);
+    expect(afterRemoval.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, [{ ...roster, model: 'example/latest' }]).byId[CHILD_AGENT_ID]?.model).toBe('example/latest');
+  });
+
+  it('expires a refreshing roster lease even when the inputs retain their identities', () => {
+    const query = new SessionAgentForestQuery();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const rows = [{ ...roster, refreshing: true, refreshing_until: new Date(now + 10).toISOString() }];
+      const snapshots = new Map([['main', emptySnapshot()]]);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBe(true);
+      clock.mockReturnValue(now + 11);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('invalidates the query when reordered evidence changes a shared child parent', () => {
+    const query = new SessionAgentForestQuery();
+    const source = (name: string) => emptySnapshot({ tasks: [{
+      taskId: name, kind: 'subagent', agentId: 'shared-child', name, state: 'running',
+      detached: false, outputTail: '',
+    }] });
+    const a = source('first');
+    const b = source('second');
+    expect(query.read(new Map([['parent-a', a], ['parent-b', b]])).byId['shared-child']?.parentAgentId).toBe('parent-b');
+    expect(query.read(new Map([['parent-b', b], ['parent-a', a]])).byId['shared-child']?.parentAgentId).toBe('parent-a');
+  });
+});
+
 
 describe('question history answers', () => {
   const questions = [{ id: 'q1', question: 'Which checks?', options: [
     { id: 'a', label: 'Typecheck' }, { id: 'b', label: 'Visual proof' },
   ] }];
+
+  it('retires a previously visible answered question with no loaded anchor or request time', () => {
+    const snapshot = userTurnSnapshot();
+    const pendingSnapshot = { ...snapshot, interactions: [{
+      interactionId: 'unanchored-question', interactionKind: 'question' as const, state: 'pending' as const,
+      toolCallId: 'off-page-tool', origin: { agentId: 'main', turnId: 0 }, request: { questions },
+    }] };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    expect(pending.blocks.at(-1)).toMatchObject({ id: 'question-unanchored-question', request: { questions } });
+    expect(projectAgentTranscriptView(pending, 'main', pendingSnapshot).blocks).toEqual(pending.blocks);
+    const answeredSnapshot = { ...pendingSnapshot, interactions: [{
+      ...pendingSnapshot.interactions[0]!, state: 'answered' as const, request: undefined,
+      response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: FIXED_AT_2 },
+    }] };
+    const answered = projectAgentTranscriptView(pending, 'main', answeredSnapshot);
+    expect(answered.blocks.some((block) => block.id === 'question-unanchored-question')).toBe(false);
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
+    expect(answered.blocks).toEqual(cold.blocks);
+    expect(answeredSnapshot.interactions[0]?.response.answers.q1.text).toBe('Read the complete appendix.');
+  });
+
+  it('keeps answered questions with a loaded tool, turn or recorded request time and their full answers', () => {
+    const snapshot = applyOpsToSnapshot(userTurnSnapshot(), spawnChildOps());
+    const fullAnswer = 'Read the complete appendix.\nThen run the selected checks.';
+    const cases = [
+      { toolCallId: TOOL_CALL_ID, request: { questions }, origin: undefined },
+      { toolCallId: undefined, request: { questions }, origin: { agentId: 'main', turnId: 1 } },
+      { toolCallId: undefined, request: { questions, created_at: FIXED_AT_1 }, origin: undefined },
+    ];
+    for (const placement of cases) {
+      const interaction = { ...placement, interactionId: 'placed-question', interactionKind: 'question' as const, state: 'pending' as const };
+      const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...snapshot, interactions: [interaction] });
+      const settledSnapshot = { ...snapshot, interactions: [{ ...interaction, state: 'answered' as const,
+        response: { answers: { q1: { kind: 'other', text: fullAnswer } }, resolved_at: FIXED_AT_2 },
+      }] };
+      const settled = projectAgentTranscriptView(pending, 'main', settledSnapshot);
+      const block = settled.blocks.find((candidate) => candidate.id === 'question-placed-question');
+      expect(block).toMatchObject({ request: { questions }, outcome: { kind: 'answered', answers: { q1: fullAnswer } } });
+      expect(projectAgentTranscriptView(createViewState('session_test'), 'main', settledSnapshot).blocks).toEqual(settled.blocks);
+      if (placement.toolCallId !== undefined) {
+        const toolIndex = settled.blocks.findIndex((candidate) => candidate.kind === 'tool' && candidate.toolCallId === placement.toolCallId);
+        expect(settled.blocks[toolIndex + 1]?.id).toBe(block?.id);
+      }
+    }
+  });
 
   it.each([
     { name: 'saved text keyed by question', answers: { 'Which checks?': 'Typecheck, Visual proof' }, expected: 'Typecheck, Visual proof' },
@@ -5869,8 +6475,6 @@ describe('question history answers', () => {
     expect(block?.kind === 'question' && block.outcome?.kind === 'answered' ? block.outcome.answers : 'wrong state').toBeUndefined();
   });
 });
-
-
 describe('external tool identity in timeline projection', () => {
   it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'SendMessage', 'AgentRun', 'AgentSend'])('preserves external %s as a tool and its raw package', (name) => {
     const output = { kind: 'external_tool_output', protocol: 'acp-v1', text: 'partial', rawOutput: { message_id: 'message-1', delivered_to: ['peer'] }, content: [{ type: 'terminal', terminalId: 'terminal-1' }] };
@@ -5896,5 +6500,38 @@ describe('external tool identity in timeline projection', () => {
       }],
     }] });
     expect(blocks.find((block) => block.kind === 'shell')).toMatchObject({ commandId: 'native-call', command: 'echo hi', output: 'hi', done: true });
+  });
+});
+
+describe('scheduled delivery modes in the queue projection', () => {
+  const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+  const previewOf = (promptId: string, originDeliveryMode: 'queue' | 'steer' | 'idle' | undefined) => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({ prompts: [{ promptId, userMessageId: promptId, originKind: 'cron_job' as const, originDeliveryMode, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition: 0 }] }),
+    );
+    return queuedPromptPreviews(projected)[0]!;
+  };
+
+  it('carries the origin mode onto the preview so consumers can tell the three apart', () => {
+    expect(previewOf('idle-1', 'idle')).toMatchObject({ cronDeliveryMode: 'idle', originKind: 'cron_job' });
+    expect(previewOf('steer-1', 'steer')).toMatchObject({ cronDeliveryMode: 'steer' });
+    expect(previewOf('queue-1', 'queue')).toMatchObject({ cronDeliveryMode: 'queue' });
+    // A record admitted before modes existed carries none, and must not be
+    // given one by projection.
+    expect(previewOf('legacy-1', undefined).cronDeliveryMode).toBeUndefined();
+  });
+
+  it('counts only user messages and queue-mode jobs as ordinary pending messages', () => {
+    // A `queue` job really is in the person's send order, and so is a legacy
+    // record that was admitted into it.
+    expect(isOrdinaryQueueItem({ promptId: 'user-1', text: 'mine' })).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('queue-1', 'queue'))).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('legacy-1', undefined))).toBe(true);
+    // `idle` and `steer` are held ahead of that order and were never queued
+    // by the person, so they are not one of their waiting messages.
+    expect(isOrdinaryQueueItem(previewOf('idle-1', 'idle'))).toBe(false);
+    expect(isOrdinaryQueueItem(previewOf('steer-1', 'steer'))).toBe(false);
   });
 });

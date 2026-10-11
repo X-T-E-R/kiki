@@ -352,7 +352,7 @@ export function ImportHistoryView({
   if (enabled !== true) {
     return (
       <div data-cap-import-disabled className="space-y-3">
-        <EmptyNote title={t('cap.import.unavailableTitle')} body={t('cap.import.unavailableBody', { flag: 'KIKI_EXPERIMENTAL_PLUGIN_IMPORT' })} />
+        <EmptyNote title={t('cap.import.unavailableTitle')} body={t('cap.import.unavailableBody')} />
       </div>
     );
   }

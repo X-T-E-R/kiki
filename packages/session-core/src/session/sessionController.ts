@@ -21,6 +21,7 @@ import {
   AgentTranscript,
   GRADE_RANK,
   gradeFor,
+  releaseFramePayload,
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
   type TranscriptCursor,
@@ -54,7 +55,7 @@ import {
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
-  sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   setLoadError,
   setLoadingOlder,
   setOlderError,
@@ -68,16 +69,15 @@ import {
   type TranscriptDetailKind,
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
-import { collectTranscriptContentRefs, patchTranscriptContent, transcriptContentEntity, snapshotContentEntity, replaceAgentContentEntity, replaceSnapshotContentEntity, patchAgentTranscriptContent } from './transcript/content';
-import { applyContentSegment, sameContentRef, restoreContentPreview, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
+import { collectTranscriptContentRefs, patchTranscriptContent, patchAgentTranscriptContent, replaceAgentContentEntity, replaceSnapshotContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
+import { applyContentSegment, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
 import { isSteerSettled, newSteerPromptId, withPendingSteers, type PendingSteer } from './transcript/steer';
 import type { QueuedPromptMeta } from './transcript/types';
-import { stabilizeAgentForest, type AgentForest } from './agentTree';
+import type { AgentForest } from './agentTree';
 import { messageContentSchema } from '@kiki/protocol';
-import { releaseFramePayload } from '@kiki/transcript';
 import { preserveSubmission } from '../composer/submissionRecovery';
 
 export type Listener = () => void;
@@ -106,6 +106,7 @@ const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
  * (an external delegation, say) then stops costing whole-session snapshots.
  */
 const MAX_ROSTER_ROW_READS = 3;
+const MAX_ROSTER_REVISION_REFRESHES = 3;
 
 export interface PublicationScheduler {
   schedule(callback: () => void): unknown;
@@ -238,6 +239,9 @@ export class SessionController {
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
   private rosterRefreshInFlight = false;
+  private rosterReadQueued = false;
+  private rosterReadInFlight = false;
+  private rosterRevisionRefreshes = 0;
   private rosterRefreshQueuedCursor: SessionCursor | undefined;
   /** Agent id → roster reads spent chasing its row (see `requestRosterRows`). */
   private readonly requestedRosterAgents = new Map<string, number>();
@@ -268,17 +272,29 @@ export class SessionController {
   private readonly forestDirtyAgents = new Set<string>();
   private readonly historyGeneration = new Map<string, number>();
   private readonly inFlightOlder = new Map<string, string>();
+  private readonly olderReads = new Map<string, { promise: Promise<boolean>; controller: AbortController; consumers: Set<symbol> }>();
+  private readonly historyReadFailures = new Map<string, number>();
+  private readonly historyReadBlocked = new Set<string>();
   private readonly emptyAgentState: SessionViewState;
   /** "Send now" echoes per agent, laid over each published view (transcript/steer.ts). */
   private readonly pendingSteers = new Map<string, readonly PendingSteer[]>();
+  private readonly unprojectedQueueReceipts = new Map<string, PromptSubmitResult>();
   private publishedForest: AgentForest | undefined;
+  private readonly forestQuery = new SessionAgentForestQuery();
+  private readonly composedSnapshots = new Map<string, {
+    live: AgentTranscriptSnapshot;
+    older: AgentTranscriptSnapshot;
+    snapshot: AgentTranscriptSnapshot;
+  }>();
   private transcriptGrades: TranscriptGradeSpec = DEFAULT_TRANSCRIPT_GRADES;
   private focusedAgentId: string | undefined;
   private readonly agentViews = new Map<string, { readonly agentId: string; readonly grade: TranscriptGrade }>();
   private readonly catchupByAgent = new Map<string, Promise<void>>();
+  private readonly catchupControllers = new Map<string, AbortController>();
   private readonly globalCoverage = new Map<string, AgentTranscriptSnapshot['globalCoverage']>();
   private readonly detailReads = new Map<string, Promise<boolean>>();
   private readonly olderPageCursors = new Map<string, string>();
+  private readonly olderPageTurns = new Map<string, string>();
   private readonly historyPreviewPages = new Map<string, { agentId: string; beforeItem?: string; beforeTurn?: string; unloaded: boolean }>();
   private readonly historyPreviewReaders = new Map<string, number>();
   private readonly historyPreviewReads = new Map<string, { agentId: string; controller: AbortController; promise: Promise<boolean> }>();
@@ -286,8 +302,9 @@ export class SessionController {
   private queuedTimingWriteSequence = 0;
   private readonly queuedTimingWrites = new Map<string, number>();
   private readonly contentControllers = new Map<string, AbortController>();
-  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; readers: number; blocked: boolean; ref?: ContentRef }>();
+  private readonly contentReaders = new Map<string, { agentId: string; source: ContentSource; roots: readonly string[]; includeOlder: boolean; readers: number; blocked: boolean; ref?: ContentRef }>();
   private contentPumpRunning = false;
+  private readonly contentPumpReads = new Set<string>();
   private readonly contentRanges = new Map<string, string>();
   private contentRangeBytes = 0;
   private readonly rangeControllers = new Map<AbortController, string>();
@@ -391,6 +408,7 @@ export class SessionController {
     const rosterChanged = next.snapshotSubagents !== this.state.snapshotSubagents;
     this.state = next;
     if (rosterChanged) this.scheduleRosterLease();
+    this.queueAutomaticRosterRead();
     if (immediate) this.notifyMain();
   }
 
@@ -480,9 +498,11 @@ export class SessionController {
   private async readSnapshot(): Promise<SessionSnapshotResponse> {
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
+    const attachment = this.viewAttachment;
     try {
       const snapshot = await this.view.snapshot({ signal: controller.signal });
-      if (!this.closed && !controller.signal.aborted) {
+      if (!this.closed && !controller.signal.aborted && attachment === this.viewAttachment &&
+        (!this.state.loaded || this.resyncInFlight || (snapshot.epoch === this.state.cursor.epoch && snapshot.as_of_seq >= this.state.cursor.seq))) {
         this.latestSnapshot = snapshot;
         this.state = { ...this.state, contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(snapshot.contentRefs ?? [])] };
       }
@@ -566,23 +586,18 @@ export class SessionController {
   /**
    * Re-attach a suspended view. The retained window renders immediately; the
    * subscription resumes from the last applied session and transcript
-   * cursors, and a fresh snapshot shell refreshes session-level fields.
+   * cursors, and the returned promise settles after the fresh snapshot shell
+   * refreshes session-level fields.
    */
-  resume(): void {
-    if (this.closed || !this.isSuspended) return;
+  resume(): Promise<void> {
+    if (this.closed || !this.isSuspended) return Promise.resolve();
     this.isSuspended = false;
-    if (!this.state.loaded) {
-      void this.open();
-      return;
-    }
-    if (this.state.resyncFailed) {
-      void this.resync();
-      return;
-    }
+    if (!this.state.loaded) return this.open();
+    if (this.state.resyncFailed) return this.resync();
     this.transcriptGrades = this.requestedTranscriptGrades();
     this.attachView(this.state.cursor);
     void this.pumpContentReads();
-    void this.refreshShell();
+    return this.refreshShell();
   }
 
   private async refreshShell(): Promise<void> {
@@ -638,6 +653,7 @@ export class SessionController {
     this.clearHiddenFrameTimer();
     this.pendingTranscriptBatches.clear();
     this.pendingTranscriptAgents.clear();
+    this.composedSnapshots.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
     this.historyPreviewReads.clear();
@@ -914,6 +930,37 @@ export class SessionController {
     }
   }
 
+  private queueAutomaticRosterRead(): void {
+    if (this.closed || this.isSuspended || !this.state.loaded || this.state.resyncing || this.rosterReadQueued || this.rosterReadInFlight) return;
+    const ref = this.latestSnapshot?.contentRefs?.find((entry) => entry.source.kind === 'snapshot' && entry.kind === 'array' && entry.path.length === 1 && entry.path[0] === 'subagents');
+    if (ref === undefined || this.view.transcript.content === undefined || this.state.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') return;
+    this.rosterReadQueued = true;
+    queueMicrotask(() => {
+      this.rosterReadQueued = false;
+      if (this.closed || this.isSuspended || this.state.resyncing) return;
+      this.rosterReadInFlight = true;
+      void this.loadContentSegment(MAIN_AGENT_ID, ref).then((advanced) => {
+        this.rosterReadInFlight = false;
+        if (advanced || !this.latestSnapshot?.contentRefs?.some((current) => sameContentRef(current, ref))) this.queueAutomaticRosterRead();
+      });
+    });
+  }
+
+  private mergeRosterRows(snapshot: SessionSnapshotResponse): readonly NonNullable<SessionSnapshotResponse['subagents']>[number][] {
+    const incoming = snapshot.subagents ?? [];
+    const rows = new Map(incoming.map((row) => [snapshotSubagentAgentId(row), row]));
+    const partial = snapshot.contentRefs?.some((ref) => ref.path[0] === 'subagents' && ref.kind === 'array') === true;
+    const stable = this.state.snapshotSubagents.flatMap((old) => {
+      const id = snapshotSubagentAgentId(old);
+      const next = rows.get(id);
+      rows.delete(id);
+      return next === undefined ? partial ? [old] : [] : [next];
+    });
+    const merged = [...stable, ...rows.values()];
+    if (merged.length > this.state.snapshotSubagents.length) this.rosterRevisionRefreshes = 0;
+    return merged;
+  }
+
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
     if (this.closed || this.isSuspended || this.resyncInFlight) return;
     if (this.rosterRefreshInFlight) {
@@ -936,7 +983,8 @@ export class SessionController {
       this.setState({
         ...this.state,
         version: this.state.version + 1,
-        snapshotSubagents: snapshot.subagents,
+        snapshotSubagents: this.mergeRosterRows(snapshot),
+        agentCounts: snapshot.agent_counts,
       }, false);
       this.retireRequestedRosterAgents();
       this.publishForest();
@@ -1060,6 +1108,7 @@ export class SessionController {
         setResyncing(
           {
             ...applyTranscriptShell(this.sessionId, snapshot, this.state),
+            transcriptReady: false,
             loadingOlder: false,
             olderError: undefined,
           },
@@ -1148,6 +1197,12 @@ export class SessionController {
     }
   }
 
+  /** Hydrate forward structure for a mounted turn; older suffix predecessors wait for loadOlderMessages or an explicit content read. */
+  retainHistoryStructure(agentId: string, turnId: string): () => void {
+    const lease = this.beginContentRead(agentId, { kind: 'turn', id: turnId }, ['steps'], false);
+    return () => { lease.release(); };
+  }
+
   historyPreviewPending(agentId: string, turnId: string): boolean {
     return this.historyPreviewPages.get(`${agentId}/${turnId}`)?.unloaded === true;
   }
@@ -1207,6 +1262,21 @@ export class SessionController {
     return changed;
   }
 
+
+
+  private cancelHistoryRead(agentId: string): void {
+    const flight = this.olderReads.get(agentId);
+    this.olderReads.delete(agentId);
+    this.inFlightOlder.delete(agentId);
+    flight?.controller.abort();
+    for (const [key, read] of this.historyPreviewReads) if (JSON.parse(key)[0] === agentId) {
+      this.historyPreviewReads.delete(key); read.controller.abort();
+    }
+    const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+    if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+  }
+
+
   async loadHistoryPreview(agentId: string, turnId: string): Promise<boolean> {
     const key = `${agentId}/${turnId}`;
     const page = this.historyPreviewPages.get(key);
@@ -1215,17 +1285,40 @@ export class SessionController {
     const existing = this.historyPreviewReads.get(requestKey);
     if (existing !== undefined) return existing.promise;
     const controller = new AbortController();
-    const generation = this.historyGeneration.get(agentId) ?? 0;
     this.snapshotControllers.add(controller);
+    const generation = this.historyGeneration.get(agentId) ?? 0;
     this.setDetailLoad(agentId, `history:${turnId}`, { status: 'loading' });
     const promise = (async () => {
       try {
-        const result = await this.readPreparedContent(() => this.view.transcript.page({ agentId,
-          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal }), controller.signal);
-        if (this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        const obsolete = () => this.closed || controller.signal.aborted || (this.historyGeneration.get(agentId) ?? 0) !== generation;
+        const read = () => this.view.transcript.page({ agentId,
+          beforeItem: page.beforeItem, beforeTurn: page.beforeTurn, pageSize: 20 }, { signal: controller.signal });
+        let result = await this.readPreparedContent(read, controller.signal);
+        if (obsolete()) return false;
+        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        if (result.read?.stale !== undefined) {
+          const group = [...this.historyPreviewPages.entries()].filter(([, candidate]) => candidate.agentId === agentId &&
+            candidate.beforeItem === page.beforeItem && candidate.beforeTurn === page.beforeTurn);
+          const groupKeys = new Set(group.map(([candidateKey]) => candidateKey));
+          const items = this.composeAgentSnapshot(agentId).items;
+          const end = items.findLastIndex((item) => item.kind === 'turn' && groupKeys.has(`${agentId}/${item.turnId}`));
+          const next = items.slice(end + 1).find((item) => item.kind === 'turn');
+          for (const [, candidate] of group) {
+            candidate.beforeItem = undefined;
+            candidate.beforeTurn = next?.kind === 'turn' ? next.turnId : candidate.beforeTurn;
+          }
+          const flight = this.historyPreviewReads.get(requestKey);
+          if (flight !== undefined) this.historyPreviewReads.set(JSON.stringify([agentId, page.beforeItem, page.beforeTurn]), flight);
+          this.historyReads.set(agentId, result.read);
+          this.publishProjectedAgent(agentId, this.ensureAgentTranscript(agentId), { historyCoverageKind: 'unknown' });
+          if (result.read.stale.retry === 'resync') { void this.resync(); return false; }
+          result = await this.readAuthoritativeTranscriptContinuation(read, 'History preview continuation is still stale', controller.signal);
+          if (obsolete()) return false;
+          if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        }
         const older = this.olderPages.get(agentId);
         if (older === undefined) return false;
-        if (result.agent_id !== agentId) throw new Error('History preview returned a different agent');
+        if (result.read !== undefined) this.historyReads.set(agentId, result.read);
         const restored = new Map(result.items.flatMap((item) => item.kind === 'turn' ? [[item.turnId, item] as const] : []));
         if (!restored.has(turnId)) throw new Error('History preview is no longer available at its cursor');
         this.olderPages.set(agentId, { ...older, items: older.items.map((item) => {
@@ -1248,25 +1341,88 @@ export class SessionController {
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
-        if (this.historyPreviewReads.get(requestKey)?.controller === controller) this.historyPreviewReads.delete(requestKey);
+        for (const [flightKey, flight] of this.historyPreviewReads) if (flight.controller === controller) this.historyPreviewReads.delete(flightKey);
       }
     })();
     this.historyPreviewReads.set(requestKey, { agentId, controller, promise });
     return promise;
   }
 
-  async loadOlderMessages(agentId: string = MAIN_AGENT_ID): Promise<boolean> {
-    return this.loadOlderTranscript(agentId);
+  loadOlderMessages(agentId: string = MAIN_AGENT_ID, signal?: AbortSignal): Promise<boolean> {
+    if (this.closed || this.isSuspended || signal?.aborted) return Promise.resolve(false);
+    this.historyReadFailures.delete(agentId);
+    this.historyReadBlocked.delete(agentId);
+    let flight = this.olderReads.get(agentId);
+    if (flight === undefined) {
+      const controller = new AbortController();
+      const promise = this.loadOlderTranscript(agentId, controller.signal).finally(() => {
+        if (this.olderReads.get(agentId)?.controller === controller) this.olderReads.delete(agentId);
+      });
+      flight = { promise, controller, consumers: new Set() };
+      this.olderReads.set(agentId, flight);
+    }
+    const shared = flight;
+    const consumer = Symbol();
+    shared.consumers.add(consumer);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', abort);
+        shared.consumers.delete(consumer);
+        if (shared.consumers.size === 0 && this.olderReads.get(agentId) === shared) {
+          this.olderReads.delete(agentId);
+          this.inFlightOlder.delete(agentId);
+          shared.controller.abort();
+          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
+          if (current?.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));
+        }
+        resolve(result);
+      };
+      const abort = () => { finish(false); };
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      void shared.promise.then(finish, () => { finish(false); });
+    });
   }
 
-  private async loadOlderTranscript(agentId: string): Promise<boolean> {
+  private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<boolean> {
     if (!this.flushPendingTranscriptBatch(agentId)) return false;
     const store = this.ensureAgentTranscript(agentId);
     if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
     const currentSnapshot = this.composeAgentSnapshot(agentId);
-    const beforeItem = this.olderPageCursors.get(agentId);
-    const beforeTurn = beforeItem === undefined ? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
-    if (this.closed || !currentSnapshot.hasMoreOlder || (beforeItem === undefined && beforeTurn === undefined)) return false;
+    const olderStructure = currentSnapshot.items.flatMap((item) => {
+      if (item.kind !== 'turn') return [];
+      const refs = (item.contentRefs ?? []).filter((ref) => ref.direction === 'backward');
+      const firstStep = item.steps[0]?.ordinal;
+      const firstFrames = refs.find((ref) => ref.path.length === 3 && ref.path[1] === firstStep);
+      const steps = refs.find((ref) => ref.path.length === 1);
+      return firstFrames ?? steps ?? refs.toSorted((a, b) => Number(a.path[1]) - Number(b.path[1]));
+    })[0];
+    if (olderStructure !== undefined) {
+      const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+      this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
+      const cancel = () => { this.cancelContentSegment(agentId, olderStructure); };
+      signal.addEventListener('abort', cancel, { once: true });
+      try {
+        return !signal.aborted && await this.loadContentSegment(agentId, olderStructure);
+      } finally {
+        signal.removeEventListener('abort', cancel);
+        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+        this.publishAgentView(agentId, setLoadingOlder(current, false));
+      }
+    }
+    let beforeItem = this.olderPageCursors.get(agentId);
+    let beforeTurn = beforeItem === undefined
+      ? this.olderPageTurns.get(agentId) ?? currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId : undefined;
+    if (this.closed || !currentSnapshot.hasMoreOlder) return false;
+    if (beforeItem === undefined && beforeTurn === undefined) {
+      this.historyReadBlocked.add(agentId);
+      const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+      this.publishAgentView(agentId, setOlderError(current, 'History window has no continuation cursor'));
+      return false;
+    }
     const inFlightKey = `${agentId}:${beforeItem ?? beforeTurn}`;
     if (this.inFlightOlder.get(agentId) === inFlightKey) return false;
     const generation = this.historyGeneration.get(agentId) ?? 0;
@@ -1274,19 +1430,35 @@ export class SessionController {
     const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
     this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
     try {
-      const page = await this.view.transcript.page({
-        agentId,
-        beforeTurn,
-        beforeItem,
-        pageSize: 20,
-      });
-      if (
-        this.closed ||
-        this.agentTranscripts.get(agentId) !== store ||
-        (this.historyGeneration.get(agentId) ?? 0) !== generation
-      ) {
-        return false;
+      const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
+      const obsolete = () => this.closed || signal.aborted || this.agentTranscripts.get(agentId) !== store ||
+        (this.historyGeneration.get(agentId) ?? 0) !== generation;
+      let page = await read();
+      if (obsolete()) return false;
+      if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
+      if (page.read?.stale !== undefined) {
+        this.historyReads.set(agentId, page.read);
+        this.olderPageCursors.delete(agentId);
+        this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
+        beforeItem = undefined;
+        beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
+        if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
+          this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
+          void this.resync();
+          return false;
+        }
+        page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
+        if (obsolete()) return false;
       }
+      const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
+      const pageReadiness = page.read?.readiness;
+      const readIsPreparing = page.items.length === 0 && (pageReadiness === 'preparing' || pageReadiness === 'partial');
+      if (page.has_more && !readIsPreparing &&
+          (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
+        this.historyReadBlocked.add(agentId);
+        throw new Error('History page did not advance its cursor');
+      }
+      this.historyReadFailures.delete(agentId);
       if (page.read !== undefined) this.historyReads.set(agentId, page.read);
       if (this.flushPendingTranscriptBatch(agentId)) this.observeToolCount(agentId, page);
       const older: AgentTranscriptSnapshot = {
@@ -1306,16 +1478,29 @@ export class SessionController {
       this.trimHistoryPreviews(agentId);
       if (page.next_cursor !== undefined) this.olderPageCursors.set(agentId, page.next_cursor);
       else this.olderPageCursors.delete(agentId);
+      if (nextTurn !== undefined) this.olderPageTurns.set(agentId, nextTurn);
+      else this.olderPageTurns.delete(agentId);
       this.forestDirtyAgents.add(agentId);
       this.publishProjectedAgent(agentId, store, {
         loadingOlder: false,
         fetchedOlder: true,
         olderError: undefined,
-        historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown' : undefined,
+        historyCoverageKind: page.coverage?.kind === 'unknown' ? 'unknown'
+          : !page.has_more && page.coverage !== undefined ? 'full' : undefined,
       });
-      return older.items.length > 0;
+      return older.items.length > 0 || page.next_cursor !== beforeItem;
     } catch (error) {
-      if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation) {
+      if (!this.closed && !signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) {
+        const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+        if (code === 40923) {
+          this.historyReadFailures.delete(agentId);
+          const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+          this.publishAgentView(agentId, { ...setLoadingOlder(current, false), olderError: undefined });
+          return false;
+        }
+        this.historyReadFailures.set(agentId, (this.historyReadFailures.get(agentId) ?? 0) + 1);
+        if (code === API_CODES.INVALID_RESPONSE || code === API_CODES.SESSION_NOT_FOUND ||
+            (code !== undefined && code >= 40000 && code < 50000)) this.historyReadBlocked.add(agentId);
         const current =
           agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
         this.publishAgentView(
@@ -1341,19 +1526,35 @@ export class SessionController {
     this.pendingTranscriptAgents.delete(agentId);
     this.catchupReplay.delete(agentId);
     const store = this.ensureAgentTranscript(agentId);
+    const retainedBodies = [...this.contentBodies.entries()].filter(([, entry]) => entry.agentId === agentId);
     this.bumpHistoryGeneration(agentId);
     for (const key of this.entityPageCursors.keys()) if (key.startsWith(`${agentId}/`)) this.entityPageCursors.delete(key);
     this.todoReads.delete(agentId);
-    if (coverage.kind === 'full') {
+    for (const kind of ['task', 'attachment', 'prompt', 'interaction', 'todo'] as const) {
+      const key = `entities:${kind}`;
+      const requestKey = `${agentId}/${key}`;
+      this.detailReads.delete(requestKey);
+      this.setDetailLoad(agentId, key, undefined);
+    }
+    const previousCursor = this.transcriptCursors.get(agentId);
+    if (coverage.kind === 'full' || (previousCursor !== undefined && previousCursor.epoch !== cursor.epoch)) {
       this.olderPages.delete(agentId);
       this.olderPageCursors.delete(agentId);
       for (const [key, page] of this.historyPreviewPages) if (page.agentId === agentId) this.historyPreviewPages.delete(key);
+    } else {
+      const retained = this.composeAgentSnapshot(agentId);
+      if (retained.items.length > 0) this.olderPages.set(agentId, {
+        ...retained,
+        hasMoreOlder: coverage.kind === 'unknown' && snapshot.items.length === 0
+          ? retained.hasMoreOlder || coverage.hasMoreOlder || snapshot.hasMoreOlder === true
+          : snapshot.hasMoreOlder ?? coverage.hasMoreOlder,
+      });
     }
-    if (!this.olderPages.has(agentId)) {
-      if (snapshot.olderCursor !== undefined) this.olderPageCursors.set(agentId, snapshot.olderCursor);
-      else this.olderPageCursors.delete(agentId);
-    }
-    const retainedBodies = [...this.contentBodies.entries()].filter(([, entry]) => entry.agentId === agentId);
+    if (snapshot.olderCursor !== undefined) this.olderPageCursors.set(agentId, snapshot.olderCursor);
+    else this.olderPageCursors.delete(agentId);
+    const oldestTurn = snapshot.items.find((item) => item.kind === 'turn')?.turnId;
+    if (oldestTurn !== undefined) this.olderPageTurns.set(agentId, oldestTurn);
+    else this.olderPageTurns.delete(agentId);
     store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
     for (const target of this.contentReaders.values()) if (target.agentId === agentId) target.blocked = false;
     for (const [key, entry] of retainedBodies) {
@@ -1783,9 +1984,9 @@ export class SessionController {
     this.flushFrames();
   }
 
-  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[]): { release(): void; retry(): void } {
-    const key = JSON.stringify([agentId, source, roots]);
-    const target = this.contentReaders.get(key) ?? { agentId, source, roots, readers: 0, blocked: false };
+  beginContentRead(agentId: string, source: ContentSource, roots: readonly string[], includeOlder = true): { release(): void; retry(): void } {
+    const key = JSON.stringify([agentId, source, roots, includeOlder]);
+    const target = this.contentReaders.get(key) ?? { agentId, source, roots, includeOlder, readers: 0, blocked: false };
     target.readers += 1;
     target.blocked = false;
     this.contentReaders.set(key, target);
@@ -1810,27 +2011,38 @@ export class SessionController {
     this.contentPumpRunning = true;
     try {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      while (!this.closed && !this.isSuspended) {
-        let didRead = false;
-        const targets = [...this.contentReaders.values()];
-        for (const target of targets) {
-          if (target.readers === 0 || target.blocked) continue;
-          const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
-            if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate)) return false;
-            return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
-          });
-          if (ref === undefined) continue;
-          target.ref = ref;
-          const applied = await this.loadContentSegment(target.agentId, ref);
+      if (this.closed || this.isSuspended) return;
+      for (const [key, target] of this.contentReaders) {
+        if (this.contentPumpReads.size >= 4) break;
+        if (target.readers === 0 || target.blocked || this.contentPumpReads.has(key)) continue;
+        const ref = this.contentEntity(target.agentId, target.source)?.contentRefs?.find((candidate) => {
+          if (!target.roots.includes(String(candidate.path[0])) || this.isContentRange(target.agentId, candidate) ||
+            !target.includeOlder && candidate.direction === 'backward') return false;
+          return candidate.path[0] !== 'steps' || candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames';
+        });
+        if (ref === undefined) continue;
+        target.ref = ref;
+        this.contentPumpReads.add(key);
+        void this.loadContentSegment(target.agentId, ref).then((applied) => {
           target.ref = applied ? undefined : ref;
           if (!applied && target.readers > 0) target.blocked =
             this.contentRefsFor(target.agentId, target.source).some((current) => sameContentRef(current, ref));
-          didRead = true;
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        }
-        if (!didRead) break;
+        }).finally(() => {
+          this.contentPumpReads.delete(key);
+          if (this.contentReaders.get(key) === target) {
+            this.contentReaders.delete(key);
+            this.contentReaders.set(key, target);
+          }
+          void this.pumpContentReads();
+        });
       }
     } finally { this.contentPumpRunning = false; }
+  }
+
+  private async readAuthoritativeTranscriptContinuation<T extends { read?: TranscriptRead }>(read: () => Promise<T>, staleMessage: string, signal?: AbortSignal): Promise<T> {
+    const result = await this.readPreparedContent(read, signal);
+    if (result.read?.stale !== undefined) throw new Error(staleMessage);
+    return result;
   }
 
   private async readPreparedContent<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -1860,24 +2072,33 @@ export class SessionController {
     if (inFlight !== undefined) return inFlight;
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
-    this.contentControllers.set(requestKey, controller);
+    const rosterRead = ref.source.kind === 'snapshot' && ref.path[0] === 'subagents';
+    const rootRosterRead = rosterRead && ref.kind === 'array' && ref.path.length === 1;
+    const rosterBaseline = rootRosterRead ? this.latestSnapshot : undefined;
+    if (rootRosterRead && !this.rosterReadInFlight) this.rosterRevisionRefreshes = 0;
+    if (!rosterRead) this.contentControllers.set(requestKey, controller);
+    const generation = this.historyGeneration.get(agentId) ?? 0;
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
-        const refs = ref.source.kind === 'snapshot' ? this.latestSnapshot?.contentRefs ?? [] : collectTranscriptContentRefs(this.composeAgentSnapshot(agentId));
-        if (!refs.some((current) => sameContentRef(current, ref))) return false;
-        const generation = this.historyGeneration.get(agentId) ?? 0;
         const baseline = this.contentEntity(agentId, ref.source);
+        const refs = baseline?.contentRefs ?? [];
+        if (!refs.some((current) => sameContentRef(current, ref))) return false;
         const segment = await this.readPreparedContent(() => read({ agentId, ref }, { signal: controller.signal }), controller.signal);
-        if ((this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
-        if (this.closed || controller.signal.aborted) return false;
+        if (this.closed || controller.signal.aborted || (!rosterRead && (this.historyGeneration.get(agentId) ?? 0) !== generation)) return false;
+        if (segment.next !== undefined && (ref.direction === 'backward' ? segment.next.offset >= ref.offset : segment.next.offset <= ref.offset) ||
+          segment.contentRefs.some((candidate) => sameContentRef(candidate, ref)))
+          throw new Error('Content segment did not advance its reference');
         if (ref.source.kind === 'snapshot') {
           const current = this.latestSnapshot;
-          if (current === undefined) return false;
+          if (current === undefined || (rosterRead && current !== baseline)) return false;
           const patched = applyContentSegment(current, segment);
           if (patched === current) return false;
           this.latestSnapshot = patched;
-          this.setState({ ...applyTranscriptShell(this.sessionId, patched, this.state), contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])] });
+          const contentRefs = [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(patched.contentRefs ?? [])];
+          this.setState(rosterRead
+            ? { ...this.state, version: this.state.version + 1, snapshotSubagents: this.mergeRosterRows(patched), contentRefs }
+            : { ...applyTranscriptShell(this.sessionId, patched, this.state), contentRefs });
           this.publishForest();
         } else {
           const store = this.ensureAgentTranscript(agentId);
@@ -1905,6 +2126,16 @@ export class SessionController {
         }
         return true;
       } catch (error) {
+        if (rootRosterRead && error instanceof RPCError && error.code === 40922 &&
+          !this.closed && !controller.signal.aborted && this.latestSnapshot === rosterBaseline &&
+          this.rosterRevisionRefreshes < MAX_ROSTER_REVISION_REFRESHES) {
+          this.rosterRevisionRefreshes += 1;
+          await this.refreshRoster(this.state.cursor);
+          if (!this.closed && !controller.signal.aborted && this.latestSnapshot !== rosterBaseline) {
+            this.setDetailLoad(agentId, key, undefined);
+            return true;
+          }
+        }
         if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next content segment') });
         return false;
       } finally {
@@ -1961,13 +2192,26 @@ export class SessionController {
     const pending = this.detailReads.get(requestKey);
     if (pending !== undefined) return pending;
     const generation = this.historyGeneration.get(agentId) ?? 0;
+    let cursor = this.entityPageCursors.get(requestKey) ?? undefined;
     const controller = new AbortController();
     this.snapshotControllers.add(controller);
     const run = (async (): Promise<boolean> => {
       this.setDetailLoad(agentId, key, { status: 'loading' });
       try {
-        const page = await read({ agentId, kind, cursor: this.entityPageCursors.get(requestKey) ?? undefined, limit: 20 }, { signal: controller.signal });
+        let page = await read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal });
         if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        if (page.read?.stale !== undefined) {
+          this.entityPageCursors.delete(requestKey);
+          cursor = undefined;
+          if (page.read.stale.retry === 'resync') { void this.resync(); return false; }
+          page = await this.readAuthoritativeTranscriptContinuation(() => read({ agentId, kind, cursor, limit: 20 }, { signal: controller.signal }),
+            'Transcript entity continuation is still stale', controller.signal);
+          if (this.closed || controller.signal.aborted || page.agent_id !== agentId || page.kind !== kind || (this.historyGeneration.get(agentId) ?? 0) !== generation) return false;
+        }
+        const partial = page.read !== undefined && page.read.readiness !== 'ready';
+        if (page.has_more && !(partial && page.items.length === 0) && (page.next_cursor === undefined || page.next_cursor === '' || page.next_cursor === cursor)) {
+          throw new Error('Transcript entity page did not advance its cursor');
+        }
         if (!this.flushPendingTranscriptBatch(agentId)) return false;
         const store = this.ensureAgentTranscript(agentId);
         const ops: TranscriptOperation[] = [];
@@ -1994,15 +2238,18 @@ export class SessionController {
         this.publishProjectedAgent(agentId, store);
         return page.items.length > 0;
       } catch (error) {
-        if (!this.closed && !controller.signal.aborted) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
+        if (!this.closed && !controller.signal.aborted && (this.historyGeneration.get(agentId) ?? 0) === generation) this.setDetailLoad(agentId, key, { status: 'error', message: errorMessage(error, 'Could not load the next transcript entities') });
         return false;
       } finally {
         this.snapshotControllers.delete(controller);
         const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId);
-        if (!this.closed && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
+        if (!this.closed && (this.historyGeneration.get(agentId) ?? 0) === generation && current?.detailLoads[key]?.status === 'loading') this.setDetailLoad(agentId, key, undefined);
       }
-    })().finally(() => { this.detailReads.delete(requestKey); });
+    })();
     this.detailReads.set(requestKey, run);
+    void run.finally(() => {
+      if (this.detailReads.get(requestKey) === run) this.detailReads.delete(requestKey);
+    });
     return run;
   }
 
@@ -2092,6 +2339,8 @@ export class SessionController {
         : batch.cursor;
     const store = this.ensureAgentTranscript(agentId);
     const priorCursor = this.transcriptCursors.get(agentId);
+    const changedTasks = new Set(batch.ops.flatMap((op) => op.op === 'task.upsert' &&
+      op.task.kind === 'subagent' && store.getTask(op.task.taskId)?.state !== op.task.state ? [op.task.taskId] : []));
     const previousTodo = store.getTodo('todo');
     const result = this.applyAgentTranscriptOps(agentId, store, batch.ops);
     if (result.gap !== undefined) {
@@ -2132,6 +2381,9 @@ export class SessionController {
       // A spawn names an agent the viewer has no roster row for; the row (role
       // profile and model) rides the session snapshot, not this op stream.
       this.requestRosterRows(subagentAgentsInOps(result.accepted), undefined, true);
+      if (this.state.agentCounts !== undefined && result.accepted.some((op) =>
+        op.op === 'task.upsert' && changedTasks.has(op.task.taskId) && op.task.agentId !== undefined,
+      )) void this.refreshRoster(this.state.cursor);
       this.pendingTranscriptAgents.add(agentId);
     }
     return true;
@@ -2154,7 +2406,9 @@ export class SessionController {
   private async runCatchUpAgent(agentId: string): Promise<void> {
     if (this.closed || this.resyncInFlight || this.rewriteHold !== undefined || this.state.resyncError?.retryable === false) return;
     const generation = this.historyGeneration.get(agentId) ?? 0;
-    const isCurrent = (): boolean => !this.closed &&
+    const controller = new AbortController();
+    this.catchupControllers.set(agentId, controller);
+    const isCurrent = (): boolean => !this.closed && !this.isSuspended && !controller.signal.aborted &&
       (this.historyGeneration.get(agentId) ?? 0) === generation;
     try {
       if (!this.hasTranscriptBaseline(agentId)) {
@@ -2164,18 +2418,18 @@ export class SessionController {
       }
       const last = this.transcriptCursors.get(agentId) ?? { seq: 0 };
       const grade = gradeFor(this.transcriptGrades, agentId);
-      let result = await this.view.transcript.catchUp({ agentId, since: last, grade: grade === 'off' ? 'turn' : grade });
+      let result = await this.view.transcript.catchUp({ agentId, since: last, grade: grade === 'off' ? 'turn' : grade }, { signal: controller.signal });
       const pages = [result];
       let since = last;
       while (result.has_more === true) {
         if (!isCurrent()) return;
-        if (!result.complete || (since.epoch !== undefined && result.epoch !== since.epoch) || result.through_seq <= since.seq || pages.length >= 2) {
+        if (!result.complete || (since.epoch !== undefined && result.epoch !== since.epoch) || result.through_seq <= since.seq) {
           this.catchupReplay.delete(agentId);
           await this.resync();
           return;
         }
         since = { seq: result.through_seq, epoch: result.epoch };
-        result = await this.view.transcript.catchUp({ agentId, since, grade: grade === 'off' ? 'turn' : grade });
+        result = await this.view.transcript.catchUp({ agentId, since, grade: grade === 'off' ? 'turn' : grade }, { signal: controller.signal });
         pages.push(result);
       }
       if (!isCurrent()) return;
@@ -2235,6 +2489,8 @@ export class SessionController {
       if (!isCurrent()) return;
       this.catchupReplay.delete(agentId);
       await this.resync();
+    } finally {
+      if (this.catchupControllers.get(agentId) === controller) this.catchupControllers.delete(agentId);
     }
   }
 
@@ -2294,7 +2550,7 @@ export class SessionController {
     for (const key of this.toolDetails.keys()) if (key.startsWith(`${agentId}/`)) this.toolDetails.delete(key);
     for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
-    this.inFlightOlder.delete(agentId);
+    this.cancelHistoryRead(agentId);
     this.catchupByAgent.delete(agentId);
     this.toolCountSpans.delete(agentId);
     this.toolCountObservations.delete(agentId);
@@ -2364,7 +2620,19 @@ export class SessionController {
   private composeAgentSnapshot(agentId: string): AgentTranscriptSnapshot {
     const live = this.ensureAgentTranscript(agentId).snapshot();
     const older = this.olderPages.get(agentId);
-    return older === undefined ? live : prependOlderTranscriptSnapshot(live, older);
+    if (older === undefined) {
+      this.composedSnapshots.delete(agentId);
+      return live;
+    }
+    const cached = this.composedSnapshots.get(agentId);
+    if (cached?.older === older && cached.live.items === live.items && cached.live.tasks === live.tasks &&
+        cached.live.interactions === live.interactions && cached.live.attachments === live.attachments &&
+        cached.live.todos === live.todos && cached.live.prompts === live.prompts && cached.live.meta === live.meta &&
+        cached.live.toolCallCount === live.toolCallCount && cached.live.toolCallCountKnown === live.toolCallCountKnown &&
+        cached.live.hasMoreOlder === live.hasMoreOlder) return cached.snapshot;
+    const snapshot = prependOlderTranscriptSnapshot(live, older);
+    this.composedSnapshots.set(agentId, { live, older, snapshot });
+    return snapshot;
   }
 
   private publishProjectedAgent(
@@ -2384,7 +2652,19 @@ export class SessionController {
         : { ...previousBase, snapshotSubagents: this.state.snapshotSubagents };
     let next = projectAgentTranscriptView(previous, agentId, snapshot, {
       retainPendingPrompts: options?.retainPendingPrompts,
+      cold: this.transcriptCursors.get(agentId)?.epoch?.startsWith('cold:') === true,
     });
+    if (agentId === MAIN_AGENT_ID) {
+      for (const prompt of snapshot.prompts) this.unprojectedQueueReceipts.delete(prompt.promptId);
+      for (const receipt of this.unprojectedQueueReceipts.values()) {
+        const projection = projectMessageContent(receipt.content);
+        next = appendLocalUserMessage(next, { userMessageId: receipt.user_message_id, promptId: receipt.prompt_id,
+          text: projection.text, media: projection.media, content: receipt.content, createdAt: receipt.created_at,
+          status: receipt.status, origin: receipt.origin, appendTiming: receipt.append_timing });
+        next = { ...next, queuedPromptMeta: { ...next.queuedPromptMeta,
+          [receipt.prompt_id]: { appendTiming: receipt.append_timing ?? 'agent_idle', revision: receipt.revision, queuePosition: previous.queuedPromptMeta[receipt.prompt_id]?.queuePosition } } };
+      }
+    }
     for (const block of next.blocks) {
       if (block.kind !== 'question' || block.outcome !== undefined) continue;
       const outcome = this.questionOutcomes.get(block.request.question_id);
@@ -2400,7 +2680,7 @@ export class SessionController {
               : next.transcriptResetVersion,
             loadingOlder: options.loadingOlder ?? next.loadingOlder,
             fetchedOlder: options.fetchedOlder ?? next.fetchedOlder,
-            olderError: options.olderError ?? next.olderError,
+            olderError: Object.hasOwn(options, 'olderError') ? options.olderError : next.olderError,
             historyCoverageKind: options.historyCoverageKind ?? next.historyCoverageKind,
           };
     const globalCoverage = this.globalCoverage.get(agentId);
@@ -2412,6 +2692,7 @@ export class SessionController {
     const cursor = this.transcriptCursors.get(agentId);
     if (cursor !== undefined) this.publishedTranscriptCursors.set(agentId, cursor);
     this.publishAgentView(agentId, withCoverage);
+    if (this.contentReaders.size > 0) void this.pumpContentReads();
     if (forestChanged && agentId !== MAIN_AGENT_ID) {
       this.setState({ ...this.state, version: this.state.version + 1 });
     }
@@ -2420,11 +2701,11 @@ export class SessionController {
   private publishAgentView(agentId: string, next: SessionViewState): void {
     if (agentId === MAIN_AGENT_ID) {
       this.setState(next);
-      return;
+    } else {
+      this.agentStates.set(agentId, next);
+      this.dirtyAgents.add(agentId);
+      this.publishAgents();
     }
-    this.agentStates.set(agentId, next);
-    this.dirtyAgents.add(agentId);
-    this.publishAgents();
   }
 
   forestPublishCount = 0;
@@ -2435,7 +2716,8 @@ export class SessionController {
       snapshots.set(agentId, this.composeAgentSnapshot(agentId));
     }
     const previous = this.publishedForest;
-    this.publishedForest = stabilizeAgentForest(previous, sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents));
+    const coldAgents = new Set([...this.transcriptCursors].filter(([, cursor]) => cursor.epoch?.startsWith('cold:') === true).map(([agentId]) => agentId));
+    this.publishedForest = this.forestQuery.read(snapshots, this.state.snapshotSubagents, coldAgents);
     this.forestPublishCount += 1;
     return previous !== this.publishedForest;
   }
@@ -2512,6 +2794,9 @@ export class SessionController {
     });
     preservation.acknowledge();
     input.onAcknowledged?.();
+    if (result.status === 'queued' && !this.agentTranscripts.get(MAIN_AGENT_ID)?.snapshot().prompts.some(prompt => prompt.promptId === result.prompt_id)) {
+      this.unprojectedQueueReceipts.set(result.prompt_id, result);
+    }
     const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
@@ -2557,10 +2842,8 @@ export class SessionController {
       planGate?: PromptPlanGate;
     },
   ): Promise<void> {
-    assertSessionWritable(this.state);
-    await this.client.editMessage(this.sessionId, messageId, {
+    await this.runMessageRewrite('edit', messageId, {
       content: input.content ?? [{ type: 'text', text: input.text }],
-      expected_cursor: this.expectedCursor(),
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
@@ -2587,9 +2870,7 @@ export class SessionController {
       planGate?: PromptPlanGate;
     } = {},
   ): Promise<void> {
-    assertSessionWritable(this.state);
-    await this.client.regenerateMessage(this.sessionId, messageId, {
-      expected_cursor: this.expectedCursor(),
+    await this.runMessageRewrite('regenerate', messageId, {
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
@@ -2597,6 +2878,51 @@ export class SessionController {
       plan_mode: input.planMode === true ? true : undefined,
     });
     void this.resync({ rewrite: true });
+  }
+
+  private readonly messageRewrites = new Map<string, {
+    fingerprint: string;
+    body: import('../transport').EditMessageRequest | import('../transport').RegenerateMessageRequest;
+    flight?: Promise<PromptSubmitResult>;
+    result?: PromptSubmitResult;
+  }>();
+
+  private async runMessageRewrite(
+    action: 'edit' | 'regenerate',
+    messageId: string,
+    input: Omit<import('../transport').EditMessageRequest, 'expected_cursor'> | Omit<import('../transport').RegenerateMessageRequest, 'expected_cursor'>,
+  ): Promise<PromptSubmitResult> {
+    const key = `${action}:${messageId}`;
+    const fingerprint = JSON.stringify(input);
+    let operation = this.messageRewrites.get(key);
+    if (operation?.fingerprint !== fingerprint) operation = undefined;
+    if (operation?.result !== undefined) {
+      if (JSON.stringify(operation.body.expected_cursor) === JSON.stringify(this.expectedCursor())) return operation.result;
+      operation = undefined;
+    }
+    if (operation?.flight !== undefined) return operation.flight;
+    assertSessionWritable(this.state);
+    if (operation === undefined) {
+      operation = { fingerprint, body: { ...input, operation_id: newSteerPromptId(), expected_cursor: this.expectedCursor() } };
+      this.messageRewrites.set(key, operation);
+    }
+    const retained = operation;
+    const request = action === 'edit'
+      ? this.client.editMessage(this.sessionId, messageId, retained.body as import('../transport').EditMessageRequest)
+      : this.client.regenerateMessage(this.sessionId, messageId, retained.body);
+    retained.flight = request;
+    try {
+      retained.result = await request;
+      return retained.result;
+    } catch (error) {
+      const code = error instanceof ApiError || error instanceof RPCError ? error.code : undefined;
+      if (code !== undefined && code > 0 && code !== 50001 && this.messageRewrites.get(key) === retained) {
+        this.messageRewrites.delete(key);
+      }
+      throw error;
+    } finally {
+      retained.flight = undefined;
+    }
   }
 
   /**
@@ -2666,7 +2992,26 @@ export class SessionController {
 
   async abortPrompt(promptId: string): Promise<void> {
     await this.client.abortPrompt(this.sessionId, promptId);
+    this.unprojectedQueueReceipts.delete(promptId);
     await this.refreshPrompts();
+  }
+
+  async readQueuedPromptContent(promptId: string, signal?: AbortSignal): Promise<readonly MessageContent[] | undefined> {
+    const source = { kind: 'prompt' as const, id: promptId };
+    const lease = this.beginContentRead(MAIN_AGENT_ID, source, ['content']);
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const ref = this.contentRefsFor(MAIN_AGENT_ID, source).find((candidate) => candidate.path[0] === 'content');
+        if (ref === undefined) break;
+        if (!await this.loadContentSegment(MAIN_AGENT_ID, ref)) throw new Error('Could not read the complete queued prompt');
+      }
+      const prompt = this.agentTranscripts.get(MAIN_AGENT_ID)?.getPrompt(promptId);
+      if (prompt?.status !== 'queued' && prompt?.status !== 'blocked') return undefined;
+      const parsed = messageContentSchema.array().safeParse(prompt.content);
+      if (!parsed.success) throw new Error('Could not read the original queued prompt attachments');
+      return parsed.data;
+    } finally { lease.release(); }
   }
 
   async replaceQueued(promptId: string, text: string, retainedAttachments?: readonly MessageContent[], presentation?: import('@kiki/transcript').TextPresentation): Promise<void> {
@@ -2675,6 +3020,7 @@ export class SessionController {
       content: [...(text.trim() === '' ? [] : [{ type: 'text' as const, text, presentation }]), ...(retainedAttachments ?? [])],
       replace_attachments: retainedAttachments === undefined ? undefined : true,
     });
+    if (this.unprojectedQueueReceipts.has(promptId)) this.unprojectedQueueReceipts.set(promptId, result);
     const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
@@ -2703,6 +3049,11 @@ export class SessionController {
     const queuedPromptMeta: Record<string, QueuedPromptMeta> = { ...this.state.queuedPromptMeta };
     result.queued_prompt_ids.forEach((id, index) => {
       if (isModelSwitchQueueId(id)) return;
+      const receipt = this.unprojectedQueueReceipts.get(id);
+      if (receipt !== undefined) {
+        this.unprojectedQueueReceipts.delete(id);
+        this.unprojectedQueueReceipts.set(id, receipt);
+      }
       const existing = queuedPromptMeta[id];
       queuedPromptMeta[id] = {
         ...existing,
@@ -2810,6 +3161,7 @@ export class SessionController {
       this.clearPendingSteer(MAIN_AGENT_ID, promptId);
       throw error;
     }
+    this.unprojectedQueueReceipts.delete(promptId);
     const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
     if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
     await this.refreshPrompts();
@@ -2843,6 +3195,8 @@ export class SessionController {
     readonly content?: MessageContent[];
     readonly media?: PendingSteer['media'];
     readonly promptId?: string;
+    readonly profile?: string;
+    readonly execution?: ExecutionSelection;
     readonly model?: string;
     readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
     readonly thinking?: string;
@@ -2873,6 +3227,8 @@ export class SessionController {
         content,
         prompt_id: promptId,
         ...(agentId === MAIN_AGENT_ID ? {} : { agent_id: agentId }),
+        profile: input.profile,
+        execution: input.execution,
         model: input.model,
         model_switch_mode: input.modelSwitchMode,
         thinking: input.thinking,
@@ -2975,7 +3331,7 @@ export class SessionController {
     const ids = this.state.queuedPromptIds;
     if (ids.length === 0) return { total: 0, failed: 0 };
     const results = await Promise.allSettled(
-      ids.map((promptId) => this.client.abortPrompt(this.sessionId, promptId)),
+      ids.map((promptId) => this.abortPrompt(promptId)),
     );
     await this.refreshPrompts();
     return {

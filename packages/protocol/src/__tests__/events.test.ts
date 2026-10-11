@@ -99,6 +99,13 @@ describe('events / display re-exports', () => {
     ).toBe(true);
   });
 
+  it('preserves native assistant media without converting it into a text delta', () => {
+    const event = { type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-image', partId: 'part-image', delta: '',
+      part: { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png' } } };
+    expect(assistantDeltaEventSchema.parse(event)).toEqual(event);
+    expect(agentEventSchema.parse(event)).toEqual(event);
+  });
+
   it('preserves legacy and step-owned assistant and thinking deltas', () => {
     expect(
       assistantDeltaEventSchema.parse({
@@ -185,6 +192,15 @@ describe('events / display re-exports', () => {
     expect(parsed.type).toBe('prompt.submitted');
     expect((parsed as { promptId: string }).promptId).toBe('prompt_1');
     expect((parsed as { status: string }).status).toBe('blocked');
+  });
+
+  it.each(['completed', 'failed', 'cancelled', 'blocked'] as const)('validates a committed prompt outcome in %s state without changing its result', (state) => {
+    const event = {
+      type: 'prompt.outcome_committed', time: 1_717_000_000_000, agentId: 'main', sessionId: 'sess_1',
+      terminal: { promptId: 'prompt_1', turnId: 7, state, result: { type: state, detail: { code: 'example.result' } } },
+    };
+    expect(eventSchema.parse(event)).toEqual(event);
+    expect(eventSchema.safeParse({ ...event, terminal: { ...event.terminal, state: 'running' } }).success).toBe(false);
   });
 
   it('validates queued prompt lifecycle events', () => {

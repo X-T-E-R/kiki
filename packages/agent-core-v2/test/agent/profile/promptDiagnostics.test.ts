@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { applyLease } from '#/app/agentProfileCatalog/applySubagentLease';
 import { promptConfigurationChannels } from '#/agent/profile/promptDiagnostics';
+import { freezeBoundProfile, recoverLegacyPromptFields } from '#/agent/profile/boundProfile';
 import { resolveProfilePromptFields } from '#/agent/profile/promptFieldSnapshot';
 import { IConfigService } from '#/app/config/config';
 import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
@@ -17,6 +18,20 @@ function channels(mode: 'preserve' | 'replace', promptMode: 'append') {
 }
 
 describe('prompt source diagnostics', () => {
+  it('recovers legacy inline fields from the saved role and caller lease instead of changed configuration', async () => {
+    const agent = createTestAgent();
+    try {
+      const profile = applyLease(normalizeAgentProfile({ ...role,
+        promptOverrides: { fields: { 'system.shared': 'SAVED SHARED' } },
+      }), { name: role.name, modelProfiles: [{ alias: 'mock-model', promptOverrides: { fields: { 'tool.read.description': 'SAVED READ' } } }] });
+      const fields = await resolveProfilePromptFields(profile, 'mock-model', 'sub', agent.get(IConfigService), agent.get(IModelService), agent.get(IPromptFieldRegistry));
+      const diagnostics = { identity: { profile: role.name, model_alias: 'mock-model', delegation_position: 'sub' as const, executor: 'native' }, apply_on: 'next-binding-or-context-rebuild' as const,
+        channels: promptConfigurationChannels({ profile, alias: 'mock-model', position: 'sub', fields, resolveId: (id) => id, overrideDeclarations: [] }) };
+      expect(recoverLegacyPromptFields(freezeBoundProfile(profile), diagnostics, 'mock-model', (id) => id)?.values).toEqual({ 'system.shared': 'SAVED SHARED', 'tool.read.description': 'SAVED READ' });
+      const unknown = { ...diagnostics, channels: diagnostics.channels.map((channel) => ({ ...channel, sources: channel.sources.map((source) => ({ ...source, surface: 'global' })) })) };
+      expect(recoverLegacyPromptFields(freezeBoundProfile(profile), unknown, 'mock-model', (id) => id)).toBeUndefined();
+    } finally { await agent.dispose(); }
+  });
   it('identifies preserved role and lease sources in their application order', () => {
     expect(channels('preserve', 'append').filter((channel) => channel.channel === 'model_profile')).toMatchObject([
       { state: 'effective', reason: expect.stringContaining('preserves'), sources: [{ surface: 'profile-model', order: 0 }] },

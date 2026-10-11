@@ -1,4 +1,6 @@
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
 import { ILogService } from '#/_base/log/log';
@@ -20,7 +22,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetaUpdated } from '#/session/sessionMetadata/sessionMetaEvents';
 
 import { IAgentTitlePromptSource } from './agentTitlePromptSource';
-import { resolveSessionTitleModelAlias, resolveSessionTitleTriggers, type SessionTitleTrigger } from './configSection';
+import { resolveSessionTitleModelAlias, resolveSessionTitlePrompt, resolveSessionTitleTriggers, type SessionTitleTrigger } from './configSection';
 import { AUTO_SESSION_TITLE_FLAG_ID } from './flag';
 import { ISessionTitleService, type SessionTitleSource } from './sessionTitle';
 
@@ -30,10 +32,6 @@ const MAX_TITLE_PROMPTS = 3;
 const MAX_TITLE_USER_SEGMENT = 300;
 const MAX_TITLE_FIRST_TURN_ASSISTANT = 600;
 const MAX_TITLE_DIGEST_ASSISTANT = 400;
-
-const TITLE_SYSTEM_PROMPT =
-  'You name conversations. Answer with the title only: one line, at most 8 words, ' +
-  'no quotes, no trailing punctuation, in the language of the conversation.';
 
 export class SessionTitleService extends Disposable implements ISessionTitleService {
   declare readonly _serviceBrand: undefined;
@@ -59,12 +57,15 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
       if (handle.id === MAIN_AGENT_ID) this.attachMain(handle);
     }));
     this._register(this.agentLifecycle.onDidDispose((id) => {
-      if (id === MAIN_AGENT_ID) this.mainSubscriptions.clear();
+      if (id !== MAIN_AGENT_ID) return;
+      const result = this.mainSubscriptions.clear();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
   }
 
   private attachMain(handle: IAgentScopeHandle): void {
-    this.mainSubscriptions.clear();
+    const previous = this.mainSubscriptions.clear();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const bus = handle.accessor.get(IEventBus);
     const queue = handle.accessor.get(IAgentPromptService).list();
     let firstUserSeen = handle.accessor.get(IAgentStateService).get(turnKey).nextTurnId > 0 ||
@@ -167,7 +168,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     try {
       const requester = this.modelCatalog.getRequester(alias);
       for await (const event of requester.request({
-        systemPrompt: TITLE_SYSTEM_PROMPT,
+        systemPrompt: resolveSessionTitlePrompt(this.config),
         tools: [],
         messages: [{ role: 'user', content: [{ type: 'text', text: chatContent }], toolCalls: [] }],
       }, undefined, { attribution: {
@@ -198,11 +199,11 @@ function errorMessage(error: unknown): string {
 }
 
 function normalizeGeneratedTitle(raw: string): string {
-  const collapsed = raw.replaceAll(/\s+/g, ' ').trim();
-  const unquoted = /^(["'“”‘’])([\s\S]*)\1$/.test(collapsed)
-    ? collapsed.slice(1, -1).trim()
-    : collapsed;
-  return unquoted.slice(0, MAX_GENERATED_TITLE_LENGTH);
+  const firstLine = raw.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '';
+  const title = firstLine.replaceAll(/\s+/g, ' ').trim().replace(/^(?:title|标题)\s*[:：]\s*/i, '');
+  const quoted = [['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’'], ['`', '`']]
+    .some(([open, close]) => title.startsWith(open!) && title.endsWith(close!) && title.length >= 2);
+  return (quoted ? title.slice(1, -1).trim() : title).slice(0, MAX_GENERATED_TITLE_LENGTH);
 }
 
 function titleInputFromPrompts(prompts: readonly string[]): string | undefined {

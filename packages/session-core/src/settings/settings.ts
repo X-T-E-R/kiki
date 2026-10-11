@@ -1008,8 +1008,7 @@ export function marketplaceUrlPatch(url: string): KikiConfigPatch {
 export function sessionTitleModelPatch(model: string): KikiConfigPatch {
   const trimmed = model.trim();
   return {
-    session_title: { model: trimmed.length === 0 ? undefined : trimmed },
-    replace_domains: ['session_title'],
+    session_title: { model: trimmed.length === 0 ? null : trimmed },
   };
 }
 
@@ -1017,7 +1016,11 @@ export const SESSION_TITLE_TRIGGERS: readonly SessionTitleTrigger[] = [
   'first_user_message', 'first_turn_completed', 'context_compacted',
 ];
 
-/** Replaces only the title settings; an empty trigger set disables automatic generation. */
+export function sessionTitlePromptPatch(prompt: string | null): KikiConfigPatch {
+  return { session_title: { prompt: prompt?.trim() ? prompt : null } };
+}
+
+/** Updates model and moments without changing the prompt; an empty trigger set disables automation. */
 export function sessionTitleSettingsPatch(model: string, triggers: readonly SessionTitleTrigger[]): KikiConfigPatch {
   const patch = sessionTitleModelPatch(model);
   return { ...patch, session_title: { ...patch.session_title, triggers: [...new Set(triggers)] } };
@@ -2168,6 +2171,10 @@ export function settingsSectionIsDeviceOnly(sectionId: string): boolean {
   return SETTINGS_SECTION_META[sectionId]?.scopes[0] === 'app';
 }
 
+export function settingsSectionSupportsSpace(sectionId: string): boolean {
+  return SETTINGS_SECTION_META[sectionId]?.scopes.includes('space') ?? false;
+}
+
 export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
   return SETTINGS_NAV_TREE.find(
     (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.includes(sectionId),
@@ -2180,7 +2187,7 @@ export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec
  * `workspace` marks pages whose editors can target one workspace through
  * their own picker.
  */
-export type SettingsScope = 'app' | 'server' | 'workspace';
+export type SettingsScope = 'app' | 'server' | 'workspace' | 'space';
 
 export interface SettingsSectionMeta {
   readonly scopes: readonly SettingsScope[];
@@ -2190,11 +2197,11 @@ export interface SettingsSectionMeta {
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
   general: { scopes: ['app'], purposeKey: 'st.purpose.general' },
-  appearance: { scopes: ['app'], purposeKey: 'st.purpose.appearance' },
+  appearance: { scopes: ['app', 'space'], purposeKey: 'st.purpose.appearance' },
   shortcuts: { scopes: ['app', 'server'], purposeKey: 'st.purpose.shortcuts' },
   connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
-  'connection-services': { scopes: ['server'], purposeKey: 'st.purpose.connectionServices' },
+  'connection-services': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.connectionServices' },
   identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
   agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
@@ -2205,7 +2212,9 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   tasks: { scopes: ['server'] },
   skills: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.skills' },
   mcp: { scopes: ['server', 'workspace'] },
-  plugins: { scopes: ['server'], purposeKey: 'st.purpose.plugins' },
+  // No purpose line: the card's own heading and the list under it already say
+  // what this page is, and a second orientation sentence only repeats them.
+  plugins: { scopes: ['server'] },
   search: { scopes: ['server'], purposeKey: 'st.purpose.search' },
   'browser-control': { scopes: ['server'], purposeKey: 'st.purpose.browserControl' },
   'computer-control': { scopes: ['server'], purposeKey: 'st.purpose.computerControl' },
@@ -2262,12 +2271,12 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   // browser tools are registered per scope, so a running session keeps its set.
   { id: 'native_browser', section: 'developer', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
-  // Stays on Developer: kap-server reads this flag once while booting and only
-  // then registers the /api/usage-export routes, so the switch has no home
-  // that could restart anything for it. The panel that would sit on the section
-  // is on the Usage page and states its own outcome.
-  { id: 'usage_export', section: 'developer', labelKey: 'st.exp.usageExport.name', descriptionKey: 'st.exp.usageExport.desc', effect: 'restart' },
+  { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
+  { id: 'recipes', section: 'ai', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
+  { id: 'plugin_workspace_usage', section: 'plugins', labelKey: 'st.exp.pluginWorkspaceUsage.name', descriptionKey: 'st.exp.pluginWorkspaceUsage.desc', effect: 'now' },
   { id: 'plugin_app_lifecycle', section: 'plugins', labelKey: 'st.exp.pluginAppLifecycle.name', descriptionKey: 'st.exp.pluginAppLifecycle.desc', effect: 'restart' },
+  { id: 'work_presets', section: 'spaces', labelKey: 'st.exp.workPresets.name', descriptionKey: 'st.exp.workPresets.desc', effect: 'now' },
+  { id: 'external_clients', section: 'connection-services', labelKey: 'st.exp.externalClients.name', descriptionKey: 'st.exp.externalClients.desc', effect: 'restart' },
 ];
 
 /** Leaf that hosts flags nobody else claims (server-specific extensions). */
@@ -2331,6 +2340,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-permission-defaults', titleKey: 'st.perm.defaultTitle', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.permission.manual', 'st.defaults.permission.yolo', 'st.perm.dangerousBash'], synonyms: ['permission defaults', '权限默认值', 'permission mode', '权限模式', 'yolo', 'full access', '完全访问', 'dangerous_bash', '危险命令'] },
   { section: 'permissions', cardId: 'st-card-permission-rules', titleKey: 'st.perm.rulesTitle', keywordKeys: ['st.perm.pattern', 'st.perm.decision'], synonyms: ['permission rules', '权限规则', 'always allow', '总是允许'] },
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
+  { section: 'sessions', cardId: 'st-card-archived', titleKey: 'st.sessions.archivedTitle', keywordKeys: ['st.sessions.archivedHint', 'st.sessions.archivedOpen'], synonyms: ['archive', 'archived', 'archived conversation', 'delete archived', '归档', '归档对话', '删除归档'] },
   { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps', 'st.layout.railOpenByDefault'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏'] },
   { section: 'shortcuts', cardId: 'st-card-shortcuts', titleKey: 'st.shortcuts.title', keywordKeys: ['st.shortcuts.intro', 'st.shortcuts.platform', 'st.shortcuts.reset'], synonyms: ['shortcut', 'shortcuts', 'keybinding', 'keyboard', 'hotkey', '快捷键', '键位', '按键', '热键'] },
@@ -2357,7 +2367,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
   { section: 'connection', tab: 'external', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
-  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.connectionServices', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入'] },
+  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.connectionServices', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
@@ -2399,15 +2409,26 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-diagnostics', titleKey: 'st.nbSearch.diagnosticsTitle', keywordKeys: ['st.nbSearch.diagnosticsHint'], synonyms: ['搜索诊断', 'search diagnostics', 'test'] },
   { section: 'mcp', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace', 'st.mcp.restart', 'st.mcp.toolsCount'], synonyms: ['能力', 'mcp 服务器', 'mcp server', 'mcp 状态', 'mcp status'] },
   { section: 'mcp', cardId: 'st-card-mcp-timeouts', titleKey: 'st.mcp.timeoutsTitle', keywordKeys: ['st.runtime.mcpStartupTimeout', 'st.runtime.mcpToolTimeout'], synonyms: ['mcp 超时', 'mcp timeout'] },
-  { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.title', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
-  { section: 'plugins', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
+  { section: 'plugins', cardId: 'st-card-plugins', titleKey: 'st.plugins.installedTitle', keywordKeys: ['st.plugins.hint'], synonyms: ['插件', 'plugin', '插件管理', 'marketplace', '插件市场', '安装插件'] },
+  // The WebBridge readiness card answers "is browser control working", so it
+  // lives on the browser page with the rest of that answer. Its old bookmark
+  // follows the card there (LEGACY_CARD_ALIASES).
+  { section: 'browser-control', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'browser-control', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
-  { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.driver', 'st.browser.setup.chrome', 'st.browser.setup.host'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver'] },
+  { section: 'browser-control', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.host', 'st.browser.route.blurb.kimi-webbridge', 'st.browser.route.blurb.independent-browser'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver', 'kimi', 'codex', '扩展', 'extension'] },
   { section: 'browser-control', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
   { section: 'computer-control', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
   { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },
   { section: 'computer-control', cardId: 'st-card-computer-mcp', titleKey: 'st.computer.connectionsTitle', keywordKeys: ['st.computer.connectionsHint', 'st.computer.fieldCommand', 'st.computer.stopButton'], synonyms: ['mcp', 'kiki-computer', 'stdio', '配置', 'connect', '连接', '停止'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
+  // One workspace's own page. Its cards live under this section so a search
+  // hit lands on the list, which is where the workspace is chosen from; the
+  // query is what turns that hit into the page for a specific workspace.
+  { section: 'workspaces', cardId: 'st-card-workspace-detail', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.renameTitle', 'st.workspaces.pin', 'st.workspaces.detail.pinHelp'], synonyms: ['workspace settings', '工作区设置', 'rename workspace', '重命名工作区'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-plugins', titleKey: 'st.workspaces.detail.plugins', keywordKeys: ['st.workspaces.detail.pluginsScope', 'st.workspaces.detail.pluginsEmpty', 'rail.plugins.restore', 'cap.install.scope.workspace'], synonyms: ['workspace plugins', '工作区插件', 'plugin scope', '插件范围'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-trust', titleKey: 'st.workspaces.detail.trust', keywordKeys: ['st.workspaces.detail.trustOn', 'st.workspaces.detail.trustOff'], synonyms: ['trusted workspace', '受信任的工作区', 'workspace trust', '工作区信任'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-memory', titleKey: 'st.workspaces.detail.inherit', keywordKeys: ['st.workspaces.detail.memoryFor', 'st.memory.workspaces'], synonyms: ['workspace memory', '工作区记忆', 'memory override', '记忆覆盖'] },
+  { section: 'workspaces', cardId: 'st-card-workspace-resources', titleKey: 'st.workspaces.detail.resources', keywordKeys: ['st.workspaces.detail.profiles', 'st.workspaces.detail.mcp', 'st.workspaces.detail.skills'], synonyms: ['agent profiles', '智能体配置', 'mcp servers', 'MCP 服务器'] },
   { section: 'workspaces', cardId: 'st-card-worktrees', titleKey: 'st.worktrees.title', keywordKeys: ['st.worktrees.hint', 'st.worktrees.cleanup', 'st.worktreePolicy.prefix', 'st.worktreePolicy.base', 'st.worktreePolicy.autoCleanup'], synonyms: ['branch prefix', '分支前缀', 'worktree policy', 'worktree 策略'] },
   { section: 'ssh', cardId: 'st-card-ssh-hosts', titleKey: 'st.ssh.hostsTitle', keywordKeys: ['st.ssh.addHost', 'st.ssh.writeBack'], synonyms: ['ssh', 'ssh config', '~/.ssh/config', 'remote host', '远程主机', '主机'] },
   { section: 'ssh', cardId: 'st-card-ssh-connection', titleKey: 'st.ssh.connectionTitle', keywordKeys: ['st.ssh.syncToggle', 'st.ssh.approvalToggle', 'st.ssh.approvalHint'], synonyms: ['connection approval', '连接审批', 'host key', '主机密钥', 'known_hosts'] },
@@ -2531,6 +2552,9 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-communication': { section: 'sessions', cardId: 'st-card-agent-messaging' },
   'st-card-thread-communication': { section: 'sessions', cardId: 'st-card-agent-messaging' },
   'st-card-notify-parent': { section: 'sessions', cardId: 'st-card-agent-messaging' },
+  // The WebBridge readiness card moved off the Plugins leaf onto the browser
+  // page; a bookmark from when it lived there still resolves.
+  'st-card-webbridge': { section: 'browser-control', cardId: 'st-card-webbridge' },
 };
 
 /** Which tab a legacy section bookmark maps to (redesign §10.3's route table). */
@@ -2592,6 +2616,96 @@ export function resolveSettingsRoute(
     return { status: 'ok', section: cardSection, cardId, tab: cardTab };
   }
   return { status: 'unknown', section: sectionParam, cardId };
+}
+
+// ---- installed-plugin settings pages (Settings → Plugins) ----
+
+/**
+ * The installed-plugin detail screen is a page of its own, not a card inside
+ * the Plugins list: `/settings/plugins?plugin=<id>`. It is one settings
+ * section with a query key, the same shape `ai?tab=` already uses, so refresh,
+ * a copied link and the browser's back button all land on the same plugin
+ * without a new route in the router.
+ *
+ * The helper is the one owner of that key's spelling. Anything that navigates
+ * here — the list, the nav tree, the Capabilities detail — goes through it, so
+ * a rename can never leave one surface pointing at a page that no longer
+ * resolves.
+ */
+export const PLUGIN_SETTINGS_QUERY_KEY = 'plugin';
+
+/** The settings route of one installed plugin's own settings page. */
+export function pluginSettingsPath(pluginId: string): string {
+  return `/settings/plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(pluginId)}`;
+}
+
+/** The settings route of the installed list itself. */
+export function installedPluginsPath(): string {
+  return '/settings/plugins';
+}
+
+/**
+ * The plugin id a settings query carries, or null on the list page. An empty
+ * value is the list, not an unknown plugin: `?plugin=` is what a link built
+ * from an unset id resolves to, and showing an empty detail page there would
+ * be a dead end.
+ */
+export function pluginSettingsIdFromQuery(search: string | URLSearchParams): string | null {
+  // Accepts a query string (`?plugin=x`), a whole route (`/settings/plugins?…`)
+  // or an absolute URL, because a caller reading a location may hold any of the
+  // three and passing one where another was meant would silently answer "no
+  // plugin" rather than fail loudly.
+  const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
+  const raw = params.get(PLUGIN_SETTINGS_QUERY_KEY);
+  return raw === null || raw === '' ? null : raw;
+}
+
+/**
+ * One workspace's own page, `/settings/workspaces?workspace=<id>`.
+ *
+ * A workspace is the unit a reader configures, so it gets a page rather than a
+ * dialog: the list stays a list, and the page is where its name, its plugins
+ * and everything else scoped to it actually live. It rides the existing
+ * `/settings/:section?` route with a query, so it needs no router change and
+ * survives Back like any other settings visit.
+ */
+export const WORKSPACE_SETTINGS_QUERY_KEY = 'workspace';
+
+/** The settings route of one workspace's own page. */
+export function workspaceSettingsPath(workspaceId: string): string {
+  return `/settings/workspaces?${WORKSPACE_SETTINGS_QUERY_KEY}=${encodeURIComponent(workspaceId)}`;
+}
+
+/** The settings route of the workspace list itself. */
+export function workspacesSettingsPath(): string {
+  return '/settings/workspaces';
+}
+
+/**
+ * The workspace id a settings query carries, or null on the list page. An
+ * empty value is the list, not a blank detail page: `?workspace=` is what a
+ * link built from an unset id resolves to.
+ */
+export function workspaceSettingsIdFromQuery(search: string | URLSearchParams): string | null {
+  const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
+  const raw = params.get(WORKSPACE_SETTINGS_QUERY_KEY);
+  return raw === null || raw === '' ? null : raw;
+}
+
+/** The settings route of the sessions section itself. */
+export function sessionsSettingsPath(): string {
+  return '/settings/sessions';
+}
+
+/**
+ * The built-in import-history surface. Bringing an old conversation in is a
+ * way of working with sessions and it ships with Kiki, so it lives on the
+ * session route next to the rest of what sessions can do, rather than behind a
+ * plugin. The old `/capabilities?view=import` address redirects here, so an
+ * old bookmark lands on the same surface rather than on a dead one.
+ */
+export function importHistoryPath(): string {
+  return '/settings/sessions/import';
 }
 
 // ---- millisecond humanizing (unit-ed inputs) ----

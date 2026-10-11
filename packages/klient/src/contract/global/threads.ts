@@ -10,6 +10,8 @@ export const threadRefSchema = z.object({
   hostId: z.string().trim().min(1),
   workspaceId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
+  personaId: z.string().optional(),
+  name: z.string().optional(),
   bridgeId: z.string().uuid().optional(),
   connectionId: z.string().uuid().optional(),
 });
@@ -38,7 +40,7 @@ export const threadTurnSchema = z.object({
   startedAt: z.number().int().nonnegative().optional(),
   endedAt: z.number().int().nonnegative(),
   reason: z.enum(['completed', 'cancelled', 'failed', 'blocked']),
-  origin: z.enum(['user', 'peer', 'bridged_peer']),
+  origin: z.enum(['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created']),
   bridgedPeer: z.object({ source: threadRefSchema, sourceHomeId: z.string().uuid(), targetHomeId: z.string().uuid(), bridgeId: z.string().uuid(),
     revision: z.number().int().positive(), location: z.enum(['local', 'network']), createdAt: z.number(), expiresAt: z.number(), sourceSeq: z.number(),
     causeId: z.string(), hop: z.number(), messageId: z.string() }).optional(),

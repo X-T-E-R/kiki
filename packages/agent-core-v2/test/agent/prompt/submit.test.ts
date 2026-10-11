@@ -90,7 +90,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-first-prompt', async (_event, next) => {
-      hook.dispose();
+      await hook.dispose();
       await held;
       await next();
     }, { before: 'context-injector' });
@@ -147,7 +147,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-yield', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     const first = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } } });
     const blocker = prompts.hooks.onBeforeSubmitPrompt.register('block-follow-up', async (event, next) => {
@@ -165,7 +165,7 @@ describe('prompt submit', () => {
     expect(ctx.llmCalls).toHaveLength(1);
     expect((await goal.resumeGoal({})).status).toBe('active');
     await goal.pauseGoal({});
-    blocker.dispose();
+    await blocker.dispose();
   });
 
   it('does not settle a replacement goal for a blocked prompt after yielding the old goal', async () => {
@@ -178,7 +178,7 @@ describe('prompt submit', () => {
     let finishFirst!: () => void;
     const firstHeld = new Promise<void>((resolve) => { finishFirst = resolve; });
     const stepHook = loop.hooks.onWillBeginStep.register('hold-original', async (_event, next) => {
-      stepHook.dispose(); await firstHeld; await next();
+      await stepHook.dispose(); await firstHeld; await next();
     }, { before: 'context-injector' });
     const first = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } } });
     let releasePrompt!: () => void;
@@ -197,7 +197,7 @@ describe('prompt submit', () => {
     expect((await queued.completion).state).toBe('blocked');
     expect(goal.getGoal().goal).toMatchObject({ goalId: replacement.goalId, status: 'active' });
     expect(ctx.llmCalls).toHaveLength(1);
-    blocker.dispose();
+    await blocker.dispose();
   });
 
   it('accepts a GUI goal follow-up during a real continuation and schedules it before the next continuation', async () => {
@@ -212,7 +212,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-continuation', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI follow-up' }], toolCalls: [], origin: { kind: 'user' } },
@@ -236,7 +236,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-autonomous', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI send now' }], toolCalls: [], origin: { kind: 'user' } },
@@ -332,7 +332,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-terminal', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await prompts.submit({ input: [{ type: 'text', text: 'first' }] });
     const waiting = prompts.submitAndWait({ input: [{ type: 'text', text: 'second' }], promptId: 'queued-terminal' });
@@ -350,7 +350,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-waiter', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     const waiting = prompts.submitAndWait({ input: [{ type: 'text', text: 'hello' }] }, controller.signal);
     const rejected = expect(waiting).rejects.toThrow('stop waiting');
@@ -389,7 +389,7 @@ describe('prompt submit', () => {
 
     const launched = await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello title' }] });
     expect(launched?.turn_id).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const metadata = await ctx.get(ISessionMetadata).read();
     expect(metadata.title).toBe('hello title');

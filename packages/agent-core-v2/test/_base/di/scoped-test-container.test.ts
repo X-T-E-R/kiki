@@ -31,7 +31,7 @@ describe('scoped test container', () => {
     registerScopedService(LifecycleScope.Session, IConsumer, Consumer);
   });
 
-  it('injects a stubbed ancestor dependency into a child-layer service', () => {
+  it('injects a stubbed ancestor dependency into a child-layer service', async () => {
     const stubGreeter: IGreeter = { greet: () => 'hello-from-stub' };
     const host = createScopedTestHost([stubPair(IGreeter, stubGreeter)]);
     const session = host.child(LifecycleScope.Session, 's1');
@@ -39,10 +39,10 @@ describe('scoped test container', () => {
     const consumer = session.accessor.get(IConsumer);
     expect(consumer.label()).toBe('consumed:hello-from-stub');
 
-    host.dispose();
+    await host.dispose();
   });
 
-  it('stubs are isolated per scope (sibling scopes see different seeds)', () => {
+  it('stubs are isolated per scope (sibling scopes see different seeds)', async () => {
     const host = createScopedTestHost();
     const s1 = host.child(LifecycleScope.Session, 's1', [
       stubPair(IGreeter, { greet: () => 'one' }),
@@ -54,10 +54,10 @@ describe('scoped test container', () => {
     expect(s1.accessor.get(IGreeter).greet()).toBe('one');
     expect(s2.accessor.get(IGreeter).greet()).toBe('two');
 
-    host.dispose();
+    await host.dispose();
   });
 
-  it('childOf builds deeper (Agent) scopes under a given parent', () => {
+  it('childOf builds deeper (Agent) scopes under a given parent', async () => {
     const host = createScopedTestHost([stubPair(IGreeter, { greet: () => 'deep' })]);
     const session = host.child(LifecycleScope.Session, 's1');
     const agent = host.childOf(session, LifecycleScope.Agent, 'main', [
@@ -67,6 +67,6 @@ describe('scoped test container', () => {
     expect(agent.accessor.get(IGreeter).greet()).toBe('agent-local');
     expect(session.accessor.get(IGreeter).greet()).toBe('deep');
 
-    host.dispose();
+    await host.dispose();
   });
 });

@@ -208,13 +208,23 @@ beforeEach(() => {
   usageExport.backfill.mockResolvedValue(preview());
 });
 
-describe('UsageExportPanel gating', () => {
-  it('reports the feature as unavailable when the server never registered the routes', async () => {
-    meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: { usage_export: false } });
+describe('UsageExportPanel availability', () => {
+  it.each([{}, { usage_export: false }])('opens the ordinary entry without an experimental gate (%j)', async (flags) => {
+    meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: flags });
+    usageExport.status.mockResolvedValue({ ...status(destination()), destinations: [] });
     await render();
-    expect(q('[data-usage-export-unavailable]')).not.toBeNull();
-    expect(usageExport.status).not.toHaveBeenCalled();
-    // An empty destination list would be a lie: the routes do not exist.
+    expect(usageExport.status).toHaveBeenCalledOnce();
+    expect(q('[data-usage-export-unavailable]')).toBeNull();
+    expect(q('[data-usage-export-empty]')).not.toBeNull();
+    expect(q<HTMLButtonElement>('[data-usage-export-add]')!.disabled).toBe(false);
+    expect(usageExport.enable).not.toHaveBeenCalled();
+    expect(usageExport.syncNow).not.toHaveBeenCalled();
+  });
+
+  it('shows an unavailable older server as a load failure, never an empty destination list', async () => {
+    usageExport.status.mockRejectedValue(new Error('HTTP 404'));
+    await render();
+    expect(q('[data-usage-export-load-error]')).not.toBeNull();
     expect(q('[data-usage-export-empty]')).toBeNull();
   });
 

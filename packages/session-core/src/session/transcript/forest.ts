@@ -5,6 +5,7 @@ import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask
 import {
   MAIN_AGENT_ID,
   buildAgentForest,
+  stabilizeAgentForest,
   type AgentForest,
   type AgentLiveSource,
   type AgentRosterDescriptor,
@@ -26,7 +27,7 @@ export function rosterFromTranscriptAgents(
       name: agent.label ?? agent.agentId,
       label: agent.label,
       status: agent.agentId === MAIN_AGENT_ID ? undefined : 'unknown',
-      startedAt: agent.createdAt,
+      createdAt: agent.createdAt,
       disposedAt: agent.disposedAt,
     };
   });
@@ -110,6 +111,7 @@ export function taskItemsFromTranscriptTasks(
         name: task.name ?? task.subagentName,
         description: task.description,
         status: task.state,
+        model: task.model,
         thinkingEffort: task.thinkingEffort,
         thinkingEffortExplicit: task.thinkingEffortExplicit,
         executorId: task.executorId,
@@ -187,10 +189,11 @@ export function rosterFromSnapshotSubagents(
     const label = presentSnapshotText(subagent.label);
     const description = presentSnapshotText(subagent.description);
     const name = label ?? description ?? presentSnapshotText(subagent.profile) ?? agentId;
-    const startedAt = subagent.started_at ?? subagent.created_at;
+    const startedAt = subagent.started_at;
     return [
       {
         agentId,
+        createdAt: subagent.created_at,
         parentAgentId: presentSnapshotText(subagent.parent_agent_id),
         parentToolCallId: presentSnapshotText(subagent.parent_tool_call_id),
         name,
@@ -200,9 +203,12 @@ export function rosterFromSnapshotSubagents(
         thinkingEffortExplicit: subagent.thinking_effort_explicit,
         executorId: presentSnapshotText(subagent.executor_id),
         executorProtocol: presentSnapshotText(subagent.executor_protocol),
-        status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
+        status: subagent.activity_status ?? (subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status),
+        statusSource: subagent.status_source,
+        nameSource: subagent.name_source,
         refreshing: subagent.refreshing,
         refreshingUntil: subagent.refreshing_until,
+        detached: subagent.run_in_background,
         disposedAt: subagent.live === false ? startedAt : undefined,
         toolCallCount: subagent.tool_call_count,
         toolCallCountKnown: subagent.tool_call_count === undefined ? undefined : true,
@@ -247,6 +253,7 @@ export function overlayLiveSourcesWithSnapshotSubagents(
       : mergeKnown(source.toolCallCountKnown, snapshot.toolCallCountKnown);
     return {
       ...source,
+      createdAt: presentSnapshotText(source.createdAt) ?? snapshot.createdAt,
       parentAgentId: source.parentAgentId ?? snapshot.parentAgentId,
       parentToolCallId: source.parentToolCallId ?? snapshot.parentToolCallId,
       name: source.name !== source.subagentId ? source.name : snapshot.name ?? source.name,
@@ -364,6 +371,45 @@ export function sessionAgentForestFromTranscript(
   return sessionAgentForest(state, rosterFromTranscriptResponse(response), taskItemsFromTranscriptTasks(response?.tasks));
 }
 
+interface SnapshotAgentRef {
+  readonly agentId: string;
+  readonly toolCallId: string;
+  readonly startedAt?: string;
+}
+
+const snapshotAgentRefCache = new WeakMap<AgentTranscriptSnapshot['items'], readonly SnapshotAgentRef[]>();
+const turnAgentRefCache = new WeakMap<object, readonly SnapshotAgentRef[]>();
+
+function snapshotAgentRefs(items: AgentTranscriptSnapshot['items']): readonly SnapshotAgentRef[] {
+  const cached = snapshotAgentRefCache.get(items);
+  if (cached !== undefined) return cached;
+  const refs = new Map<string, SnapshotAgentRef>();
+  for (const item of items) {
+    if (item.kind !== 'turn') continue;
+    let turnRefs = turnAgentRefCache.get(item);
+    if (turnRefs === undefined) {
+      const entries = new Map<string, SnapshotAgentRef>();
+      for (const step of item.steps) {
+        for (const frame of step.frames) {
+          if (frame.kind !== 'tool') continue;
+          for (const ref of frame.agentRefs ?? []) {
+            entries.set(ref.agentId, { agentId: ref.agentId, toolCallId: frame.toolCallId,
+              startedAt: entries.get(ref.agentId)?.startedAt ?? step.startedAt ?? item.startedAt });
+          }
+        }
+      }
+      turnRefs = [...entries.values()];
+      turnAgentRefCache.set(item, turnRefs);
+    }
+    for (const ref of turnRefs) {
+      refs.set(ref.agentId, { ...ref, startedAt: refs.get(ref.agentId)?.startedAt ?? ref.startedAt });
+    }
+  }
+  const result = [...refs.values()];
+  snapshotAgentRefCache.set(items, result);
+  return result;
+}
+
 export function liveSourcesFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
 ): readonly AgentLiveSource[] {
@@ -389,52 +435,17 @@ export function liveSourcesFromAgentSnapshots(
         toolCallCountAuthoritative: existing?.toolCallCountAuthoritative,
       });
     }
-    for (const item of snapshot.items) {
-      if (item.kind !== 'turn') continue;
-      for (const step of item.steps) {
-        for (const frame of step.frames) {
-          if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
-          for (const ref of frame.agentRefs) {
-            const existing = byId.get(ref.agentId);
-            byId.set(ref.agentId, {
-              subagentId: ref.agentId,
-              parentAgentId,
-              parentToolCallId: frame.toolCallId,
-              name: existing?.name ?? ref.agentId,
-              status: existing?.status ?? 'running',
-              description: existing?.description,
-              summary: existing?.summary,
-              error: existing?.error,
-              startedAt: existing?.startedAt ?? step.startedAt ?? item.startedAt,
-              endedAt: existing?.endedAt,
-              toolCallCount: existing?.toolCallCount,
-              toolCallCountKnown: existing?.toolCallCountKnown,
-              toolCallCountAuthoritative: existing?.toolCallCountAuthoritative,
-              model: existing?.model,
-              thinkingEffort: existing?.thinkingEffort,
-            });
-          }
-        }
-      }
-    }
-    const meta = snapshot.meta.agent;
-    if (meta !== undefined) {
-      for (const [agentId, live] of byId) {
-        if (agentId === parentAgentId) continue;
-        if (live.parentAgentId !== parentAgentId) continue;
-      }
-      for (const task of tasks) {
-        if (task.agentId === undefined) continue;
-        const existing = byId.get(task.agentId);
-        if (existing === undefined) continue;
-        if (parentAgentId === task.agentId) {
-          byId.set(task.agentId, {
-            ...existing,
-            model: meta.model ?? existing.model,
-            thinkingEffort: meta.thinkingEffort ?? existing.thinkingEffort,
-          });
-        }
-      }
+    for (const ref of snapshotAgentRefs(snapshot.items)) {
+      const existing = byId.get(ref.agentId);
+      byId.set(ref.agentId, {
+        ...existing,
+        subagentId: ref.agentId,
+        parentAgentId,
+        parentToolCallId: ref.toolCallId,
+        name: existing?.name ?? ref.agentId,
+        status: existing?.status ?? 'unknown',
+        startedAt: existing?.startedAt ?? ref.startedAt,
+      });
     }
   }
   for (const [agentId, snapshot] of snapshots) {
@@ -457,6 +468,7 @@ export function liveSourcesFromAgentSnapshots(
 export function sessionAgentForestFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
   snapshotSubagents?: readonly SnapshotSubagent[],
+  coldAgents?: ReadonlySet<string>,
 ): AgentForest {
   const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromAgentSnapshots(snapshots),
@@ -464,14 +476,16 @@ export function sessionAgentForestFromAgentSnapshots(
   );
   const tasks: AgentTaskItem[] = [];
   const roster: AgentRosterDescriptor[] = [];
+  const liveById = new Map(live.map((entry) => [entry.subagentId, entry]));
   for (const [agentId, snapshot] of snapshots) {
     const meta = snapshot.meta.agent;
     const count = canonicalToolCallCountFields(snapshot);
+    const source = liveById.get(agentId);
     roster.push({
       agentId,
-      parentAgentId: live.find((entry) => entry.subagentId === agentId)?.parentAgentId,
-      parentToolCallId: live.find((entry) => entry.subagentId === agentId)?.parentToolCallId,
-      name: live.find((entry) => entry.subagentId === agentId)?.name ?? agentId,
+      parentAgentId: source?.parentAgentId,
+      parentToolCallId: source?.parentToolCallId,
+      name: source?.name ?? agentId,
       model: meta?.model,
       thinkingEffort: meta?.thinkingEffort,
       contextTokens: meta?.contextTokens,
@@ -499,9 +513,26 @@ export function sessionAgentForestFromAgentSnapshots(
   roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
   const forest = overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);
   const byId = { ...forest.byId };
-  for (const [agentId, snapshot] of snapshots) {
-    const node = byId[agentId];
+  const snapshotRows = new Map((snapshotSubagents ?? []).map((row) => [snapshotSubagentAgentId(row), row]));
+  const liveIds = new Set((snapshotSubagents ?? []).filter((row) => row.live === true).map(snapshotSubagentAgentId));
+  for (const row of snapshotSubagents ?? []) {
+    const id = snapshotSubagentAgentId(row);
+    const node = byId[id];
     if (node === undefined) continue;
+    byId[id] = { ...node, nameSource: row.name_source,
+      statusSource: node.status === (row.activity_status ?? row.status) ? row.status_source : undefined };
+  }
+  for (const [agentId, snapshot] of snapshots) {
+    let node = byId[agentId];
+    if (node === undefined) continue;
+    const row = snapshotRows.get(agentId);
+    const meta = snapshot.meta.agent;
+    const model = coldAgents?.has(agentId) === true ? row?.model ?? meta?.model : meta?.model;
+    const thinking = coldAgents?.has(agentId) === true ? row?.thinking_effort ?? meta?.thinkingEffort : meta?.thinkingEffort;
+    if (model !== undefined || thinking !== undefined) {
+      node = { ...node, model: model ?? node.model, thinkingEffort: thinking ?? node.thinkingEffort };
+      byId[agentId] = node;
+    }
     const turn = snapshot.items.findLast((item) => item.kind === 'turn');
     if (turn?.kind !== 'turn') continue;
     const outcome = turnOutcomeFromItem(turn);
@@ -511,7 +542,55 @@ export function sessionAgentForestFromAgentSnapshots(
     if (Number.isFinite(nodeStartedAt) && Number.isFinite(endedAt) && nodeStartedAt > endedAt) continue;
     byId[agentId] = { ...node, turnOutcome: outcome };
   }
+  const coldEvidence = new Set(coldAgents);
+  for (const agentId of coldAgents ?? []) {
+    const snapshot = snapshots.get(agentId);
+    if (snapshot === undefined) continue;
+    const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+    for (const task of tasks) if (task.agentId !== undefined) coldEvidence.add(task.agentId);
+  }
+  for (const agentId of coldEvidence) {
+    const node = byId[agentId];
+    if (node === undefined || liveIds.has(agentId)) continue;
+    byId[agentId] = { ...node, busy: false, status: node.status === 'running' || node.status === 'suspended' ? 'unknown' : node.status };
+  }
   return { byId, roots: forest.roots.map((node) => byId[node.agentId]!) };
+}
+
+export class SessionAgentForestQuery {
+  private snapshots = new Map<string, AgentState | AgentTranscriptSnapshot>();
+  private subagents: readonly SnapshotSubagent[] | undefined;
+  private coldAgents = new Set<string>();
+  private forest: AgentForest | undefined;
+  private validUntil = Infinity;
+
+  read(
+    snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
+    subagents?: readonly SnapshotSubagent[],
+    coldAgents?: ReadonlySet<string>,
+  ): AgentForest {
+    const previousIds = [...this.snapshots.keys()];
+    if (this.forest !== undefined && Date.now() < this.validUntil && this.subagents === subagents &&
+        this.snapshots.size === snapshots.size && this.coldAgents.size === (coldAgents?.size ?? 0) &&
+        [...this.coldAgents].every((id) => coldAgents?.has(id) === true) &&
+        [...snapshots].every(([id, next], index) => {
+          const previous = this.snapshots.get(id);
+          return previousIds[index] === id && previous !== undefined && previous.items === next.items && previous.tasks === next.tasks &&
+            previous.meta === next.meta && previous.toolCallCount === next.toolCallCount &&
+            canonicalToolCallCountFields(previous).toolCallCountKnown === canonicalToolCallCountFields(next).toolCallCountKnown;
+        })) return this.forest;
+    this.forest = stabilizeAgentForest(this.forest, sessionAgentForestFromAgentSnapshots(snapshots, subagents, coldAgents));
+    this.snapshots = new Map(snapshots);
+    this.subagents = subagents;
+    this.coldAgents = new Set(coldAgents);
+    this.validUntil = Infinity;
+    const now = Date.now();
+    for (const row of subagents ?? []) {
+      const until = Date.parse(row.refreshing_until ?? '');
+      if (row.refreshing === true && until > now) this.validUntil = Math.min(this.validUntil, until);
+    }
+    return this.forest;
+  }
 }
 
 /**
@@ -524,7 +603,7 @@ function filterRosterToLiveOrPresent(
 ): readonly AgentRosterDescriptor[] {
   if (snapshots.size === 0) return roster;
   const presentIds = new Set<string>(snapshots.keys());
-  return roster.filter((entry) => presentIds.has(entry.agentId) ||
+  return roster.filter((entry) => entry.statusSource !== undefined || presentIds.has(entry.agentId) ||
     entry.status === 'failed' || entry.status === 'cancelled' || (
     entry.disposedAt === undefined &&
     ((entry.refreshing === true && Date.parse(entry.refreshingUntil ?? '') > Date.now()) ||

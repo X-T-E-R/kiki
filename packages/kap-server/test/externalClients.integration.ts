@@ -39,7 +39,7 @@ describe('native external clients',()=>{
     const invalidOrigin=await authedFetch(server,`http://127.0.0.1:${server.port}`,'/api/external-clients/listener',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:true,publicUrl:'https://example.test/base'})});
     expect(await invalidOrigin.json()).toMatchObject({code:40001,details:{code:'invalid_public_origin'}});expect((await owner('/listener')).mcpUrl).toBe(mcpUrl);
     const before=(await owner(`/${connection.id}/sessions`)).sessions;expect(before).toEqual([]);
-    const listed=await client.listTools();expect(listed.tools.some(t=>t.name==='Read')).toBe(false);expect(listed.tools.some(t=>t.name==='kiki_session')).toBe(true);
+    const listed=await client.listTools();expect(listed.tools.some(t=>t.name==='Read')).toBe(false);expect(listed.tools.some(t=>t.name==='kiki_session')).toBe(true);expect(listed.tools.some(t=>t.name==='kiki_respond')).toBe(false);
     expect((await owner(`/${connection.id}/sessions`)).sessions).toEqual([]);
     await call(client,'kiki_session',{action:'new',_kiki:{idempotency_key:'new-chat-one'}},{'openai/session':'chat-one'});
     expect((await client.listTools()).tools.some(t=>t.name==='Read')).toBe(true);
@@ -76,6 +76,16 @@ describe('native external clients',()=>{
       search=await terminal(client,await call(client,'HistorySearch',{cursor:page.next_cursor,_kiki:{session_ref:first.session_ref}}));page=JSON.parse(search.result.output);
     }
     expect(search.result.isError,JSON.stringify(page)).not.toBe(true);expect(JSON.stringify(page)).toContain('Explicit saved material');
+    for (const include_tool_output of [false, true, false]) {
+      let outputSearch=await terminal(client,await call(client,'HistorySearch',{query:'once',include_tool_output,source:'transcript',_kiki:{session_ref:first.session_ref}}));
+      let outputPage=JSON.parse(outputSearch.result.output);
+      for(let i=0;i<5&&outputPage.hits?.length===0&&outputPage.next_cursor;i++) {
+        outputSearch=await terminal(client,await call(client,'HistorySearch',{cursor:outputPage.next_cursor,_kiki:{session_ref:first.session_ref}}));outputPage=JSON.parse(outputSearch.result.output);
+      }
+      expect(outputSearch.result.isError,JSON.stringify(outputPage)).not.toBe(true);
+      expect(outputPage.hits.length>0).toBe(include_tool_output);
+      if(include_tool_output) expect(outputPage.hits.every((hit:{role:string})=>hit.role==='tool')).toBe(true);
+    }
     const fork=await owner(`/sessions/${record.sessionId}/continue`,{});expect(fork.sessionId).not.toBe(record.sessionId);
     const forkMeta=await server.core.accessor.get(ISessionManager).get(fork.sessionId)!.accessor.get(ISessionMetadata).read();expect(forkMeta.custom?.['externalClient']).toBeUndefined();
     await owner(`/${connection.id}`,undefined,'DELETE');

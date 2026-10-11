@@ -1,5 +1,7 @@
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
@@ -292,6 +294,7 @@ export class SessionManager implements ISessionManager {
       work({
         archive: () => this.archiveInner(sessionId),
         restore: () => this.restoreInner(sessionId),
+        delete: () => this.deleteInner(sessionId),
       }),
     );
   }
@@ -404,21 +407,23 @@ export class SessionManager implements ISessionManager {
   }
 
   async delete(sessionId: string): Promise<void> {
-    await this.serializeLifecycle(sessionId, async () => {
-      const temporary = this.ephemeral.get(sessionId);
-      const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
-      if (target === undefined) {
-        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-      }
-      await this.runWorkspaceOperation(
-        target.workspaceId,
-        () => target.controller.delete(sessionId, () => {
-          this.ephemeral.delete(sessionId);
-          this.didDeleteEmitter.fire({ sessionId });
-        }),
-        target.release,
-      );
-    });
+    await this.serializeLifecycle(sessionId, () => this.deleteInner(sessionId));
+  }
+
+  private async deleteInner(sessionId: string): Promise<void> {
+    const temporary = this.ephemeral.get(sessionId);
+    const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
+    if (target === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    await this.runWorkspaceOperation(
+      target.workspaceId,
+      () => target.controller.delete(sessionId, () => {
+        this.ephemeral.delete(sessionId);
+        this.didDeleteEmitter.fire({ sessionId });
+      }),
+      target.release,
+    );
   }
 
   async fork(options: ForkSessionOptions): Promise<ISessionScopeHandle> {
@@ -461,14 +466,14 @@ export class SessionManager implements ISessionManager {
     );
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
-    for (const state of this.residency.values()) state.activitySubscription?.dispose();
+    for (const state of this.residency.values()) await state.activitySubscription?.dispose();
     this.residency.clear();
     for (const { controller, subscriptions } of [...this.controllerEntries].reverse()) {
-      subscriptions.dispose();
-      controller.dispose();
+      await subscriptions.dispose();
+      await controller.dispose();
     }
     this.controllerEntries.clear();
     this.controllers.clear();
@@ -532,7 +537,8 @@ export class SessionManager implements ISessionManager {
 
   private registerResidency(sessionId: string, handle: ISessionScopeHandle): void {
     const entry = this.ensureResidency(sessionId);
-    entry.activitySubscription?.dispose();
+    const previous = entry.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const update = (): void => {
       try {
         const state = handle.accessor.get(ISessionActivityView).state();
@@ -569,7 +575,8 @@ export class SessionManager implements ISessionManager {
 
   private dropResidency(sessionId: string): void {
     const entry = this.residency.get(sessionId);
-    entry?.activitySubscription?.dispose();
+    const previous = entry?.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     this.residency.delete(sessionId);
   }
 
@@ -656,8 +663,10 @@ export class SessionManager implements ISessionManager {
     this.controllerEntries.delete(entry);
     this.controllerWorkspaces.delete(entry.controller);
     if (this.controllers.get(workspaceId) === entry) this.controllers.delete(workspaceId);
-    entry.subscriptions.dispose();
-    entry.controller.dispose();
+    const subscriptions = entry.subscriptions.dispose();
+    if (isPromiseLike(subscriptions)) subscriptions.catch(onUnexpectedError);
+    const controller = entry.controller.dispose();
+    if (isPromiseLike(controller)) controller.catch(onUnexpectedError);
   }
 
   private async controllerForSession(sessionId: string): Promise<{

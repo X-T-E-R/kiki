@@ -7,6 +7,7 @@ import type {
   ServiceTier,
   ThinkingEffort,
   RequestIdentityWireOptions,
+  RawResponseObserver,
   VideoUploadInput,
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
@@ -60,6 +61,7 @@ export interface ModelRequestParams {
   readonly usedContextTokensTrusted?: boolean;
   readonly maxContextTokens?: number;
   readonly onTraceId?: (traceId: string | null) => void;
+  readonly rawResponseObserver?: RawResponseObserver;
   readonly requestIdentity?: RequestIdentityWireOptions;
   readonly attribution?: RequestAttribution;
 }

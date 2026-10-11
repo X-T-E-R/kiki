@@ -72,7 +72,7 @@ describe('createMcpOAuthStore', () => {
       expect(await store(base).read('account.json')).toEqual({ token: 'shared' });
       expect(await store(home).read('account.json')).toEqual({ token: 'isolated' });
     } finally {
-      disposables.dispose();
+      await disposables.dispose();
       await rm(root, { recursive: true, force: true });
     }
   });

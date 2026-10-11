@@ -1,3 +1,4 @@
+import { onUnexpectedError } from '../errors/unexpectedError';
 import type { IDisposable } from './lifecycle';
 import type { Emitter } from '../event';
 import { isPromiseLike, type EffectBody } from '../lifecycle/disposer';
@@ -217,7 +218,8 @@ export function bindServiceUnit(instance: UnitInternals & IDisposable, frame: Co
       op(runtime);
     }
   } catch (error) {
-    instance.dispose();
+    const result = instance.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     throw error;
   }
 }
@@ -350,7 +352,8 @@ export class FiberRuntime implements Fiber {
     }
     const label = typeof event === 'string' ? `on:${event}` : `on:${event.constructor?.name ?? 'emitter'}`;
     const entry = this._book.register(() => {
-      subscription.dispose();
+      const result = subscription.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }, label);
     return new BasicFiberHandle({
       name: label,
@@ -398,7 +401,7 @@ export class FiberRuntime implements Fiber {
         config,
       },
     );
-    const entry = this._book.register(() => core.dispose(), `provide:${String(id)}`);
+    const entry = this._book.register(() => { void core.dispose(); }, `provide:${String(id)}`);
     return new BasicFiberHandle<T>({
       name,
       uid: undefined,
@@ -413,7 +416,9 @@ export class FiberRuntime implements Fiber {
         );
       },
       dispose: async () => {
-        await entry.dispose();
+        if (entry.disposed) return;
+        entry.release();
+        await core.dispose();
       },
       whenActive: () => this._host.resolveTokenWhenAvailable(id).then(() => undefined),
     });
@@ -421,7 +426,7 @@ export class FiberRuntime implements Fiber {
 
   private _provideTokenInstance<T>(id: ServiceIdentifier<T>, instance: T): FiberHandle<T> {
     const core = this._host.provideTokenInstance(id, instance);
-    const entry = this._book.register(() => core.dispose(), `provide:${String(id)}`);
+    const entry = this._book.register(() => { void core.dispose(); }, `provide:${String(id)}`);
     return new BasicFiberHandle<T>({
       name: String(id),
       uid: undefined,
@@ -429,7 +434,9 @@ export class FiberRuntime implements Fiber {
       state: () => mapUnitState(this._host.tokenState(id)),
       update: () => this._host.updateToken(id, undefined, false),
       dispose: async () => {
-        await entry.dispose();
+        if (entry.disposed) return;
+        entry.release();
+        await core.dispose();
       },
       whenActive: () => this._host.resolveTokenWhenAvailable(id).then(() => undefined),
     });
@@ -454,7 +461,7 @@ export class FiberRuntime implements Fiber {
       instance = this._host.constructService(recipe, nextConfig);
       entry = this._book.register(() => {
         state = FiberState.Unloading;
-        (instance as Partial<IDisposable>).dispose?.();
+        return (instance as Partial<IDisposable>).dispose?.();
       }, `provide:${name}`);
       state = FiberState.Active;
     };
@@ -574,6 +581,8 @@ interface BasicHandleParts {
 }
 
 class BasicFiberHandle<T> implements FiberHandle<T> {
+  private _disposePromise: Promise<void> | undefined;
+
   constructor(private readonly _parts: BasicHandleParts) {}
 
   get name(): string {
@@ -596,7 +605,7 @@ class BasicFiberHandle<T> implements FiberHandle<T> {
   }
 
   dispose(): Promise<void> {
-    return this._parts.dispose();
+    return this._disposePromise ??= this._parts.dispose();
   }
 
   // eslint-disable-next-line eslint-plugin-unicorn(no-thenable)

@@ -65,13 +65,13 @@ Create a room with two to six members, a classification workspace and a host. Pe
 
 1. A user mention wakes the named members; `@everyone` selects all members.
 2. A user message without mentions goes to the host, whether the host is a persona or a thread.
-3. A persona message wakes only the members it mentions. A message with no mentions does not continue the discussion.
+3. A persona or thread room message wakes only the members it mentions. A message with no mentions is logged but wakes no one.
 
-Members run one after another, so a later speaker sees earlier speakers' results. A muted member is skipped by persona mentions and host fallback, but an explicit user mention still wakes it. Each member sees the messages since its last wake, minus its own already-recorded output.
+Persona turns run one after another; existing threads each have their own queue. A muted member is skipped by agent mentions and host fallback, but an explicit user mention still wakes it. Each member sees messages since its last successfully completed catch-up, minus its own already-recorded output. Notifications already covered by that successful batch do not start separate turns; a failed or cancelled turn does not confirm the batch.
 
 The budget limits member messages after each user message (12 by default). When it runs out the discussion pauses; **Continue** resets the budget and resumes the retained work. **Pause** cancels queued wakes but lets the active turn finish, and **Stop all** also interrupts an active persona turn — never an original thread task — without undoing completed actions. Persona-only rooms keep user interruption steering, mixed rooms keep queued work. One room question is shown at a time; later ones queue.
 
-Thread members default to `queueWhenBusy: true`, so room input waits for their current turn instead of steering it, and cold threads resume in their own workspaces. Every member other than the host gets unmentioned messages in its next catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room.
+Thread members default to `queueWhenBusy: true`, so room input waits for their current turn instead of steering it, and cold threads resume in their own workspaces. Messages that do not select a member are included in that member's next catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room. Use exact member IDs (`sessionId` for a thread, `personaId` for a persona) in `mentions`, not display names. A send without mentions does not wake the host; that fallback applies only to user messages.
 
 Renaming, changing the host, muting and workspace classification never rewrite a member's system prompt or permissions. Removing a thread leaves a system record in its session and preserves the room log without archiving the original thread. Creating a room needs two to six members, though members can leave and take it below two.
 

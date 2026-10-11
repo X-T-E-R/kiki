@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextAppendLoopEvent, ContextApplyCompaction, ContextUndo } from '#/agent/contextMemory/contextEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -168,6 +170,39 @@ describe('hooks v2 loading contract', () => {
 });
 
 describe('hooks v2 session workspace loading', () => {
+  it('filters plugin rules by workspace without changing user rules or the home registry', async () => {
+    const change = new Emitter<PluginUsageChange>();
+    let overrides: Readonly<Record<string, boolean>> = { example: false };
+    const global = snapshot([rule({ id: 'user' }), rule({ id: 'plugin' })]);
+    const plugin = global.rules[1]!;
+    const merged: HookRulesSnapshot = { ...global, rules: [global.rules[0]!, { ...plugin, id: 'plugin/example/plugin', namespace: 'plugin/example' }] };
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides, applyState: 'applied', errors: [] }),
+      allows: async (_workspaceId, id) => overrides[id] !== false, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const session = new HookRulesSession(
+      { _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as IHookRulesRegistry['onDidChange'], snapshot: () => merged, disabled: () => [], reload: async () => {} },
+      { onDidChangeModels: Event.None } as unknown as IModelService,
+      { current: undefined, onDidChange: Event.None } as unknown as import('#/_base/di/instantiation').LiveRef<import('#/features/externalHooks/session/hookRules').ISessionHookWorkspace>,
+      usage, { workspaceId: 'workspace-a' } as unknown as ISessionContext,
+    );
+    try {
+      await session.ready;
+      expect(session.snapshot().rules.find((entry) => entry.namespace === 'plugin/example')).toMatchObject({ active: false, reason: 'workspace_plugin_disabled' });
+      expect(session.snapshot().rules.find((entry) => entry.namespace === 'user')?.active).toBe(true);
+      expect(merged.rules.every((entry) => entry.active)).toBe(true);
+      overrides = {};
+      const waiters: Promise<unknown>[] = [];
+      change.fire({ workspaceId: 'workspace-a', pluginId: 'example', revision: 1, waitUntil: (work) => { waiters.push(work); } });
+      await session.ready;
+      await Promise.all(waiters);
+      expect(session.snapshot().rules.every((entry) => entry.active)).toBe(true);
+    } finally { await session.dispose(); change.dispose(); }
+  });
+
   it('watches absent files, hot-loads rules, follows trust revocation and reports syntax errors before execution', async () => {
     const entry = await source(undefined, 'workspace', false);
     const file = nodePath.join(entry.root, '.kiki', 'hooks.toml');
@@ -179,6 +214,8 @@ describe('hooks v2 session workspace loading', () => {
       const noEvent = () => ({ dispose: () => {} });
       reg.definePartialInstance(IHookRulesRegistry, { ready: Promise.resolve(), onDidChange: noEvent, snapshot: () => snapshot([]), disabled: () => [] });
       reg.definePartialInstance(IModelService, { onDidChangeModels: noEvent, resolveId: (id) => id });
+      reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: noEvent });
+      reg.definePartialInstance(ISessionContext, { workspaceId: 'example' });
       reg.defineInstance(ISessionHookWorkspace, {
         _serviceBrand: undefined, root: entry.root,
         trust: { _serviceBrand: undefined, ready: Promise.resolve(), get: async () => trusted, isTrusted: () => trusted, trust: async () => { trusted = true; }, untrust: async () => { trusted = false; }, onDidChange: noEvent },
@@ -226,7 +263,7 @@ describe('hooks v2 session workspace loading', () => {
       expect(restored.revision).toBe(before.revision);
       expect(Object.values(restored.buckets)[0]?.completed).toBe(3);
       expect(watched).toContain(file);
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 });
 
@@ -343,7 +380,7 @@ describe('hooks v2 completed-step engine contract', () => {
       await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
       expect(injections(ctx)).toHaveLength(0);
       await ctx.expectResumeMatches();
-    } finally { compact.dispose(); }
+    } finally { await compact.dispose(); }
   });
 
   it('does not credit an in-flight old step to a replacement semantic revision', async () => {
@@ -438,7 +475,7 @@ describe('hooks v2 completed-step engine contract', () => {
       expect(outputs).toHaveLength(1);
       expect(JSON.parse(outputs[0]!)).toMatchObject({ rules: [{ id: 'user/focus', completedSteps: 0, nextDue: 1 }] });
       expect(ctx.get(IAgentContextMemoryService).get()).toEqual(before);
-    } finally { subscription.dispose(); }
+    } finally { await subscription.dispose(); }
   });
 
   it('keeps prompt input intact and skips a failed prompt injection without consuming its receipt', async () => {

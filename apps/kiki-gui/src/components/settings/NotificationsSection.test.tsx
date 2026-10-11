@@ -15,6 +15,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../../i18n';
 import { NotificationsSection } from './NotificationsSection';
+import { readSettings } from '@kiki/session-core/settings';
+import { CompletionObserver } from '@kiki/session-core/sessions';
+import { AwayNotifier } from '../../lib/awayNotify';
 
 const api = {
   getSettings: vi.fn(), updateSettings: vi.fn(), listProviders: vi.fn(), upsertInstance: vi.fn(), deleteInstance: vi.fn(),
@@ -25,7 +28,7 @@ const revealSecret = vi.fn();
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret } }),
 }));
-vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
+vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 
 const PROVIDERS: NotificationProviderDescriptor[] = [
   { id: 'telegram', can_send: true, can_receive: false, status: 'unverified', status_reason: 'real_account_not_tested',
@@ -93,6 +96,31 @@ async function render(settings = SETTINGS, entry = '/settings/notifications'): P
 const click = async (element: Element | null) => { await act(async () => { (element as HTMLElement).click(); }); };
 
 describe('NotificationsSection', () => {
+  it('shows the existing default-on conversation completion switch and persists disabling/re-enabling it', async () => {
+    const container = await render();
+    const row = () => container.querySelector('[data-notify-away-kind="completed"]')!;
+    expect(row().textContent).toContain('Notify when the conversation finishes');
+    expect(row().textContent).toContain('finite background tasks');
+    expect(row().querySelector<HTMLInputElement>('input')!.checked).toBe(true);
+    const observer = new CompletionObserver();
+    const notifier = new AwayNotifier();
+    const notify = vi.fn(async () => {});
+    notifier.configure({ isAway: async () => true, notify, format: () => ({ title: 'Work settled', route: '/s/example' }) });
+    observer.observe([], []);
+    const completion = (episode_id: string) => [{ session_id: 'example', episode_id, completed_at: Date.now() }];
+    await click(row().querySelector('input'));
+    expect(readSettings().awayNotifications.completed).toBe(false);
+    await notifier.report(observer.observe(completion('disabled'), []));
+    expect(notify).not.toHaveBeenCalled();
+    await click(row().querySelector('input'));
+    expect(readSettings().awayNotifications.completed).toBe(true);
+    await notifier.report(observer.observe(completion('disabled'), []));
+    expect(notify).not.toHaveBeenCalled();
+    await notifier.report(observer.observe(completion('enabled'), []));
+    expect(notify).toHaveBeenCalledTimes(1);
+    notifier.reset();
+  });
+
   it('shows each failure as its own state and tags send-only, unverified channels', async () => {
     const container = await render();
     const state = (id: string) => container.querySelector(`[data-notify-channel="${id}"] [data-notify-state]`)?.getAttribute('data-notify-state');

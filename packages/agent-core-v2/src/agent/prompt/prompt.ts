@@ -53,7 +53,11 @@ export interface PromptExecutionBinding {
 
 export interface PromptInput {
   readonly id?: string;
+  readonly userMessageId?: string;
+  readonly retryFingerprint?: string;
   readonly message: ContextMessage;
+  /** Commits an admitted history rewrite after prompt preparation, before queue publication. */
+  readonly commitHistoryRewrite?: (prompt: import('./promptService').PromptEnqueuedPayload) => Promise<void>;
   readonly execution?: PromptExecutionBinding;
   readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
@@ -145,6 +149,11 @@ export interface PromptInjectOptions {
 
 export interface PromptLaunchResult {
   readonly turn_id: number;
+  readonly prompt_id?: string;
+  readonly created_at?: string;
+  readonly state?: 'running' | 'queued' | 'blocked';
+  readonly append_timing?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 /** A serializable terminal receipt for this submission, including prompts that never launch. */
@@ -171,12 +180,12 @@ export interface PromptReservation extends IDisposable {
 
 export const promptAdmission = Symbol('promptAdmission');
 
-type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean) => PromptReservation;
+type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string) => PromptReservation;
 
-export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false): PromptReservation {
+export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false, retryFingerprint?: string): PromptReservation {
   return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
     promptAdmission
-  ](promptId, durableAcceptance);
+  ](promptId, durableAcceptance, retryFingerprint);
 }
 
 export const promptRetry = Symbol('promptRetry');
@@ -201,6 +210,7 @@ export interface IAgentPromptService {
   recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
   lookup(promptId: string, input?: PromptInput): import('./promptReplay').PromptLookup | undefined;
   enqueue(input: PromptInput): Promise<PromptHandle>;
+  enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle>;
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;
   /** Abort cancels only the wait; use abort(promptId) to cancel the submitted prompt. */
   submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult>;
@@ -244,7 +254,14 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
-  drain(reason?: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
+  /**
+   * Stops admission and settles owned launch preparation and recovery hydration.
+   * The default cancels durable pending requests. Normal owner shutdown uses
+   * `preserve-pending`: local waiters settle without a durable cancellation for
+   * unlaunched requests. Restore holds those requests until explicit resume;
+   * launched or outcome-unknown requests are never automatically resent.
+   */
+  drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
   clear(): void;

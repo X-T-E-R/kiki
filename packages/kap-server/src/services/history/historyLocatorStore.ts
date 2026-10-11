@@ -4,7 +4,7 @@ import { open, stat } from 'node:fs/promises';
 import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
   type HistoryDirectoryRequest, type HistoryDirectoryPage, type HistoryDirectoryTurn,
 } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
-import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
+import type { HistoryHit, HistoryPreparation, HistoryDirectoryLookup } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 import { NavigationWireAdapter, openingText, type NavigationEffect } from '@kiki/transcript/navigationWireAdapter';
 import { streamWireRecordsAwaited, type AwaitedWireRecordsStreamOptions, type WireRecordSpan } from '@kiki/transcript-live/wireRecords';
@@ -294,7 +294,7 @@ export class HistoryLocatorStore {
     try {
       return await (signal === undefined ? flight.promise : Promise.race([flight.promise,
         new Promise<never>((_, reject) => {
-          abort = () => reject(signal.reason ?? new DOMException('Navigation read aborted', 'AbortError'));
+          abort = () => { reject(signal.reason ?? new DOMException('Navigation read aborted', 'AbortError')); };
           signal.addEventListener('abort', abort, { once: true });
           if (signal.aborted) abort();
         })]));
@@ -377,7 +377,8 @@ export class HistoryLocatorStore {
           if (row.part === undefined || row.part === 'input' || role === undefined ||
               row.anchor.end !== span.endByteOffset || row.anchor.digest !== recordDigest ||
               search.role !== undefined && role !== search.role ||
-              role === 'tool' && search.includeToolOutput !== true && search.role !== 'tool' ||
+              (role === 'tool' && search.includeToolOutput !== true && search.role !== 'tool' ||
+                role === 'record' && search.role !== 'record') ||
               search.after !== undefined && (row.time === undefined || row.time < search.after) ||
               search.before !== undefined && (row.time === undefined || row.time >= search.before) ||
               emitted.has(rowKey(row))) continue;
@@ -418,6 +419,9 @@ export class HistoryLocatorStore {
     const sourceMatches = saved !== undefined && stateDb?.hasCanonicalSources(input.key) === true && cursor?.ordinal === saved.ordinal &&
       saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset)
         .then((proof) => matchesNavigationProof(saved.source, proof), sourceMutationOrThrow);
+    const through = input.stopAt ?? input.search?.asOf ?? (await stat(input.wirePath)).size;
+    const source = await historyNavigationProof(input.wirePath, through);
+    if (source.identity !== input.incarnation) throw new Error('history_source_changed');
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
     const rebuild = stateDb === undefined
       ? freshSearch || scanner === undefined || scanner.incarnation !== input.incarnation
@@ -451,7 +455,7 @@ export class HistoryLocatorStore {
     const emitted = new Set<string>();
     const addHit = (row: HistoryNavRow, text: string): void => {
       if (plan === undefined || row.role === undefined ||
-          row.role === 'tool' && !includeToolOutput ||
+          (row.role === 'tool' && !includeToolOutput || row.role === 'record' && input.search?.role !== 'record') ||
           input.search?.role !== undefined && row.role !== input.search.role ||
           input.search?.after !== undefined && (row.time === undefined || row.time < input.search.after) ||
           input.search?.before !== undefined && (row.time === undefined || row.time >= input.search.before)) return;
@@ -472,7 +476,7 @@ export class HistoryLocatorStore {
     const readOptions: AwaitedWireRecordsStreamOptions = {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
       maxBytes: HISTORY_NAV_SCAN_BYTES,
-      endByteOffset: input.stopAt ?? input.search?.asOf,
+      endByteOffset: through,
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
@@ -492,11 +496,14 @@ export class HistoryLocatorStore {
           const legacyCallId = typeof message?.['toolCallId'] === 'string' ? message['toolCallId'] : undefined;
           const stepId = typeof event?.['stepUuid'] === 'string' ? event['stepUuid'] : undefined;
           const explicitTurn = record['turnId'] ?? event?.['turnId'];
+          const explicitTurnText = typeof explicitTurn === 'number' || typeof explicitTurn === 'string'
+            ? String(explicitTurn)
+            : undefined;
           const effect = projected.find((op) => op.op === 'turn.upsert' || op.op === 'step.upsert' || op.op === 'frame.upsert');
           const turnId = callId !== undefined || legacyCallId !== undefined
             ? scalar.tools.get(callId ?? legacyCallId!)?.turnId ??
               (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn
-            : explicitTurn !== undefined && /^\d+$/u.test(String(explicitTurn)) ? `t${explicitTurn}`
+            : explicitTurnText !== undefined && /^\d+$/u.test(explicitTurnText) ? `t${explicitTurnText}`
               : effect?.op === 'turn.upsert' ? effect.turn.turnId
                 : effect?.op === 'step.upsert' || effect?.op === 'frame.upsert' ? effect.turnId
                   : (stepId === undefined ? undefined : scalar.steps.get(stepId)?.turnId) ?? scanner.adapter.checkpoint().currentTurn;
@@ -529,7 +536,7 @@ export class HistoryLocatorStore {
                 (input.search?.role === undefined || input.search.role === 'tool')) {
               return frame.output !== undefined && matchHistoryText(outputText(frame.output), plan) !== undefined;
             }
-            if(frame.kind==='record' && (input.search?.role===undefined||input.search.role==='record')) return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
+            if(frame.kind==='record' && input.search?.role==='record') return frame.text!==undefined && matchHistoryText(frame.text,plan)!==undefined;
             return false;
           });
           if (hasMatch) matchedRecords += 1;
@@ -710,8 +717,10 @@ export class HistoryLocatorStore {
     }
     await flushPending();
     const nextOrdinal = scanner.ordinal + read.recordCount;
+    const currentSource = await historyNavigationProof(input.wirePath, through);
+    if (!matchesNavigationProof(source, currentSource)) throw new Error('history_source_changed');
     if (stateDb !== undefined) {
-      const proof = await historyNavigationProof(input.wirePath, read.nextByteOffset);
+      const proof = read.nextByteOffset === through ? currentSource : await historyNavigationProof(input.wirePath, read.nextByteOffset);
       input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
       stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
@@ -753,11 +762,25 @@ export class HistoryLocatorStore {
     const scan = await this.scan(request.sessionId, request.agentId, request.signal);
     if (scan === undefined) return { status: 'unavailable', target, source: 'navigation',
       coverage: { complete: false, domain: 'directory', gaps: ['source_missing'] } };
+    if (cursor?.preparation !== undefined && (cursor.preparation.incarnation !== scan.incarnation ||
+        scan.nextByteOffset < cursor.preparation.offset)) throw new Error('HistoryList source changed; restart without cursor.');
+    if (!scan.complete) {
+      const progressed = scan.recordsRead > 0 && scan.nextByteOffset > (cursor?.preparation?.offset ?? 0);
+      const nextCursor = progressed ? encodeHistoryDirectoryCursor({ v: 1,
+        request: { workspaceId: request.workspaceId, sessionId: request.sessionId, kind: 'turns',
+          agentId: request.agentId, beforeTurn: request.beforeTurn, afterTurn: request.afterTurn,
+          at: request.at, order: request.order, limit: request.limit },
+        preparation: { offset: scan.nextByteOffset, incarnation: scan.incarnation } }) : undefined;
+      return { status: 'partial', target, source: 'navigation', turns: [], nextCursor,
+        coverage: { complete: false, domain: 'directory',
+          gaps: [progressed ? 'navigation_building' : scan.incompleteReason ?? 'projection_stalled'],
+          scanned: { bytes: scan.bytesRead, records: scan.recordsRead } } };
+    }
     const dir = request.order === 'newest' ? 'desc' : 'asc';
     const filter = { workspace: request.workspaceId, session: request.sessionId,
       agent: request.agentId, kind: 'turn', active: true };
     let atTurn: number | undefined;
-    if (request.at !== undefined && cursor === undefined) {
+    if (request.at !== undefined && cursor?.afterTurn === undefined) {
       const [earlier, later] = await Promise.all([
         this.store.pageByColumn<HistoryNavRow>(HISTORY_NAV_COLLECTION, {
           column: 'time', dir: 'desc', bounds: { lte: request.at }, filter, limit: 1,
@@ -807,17 +830,31 @@ export class HistoryLocatorStore {
     };
   }
 
+  async lookupDirectory(workspace: string, session: string, agent: string, turn: number, step?: string,
+    preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup> {
+    const scan = await this.scan(session, agent, signal);
+    if (scan === undefined) return { status: 'source_missing' };
+    if (preparation !== undefined && (preparation.incarnation !== scan.incarnation ||
+        scan.nextByteOffset < preparation.offset)) return { status: 'stale_ref' };
+    if (!scan.complete) {
+      if (scan.incompleteReason === 'partial_tail') return { status: 'source_pending' };
+      if (scan.recordsRead === 0 || scan.nextByteOffset <= (preparation?.offset ?? 0)) {
+        return { status: 'navigation_unavailable', reason: scan.incompleteReason ?? 'projection_stalled' };
+      }
+      return { status: 'navigation_building', next: { offset: scan.nextByteOffset, incarnation: scan.incarnation },
+        scanned: { bytes: scan.bytesRead, records: scan.recordsRead } };
+    }
+    const row = await this.row(workspace, session, agent, step === undefined ? 'turn' : 'step', turn, step);
+    if (row?.active !== true) return { status: 'not_found' };
+    if (row.position === undefined) return { status: 'navigation_unavailable', reason: 'position_missing' };
+    const checked = await this.read(this.ref(row));
+    return checked.status === 'ok' ? { status: 'ok', ref: this.ref(row) } : checked;
+  }
+
   async directoryRef(workspace: string, session: string, agent: string,
     turn: number, step?: string): Promise<string | undefined> {
-    const kind = step === undefined ? 'turn' : 'step';
-    let row = await this.row(workspace, session, agent, kind, turn, step);
-    if (row === undefined || row.position === undefined) {
-      await this.scan(session, agent);
-      row = await this.row(workspace, session, agent, kind, turn, step);
-    }
-    if (row?.active !== true || row.position === undefined) return undefined;
-    const checked = await this.read(this.ref(row));
-    return checked.status === 'ok' ? this.ref(row) : undefined;
+    const lookup = await this.lookupDirectory(workspace, session, agent, turn, step);
+    return lookup.status === 'ok' ? lookup.ref : undefined;
   }
 
   async readBlocks(ref: string, maxChars: number,

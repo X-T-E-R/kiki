@@ -122,11 +122,27 @@ export const declaredAgentModelMenuSchema = z.object({
 });
 export type DeclaredAgentModelMenu = z.infer<typeof declaredAgentModelMenuSchema>;
 
+export const executorCapabilityStateSchema = z.enum(['unknown', 'loading', 'ready', 'partial', 'unavailable']);
+export const executorCapabilityDimensionSchema = z.object({
+  state: executorCapabilityStateSchema,
+  values: z.array(z.string()).optional(),
+  diagnostic: z.string().optional(),
+});
+export const executorCapabilityProjectionSchema = z.object({
+  source: z.enum(['negotiated', 'cli_probe']),
+  version: z.string().optional(),
+  observed_at: z.number().int().nonnegative(),
+  models: executorCapabilityDimensionSchema,
+  thinking_levels: executorCapabilityDimensionSchema,
+});
+export type ExecutorCapabilityProjection = z.infer<typeof executorCapabilityProjectionSchema>;
+
 export const agentModelMenuProjectionSchema = z.object({
   restrict_models_to_menu: z.boolean(),
   declared_model_menu: declaredAgentModelMenuSchema,
   effective_model_aliases: z.array(z.string()),
   model_constraints_active: z.boolean().optional(),
+  executor_capabilities: executorCapabilityProjectionSchema.optional(),
 });
 export type AgentModelMenuProjection = z.infer<typeof agentModelMenuProjectionSchema>;
 

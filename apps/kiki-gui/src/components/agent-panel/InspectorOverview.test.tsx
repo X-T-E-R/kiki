@@ -206,3 +206,26 @@ describe('the overview owns the figures, and the scope that changes them', () =>
     expect(container.textContent).toContain('部分统计');
   });
 });
+
+describe('the overview keeps its restyle hooks addressable', () => {
+  it('names the context figure for the rail to style', async () => {
+    const container = await render({ contextUsed: 25_900, contextLimit: 262_000 });
+    // The rail restyles this figure as a mono reading, so it needs a name of
+    // its own rather than being reached for by whatever class it happens to
+    // carry today.
+    const figure = container.querySelector<HTMLElement>('[data-overview-context-figures]');
+    expect(figure).not.toBeNull();
+    expect(figure?.textContent).toContain('25.9k');
+    expect(figure?.className).not.toContain('[&');
+  });
+
+  it('gives every fact a stable name for the host layout to target', async () => {
+    const container = await render({ figures: { costUsd: 0.05, totalTokens: 1_200, cacheRate: 12 } });
+    for (const name of ['cost', 'tokens', 'cache']) {
+      const fact = container.querySelector<HTMLElement>(`[data-overview-fact="${name}"]`);
+      expect(fact).not.toBeNull();
+      // The value is the element's first child: the rail sizes that one.
+      expect(fact?.firstElementChild?.tagName).toBe('DIV');
+    }
+  });
+});

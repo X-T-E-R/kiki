@@ -8,11 +8,13 @@ import {
   type DelegationProcedureName,
   type DelegationProcedureTable,
 } from '@kiki/klient/procedures';
-import { createSeatKlient, type SeatKlient } from '@kiki/klient/procedures/http';
+import { createSeatKlient } from '@kiki/klient/procedures/http';
+import { createKlient } from '@kiki/klient/http';
+import type { Klient } from '@kiki/klient';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';
-import { createSeatOnConnection } from './seat';
+import { createSeatOnConnection, resolveSeatOnConnection } from './seat';
 import { ensureServer } from './serve';
 
 export const KIKI_CLI_PRINCIPAL = 'kiki-cli';
@@ -32,7 +34,9 @@ export interface DelegationRuntimeDependencies {
   readonly cwd?: () => string;
   readonly ensureServer?: typeof ensureServer;
   readonly createSeat?: typeof createSeatOnConnection;
+  readonly resolveSeat?: typeof resolveSeatOnConnection;
   readonly createSeatKlient?: typeof createSeatKlient;
+  readonly createKlient?: typeof createKlient;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly stdout?: Pick<NodeJS.WriteStream, 'write'>;
   readonly stderr?: Pick<NodeJS.WriteStream, 'write'>;
@@ -63,6 +67,7 @@ interface CliProcedureMetadata {
   readonly options?: readonly CliOptionMetadata[];
   readonly prepare?: (wire: Record<string, unknown>, options: Record<string, unknown>) => void;
   readonly behavior?: 'dispatch' | 'events' | 'plain';
+  readonly sessionRequirement?: 'catalog' | 'existing' | 'create';
 }
 
 export interface ProjectedDelegationCommand {
@@ -72,6 +77,7 @@ export interface ProjectedDelegationCommand {
   readonly positionals: readonly CliPositionalMetadata[];
   readonly options: readonly CliOptionMetadata[];
   readonly behavior: 'dispatch' | 'events' | 'plain';
+  readonly sessionRequirement: 'catalog' | 'existing' | 'create';
   canonicalInput(positionals: readonly unknown[], options: Record<string, unknown>): unknown;
 }
 
@@ -82,10 +88,11 @@ const COMMON_OPTIONS: readonly CliOptionMetadata[] = [
 ];
 
 const CLI_METADATA: readonly CliProcedureMetadata[] = [
-  { procedure: 'profiles', command: 'agents', description: 'List named agent profiles, models, and tools.', behavior: 'plain' },
+  { procedure: 'profiles', command: 'agents', description: 'List named agent profiles, models, and tools.', behavior: 'plain', sessionRequirement: 'catalog' },
   { procedure: 'list', command: 'list', description: 'List children and continuations owned by the CLI seat.', behavior: 'plain' },
   {
     procedure: 'dispatch',
+    sessionRequirement: 'create',
     command: 'dispatch <message>',
     description: 'Dispatch main-agent work or start/reuse a named child asynchronously.',
     positionals: [{ name: 'message', input: 'message', required: true }],
@@ -240,6 +247,7 @@ export function projectDelegationCommands(
       positionals,
       options,
       behavior: metadata.behavior ?? 'plain',
+      sessionRequirement: metadata.sessionRequirement ?? 'existing',
       canonicalInput: (values, rawOptions) => {
         const wire: Record<string, unknown> = {};
         for (const [index, positional] of positionals.entries()) {
@@ -297,12 +305,12 @@ export async function runDelegationCommand(
 ): Promise<number> {
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
-  let client: SeatKlient | undefined;
+  let client: CliDelegationClient | undefined;
   try {
     const command = projectDelegationCommands()
       .find((candidate) => candidate.procedure.name === procedureName)!;
     const input = command.canonicalInput(positionals, options);
-    client = await createCliSeatKlient(options, dependencies);
+    client = await createCliDelegationClient(command.sessionRequirement, options, dependencies);
     if (command.behavior === 'events' && options['follow'] === true) {
       return await followEvents(client, input as DelegationProcedureInput<'events'>, options, dependencies, stdout);
     }
@@ -321,7 +329,7 @@ export async function runDelegationCommand(
 }
 
 function callProcedure(
-  client: SeatKlient,
+  client: CliDelegationClient,
   name: DelegationProcedureName,
   input: unknown,
 ): Promise<unknown> {
@@ -335,25 +343,43 @@ export async function canonicalWorkspace(
   return normalize(await realpath(resolve(workspace ?? cwd())));
 }
 
-async function createCliSeatKlient(
+interface CliDelegationClient {
+  call(name: DelegationProcedureName, input: unknown): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+async function createCliDelegationClient(
+  requirement: ProjectedDelegationCommand['sessionRequirement'],
   options: Record<string, unknown>,
   dependencies: DelegationRuntimeDependencies,
-): Promise<SeatKlient> {
+): Promise<CliDelegationClient> {
   const workspace = await canonicalWorkspace(asString(options['workspace']), dependencies.cwd);
   const homeDir = resolveKikiHome(asString(options['home']));
   const connection = await (dependencies.ensureServer ?? ensureServer)({ homeDir, workspace });
-  const seat = await (dependencies.createSeat ?? createSeatOnConnection)(connection, {
-    workspace,
-    principal: KIKI_CLI_PRINCIPAL,
-  });
-  return (dependencies.createSeatKlient ?? createSeatKlient)({
+  if (requirement === 'catalog') {
+    const client: Klient = (dependencies.createKlient ?? createKlient)({
+      endpoint: connection.url,
+      token: connection.token,
+    });
+    return {
+      call: () => client.rest!.agents.list({ cwd: workspace, effective: true }),
+      close: () => client.close(),
+    };
+  }
+  const resolveSeat = requirement === 'create'
+    ? dependencies.createSeat ?? createSeatOnConnection
+    : dependencies.resolveSeat ?? resolveSeatOnConnection;
+  const seat = await resolveSeat(connection, { workspace, principal: KIKI_CLI_PRINCIPAL });
+  if (seat === null) throw new Error('CLI delegation seat does not exist; dispatch work or explicitly create a seat first.');
+  const client = (dependencies.createSeatKlient ?? createSeatKlient)({
     endpoint: connection.url,
     token: seat.delegationToken,
   });
+  return { call: (name, input) => client.call(name, input as never), close: () => client.close() };
 }
 
 async function finishDispatch(
-  client: SeatKlient,
+  client: CliDelegationClient,
   dispatched: unknown,
   options: Record<string, unknown>,
   stdout: Pick<NodeJS.WriteStream, 'write'>,
@@ -374,7 +400,7 @@ async function finishDispatch(
 }
 
 async function followEvents(
-  client: SeatKlient,
+  client: CliDelegationClient,
   initialInput: DelegationProcedureInput<'events'>,
   options: Record<string, unknown>,
   dependencies: DelegationRuntimeDependencies,

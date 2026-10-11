@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from 'react';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
+import { sortThinkingEffortsForDisplay } from '@kiki/session-core/settings';
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
 import { buildCatalogModelOptions } from '../../modelSelectOptions';
@@ -70,7 +71,7 @@ export function EffortPicker({ id, value, onChange, supported, disabled, allowUn
   disabled?: boolean; allowUnset?: boolean; unsetLabel?: string; unsetTrigger?: ReactNode; ariaLabel?: string;
 }) {
   const { t } = useI18n();
-  const levels = supported !== undefined && supported.length > 0 ? supported : EFFORTS;
+  const levels = sortThinkingEffortsForDisplay(supported !== undefined && supported.length > 0 ? supported : EFFORTS);
   const choices = [...(allowUnset ? [{ value: '', label: unsetLabel ?? t('st.profiles.effortUnset') }] : []),
     ...levels.map((level) => ({ value: level, label: effortLabel(level) })),
     ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value), hint: t('st.profiles.effortUnsupported') }] : [])];

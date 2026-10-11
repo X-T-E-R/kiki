@@ -14,7 +14,7 @@ import {
   aggregateDimensionGroups,
   buildAgentTree,
   type UsageDimensionRow,
-  type UsageFilters,
+  type UsageLegacyDimension,
   type UsageTokensWire,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
@@ -25,74 +25,6 @@ import {
   rowCacheHit,
   ShareBar,
 } from './usageShared';
-
-interface Rollup {
-  readonly key: string;
-  readonly label: string;
-  readonly unknown: boolean;
-  readonly cost: number;
-  readonly tokens: number;
-  readonly cacheRead: number;
-  readonly input: number;
-}
-
-/**
- * Roll the server's per-bucket groups up by one attribution field. Each
- * bucket group already carries that field as a single value (null when it
- * was missing or mixed inside the bucket), so the rollup never guesses.
- */
-function rollupBy(
-  trend: readonly UsageTrendBucketWire[],
-  pick: (group: UsageTrendBucketWire['groups'][number]) => string | null,
-  unknownLabel: string,
-): Rollup[] {
-  const map = new Map<string, { label: string; unknown: boolean; cost: number; tokens: number; cacheRead: number; input: number }>();
-  for (const group of trend.flatMap((bucket) => bucket.groups)) {
-    const value = pick(group);
-    const key = value ?? '__unknown';
-    const entry = map.get(key) ?? { label: value ?? unknownLabel, unknown: value === null, cost: 0, tokens: 0, cacheRead: 0, input: 0 };
-    const { tokens } = group;
-    entry.cost += group.cost_usd_estimated;
-    entry.tokens += tokens.input_other + tokens.output + tokens.input_cache_read + tokens.input_cache_creation;
-    entry.cacheRead += tokens.input_cache_read;
-    entry.input += tokens.input_other + tokens.input_cache_read + tokens.input_cache_creation;
-    map.set(key, entry);
-  }
-  return [...map.entries()]
-    .map(([key, entry]) => ({ key, ...entry }))
-    .toSorted((a, b) => b.cost - a.cost || b.tokens - a.tokens);
-}
-
-function RollupStrip({ title, rollups, dataKey }: {
-  readonly title: string;
-  readonly rollups: readonly Rollup[];
-  readonly dataKey: string;
-}) {
-  const { time } = useI18n();
-  const totalCost = rollups.reduce((sum, entry) => sum + entry.cost, 0);
-  if (rollups.length === 0) return null;
-  return (
-    <div data-usage-rollup={dataKey} className="rounded-lg border border-hairline bg-paper/60 p-3">
-      <h3 className="mb-2 text-[12px] font-medium text-ink-soft">{title}</h3>
-      <ul className="space-y-2">
-        {rollups.map((entry) => (
-          <li key={entry.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-1">
-            <span className={`min-w-0 truncate text-[13px] ${entry.unknown ? 'text-ink-faint italic' : 'text-ink'}`} title={entry.label}>
-              {entry.label}
-            </span>
-            <span className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
-              {formatCostOrDash(entry.cost, false)}
-            </span>
-            <ShareBar ratio={totalCost > 0 ? entry.cost / totalCost : 0} />
-            <span className="text-right font-mono text-[11px] text-ink-faint tabular-nums">
-              {time.formatTokens(entry.tokens)} · {formatPercent(entry.input > 0 ? entry.cacheRead / entry.input : null)}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
 
 function tokensTotalUnknown(row: UsageDimensionRow): boolean {
   return row.tokensUnknown && row.totalTokens === 0;
@@ -112,11 +44,11 @@ function sumTokens(rows: readonly UsageDimensionRow[]): UsageTokensWire {
 
 export function DimensionBreakdown({
   trend,
-  filters,
+  dimension,
   labelFor,
 }: {
   readonly trend: readonly UsageTrendBucketWire[];
-  readonly filters: UsageFilters;
+  readonly dimension: UsageLegacyDimension;
   readonly labelFor: (row: UsageDimensionRow) => string;
 }) {
   const { t, time } = useI18n();
@@ -135,12 +67,6 @@ export function DimensionBreakdown({
   if (rows.length === 0) {
     return <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>;
   }
-
-  const secondary = filters.dimension === 'model'
-    ? rollupBy(trend, (group) => group.provider, t('usage.breakdown.unknownProvider'))
-    : filters.dimension === 'agent'
-      ? rollupBy(trend, (group) => group.profile_name, t('usage.breakdown.unknownProfile'))
-      : [];
 
   const renderRow = (row: UsageDimensionRow, depth: number, control?: ReactNode) => {
     const share = totalCost > 0 ? row.costUsdEstimated / totalCost : 0;
@@ -165,9 +91,9 @@ export function DimensionBreakdown({
             <p className="truncate font-mono text-[11px] text-ink-faint">
               {row.mixedAttribution
                 ? t('usage.dim.mixedAttribution')
-                : filters.dimension === 'agent'
+                : dimension === 'agent'
                   ? [row.modelAlias, row.provider].filter((part) => part !== null).join(' · ')
-                  : (row.provider ?? '')}
+                  : ''}
             </p>
           </div>
         </div>
@@ -198,7 +124,7 @@ export function DimensionBreakdown({
 
   const header = (
     <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-x-4 px-3 pb-2 text-[11px] text-ink-faint sm:grid-cols-[minmax(0,1fr)_7rem_4.5rem_4.5rem_5.5rem]">
-      <span className="pl-7">{t(`usage.dimension.${filters.dimension}`)}</span>
+      <span className="pl-7">{t(`usage.dimension.${dimension}`)}</span>
       <span className="hidden sm:block">{t('usage.col.share')}</span>
       <span className="hidden text-right sm:block">{t('usage.col.tokens')}</span>
       <span className="hidden text-right sm:block">{t('usage.col.cacheHit')}</span>
@@ -207,7 +133,7 @@ export function DimensionBreakdown({
   );
 
   let list: ReactNode;
-  if (filters.dimension !== 'agent') {
+  if (dimension !== 'agent') {
     list = <ul className="divide-y divide-hairline">{rows.map((row) => renderRow(row, 0))}</ul>;
   } else {
     const tree = buildAgentTree(rows);
@@ -256,18 +182,9 @@ export function DimensionBreakdown({
   }
 
   return (
-    <div className={`grid gap-4 ${secondary.length > 0 ? 'lg:grid-cols-[minmax(0,1fr)_16rem]' : ''}`}>
-      <div className="min-w-0">
-        {header}
-        {list}
-      </div>
-      {secondary.length > 0 ? (
-        <RollupStrip
-          dataKey={filters.dimension === 'model' ? 'provider' : 'profile'}
-          title={filters.dimension === 'model' ? t('usage.breakdown.byProvider') : t('usage.breakdown.byProfile')}
-          rollups={secondary}
-        />
-      ) : null}
+    <div className="min-w-0">
+      {header}
+      {list}
     </div>
   );
 }

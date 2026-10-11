@@ -26,7 +26,7 @@ const ATTENTION = new Set(['dependency', 'unauthorized', 'connection', 'noCreden
 
 /**
  * Settings → Notifications & messages. This device's system notifications
- * first (they need no server), then nb-IM: rules every channel shares, the
+ * first (they need no channel setup), then nb-IM: rules every channel shares, the
  * channel list rendered from the provider registry, and the add form for
  * built-in channels. Receiving replies is not part of this
  * release, so nothing here offers it.

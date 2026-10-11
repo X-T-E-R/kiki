@@ -31,7 +31,7 @@ interface FakeAgent {
   readonly handle: IAgentScopeHandle;
   readonly run: ReturnType<typeof vi.fn>;
   readonly runs: Array<{ resolve: (summary: string) => void; reject: (error: unknown) => void }>;
-  executionState: 'idle' | 'running';
+  executionState: 'idle' | 'running' | 'closed';
   loopState: 'idle' | 'running';
   pendingTurnIds: number[];
   hasPendingRequests: boolean;
@@ -129,8 +129,8 @@ describe('SessionSubagentService idle release', () => {
     ix.set(ISessionSubagentService, new SyncDescriptor(SessionSubagentService));
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     vi.useRealTimers();
   });
 
@@ -266,6 +266,8 @@ describe('SessionSubagentService idle release', () => {
     expect(isReleasable(child.handle)).toBe(true);
     child.executionState = 'running';
     expect(isReleasable(child.handle)).toBe(false);
+    child.executionState = 'closed';
+    expect(isReleasable(child.handle)).toBe(true);
     child.executionState = 'idle';
     child.pendingPrompts = [{}];
     expect(isReleasable(child.handle)).toBe(false);

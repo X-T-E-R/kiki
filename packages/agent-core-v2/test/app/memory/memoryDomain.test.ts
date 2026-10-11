@@ -28,6 +28,12 @@ let home: string;
 let persona: MemoryPersonaContext | undefined;
 let approval: 'auto' | 'review';
 const save = (title: string, scope: MemoryScope = workspace, body = 'Default rule; preserve the specialist exception.') => store.put({ action: 'create', scope, type: 'feedback', title, body, reason: 'Human guidance', source, basis, validity });
+function promiseWithResolvers<T>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void; reject: (reason?: unknown) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
 const update = (entry: MemoryEntry, scope: MemoryScope = workspace, body = entry.body) => store.put({ action: 'update', scope, id: entry.id, expectedRevision: entry.revision, type: entry.type, title: entry.title, body, reason: 'Current correction', source });
 async function execute(input: ToolExecution | Promise<ToolExecution>) {
   const execution = await input;
@@ -636,8 +642,8 @@ describe('memory write capacity scans and namespace isolation', () => {
 
   it('keeps a cancelled queued writer behind its predecessor while other namespaces and light reads complete', async () => {
     const base = pathFor(global);
-    const release = Promise.withResolvers<void>();
-    const entered = Promise.withResolvers<void>();
+    const release = promiseWithResolvers<void>();
+    const entered = promiseWithResolvers<void>();
     const write = storage.write.bind(storage);
     let hold = true;
     vi.spyOn(storage, 'write').mockImplementation(async (scope, key, bytes, options) => {

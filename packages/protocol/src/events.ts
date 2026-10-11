@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ToolInputDisplaySchema, type ToolInputDisplay } from './display';
-import { messageContentSchema, type MessageContent } from './message';
+import { assistantStreamPartSchema, messageContentSchema, type AssistantStreamPart, type MessageContent } from './message';
 import {
   sessionPendingInteractionSchema,
   sessionSchema,
@@ -142,8 +142,14 @@ export interface BackgroundTaskOrigin {
   readonly notificationId: string;
 }
 
+export type CronDeliveryMode = 'queue' | 'steer' | 'idle';
+
+export const cronDeliveryModeSchema = z.enum(['queue', 'steer', 'idle']);
+
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
+  /** Absent on records admitted before delivery modes existed; those stay FIFO. */
+  readonly deliveryMode?: CronDeliveryMode;
   readonly jobId: string;
   readonly cron: string;
   readonly recurring: boolean;
@@ -821,7 +827,9 @@ export interface AssistantDeltaEvent {
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;
+  readonly partId?: string;
   readonly delta: string;
+  readonly part?: AssistantStreamPart;
 }
 
 export interface HookResultEvent {
@@ -1127,6 +1135,17 @@ export interface PromptCompletedEvent {
   readonly reason?: 'completed' | 'failed' | 'blocked';
 }
 
+export interface PromptOutcomeCommittedEvent {
+  readonly type: 'prompt.outcome_committed';
+  readonly time?: number;
+  readonly terminal: {
+    readonly promptId: string;
+    readonly turnId?: string | number;
+    readonly state: 'completed' | 'failed' | 'cancelled' | 'blocked';
+    readonly result?: unknown;
+  };
+}
+
 export interface PromptAbortedEvent {
   readonly type: 'prompt.aborted';
   readonly promptId: string;
@@ -1235,6 +1254,7 @@ export type AgentEvent =
   | PromptEnqueuedEvent
   | PromptLaunchCommittedEvent
   | PromptCompletedEvent
+  | PromptOutcomeCommittedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent;
 
@@ -1346,6 +1366,7 @@ export const backgroundTaskOriginSchema = z.object({
 
 export const cronJobOriginSchema = z.object({
   kind: z.literal('cron_job'),
+  deliveryMode: cronDeliveryModeSchema.optional(),
   jobId: z.string(),
   cron: z.string(),
   recurring: z.boolean(),
@@ -1954,7 +1975,9 @@ export const assistantDeltaEventSchema = z.object({
   turnId: z.number(),
   step: z.number().optional(),
   stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 }) satisfies z.ZodType<AssistantDeltaEvent>;
 
 export const hookResultEventSchema = z.object({
@@ -2207,6 +2230,17 @@ export const promptCompletedEventSchema = z.object({
   reason: z.enum(['completed', 'failed', 'blocked']).optional(),
 }) satisfies z.ZodType<PromptCompletedEvent>;
 
+export const promptOutcomeCommittedEventSchema = z.object({
+  type: z.literal('prompt.outcome_committed'),
+  time: z.number().optional(),
+  terminal: z.object({
+    promptId: z.string(),
+    turnId: z.union([z.string(), z.number()]).optional(),
+    state: z.enum(['completed', 'failed', 'cancelled', 'blocked']),
+    result: z.unknown().optional(),
+  }),
+}) satisfies z.ZodType<PromptOutcomeCommittedEvent>;
+
 export const promptAbortedEventSchema = z.object({
   type: z.literal('prompt.aborted'),
   promptId: z.string(),
@@ -2319,6 +2353,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   promptEnqueuedEventSchema,
   promptLaunchCommittedEventSchema,
   promptCompletedEventSchema,
+  promptOutcomeCommittedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,
 ]) satisfies z.ZodType<AgentEvent>;

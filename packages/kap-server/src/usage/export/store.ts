@@ -19,7 +19,7 @@ export class UsageExportStore {
   private readonly projectedOrigins = new Map<string, Set<string>>();
   private elected: boolean;
   get writer(): boolean { return this.elected; }
-  constructor(path: string) {
+  constructor(path: string, private readonly legacyDisabled?: boolean) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.election = new DatabaseSync(`${path}.writer.sqlite`);
     this.election.exec('PRAGMA busy_timeout=0');
@@ -49,6 +49,7 @@ export class UsageExportStore {
       this.db.prepare("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
       this.db.prepare("INSERT OR IGNORE INTO meta VALUES('capacity','52428800')").run();
       this.db.exec('DELETE FROM staging;');
+      this.retireExperimentalGate();
     }
   }
   tryPromote(): boolean {
@@ -56,7 +57,17 @@ export class UsageExportStore {
     try { this.election.exec('BEGIN IMMEDIATE'); } catch { return false; }
     this.fence = randomUUID(); this.elected = true;
     this.db.prepare("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
-    this.db.exec('DELETE FROM staging;'); return true;
+    this.db.exec('DELETE FROM staging;'); this.retireExperimentalGate(); return true;
+  }
+  private retireExperimentalGate(): void {
+    if (this.legacyDisabled === undefined || this.meta('experimental-gate-retired') !== null) return;
+    this.transaction(() => {
+      if (this.legacyDisabled) for (const destination of this.list()) {
+        if (destination.enabled) this.update(destination.id, { enabled: false, state: 'disabled', next_at: null });
+        this.setMeta(`handoff-arm:${destination.id}`, '');
+      }
+      this.setMeta('experimental-gate-retired', 'true');
+    });
   }
   private assertWriter(): void {
     if (this.closed || !this.writer || (this.db.prepare("SELECT value FROM meta WHERE key='fence'").get() as Row | undefined)?.['value'] !== this.fence) throw new Error('export-writer-unavailable');

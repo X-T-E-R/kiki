@@ -190,6 +190,182 @@ describe('server-v2 /api/sessions', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
+  it('reads archived messages without restore and permanently deletes only the attached archived family', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'archive-readable', workDir: home! });
+    const agent = await root.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    agent.accessor.get(IAgentContextMemoryService).append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Saved archive message' }], toolCalls: [] });
+    await agent.accessor.get(IWireService).flush();
+    const attached = await manager.create({ sessionId: 'archive-attached', workDir: home! });
+    const promoted = await manager.create({ sessionId: 'archive-independent', workDir: home! });
+    const neighbor = await manager.create({ sessionId: 'archive-unarchived', workDir: home! });
+    for (const handle of [attached, promoted, neighbor]) await handle.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    await postJson(`/api/sessions/${root.id}:archive`, { include_attached: true, exclude_session_ids: [promoted.id, neighbor.id] });
+    await manager.archive(promoted.id);
+    const restore = vi.spyOn(manager, 'restore');
+    const messages = await getJson<{ items: { content: unknown }[] }>(`/api/sessions/${root.id}/messages`);
+    expect(messages.body.code).toBe(0);
+    expect(JSON.stringify(messages.body.data)).toContain('Saved archive message');
+    expect((await core.get(ISessionIndex).get(root.id))?.archived).toBe(true);
+    expect(restore).not.toHaveBeenCalled();
+    const deleted = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${root.id}:delete-archived`, { exclude_session_ids: [promoted.id] });
+    expect(deleted.body.code).toBe(0);
+    expect(deleted.body.data.deleted_ids.toSorted()).toEqual([root.id, attached.id].toSorted());
+    expect(deleted.body.data.failed).toEqual([]);
+    expect(await core.get(ISessionIndex).get(root.id)).toBeUndefined();
+    expect(await core.get(ISessionIndex).get(promoted.id)).toMatchObject({ archived: true });
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toMatchObject({ archived: false });
+    const refused = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${neighbor.id}:delete-archived`, {});
+    expect(refused.body.data.failed).toHaveLength(1);
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toBeDefined();
+  });
+
+  it('deletes every archived page with partial failure and preserves restored and newly created unarchived sessions', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    const registry = core.get(IWorkspaceService);
+    const workspace = await registry.createOrTouch(home!);
+    const docs = core.get(IAtomicDocumentStore);
+    for (let i = 0; i < 105; i++) await docs.set(`sessions/${workspace.id}/archive-page-${i}`, 'state.json', {
+      version: 2, id: `archive-page-${i}`, cwd: home, title: `Saved ${i}`, createdAt: i + 1, updatedAt: i + 1, archived: true,
+    });
+    await index.prepare();
+    const page = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=50');
+    expect(page.body.data.items).toHaveLength(50);
+    expect(page.body.data.has_more).toBe(true);
+    const searched = await getJson<PageWire>('/api/sessions?archived_only=true&q=Saved%20104');
+    expect(searched.body.data.items.map((item) => item.id)).toEqual(['archive-page-104']);
+    const original = manager.withLifecycleSerialization.bind(manager);
+    vi.spyOn(manager, 'withLifecycleSerialization').mockImplementation((id, work) => original(id, async (lifecycle) => {
+      if (id === 'archive-page-10') throw new Error('fixture deletion blocked');
+      if (id === 'archive-page-11') await lifecycle.restore();
+      return work(lifecycle);
+    }));
+    await manager.create({ sessionId: 'archive-new-active', workDir: home! });
+    const result = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>('/api/sessions:delete-archived', {});
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.deleted_ids).toHaveLength(103);
+    expect(result.body.data.failed.map((item) => item.id).toSorted()).toEqual(['archive-page-10', 'archive-page-11']);
+    expect(await index.get('archive-new-active')).toMatchObject({ archived: false });
+    expect(await index.get('archive-page-11')).toMatchObject({ archived: false });
+    const fresh = await getJson<PageWire>('/api/sessions?archived_only=true');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual(['archive-page-10']);
+  });
+
+  it('archives the authoritative attached family across cold pages and workspaces while preserving promoted subtrees', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    await index.prepare();
+    const root = await manager.create({ sessionId: 'family-root', workDir: home! });
+    const rootDir = root.accessor.get(ISessionContext).sessionDir;
+    const workspaceId = root.accessor.get(ISessionContext).workspaceId;
+    const docs = core.get(IAtomicDocumentStore);
+    const scope = (id: string, workspace = workspaceId) => `sessions/${workspace}/${id}`;
+    const put = (id: string, custom: Record<string, unknown>, workspace = workspaceId, archived = false) => docs.set(scope(id, workspace), 'state.json', {
+      version: 2, id, cwd: home, createdAt: 1, updatedAt: 1, archived, archivedAt: archived ? 7 : undefined, custom,
+      agents: { main: { model: 'fixture-model', personaId: 'fixture-persona' } },
+      worktree: { worktreeId: 'fixture-worktree', branch: 'fixture-branch', sourceRoot: home, baseRef: 'HEAD' },
+    });
+    for (let i = 0; i < 105; i++) await put(`family-child-${i}`, { created_by_session_id: root.id });
+    await put('family-deep', { child_session_kind: 'child', parent_session_id: 'family-child-104' }, 'other-workspace');
+    await put('family-promoted', { created_by_session_id: root.id });
+    await put('family-promoted-child', { created_by_session_id: 'family-promoted' });
+    await put('family-fork', { parent_session_id: root.id });
+    await put('family-sibling', { created_by_session_id: 'other-root' });
+    await put('family-historical-archived', { created_by_session_id: root.id }, workspaceId, true);
+    const events: string[] = [];
+    const subscription = core.get(IEventService).onDidPublish((event) => { if (event.type === 'event.session.archived') events.push((event as unknown as { payload: { sessionId: string } }).payload.sessionId); });
+    const body = { include_attached: true, exclude_session_ids: ['family-promoted', root.id] };
+    try {
+      const first = await postJson<{ archived: boolean; outcomes: { id: string; ok: boolean }[] }>(`/api/sessions/${root.id}:archive`, body);
+      expect(first.body.code).toBe(0);
+      expect(first.body.data.archived).toBe(true);
+      expect(first.body.data.outcomes).toHaveLength(108);
+      expect(first.body.data.outcomes.every((item) => item.ok)).toBe(true);
+      expect(JSON.parse(await readFile(join(rootDir, 'state.json'), 'utf8')).archived).toBe(true);
+      expect(await docs.get(scope('family-deep', 'other-workspace'), 'state.json')).toMatchObject({ archived: true });
+      for (const id of ['family-promoted', 'family-promoted-child', 'family-fork', 'family-sibling']) {
+        expect(await docs.get(scope(id), 'state.json')).toMatchObject({ archived: false });
+      }
+      expect(await index.get('family-child-104')).toMatchObject({ archived: true, personaId: 'fixture-persona', worktree: { worktreeId: 'fixture-worktree' } });
+      expect(events).toHaveLength(107);
+      const defaultList = await getJson<PageWire>('/api/sessions');
+      expect(defaultList.body.data.items.map((item) => item.id).toSorted()).toEqual(['family-fork', 'family-promoted', 'family-promoted-child', 'family-sibling']);
+      let archivedList = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=100');
+      expect(archivedList.body.data.has_more).toBe(true);
+      const archivedIds = archivedList.body.data.items.map((item) => item.id);
+      while (archivedList.body.data.has_more) {
+        const cursor = archivedList.body.data.items.at(-1)!.id;
+        archivedList = await getJson<PageWire>(`/api/sessions?archived_only=true&page_size=100&before_id=${cursor}`);
+        archivedIds.push(...archivedList.body.data.items.map((item) => item.id));
+      }
+      expect(archivedIds.toSorted()).toEqual(first.body.data.outcomes.map((item) => item.id).toSorted());
+      const retry = await postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, body);
+      expect(retry.body.data.archived).toBe(true);
+      expect(events).toHaveLength(107);
+      expect(await docs.get(scope('family-historical-archived'), 'state.json')).toMatchObject({ archivedAt: 7 });
+      const promoted = await postJson<{ archived: boolean; outcomes: { id: string }[] }>('/api/sessions/family-promoted:archive', body);
+      expect(promoted.body.data.outcomes.map((item) => item.id).toSorted()).toEqual(['family-promoted', 'family-promoted-child']);
+      expect(promoted.body.data.archived).toBe(true);
+      const restored = await postJson<SessionWire>(`/api/sessions/${root.id}:restore`);
+      expect(restored.body.data.archived).toBe(false);
+      expect(await docs.get(scope('family-child-0'), 'state.json')).toMatchObject({ archived: true });
+    } finally { subscription.dispose(); }
+  });
+
+  it('reports unfinished family items, keeps fresh lists and safely retries concurrent archive requests', async () => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'retry-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'retry-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const childDir = child.accessor.get(ISessionContext).sessionDir;
+    await manager.close(child.id);
+    const docs = core.get(IAtomicDocumentStore);
+    const set = docs.set.bind(docs);
+    let failed = false;
+    const writing = vi.spyOn(docs, 'set').mockImplementation(async (scope, key, value) => {
+      if (!failed && scope.endsWith(`/${child.id}`) && (value as { archived?: boolean }).archived) { failed = true; throw new Error('injected child archive write failure'); }
+      await set(scope, key, value);
+    });
+    const first = await postJson<{ archived: boolean; outcomes: unknown[] }>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(first.body.code).toBe(0);
+    expect(first.body.data.archived).toBe(false);
+    expect(first.body.data.outcomes).toContainEqual({ id: child.id, ok: false, reason: 'error', message: 'injected child archive write failure' });
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(false);
+    const fresh = await getJson<PageWire>('/api/sessions');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual([child.id]);
+    writing.mockRestore();
+    const retries = await Promise.all([1, 2].map(() => postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, { include_attached: true })));
+    expect(retries.map((item) => item.body.data.archived)).toEqual([true, true]);
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(true);
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items).toEqual([]);
+    expect(manager.residencyReport?.()).toMatchObject({ lifecycleOperations: 0 });
+  });
+
+  it('fails family discovery before mutation when authoritative metadata is unreadable', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'unreadable-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'unreadable-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const docs = core.get(IAtomicDocumentStore);
+    const get = docs.get.bind(docs);
+    vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (scope.endsWith(`/${child.id}`) && key === 'state.json') throw new Error('injected unreadable metadata');
+      return get(scope, key);
+    });
+    const result = await postJson<unknown>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(result.body.code).not.toBe(0);
+    expect(result.body.msg).toContain(child.id);
+    expect((await root.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+    expect((await child.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+  });
+
   it('downloads a ZIP with the supplied Web log and cleans up its temporary directory', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
       metadata: { cwd: home as string },
@@ -351,7 +527,7 @@ describe('server-v2 /api/sessions', () => {
       eventBus,
       events,
       cancel: async () => {
-        subscription.dispose();
+        await subscription.dispose();
         await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
           agent_config: { goal_control: 'cancel' },
         });
@@ -481,7 +657,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -699,7 +876,7 @@ describe('server-v2 /api/sessions', () => {
     } finally {
       await rename(backupDir, instancesDir);
       onCreated?.dispose();
-      onEvent.dispose();
+      await onEvent.dispose();
     }
 
     expect(failed.status).toBe(200);
@@ -828,6 +1005,26 @@ describe('server-v2 /api/sessions', () => {
     expect(body.code).toBe(0);
     expect(body.data.items.some((s) => s.id === created.body.data.id)).toBe(true);
     expect(typeof body.data.has_more).toBe('boolean');
+  });
+
+  it('projects cold sidebar personas from summaries without replaying agent wires', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const rows: SessionSummary[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `cold-sidebar-${index}`, workspaceId: created.workspace_id, cwd: home,
+      personaId: index === 0 ? 'summary-persona' : undefined,
+      custom: index === 1 ? { bot_persona_id: 'legacy-persona' } : undefined,
+      createdAt: 1, updatedAt: 1000 - index, archived: false,
+    }));
+    vi.spyOn(server!.core.accessor.get(ISessionIndex), 'listRecent').mockResolvedValue({ items: rows, nextCursor: undefined });
+    const read = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read').mockImplementation(() => {
+      throw new Error('Sidebar must not replay an agent wire');
+    });
+    const { body } = await getJson<PageWire>('/api/sessions?page_size=50');
+    expect(body.code).toBe(0);
+    expect(body.data.items).toHaveLength(50);
+    expect(body.data.items[0]?.agent_config).toMatchObject({ persona: { id: 'summary-persona' } });
+    expect(body.data.items[1]?.agent_config).toMatchObject({ persona: { id: 'legacy-persona' } });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {
@@ -1891,6 +2088,33 @@ describe('server-v2 /api/sessions', () => {
     expect(childChildren.body.data.items.some((s) => s.id === grandchildId)).toBe(true);
   });
 
+  it.each(['custom', 'generated', 'replaceable'] as const)('preserves the source title kind on a default fork (%s)', async (kind) => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: kind });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, {});
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+    const disk = JSON.parse(await readFile(join(home!, 'sessions', parent.body.data.workspace_id, forked.body.data.id, 'state.json'), 'utf8'));
+    expect(disk.titleKind).toBe(kind);
+    await closeSessionById(server!.core.accessor, target.id);
+    const resumed = await resumeSessionById(server!.core.accessor, target.id);
+    expect(await resumed!.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+  });
+
+  it('marks an explicitly named fork custom even when the source title is replaceable', async () => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: 'replaceable' });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, { title: 'Named fork' });
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Named fork', titleKind: 'custom' });
+  });
+
   it('does not list a plain fork as a child (kind must be "child")', async () => {
     const cwd = home as string;
     const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
@@ -2276,7 +2500,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -2384,7 +2609,7 @@ describe('server-v2 /api/sessions', () => {
       title: 'renamed-via-profile',
     });
     expect(updated.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const meta = events.find((e) => e.type === 'session.meta.updated');
     expect(meta).toBeDefined();
@@ -2570,7 +2795,7 @@ describe('server-v2 /api/sessions', () => {
       { content: [{ type: 'text', text: 'hello web title' }] },
     );
     expect(submitted.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const got = await getJson<SessionWire>(`/api/sessions/${id}`);
     expect(got.body.code).toBe(0);

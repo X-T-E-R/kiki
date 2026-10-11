@@ -15,7 +15,7 @@ export interface ScopedTestHost {
   readonly app: Scope;
   child(kind: ScopeKind, id: string, stubs?: ScopeSeed): Scope;
   childOf(parent: Scope, kind: ScopeKind, id: string, stubs?: ScopeSeed): Scope;
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 export function createScopedTestHost(appStubs: ScopeSeed = []): ScopedTestHost {
@@ -38,7 +38,7 @@ export function createScopedTestHost(appStubs: ScopeSeed = []): ScopedTestHost {
       return parent.createChild(kind, id, { seeds: stubs });
     },
     dispose() {
-      app.dispose();
+      return app.dispose();
     },
   };
 }

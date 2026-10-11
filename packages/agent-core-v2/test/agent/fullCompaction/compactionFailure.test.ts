@@ -26,6 +26,12 @@ describe('compaction-only retry classification', () => {
     expect(isRetryableCompactionError(new APIStatusError(503, 'down'))).toBe(true);
   });
 
+  it('names manual and automatic failures from their actual trigger', () => {
+    const error = new Error('summary failed');
+    expect(describeCompactionFailure(error, 'fixture', 'model', 1, 'manual')).toMatch(/^Manual compaction failed/);
+    expect(describeCompactionFailure(error, 'fixture', 'model', 1, 'auto')).toMatch(/^Automatic compaction failed/);
+  });
+
   it('attaches sanitized status detail for all 4xx, including 429', () => {
     expect(normalizeAPIStatusError(403, 'Forbidden', null, null, null, { error: { code: 'FORBIDDEN', message: 'bad scope' } }).message).toContain('FORBIDDEN: bad scope');
     expect(normalizeAPIStatusError(429, 'Rate limit', null, null, null, { error: { code: 'RATE_LIMITED', message: 'slow down' } }).message).toContain('RATE_LIMITED: slow down');

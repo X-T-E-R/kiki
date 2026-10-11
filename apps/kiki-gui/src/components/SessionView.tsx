@@ -16,7 +16,7 @@ import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, Work
 import { ConfirmDialog } from './ConfirmDialog';
 import { NavBackButton } from './NavBackButton';
 import { useGuardedNavigate } from './dirtyGuard';
-import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine } from './Composer';
+import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort, type ComposerEngine, type PendingRuntimeControls } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
@@ -29,7 +29,7 @@ import {
   type ConversationSeat,
 } from './ConversationShell';
 import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
-import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
@@ -51,9 +51,14 @@ import { PersonaSessionIdentity } from './persona/PersonaSessionIdentity';
 import { PersonaSettingsDialog } from './persona/PersonaSettingsUpdate';
 import { sessionPersonaId } from './persona/personaSessionUtils';
 import { WorktreeMark } from './WorktreeMark';
+import {
+  contentSegmentKey,
+  isSessionRemainderRef,
+  type ContentContinuationHandle,
+} from './transcriptDetail';
+import { contentTextPresentation, readTextPresentation, type ContentRef } from '@kiki/transcript';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
-import { contentTextPresentation, readTextPresentation } from '@kiki/transcript';
 import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
@@ -104,6 +109,7 @@ import {
   assistantMessageIdFromBlock,
   createViewState,
   filterBlocksToDirectChildren,
+  isOrdinaryQueueItem,
   pendingQuestionCount,
   queuedPromptPreviews,
   sessionAgentForest,
@@ -122,7 +128,6 @@ import {
   readModelSwitchPreferences,
   readSettings,
   readTerminalPanelPrefs,
-  markSessionSeen,
   rememberModelSwitchChoice,
   resolveCatalogModel,
   resolveEffectiveModel,
@@ -140,10 +145,12 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import {
   agentProfileCatalogQueryKey,
+  invalidateAgentProfileCatalogs,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, isSessionNotFoundMessage, type ModelSwitchMode, type UpdateAgentGoalInput } from '../lib/client';
+import { invalidatePluginQueries } from '../lib/pluginFreshness';
 import { locateInTimeline, locateSpawnTarget, normalizeTurnId } from '../lib/timelineLocate';
 import { getReadingSnapshot, timelineSnapshotKey } from '../lib/navViewState';
 import { useNavVisitId } from '../lib/useNavSnapshot';
@@ -157,6 +164,7 @@ import { harnessDenies, useSessionHarness, type SessionHarness } from './harness
 import { useExecutorCatalog } from './settings/profileEditor/engines';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
+import { useViewedSession } from '../lib/useAwayNotifications';
 import { pushToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
@@ -303,14 +311,17 @@ function MoreIcon({ className = '' }: { className?: string }) {
 function useActiveController(
   sessionId: string | undefined,
   focusedAgentId?: string,
-): SessionController | null {
+): { controller: SessionController | null; leaseReady: boolean } {
   const { client } = useConnection();
   const registry = useControllerRegistry();
-  const [controller, setController] = useState<SessionController | null>(null);
+  const [active, setActive] = useState<{ controller: SessionController | null; leaseReady: boolean }>({
+    controller: null,
+    leaseReady: false,
+  });
 
   useEffect(() => {
     if (sessionId === undefined) {
-      setController(null);
+      setActive({ controller: null, leaseReady: false });
       return;
     }
     // The registry keeps a recently left view parked (bounded LRU), so coming
@@ -321,19 +332,27 @@ function useActiveController(
       () => new SessionController(client.sessions, client.sessionView(sessionId), sessionId),
     );
     const next = lease.controller;
+    let activeLease = true;
     next.setFocusedAgent(focusedAgentId);
-    setController(next);
-    void lease.ready.catch(() => {
-      // snapshot failure leaves the controller unloaded; the transcript shows
-      // "Opening session…" until a resync succeeds
-    });
+    setActive({ controller: next, leaseReady: false });
+    void lease.ready.then(
+      () => {
+        if (activeLease) setActive({ controller: next, leaseReady: true });
+      },
+      () => {
+        // Snapshot failure leaves the controller unloaded; the transcript shows
+        // "Opening session…" until a resync succeeds, but the lease is settled.
+        if (activeLease) setActive({ controller: next, leaseReady: true });
+      },
+    );
     return () => {
+      activeLease = false;
       lease.release();
-      setController(null);
+      setActive({ controller: null, leaseReady: false });
     };
   }, [client, sessionId, registry]);
 
-  return controller;
+  return active;
 }
 
 /** The ☰ count on a phone: the same inbox the sidebar's bell reports. */
@@ -956,6 +975,26 @@ export function resolveSessionSeatPhase(input: {
   hasInitialPrompt: boolean;
 }): ConversationPhase {
   return !input.loaded && !input.hasInitialPrompt ? 'settling' : 'active';
+}
+
+/**
+ * A shell snapshot is enough to send once its operation lease has settled;
+ * transcript seed is independent presentation work.
+ */
+export function resolveSessionSendReady(input: {
+  leaseReady: boolean;
+  loaded: boolean;
+  loadError?: string;
+  resyncing: boolean;
+  resyncFailed: boolean;
+}): boolean {
+  return input.leaseReady && input.loaded &&
+    input.loadError === undefined && !input.resyncing && !input.resyncFailed;
+}
+
+/** Session-operation reads start only after the snapshot operation lease settles. */
+export function sessionIdForSendReadyRead(sessionId: string | undefined, sendReady: boolean): string | undefined {
+  return sendReady ? sessionId : undefined;
 }
 
 interface SessionCreateHandoff {
@@ -1868,7 +1907,7 @@ export function SessionView({
     setAnnotations((current) => current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)));
   }, []);
 
-  const controller = useActiveController(sessionId, selectedAgentId);
+  const { controller, leaseReady } = useActiveController(sessionId, selectedAgentId);
   const queryClient = useQueryClient();
 
   // Embedded terminal panel: per-session manager (terminal list + attach
@@ -2101,6 +2140,18 @@ export function SessionView({
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
+  const sessionSendReady = resolveSessionSendReady({
+    leaseReady,
+    loaded: state.loaded,
+    loadError: state.loadError,
+    resyncing: state.resyncing,
+    resyncFailed: state.resyncFailed,
+  });
+  const [railReady, setRailReady] = useState(false);
+  useEffect(() => {
+    if (sessionSendReady) setRailReady(true);
+  }, [sessionSendReady]);
+  const railMountReady = railReady || sessionSendReady;
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -2143,15 +2194,9 @@ export function SessionView({
     onOpenSession: (target) => { void navigate(`/s/${target}`); },
   }), [state.session?.agent_config.persona, state.session?.delivery, sessionId, navigate]);
 
-  // Read state: while a session is on screen, keep its seen-mark at the newest
-  // event the user has therefore looked at. This clears the session from the
-  // activity inbox and from the sidebar's unread state, and re-arms both the
-  // moment a later turn pushes `last_seq` past the mark.
-  const seenSeq = state.session?.last_seq;
-  useEffect(() => {
-    if (seenSeq === undefined) return;
-    markSessionSeen(sessionId, seenSeq);
-  }, [sessionId, seenSeq]);
+  // Advance this conversation's seen-mark only while its route is visible
+  // and focused. Other conversations and hidden mounted views stay unread.
+  useViewedSession(host, sessionId, state.session?.last_seq);
 
   // Store-controlled pills: the server-reported value wins unless a local
   // click is still waiting to be committed with the next prompt.
@@ -2259,8 +2304,11 @@ export function SessionView({
     () => boundExecutionChoice(executionBinding, state.session?.agent_config.profile),
     [executionBinding, state.session],
   );
-  const shownExecution = pendingExecution ?? boundExecution;
-  const executionPending = pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution);
+  const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
+  const shownExecution = pendingExecution ?? (profilePending
+    ? { ...boundExecution, profile: pendingProfile, profile_file: undefined }
+    : boundExecution);
+  const executionPending = profilePending || (pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution));
   // Engine names for the confirmation, from the same catalog the panel reads.
   const executorCatalog = useExecutorCatalog();
   const executorLabels = useMemo(() => ({
@@ -2317,10 +2365,15 @@ export function SessionView({
     effectiveModel === sessionModel ? state.thinkingEffort : undefined,
     catalogItem?.default_effort,
   ) : state.thinkingEffort);
+  const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined;
+  const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined;
+  const pendingRuntimeControls: PendingRuntimeControls | undefined = modelControlPending || effortControlPending ? {
+    model: modelControlPending ? effectiveModel : undefined,
+    thinking: effortControlPending ? effectiveEffort : undefined,
+  } : undefined;
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);
-  const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
 
   // ---- model switching: three-mode confirm + queued control item ----
   // Preferences are the space's server config (the GUI only caches the query,
@@ -2539,6 +2592,12 @@ export function SessionView({
     setEffortChoice(undefined);
     setModelSwitchMode(undefined);
   }, []);
+  const cancelPendingRuntimeControls = useCallback(() => {
+    setModelOverride(undefined);
+    setEffortOverride(undefined);
+    setModelSwitchMode(undefined);
+    clearTouchedControls();
+  }, [clearTouchedControls]);
 
   const applyPendingProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
@@ -2614,9 +2673,19 @@ export function SessionView({
   const refetchAgentProfiles = agentProfilesQuery.refetch;
   const handleContextRebuild = useCallback(async () => {
     const result = await client.rebuildContext(sessionId);
+    // A rebuild changes what the conversation carries — the instructions, the
+    // plugins, the skills a plugin brings, and the tools those contribute — so
+    // every list that answers from those sources is re-read. Each one re-reads
+    // its own source; none of them is re-created, and the session, its messages
+    // and its history stay as they are.
+    void invalidateAgentProfileCatalogs(queryClient);
+    void invalidatePluginQueries(queryClient);
+    void queryClient.invalidateQueries({ queryKey: ['skills'] });
+    void queryClient.invalidateQueries({ queryKey: ['tools'] });
+    void queryClient.invalidateQueries({ queryKey: ['session-mcp-capabilities'] });
     void refetchAgentProfiles();
     return result;
-  }, [client, refetchAgentProfiles, sessionId]);
+  }, [client, queryClient, refetchAgentProfiles, sessionId]);
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
@@ -2794,6 +2863,8 @@ export function SessionView({
             .sendPromptNow({
               text: echoText,
               content,
+              profile: profileSwitch.profile,
+              execution: profileSwitch.execution,
               model: profileSwitch.model,
               thinking: profileSwitch.thinking,
               modelSwitchMode: modelControlTouched ? modelSwitchMode : undefined,
@@ -2866,7 +2937,6 @@ export function SessionView({
           planGate,
           goalObjective: promptGoalObjective(options),
           appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-          afterModelSwitch: options?.now === true ? undefined : modelSwitches.dependency?.input.operationId,
           personaGreetingReply: options?.personaGreetingReply,
         };
         let accepted = false;
@@ -3152,7 +3222,6 @@ boundExecution,
     planMode,
     planGate,
     liveSettings.defaultAppendTiming,
-    modelSwitches.dependency,
     modelSwitches.switches,
     modelSwitches.refresh,
     quote,
@@ -3298,7 +3367,7 @@ boundExecution,
   // publish, re-registering TopEdge's scroll listener and defeating the
   // memoized block components.
   const handleLoadOlder = useCallback(
-    () => controller?.loadOlderMessages(MAIN_AGENT_ID) ?? Promise.resolve(false),
+    (signal?: AbortSignal) => controller?.loadOlderMessages(MAIN_AGENT_ID, signal) ?? Promise.resolve(false),
     [controller],
   );
 
@@ -3641,7 +3710,18 @@ boundExecution,
     setConfirmClearQueue(true);
   }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
-  const queuedItemCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  // The composer header counts what the user is waiting to send. A scheduled
+  // prompt held ahead of that order (`idle`/`steer`) is named separately so it
+  // cannot read as one more of their own messages, but it keeps a row in the
+  // opened detail — its text is real work waiting to be read.
+  const ordinaryQueuedItems = useMemo(() => queuedItems.filter(isOrdinaryQueueItem), [queuedItems]);
+  const heldCronItems = useMemo(() => queuedItems.filter((item) => !isOrdinaryQueueItem(item)), [queuedItems]);
+  const queuedItemCount = ordinaryQueuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  const queueRowCount = queuedItems.length + modelSwitches.switches.filter((entry) => entry.queueIndex >= 0).length;
+  const promptCoverage = state.globalCoverage?.prompts;
+  const promptEntityLoad = state.detailLoads['entities:prompt'];
+  const hasPromptContinuation = promptCoverage !== undefined && (promptCoverage.hasMore || promptEntityLoad !== undefined);
+  const handleLoadPromptEntities = useCallback(() => { void controller?.loadTranscriptEntities(MAIN_AGENT_ID, 'prompt'); }, [controller]);
   const handleRemoveQueuedAttachment = useCallback((promptId: string, attachmentIndex: number) => {
     const item = queuedItems.find((entry) => entry.promptId === promptId);
     if (controller === null || item?.content === undefined) return Promise.resolve();
@@ -3691,6 +3771,41 @@ boundExecution,
           [],
         ),
       );
+      if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
+      const pathFileMentions = (block?.media ?? item.media ?? []).flatMap((media) => {
+        const mention = fileMentionFromPathMedia(media);
+        return mention === undefined ? [] : [mention];
+      });
+      const open = (content: readonly MessageContent[], text: string) => {
+        if (!composerOwnerActive.current || queueEditRef.current !== null) return;
+        setQueueEdit({
+          promptId,
+          owner: crypto.randomUUID(),
+          attachments: [...retainedAttachmentsFromContent(content), ...pathFileMentions],
+          savedDraft: draftRef.current,
+          savedQuote: quote,
+          savedQuoteSource: quoteSource,
+          savedAnnotations: annotations,
+        });
+        const carryovers = parseSelectionCarryovers(
+          block?.text ?? text,
+          block?.presentation ?? contentTextPresentation(content, '\n\n'),
+        );
+        updateDraft(carryovers.body);
+        setQuote(carryovers.quote);
+        setQuoteSource(carryovers.quoteSource);
+        setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
+          (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
+        ));
+      };
+      const incomplete = controller?.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
+      if (!incomplete) { open(item.content ?? [], item.text); return; }
+      const parkedDraft = draftRef.current;
+      void controller?.readQueuedPromptContent(promptId).then((content) => {
+        if (content !== undefined && draftRef.current === parkedDraft) open(content, content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'));
+      }).catch((error: unknown) => {
+        pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+      });
     },
     [queueEdit, queuedItems, state.blocks, quote, quoteSource, annotations, updateDraft],
   );
@@ -3820,9 +3935,7 @@ boundExecution,
     if (
       controller === null ||
       actions === null ||
-      !state.loaded ||
-      state.resyncing ||
-      state.resyncFailed
+      !sessionSendReady
     ) {
       return;
     }
@@ -3869,9 +3982,7 @@ boundExecution,
   }, [
     controller,
     actions,
-    state.loaded,
-    state.resyncing,
-    state.resyncFailed,
+    sessionSendReady,
     location.pathname,
     navigate,
     updateDraft,
@@ -3910,12 +4021,7 @@ boundExecution,
     reportAttention([{ sessionId, agentId: MAIN_AGENT_ID, turnId: turnTail.turnId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
-  const composerDisabled =
-    controller === null ||
-    !state.loaded ||
-    state.loadError !== undefined ||
-    state.resyncing ||
-    state.resyncFailed;
+  const composerDisabled = controller === null || !sessionSendReady;
   const modelSource: ModelSource = resolveModelSource(
     composerSelection.modelOverride,
     sessionModel,
@@ -3933,7 +4039,7 @@ boundExecution,
   // meter's adjustable track (absent on engines that do not report one).
   const compactionProgress = useCompactionProgress(client, sessionId);
   const contextAutoCompact = useContextMeterAutoCompact({
-    sessionId,
+    sessionId: sessionIdForSendReadyRead(sessionId, sessionSendReady),
     agentId: MAIN_AGENT_ID,
     modelId: sessionModel,
     modelLabel: catalogItem?.display_name ?? sessionModel,
@@ -4017,6 +4123,7 @@ boundExecution,
       summary: <GoalHeaderSummary goal={headerGoal} />,
       ariaLabel: t('goal.cardAria'),
       title: headerGoal.objective,
+      actions: headerGoal.status === 'active' ? <GoalPauseButton onPause={handleGoalPause} /> : undefined,
       panel: (
         <GoalCard goal={headerGoal} onRefresh={handleGoalRefresh} onUpdate={handleGoalUpdate}
           onPause={handleGoalPause} onResume={handleGoalResume} onCancel={handleGoalCancel} />
@@ -4025,9 +4132,12 @@ boundExecution,
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
     // A queued switch is a queue item too: the strip stays visible so its
-    // control row can be changed or cancelled before it runs.
-    if (queuedItemCount === 0) return undefined;
-    const total = queuedItemCount;
+    // control row can be changed or cancelled before it runs. A scheduled
+    // prompt held ahead of the send order counts too — otherwise a session
+    // waiting only on one would show nothing at all.
+    if (queueRowCount === 0 && !hasPromptContinuation) return undefined;
+    const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
+    const total = queueRowCount - Math.max(0, idleCount - 1);
     return {
       summary: (
         <QueueHeaderSummary
@@ -4038,7 +4148,7 @@ boundExecution,
           }}
         />
       ),
-      ariaLabel: t('composer.queueStack.openAria'),
+      ariaLabel: t(queueRowCount === 0 ? 'queue.records' : 'composer.queueStack.openAria'),
       count: total,
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
@@ -4048,18 +4158,21 @@ boundExecution,
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
           onMove={handleMoveQueued} onChangeTiming={handleQueuedTiming}
           modelSwitches={modelSwitches.switches}
+          resolveModelId={value => resolveCatalogModel(modelsQuery.data?.items ?? [], value)?.id ?? value}
           onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
           timingReady={queueTimingReady}
+          promptContinuation={promptCoverage === undefined ? undefined : { coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }}
         />
       ),
     };
   }, [
-    queuedItems, queuedItemCount, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
+    queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
-    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel,
+    modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
+    hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
@@ -4166,6 +4279,52 @@ boundExecution,
     () => state.tasks.filter((task) => task.status === 'running').length,
     [state.tasks],
   );
+  // The session's own remainder, offered from the composer's footer rather than
+  // only from the reading column: the reader is most often at the input, and a
+  // footer that does not say what is missing makes the input look like the whole
+  // conversation.
+  //
+  // This reads the same controller state the workspace's own outlet reads — the
+  // one published `contentRefs` and `detailLoads`, and the same
+  // `loadContentSegment` that fills them — so the two outlets are two views of
+  // one source, not two copies. A session whose structure the window carried in
+  // full reports nothing here and the entry disappears, rather than claiming to
+  // have read everything.
+  const sessionRemainder = useMemo(() => {
+    if (controller === null) return undefined;
+    const refs = (state.contentRefs ?? []).filter(isSessionRemainderRef);
+    if (refs.length === 0) return undefined;
+    const loads = state.detailLoads;
+    const loadContent = (ref: ContentRef) => controller.loadContentSegment(MAIN_AGENT_ID, ref);
+    return {
+      pending: refs,
+      statusOf: (ref: ContentRef) => loads[contentSegmentKey(ref)],
+      request: (ref: ContentRef) => { void loadContent(ref); },
+    } satisfies ContentContinuationHandle;
+  }, [controller, state.contentRefs, state.detailLoads]);
+  // Visible session structure finishes itself the same way the roster does: one
+  // idle remainder ref is read at a time, so the composer's outlet for it stops
+  // being a permanent "not fully read" fixture and disappears once nothing is
+  // left to read. A read that applied nothing parks its ref until a resync or a
+  // new snapshot moves it, so a stuck ref can neither loop the drain nor starve
+  // the refs behind it, and a failed read keeps its error state for the row's
+  // retry.
+  const remainderStalledRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (state.resyncing) {
+      remainderStalledRef.current = new Set();
+      return;
+    }
+    if (controller === null || !state.loaded || sessionRemainder === undefined) return;
+    const refs = sessionRemainder.pending;
+    if (refs.some((ref) => sessionRemainder.statusOf(ref)?.status === 'loading')) return;
+    const next = refs.find((ref) => sessionRemainder.statusOf(ref) === undefined && !remainderStalledRef.current.has(JSON.stringify(ref)));
+    if (next === undefined) return;
+    const key = JSON.stringify(next);
+    void controller.loadContentSegment(MAIN_AGENT_ID, next).then((advanced) => {
+      if (!advanced) remainderStalledRef.current = new Set([...remainderStalledRef.current, key]);
+    });
+  }, [controller, state.loaded, state.resyncing, sessionRemainder]);
   // A model request parked on a governance permit shows a quiet "Queued" status
   // with an inline detail popover — the rules themselves stay in /usage.
   // The poll mounts only while the line can be visible.
@@ -4231,9 +4390,14 @@ boundExecution,
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
             pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+              from: modelSwitches.active.receipt.fromModel,
               to: modelSwitches.active.receipt.toModel,
               mode: modelSwitches.active.input.mode,
+              originalThinking: modelSwitches.active.originalBinding.thinking,
+              targetThinking: modelSwitches.active.input.thinking,
             }}
+            pendingRuntimeControls={pendingRuntimeControls}
+            onCancelRuntimeControls={cancelPendingRuntimeControls}
             modelSwitchError={modelSwitches.error === undefined ? undefined : {
               detail: modelSwitches.error.message,
               onRetry: modelSwitches.refresh,
@@ -4289,6 +4453,7 @@ boundExecution,
             onSendNow={handleComposerSendNow}
             sendTimingDefault={liveSettings.defaultAppendTiming}
             working={composerWorkingInfo}
+            sessionRemainder={sessionRemainder}
             onAbort={handleComposerAbort}
             queueEditing={queueEdit !== null}
             onQueueEditConfirm={handleQueueEditConfirm}
@@ -4326,6 +4491,8 @@ boundExecution,
     modelSource,
     modelSwitches.active,
     modelSwitches.error,
+    pendingRuntimeControls,
+    cancelPendingRuntimeControls,
     pendingProfile,
     boundProfile,
     profilePending,
@@ -4443,7 +4610,7 @@ boundExecution,
         <ConfirmDialog
           open={confirmClearQueue}
           overlayId="confirm-clear-queue"
-          title={t('sv.queueClearTitle', { count: queuedItemCount })}
+          title={t('sv.queueClearTitle', { count: queueRowCount })}
           body={t('sv.queueClearBody')}
           confirmLabel={t('sv.queueClearAll')}
           onConfirm={confirmClearQueueRun}
@@ -4536,7 +4703,10 @@ boundExecution,
               />
             ) : null}
           </>,
-          rail: <RightRail
+          // The inspector's session-operation reads wait until the first
+          // snapshot lease settles; after that, resyncs keep the mounted rail
+          // and its drafts instead of tearing the surface down.
+          rail: railMountReady ? <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}
@@ -4545,7 +4715,7 @@ boundExecution,
             onInspectMain={inspectMain} onOpenFile={openFileInPreview}
             onReviewPending={reviewPending}
             sessionPending={trayItems} onResolveApproval={handleResolveApproval}
-          />,
+          /> : null,
         }}
       />
       </InteractionPlacementContext.Provider>
@@ -4631,7 +4801,7 @@ boundExecution,
       <ConfirmDialog
         open={confirmClearQueue}
         overlayId="confirm-clear-queue"
-        title={t('sv.queueClearTitle', { count: queuedItemCount })}
+        title={t('sv.queueClearTitle', { count: queueRowCount })}
         body={t('sv.queueClearBody')}
         confirmLabel={t('sv.queueClearAll')}
         onConfirm={confirmClearQueueRun}

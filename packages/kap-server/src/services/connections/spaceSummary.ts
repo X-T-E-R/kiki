@@ -9,6 +9,7 @@ export class SpaceSummaryProjection {
   private readonly epoch = randomUUID();
   private readonly watchers = new Map<string, IDisposable>();
   private readonly listeners: IDisposable[] = [];
+  private readonly pendingDisposals: Promise<void>[] = [];
   constructor(private readonly core: Scope) {
     const manager = core.accessor.get(ISessionManager);
     for (const session of manager.list()) this.watch(session);
@@ -26,11 +27,21 @@ export class SpaceSummaryProjection {
     }
     return { online: true, busy_sessions: busy, needs_you_sessions: needsYou, revision: `${this.epoch}:${this.revision}`, as_of: Date.now() };
   }
-  dispose(): void { for (const watcher of this.watchers.values()) watcher.dispose(); for (const listener of this.listeners) listener.dispose(); this.watchers.clear(); }
+  dispose(): void {
+    for (const watcher of this.watchers.values()) this.collect(watcher.dispose());
+    for (const listener of this.listeners) this.collect(listener.dispose());
+    this.watchers.clear();
+  }
+  async disposeAsync(): Promise<void> {
+    await Promise.all(this.pendingDisposals.splice(0));
+  }
+  private collect(result: void | Promise<void>): void {
+    if (result instanceof Promise) this.pendingDisposals.push(result);
+  }
   private watch(session: ISessionScopeHandle): void {
     this.unwatch(session.id);
     this.watchers.set(session.id, session.accessor.get(ISessionActivityView).onDidChange(() => { this.revision += 1; }));
     this.revision += 1;
   }
-  private unwatch(sessionId: string): void { this.watchers.get(sessionId)?.dispose(); this.watchers.delete(sessionId); this.revision += 1; }
+  private unwatch(sessionId: string): void { this.collect(this.watchers.get(sessionId)?.dispose()); this.watchers.delete(sessionId); this.revision += 1; }
 }

@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
+import type { PluginUsageTarget } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { useHost } from '../../host';
 import { openExternalUrl } from '../../host/external';
@@ -25,6 +26,7 @@ import { useConnection } from '../../state/connection';
 import { InlineError } from '../controls';
 import { Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
+import { scopeKey } from './pluginUsage';
 
 const MAX_REQUESTS_PER_WINDOW = 20;
 const RATE_WINDOW_MS = 10_000;
@@ -34,6 +36,7 @@ export function PluginPanelHost({
   panelId,
   label,
   sessionId,
+  target,
   className = 'h-full min-h-[420px] w-full',
 }: {
   readonly pluginId: string;
@@ -41,6 +44,13 @@ export function PluginPanelHost({
   readonly label: string;
   /** The session the panel acts on; absent → the panel runs without one. */
   readonly sessionId?: string;
+  /**
+   * The scope the document is served for. A workspace panel is served only for
+   * the target that asked for it, so the key carries it and switching scope
+   * cannot reuse the other scope's document — which would leave an executable
+   * panel behind after it is closed.
+   */
+  readonly target?: PluginUsageTarget;
   readonly className?: string;
 }) {
   const { client } = useConnection();
@@ -49,9 +59,10 @@ export function PluginPanelHost({
   const frameRef = useRef<HTMLIFrameElement>(null);
   const recent = useRef<number[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const targetKey = scopeKey(target);
   const documentQuery = useQuery({
-    queryKey: ['plugin-panel-document', pluginId, panelId],
-    queryFn: () => client.getPluginPanelDocument(pluginId, panelId),
+    queryKey: ['plugin-panel-document', pluginId, panelId, targetKey],
+    queryFn: () => client.getPluginPanelDocument(pluginId, panelId, target),
     staleTime: 60_000,
     retry: false,
   });

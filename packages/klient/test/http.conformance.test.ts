@@ -223,7 +223,7 @@ it('persona REST supports action suffixes and character-card import/export', asy
         expect((await recreatedService.sendHandoff(handoff)).messageId).toBe('handoff-receipt');
         await expect(recreatedService.sendHandoff({ ...handoff, idempotencyKey: 'new-call' })).rejects.toThrow('handoff limit');
         expect(send).toHaveBeenCalledTimes(2);
-      } finally { recreatedService.dispose(); }
+      } finally { await recreatedService.dispose(); }
     } finally { send.mockRestore(); }
     const rooms = klient.rest.rooms;
     const room = await rooms.create({ name: 'REST room', workspace: process.cwd(), members: [{ personaId: created.definition.id }, { personaId: imported.snapshot.definition.id }] });

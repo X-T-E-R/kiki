@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { Error2, ErrorCodes } from '#/errors';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -14,15 +15,17 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import './flag';
 import { detectFileType, MEDIA_SNIFF_BYTES } from './file-type';
-import { compressImageForModel, IMAGE_BYTE_BUDGET } from './image-compress';
 import {
-  buildMalformedImageNotice,
+  compressImageForModel,
+  IMAGE_BYTE_BUDGET,
+  validateImageDataUrl,
+} from './image-compress';
+import {
   buildUnsupportedImageNotice,
   decodeBase64Prefix,
   isDataUrl,
   isModelAcceptedImageMime,
   normalizeImageMime,
-  parseImageDataUrl,
   resolveEffectiveImageMime,
   unsupportedImageMimeFromUrl,
 } from './image-format-policy';
@@ -185,10 +188,14 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       requester,
       this.flags.enabled('image_format_conversion'),
     );
-    const parsed = parseImageDataUrl(part.imageUrl.url);
-    if (parsed === null) {
+    const validated = await validateImageDataUrl(part.imageUrl.url);
+    if (validated === null) {
       if (isDataUrl(part.imageUrl.url)) {
-        return { type: 'text', text: buildMalformedImageNotice(part.imageUrl.url) };
+        throw new Error2(
+          ErrorCodes.REQUEST_INVALID,
+          'The image attachment has an incomplete or invalid base64 data URL. Reattach the original image and retry.',
+          { details: { mediaType: 'image', urlLength: part.imageUrl.url.length } },
+        );
       }
       const unsupported = unsupportedImageMimeFromUrl(
         part.imageUrl.url,
@@ -207,15 +214,15 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       };
     }
     const mimeType = normalizeImageMime(
-      resolveEffectiveImageMime(parsed.mimeType, decodeBase64Prefix(parsed.base64)),
+      resolveEffectiveImageMime(validated.mimeType, decodeBase64Prefix(validated.base64)),
     );
     if (isModelAcceptedImageMime(mimeType, requester.model.providerType, policy.acceptedTypes)) {
-      const url = `data:${mimeType};base64,${parsed.base64}`;
+      const url = `data:${mimeType};base64,${validated.base64}`;
       return url === part.imageUrl.url
         ? part
         : { type: 'image_url', imageUrl: { ...part.imageUrl, url } };
     }
-    const source = Buffer.from(parsed.base64, 'base64');
+    const source = validated.bytes;
     const resolved = await prepareImageBytes(
       source,
       mimeType,

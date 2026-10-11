@@ -3,6 +3,8 @@ import { Emitter, type Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { IHostProcessService } from '#/os/interface/hostProcess';
 
 import { HOOKS_SECTION, legacyHooks, type HooksConfig } from '../configSection';
@@ -31,6 +33,8 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     @IPluginService private readonly plugins: IPluginService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IHostProcessService private readonly hostProcess: IHostProcessService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
+    @ISessionIndex private readonly sessions?: ISessionIndex,
     private readonly callbacks: HookRunCallbacks = {},
   ) {
     super();
@@ -91,6 +95,17 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     await this.ready;
     if (!this.hasSuccessfulSnapshot) throw this.loadFailure;
     let byEvent = this.byEvent;
+    if (this.usage?.enabled() && args.sessionId !== undefined && this.sessions !== undefined && (byEvent.get(event) ?? []).some((entry) => entry.hook.pluginId !== undefined)) {
+      const session = await this.sessions.get(args.sessionId);
+      const workspaceId = session?.workspaceId;
+      const hooks = await Promise.all((byEvent.get(event) ?? []).map(async (indexed) =>
+        indexed.hook.pluginId === undefined || workspaceId !== undefined && await this.usage!.allows(
+          workspaceId,
+          indexed.hook.pluginId,
+          args.sessionId,
+        ) ? indexed : undefined));
+      byEvent = new Map([[event, hooks.filter((indexed) => indexed !== undefined)]]);
+    }
     if (args.additionalHooks !== undefined) {
       const additional = indexHooks(await args.additionalHooks());
       byEvent = new Map([[event, [...byEvent.get(event) ?? [], ...additional.get(event) ?? []]]]);
@@ -130,7 +145,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   private async load(): Promise<void> {
     await this.config.ready;
     const configured = this.config.get<HooksConfig>(HOOKS_SECTION);
-    const pluginHooks = await this.plugins.enabledHooks();
+    const pluginHooks = await this.plugins.enabledHooks('*');
     this.byEvent = indexHooks([...legacyHooks(configured), ...pluginHooks]);
     this.hasSuccessfulSnapshot = true;
     this.loadFailure = undefined;

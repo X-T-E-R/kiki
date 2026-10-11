@@ -12,6 +12,9 @@ import {
 import { createScopedTestHost, stubPair, type ScopedTestHost } from '#/_base/di/test';
 import { Emitter, Event } from '#/_base/event';
 import { IEventBus } from '#/app/event/eventBus';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { goalKey, GoalUpdated } from '#/agent/goal/goalOps';
 import type { Event2, Event2Class } from '#/app/event/event2';
 import {
   AgentActivityUpdated,
@@ -51,7 +54,7 @@ class FakeBus implements IEventBus {
           ? { type: (arg1 as Event2Class).type, fn: arg2 as (event: Event2) => void }
           : { fn: arg1 as (event: Event2) => void };
     this.handlers.add(entry);
-    return { dispose: () => this.handlers.delete(entry) };
+    return { dispose: () => { this.handlers.delete(entry); } };
   }
 }
 
@@ -61,6 +64,7 @@ class FakeAgentHandle {
   readonly state = new AgentStateService();
   activity: AgentActivityState = { lifecycle: 'ready', background: [] };
   private readonly view = { state: () => this.activity };
+  readonly services = new Map<unknown, unknown>();
   readonly accessor;
 
   constructor(readonly id: string) {
@@ -69,7 +73,7 @@ class FakeAgentHandle {
         if (token === IEventBus) return this.bus;
         if (token === IAgentActivityView) return this.view;
         if (token === IAgentStateService) return this.state;
-        return undefined;
+        return this.services.get(token);
       },
     };
   }
@@ -183,9 +187,9 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     lifecycle = session.accessor.get(IAgentLifecycleService) as unknown as FakeAgentLifecycle;
   });
 
-  afterEach(() => {
-    disposables.dispose();
-    host.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
+    await host.dispose();
   });
 
   function viewWithChanges(): {
@@ -364,5 +368,34 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
 
     expect(view.state().busy).toBe(true);
     expect(changes.at(-1)?.cause).toBe('turn_started');
+  });
+
+  it('keeps the inbox busy through finite result delivery, goal turn gaps and loop finalization, not resident services', async () => {
+    const main = lifecycle.addAgent(MAIN_AGENT_ID);
+    let unfinished = true;
+    const loop = { state: 'idle', finalizing: false, hasPendingRequests: false, pendingTurnIds: [] };
+    main.services.set(IAgentTaskService, { hasUnfinishedWork: () => unfinished });
+    main.services.set(IAgentLoopService, { status: () => loop, settled: async () => {} });
+    main.state.contributeState(goalKey);
+    const { view, changes } = viewWithChanges();
+    main.activity = turnEnded(1, 'completed');
+    main.emitActivity();
+    expect(view.state()).toMatchObject({ busy: true, mainTurnActive: false });
+    unfinished = false;
+    main.state.set(goalKey, { goalId: 'goal-example', objective: 'Finish the work', status: 'active',
+      followUpTiming: 'subagents_done', controlRevision: 1, turnsUsed: 1, tokensUsed: 0, wallClockMs: 0, budgetLimits: {} });
+    main.bus.publish(new GoalUpdated({ snapshot: null }));
+    await Promise.resolve();
+    expect(view.state().busy).toBe(true);
+    main.state.set(goalKey, null);
+    loop.finalizing = true;
+    main.bus.publish(new GoalUpdated({ snapshot: null }));
+    await Promise.resolve();
+    expect(view.state().busy).toBe(true);
+    loop.finalizing = false;
+    main.activity = { ...main.activity, background: [{ kind: 'process', id: 'resident-service', since: 0 }] };
+    main.emitActivity();
+    expect(view.state().busy).toBe(false);
+    expect(changes.filter((change) => !change.state.busy)).toHaveLength(1);
   });
 });

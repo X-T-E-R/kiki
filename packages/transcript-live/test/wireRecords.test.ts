@@ -297,6 +297,41 @@ describe('streamWireRecords', () => {
     });
   });
 
+  it('keeps an absolute watermark across awaited batches without treating it as an IO budget', async () => {
+    const records = Array.from({ length: 260 }, (_, index) => ({ type: 'metadata', index, text: '中文' }));
+    const prefix = records.slice(0, 256).map((record) => `${JSON.stringify(record)}\n`).join('');
+    const raw = records.map((record) => `${JSON.stringify(record)}\n`).join('');
+    await withWireFile(raw, async (wirePath) => {
+      const streamed: ContextRecord[] = [];
+      const result = await streamWireRecordsAwaited(wirePath, {
+        endByteOffset: Buffer.byteLength(prefix), maxBytes: 1 << 20, chunkBytes: 64 << 10,
+        onRecord: async (record) => { streamed.push(record); },
+      });
+      expect(streamed).toEqual(records.slice(0, 256));
+      expect(result).toMatchObject({ recordCount: 256, nextByteOffset: Buffer.byteLength(prefix), complete: true });
+      expect(result.bytesRead).toBeGreaterThan(Buffer.byteLength(prefix));
+      expect(result.bytesRead).toBeLessThanOrEqual(1 << 20);
+      expect(await readWireRecords(wirePath)).toEqual(records);
+    });
+  });
+
+  it('reports a captured partial record instead of consuming a completed suffix beyond its watermark', async () => {
+    const first = '{"type":"metadata","index":0}\n';
+    const second = '{"type":"metadata","index":1}\n';
+    await withWireFile(first + second, async (wirePath) => {
+      const records: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, {
+        endByteOffset: Buffer.byteLength(first) + 8,
+        onRecord: (record) => { records.push(record); },
+      });
+      expect(records).toEqual([{ type: 'metadata', index: 0 }]);
+      expect(result).toMatchObject({ complete: false, incompleteReason: 'partial_tail',
+        nextByteOffset: Buffer.byteLength(first), bytesRead: Buffer.byteLength(first) + 8 });
+      await expect(streamWireRecords(wirePath, { startByteOffset: 20, endByteOffset: 10,
+        onRecord: () => undefined })).rejects.toThrow('invalid wire end offset');
+    });
+  });
+
   it.each([1, 2, 4])('[STAT-R3] stops at the byte budget without emitting a truncated record (%i)', async (extraBytes) => {
     const first = { type: 'metadata', index: 0 };
     const padded = `${JSON.stringify({ type: 'metadata', index: 9 })}${' '.repeat(64)}`;

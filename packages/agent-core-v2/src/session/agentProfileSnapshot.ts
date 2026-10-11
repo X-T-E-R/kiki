@@ -20,7 +20,7 @@ import { LlmRequest, promptRequestEvidence } from '#/agent/llmRequester/llmReque
 
 type PersistedProfileFields = Pick<ProfileModelState,
   'personaId' | 'personaRevision' | 'personaOverrides' | 'persona' | 'roomPrompt' |
-  'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
+  'execution' | 'modelAlias' | 'profileName' | 'profileDefinitionId' | 'routeId' |
   'lockedModelAlias' | 'lockedThinkingEffort' | 'executionRestriction' |
   'allowParentNotify' | 'executorId' | 'executorProtocol' | 'thinkingLevel' | 'thinkingEffortExplicit' | 'thinkingEffortAdjusted' |
   'bindingAdvisories' | 'serviceTier' | 'toolAllowPolicies' | 'disallowedTools' | 'disabledToolGroups' |
@@ -158,6 +158,7 @@ async function scanPersistedAgentProfileSnapshot(
   const toolPolicy = effectiveToolBinding({ tools: activeToolNames, toolAllowPolicies: state.toolAllowPolicies, disallowedTools: state.disallowedTools }, state.toolOverride, state.boundProfile);
   return {
     source: 'wire',
+    execution: state.execution,
     toolOverride: state.toolOverride,
     memoryReadContext: state.memoryReadContext,
     personaId: state.personaId,
@@ -222,6 +223,7 @@ function cachePersistedAgentProfile(
 function persistedMetadataKey(metadata: AgentMeta | undefined): string {
   return JSON.stringify([
     subagentProfileName(metadata),
+    metadata?.execution,
     metadata?.model,
     metadata?.thinkingEffort,
     metadata?.thinkingEffortExplicit,
@@ -234,6 +236,7 @@ function metadataSnapshot(metadata: AgentMeta | undefined): PersistedAgentProfil
   if (metadata === undefined) return undefined;
   return {
     source: 'metadata',
+    execution: metadata.execution,
     profileName: subagentProfileName(metadata),
     modelAlias: metadata.model,
     thinkingLevel: metadata.thinkingEffort,

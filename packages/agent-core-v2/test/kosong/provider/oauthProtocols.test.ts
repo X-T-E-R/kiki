@@ -77,7 +77,7 @@ async function requestFromConfig(
       headers: { ...projection.headers, ...options.headers }, cacheKey: projection.cacheKey, requestIdentity: projection.wire,
     })) events.push(event);
     return events;
-  } finally { host.dispose(); }
+  } finally { await host.dispose(); }
 }
 
 function responseStream(): Response {

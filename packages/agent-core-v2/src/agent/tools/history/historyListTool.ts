@@ -44,6 +44,7 @@ export interface HistoryDirectoryCursor {
   readonly request: HistoryDirectoryCursorRequest;
   readonly afterTurn?: number;
   readonly afterAgent?: { readonly time?: string; readonly agentId: string };
+  readonly preparation?: { readonly offset: number; readonly incarnation: string };
 }
 
 export interface HistoryDirectoryRequest extends HistoryDirectoryCursorRequest {
@@ -159,6 +160,11 @@ export function decodeHistoryDirectoryCursor(value: string): HistoryDirectoryCur
   if (cursor.afterTurn !== undefined && (!Number.isSafeInteger(cursor.afterTurn) || cursor.afterTurn < 0)) {
     throw new Error('Invalid HistoryList cursor; restart with {kind:"turns"}.');
   }
+  if (cursor.preparation !== undefined && (normalized.kind !== 'turns' || cursor.afterTurn !== undefined ||
+      !Number.isSafeInteger(cursor.preparation?.offset) || cursor.preparation.offset < 0 ||
+      typeof cursor.preparation.incarnation !== 'string' || !cursor.preparation.incarnation)) {
+    throw new Error('Invalid HistoryList preparation cursor; restart with {kind:"turns"}.');
+  }
   if ((normalized.kind === 'turns' && afterAgent !== undefined) ||
       (normalized.kind === 'agents' && cursor.afterTurn !== undefined)) {
     throw new Error('Invalid HistoryList cursor; restart with {kind:"turns"}.');
@@ -186,7 +192,7 @@ function cursorInputMismatch(input: HistoryListInput, cursor: HistoryDirectoryCu
 export class HistoryListTool implements IHistoryListTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'HistoryList' as const;
-  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Use before_turn or after_turn for a known range, at for a timestamp, and kind=agents to discover archived agents. Entries omit tool bodies and include coverage plus a ref when available; pass only cursor to continue. For currently owned child executions, use AgentList.';
+  readonly description = 'Browse a compact transcript directory when you do not know a turn number or useful search words. Defaults to this session and this agent, newest first. Use before_turn or after_turn for a known range, at for a timestamp, and kind=agents to discover archived agents. Entries omit tool bodies and include coverage plus a ref when available. Pass only cursor to continue, including partial navigation preparation; an empty partial page is not an empty directory. For currently owned child executions, use AgentList.';
   readonly parameters = toInputJsonSchema(HistoryListInputSchema, (schema) => {
     schema['allOf'] = [
       {

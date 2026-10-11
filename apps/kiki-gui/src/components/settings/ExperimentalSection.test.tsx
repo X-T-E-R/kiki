@@ -66,6 +66,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   query.clear();
+  localStorage.removeItem('kiki.locale');
 });
 
 describe('ExperimentalRows', () => {
@@ -102,20 +103,57 @@ describe('ExperimentalRows', () => {
     expect(row.textContent).toContain('Server-specific feature');
   });
 
-  it('names the two shipped feature flags instead of the server-specific fallback', async () => {
-    client.meta.mockResolvedValue({
-      experimental_flags: { usage_export: false, plugin_import: false, vendor_extension: true },
-    });
+  it.each(['en', 'zh'] as const)('renders new builtins on their owning pages without unknown copy (%s)', async (locale) => {
+    localStorage.setItem('kiki.locale', locale);
+    const flags = ['recipes', 'plugin_workspace_usage', 'plugin_app_lifecycle', 'work_presets', 'external_clients'];
+    client.getConfig.mockResolvedValue({ experimental: {} });
+    client.meta.mockResolvedValue({ experimental_flags: Object.fromEntries([...flags, 'vendor_extension'].map((id) => [id, true])) });
+    const names = locale === 'en'
+      ? ['Model Recipes', 'Workspace plugin selection', 'App plugin services', 'Space work modes', 'External MCP clients']
+      : ['模型 Recipe', '工作区插件选择', '应用级插件服务', '空间工作模式', '外部 MCP 客户端'];
+    const sections = ['ai', 'plugins', 'plugins', 'spaces', 'external-clients'];
+    for (const [index, id] of flags.entries()) {
+      await render(sections[index]!);
+      const row = container.querySelector(`[data-experimental-row="${id}"]`)!;
+      expect(row).not.toBeNull();
+      expect(row.textContent).toContain(names[index]);
+      expect(row.textContent).not.toContain(locale === 'en' ? 'Server-specific feature' : '此服务器特有的功能');
+      expect(row.querySelector('[data-experimental-choice="default"]')?.getAttribute('aria-pressed')).toBe('true');
+      expect(row.querySelector('[data-experimental-choice="default"]')?.textContent).toBe(locale === 'en' ? 'Default (on)' : '默认（开启）');
+    }
     await render('developer');
-    const exportRow = container.querySelector('[data-experimental-row="usage_export"]')!;
-    expect(exportRow.textContent).toContain('Send usage to other tools');
-    expect(exportRow.textContent).toContain('Turning it on needs a server restart.');
-    const importRow = container.querySelector('[data-experimental-row="plugin_import"]')!;
-    expect(importRow.textContent).toContain('Import history from other tools');
-    expect(importRow.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
-    // A flag nobody claims still lands on the same page under the fallback name.
+    for (const id of flags) expect(container.querySelector(`[data-experimental-row="${id}"]`)).toBeNull();
+    expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
+      .toContain(locale === 'en' ? 'Server-specific feature' : '此服务器特有的功能');
+    localStorage.removeItem('kiki.locale');
+  });
+
+  it.each([true, false])('does not recreate a retired usage export switch from saved config (%s)', async (value) => {
+    client.getConfig.mockResolvedValue({ experimental: { usage_export: value, vendor_extension: false } });
+    client.meta.mockResolvedValue({ experimental_flags: { usage_export: value, plugin_import: false, vendor_extension: true } });
+    await render('developer');
+    expect(container.querySelector('[data-experimental-row="usage_export"]')).toBeNull();
+    expect(container.querySelector('[data-experimental-row="plugin_import"]')?.textContent)
+      .not.toContain('Import history from other tools');
     expect(container.querySelector('[data-experimental-row="vendor_extension"]')?.textContent)
       .toContain('Server-specific feature');
+  });
+
+  it('names local session continuation on Sessions and applies the choice on the next attachment', async () => {
+    client.meta.mockResolvedValue({ experimental_flags: { local_session_resume: true, vendor_extension: true } });
+    await render('sessions');
+    const row = container.querySelector('[data-experimental-row="local_session_resume"]')!;
+    expect(row.textContent).toContain('Continue local external sessions');
+    expect(row.textContent).toContain('Continue existing Claude Code and Codex sessions on this machine.');
+    expect(row.textContent).not.toContain('Server-specific feature');
+    expect(row.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-experimental-choice="off"]')!.click(); });
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith({ experimental: { task_wait: true, local_session_resume: false }, replace_domains: ['experimental'] });
+    expect(restartRequirementSnapshot().required).toBe(false);
+    await render('developer');
+    expect(container.querySelector('[data-experimental-row="local_session_resume"]')).toBeNull();
+    expect(container.querySelector('[data-experimental-row="vendor_extension"]')).not.toBeNull();
   });
 
   it('marks a restart when a restart-only flag is turned on', async () => {
@@ -135,6 +173,18 @@ describe('ExperimentalRows', () => {
     await act(async () => { again.click(); });
     await flush();
     expect(restartRequirementSnapshot().fields).toContain('search_worker');
+  });
+
+  it.each([true, false])('marks a restart only when restoring Default resolves on (%s)', async (enabled) => {
+    client.getConfig.mockResolvedValue({ experimental: { external_clients: false } });
+    client.meta.mockResolvedValueOnce({ experimental_flags: { external_clients: false } })
+      .mockResolvedValue({ experimental_flags: { external_clients: enabled } });
+    await render('external-clients');
+    const button = container.querySelector<HTMLButtonElement>('[data-experimental-row="external_clients"] [data-experimental-choice="default"]')!;
+    await act(async () => { button.click(); });
+    await flush();
+    expect(client.patchConfig).toHaveBeenCalledWith({ experimental: {}, replace_domains: ['experimental'] });
+    expect(restartRequirementSnapshot().required).toBe(enabled);
   });
 
   it('rolls the choice back and explains the failure when the save fails', async () => {

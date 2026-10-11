@@ -39,7 +39,7 @@ export function runningSubagentStatus(
     if (handle.id === excludedAgentId) continue;
     if (handle.accessor.get(IAgentScopeContext).parentAgentId !== parentAgentId) continue;
     const state = handle.accessor.get(IAgentExecutionService).status().state;
-    if (state === 'broken') running.delete(handle.id);
+    if (state === 'broken' || state === 'closed') running.delete(handle.id);
     else if (state !== 'idle') running.set(handle.id, running.get(handle.id) ?? handle.id);
   }
   if (running.size === 0) return undefined;

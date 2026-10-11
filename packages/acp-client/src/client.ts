@@ -1,4 +1,3 @@
-import { StringDecoder } from 'node:string_decoder';
 import { Readable, Transform, Writable } from 'node:stream';
 
 import {
@@ -11,12 +10,14 @@ import {
   type ClientConnection,
   type InitializeRequest,
   type NewSessionRequest,
+  type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionConfigOption,
   type SetSessionConfigOptionRequest,
 } from '@agentclientprotocol/sdk';
+import { z } from 'zod';
 
-import { AsyncQueue } from '#/async-queue';
+import { AsyncQueue, type AsyncQueueReservation } from '#/async-queue';
 import { AcpClientError, AcpClientErrorCode, AcpProtocolError } from '#/errors';
 import {
   mapAcpSessionNotification,
@@ -43,12 +44,19 @@ import type {
   HostProcessServiceLike,
 } from '#/types';
 
+const permissionToolKind = z.enum([
+  'read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other',
+]).nullish();
+const permissionToolLocations = z.array(z.object({
+  path: z.string(),
+  line: z.number().nullish(),
+  _meta: z.record(z.string(), z.unknown()).nullish(),
+}).passthrough()).nullish();
+
 const DEFAULT_STARTUP_TIMEOUT_MS = 70_000;
 const DEFAULT_CANCEL_GRACE_MS = 3_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3_000;
 const DEFAULT_STDERR_MAX_BYTES = 64 * 1024;
-const MAX_NDJSON_FRAME_BYTES = 1024 * 1024;
-const MAX_STDOUT_BUFFER_BYTES = 1024 * 1024;
 const MAX_EVENT_BACKLOG = 1024;
 const SESSION_REF_VERSION = 1;
 const UNKNOWN_UPDATE_METHOD = '_kiki/session_update_unknown';
@@ -70,6 +78,7 @@ const KNOWN_UPDATE_TYPES = new Set([
 
 interface ActiveTurn {
   readonly queue: AsyncQueue<NormalizedExecutorEvent>;
+  readonly toolCalls: Map<string, Pick<RequestPermissionRequest['toolCall'], 'kind' | 'locations'>>;
   readonly requestController: AbortController;
   readonly signal: AbortSignal;
   readonly settled: Promise<void>;
@@ -85,14 +94,59 @@ interface OpenResponse {
   readonly availableModes?: readonly string[];
 }
 
-class ValidatedNdjsonInput extends Transform {
-  readonly #decoder = new StringDecoder('utf8');
-  readonly #onProtocolError: (error: AcpProtocolError) => void;
-  #buffer = '';
+class LineBuffer {
+  readonly #pending: Uint8Array[] = [];
 
-  constructor(onProtocolError: (error: AcpProtocolError) => void) {
+  push(chunk: Uint8Array): Uint8Array[] {
+    const lines: Uint8Array[] = [];
+    let start = 0;
+    let newline = chunk.indexOf(0x0a, start);
+    while (newline !== -1) {
+      lines.push(this.#takeLine(chunk.subarray(start, newline)));
+      start = newline + 1;
+      newline = chunk.indexOf(0x0a, start);
+    }
+    if (start < chunk.byteLength) {
+      this.#pending.push(start === 0 ? chunk : new Uint8Array(chunk.subarray(start)));
+    }
+    return lines;
+  }
+
+  flush(): Uint8Array | undefined {
+    if (this.#pending.length === 0) return undefined;
+    return this.#takeLine(new Uint8Array(0));
+  }
+
+  #takeLine(tail: Uint8Array): Uint8Array {
+    if (this.#pending.length === 0) return tail;
+    let total = tail.byteLength;
+    for (const part of this.#pending) total += part.byteLength;
+    const line = new Uint8Array(total);
+    let offset = 0;
+    for (const part of this.#pending) {
+      line.set(part, offset);
+      offset += part.byteLength;
+    }
+    line.set(tail, offset);
+    this.#pending.length = 0;
+    return line;
+  }
+}
+
+class ValidatedNdjsonInput extends Transform {
+  readonly #decoder = new TextDecoder();
+  readonly #lines = new LineBuffer();
+  readonly #onProtocolError: (error: AcpProtocolError) => void;
+  readonly #beforeFrame: ((line: string) => Promise<void>) | undefined;
+  #callback: ((error?: Error | null) => void) | undefined;
+
+  constructor(
+    onProtocolError: (error: AcpProtocolError) => void,
+    beforeFrame?: (line: string) => Promise<void>,
+  ) {
     super();
     this.#onProtocolError = onProtocolError;
+    this.#beforeFrame = beforeFrame;
   }
 
   override _transform(
@@ -100,71 +154,56 @@ class ValidatedNdjsonInput extends Transform {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    try {
-      this.#consume(typeof chunk === 'string' ? chunk : this.#decoder.write(chunk));
-      callback();
-    } catch (error) {
-      const protocolError =
-        error instanceof AcpProtocolError
-          ? error
-          : new AcpProtocolError('ACP stdout contained malformed NDJSON', {
-              cause: error,
-            });
-      this.#onProtocolError(protocolError);
-      callback(protocolError);
-    }
+    this.#callback = callback;
+    void this.#consume(typeof chunk === 'string' ? Buffer.from(chunk) : chunk).then(
+      () => this.#finishTransform(),
+      (error: unknown) => this.#failTransform(error, 'ACP stdout contained malformed NDJSON'),
+    );
   }
 
   override _flush(callback: (error?: Error | null) => void): void {
-    try {
-      this.#consume(this.#decoder.end());
-      if (this.#buffer.trim().length > 0) {
-        this.#assertFrameSize(this.#buffer);
-        this.push(this.#validatedLine(this.#buffer));
-      }
-      this.#buffer = '';
-      callback();
-    } catch (error) {
-      const protocolError =
-        error instanceof AcpProtocolError
-          ? error
-          : new AcpProtocolError('ACP stdout ended with malformed NDJSON', {
-              cause: error,
-            });
-      this.#onProtocolError(protocolError);
-      callback(protocolError);
+    this.#callback = callback;
+    void this.#finish().then(
+      () => this.#finishTransform(),
+      (error: unknown) => this.#failTransform(error, 'ACP stdout ended with malformed NDJSON'),
+    );
+  }
+
+  async #finish(): Promise<void> {
+    await this.#consume(new Uint8Array(0));
+    const tail = this.#lines.flush();
+    if (tail === undefined) return;
+    await this.#emitLine(this.#decoder.decode(tail), false);
+  }
+
+  async #consume(value: Uint8Array): Promise<void> {
+    for (const line of this.#lines.push(value)) {
+      await this.#emitLine(this.#decoder.decode(line), true);
     }
   }
 
-  #consume(value: string): void {
-    let offset = 0;
-    let newline = value.indexOf('\n', offset);
-    while (newline >= 0) {
-      this.#append(value.slice(offset, newline));
-      const line = this.#buffer;
-      this.#buffer = '';
-      this.#assertFrameSize(line);
-      this.push(`${this.#validatedLine(line)}\n`);
-      offset = newline + 1;
-      newline = value.indexOf('\n', offset);
-    }
-    this.#append(value.slice(offset));
+  async #emitLine(line: string, terminated: boolean): Promise<void> {
+    const validated = this.#validatedLine(line);
+    const output = terminated ? `${validated}\n` : validated;
+    await this.#beforeFrame?.(output);
+    this.push(output);
   }
 
-  #append(value: string): void {
-    if (
-      Buffer.byteLength(this.#buffer, 'utf8') + Buffer.byteLength(value, 'utf8') >
-      MAX_STDOUT_BUFFER_BYTES
-    ) {
-      throw new AcpProtocolError('ACP stdout pending buffer exceeded the protocol limit');
-    }
-    this.#buffer += value;
+  #finishTransform(): void {
+    const callback = this.#callback;
+    this.#callback = undefined;
+    callback?.();
   }
 
-  #assertFrameSize(line: string): void {
-    if (Buffer.byteLength(line, 'utf8') > MAX_NDJSON_FRAME_BYTES) {
-      throw new AcpProtocolError('ACP NDJSON frame exceeded the protocol limit');
-    }
+  #failTransform(error: unknown, message: string): void {
+    const protocolError =
+      error instanceof AcpProtocolError
+        ? error
+        : new AcpProtocolError(message, { cause: error });
+    this.#onProtocolError(protocolError);
+    const callback = this.#callback;
+    this.#callback = undefined;
+    callback?.(protocolError);
   }
 
   #validatedLine(line: string): string {
@@ -245,12 +284,17 @@ export class AcpProcessClient {
   #state: AcpClientState = 'cold';
   #openingMode: Exclude<AcpSessionOpenMode, 'live'> | undefined;
   #process: HostProcessLike | undefined;
+  readonly #exitedProcesses = new Set<HostProcessLike>();
   #connection: ClientConnection | undefined;
   #capabilities: AgentCapabilities = {};
   #openResult: AcpOpenSessionResult | undefined;
   #observedModeId: string | undefined;
   #modeWaiter: ((mode: string) => void) | undefined;
   #activeTurn: ActiveTurn | undefined;
+  #pendingEventReservations: Array<{
+    readonly active: ActiveTurn;
+    readonly reservation: AsyncQueueReservation<NormalizedExecutorEvent>;
+  }> = [];
   #startupInFlight = false;
   #loadReplayCount = 0;
   #protocolFailure: AcpProtocolError | undefined;
@@ -387,7 +431,7 @@ export class AcpProcessClient {
             options.signal,
           );
           if (this.#observedModeId === undefined) {
-            await Promise.race([observed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
+            await Promise.race([observed, new Promise<void>((resolve) => { setTimeout(resolve, 500); })]);
           }
         } finally {
           this.#modeWaiter = undefined;
@@ -506,6 +550,7 @@ export class AcpProcessClient {
     });
     const active: ActiveTurn = {
       queue,
+      toolCalls: new Map(),
       requestController,
       signal: request.signal,
       settled,
@@ -559,6 +604,7 @@ export class AcpProcessClient {
               ? this.#disconnectError('ACP connection closed during prompt', error)
               : this.#decorateError(error, AcpClientErrorCode.ProtocolError);
         queue.fail(failure);
+        this.#releasePendingEventReservations(active);
         if (this.#state === 'prompting') this.#setState('broken');
         throw failure;
       } finally {
@@ -697,10 +743,13 @@ export class AcpProcessClient {
       });
     });
 
-    const validatedInput = new ValidatedNdjsonInput((error) => {
-      this.#protocolFailure = error;
-      this.#connection?.close(error);
-    });
+    const validatedInput = new ValidatedNdjsonInput(
+      (error) => {
+        this.#protocolFailure = error;
+        this.#connection?.close(error);
+      },
+      (line) => this.#reserveEventFrame(line),
+    );
     child.stdout.pipe(validatedInput);
     const app = client({ name: this.#descriptor.clientName ?? 'kiki-acp-client' });
     app.onNotification(methods.client.session.update, ({ params }) => {
@@ -708,7 +757,7 @@ export class AcpProcessClient {
     });
     if (this.#descriptor.id === 'grok-acp') {
       for (const method of ['_x.ai/session_notification', '_x.ai/session/update']) {
-        app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params); });
+        app.onNotification<unknown>(method, (params) => params, ({ params }) => { this.#handleSessionUpdate(params, method); });
       }
     }
     app.onNotification<unknown>(
@@ -728,7 +777,12 @@ export class AcpProcessClient {
           ? context.signal
           : AbortSignal.any([context.signal, this.#activeTurn.signal]);
       try {
-        const decision = await handler(context.params, {
+        const facts = context.params.sessionId === this.#openResult?.sessionId
+          ? this.#activeTurn?.toolCalls.get(context.params.toolCall.toolCallId) : undefined;
+        const request = { ...context.params, toolCall: { ...context.params.toolCall,
+          kind: context.params.toolCall.kind === undefined ? facts?.kind : context.params.toolCall.kind,
+          locations: context.params.toolCall.locations === undefined ? facts?.locations : context.params.toolCall.locations } };
+        const decision = await handler(request, {
           signal,
           options: context.params.options,
         });
@@ -1016,25 +1070,63 @@ export class AcpProcessClient {
     return undefined;
   }
 
-  #handleSessionUpdate(params: unknown): void {
+  async #reserveEventFrame(line: string): Promise<void> {
+    let message: Record<string, unknown>;
     try {
-      const mapped = mapAcpSessionNotification(params);
+      const value = JSON.parse(line) as unknown;
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
+      message = value as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const method = message['method'];
+    if (typeof method !== 'string' || !this.#isEventMethod(method)) return;
+    const active = this.#activeTurn;
+    if (active === undefined || (this.#state === 'opening_session' && this.#openingMode === 'load')) return;
+    const reservation = await active.queue.reserve();
+    this.#pendingEventReservations.push({ active, reservation });
+  }
+
+  #isEventMethod(method: string): boolean {
+    return method === methods.client.session.update ||
+      method === UNKNOWN_UPDATE_METHOD ||
+      this.#descriptor.id === 'grok-acp' &&
+        (method === '_x.ai/session_notification' || method === '_x.ai/session/update');
+  }
+
+  #handleSessionUpdate(params: unknown, method = 'session/update'): void {
+    const pending = this.#pendingEventReservations.shift();
+    try {
+      const mapped = mapAcpSessionNotification(params, method);
       if (mapped.event.type === 'mode.update' && mapped.sessionId === this.#openResult?.sessionId) {
         this.#observedModeId = mapped.event.currentModeId;
         this.#modeWaiter?.(mapped.event.currentModeId);
       }
       if (this.#state === 'opening_session' && this.#openingMode === 'load') {
+        pending?.reservation.release();
         this.#loadReplayCount += 1;
         return;
       }
-      const active = this.#activeTurn;
+      const active = pending?.active ?? this.#activeTurn;
       if (
         active !== undefined &&
+        (pending?.active === active || active === this.#activeTurn) &&
         mapped.sessionId === this.#openResult?.sessionId
       ) {
-        active.queue.push(mapped.event);
+        if (mapped.event.type === 'tool.call' || mapped.event.type === 'tool.update') {
+          const previous = active.toolCalls.get(mapped.event.toolCallId);
+          active.toolCalls.set(mapped.event.toolCallId, {
+            kind: mapped.event.kind === undefined ? previous?.kind : permissionToolKind.safeParse(mapped.event.kind).data,
+            locations: mapped.event.locations === undefined ? previous?.locations : permissionToolLocations.safeParse(mapped.event.locations).data,
+          });
+        }
+        if (pending?.active === active) pending.reservation.commit(mapped.event);
+        else active.queue.push(mapped.event);
+        return;
       }
+      pending?.reservation.release();
     } catch (error) {
+      pending?.reservation.release();
       const protocolError =
         error instanceof AcpProtocolError
           ? error
@@ -1043,6 +1135,15 @@ export class AcpProcessClient {
             });
       this.#protocolFailure = protocolError;
       this.#connection?.close(protocolError);
+    }
+  }
+
+  #releasePendingEventReservations(active?: ActiveTurn): void {
+    for (let index = this.#pendingEventReservations.length - 1; index >= 0; index -= 1) {
+      const pending = this.#pendingEventReservations[index];
+      if (active !== undefined && pending?.active !== active) continue;
+      pending?.reservation.release();
+      this.#pendingEventReservations.splice(index, 1);
     }
   }
 
@@ -1118,6 +1219,8 @@ export class AcpProcessClient {
         if (this.#process !== child) return;
         this.#process = undefined;
         if (this.#intentionalExit.has(child) || this.#state === 'closing') return;
+        this.#exitedProcesses.add(child);
+        if (exitCode === 0) return;
         this.#connection?.close(
           new AcpClientError(
             AcpClientErrorCode.Disconnected,
@@ -1141,6 +1244,7 @@ export class AcpProcessClient {
 
   #observeConnection(connection: ClientConnection): void {
     void connection.closed.then(() => {
+      void this.#disposeExitedProcesses();
       if (this.#connection !== connection) return;
       this.#connection = undefined;
       if (this.#state === 'closing' || this.#state === 'closed') return;
@@ -1152,6 +1256,21 @@ export class AcpProcessClient {
     });
   }
 
+  async #disposeExitedProcesses(): Promise<void> {
+    const processes = [...this.#exitedProcesses];
+    this.#exitedProcesses.clear();
+    for (const child of processes) {
+      try {
+        await child.dispose();
+      } catch (error) {
+        this.#options.logger?.warn?.('Failed to dispose exited ACP process', {
+          pid: child.pid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   async #cleanupTransport(closeState: boolean): Promise<void> {
     try {
       this.#connection?.close();
@@ -1159,6 +1278,8 @@ export class AcpProcessClient {
       try {
         await this.#terminateCurrentProcess();
       } finally {
+        await this.#disposeExitedProcesses();
+        this.#releasePendingEventReservations();
         this.#connection = undefined;
         this.#process = undefined;
         if (closeState) this.#setState('closed');

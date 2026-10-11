@@ -66,8 +66,9 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 
 ## Experimental Features
 
-- Gate a not-yet-public feature behind an experimental flag. Flags are env-driven and default off: `KIKI_EXPERIMENTAL_<NAME>` toggles one, `KIKI_EXPERIMENTAL_FLAG` enables all. Precedence is per-flag env > `[experimental]` config > master env > the flag's `default`. Release by flipping the entry's `default` to `true`.
-  - `packages/agent-core-v2` and kap-server modules: there is no central catalog — declare the flag in the owning domain via `registerFlagDefinition` at import time (see `packages/agent-core-v2/docs/flag.md`), then check it with `IFlagService.enabled(id)`. Current search-index-separation flags: `persistence_minidb_readmodel` (session read model, default on) and `search_worker` (global search worker host, default on).
+- Product features are available by default, including new features. Use an experimental flag only for a real rollout or rollback boundary; do not add another master gate to an ordinary feature that already has its own configuration. A `default: false` needs an explicit human requirement and its source, not a precaution about possible defects. Smoke-test and repair defects instead.
+- Availability does not authorize new external connections, plugin installation, or script execution. Preserve explicit user off choices, per-destination consent, and permission rules. Flag precedence remains per-flag env > `[experimental]` config > truthy master env > registry default; a falsy master env is unset, not a global off command.
+- Flag definitions remain distributed: declare them in the owning domain through `registerFlagDefinition` at import time, then use `IFlagService.enabled(id)` (see `packages/agent-core-v2/docs/flag.md`). Every built-in id also needs a Settings home, accurate application timing, and English/Chinese name and description in `packages/session-core`; the distributed-registration regression in `src/settings/settings.test.ts` must stay green. Unknown-server fallback is for extensions, not missing built-in copy.
 
 ## Where to Update Instructions
 

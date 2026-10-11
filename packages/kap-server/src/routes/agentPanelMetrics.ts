@@ -70,6 +70,7 @@ export interface PersistedAgentPanelMetricsOptions {
   readonly agentIds?: readonly string[];
   readonly skipAgentIds?: readonly string[];
   readonly mutableAgentIds?: readonly string[];
+  readonly mutableUsageRecords?: Readonly<Record<string, number>>;
   readonly limits?: Partial<PersistedAgentPanelMetricsLimits>;
 }
 
@@ -134,6 +135,11 @@ export async function readPersistedAgentPanelMetrics(
     : [...new Set(options.agentIds)];
   const wanted = requested.filter((agentId) => !skip.has(agentId));
   const mutable = new Set(options.mutableAgentIds ?? []);
+  const keyFor = (agentId: string) => {
+    const records = options.mutableUsageRecords?.[agentId];
+    const key = agentMetricsCacheKey(workspaceId, sessionId, agentId);
+    return records === undefined ? key : `${key}\0usage:${records}`;
+  };
   const liveSeenKey = `${workspaceId}\0${sessionId}`;
   const liveSeen = state.liveSeen.get(liveSeenKey) ?? new Set<string>();
   const liveNow = new Set([...skip, ...mutable]);
@@ -155,7 +161,7 @@ export async function readPersistedAgentPanelMetrics(
   const missing: string[] = [];
   const now = Date.now();
   for (const agentId of wanted) {
-    const cached = state.cache.get(agentMetricsCacheKey(workspaceId, sessionId, agentId));
+    const cached = state.cache.get(keyFor(agentId));
     if (cached !== undefined && cached.expiresAt > now) result.set(agentId, cached.metrics);
     else missing.push(agentId);
   }
@@ -165,7 +171,7 @@ export async function readPersistedAgentPanelMetrics(
     options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
   ].join(':');
-  const flightKey = `${workspaceId}\0${sessionId}\0${missing.toSorted().join('\0')}\0${limitsKey}`;
+  const flightKey = `${missing.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
   let flight = state.flights.get(flightKey);
   if (flight !== undefined) {
     flight.sharedWaiters += 1;
@@ -188,7 +194,7 @@ export async function readPersistedAgentPanelMetrics(
         const ttl = scanResult.budgetCapped || mutable.has(agentId)
           ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
           : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
-        cachePersistedMetrics(state, agentMetricsCacheKey(workspaceId, sessionId, agentId), {
+        cachePersistedMetrics(state, keyFor(agentId), {
           expiresAt: Date.now() + ttl,
           metrics,
         });
@@ -205,7 +211,7 @@ export async function readPersistedAgentPanelMetrics(
   const scanned = await waitForPersistedMetricsFlight(flight, options.signal);
   for (const agentId of missing) {
     const metrics = scanned.metrics[agentId]
-      ?? state.cache.get(agentMetricsCacheKey(workspaceId, sessionId, agentId))?.metrics
+      ?? state.cache.get(keyFor(agentId))?.metrics
       ?? toPersistedMetrics(emptyPersistedUsage(true));
     result.set(agentId, metrics);
   }

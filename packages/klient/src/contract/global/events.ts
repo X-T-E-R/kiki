@@ -48,8 +48,10 @@ export interface KlientEventPayloads {
   'kosong.providers.changed': ProvidersChangedEvent;
   'kosong.models.changed': ModelsChangedEvent;
   'plugins.reloaded': ReloadSummary;
+  'plugins.changed': Record<string, never>;
   'session.archived': SessionArchivedPayload;
   'session.metaUpdated': SessionMetaUpdatedPayload;
+  'usage.settled': { readonly sessionId?: string; readonly agentId?: string };
   'kosong.changed': CatalogChangedPayload;
   'search.indexStateChanged': z.infer<typeof searchIndexStateSchema>;
   'executors.antigravityInstallProgress': z.infer<typeof antigravityInstallProgressSchema>;
@@ -118,6 +120,10 @@ export const antigravityInstallProgressSchema = z.discriminatedUnion('stage', [
 
 /** Public event name → source binding + payload schema. */
 export const globalEvents = {
+  'usage.settled': {
+    kind: 'bus', type: 'event.usage.settled',
+    schema: z.object({ sessionId: z.string().optional(), agentId: z.string().optional() }),
+  },
   'room.changed': {
     kind: 'emitter', service: 'roomService', event: 'onDidChange', schema: roomChangeEventSchema,
   },
@@ -158,6 +164,9 @@ export const globalEvents = {
     service: 'pluginService',
     event: 'onDidReload',
     schema: reloadSummarySchema,
+  },
+  'plugins.changed': {
+    kind: 'bus', type: 'event.plugin.changed', schema: z.object({}).strict(),
   },
   'session.archived': {
     kind: 'bus',

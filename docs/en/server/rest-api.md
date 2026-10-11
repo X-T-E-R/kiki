@@ -146,9 +146,11 @@ The response uses schema version `1` with independent sources and meters. Each m
 | `GET /api/config` | Read the global config (secret fields redacted) |
 | `POST /api/config` | Merge-patch the config; broadcasts `event.config.changed` |
 
+Session-title prompt reads, read-only defaults and field-level save/delete patches are documented under [`session_title`](../configuration/config-files.md#session-title).
+
 The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is the separate read-only inspection view for an active agent. Its rules, source statuses, diagnostics, and cadence counts describe effective runtime state; it is not a configuration-save endpoint.
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is a separate read-only inspection view. Active agents return their effective rules, source statuses, diagnostics, and cadence counts. Closed sessions use the saved agent binding and cadence records with the current rule sources, without resuming the agent or executing hooks. Invalid workspace sources remain visible in diagnostics while valid global rules are retained. This endpoint does not save configuration.
 
 ### Models and providers
 
@@ -208,11 +210,13 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | Method and path | Description |
 | --- | --- |
 | `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
-| `GET /api/sessions` | List sessions; cursor pagination with filters such as `busy` and `archived_only` |
+| `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
 | `POST /api/sessions/{session_id}/profile` | Update title, metadata, agent config |
 | `POST /api/sessions/{session_id}:{action}` | Session actions: `fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:delete-archived` | Permanently delete an archived conversation and its attached archived family |
+| `POST /api/sessions:delete-archived` | Permanently delete all archived conversations in the connected home |
 | `GET /api/sessions/{session_id}/children` | List child sessions |
 | `POST /api/sessions/{session_id}/children` | Create a child session (fork with a tag) |
 | `GET /api/sessions/{session_id}/status` | Realtime status rollup |
@@ -221,7 +225,39 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
 
+Snapshot `subagents` roster rows carry an optional `created_at` UTC ISO timestamp for the agent's immutable creation time. A newly created agent has it before its first run starts, including while queued; resuming the same agent, restoring its scope, restarting the server, or switching its model does not change it. A fork that creates a new agent records a new creation time. The separate optional `started_at` identifies the run described by the row and may change on a later run.
+
+Model, effort and executor fields prefer the current committed agent metadata over its spawn snapshot, with spawn values used only when current values are unavailable. Effort provenance and executor protocol stay with their selected source; a current binding alone does not prove which model served a request.
+
+An agent whose saved metadata has no creation time omits `created_at`; treat it as unknown, not as the session creation time, run start, attachment time, or a value inferred from its ID. Creation timestamps use the host's wall clock, not a dispatch or turn identity: equal timestamps, clock changes, or missing comparison boundaries do not establish which dispatch created an agent.
+
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
+
+Set `agent_config.execution` at creation to select a harness independently of a profile:
+
+```json
+{ "agent_config": { "execution": { "executor": "claude-acp" } } }
+```
+
+The selection is `{ executor, profile?, profile_file?, overrides? }`. Choose either a registered `profile` name or a `profile_file` Markdown path; they are mutually exclusive, and the selected profile must use the same executor. Explicit files do not require `main: true` and are not registered or copied into a profile directory. Omit both fields for direct external execution. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context` and `allow_kiki_subagents`. With the same executor and profile name or file path, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. Legacy top-level model/profile/thinking requests remain supported.
+
+Before choosing a file, `POST /api/agent-profiles/file-preview` accepts `{ path, cwd?, workspace_id? }` and returns `{ profile }` with the usual named-profile metadata, including its canonical `source_file` and executor. Supply at most one of `cwd` and `workspace_id`; a relative path requires one, while an absolute or `~/` path can be previewed without either. Paths are read on the connected server, not the client machine. Missing or invalid files return `40001` with path diagnostics, without changing a binding. The typed HTTP client exposes this as `klient.rest.agents.previewFile(body, options?)`. Use the returned `source_file` as `execution.profile_file` at session creation or with the next prompt.
+
+Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
+
+#### `POST /api/sessions/{session_id}:archive`
+
+An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.
+
+Family requests return `data: { archived, outcomes }`. `archived: true` confirms all target sessions; each outcome is `{ id, ok: true }` or `{ id, ok: false, reason, message }`. Partial failure returns `archived: false` even when the envelope code is `0`; keep the successful items and retry the unfinished ones. Discovery failure returns an error before any archive mutation. Refresh the list after either result. Older servers without `outcomes` cannot confirm a family archive. Archive does not delete history or worktrees; `:restore` restores only the requested session. The existing batch archive endpoint still acts only on its supplied IDs.
+
+#### Archived conversation management
+
+Use `GET /api/sessions?archived_only=true` with the existing `page_size` and `before_id` cursor parameters to read archives. `q` accepts up to 500 characters and matches a case-insensitive substring of the title, workspace path or workspace ID, across pages; it does not search message contents. Reading an archived conversation's messages does not restore it.
+
+`POST /api/sessions/{session_id}:delete-archived` accepts `{}` or `{ "exclude_session_ids": ["independent-thread-id"] }`. It discovers the same attached family as [session archive](#sessions), excludes whole specified subtrees, and deletes only archived members. The requested root must still be archived; restoring a target before its deletion keeps it. `POST /api/sessions:delete-archived` accepts `{}` and discovers all archived conversations in the connected home before deleting; search, workspace filters and the loaded page do not narrow its scope. Independently displayed archived threads are included in this all-archives operation.
+
+Both calls permanently remove saved conversation data and return `data: { deleted_ids, failed }`. Each failed item has `{ id, title?, message }`; an envelope code of `0` is not complete success when `failed` is nonempty. Refresh the archive list after success, partial failure or a request error, and use the fresh state before retrying. Discovery failure occurs before deletion. Clients must obtain confirmation before sending either request; cancelling that confirmation must not send a delete request.
 
 #### `POST /api/sessions/{session_id}:compact`
 
@@ -241,12 +277,18 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | Page messages (`before_id` / `after_id` / `role`) |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | Read one message |
+| `POST /api/sessions/{session_id}/messages/{message_id}:edit` | Replace a user message and rerun from it |
+| `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | Rerun the user turn behind the latest final assistant message |
 | `GET /api/sessions/{session_id}/transcript` | Turn-paged transcript (requires `agent_id` and `transcript_coverage_version=2`); global state rides along unpaginated |
 | `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (requires `agent_id`, `since_seq`, and `transcript_coverage_version=2`); `complete: false` means a full refresh is needed |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | Turn-opening user inputs, unpaginated |
 | `GET /api/sessions/{session_id}/transcript/plan` | ExitPlanMode plan content, path, and review outcome |
 | `GET /api/sessions/{session_id}/transcript/detail` | One canonical entity (`agent_id`, `kind`, `id`) |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | Continue one bounded field from a `contentRefs` entry |
+
+Editing and regenerating require an idle session and `expected_cursor: { seq, epoch }` from the current session view. An edit replaces the complete `content` array, including attachments; regeneration reuses the original user input behind the selected final assistant response. Preflight rejection leaves conversation history unchanged. An accepted rewrite retains `user_message_id` and receives a new `prompt_id`.
+
+For response-loss recovery, send an optional `operation_id` and keep that ID and the entire request body unchanged when retrying the same action. A matching accepted retry returns the original receipt without another run, even after an uploaded source file has expired. Use a new ID for a different body or a new action. Reusing an ID with different input returns `40938`; a stale cursor returns `40937`, so refresh the session view before starting a new action. If the response is uncertain, retry manually rather than automatically submitting another action.
 
 Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
 
@@ -258,6 +300,8 @@ A transcript page keeps large fields as `contentRefs`. Each reference carries `s
 
 While the source history is still being located, the same call returns `code: 40923` and `msg: "history_canonical_preparing"`; retry that body. When the field no longer matches the reference, it returns `code: 40922` and `msg: "Content changed; reload its preview before continuing."` Reload the transcript preview and continue from the new reference. An unknown reference returns `code: 40401` and `msg: "content unavailable"`. Other routes also use `40922` and `40923`; match this `msg`, not the number alone. An invalid body returns `code: 40001` and `msg: "invalid content reference"`.
 
+The transcript response's `agents` descriptors use camelCase: `{ agentId, type?, parentAgentId?, delegator?, label?, createdAt?, disposedAt? }`. Their optional `createdAt` carries the same immutable UTC ISO creation time and [unknown-time rules](#sessions) as snapshot `subagents[].created_at`, for both live and closed sessions. It is not the transcript turn's `startedAt` or the snapshot run's `started_at`.
+
 ### Prompts
 
 | Method and path | Description |
@@ -267,6 +311,10 @@ While the source history is still being located, the same call returns `code: 40
 | `POST /api/sessions/{session_id}/prompts:steer` | Send selected queued prompts now |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
+
+To retry a submission whose response was lost, keep its optional `prompt_id` and complete request body unchanged. Matching retries return the original accepted receipt without resubmitting the prompt, including main-agent, attachment, and bundled-skill submissions. Changed input needs a new `prompt_id`; reusing an accepted ID for different input returns `40938`. If an older accepted request has no replayable receipt, inspect its queue or history rather than automatically sending it again.
+
+A prompt can carry the same [execution selection](#sessions) in its top-level `execution` field. It is captured with that prompt and applied when the prompt launches, not when it enters the queue. The current turn keeps its committed binding. A changed execution generation starts a fresh remote session without resuming or forking the old one or sending a handoff of the old Kiki conversation; visible Kiki history is retained. Cold recovery reuses the committed generation and its own saved remote reference.
 
 The top-level `profile`, `model` and `thinking` selections are also captured with the prompt. Add `model_switch_mode: "direct" | "compact" | "fresh"` with `model` to carry a confirmed context choice on that same message: keep the current context, summarize it, or rebuild a fresh context window. This choice cannot also change `profile` or `execution`. Prompt list items expose saved settings in optional `runtime_controls`, including camelCase `modelSwitchMode`. They survive queue recovery and do not create a separate control-only queue item. A saved selection or accepted receipt is not proof of an actual request on the selected model.
 
@@ -294,8 +342,15 @@ For an explicit switch operation, an accepted send is not a completed switch. If
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | Read a task (optional output preview) |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | Cancel a task |
 | `GET /api/cron` | List scheduled tasks across workspaces |
+| `POST /api/cron` | Create a scheduled prompt for `session_id` |
+| `GET /api/cron/{task_id}` | Read the complete scheduled prompt |
+| `PATCH /api/cron/{task_id}` | Edit a schedule or rebind within its workspace |
+| `POST /api/cron/{task_id}:pause` / `:resume` / `:run` | Pause, resume, or trigger a schedule |
+| `DELETE /api/cron/{task_id}` | Delete a schedule |
 
 Task and cron lists accept `page_size` (1–100, default 100) and `offset` (default 0). Responses include `items`, `has_more`, and `next_offset` when more results remain. The task list also accepts `status`; the cron list accepts `session_id`. Offset pages may shift if tasks change between requests.
+
+Cron create accepts `session_id`, `cron`, `prompt`, and optional `recurring`, `paused`, and `delivery_mode`. Update accepts any nonempty subset except `paused`; use the pause/resume action for that field. `delivery_mode` is `idle` (default, wait for current work then run ahead of ordinary messages), `queue` (normal message order), or `steer` (next safe step without cancelling the current request). Repeated idle fires of one waiting job merge with a total trigger count. Task responses include the effective `delivery_mode`; omitted modes on older tasks default to idle on their next fire, without changing already queued deliveries. See [Scheduled tasks](../reference/tools.md#scheduled-tasks) for timing and recovery semantics.
 
 ### Skills, tools, and MCP
 
@@ -337,7 +392,7 @@ Sync reads and saves return `{ enabled, source }`: `home` is this Kiki home's sa
 
 `rest.ssh.hostKeys(id, workspaceId?)` returns the resolved `hostname`, `port`, and matching `label`, plus `state`, `records`, and source `files`. `recorded` means a local identity record exists; it does not mean the remote key has just been verified. `unrecorded` means no matching record was found in readable or missing files. `unavailable` means the read is incomplete or a matching record cannot be interpreted. Records include the SHA256 `fingerprint` when readable, `algorithm`, file and line, host pattern, and status (`recorded`, `revoked`, `unsupported`, or `invalid`). Unsupported markers such as `@cert-authority`, invalid public keys, and file errors carry a `reason`.
 
-OpenSSH's `ssh -G` output loses path quoting. A multi-file `UserKnownHostsFile` value or a path containing whitespace therefore returns `unavailable` with `ambiguous-known-hosts-paths`, including the usual two-file OpenSSH default. The reader does not guess path boundaries. This API neither connects to the host nor changes trust records, and cannot report a remote key as unchanged or changed. First-key approval and changed-key rejection still occur through the existing connection flow.
+Kiki resolves `UserKnownHostsFile` boundaries from OpenSSH's configuration and path expansion, including multiple files and quoted paths containing spaces. If the boundaries cannot be resolved unambiguously, the request fails rather than guessing. `UserKnownHostsFile none` returns an empty `files` list and does not write a default file; unknown keys still require approval on each connection. This API neither connects to the host nor changes trust records, and cannot report a remote key as unchanged or changed. First-key approval and changed-key rejection still occur through the existing connection flow.
 
 ### Browser connections
 
@@ -400,9 +455,11 @@ PTY terminal endpoints; mounted only on loopback binds.
 | `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
 | `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
 
-`GET /api/memory/{scope}` without pagination returns the whole namespace as `{ items, coverage }` and keeps working for existing clients. Its default statuses differ by shape: with no `query` it returns `active` and `pending`, with a `query` it searches `active` only, and `include_inactive=true` widens either to all four. `coverage` reports the statuses that were actually inspected.
+`GET /api/memory/{scope}` returns bounded pages as `{ items, mode, next_cursor, coverage }`, including when no pagination parameters are supplied. `mode` defaults to `list` with no `query` and to `search` with one; `page_size` is 1–20. Without explicit `statuses`, list reads `active` and `pending`, search reads `active`, and `include_inactive=true` widens either to all four. `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived`. Existing clients must consume `next_cursor` rather than treating the first page as the whole namespace.
 
-Passing `mode`, `page_size`, `statuses` or `cursor` switches to paged results and adds `next_cursor`. Here `mode` defaults to `list` with no `query` and to `search` with one, `page_size` is 1–20, and `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived` defaulting to `active`. Keep the same `{scope}` path and the same `workspace_id` / `persona_id` that identify the namespace, and send `cursor` without `mode`, `query`, `type`, `page_size`, `statuses` or `include_inactive` — the cursor already carries the scopes, filters and page size it was issued for, and adding any of them back returns the `40944` code. A cursor also stops working when the underlying entries or the namespace change; start the query over and reconcile by id rather than assuming the second run covers what the first did.
+Continue until `next_cursor` is null and `coverage.exhausted` is true. An empty preparation page with a cursor is not an empty namespace. `coverage.complete` and `warnings` report unreadable, invalid or oversized records; those records do not hide the other readable entries. Scan budgets are per call, not a permanent inventory limit; search ranking and list title ordering apply within each bounded source chunk.
+
+Keep the same `{scope}` path and owning `workspace_id` / `persona_id`, and send `cursor` alone, without the original filters or page size. Mixing them returns `40944`. A cursor is invalidated by source changes or a store restart; restart and reconcile by scope plus ID. `GET /api/memory/{scope}/inbox` returns the same page shape for `pending` only and accepts `page_size` or a pending-list `cursor`; cursors for other statuses or search mode are rejected.
 
 `PUT /api/memory/{scope}/{id}` takes the same action vocabulary as [`MemoryWrite`](../reference/tools.md#writing-an-entry): `action` (`create`, `update`, `supersede`, `archive`), `type`, `title`, `body`, `reason`, `expected_revision` and `pinned`. Writes through REST are recorded as coming from you, whatever `source` the agent would have used. The response is `{ entry, operationId, outcome, warnings? }`, where `outcome` is `applied`, `pending` or `unchanged`; `operationId` is `null` for `unchanged` and for a proposal identical to one already waiting, and those two cases have nothing to undo. For `update`, `supersede` and `archive`, `expected_revision` is required — a `PUT` built on a stale revision is refused instead of overwriting a newer one.
 
@@ -428,7 +485,7 @@ The peer-thread endpoints support cross-session collaboration: a thread is addre
 | Method and path | Description |
 | --- | --- |
 | `GET /api/threads` | List addressable threads, filterable by `workspace_id`; cursor pagination |
-| `POST /api/threads:read` | Read a thread's completed user and peer turns, optionally continuing from a `cursor` |
+| `POST /api/threads:read` | Read a thread's completed turns with their recorded origin, optionally continuing from a `cursor` |
 | `POST /api/threads:send` | Durably accept a message for another thread (requires a non-empty `idempotency_key`; a key maps to a single message) |
 | `POST /api/threads:wait` | Long-poll for activity on up to 8 threads, `timeout_ms` capped at 60 seconds |
 | `GET /api/workspaces/{workspace_id}/thread-communication` | Read the persisted override and effective thread-communication state for the workspace |
@@ -518,12 +575,25 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `GET /api/usage` | Aggregate usage across sessions with bounded filters and pagination |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | Inspect model price sources or patch user price overrides, see below |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | Create or list external-delegation seats |
+| `POST /api/external-delegation/seats:resolve` | Resolve an existing seat by `{ workspace, principal }`; returns the seat with its delegation token, or `null`, without creating a seat, session, or workspace |
 | `DELETE /api/external-delegation/seats/{seat_id}` | Revoke an external-delegation seat |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | Call an admitted external-delegation procedure |
 | `GET /api/sessions/query` | Next-generation session list, see below |
 | `POST /api/sessions:archive` | Batch-archive sessions, see below |
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
+
+`POST /api/search` accepts `query` and defaults to user/assistant text plus session titles. Set `include_tool_output: true` to include tool results and Shell output; thinking, tool names and tool inputs remain excluded. `role` can select `user`, `assistant`, `tool` or `title`, with `role: "tool"` explicitly selecting tool results. The same content scope applies to live sessions and existing indexes. Changing it invalidates the old `page_token`; start again without a token.
+
+### Usage source grouping
+
+`GET /api/usage` supports `dimension=agent|model|project|session|provider|profile`. The native `provider` and `profile` dimensions group each record by its recorded source, including profile changes within one agent and provider changes behind one model alias. Profile means the execution profile, not a persona or a main/subagent role.
+
+Repeat `model`, `provider`, `profile`, `agent.id`, or `workspace.id` to select multiple values: `?dimension=profile&profile=explore&profile=general`. Values within a filter are ORed; different filters are ANDed. Profile matching is exact and case-sensitive against the record's `profileName`, not the agent's current profile. The response echoes normalized values in `query.profiles`; older servers may omit this additive field.
+
+Source groups use opaque keys such as `provider:"example-provider"` or `profile:"explore"`; missing sources have distinct `provider:null` or `profile:null` keys and a `null` attribution field. They retain their recorded usage and are never inferred from a model or agent ID. Use `group.provider` or `group.profile_name`, not the group key, as a filter value. There is no filter sentinel for missing sources; the literal value `unknown` selects only records that actually carry that name.
+
+For a selected period or comparison, send `range=custom&start_at=A&end_at=B` with epoch-millisecond bounds `[A,B)`. Summary, trend groups, and each session's `usage` apply the same record filters and exact window; session totals do not include unrelated profiles or the rest of a time bucket. Cost and token unknown flags remain separate from their recorded numeric subtotals. Keep the existing archive, timezone, and pagination parameters; discard `page_token` when changing filters or the window.
 
 ### Full usage rescan
 

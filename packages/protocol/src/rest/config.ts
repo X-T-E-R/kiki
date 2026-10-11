@@ -106,7 +106,15 @@ export type SessionTitleTrigger = z.infer<typeof sessionTitleTriggerSchema>;
 export const sessionTitleConfigResponseSchema = z.object({
   model: z.string().optional(),
   triggers: z.array(sessionTitleTriggerSchema).optional(),
+  prompt: z.string().optional(),
+  default_prompt: z.string().optional(),
+  prompt_source: z.enum(['default', 'custom']).optional(),
 });
+
+export const sessionTitleConfigPatchSchema = sessionTitleConfigResponseSchema
+  .omit({ default_prompt: true, prompt_source: true })
+  .extend({ model: z.string().nullable().optional(), prompt: z.string().nullable().optional() })
+  .strict();
 
 export const planConfigResponseSchema = z.object({
   gate: z.enum(['free', 'gated']),
@@ -218,8 +226,17 @@ export const interactionConfigPatchSchema = z.object({
   ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 
+export const agentExecutorDisplayConfigSchema = z.object({
+  externalsVisible: z.boolean().optional(),
+}).strict();
+
+export const agentExecutorDisplayConfigPatchSchema = z.object({
+  externals_visible: z.boolean().nullable().optional(),
+}).strict();
+
 export const configResponseSchema = z.object({
   computer_control: computerControlConfigResponseSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
@@ -262,6 +279,7 @@ export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
   computer_control: computerControlConfigPatchSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
@@ -305,7 +323,7 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: sessionTitleConfigResponseSchema.optional(),
+  session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),

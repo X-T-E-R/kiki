@@ -241,7 +241,7 @@ export class AgentTranscript {
           break;
         }
       }
-      if (trimmed || this.#trimmedTurns > 0) {
+      if (trimmed || this.#trimmedTurns > 0 || hasMoreOlder && start > 0 && start < items.length) {
         items = tailTurns === 0 ? [] : items.slice(start);
         hasMoreOlder = true;
       }

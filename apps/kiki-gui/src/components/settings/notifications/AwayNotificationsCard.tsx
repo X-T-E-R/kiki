@@ -35,6 +35,18 @@ export function AwayNotificationsCard() {
   const settings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const [enabled, setEnabled] = useState(() => readDesktopPrefs().notifications);
   const supported = host.notify !== undefined;
+  const [permission, setPermission] = useState(() => typeof window === 'undefined' ? undefined : window.Notification?.permission);
+
+  useEffect(() => {
+    if (host.kind !== 'browser' || !supported) return;
+    const refreshPermission = () => setPermission(window.Notification?.permission);
+    window.addEventListener('focus', refreshPermission);
+    document.addEventListener('visibilitychange', refreshPermission);
+    return () => {
+      window.removeEventListener('focus', refreshPermission);
+      document.removeEventListener('visibilitychange', refreshPermission);
+    };
+  }, [host.kind, supported]);
 
   useEffect(() => {
     if (host.kind !== 'tauri') return;
@@ -54,7 +66,7 @@ export function AwayNotificationsCard() {
       id="st-card-notify-away"
       title={t('st.away.title')}
       scope="app"
-      aside={supported ? undefined : t('st.away.browserHint')}
+      aside={!supported ? t('st.away.browserHint') : host.kind === 'browser' && permission === 'denied' ? t('st.away.permissionDenied') : undefined}
     >
       {supported ? (
         <div className="min-w-0 space-y-2" data-notify-away>
@@ -74,6 +86,7 @@ export function AwayNotificationsCard() {
                       writeSettings({ awayNotifications: { ...settings.awayNotifications, [kind]: checked } });
                     }}
                   />
+                  {kind === 'completed' ? <p className="pb-2 text-[12px] leading-relaxed text-ink-faint">{t('st.away.completedHint')}</p> : null}
                 </div>
               ))}
             </fieldset>

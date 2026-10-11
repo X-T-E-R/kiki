@@ -1,110 +1,47 @@
-# flag
+# Feature flags
 
-> Experimental feature-flag gating for agent-core-v2 — a App-scope `IFlagService` resolver plus a writable `IFlagRegistry` catalog that domains contribute their flags to, backed by the `[experimental]` config section.
+`IFlagService` resolves distributed domain definitions at App scope, with overrides in `[experimental]`. Product features, including new features, are available by default. Keep a flag only for a real rollout or rollback boundary; ordinary configured features do not need another experimental master gate. A default-off definition requires an explicit human requirement and its source.
 
-Gates not-yet-public features behind `IFlagService.enabled(id)`, per the repository hard rule that unreleased behavior must be flag-gated. Ported from `packages/agent-core/src/flags/**`; v1 was a process-global `FlagResolver` singleton over a central `FLAG_DEFINITIONS` array, v2 is a scoped DI service whose flag definitions are registered **decentrally** by each owning domain — there is no central catalog to edit.
+Availability preserves user off choices and does not authorize external connections, plugin installation, or script execution. Consent, per-destination enablement and permission checks remain in their owning domains.
 
-## Layout
+## Definitions and resolution
 
-- `src/flag/flagRegistry.ts` — `IFlagRegistry` token + `FlagDefinitionInput` / `FlagId` / `FlagSurface` types + `registerFlagDefinition` / `getContributedFlags` (import-time contribution queue).
-- `src/flag/flagRegistryService.ts` — `FlagRegistryService` impl; in-memory catalog seeded from import-time contributions; App scope.
-- `src/flag/flag.ts` — `IFlagService` token + resolver types (`ExperimentalFlagMap`, `ExperimentalFlagConfig`, `ExperimentalFlagSource`, `ExperimentalFeatureState`) + `ExperimentalConfigSchema` / `ExperimentalConfig` (zod).
-- `src/flag/flagService.ts` — `FlagService` impl + `MASTER_ENV` (`KIKI_EXPERIMENTAL_FLAG`) + `EXPERIMENTAL_SECTION` (`experimental`); reads definitions from `IFlagRegistry`; self-registers at App scope.
-- `src/flag/index.ts` — barrel; re-exported by `src/index.ts`.
-- `src/<domain>/flag.ts` — each domain that owns a flag declares it here and calls `registerFlagDefinition` at the module top level (e.g. `src/agent/toolSelect/flag.ts`). The directory already names the domain, so the file is just `flag.ts`.
+The runtime registry is distributed, not a central array. Each owning domain calls `registerFlagDefinition` at import time; `FlagRegistryService` drains those contributions when instantiated. `IFlagRegistry.register` also accepts runtime contributions and returns a disposable that unregisters them.
 
-## Public surface
+The implementation lives in `src/app/flag/`: `flagRegistry.ts` owns the definition contract and contribution queue, `flagRegistryService.ts` owns the catalog, `flag.ts` registers the experimental config section, and `flagService.ts` resolves it. The package entry imports leaf modules precisely; there is no domain barrel to add.
 
-- `IFlagService` (DI token, App scope): `enabled(id)`, `explain(id)`, `snapshot()`, `enabledIds()`, `explainAll()`, `setConfigOverrides(overrides)`, `registry`.
-- `IFlagRegistry` (DI token, App scope): `register(definition)`, `get(id)`, `list()` — writable catalog. `register` is the **runtime** path (tests, dynamic registration); `IFlagService.registry` exposes the same instance for hosts/UI to enumerate flags without resolving them.
-- `registerFlagDefinition(definition)` — the **import-time** path. Domains call this from their `flag.ts` top level; contributions are queued and drained by `FlagRegistryService` when it is instantiated.
-- `FlagService` / `FlagRegistryService`: exported for tests and hosts that construct them directly.
+Highest precedence wins:
 
-## Resolution precedence
+1. The definition's per-feature environment variable, including explicit false.
+2. The per-flag `[experimental]` config value, including explicit false.
+3. Truthy `KIKI_EXPERIMENTAL_FLAG`.
+4. The registry default.
 
-Highest wins; env is read live on every call (nothing cached):
+A falsy master environment variable is unset, not a global off command. Environment variables are read live. The service refreshes config overrides on `onDidChangeConfiguration` for the experimental domain; consumers that capture the result during construction may require a restart.
 
-1. L1 per-feature `def.env` (e.g. `KIKI_EXPERIMENTAL_MY_FEATURE`) → forces on/off.
-2. L2 `[experimental]` config section per-flag override.
-3. L3 master env `KIKI_EXPERIMENTAL_FLAG` truthy → every flag on.
-4. L4 registry `default`.
+`enabled(id)` returns false for an unregistered id. `explain(id)` returns undefined for it; registered states include the effective value, source and saved config value. `snapshot`, `enabledIds` and `explainAll` enumerate the effective registry. Loose boolean config keys preserve obsolete values as inert configuration without recreating retired features.
 
-`explain(id)` returns the winning `source` (`master-env` | `env` | `config` | `default`) plus the effective `configValue`. `explain(id)` returns `undefined` (and `enabled(id)` returns `false`) for an id that no domain has registered.
+## Add or retain a flag
 
-## Config integration
-
-- `FlagService` registers the `[experimental]` section into `IConfigRegistry` at construction (`registerSection('experimental', ExperimentalConfigSchema)`) and reads overrides from `IConfigService`.
-- It subscribes `IConfigService.onDidChangeConfiguration` and refreshes overrides whenever the `experimental` domain changes, so config edits apply live.
-- `IConfigRegistry.registerSection` throws if a domain is registered twice — `experimental` is owned exclusively by `FlagService`.
-- `setConfigOverrides(overrides)` is an imperative escape hatch for tests and hosts without an `IConfigService`; hosts on `IConfigService` should set the `[experimental]` section instead.
-
-Config shape mirrors v1:
-
-```toml
-[experimental]
-my_feature = false
-```
-
-Keys are intentionally loose (`z.record(z.string(), z.boolean())`), so obsolete flags stay inert config.
-
-## Add a flag
-
-Declare the definition in the owning domain's `flag.ts` and call `registerFlagDefinition` at the module top level. There is no central catalog to edit.
-
-`src/<domain>/flag.ts`:
+Use the owning domain's `flag.ts` and import its leaf from `src/index.ts` before any consumer resolves `IFlagService`:
 
 ```ts
-import { type FlagDefinitionInput, registerFlagDefinition } from '#/flag';
+import { type FlagDefinitionInput, registerFlagDefinition } from '#/app/flag/flagRegistry';
 
 export const myFeatureFlag: FlagDefinitionInput = {
   id: 'my_feature',
   title: 'My feature',
-  description: '...',
+  description: 'The capability this switch controls.',
   env: 'KIKI_EXPERIMENTAL_MY_FEATURE',
-  default: false,
+  default: true,
   surface: 'both',
 };
 
 registerFlagDefinition(myFeatureFlag);
 ```
 
-Then load it from the domain barrel so the top-level call runs at import time:
+The environment name must be unique, start with `KIKI_EXPERIMENTAL_`, and not equal `KIKI_EXPERIMENTAL_FLAG`. The id must not be `flag`; duplicate ids fail registration. `FlagId` remains a string, and `surface` (`core`, `tui`, `both`) is descriptive metadata, not a resolution rule.
 
-```ts
-// src/<domain>/index.ts
-import './flag';
-export * from './flag';
-```
+Every built-in id also needs a home in `EXPERIMENTAL_FLAG_HOMES` (`packages/session-core/src/settings/settings.ts`), its actual Settings page and application timing, and a name and description in both `src/i18n/en.ts` and `zh.ts`. The distributed-registration regression in `src/settings/settings.test.ts` checks this coverage and defaults. Unknown-server copy is for extensions, not missing built-in entries.
 
-`src/index.ts` already re-exports every domain barrel, so the contribution runs during bootstrap, before any scope is created — and therefore before any consumer resolves `IFlagService`.
-
-- `env` must start with `KIKI_EXPERIMENTAL_`, be unique, and not equal `KIKI_EXPERIMENTAL_FLAG`.
-- `id` must not be `flag`. A duplicate `id` throws when `FlagRegistryService` drains the contributions.
-- `FlagId` is `string`, not a literal union: with no central catalog there is nothing to derive it from, so `enabled()` has no compile-time typo-checking. Cover gated behavior with tests instead.
-- `surface`: `core` | `tui` | `both` (documentation/grouping only; not used in resolution).
-
-## Consume a flag
-
-Inject `IFlagService` and gate on it. It is resolvable from any scope (App ancestor):
-
-```ts
-constructor(@IFlagService private readonly flags: IFlagService) {}
-// ...
-if (!this.flags.enabled('my_feature')) return;
-```
-
-## Layering & scope
-
-- Domain `flag` imports only `config` downward.
-- It cannot live in `_base`: registering/reading the config section requires importing `config`, and `_base` is pure infrastructure that must not know any business domain.
-- Scope: `IFlagRegistry` and `IFlagService` are both `App`. Env + config are process-global inputs, so there is no per-session/agent state. Flag definitions are contributed at **import time** (top-level `registerFlagDefinition` calls), so they are queued before any scope is created and drained when `FlagRegistryService` is first instantiated — before `IFlagService` is first resolved.
-- Tests build `FlagService` + `FlagRegistryService` directly with a real `ConfigRegistry`/`ConfigService` and an injected env map, then `register` the flags they exercise (`test/flag/flag.test.ts`).
-
-## References
-
-- `packages/agent-core-v2/src/flag/` — implementation (`IFlagRegistry` + `IFlagService`).
-- `packages/agent-core-v2/src/agent/toolSelect/flag.ts` — example per-domain flag contribution.
-- `packages/agent-core-v2/test/flag/flag.test.ts` — precedence + config subscription tests.
-- `packages/agent-core/src/flags/` — v1 source this was ported from.
-- `packages/agent-core-v2/GAP_ANALYSIS.md` §2.1 — gap closure note.
-- Root `AGENTS.md` — experimental-feature gating rule.
+Inject `IFlagService` to consume a retained boundary. Tests resolve the service through DI with an injected environment map and real config/registry services, checking the omitted/default path and explicit false. See `test/app/flag/flag.test.ts` and the lifecycle guidance in `.agents/skills/agent-core-dev/flags.md`.

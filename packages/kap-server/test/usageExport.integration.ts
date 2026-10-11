@@ -9,6 +9,10 @@ import { AGENT_WIRE_RECORD_KEY, IBootstrapService, IFileSystemStorageService, IR
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
+import { IAppendLogStore, IEventService } from '@kiki/agent-core-v2';
+import { EventService } from '@kiki/agent-core-v2/app/event/eventService';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { VIBE_CAFE_INGEST_ENDPOINT, usageExportBatchSchema, usageExportItemSchema, type UsageExportBatch } from '@kiki/protocol';
 import type { VibeAuthRequest } from '../src/usage/export/vibeAuth';
 import { createVibeUsageAdapter } from '../src/usage/export/vibe';
@@ -45,9 +49,12 @@ function record(time: number, inputOther: number, other = { output: 3, inputCach
 }
 async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest) {
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true }));
-  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); append.dispose(); });
+  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
   const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home } as Bootstrap;
-  const retained = new RetainedUsageService(bootstrap, storage, append); const sessions: SessionSummary[] = [];
+  const ix = new TestInstantiationService(); cleanup.push(async () => { await ix.dispose(); });
+  ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append);
+  ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+  const retained = ix.get(IRetainedUsageService); const sessions: SessionSummary[] = [];
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
   const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
@@ -57,7 +64,7 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => storage.write(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, Buffer.from(records.map((v) => JSON.stringify(v)).join('\n') + '\n'));
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async () => { await service.close(); store = new UsageExportStore(path); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -74,6 +81,40 @@ async function destination(service: UsageExportService, endpoint = 'https://exam
 async function enable(service: UsageExportService, id: string) { const preview = await service.preview(id); await service.enable(id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); return preview; }
 
 describe('usage export real source → SQLite outbox → loopback receiver → durable ACK', () => {
+  it('sends nothing without destinations or from draft and disabled destinations after retirement', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    await f.restart(false); f.service.start(); await f.service.tick();
+    expect(f.service.status().destinations).toEqual([]); expect(r.requests).toBe(0);
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const draft = await destination(f.service, r.endpoint, r.port);
+    await f.service.syncNow(draft.id); expect(r.requests).toBe(0);
+    await enable(f.service, draft.id); f.service.disable(draft.id);
+    const disabled = f.store.get(draft.id);
+    await f.restart(false); f.service.start(); await f.service.tick(); await f.service.syncNow(draft.id);
+    expect(f.store.get(draft.id)).toEqual(disabled); expect(r.requests).toBe(0);
+  });
+
+  it('converts the old explicit off choice once to paused destinations, preserving consent and queued data', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const consent = f.store.get(d.id).consent_fingerprint; const queue = f.store.queue(d.id);
+    f.store.setMeta(`handoff-arm:${d.id}`, 'pending-old-arm');
+    await f.restart(true); f.service.start(); await f.service.tick(); await f.service.syncNow(d.id);
+    expect(f.store.get(d.id)).toMatchObject({ enabled: false, state: 'disabled', next_at: null, consent_fingerprint: consent });
+    expect(f.store.queue(d.id)).toEqual(queue); expect(f.store.meta(`handoff-arm:${d.id}`)).toBe(''); expect(r.requests).toBe(0);
+    await f.service.enable(d.id, { preview_fingerprint: consent!, acknowledge: true });
+    await f.restart(true);
+    expect(f.store.get(d.id).enabled).toBe(true);
+    await f.service.syncNow(d.id); expect(r.requests).toBe(1);
+  });
+
+  it('retiring an enabled legacy gate does not pause an explicitly enabled destination', async () => {
+    const f = await fixture(); const d = await destination(f.service); await enable(f.service, d.id);
+    const before = f.store.get(d.id); await f.restart(false);
+    expect(f.store.get(d.id)).toEqual(before);
+  });
+
   it('preserves timestamp and safe token boundaries without per-record temporary arrays', () => {
     const usage = { inputOther: 1, inputCacheRead: 2, inputCacheCreation: 3, output: 4 };
     const projected = projectSource({ key: 'boundary', workspaceId: 'work', kind: 'session', records: [
@@ -129,7 +170,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     await f.write(s.id, 'main', [record(T + 1, 10), record(T + 1, 10), record(T + 1_800_001, 20), { ...record(T + 2, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: false }, { ...record(T + 3, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: undefined }, record(T + 4, -1), record(T + 5, Number.MAX_SAFE_INTEGER + 1), record(T + 6, 7, undefined, SENTINEL)]);
     await f.write(s.id, 'subagent', [record(T + 7, 30)]);
     const deleted = f.add('deleted'); await f.write(deleted.id, 'main', [record(T + 8, 40)]); await f.retained.retainDeletedSession(deleted); f.sessions.splice(f.sessions.indexOf(deleted), 1);
-    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage('sessions/work/private', 'work');
+    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage!('sessions/work/private', 'work');
     const d = await destination(f.service, r.endpoint, r.port); const preview = await f.service.preview(d.id);
     expect(r.requests).toBe(0); expect(preview.source_complete).toBe(true); expect(preview.invalid_records).toBe(2);
     const totals = preview.items.reduce((sum, item) => { const t = item.bucket!.tokens; return [sum[0]! + t.input_other, sum[1]! + t.input_cache_read, sum[2]! + t.input_cache_creation, sum[3]! + t.output]; }, [0, 0, 0, 0]);
@@ -314,17 +355,37 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     preview = await f.service.preview(d.id); expect(preview.items.every((item) => Date.parse(item.bucket!.start_at) >= plan.cutoff_at && Date.parse(item.bucket!.start_at) < R)).toBe(true);
   });
 
-  it('uses the actual default-off Runtime registration and owner gate, including dangerous auth-bypass mode', async () => {
-    for (const mode of ['off', 'on', 'dangerous'] as const) {
+  it.each([
+    { config: false, env: undefined, enabled: false },
+    { config: true, env: 'off', enabled: false },
+    { config: false, env: 'on', enabled: true },
+  ])('migrates Runtime legacy overrides with the old env precedence (%j)', async (choice) => {
+    const f = await fixture(); const r = await receiverFixture();
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const before = { ...f.store.get(d.id), next_at: null };
+    const home = await mkdtemp(join(tmpdir(), 'kiki-export-upgrade-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const saved = new UsageExportStore(join(home, 'usage-export', 'export.sqlite')); saved.save(before); saved.close();
+    await writeFile(join(home, 'config.toml'), `[experimental]\nusage_export = ${choice.config}\n`);
+    const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: choice.env }, seeds: [[IModelPricingService, priced]] });
+    cleanup.push(() => server.close());
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/usage-export`, { headers: { authorization: `Bearer ${server.localOwnerToken}` } });
+    expect(response.status).toBe(200);
+    const current = (await response.json()).data.destinations[0].destination;
+    expect(current).toEqual(choice.enabled ? before : { ...before, enabled: false, state: 'disabled' });
+    expect(r.requests).toBe(0);
+  });
+
+  it('registers the Runtime without an experimental flag and keeps the owner gate, including dangerous auth-bypass mode', async () => {
+    for (const mode of ['default', 'legacy-off', 'dangerous'] as const) {
       const home = await mkdtemp(join(tmpdir(), 'kiki-export-owner-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
-      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: mode === 'off' ? 'false' : 'true' }, seeds: [[IModelPricingService, priced]] });
-      cleanup.push(() => server.close()); const url = `http://127.0.0.1:${server.port}/api/usage-export`;
-      const owner = await fetch(url, { headers: { authorization: `Bearer ${server.localOwnerToken}` } }); expect(owner.status).toBe(mode === 'off' ? 404 : 200);
-      if (mode !== 'off') {
-        expect((await owner.json()).data.writer).toBe(true);
-        expect((await fetch(url, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
-        expect([401, 403]).toContain((await fetch(url)).status);
-      }
+      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: mode === 'legacy-off' ? { KIKI_EXPERIMENTAL_USAGE_EXPORT: 'false' } : {}, seeds: [[IModelPricingService, priced]] });
+      cleanup.push(() => server.close()); const base = `http://127.0.0.1:${server.port}/api`;
+      const headers = { authorization: `Bearer ${server.localOwnerToken}` };
+      const owner = await fetch(`${base}/usage-export`, { headers }); expect(owner.status).toBe(200);
+      expect((await owner.json()).data).toMatchObject({ writer: true, destinations: [] });
+      expect((await (await fetch(`${base}/meta`, { headers })).json()).data.experimental_flags).not.toHaveProperty('usage_export');
+      expect((await fetch(`${base}/usage-export`, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
+      expect([401, 403]).toContain((await fetch(`${base}/usage-export`)).status);
       await server.close();
     }
   }, 30000);
@@ -369,16 +430,19 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     let approved = false;
     const key = 'vbu_SYNTHETIC_FIXTURE_KEY';
     const requests: { path: string; body: unknown; authorization?: string }[] = [];
-    const server = createServer(async (req, res) => {
-      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const raw = Buffer.concat(chunks);
-      const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
-      const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
-      res.setHeader('content-type', 'application/json');
-      if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
-      else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
-      else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
-      else { res.statusCode = 401; res.end('{}'); }
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks);
+        const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
+        const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
+        res.setHeader('content-type', 'application/json');
+        if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
+        else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
+        else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
+        else { res.statusCode = 401; res.end('{}'); }
+      });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -471,7 +535,7 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     const preview = await enable(f.service, d.id);
     expect(JSON.stringify(preview)).not.toContain(key);
     await f.service.syncNow(d.id); expect(observed).toEqual([`Bearer ${key}`]);
-    f.service.disable(d.id); await f.restart();
+    f.service.disable(d.id); await f.restart(true);
     expect(f.store.get(d.id).enabled).toBe(false);
     await f.service.remove(d.id, true);
     await expect(stat(privatePath)).rejects.toMatchObject({ code: 'ENOENT' }); expect(keys.size).toBe(0);

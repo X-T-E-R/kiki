@@ -4,6 +4,10 @@
  * inputs or depends on a not-yet-landed wire candidate.
  */
 
+import type { SnapshotSubagent } from '@kiki/protocol';
+
+type SnapshotNameSource = SnapshotSubagent['name_source'];
+
 export const MAIN_AGENT_ID = 'main';
 
 /**
@@ -46,6 +50,7 @@ export interface AgentUsageSummary {
  */
 export interface AgentLiveSource {
   readonly subagentId: string;
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name: string;
@@ -82,6 +87,7 @@ export interface AgentLiveSource {
  */
 export interface AgentRosterDescriptor {
   readonly agentId: string;
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name?: string;
@@ -95,8 +101,11 @@ export interface AgentRosterDescriptor {
   readonly maxContextTokens?: number;
   readonly usage?: AgentUsageSummary;
   readonly status?: string;
+  readonly statusSource?: 'metadata' | 'runtime';
+  readonly nameSource?: SnapshotNameSource;
   readonly refreshing?: boolean;
   readonly refreshingUntil?: string;
+  readonly detached?: boolean;
   readonly busy?: boolean;
   readonly toolCallCount?: number;
   readonly toolCallCountKnown?: boolean;
@@ -160,10 +169,14 @@ export interface AgentTurnOutcome {
 
 export interface AgentTreeNode {
   readonly agentId: string;
+  /** Immutable entity birth; unknown for legacy agents, independent of the current run. */
+  readonly createdAt?: string;
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name: string;
   readonly label: string;
+  readonly nameSource?: SnapshotNameSource;
+  readonly statusSource?: SnapshotSubagent['status_source'];
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly thinkingEffortExplicit?: boolean;
@@ -250,6 +263,7 @@ export interface AgentHistoryCursor {
 
 interface DraftNode {
   agentId: string;
+  createdAt: string | undefined;
   parentAgentId: string | undefined;
   rosterParentAgentId: string | undefined;
   parentToolCallId: string | undefined;
@@ -359,10 +373,13 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
   if (a === b) return true;
   return (
     a.agentId === b.agentId &&
+    a.createdAt === b.createdAt &&
     a.parentAgentId === b.parentAgentId &&
     a.parentToolCallId === b.parentToolCallId &&
     a.name === b.name &&
     a.label === b.label &&
+    a.nameSource === b.nameSource &&
+    a.statusSource === b.statusSource &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
     a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
@@ -544,6 +561,7 @@ export function buildAgentForest(
     const status = draft.status ?? 'unknown';
     const node: AgentTreeNode = {
       agentId: draft.agentId,
+      createdAt: draft.createdAt,
       parentAgentId,
       parentToolCallId: draft.parentToolCallId,
       name,
@@ -743,6 +761,7 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
   if (existing !== undefined) return existing;
   const created: DraftNode = {
     agentId,
+    createdAt: undefined,
     parentAgentId: undefined,
     rosterParentAgentId: undefined,
     parentToolCallId: undefined,
@@ -827,6 +846,7 @@ function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
 }
 
 function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
+  draft.createdAt ??= firstPresent(entry.createdAt);
   const rosterParent = cleanId(entry.parentAgentId);
   if (rosterParent !== undefined) draft.rosterParentAgentId = rosterParent;
   draft.parentAgentId = rosterParent ?? draft.parentAgentId;
@@ -852,12 +872,21 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
     (refreshingAt === undefined ||
       ((draft.statusStartedAt === undefined || draft.statusStartedAt <= refreshingAt) &&
         (draft.statusEndedAt === undefined || draft.statusEndedAt <= refreshingAt)));
-  const status = normalizeStatus(entry.status);
-  const accepted =
-    status === undefined
+  const status = normalizeStatus(entry.status, entry.detached === true);
+  const authority = entry.statusSource === undefined ? STATUS_AUTHORITY.roster : 4;
+  const metadataIdentityOnly = entry.statusSource === 'metadata' && status === 'unknown';
+  const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
+  const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
+  const inactive = entry.statusSource !== undefined && !metadataIdentityOnly && !inactiveIsOlder && (status === 'idle' || status === 'unknown');
+  if (inactive) {
+    draft.status = status;
+    draft.statusAuthority = authority;
+    draft.busy = false;
+  }
+  const accepted = inactive ||
+    (status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
-      : applyStatus(draft, status, STATUS_AUTHORITY.roster, entry.startedAt, entry.endedAt)
-          .accepted;
+      : applyStatus(draft, status, authority, entry.startedAt, entry.endedAt).accepted);
   if (refreshing) {
     draft.refreshing = true;
     draft.refreshingUntil = entry.refreshingUntil;
@@ -894,9 +923,10 @@ function invalidateDisposedRun(draft: DraftNode, disposedAt: number, authority: 
 }
 
 function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
+  draft.createdAt ??= firstPresent(block.createdAt);
   draft.parentAgentId = draft.parentAgentId ?? cleanId(block.parentAgentId);
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
-  draft.name = firstPresent(block.name) ?? draft.name;
+  if (block.name !== block.subagentId || draft.name === undefined) draft.name = firstPresent(block.name) ?? draft.name;
   draft.label = firstPresent(block.label) ?? draft.label;
   draft.description = firstPresent(block.description) ?? draft.description;
   applyToolCallCount(
@@ -905,6 +935,8 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
     block.toolCallCountKnown,
     block.toolCallCountAuthoritative,
   );
+  if (draft.statusAuthority === 4 && (draft.status === 'unknown' || draft.status === 'idle') &&
+    isActiveStatus(normalizeStatus(block.status) ?? 'unknown')) return;
   const disposedAt = parseStatusTimestamp(block.disposedAt);
   if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
     draft.disposedAt = disposedAt;
@@ -1185,7 +1217,7 @@ function isActiveStatus(status: AgentStatus): boolean {
 /** Terminal statuses are never busy; running/suspended/background stay active. */
 function busyFromStatus(status: AgentStatus, hinted?: boolean): boolean {
   if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'lost' || status === 'idle') return false;
-  return hinted ?? isActiveStatus(status);
+  return isActiveStatus(status) || hinted === true;
 }
 
 function normalizeLiveInput(input: AgentLiveTranscriptInput): AgentLiveTranscript {

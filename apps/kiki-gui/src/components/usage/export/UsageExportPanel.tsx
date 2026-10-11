@@ -15,8 +15,7 @@
  * destination that cannot authenticate never covers the list, and nothing here
  * touches the chat surface.
  *
- * Honesty rules: with the `usage_export` flag off the server registers no routes
- * at all, and that is reported as unavailable rather than as an empty list; a
+ * Honesty rules: a failed status request is never shown as an empty list; a
  * `writer: false` snapshot is shown read-only; the consent state is the server's
  * own fingerprint, never a client guess; a paused or drafted destination keeps
  * its queue and says so; and every count comes from the wire.
@@ -57,7 +56,6 @@ import {
   usageExportApi,
   handoffViewOf,
   utcLabel,
-  useUsageExportEnabled,
   type UsageExportEntry,
 } from '../../../lib/usageExport';
 
@@ -75,16 +73,15 @@ function shortId(value: string): string {
 }
 
 export function UsageExportPanel() {
-  const { client, klient, scopeId, meta, config, sshLabel } = useConnection();
+  const { klient, scopeId, meta, config, sshLabel } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const api = usageExportApi(klient);
-  const { enabled, loading: flagLoading } = useUsageExportEnabled(client);
 
   const statusQuery = useQuery({
     queryKey: [USAGE_EXPORT_QUERY_KEY, 'status', scopeId],
     queryFn: () => api!.status(),
-    enabled: api !== undefined && enabled === true,
+    enabled: api !== undefined,
     retry: false,
     refetchInterval: (query) => {
       if (query.state.status === 'error') return 10_000;
@@ -180,32 +177,6 @@ export function UsageExportPanel() {
       <div className="space-y-3" data-usage-export-panel>
         <SourceLine server={sourceLabel} home={home} />
         <p role="alert" data-usage-export-no-transport className={NOTICE_AMBER}>{t('usage.export.noTransport')}</p>
-      </div>
-    );
-  }
-
-  if (flagLoading || (enabled === undefined && !statusQuery.isError)) {
-    return (
-      <div className="space-y-3" data-usage-export-panel>
-        <SourceLine server={sourceLabel} home={home} />
-        <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
-          <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-          {t('usage.export.loading')}
-        </div>
-      </div>
-    );
-  }
-
-  if (enabled !== true) {
-    return (
-      <div className="space-y-3" data-usage-export-panel>
-        <SourceLine server={sourceLabel} home={home} />
-        <div data-usage-export-unavailable className="rounded-xl border border-hairline bg-panel px-4 py-8">
-          <p className="text-[13px] font-medium text-ink">{t('usage.export.unavailable.title')}</p>
-          <p className="mt-1 max-w-[76ch] text-[12.5px] leading-relaxed text-ink-soft">
-            {t('usage.export.unavailable.body', { flag: 'usage_export' })}
-          </p>
-        </div>
       </div>
     );
   }
