@@ -3114,6 +3114,7 @@ function opsAffectForest(ops: readonly TranscriptOperation[]): boolean {
       case 'turn.upsert':
       case 'step.upsert':
       case 'frame.upsert':
+      case 'frame.remove':
       case 'items.remove':
         return true;
       default:

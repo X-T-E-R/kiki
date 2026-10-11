@@ -54,6 +54,15 @@ import { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMedia
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
+import { createTestAgent, permissionModeServices } from '../../agent-core-v2/test/harness';
+import { IModelCatalog } from '@kiki/agent-core-v2/kosong/model/catalog';
+import { ModelRequesterImpl } from '@kiki/agent-core-v2/kosong/model/modelRequesterImpl';
+import { IProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/protocol/protocol';
+import { APIStatusError } from '@kiki/agent-core-v2/kosong/contract/errors';
+import type { ChatProvider } from '@kiki/agent-core-v2/kosong/contract/provider';
+import type { Message } from '@kiki/agent-core-v2/kosong/contract/message';
+import { emptyUsage } from '@kiki/agent-core-v2/kosong/contract/usage';
+import { agentTranscriptToBlocks } from '@kiki/session-core/session';
 
 function ev(payload: Record<string, unknown>): LiveAdapterBusEvent {
   return payload as unknown as LiveAdapterBusEvent;
@@ -528,6 +537,80 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(frames.map((frame) => [frame.frameId, frame.responseInstanceId, frame.text])).toEqual([
       ['item-one', 'attempt-one', 'First'], ['summary-one', 'attempt-one', 'Summary'], ['item-two', 'attempt-two', 'Separate'],
     ]);
+  });
+
+  it('retracts an actual 401 retry through the loop, live projection and durable cold replay', async () => {
+    const ctx = createTestAgent(permissionModeServices('manual'));
+    const tx = new AgentTranscript('main');
+    const adapter = new AgentTranscriptLiveAdapter('main', { stepFrames: (turnId, stepId) => tx.getTurn(turnId)?.steps.find((step) => step.stepId === stepId)?.frames });
+    const wire = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(tx);
+    const histories: Message[][] = [];
+    let calls = 0;
+    const provider: ChatProvider = {
+      name: 'fixture-provider', modelName: 'fixture-model', thinkingEffort: null,
+      async generate(_system, _tools, history) {
+        const attempt = calls++;
+        histories.push(structuredClone(history));
+        return {
+          id: `response-fixture-${attempt}`, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop', traceId: null,
+          async *[Symbol.asyncIterator]() {
+            if (attempt === 0) {
+              yield { type: 'think' as const, think: 'discarded thinking', encrypted: 'discarded-opaque' };
+              yield { type: 'text' as const, text: 'discarded prose' };
+              yield { type: 'function' as const, id: 'discarded-call', name: 'Read', arguments: '', _streamIndex: 0 };
+              yield { type: 'tool_call_part' as const, index: 0, argumentsPart: '{}' };
+              throw new APIStatusError(401, 'fixture unauthorized');
+            }
+            yield { type: 'think' as const, think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque' };
+            yield { type: 'think' as const, think: 'Successful summary', encrypted: 'fixture-summary-opaque' };
+            yield { type: 'text' as const, text: 'Final body' };
+          },
+        };
+      },
+    };
+    const registry = ctx.get(IProtocolAdapterRegistry);
+    const catalog = ctx.get(IModelCatalog);
+    const providerSpy = vi.spyOn(registry, 'createChatProvider').mockReturnValue(provider);
+    const requesterSpy = vi.spyOn(catalog, 'getRequester').mockImplementation((id, settings) => new ModelRequesterImpl({ ...catalog.get(id, settings), authProvider: { canRefresh: true, getAuth: () => Promise.resolve({ apiKey: 'fixture-token' }) } }, registry));
+    let sawDiscardedTool = false;
+    const subscription = ctx.get(IEventBus).subscribe((event) => {
+      const record = event.serialize();
+      reducer.apply(wire.add(record));
+      tx.apply(adapter.map(event as unknown as LiveAdapterBusEvent));
+      sawDiscardedTool ||= tx.getToolCall('discarded-call') !== undefined;
+    });
+    try {
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Fixture request' }] });
+      await ctx.untilTurnEnd();
+      await ctx.get(IAgentLoopService).settled();
+      expect(calls).toBe(2);
+      expect(histories[1]).toEqual(histories[0]);
+      expect(sawDiscardedTool).toBe(true);
+      expect(tx.getToolCall('discarded-call')).toBeUndefined();
+      const records = await ctx.persistedWireRecords();
+      const cold = new AgentTranscript('main');
+      const coldWire = new TranscriptWireAdapter('main');
+      const coldReducer = new TranscriptFactReducer(cold);
+      for (const record of records) coldReducer.apply(coldWire.add(record));
+      coldReducer.apply(coldWire.finish());
+      const thoughts = (snapshot: AgentTranscriptSnapshot) => agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' }).filter((block) => block.kind === 'thinking');
+      expect(thoughts(tx.snapshot())).toEqual([expect.objectContaining({ text: 'Successful reasoning\n\nSuccessful summary', streaming: false, fragments: [expect.objectContaining({ text: 'Successful reasoning' }), expect.objectContaining({ text: 'Successful summary' })] })]);
+      expect(thoughts(cold.snapshot()).map((block) => [block.id, block.text])).toEqual(thoughts(tx.snapshot()).map((block) => [block.id, block.text]));
+      expect(JSON.stringify(tx.snapshot())).not.toContain('discarded');
+      expect(JSON.stringify(cold.snapshot())).not.toContain('discarded');
+      const assistant = ctx.contextData().history.find((message) => message.role === 'assistant');
+      expect(assistant?.content).toEqual([
+        { type: 'think', think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque' },
+        { type: 'think', think: 'Successful summary', encrypted: 'fixture-summary-opaque' },
+        { type: 'text', text: 'Final body' },
+      ]);
+    } finally {
+      subscription.dispose();
+      requesterSpy.mockRestore();
+      providerSpy.mockRestore();
+      await ctx.dispose();
+    }
   });
 
   it('adopts a backfilled tool frame when the result arrives after a mid-bind attach', () => {

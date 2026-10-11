@@ -82,6 +82,9 @@ export function applyOperation(state: AgentState, op: TranscriptOperation): Appl
     case 'frame.upsert':
       result = applyFrameUpsert(state, op);
       break;
+    case 'frame.remove':
+      result = applyFrameRemove(state, op);
+      break;
     case 'tool.count.set':
       result = applyToolCountSet(state, op.count);
       break;
@@ -484,6 +487,34 @@ function applyFrameUpsert(
       : insertTurn(state.items, nextTurn);
   return {
     state: { ...state, items, toolCallCount },
+    changed: true,
+    toolCallCountDelta,
+  };
+}
+
+function applyFrameRemove(
+  state: AgentState,
+  op: Extract<TranscriptOperation, { op: 'frame.remove' }>,
+): ApplyResult {
+  const located = findTurn(state.items, op.turnId);
+  const stepIndex = located?.turn.steps.findIndex((step) => step.stepId === op.stepId) ?? -1;
+  const step = located?.turn.steps[stepIndex];
+  const frame = step?.frames.find((entry) => entry.frameId === op.frameId);
+  if (located === undefined || step === undefined || frame === undefined) {
+    return { state, changed: false, toolCallCountDelta: 0 };
+  }
+  const toolCallCountDelta = frame.kind === 'tool' ? -1 : 0;
+  const nextStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== op.frameId) };
+  const nextTurn = carryContentHydration(located.turn, {
+    ...located.turn,
+    steps: replaceAt(located.turn.steps, stepIndex, nextStep),
+  });
+  return {
+    state: {
+      ...state,
+      items: replaceAt(state.items, located.index, nextTurn),
+      toolCallCount: adjustToolCallCount(state.toolCallCount, toolCallCountDelta),
+    },
     changed: true,
     toolCallCountDelta,
   };

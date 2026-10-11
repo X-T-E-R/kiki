@@ -181,11 +181,13 @@ export class ModelRequesterImpl implements ModelRequester {
     };
 
     const attribution = params.attribution;
+    let attemptId: string | undefined;
     let result: GenerateResult;
     try {
       result = await this.runWithAuthRefresh(
         async (auth, requestSignal) => {
           const responseInstanceId = randomUUID();
+          attemptId = responseInstanceId;
           const permit = await this.admission?.acquire({
             ...attribution, attemptId: responseInstanceId, modelId: this.model.id, providerId: this.model.providerName,
           }, requestSignal);
@@ -210,6 +212,9 @@ export class ModelRequesterImpl implements ModelRequester {
           }
         },
         signal,
+        () => {
+          if (attemptId !== undefined) queue.push({ type: 'attempt.discarded', responseInstanceId: attemptId });
+        },
       );
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true) throw error;
@@ -244,6 +249,7 @@ export class ModelRequesterImpl implements ModelRequester {
   private async runWithAuthRefresh<T>(
     run: (auth: ProviderRequestAuth | undefined, signal: AbortSignal | undefined) => Promise<T>,
     signal?: AbortSignal,
+    onAttemptDiscarded?: () => void,
   ): Promise<T> {
     const auth = await this.authProvider.getAuth();
     try {
@@ -252,6 +258,7 @@ export class ModelRequesterImpl implements ModelRequester {
       if (!this.shouldForceRefresh(error)) throw error;
     }
 
+    onAttemptDiscarded?.();
     const refreshedAuth = await this.authProvider.getAuth({ force: true });
     try {
       return await run(refreshedAuth, signal);

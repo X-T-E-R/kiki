@@ -389,6 +389,10 @@ describe('ModelRequesterImpl request execution', () => {
     expect(parts[0]!.responseInstanceId).toEqual(expect.any(String));
     expect(parts[1]!.responseInstanceId).toEqual(expect.any(String));
     expect(parts[0]!.responseInstanceId).not.toBe(parts[1]!.responseInstanceId);
+    const discarded = events.filter((event) => event.type === 'attempt.discarded');
+    expect(discarded).toEqual([{ type: 'attempt.discarded', responseInstanceId: parts[0]!.responseInstanceId }]);
+    expect(events.indexOf(discarded[0]!)).toBeGreaterThan(events.indexOf(parts[0]!));
+    expect(events.indexOf(discarded[0]!)).toBeLessThan(events.indexOf(parts[1]!));
     expect(new Set(parts.slice(1).map((part) => part.responseInstanceId)).size).toBe(1);
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls[0]!.history).toEqual(INPUT.messages);

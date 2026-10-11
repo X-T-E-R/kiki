@@ -1501,6 +1501,30 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('retracts discarded streaming frames idempotently in stores and subscriber grades', () => {
+    const seed: TranscriptOperation[] = [turnOp(0), { ...stepOp, turnId: 't0', step: { ...stepOp.step, turnId: 't0', stepId: 'step-fixture' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'failed-think', text: 'discarded' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'tool', frameId: 'failed-tool', toolCallId: 'failed-call', name: 'Read', state: 'running' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'kept-think', text: 'successful' } },
+    ];
+    const removes: TranscriptOperation[] = ['failed-think', 'failed-tool'].map((frameId) => ({ op: 'frame.remove', turnId: 't0', stepId: 'step-fixture', frameId }));
+    expect(removes.map((op) => transcriptOperationSchema.parse(op))).toEqual(removes);
+    expect(filterOpsForGrade('turn', removes)).toEqual([]);
+    expect(filterOpsForGrade('block', removes)).toEqual(removes);
+    expect(filterOpsForGrade('delta', removes)).toEqual(removes);
+    expect(isAppendOnly(removes)).toBe(false);
+    const tx = new AgentTranscript('main');
+    const draft = new AgentTranscriptDraft('main');
+    for (const target of [tx, draft]) {
+      target.apply(seed);
+      expect(target.apply(removes)).toMatchObject({ toolCallCountDelta: -1 });
+      expect(target.apply(removes)).toMatchObject({ accepted: [], toolCallCountDelta: 0 });
+      expect(target.getToolCall('failed-call')).toBeUndefined();
+      expect(target.getTurn('t0')!.steps[0]!.frames.map((frame) => frame.frameId)).toEqual(['kept-think']);
+    }
+    expect(draft.snapshot()).toEqual(tx.snapshot());
+  });
+
   it('retains response instance and provider response metadata in canonical schema round trips', () => {
     const frame = transcriptOperationSchema.parse({ op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'item-fixture', text: 'fixture summary', responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
     expect(frame).toMatchObject({ frame: { responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });

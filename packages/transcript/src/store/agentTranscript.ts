@@ -343,6 +343,13 @@ export class AgentTranscript {
       }
       return;
     }
+    if (op.op === 'frame.remove') {
+      const key = toolFrameKey(op.turnId, op.stepId, op.frameId);
+      const toolCallId = this.#toolCallIdByFrame.get(key);
+      if (toolCallId !== undefined) this.#toolCalls.delete(toolCallId);
+      this.#toolCallIdByFrame.delete(key);
+      return;
+    }
     if (op.op !== 'frame.upsert') return;
     const key = toolFrameKey(op.turnId, op.stepId, op.frame.frameId);
     const previousToolCallId = this.#toolCallIdByFrame.get(key);
@@ -611,6 +618,7 @@ function appendTargetKey(op: TranscriptOperation): string | undefined {
   if (op.op === 'frame.upsert') {
     return `frame:${op.turnId}:${op.stepId}:${op.frame.frameId}`;
   }
+  if (op.op === 'frame.remove') return `frame:${op.turnId}:${op.stepId}:${op.frameId}`;
   if (op.op === 'task.upsert') return `task:${op.task.taskId}`;
   return undefined;
 }

@@ -64,6 +64,9 @@ function collectChangedIds(operation: TranscriptOperation, changed: Set<string>)
     case 'frame.upsert':
       changed.add(operation.frame.frameId);
       return;
+    case 'frame.remove':
+      changed.add(operation.frameId);
+      return;
     case 'tool.count.set':
       changed.add('toolCallCount');
       return;

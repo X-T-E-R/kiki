@@ -182,6 +182,20 @@ export class ThinkingDelta extends Event2<ThinkingDeltaPayload> {
 }
 export interface ThinkingDelta extends ThinkingDeltaPayload {}
 
+export interface ResponseAttemptDiscardedPayload {
+  readonly turnId: number;
+  readonly stepId: string;
+  readonly partIds: readonly string[];
+  readonly toolCallIds: readonly string[];
+}
+
+/** Observable-only retraction of partial output from an explicitly discarded internal response attempt. */
+export class ResponseAttemptDiscarded extends Event2<ResponseAttemptDiscardedPayload> {
+  static override readonly type = 'response.attempt.discarded';
+  static override readonly observable = true;
+}
+export interface ResponseAttemptDiscarded extends ResponseAttemptDiscardedPayload {}
+
 export interface ToolCallDeltaPayload {
   readonly turnId: number;
   readonly step?: number;

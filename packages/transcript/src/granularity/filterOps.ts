@@ -17,6 +17,7 @@ function admits(grade: TranscriptGrade, op: TranscriptOperation): boolean {
       return GRADE_RANK[grade] >= GRADE_RANK.delta;
     case 'step.upsert':
     case 'frame.upsert':
+    case 'frame.remove':
       return GRADE_RANK[grade] >= GRADE_RANK.block;
     default:
       return true;

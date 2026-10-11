@@ -10,6 +10,7 @@ import type {
 import type { GoalUpdated } from '@kiki/agent-core-v2/agent/goal/goalOps';
 import type {
   AssistantDelta,
+  ResponseAttemptDiscarded,
   ThinkingDelta,
   ToolCallDelta,
   TurnStarted,
@@ -144,6 +145,7 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'turn.step.retrying' } & TurnStepRetrying)
   | ({ readonly type: 'assistant.delta' } & AssistantDelta)
   | ({ readonly type: 'thinking.delta' } & ThinkingDelta)
+  | ({ readonly type: 'response.attempt.discarded' } & ResponseAttemptDiscarded)
   | ({ readonly type: 'tool.call.delta' } & ToolCallDelta)
   | ({ readonly type: 'tool.progress' } & ToolProgress)
   | ({ readonly type: 'tool.call.started' } & ToolCallStarted)
@@ -353,6 +355,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onTextDelta(event, 'assistant');
       case 'thinking.delta':
         return this.onTextDelta(event, 'thinking');
+      case 'response.attempt.discarded':
+        return this.onAttemptDiscarded(event);
       case 'tool.call.delta':
         return this.onToolCallDelta(event);
       case 'tool.progress':
@@ -750,6 +754,22 @@ export class AgentTranscriptLiveAdapter {
     };
     ops.push({ op: 'step.upsert', turnId, step: this.currentStep });
     return ops;
+  }
+
+  private onAttemptDiscarded(event: ResponseAttemptDiscarded): TranscriptOperation[] {
+    const turnId = `t${event.turnId}`;
+    const frameIds = new Set(event.partIds);
+    for (const toolCallId of event.toolCallIds) {
+      const hit = this.toolFrames.get(toolCallId) ?? this.adoptToolFrame(toolCallId);
+      if (hit === undefined || hit.turnId !== turnId || hit.stepId !== event.stepId) continue;
+      frameIds.add(hit.frame.frameId);
+      this.toolFrames.delete(toolCallId);
+    }
+    if (this.currentStep?.turnId === turnId && this.currentStep.stepId === event.stepId) {
+      if (this.openText !== undefined && frameIds.has(this.openText.frameId)) this.openText = undefined;
+      if (this.openThinking !== undefined && frameIds.has(this.openThinking.frameId)) this.openThinking = undefined;
+    }
+    return [...frameIds].map((frameId) => ({ op: 'frame.remove', turnId, stepId: event.stepId, frameId }));
   }
 
   private onTextDelta(

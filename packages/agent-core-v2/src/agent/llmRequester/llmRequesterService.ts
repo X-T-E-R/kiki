@@ -468,7 +468,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       let usage: TokenUsage | undefined;
       let timing: ModelRequestTiming | undefined;
       let finish: Extract<ModelRequestEvent, { type: 'finish' }> | undefined;
-      const toolCallIds = this.toolCallIdNormalizer.beginResponse();
+      let toolCallIds = this.toolCallIdNormalizer.beginResponse();
 
       const setTraceId = (traceId: string | null | undefined): void => {
         const normalized = traceId ?? undefined;
@@ -486,6 +486,11 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           attribution,
         })) {
           switch (event.type) {
+            case 'attempt.discarded':
+              toolCallIds.rollback();
+              toolCallIds = this.toolCallIdNormalizer.beginResponse();
+              onAttemptRetry?.();
+              break;
             case 'part':
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
               break;

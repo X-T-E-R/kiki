@@ -59,6 +59,14 @@ export interface FrameUpsertOp {
   readonly frame: TranscriptFrame;
 }
 
+/** Idempotent retraction of a discarded streaming frame. */
+export interface FrameRemoveOp {
+  readonly op: 'frame.remove';
+  readonly turnId: TurnId;
+  readonly stepId: StepId;
+  readonly frameId: FrameId;
+}
+
 /** Authoritative count at the enclosing batch cursor; omission explicitly invalidates count knowledge. */
 export interface ToolCountSetOp {
   readonly op: 'tool.count.set';
@@ -154,6 +162,7 @@ export type TranscriptOperation =
   | TurnUpsertOp
   | StepUpsertOp
   | FrameUpsertOp
+  | FrameRemoveOp
   | ToolCountSetOp
   | AppendOp
   | MarkerUpsertOp

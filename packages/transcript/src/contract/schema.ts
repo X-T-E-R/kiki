@@ -668,6 +668,12 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     frame: transcriptFrameSchema,
   }),
   z.object({
+    op: z.literal('frame.remove'),
+    turnId: turnIdSchema,
+    stepId: stepIdSchema,
+    frameId: frameIdSchema,
+  }),
+  z.object({
     op: z.literal('tool.count.set'),
     count: z.number().int().nonnegative().optional(),
   }),

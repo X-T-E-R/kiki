@@ -77,6 +77,7 @@ import {
 import { StepRequestQueue, type StepRequestBatch } from './stepRequestQueue';
 import {
   AssistantDelta,
+  ResponseAttemptDiscarded,
   isDisplayablePromptOrigin,
   ThinkingDelta,
   ToolCallDelta,
@@ -1351,7 +1352,20 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
     const partialContent: Array<{ id: string; part: ContentPart; responseInstanceId?: string }> = [];
     let responseInstanceId: string | undefined;
+    const emittedToolCallIds = new Set<string>();
     let forceContentPartBoundary = false;
+    const discardAttemptParts = () => {
+      const partIds = partialContent.map((entry) => entry.id);
+      const toolCallIds = [...emittedToolCallIds];
+      if (partIds.length > 0 || toolCallIds.length > 0) {
+        void this.dispatcher.dispatch(new ResponseAttemptDiscarded({ turnId, stepId, partIds, toolCallIds }));
+      }
+      partialContent.length = 0;
+      callsByIndex.clear();
+      emittedToolCallIds.clear();
+      forceContentPartBoundary = false;
+      responseInstanceId = undefined;
+    };
     const accumulate = (part: ContentPart): string => {
       const last = partialContent.at(-1);
       if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) {
@@ -1366,8 +1380,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     return {
       handle: (part, instanceId) => {
         if (instanceId !== responseInstanceId) {
-          callsByIndex.clear();
-          forceContentPartBoundary = true;
+          discardAttemptParts();
           responseInstanceId = instanceId;
         }
         switch (part.type) {
@@ -1396,6 +1409,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             onResponseEvent();
             forceContentPartBoundary = true;
             callsByIndex.set(part._streamIndex, { id: part.id, name: part.name });
+            emittedToolCallIds.add(part.id);
             void this.dispatcher.dispatch(
               new ToolCallDelta({
                 turnId,
@@ -1440,11 +1454,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           return { id: entry!.id, part, responseInstanceId: entry!.responseInstanceId };
         });
       },
-      discardAttemptParts: () => {
-        partialContent.length = 0;
-        callsByIndex.clear();
-        forceContentPartBoundary = false;
-      },
+      discardAttemptParts,
       drainInterruptedContent: () =>
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };

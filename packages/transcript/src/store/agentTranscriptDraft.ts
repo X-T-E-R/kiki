@@ -254,6 +254,8 @@ export class AgentTranscriptDraft {
         return this.applyStepUpsert(op.turnId, op.step);
       case 'frame.upsert':
         return this.applyFrameUpsert(op.turnId, op.stepId, op.frame);
+      case 'frame.remove':
+        return this.applyFrameRemove(op.turnId, op.stepId, op.frameId);
       case 'tool.count.set':
         return this.applyToolCountSet(op.count);
       case 'append':
@@ -362,6 +364,28 @@ export class AgentTranscriptDraft {
     this.#steps.set(stepMapKey, nextStep);
     this.#frames.set(frameMapKey, frame);
     if (frame.kind === 'tool') this.#tools.set(frame.toolCallId, { turnId, stepId, frame });
+    return { changed: true, toolCallCountDelta };
+  }
+
+  private applyFrameRemove(turnId: string, stepId: string, frameId: string): DraftOperationResult {
+    const frameMapKey = frameKey(turnId, stepId, frameId);
+    const frame = this.#frames.get(frameMapKey);
+    const stepMapKey = stepKey(turnId, stepId);
+    const step = this.#steps.get(stepMapKey);
+    const turn = this.#turns.get(turnId);
+    if (frame === undefined || step === undefined || turn === undefined) {
+      return { changed: false, toolCallCountDelta: 0 };
+    }
+    const toolCallCountDelta = frame.kind === 'tool' ? -1 : 0;
+    this.#toolCallCount = adjustToolCallCount(this.#toolCallCount, toolCallCountDelta);
+    if (frame.kind === 'tool') this.#tools.delete(frame.toolCallId);
+    this.#frames.delete(frameMapKey);
+    const nextStep = { ...step, frames: step.frames.filter((entry) => entry.frameId !== frameId) };
+    this.#steps.set(stepMapKey, nextStep);
+    this.replaceOrInsertTurn({
+      ...turn,
+      steps: turn.steps.map((entry) => entry.stepId === stepId ? nextStep : entry),
+    });
     return { changed: true, toolCallCountDelta };
   }
 
@@ -818,6 +842,7 @@ function appendTargetKey(op: TranscriptOperation): string | undefined {
   if (op.op === 'frame.upsert') {
     return `frame:${op.turnId}:${op.stepId}:${op.frame.frameId}`;
   }
+  if (op.op === 'frame.remove') return `frame:${op.turnId}:${op.stepId}:${op.frameId}`;
   if (op.op === 'task.upsert') return `task:${op.task.taskId}`;
   return undefined;
 }
