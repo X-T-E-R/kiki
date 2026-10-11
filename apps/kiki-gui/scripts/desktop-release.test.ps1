@@ -7,7 +7,9 @@ $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $tempBase = Join-Path $repoRoot '.tmp\desktop-release-tests'
 [IO.Directory]::CreateDirectory($tempBase) | Out-Null
 $testRoot = Join-Path $tempBase ([guid]::NewGuid().ToString('N'))
-$runtimeRoot = Join-Path $testRoot 'runtime'
+# Named Kiki-Dev so the development runtime keeps its existing shortcut names; the
+# main runtime case below installs into <testRoot>\Kiki.
+$runtimeRoot = Join-Path $testRoot 'Kiki-Dev'
 $candidateRoot = Join-Path $testRoot 'candidate'
 $desktopRoot = Join-Path $testRoot 'desktop'
 $expectedCommit = 'a' * 40
@@ -272,6 +274,69 @@ try {
     Assert-True ($promoteShortcut.Arguments -match '-Action Promote') 'Promote Kiki GUI (Dev).lnk does not select the Promote action.'
     Assert-True ($promoteShortcut.Arguments -match '-WaitForUser') 'Promote Kiki GUI (Dev).lnk does not keep its success or failure visible.'
     Assert-True ($promoteShortcut.Arguments.Contains("-ExpectedCommit `"$expectedCommit`"")) 'Promote shortcut does not pass ExpectedCommit.'
+    Assert-Equal 'Launch the current promoted Kiki development build' $launchShortcut.Description 'Kiki GUI (Dev).lnk lost its development description.'
+    Assert-Equal 'Promote the last successful Kiki development build' $promoteShortcut.Description 'Promote Kiki GUI (Dev).lnk lost its development description.'
+    Assert-Equal (Join-Path $runtimeRoot 'controller') $launchShortcut.WorkingDirectory 'Kiki GUI (Dev).lnk does not work from the controller directory.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $desktopRoot 'Kiki GUI.lnk'))) 'The development runtime installed the release launch shortcut name.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $desktopRoot 'Promote Kiki GUI.lnk'))) 'The development runtime installed the release promote shortcut name.'
+
+    $mainRoot = Join-Path $testRoot 'Kiki'
+    $mainDesktop = Join-Path $testRoot 'main-desktop'
+    [IO.Directory]::CreateDirectory($mainDesktop) | Out-Null
+    # The user's normal entry already exists and must be updated in place.
+    $userEntry = $shell.CreateShortcut((Join-Path $mainDesktop 'Kiki GUI.lnk'))
+    $userEntry.TargetPath = (Join-Path $testRoot 'old-kiki.exe')
+    $userEntry.Arguments = '-old'
+    $userEntry.Save()
+    $otherEntryPath = Join-Path $mainDesktop 'Other App.lnk'
+    $otherEntry = $shell.CreateShortcut($otherEntryPath)
+    $otherEntry.TargetPath = (Join-Path $testRoot 'other.exe')
+    $otherEntry.Arguments = '-keep'
+    $otherEntry.Save()
+    $otherEntryBytes = [IO.File]::ReadAllBytes($otherEntryPath)
+
+    $mainOutput = Invoke-Controller @(
+        '-Action', 'InstallShortcuts',
+        '-RuntimeRoot', $mainRoot,
+        '-CandidateRoot', $candidateRoot,
+        '-DesktopPath', $mainDesktop,
+        '-ExpectedCommit', $expectedCommit
+    )
+    Assert-True ($mainOutput -match 'Installed Kiki shortcuts in') 'Main shortcut installation did not report the release runtime.'
+
+    $mainController = Join-Path (Join-Path $mainRoot 'controller') 'desktop-release.ps1'
+    Assert-True (Test-Path -LiteralPath $mainController -PathType Leaf) 'Main shortcut installation did not install the release controller.'
+    $mainSettings = Get-Content -LiteralPath (Join-Path (Join-Path $mainRoot 'controller') 'settings.json') -Raw | ConvertFrom-Json
+    Assert-Equal ([IO.Path]::GetFullPath($candidateRoot)) ([string]$mainSettings.candidateRoot) 'Main runtime settings did not point at the injected candidate.'
+    Assert-Equal $expectedCommit ([string]$mainSettings.expectedCommit) 'Main runtime settings dropped ExpectedCommit.'
+
+    $mainLaunch = $shell.CreateShortcut((Join-Path $mainDesktop 'Kiki GUI.lnk'))
+    $mainPromote = $shell.CreateShortcut((Join-Path $mainDesktop 'Promote Kiki GUI.lnk'))
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $mainDesktop 'Kiki GUI (Dev).lnk'))) 'The main runtime created a development launch shortcut.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $mainDesktop 'Promote Kiki GUI (Dev).lnk'))) 'The main runtime created a development promote shortcut.'
+    Assert-Equal 'Launch the current promoted Kiki build' $mainLaunch.Description 'Kiki GUI.lnk does not describe the release build.'
+    Assert-Equal 'Promote the last successful Kiki build' $mainPromote.Description 'Promote Kiki GUI.lnk does not describe the release build.'
+    Assert-True ($mainLaunch.TargetPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) 'Kiki GUI.lnk does not target Windows PowerShell.'
+    Assert-True ($mainLaunch.TargetPath -cne (Join-Path $testRoot 'old-kiki.exe')) 'Kiki GUI.lnk was not updated away from the previous target.'
+    Assert-True ($mainLaunch.Arguments.Contains("-File `"$mainController`"")) 'Kiki GUI.lnk does not invoke the installed release controller.'
+    Assert-True ($mainLaunch.Arguments.Contains("-RuntimeRoot `"$mainRoot`"")) 'Kiki GUI.lnk does not launch the main runtime.'
+    Assert-True ($mainLaunch.Arguments -match '-Action Launch') 'Kiki GUI.lnk does not select the Launch action.'
+    Assert-True ($mainLaunch.Arguments -match '-WindowStyle Hidden') 'Kiki GUI.lnk does not hide the controller window.'
+    Assert-True (-not $mainLaunch.Arguments.Contains('-ExpectedCommit')) 'Kiki GUI.lnk requires an expected commit.'
+    Assert-True (-not ($mainLaunch.Arguments -match 'target[\\/]debug')) 'Kiki GUI.lnk points into target/debug.'
+    Assert-Equal (Join-Path $mainRoot 'controller') $mainLaunch.WorkingDirectory 'Kiki GUI.lnk does not work from the controller directory.'
+    Assert-Equal (Join-Path $mainRoot 'controller') $mainPromote.WorkingDirectory 'Promote Kiki GUI.lnk does not work from the controller directory.'
+    Assert-True ($mainPromote.Arguments.Contains("-File `"$mainController`"")) 'Promote Kiki GUI.lnk does not invoke the installed release controller.'
+    Assert-True ($mainPromote.Arguments.Contains("-RuntimeRoot `"$mainRoot`"")) 'Promote Kiki GUI.lnk does not target the main runtime.'
+    Assert-True ($mainPromote.Arguments -match '-Action Promote') 'Promote Kiki GUI.lnk does not select the Promote action.'
+    Assert-True ($mainPromote.Arguments -match '-WaitForUser') 'Promote Kiki GUI.lnk does not keep its result visible.'
+    Assert-True ($mainPromote.Arguments.Contains("-ExpectedCommit `"$expectedCommit`"")) 'Promote Kiki GUI.lnk does not pass ExpectedCommit.'
+
+    Assert-True (Test-Path -LiteralPath $otherEntryPath -PathType Leaf) 'Shortcut installation removed an unrelated user shortcut.'
+    Assert-BytesEqual $otherEntryBytes ([IO.File]::ReadAllBytes($otherEntryPath)) 'Shortcut installation changed an unrelated user shortcut.'
+    $otherEntryAfter = $shell.CreateShortcut($otherEntryPath)
+    Assert-Equal (Join-Path $testRoot 'other.exe') $otherEntryAfter.TargetPath 'Shortcut installation retargeted an unrelated user shortcut.'
+    Assert-Equal '-keep' $otherEntryAfter.Arguments 'Shortcut installation rewrote an unrelated user shortcut.'
 
     $defaultRuntime = Join-Path $testRoot 'default-candidate-runtime'
     Invoke-Controller @(
@@ -326,7 +391,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $legacyRoot 'desktop-build-receipt.json'))) 'Launch required a build receipt for an existing release.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $legacyRelease 'desktop-build-receipt.json'))) 'Launch required a build receipt inside an existing release.'
 
-    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, receipt, and legacy-launch cases.'
+    Write-Output 'desktop-release tests passed: initial, repeated, fail-closed, verification, cli-publish, installed-controller, production-default, shortcut, main-runtime-shortcut, receipt, and legacy-launch cases.'
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

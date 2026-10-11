@@ -378,6 +378,28 @@ function New-KikiShortcut(
     $shortcut.Save()
 }
 
+function Get-ShortcutProfile([string]$Root) {
+    # Same runtime-name convention as Invoke-Launch: only a Kiki-Dev root is the
+    # development runtime. Anything else (the EasyAgent\Kiki runtime) is the
+    # normal one, so its desktop entry keeps the plain Kiki GUI name.
+    if ((Split-Path -Leaf $Root) -eq 'Kiki-Dev') {
+        return [pscustomobject]@{
+            LaunchFile = 'Kiki GUI (Dev).lnk'
+            PromoteFile = 'Promote Kiki GUI (Dev).lnk'
+            LaunchDescription = 'Launch the current promoted Kiki development build'
+            PromoteDescription = 'Promote the last successful Kiki development build'
+            Output = 'Installed Kiki development shortcuts in: {0}'
+        }
+    }
+    return [pscustomobject]@{
+        LaunchFile = 'Kiki GUI.lnk'
+        PromoteFile = 'Promote Kiki GUI.lnk'
+        LaunchDescription = 'Launch the current promoted Kiki build'
+        PromoteDescription = 'Promote the last successful Kiki build'
+        Output = 'Installed Kiki shortcuts in: {0}'
+    }
+}
+
 function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Desktop, [string]$ExpectedCommit) {
     Assert-FullCommit $ExpectedCommit
     $rootPath = Get-FullPath $Root
@@ -400,14 +422,15 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     Assert-SafeShortcutPath $rootPath 'Runtime root'
     Assert-SafeShortcutPath $installedController 'Installed controller path'
     Assert-SafeShortcutPath $ExpectedCommit 'Expected commit'
+    $profile = Get-ShortcutProfile $rootPath
     $powerShellPath = Join-Path $PSHOME 'powershell.exe'
     $shell = New-Object -ComObject WScript.Shell
     $common = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $installedController
     $launchArguments = '-WindowStyle Hidden {0} -Action Launch -RuntimeRoot "{1}"' -f $common, $rootPath
     $promoteArguments = '{0} -Action Promote -RuntimeRoot "{1}" -ExpectedCommit "{2}" -WaitForUser' -f $common, $rootPath, $ExpectedCommit
-    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Kiki GUI (Dev).lnk') $powerShellPath $launchArguments $controllerDirectory 'Launch the current promoted Kiki development build'
-    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Promote Kiki GUI (Dev).lnk') $powerShellPath $promoteArguments $controllerDirectory 'Promote the last successful Kiki development build'
-    Write-Output "Installed Kiki development shortcuts in: $desktopFullPath"
+    New-KikiShortcut $shell (Join-Path $desktopFullPath $profile.LaunchFile) $powerShellPath $launchArguments $controllerDirectory $profile.LaunchDescription
+    New-KikiShortcut $shell (Join-Path $desktopFullPath $profile.PromoteFile) $powerShellPath $promoteArguments $controllerDirectory $profile.PromoteDescription
+    Write-Output ($profile.Output -f $desktopFullPath)
 }
 
 function Resolve-CandidateRoot {
