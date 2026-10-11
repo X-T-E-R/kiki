@@ -24,12 +24,13 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
     ? undefined
     : resolveFileReference(target.split(/[?#]/, 1)[0]!, directory)?.path, [target, directory]);
   const [attempt, setAttempt] = useState(0);
-  const [failure, setFailure] = useState(false);
+  const [failedMedia, setFailedMedia] = useState<{ client: unknown; path: string | undefined } | null>(null);
 
   const fileId = target === undefined ? undefined : parseDaemonFileRefFileId(target);
   const localPath = fileId === undefined ? path : undefined;
   const mediaItem = useMemo<MediaRef>(() => ({ kind: 'image', path: localPath }), [localPath]);
   const load = useSessionMedia(mediaItem, preview?.sessionId, localPath !== undefined && client !== undefined, true, attempt);
+  const failure = failedMedia !== null && failedMedia.client === client && failedMedia.path === path;
   if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
 
   const name = safeImagePreviewName({ metadataName: load.status === 'ready' ? load.name : undefined, path });
@@ -41,7 +42,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
       <button
         type="button"
         onClick={() => {
-          setFailure(false);
+          setFailedMedia(null);
           setAttempt((value) => value + 1);
         }}
         className="text-[12px] text-ink-faint hover:text-ink hover:underline"
@@ -52,7 +53,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   }
 
   const url = path === undefined ? src : load.status === 'ready' ? load.url : undefined;
-  const content = <img {...props} src={url} alt={description} decoding="async" onError={() => { setFailure(true); }} className="max-w-full h-auto" />;
+  const content = <img {...props} src={url} alt={description} decoding="async" onError={() => { setFailedMedia({ client, path }); }} className="max-w-full h-auto" />;
   if (preview === null) return content;
   return (
     <button

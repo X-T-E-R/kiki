@@ -191,6 +191,46 @@ it('keeps hook order when one image switches between a daemon file and a local p
   }
 });
 
+it('clears a decode failure when the same image changes path or connection', async () => {
+  const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+    .mockReturnValueOnce('blob:broken')
+    .mockReturnValueOnce('blob:recovered')
+    .mockReturnValueOnce('blob:next-connection');
+  const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  try {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const draw = (src: string) => (
+      <I18nProvider><MarkdownFileImage src={src} alt="diagram" documentDirectory="/work/docs" /></I18nProvider>
+    );
+    await act(async () => { root.render(draw('./assets/broken.png')); });
+    const broken = container.querySelector('img');
+    expect(broken?.getAttribute('src')).toBe('blob:broken');
+    await act(async () => { broken?.dispatchEvent(new Event('error')); });
+    expect(container.querySelector('img')).toBeNull();
+
+    await act(async () => { root.render(draw('./assets/ok.png')); });
+    expect(readHostMediaPreviewBytes).toHaveBeenCalledWith('/work/docs/assets/ok.png', expect.anything());
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:recovered');
+
+    const recovered = container.querySelector('img');
+    await act(async () => { recovered?.dispatchEvent(new Event('error')); });
+    expect(container.querySelector('img')).toBeNull();
+    connectionMock.activeClient = {
+      readingOptions: () => ({}),
+      readHostMediaPreviewBytes: async () => ({ bytes: new Uint8Array([2]), mime: 'image/png' }),
+    };
+    await act(async () => { root.render(draw('./assets/ok.png')); });
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:next-connection');
+  } finally {
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+  }
+});
+
 it('renders Mermaid as an inert image and leaves invalid diagrams as code', async () => {
   const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:markdown-diagram');
   const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
