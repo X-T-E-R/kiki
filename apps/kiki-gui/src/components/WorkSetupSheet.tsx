@@ -57,6 +57,12 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
   const ready = useMemo(() => mode.plugins.filter((plugin) => plugin.installed && plugin.enabled), [mode.plugins]);
   const missing = useMemo(() => mode.plugins.filter((plugin) => !plugin.installed || !plugin.enabled), [mode.plugins]);
   const prerequisite = useMemo(() => mode.plugins.find((plugin) => plugin.prerequisite !== undefined), [mode.plugins]);
+  // `completed` names every plugin the server kept, including ones that were
+  // already on, plus `pluginId:prerequisite` for a program installed beside
+  // them. The count is only the plugins this sheet was adding.
+  const added = phase.kind === 'partial'
+    ? missing.filter((plugin) => phase.completed.includes(plugin.id) && phase.failures.every((failure) => failure.plugin_id !== plugin.id))
+    : [];
 
   useEffect(() => {
     if (phase.kind !== 'working') return;
@@ -101,7 +107,7 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
           {phase.kind === 'partial' ? (
             <p className="mt-2 text-[12.5px] leading-[1.55] text-ink-soft">
               {t('workSetup.partialBody', {
-                done: String(phase.completed.length),
+                done: String(added.length),
                 total: String(missing.length),
               })}
             </p>
@@ -175,12 +181,10 @@ export function WorkSetupSheet({ mode, client, onClose, onEnabled, onPickFile }:
 
           {phase.kind === 'partial' ? (
             <div className="mt-1">
-              {phase.completed.length > 0 ? (
+              {added.length > 0 ? (
                 <>
                   <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workSetup.itemReady')}</p>
-                  {mode.plugins
-                    .filter((plugin) => phase.completed.includes(plugin.id))
-                    .map((plugin) => (
+                  {added.map((plugin) => (
                       <div key={plugin.id} className="flex items-start gap-2.5 border-b border-hairline py-2.5">
                         <ItemMark state="have" />
                         <div className="min-w-0 flex-1">

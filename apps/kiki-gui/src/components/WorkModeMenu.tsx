@@ -107,9 +107,9 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
                   aria-checked={active}
                   data-work-mode-option={mode.id}
                   onClick={() => {
-                    chooseMode(mode.id);
-                    if (!mode.enabled) onSetup(mode);
-                    else setOpen(false);
+                    setOpen(false);
+                    if (mode.enabled) chooseMode(mode.id);
+                    else onSetup(mode);
                   }}
                   className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-ink/[0.04] ${active ? 'bg-selected' : ''}`}
                 >

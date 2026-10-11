@@ -15,7 +15,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -205,6 +205,7 @@ const COPY: Record<string, string> = {
   'workSetup.doneBody': 'You can start a task below.',
   'workSetup.doneAction': 'Start working',
   'workSetup.partialBody': '{done} of {total} parts are ready. What worked is kept.',
+  'workSetup.itemReady': 'Ready',
   'workSetup.partialAction': 'Retry the rest',
   'workSetup.close': 'Close',
   'workSetup.failedItem': '{name} could not be installed. {reason}',
@@ -302,6 +303,10 @@ beforeEach(async () => {
   fixture.response = 'office';
   fixture.items = [kikiItem, workItem];
   fixture.enableCalls.length = 0;
+  fixture.enableWorkPreset = async (id: string, prerequisites: boolean) => {
+    fixture.enableCalls.push({ id, prerequisites });
+    return { preset: {}, completed: ['kiki-office'], failures: [] };
+  };
   const { configureSpaceStorage } = await import('../lib/spaceStorage');
   const { configureWorkModes, writeWindowModeId } = await import('../lib/workModes');
   localStorage.clear();
@@ -340,6 +345,112 @@ describe('work surfaces — visual proof', () => {
     await act(async () => { document.querySelector('[data-work-setup-confirm]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     // One action carries the whole setup, including the prerequisite consent.
     expect(fixture.enableCalls).toEqual([{ id: 'work', prerequisites: true }]);
+  });
+
+  it('partial setup counts only plugins this step added, not the prerequisite or what was already ready', async () => {
+    const accepted: { id?: string; enabled?: boolean }[] = [];
+    const mode = {
+      ...workItem,
+      enabled: false,
+      plugins: [writing, { ...office, installed: false, enabled: false }, { ...extract, installed: false, enabled: false }],
+    };
+    fixture.enableWorkPreset = async (id: string, prerequisites: boolean) => {
+      fixture.enableCalls.push({ id, prerequisites });
+      return {
+        preset: { ...mode, enabled: true },
+        completed: ['kiki-writing', 'kiki-office', 'kiki-office:officecli'],
+        failures: [{ plugin_id: 'kiki-extract', message: 'Package is not available from this installation source.' }],
+      };
+    };
+    const client = { enableWorkPreset: (...args: [string, boolean]) => fixture.enableWorkPreset(...args) } as never;
+    await mount(<WorkSetupSheet mode={mode as never} client={client} onClose={() => {}} onEnabled={(preset) => { accepted.push(preset); }} />);
+    await act(async () => { document.querySelector('[data-work-setup-confirm]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await shoot('work-setup-partial', 700, 900);
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('1 of 2 parts are ready');
+    expect(text).toContain('Office');
+    expect(text).toContain('Extract');
+    expect(text).not.toContain('Writing');
+    expect(text).not.toContain('OfficeCLI');
+    expect(text).not.toContain('3 of 2');
+    expect(document.querySelectorAll('[data-work-setup-failure]')).toHaveLength(1);
+    expect(accepted).toEqual([{ ...mode, enabled: true }]);
+  });
+
+  it('a mode that is not ready closes the menu and leaves this window unchanged until enable is accepted', async () => {
+    const { useWorkModes } = await import('../lib/workModeCatalog');
+    const { readWindowModeId, writeWindowModeId } = await import('../lib/workModes');
+    const reportsItem = { id: 'reports', name: 'Reports', description: 'A ready mode in this window.', enabled: true, removed: false, preferences: {}, plugins: [] };
+    writeWindowModeId('kiki');
+    const stored = JSON.parse(localStorage.getItem('kiki.windowMode') ?? '{}') as Record<string, string>;
+    stored['main::w-otherwin1'] = 'reports';
+    localStorage.setItem('kiki.windowMode', JSON.stringify(stored));
+    const beforeKeys = Object.keys(localStorage).sort();
+    fixture.items = [kikiItem, reportsItem, { ...workItem, enabled: false }];
+    fixture.enableWorkPreset = async (id: string, prerequisites: boolean) => {
+      fixture.enableCalls.push({ id, prerequisites });
+      return { preset: { ...workItem, enabled: true }, completed: ['kiki-office'], failures: [] };
+    };
+    const opened: string[] = [];
+    const accepted: string[] = [];
+    const client = {
+      listWorkPresets: fixture.listWorkPresets,
+      enableWorkPreset: (...args: [string, boolean]) => fixture.enableWorkPreset(...args),
+    } as never;
+    function Harness() {
+      const cat = useWorkModes(client);
+      const [setup, setSetup] = useState<typeof workItem | null>(null);
+      return (
+        <>
+          <WorkModeMenu catalog={cat} onSetup={(mode) => { opened.push(mode.id); setSetup(mode as typeof workItem); }} />
+          {setup !== null ? (
+            <WorkSetupSheet
+              mode={setup}
+              client={client}
+              onClose={() => { setSetup(null); }}
+              onEnabled={(preset) => { accepted.push(preset.id); writeWindowModeId(preset.id); }}
+            />
+          ) : null}
+        </>
+      );
+    }
+    await mount(<Harness />);
+    const openMenu = async () => {
+      await act(async () => { container.querySelector('[data-work-mode-trigger]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    const choose = async (id: string) => {
+      await act(async () => { container.querySelector(`[data-work-mode-option="${id}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    await openMenu();
+    await choose('work');
+    await shoot('work-mode-not-ready', 780, 900);
+    expect(container.querySelector('[data-work-mode-popover]')).toBeNull();
+    expect(container.querySelector('[data-work-mode-trigger]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-work-mode-trigger]')?.textContent).toContain('Kiki');
+    expect(opened).toEqual(['work']);
+    expect(readWindowModeId()).toBe('kiki');
+    expect(document.querySelector('[data-work-setup]')).not.toBeNull();
+
+    const decline = [...document.querySelectorAll('button')].find((button) => button.textContent === 'Not now');
+    await act(async () => { decline!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(document.querySelector('[data-work-setup]')).toBeNull();
+    expect(accepted).toEqual([]);
+    expect(readWindowModeId()).toBe('kiki');
+
+    await openMenu();
+    await choose('reports');
+    expect(container.querySelector('[data-work-mode-popover]')).toBeNull();
+    expect(opened).toEqual(['work']);
+    expect(readWindowModeId()).toBe('reports');
+
+    await openMenu();
+    await choose('work');
+    await act(async () => { document.querySelector('[data-work-setup-confirm]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(accepted).toEqual(['work']);
+    expect(readWindowModeId()).toBe('work');
+    const table = JSON.parse(localStorage.getItem('kiki.windowMode') ?? '{}') as Record<string, string>;
+    expect(table['main::w-otherwin1']).toBe('reports');
+    expect(Object.keys(localStorage).sort()).toEqual(beforeKeys);
   });
 
   it('work home: a page you can act on', async () => {

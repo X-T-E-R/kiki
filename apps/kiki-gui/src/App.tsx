@@ -72,7 +72,7 @@ import { UsagePage } from './components/UsagePage';
 import { WorkPage } from './components/WorkPage';
 import { WorkSetupSheet } from './components/WorkSetupSheet';
 import { useWorkModes, workPresetsEnabled } from './lib/workModeCatalog';
-import { readWindowModeId } from './lib/workModes';
+import { readWindowModeId, writeWindowModeId } from './lib/workModes';
 import { landingRouteFor } from './lib/workModeStartup';
 import { useHost } from './host';
 import {
@@ -977,7 +977,7 @@ export function App() {
             mode={workSetup}
             client={client}
             onClose={() => { setWorkSetup(null); }}
-            onEnabled={() => { workModeCatalog.reload(); }}
+            onEnabled={(preset) => { writeWindowModeId(preset.id); workModeCatalog.reload(); }}
             onPickFile={() => { setWorkSetup(null); }}
           />
         ) : null}
