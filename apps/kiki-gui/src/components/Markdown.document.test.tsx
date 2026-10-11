@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
+import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 
 const readHostMediaPreviewBytes = vi.fn(async (_path: string, _options?: unknown) => ({
   bytes: new Uint8Array([137, 80, 78, 71]), mime: 'image/png',
@@ -116,6 +117,51 @@ it('leaves external image URLs with query strings on the external path', async (
   const container = await render('![logo](https://example.test/logo.png?rev=2)', '/work/docs');
   expect(readHostMediaPreviewBytes).not.toHaveBeenCalled();
   expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/logo.png?rev=2');
+});
+
+it('loads a Windows absolute image in ordinary chat through the host preview', async () => {
+  const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:chat-windows-image');
+  const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  const openImage = vi.fn();
+  const preview: MediaPreviewApi = {
+    cwd: 'C:/work',
+    sessionId: 'session-1',
+    openImage,
+    openFile: vi.fn(),
+    openAttachment: vi.fn(),
+    openAgentPanel: vi.fn(),
+    openBuiltinSkill: vi.fn(),
+    previewTabCount: 0,
+    previewPanelOpen: false,
+    togglePreviewPanel: vi.fn(),
+    activeAgentPanelId: undefined,
+  };
+  try {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <MemoryRouter><I18nProvider>
+          <MediaPreviewContext.Provider value={preview}>
+            <Markdown mode="static" text={'![shot](C:\\Example\\shot.png)'} />
+          </MediaPreviewContext.Provider>
+        </I18nProvider></MemoryRouter>,
+      );
+    });
+    expect(readHostMediaPreviewBytes).toHaveBeenCalledWith('C:\\Example\\shot.png', expect.anything());
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('src')).toBe('blob:chat-windows-image');
+    await act(async () => {
+      image?.closest('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(openImage).toHaveBeenCalledWith('blob:chat-windows-image', 'shot.png');
+  } finally {
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+  }
 });
 
 it('keeps the UNC share prefix when loading a relative image', async () => {

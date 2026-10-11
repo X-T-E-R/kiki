@@ -45,6 +45,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type P
 import type { DeferredAppendTiming } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { stripThreadRefContext } from '@kiki/session-core/composer';
+import type { MediaRef } from '@kiki/session-core/composer/media';
 import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
 import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
@@ -53,6 +54,8 @@ import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { ContinuationRow } from './ContentContinuation';
 import { Icon } from './icons';
+import { useMediaPreview } from './mediaPreviewContext';
+import { useSessionMedia } from './mediaParts';
 
 export type QueueRuntimeControls = NonNullable<QueuedPromptPreview['runtimeControls']>;
 
@@ -72,6 +75,78 @@ export const TIMING_HINT_KEY = {
   subagents_done: 'timing.hint.subagentsDone',
   tasks_done: 'timing.hint.tasksDone',
 } as const;
+
+function QueueMediaItem({
+  media,
+  sessionId,
+}: {
+  readonly media: MediaRef & {
+    readonly file_id?: string;
+    readonly source?: { readonly kind?: string; readonly file_id?: string; readonly url?: string };
+  };
+  readonly sessionId?: string;
+}) {
+  const { t } = useI18n();
+  const preview = useMediaPreview();
+  const [attempt, setAttempt] = useState(0);
+  const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
+  const fileId = media.fileId ?? media.file_id ?? (media.source?.kind === 'session_media' || media.source?.kind === 'file' ? media.source.file_id : undefined);
+  const rawUrl = media.url ?? (media.source?.kind === 'url' ? media.source.url : undefined);
+  const normalizedMedia = useMemo(() => ({
+    ...media,
+    fileId: fileId ?? media.fileId,
+    url: rawUrl ?? media.url,
+  }), [media, fileId, rawUrl]);
+  const enabled = normalizedMedia.kind === 'image' && normalizedMedia.url === undefined && (normalizedMedia.fileId !== undefined || normalizedMedia.path !== undefined);
+  const load = useSessionMedia(normalizedMedia, sessionId, enabled, true, attempt);
+  if (normalizedMedia.kind !== 'image') return null;
+  const src = normalizedMedia.url ?? (load.status === 'ready' ? load.url : undefined);
+  const failed = load.status === 'failed' || (src !== undefined && failedUrl === src);
+  if (failed) {
+    return (
+      <button
+        type="button"
+        data-queue-media-retry
+        onClick={(event) => {
+          event.stopPropagation();
+          setFailedUrl(undefined);
+          setAttempt((value) => value + 1);
+        }}
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink-subtle"
+        title={t('common.retry')}
+        aria-label={t('common.retry')}
+      >
+        <Icon name="file" size={12} />
+      </button>
+    );
+  }
+  if (normalizedMedia.url === undefined && load.status === 'loading') {
+    return <span aria-busy="true" className="h-4 w-4 shrink-0 animate-pulse rounded bg-ink/[0.08]" />;
+  }
+  if (src === undefined) return null;
+  const imgElement = (
+    <img
+      src={src}
+      alt={normalizedMedia.name ?? ''}
+      className="h-4 w-4 rounded object-cover"
+      onError={() => { setFailedUrl(src); }}
+    />
+  );
+  if (preview === null) return imgElement;
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        preview.openImage(src, normalizedMedia.name);
+      }}
+      className="flex shrink-0 items-center justify-center rounded transition-opacity hover:opacity-85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-selected-ink"
+      title={normalizedMedia.name}
+    >
+      {imgElement}
+    </button>
+  );
+}
 
 /**
  * The queue sheet's label behind the composer card: "N 条待发送" on the left,
@@ -187,6 +262,7 @@ export function QueueStrip({
   readonly onCancelModelSwitch?: (operationId: string) => Promise<void> | void;
 }) {
   const { t } = useI18n();
+  const preview = useMediaPreview();
   const noticeId = useId();
   // A row with an in-flight action stays disabled until the action settles
   // (success removes the row via reconcile; failure keeps it, re-enabled,
@@ -554,9 +630,7 @@ export function QueueStrip({
           const label = media.name ?? media.mime ?? t('media.attachment');
           return (
             <span key={`${item.promptId}-media-${mediaIndex}`} className="inline-flex max-w-28 shrink-0 items-center gap-1 rounded-[4px] bg-paper px-1.5 py-0.5 text-[12px] text-ink-soft" title={label}>
-              {media.kind === 'image' && media.url !== undefined ? (
-                <img src={media.url} alt="" className="h-4 w-4 rounded object-cover" />
-              ) : null}
+              <QueueMediaItem media={media} sessionId={preview?.sessionId} />
               <span className="truncate">{label}</span>
               {onRemoveAttachment !== undefined && item.content !== undefined && !isEditing ? (
                 <button

@@ -124,7 +124,7 @@ interface MdastLike {
   children?: MdastLike[];
 }
 
-function remarkLocalFileLinks(includeImages = false) {
+function remarkLocalFileLinks(includeImages = true) {
   return (tree: MdastLike, file: VFileLike) => {
     const source = typeof file.value === 'string' ? file.value : undefined;
     const visit = (node: MdastLike) => {
@@ -304,9 +304,11 @@ function lastParseablePrefix(url: string): number {
   return 0;
 }
 
-const REMARK_PLUGINS = [remarkLocalFileLinks, remarkSplitAutolinkTail];
+function remarkDocumentAssets() { return remarkLocalFileLinks(true); }
+
+const REMARK_PLUGINS = [remarkDocumentAssets, remarkSplitAutolinkTail];
 const DOCUMENT_REMARK_PLUGINS = [
-  function remarkDocumentAssets() { return remarkLocalFileLinks(true); },
+  remarkDocumentAssets,
   remarkSplitAutolinkTail,
 ];
 

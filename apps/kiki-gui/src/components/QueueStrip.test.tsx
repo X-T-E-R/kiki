@@ -5,7 +5,21 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 import { QueueHeaderSummary, QueueStrip, type QueueRuntimeControls } from './QueueStrip';
+
+const readSessionMediaPreviewBytes = vi.hoisted(() => vi.fn(async () => ({
+  bytes: new Uint8Array([137, 80, 78, 71]),
+  mime: 'image/png',
+  name: 'shot.png',
+})));
+const queuedMediaClient = vi.hoisted(() => ({
+  readingOptions: () => ({}),
+  readSessionMediaPreviewBytes,
+}));
+vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({ client: queuedMediaClient, scopeId: 'local' }),
+}));
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -34,21 +48,48 @@ const ITEMS = [
 
 async function renderStrip(
   props: Partial<Parameters<typeof QueueStrip>[0]> = {},
+  preview?: Partial<MediaPreviewApi>,
 ): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  const api: MediaPreviewApi | undefined = preview === undefined ? undefined : {
+    cwd: 'C:/work',
+    sessionId: 'session-1',
+    openImage: vi.fn(),
+    openFile: vi.fn(),
+    openAttachment: vi.fn(),
+    openAgentPanel: vi.fn(),
+    openBuiltinSkill: vi.fn(),
+    previewTabCount: 0,
+    previewPanelOpen: false,
+    togglePreviewPanel: vi.fn(),
+    activeAgentPanelId: undefined,
+    ...preview,
+  };
   await act(async () => {
     root.render(
       <I18nProvider>
-        <QueueStrip
-          items={ITEMS}
-          onSendNow={() => {}}
-          onRemove={() => {}}
-          onClearAll={() => {}}
-          {...props}
-        />
+        {api === undefined ? (
+          <QueueStrip
+            items={ITEMS}
+            onSendNow={() => {}}
+            onRemove={() => {}}
+            onClearAll={() => {}}
+            {...props}
+          />
+        ) : (
+          <MediaPreviewContext.Provider value={api}>
+            <QueueStrip
+              items={ITEMS}
+              onSendNow={() => {}}
+              onRemove={() => {}}
+              onClearAll={() => {}}
+              {...props}
+            />
+          </MediaPreviewContext.Provider>
+        )}
       </I18nProvider>,
     );
   });
@@ -177,6 +218,30 @@ describe('QueueStrip edit round-trip', () => {
 
     await click(container.querySelector('button[aria-label="Edit queued prompt"]')!);
     expect(onEdit).toHaveBeenCalledExactlyOnceWith('p1');
+  });
+
+  it('shows and opens a persisted queued image that has only a file id', async () => {
+    readSessionMediaPreviewBytes.mockClear();
+    const openImage = vi.fn();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:queued-file');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    try {
+      const { container } = await renderStrip({
+        items: [{
+          promptId: 'p-file',
+          text: 'parked',
+          media: [{ kind: 'image', fileId: 'file-queued', name: 'shot.png' }],
+        }],
+      }, { sessionId: 'session-1', openImage });
+      expect(readSessionMediaPreviewBytes).toHaveBeenCalledWith('session-1', 'file-queued', expect.anything());
+      const image = container.querySelector('img');
+      expect(image?.getAttribute('src')).toBe('blob:queued-file');
+      await click(image!.closest('button')!);
+      expect(openImage).toHaveBeenCalledWith('blob:queued-file', 'shot.png');
+    } finally {
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+    }
   });
 
   it('shows queued images, permits editing attachment-only prompts and removes visible attachments', async () => {
