@@ -13,6 +13,7 @@ export interface HostProcessOptions {
   readonly windowsHide?: boolean;
   readonly mergeStderr?: boolean;
   readonly timeout?: number;
+  readonly ownedProcessTree?: boolean;
 }
 
 export interface IHostProcess {

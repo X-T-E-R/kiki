@@ -1,7 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { buildWindowsProcessHelper as buildCanonicalHelper } from '../../../../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs';
+import { stageNpmDistributions } from '../../../scripts/npm/stage.mjs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { buildWindowsProcessHelper, collectWindowsProcessAssets } from '../../../scripts/native/windows-process-assets.mjs';
 import { collectAuthNativePackage, collectNodePtyPackage } from '../../../scripts/native/assets.mjs';
 
 import {
@@ -225,4 +230,77 @@ describe('node-pty loading unit', () => {
       rmSync(packageRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
+});
+
+
+describe('Windows process helper build asset', () => {
+  it('does not add a Windows helper to POSIX targets', async () => {
+    expect(await collectWindowsProcessAssets({ appRoot: '.', target: 'linux-x64' })).toEqual({ runtimeFiles: [], assets: {} });
+  });
+
+  it.skipIf(process.platform !== 'win32')('compiles once for concurrent consumers and cleans the private build directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-helper-build-'));
+    try {
+      const options = { appRoot: fileURLToPath(new URL('../../../', import.meta.url)), target: 'win32-x64', outputDir: dir };
+      const start = performance.now();
+      const results = await Promise.all(Array.from({ length: 3 }, () => buildWindowsProcessHelper(options)));
+      expect(results[0]).toBe(results[1]);
+      expect(results[1]).toBe(results[2]);
+      expect(results[0]?.bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
+      const assets = await collectWindowsProcessAssets(options);
+      expect(assets.runtimeFiles[0]?.key).toBe('windows-process-helper');
+      console.log(JSON.stringify({ coldCompileMs: performance.now() - start, concurrentConsumers: 3, singleFlight: true }));
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('reports a missing build compiler instead of publishing a helper', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-helper-fail-'));
+    try {
+      vi.stubEnv('SystemRoot', dir);
+      const options = { appRoot: fileURLToPath(new URL('../../../', import.meta.url)), target: 'win32-x64', outputDir: dir };
+      await expect(buildWindowsProcessHelper(options)).rejects.toThrow('Could not compile the Windows process helper');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+});
+
+
+it('stages the precompiled Windows helper on a Linux npm publisher and rejects missing artifacts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kiki-linux-npm-stage-'));
+  const original = process.platform;
+  try {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    vi.stubEnv('SystemRoot', join(dir, 'no-compiler'));
+    const appRoot = join(dir, 'apps', 'kimi-code');
+    const artifact = join(dir, 'windows-process-helper.exe');
+    const bytes = Buffer.from([77, 90, 0, 255, 1, 2]);
+    writeFileSync(artifact, bytes);
+    mkdirSync(join(appRoot, 'dist'), { recursive: true });
+    mkdirSync(join(appRoot, 'native'), { recursive: true });
+    mkdirSync(join(appRoot, 'scripts', 'npm'), { recursive: true });
+    mkdirSync(join(dir, 'apps', 'kiki-gui'), { recursive: true });
+    writeFileSync(join(appRoot, 'package.json'), JSON.stringify({ version: '1.0.0', dependencies: { ws: '8.18.0' } }));
+    writeFileSync(join(dir, 'apps', 'kiki-gui', 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    writeFileSync(join(appRoot, 'README.md'), 'fixture');
+    writeFileSync(join(appRoot, 'scripts', 'npm', 'desktop-postinstall.mjs'), '');
+    const outputDir = join(appRoot, 'dist', 'native');
+    await expect(buildCanonicalHelper({ target: 'win32-x64', outputDir, prebuiltPath: join(dir, 'missing.exe') })).rejects.toThrow('release artifact is missing or invalid');
+    expect(readdirSync(outputDir)).toEqual([]);
+    const built = await buildCanonicalHelper({ target: 'win32-x64', outputDir, prebuiltPath: artifact });
+    expect(built?.bytes).toEqual(bytes);
+    expect(readFileSync(join(outputDir, 'windows-process-helper.exe'))).toEqual(bytes);
+    await stageNpmDistributions(appRoot);
+    for (const kind of ['lite', 'full']) {
+      const staged = join(appRoot, 'dist-npm', kind);
+      expect(readFileSync(join(staged, 'dist', 'native', 'windows-process-helper.exe'))).toEqual(bytes);
+      expect(JSON.parse(readFileSync(join(staged, 'package.json'), 'utf8')).files).toContain('dist');
+    }
+    console.log(JSON.stringify({ publisher: 'linux', compilerUsed: false, prebuiltCopied: true, npmDistributions: ['lite', 'full'], missingArtifactRejected: true }));
+  } finally {
+    Object.defineProperty(process, 'platform', { value: original });
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
 });

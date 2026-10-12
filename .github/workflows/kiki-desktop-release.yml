@@ -465,6 +465,7 @@ jobs:
           export KIKI_BUILT_IN_CATALOG_FILE="$RUNNER_TEMP/kiki-npm-built-in-catalog.json"
           node apps/kimi-code/scripts/update-catalog.mjs --out "$KIKI_BUILT_IN_CATALOG_FILE"
           export KIKI_AUTH_NATIVE_ARTIFACT_ROOT="$PWD/cli-native/auth-native"
+          export KIKI_WINDOWS_PROCESS_HELPER_ARTIFACT="$PWD/cli-native/windows-process-helper/win32-x64/windows-process-helper.exe"
           pnpm --filter @kiki/cli run build
           node apps/kimi-code/scripts/npm/stage.mjs
 

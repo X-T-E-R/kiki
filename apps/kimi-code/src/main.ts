@@ -32,7 +32,7 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile } from './native/native-assets';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile, getWindowsProcessHelperFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
@@ -100,6 +100,8 @@ function bootstrap(): void {
   installNativeModuleHook();
   const pluginHostRunner = getPluginHostRunnerFile();
   if (pluginHostRunner !== null) process.env['KIKI_PLUGIN_HOST_RUNNER'] = pluginHostRunner;
+  const windowsProcessHelper = getWindowsProcessHelperFile();
+  if (windowsProcessHelper !== null) process.env['KIKI_WINDOWS_PROCESS_HELPER'] = windowsProcessHelper;
   const historyEntry = getHistoryImportEntryFile();
   if (historyEntry !== null) process.env['KIKI_HISTORY_IMPORT_ENTRY'] = historyEntry;
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid

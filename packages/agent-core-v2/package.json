@@ -44,7 +44,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm gen:official-plugin-metadata && tsdown src/index.ts src/app/plugin/defaultCatalog.ts",
+    "build": "pnpm gen:official-plugin-metadata && tsdown src/index.ts src/app/plugin/defaultCatalog.ts && node scripts/build-windows-process-helper.mjs",
     "gen:official-plugin-metadata": "node scripts/gen-official-plugin-metadata.mjs",
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

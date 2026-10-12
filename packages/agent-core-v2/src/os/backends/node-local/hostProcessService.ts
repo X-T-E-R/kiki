@@ -13,6 +13,8 @@ import {
   type IHostProcess,
 } from '#/os/interface/hostProcess';
 
+import { spawnWindowsProcessTree } from './windowsProcessTree';
+
 const isWindows: boolean = process.platform === 'win32';
 const TASKKILL_TIMEOUT_MS = 5_000;
 
@@ -115,28 +117,28 @@ class HostProcess implements IHostProcess {
     }
 
     if (isWindows) {
-      const taskkillArgs = ['/T', '/F', '/PID', String(this.pid)];
-      const killer = spawn('taskkill', taskkillArgs, {
+      if (this._exitCode !== null) return;
+      const killer = spawn('taskkill', ['/T', '/F', '/PID', String(this.pid)], {
         stdio: 'ignore',
         windowsHide: true,
       });
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      const exited = await Promise.race([
-        new Promise<true>((resolve) => {
-          const done = (): void => { resolve(true); };
-          killer.once('error', done);
-          killer.once('close', done);
-        }),
-        new Promise<false>((resolve) => {
-          timeout = setTimeout(() => { resolve(false); }, TASKKILL_TIMEOUT_MS);
-          timeout.unref?.();
-        }),
-      ]);
-      clearTimeout(timeout);
-      if (!exited) {
-        killer.unref();
-        killer.kill();
-      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const failure = (phase: string, cause?: unknown, exitCode?: number | null): void => {
+            reject(new HostProcessError(HostProcessErrorCode.KillFailed, `Failed to terminate process ${this.pid} with taskkill.`, {
+              details: { cleanupComplete: false, phase, pid: this.pid, exitCode }, cause,
+            }));
+          };
+          killer.once('error', (error) => { failure('control', error); });
+          killer.once('close', (code) => { if (code === 0) resolve(); else failure('terminate', undefined, code); });
+          timeout = setTimeout(() => {
+            killer.kill();
+            killer.unref();
+            failure('deadline');
+          }, TASKKILL_TIMEOUT_MS);
+        });
+      } finally { clearTimeout(timeout); }
       return;
     }
 
@@ -183,6 +185,9 @@ export class HostProcessService implements IHostProcessService {
     options: HostProcessOptions = {},
   ): Promise<IHostProcess> {
     const spawnOptions = buildSpawnOptions(options);
+    if (isWindows && options.ownedProcessTree === true) {
+      return spawnWindowsProcessTree(command, args, spawnOptions, options.mergeStderr ?? false);
+    }
     const child = spawn(command, args as string[], spawnOptions);
     try {
       await waitForSpawn(child);

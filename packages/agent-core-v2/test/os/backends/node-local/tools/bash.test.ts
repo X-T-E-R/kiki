@@ -1054,6 +1054,7 @@ describe('BashTool', () => {
     expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
+    expect(execOptions?.ownedProcessTree).toBe(true);
     expect(result).toMatchObject({
       output: 'ok\n',
       isError: false,
@@ -1896,6 +1897,7 @@ describe('BashTool background mode', () => {
     expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
+    expect(execOptions?.ownedProcessTree).toBe(true);
     expect(secondProc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(results).toContainEqual(expect.objectContaining({ isError: false }));
     expect(results).toContainEqual(

@@ -184,7 +184,7 @@ describe('kiki command helpers', () => {
     let requests = 0;
     const daemon = vi.fn<typeof import('../../src/kiki/seat').daemonRequest>(async <T>() => credentials[requests++] as T);
     registerMcpCommand(program, {
-      ensureServer: vi.fn(async () => ({ url: 'http://127.0.0.1:1234', token: 'owner' })) as typeof ensureServer,
+      ensureServer: vi.fn(async () => ({ url: 'http://127.0.0.1:1234', token: 'owner', serverId: 'server-fixture' })) as typeof ensureServer,
       daemonRequest: daemon as typeof import('../../src/kiki/seat').daemonRequest,
       createExternalClientStdioBridge: async (options) => {
         expect(await options.resolveCredential(options.connectionId)).toEqual(credentials[0]);

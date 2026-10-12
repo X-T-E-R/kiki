@@ -26,6 +26,7 @@ export class ProcessTask implements AgentTask {
   readonly kind = 'process' as const;
   readonly idPrefix = 'bash';
   private exitCode: number | null = null;
+  private stopPromise: Promise<void> | undefined;
 
   constructor(
     readonly proc: ProcessHandle,
@@ -43,7 +44,8 @@ export class ProcessTask implements AgentTask {
     void streamDrained.catch(() => {});
 
     const requestStop = (): void => {
-      void this.proc.kill('SIGTERM').catch(() => {});
+      this.stopPromise = this.proc.kill('SIGTERM');
+      void this.stopPromise.catch(() => {});
     };
     if (sink.signal.aborted) {
       requestStop();
@@ -68,19 +70,18 @@ export class ProcessTask implements AgentTask {
       };
     } finally {
       sink.signal.removeEventListener('abort', requestStop);
+      await this.stopPromise;
       await this.disposeProcess();
     }
     await sink.settle(settlement);
   }
 
   async forceStop(): Promise<void> {
-    try {
-      if (this.proc.exitCode === null) {
-        await this.proc.kill('SIGKILL');
-      }
-    } finally {
-      await this.disposeProcess();
+    if (this.proc.exitCode === null || process.platform === 'win32') {
+      this.stopPromise = this.proc.kill('SIGKILL');
+      await this.stopPromise;
     }
+    await this.disposeProcess();
   }
 
   toInfo(base: AgentTaskInfoBase): ProcessTaskInfo {
@@ -94,13 +95,9 @@ export class ProcessTask implements AgentTask {
   }
 
   private async disposeProcess(): Promise<void> {
-    try {
-      await this.proc.dispose();
-    } catch {
-    } finally {
-      this.release?.();
-      this.release = undefined;
-    }
+    await this.proc.dispose();
+    this.release?.();
+    this.release = undefined;
   }
 }
 
@@ -206,8 +203,10 @@ export function createProcessExecutor(
     ]).then(() => undefined);
     void streamDrained.catch(() => {});
 
+    let stopPromise: Promise<void> | undefined;
     const requestStop = (): void => {
-      void proc.kill('SIGTERM').catch(() => {});
+      stopPromise = proc.kill('SIGTERM');
+      void stopPromise.catch(() => {});
     };
     if (signal.aborted) {
       requestStop();
@@ -219,6 +218,7 @@ export function createProcessExecutor(
       const exitCode = await proc.wait();
       await waitForStreamDrain(streamDrained);
       signal.removeEventListener('abort', requestStop);
+      await stopPromise;
       await disposeProcess(proc);
       if (signal.aborted) throw signal.reason;
       if (exitCode !== 0) {
@@ -229,6 +229,7 @@ export function createProcessExecutor(
     } catch (error: unknown) {
       await waitForStreamDrainSettled(streamDrained);
       signal.removeEventListener('abort', requestStop);
+      await stopPromise;
       await disposeProcess(proc);
       throw error;
     }
@@ -279,7 +280,7 @@ function observeProcessStreamRaw(
 }
 
 async function disposeProcess(proc: ProcessHandle): Promise<void> {
-  try { await proc.dispose(); } catch {   }
+  await proc.dispose();
 }
 
 function createPrematureCloseError(): Error {

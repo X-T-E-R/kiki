@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, relative, resolve, win32 as pathWin32 } from 'node:path';
 import { join as joinPosix } from 'pathe';
 
@@ -22,6 +23,7 @@ import {
   KAP_SQLITE_QUERY_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
+  WINDOWS_PROCESS_HELPER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
   buildManifestKey,
 } from '../../scripts/native/manifest.mjs';
@@ -458,6 +460,14 @@ export function getBrowserDriverFile(options: NativeAssetOptions = {}): string |
     throw new Error('Managed browser build metadata or binary checksum mismatch');
   }
   return binary;
+}
+
+export function getWindowsProcessHelperFile(options: NativeAssetOptions = {}): string | null {
+  const embedded = getNativeRuntimeFile(WINDOWS_PROCESS_HELPER_ASSET.key, options);
+  if (embedded !== null) return embedded;
+  if (options.source !== undefined || options.manifest !== undefined) return null;
+  const packaged = new URL('./native/windows-process-helper.exe', import.meta.url);
+  return existsSync(packaged) ? fileURLToPath(packaged) : null;
 }
 
 export function getPluginHostRunnerFile(options: NativeAssetOptions = {}): string | null {

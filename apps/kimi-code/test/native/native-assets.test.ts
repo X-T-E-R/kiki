@@ -26,6 +26,7 @@ import {
   getNativeCacheBase,
   getNativePackageRoot,
   getPluginHostRunnerFile,
+  getWindowsProcessHelperFile,
   NATIVE_ASSET_MANIFEST_VERSION,
   type NativeAssetManifest,
   type NativeAssetSource,
@@ -766,5 +767,34 @@ describe('text-only bundled documentation', () => {
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+});
+
+
+describe('Windows process helper native assets', () => {
+  it('extracts and repairs the checked helper asset without requiring a runtime compiler', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-process-asset-'));
+    try {
+      const bytes = Buffer.from([77, 90, 0, 255]);
+      const base = fakeManifest({});
+      const assetKey = 'native/test-target/runtime/windows-process-helper';
+      const manifest: NativeAssetManifest = {
+        ...base.manifest,
+        runtimeFiles: [{ key: 'windows-process-helper', assetKey,
+          relativePath: 'runtime/process/windows-process-helper.exe', sha256: sha256(bytes), mode: 0o755 }],
+      };
+      const source: NativeAssetSource = {
+        getAssetKeys: () => [...base.source.getAssetKeys(), assetKey],
+        getRawAsset: (key) => key === assetKey ? bytes : base.source.getRawAsset(key),
+      };
+      const options = { cacheBase: dir, manifest, source, version: 'test' };
+      const file = getWindowsProcessHelperFile(options);
+      expect(file).toBe(join(dir, 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'process', 'windows-process-helper.exe'));
+      expect(readFileSync(file!)).toEqual(bytes);
+      writeFileSync(file!, 'corrupt');
+      expect(getWindowsProcessHelperFile(options)).toBe(file);
+      expect(readFileSync(file!)).toEqual(bytes);
+      expect(getWindowsProcessHelperFile({ ...options, manifest: base.manifest })).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 });

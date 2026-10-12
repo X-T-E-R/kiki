@@ -97,6 +97,7 @@ Two delivery paths only — never introduce a third (no deferred-delivery queues
 
 Per-domain references live in `docs/`.
 
+- [`docs/windows-process.md`](docs/windows-process.md) — Windows Bash Job ownership, cleanup failure/retry, and the single build-time helper consumed by source, SDK, npm and SEA entries. Keep precompiled cross-host packaging intact; no runtime compiler or taskkill fallback for owned trees.
 - [`docs/di.md`](docs/di.md) — Read **before adding any business capability**: a scenario-driven walkthrough of the DI × Scope black box, from "add a global service" through dependency injection, scope selection, disposal, delayed/eager instantiation, `invokeFunction`, `createInstance`, child scopes, and cycles — introducing each concept only as the scenario needs it.
 - [`docs/service-design.md`](docs/service-design.md) — Read **before designing a new Service**: first-principles rules for choosing a scope, splitting a domain Multi-Scope, picking a calling style (direct call vs event vs veto event vs hook), and directing dependencies — the design companion to `docs/di.md`.
 - [`docs/flag.md`](docs/flag.md) — Read **before gating behavior behind a feature flag**: declaring a flag in its owning domain and registering it at import time via `registerFlagDefinition`, checking `IFlagService.enabled(id)`, wiring the `[experimental]` config section, or deciding whether a flag is App-scope vs. per-session.

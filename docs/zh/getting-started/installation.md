@@ -23,6 +23,8 @@ Kiki 的终端形态在任何现代终端里都能正常运行，Windows Termina
 
 macOS 需要 **13.5 或更高版本**；这个下限来自内置运行时，因此无论用哪种方式安装都适用。Intel 与 Apple Silicon 是分开下载的，按你的 Mac 选对应的一个。Linux 桌面构建只有 x64（deb 或 AppImage）；Linux 的 CLI/TUI 另外提供 arm64。
 
+Windows 上，Kiki 的 Bash 工具需要 [Git for Windows](https://gitforwindows.org/) 和 .NET Framework 4.x；Windows 10、11 已包含该运行时。若 .NET Framework 缺失或被禁用，请启用或修复它。进程辅助程序随 Kiki 发行包提供，运行 Kiki 的电脑无需安装编译器。
+
 1. 打开 [Kiki Releases 页面](https://github.com/X-T-E-R/kiki/releases)，选择所需的 stable 或 beta 版 `kiki-v<version>` 标签。
 2. 下载对应桌面构建和同名的 `.sha256` 文件，比较发布哈希与下载文件的哈希。macOS 用 `shasum -a 256 <文件>`，Linux 用 `sha256sum <文件>`，Windows PowerShell 用 `Get-FileHash <文件> -Algorithm SHA256`。
 3. Windows 运行安装包；Linux deb 运行 `sudo apt install ./Kiki_*.deb`；Linux AppImage 先运行 `chmod +x Kiki_*.AppImage`，再运行 `./Kiki_*.AppImage`；macOS 挂载 dmg 并把 Kiki 拖入「应用程序」。
@@ -59,7 +61,7 @@ kiki --version
 
 两个包只选一个安装，它们提供的是同一个 `kiki` 命令。`kiki-agent` 会在安装时下载并校验对应平台的桌面构建，因此需要联网，覆盖 Windows 与 Linux x64 以及 macOS Intel 和 Apple Silicon；`kiki-agent-lite` 只包含 CLI。
 
-Windows 上两个包都依赖 [Git for Windows](https://gitforwindows.org/) 提供的 shell，请在首次运行前装好。Git Bash 装在非默认位置时，把 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
+两个 npm 包都遵循[上面的 Windows Bash 要求](#安装桌面版)。Git Bash 装在非默认位置时，把 `KIKI_SHELL_PATH` 设置为 `bash.exe` 的绝对路径。
 
 ### 从源码开发
 
