@@ -156,11 +156,13 @@ Expand a tool card to inspect the arguments and output the harness supplied. Unk
 
 ### External main-agent delegation
 
-An external executor can run as the main agent. To let it dispatch Kiki subagents, add `allow_kiki_subagents: true` to its profile and bind that profile to the main agent. The main-agent `execution` path can also set it in session overrides or [harness defaults](../configuration/config-files.md#external-harness-defaults); an omitted profile field inherits those defaults. Without an explicit value it is `false`, and it does not enable delegation from external child agents.
+An external executor can run as either the main agent or a child. For a main agent, `allow_kiki_subagents: true` enables Kiki delegation tools; set it in the profile, session overrides or [harness defaults](../configuration/config-files.md#external-harness-defaults). An omitted profile field inherits those defaults. A bare main agent with no capability opt-in gets no Kiki tool bridge.
 
-Kiki attaches its MCP tools (the bridge through which a harness calls Kiki) to the **existing session**, without creating a separate seat session. The harness must support local stdio MCP and have `kiki` on its path. The profile's spawn switch, preset permissions and preferences, model constraints and parent-notification policy still apply. Rebind the main profile after changing the flag — an existing binding keeps its frozen snapshot — and the bridge is revoked by disabling delegation or closing the executor.
+A real child whose executor explicitly supports local stdio MCP automatically receives a bridge to its allowed native Kiki tools, including registered plugin and MCP tools. The bridge uses the child's own session and agent identity, not a main-agent proxy. Native role restrictions, leaf rules, tool policy, approvals and workspace limits still apply. An explicit `allow_kiki_subagents: false` disables `AgentRun`, `AgentList` and `AgentSend`; it does not disable `AgentNotify`, which follows its own parent-notification permissions.
 
-A child's completion is queued back to the same main agent without blocking the child: if the main agent is busy, delivery waits for its turn to settle; if it is idle, the receipt wakes it. Parent notifications use the same conversation and remain subject to `allow_parent_notify` and the configured notification policy.
+The bridge attaches to the **existing session**, without creating a separate seat session. The harness must accept session-local stdio MCP, and its process must be able to launch Kiki's bridge command. When this native bridge is active, session MCP tools go through the native registry and policy rather than also being forwarded directly to the harness. An executor that cannot receive the bridge reports an error for an explicit capability request; unknown support does not enable automatic child injection.
+
+A child's completion is queued back to the same main agent without blocking the child: if the main agent is busy, delivery waits for its turn to settle; if it is idle, the receipt wakes it. An allowed `AgentNotify` call reaches the real parent's mailbox and remains subject to `allow_parent_notify` and the configured notification policy. Closing the executor releases its bridge; a released seat or a destroyed and recreated agent cannot reuse the old connection.
 
 Codex app-server MCP tool calls can require a separate vendor approval, mapped to Kiki's persistent approval interaction. Explicit Kiki Full access (YOLO), without deny or ask rules, finite tool declarations, execution restrictions or worktree isolation, sets Codex's `approvalPolicy` to `never` rather than forcing an approval callback. Other explicit modes or those constraints use `on-request` so Kiki can apply its tool permission checks. Kiki does not widen the Codex sandbox.
 
@@ -178,18 +180,20 @@ allow_kiki_subagents: true
 kiki_context: [memory, board, cron, threads, history, hooks]
 ```
 
-In legacy profile-only bindings, an absent list turns every group off. In the main-agent `execution` path, an omitted profile field inherits [harness defaults](../configuration/config-files.md#external-harness-defaults), and session overrides take priority; `[]` explicitly disables everything. Rebind the execution after editing it. Tools are registered once when the bridge starts, so a group you enable later is not added to a harness that is already running. The bound profile's tool policy and feature settings still apply. Only external main agents can acquire this bridge.
+For a main agent, an omitted profile field inherits [harness defaults](../configuration/config-files.md#external-harness-defaults), with session overrides taking priority; without a declaration the context groups stay off. A compatible child inherits its allowed native context tools when no layer declares a choice. An explicit `[]` closes all context groups for that agent, not unrelated file, task or plugin tools; a selected list exposes only its groups. Clearing a session override with `null` restores inherited settings. Rebind the execution after changing its configuration.
 
-| Group | MCP tools |
+| Group | Native bridge MCP tools |
 | --- | --- |
-| `memory` | `kiki_memory_read`, `kiki_memory_search`, `kiki_memory_write` |
-| `board` | `kiki_board_read`, `kiki_board_write` |
-| `cron` | `kiki_cron` (`action: create`, `list`, or `delete`) |
-| `threads` | `kiki_thread_list`, `kiki_thread_read`, `kiki_thread_send` |
-| `history` | `kiki_history_search`, `kiki_history_read` |
+| `memory` | `kiki_MemoryRead`, `kiki_MemorySearch`, `kiki_MemoryWrite` |
+| `board` | `kiki_BoardRead`, `kiki_BoardWrite` |
+| `cron` | `kiki_Cron` (`action: create`, `list`, or `delete`) |
+| `threads` | Allowed `kiki_Thread*` tools; each tool keeps its native role restrictions |
+| `history` | `kiki_HistoryList`, `kiki_HistorySearch`, `kiki_HistoryRead` |
 | `hooks` | Message-context injection; no extra model-callable tool |
 
-These tools use native Kiki parameters and execution policies, including approval, persona visibility, workspace access, memory review and Plan mode restrictions. Calls are attributed to the existing main agent — not to a user write, and not to a new seat session. The bridge token cannot reach ordinary REST endpoints or select a different caller session, and the native read tools advertise MCP read-only annotations. Suppressing vendor approval prompts through the Codex Full access mapping above does not grant additional Kiki capabilities.
+The native bridge names tools `kiki_<native tool name>` and rechecks the current registry and policy for both listing and calls. Registered plugin and MCP tools use the same path for a child. Legacy attached context seats retain their lower-case names, such as `kiki_memory_read` and `kiki_history_search`; use the catalog returned by that connection rather than assuming the two naming schemes are interchangeable.
+
+These tools use native Kiki parameters and execution policies, including approval, persona visibility, workspace access, memory review and Plan mode restrictions. Calls and approvals belong to the exact existing agent, whether main or child. The bridge token cannot reach ordinary REST endpoints, select a different caller or use the legacy delegation endpoint to bypass native policy. Suppressing vendor approval prompts through the Codex Full access mapping above does not grant additional Kiki capabilities.
 
 `hooks` sends memory summaries and undelivered reminders and working notes as messages, rather than by rewriting the system prompt or the tool schema. Identical content is deduplicated for the bridge's lifetime, and hook content is recorded in the Kiki transcript with a `hook_result` origin. Kiki writes only temporary process or session configuration and does not edit the harness's global hook settings.
 
@@ -279,8 +283,8 @@ Model-list rejection and advisories below describe **subagent bindings**. For a 
 | `restrict_models_to_menu` | no | Boolean, default `false`, top-level profile field only. When `true`, adds a **hard** model ceiling from the author's original default `model_alias` plus `model_profiles[].alias`, captured before route / lease rewrites and frozen with the binding. Other hard allowsets still intersect and denials still apply; explicit pins and resume cannot bypass it. See [Model menus and hard boundaries](./agent-profiles.md#model-menus-and-hard-boundaries) |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. With `model_alias: inherit`, an explicit effort pin takes priority over the caller's effective effort |
 | `executor` | no | Executor id from `agent-executors.toml`; omit it to use the native engine. Named-child dispatch uses this binding from both in-process and external delegation surfaces. For an external delegation, harness approval requests are exposed through that root's `interactions` / `respond` operations and scoped to its own children. Example profiles live in the repository under `docs/examples/agent-profiles/external-harnesses/` |
-| `allow_kiki_subagents` | no | Default `false`. Attach Kiki's same-session delegation tools when this profile is bound to an external main agent; requires local stdio MCP. See [External main-agent delegation](#external-main-agent-delegation) |
-| `kiki_context` | no | Opt-in list of `memory`, `board`, `cron`, `threads`, `history`, and `hooks`; absent or `[]` disables all groups. See [Kiki context in external main agents](#kiki-context-in-external-main-agents) |
+| `allow_kiki_subagents` | no | Enables delegation tools for an external main agent; an undeclared main value stays off. Compatible children inherit allowed native delegation when no layer declares a choice. Explicit `false` disables `AgentRun`, `AgentList` and `AgentSend`, not `AgentNotify`. Requires session-local stdio MCP and native spawn authority. See [External main-agent delegation](#external-main-agent-delegation) |
+| `kiki_context` | no | List of `memory`, `board`, `cron`, `threads`, `history`, and `hooks`. Undeclared main groups stay off; compatible children inherit allowed native context tools. Explicit `[]` closes the context groups, not unrelated native tools. See [Kiki context in external main agents](#kiki-context-in-external-main-agents) |
 | `allowed_models` | no | **Hard** model allowlist, as a YAML list or comma-separated string. Native aliases are compared by canonical model identity; external executors are checked against their effective model ID. An out-of-list binding is rejected, including explicit pins, manual selection, and resume. `[]` permits no models; omit, use `null`, or use a lone `"*"` for no additional restriction. Never mix `*` with names |
 | `deny_models` | no | **Hard** model denylist. A match is rejected even when another list allows it. Empty or omitted means no denials; wildcards are invalid. Machine `[subagent].deny_models` remains an additional hard boundary |
 | `allowed_efforts` | no | **Hard** allowlist of effective thinking efforts. Profile, lease, tree, and matching model-profile rules all apply; `[]` permits no effort. Neither an explicit pin nor a forced host value bypasses it. Unsupported provider/executor efforts remain errors |

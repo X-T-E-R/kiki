@@ -156,11 +156,13 @@ ACP harness 的工具调用与 Kiki 工具显示在同一条时间线中。harne
 
 ### 外部 main agent 的委派
 
-外部执行器可以担任 main agent。要让它派遣 Kiki subagent，在其 profile 中添加 `allow_kiki_subagents: true` 并把该 profile 绑定为 main agent。main agent 的 `execution` 路径也可在会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 中开启；profile 未声明该字段时继承这些默认值。没有任何显式值时为 `false`，也不会为外部子 Agent 开启委派。
+外部执行器既可以担任 main agent，也可以运行子 Agent。main agent 通过 `allow_kiki_subagents: true` 开启 Kiki 委派工具，可在 profile、会话覆盖或 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置) 中声明；profile 省略时继承默认设置。没有能力声明的原样 main 执行不会注入 Kiki 工具桥。
 
-Kiki 把 MCP 工具（harness 调用 Kiki 的桥）附加到**已有会话**，不另建 seat 会话。harness 需要支持本机 stdio MCP，且其进程能找到 `kiki`。profile 的派发开关、预设权限与推荐、模型约束和父级通知策略仍然生效。改开关后需重新绑定 main profile，已有绑定保留冻结快照；在已绑定的 main profile 上关闭委派或关闭执行器都会撤销这个桥。
+真实子 Agent 的执行器明确支持本机 stdio MCP 时，自动获得其获准的原生 Kiki 工具桥，包括已注册的插件和 MCP 工具。桥接调用使用这个子 Agent 自己的会话和身份，不借用 main agent。原生角色、叶子限制、工具策略、审批和工作区限制继续生效。明确设置 `allow_kiki_subagents: false` 会关闭 `AgentRun`、`AgentList` 和 `AgentSend`，不关闭 `AgentNotify`；父级通知沿自己的权限规则执行。
 
-子 Agent 的完成回执非阻塞地排回同一个 main agent：它忙碌时等当前轮次结束，空闲时直接唤醒它。父级通知使用同一段对话，仍受 `allow_parent_notify` 和配置的通知策略约束。
+工具桥附加到**已有会话**，不另建 seat 会话。harness 必须接受会话级 stdio MCP，并能启动 Kiki 的桥接命令。启用原生桥后，会话 MCP 工具经过原生注册表和策略，不再同时直接转发给 harness。执行器明确不支持这条连接时，显式请求能力会得到配置错误；支持状态未知不会自动为子 Agent 注入工具桥。
+
+子 Agent 的完成回执非阻塞地排回同一个 main agent：它忙碌时等当前轮次结束，空闲时直接唤醒它。获准的 `AgentNotify` 进入真实父 Agent 的邮箱，仍受 `allow_parent_notify` 和配置的通知策略约束。关闭执行器会释放工具桥；已释放的 seat 或被销毁后重新创建的 Agent 无法复用旧连接。
 
 Codex app-server 的 MCP 工具调用可能另需厂商审批，Kiki 把它映射为持久化审批交互。明确设置 Kiki Full access（YOLO），且没有 deny 或 ask 规则、有限工具声明、执行限制或 worktree 隔离时，Codex 的 `approvalPolicy` 使用 `never`，不强制保留审批回调。其他显式模式或存在这些约束时使用 `on-request`，让 Kiki 应用工具权限检查。Kiki 不会放宽 Codex 沙箱。
 
@@ -178,18 +180,20 @@ allow_kiki_subagents: true
 kiki_context: [memory, board, cron, threads, history, hooks]
 ```
 
-旧的纯 profile 绑定中，不设置列表表示全部关闭。main agent 的 `execution` 路径中，profile 未声明该字段时继承 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置)，会话覆盖优先；`[]` 明确关闭全部组。改完需要重新绑定 execution。工具在桥启动时一次性注册，之后开启的工具组不会改写正在运行的 harness 工具列表。profile 的工具策略与功能设置仍然生效，只有外部 main agent 能取得这个桥。
+main agent 的 profile 省略该字段时继承 [harness 默认设置](../configuration/config-files.md#外部-harness-默认设置)，会话覆盖优先；各层均无声明时，上下文工具组保持关闭。兼容的子 Agent 在各层未作选择时，继承其获准的原生上下文工具。明确的 `[]` 关闭该 Agent 的全部上下文组，不影响无关的文件、任务或插件工具；指定列表只开放其中的组。用 `null` 清除会话覆盖后恢复继承设置。修改配置后重新绑定 execution。
 
-| 工具组 | MCP 工具 |
+| 工具组 | 原生桥 MCP 工具 |
 | --- | --- |
-| `memory` | `kiki_memory_read`、`kiki_memory_search`、`kiki_memory_write` |
-| `board` | `kiki_board_read`、`kiki_board_write` |
-| `cron` | `kiki_cron`（`action: create`、`list` 或 `delete`） |
-| `threads` | `kiki_thread_list`、`kiki_thread_read`、`kiki_thread_send` |
-| `history` | `kiki_history_search`、`kiki_history_read` |
+| `memory` | `kiki_MemoryRead`、`kiki_MemorySearch`、`kiki_MemoryWrite` |
+| `board` | `kiki_BoardRead`、`kiki_BoardWrite` |
+| `cron` | `kiki_Cron`（`action: create`、`list` 或 `delete`） |
+| `threads` | 获准的 `kiki_Thread*` 工具，各自保留原生角色限制 |
+| `history` | `kiki_HistoryList`、`kiki_HistorySearch`、`kiki_HistoryRead` |
 | `hooks` | 消息上下文注入，不增加模型可调用的工具 |
 
-这些工具沿用 Kiki 原生参数和执行策略，包括审批、persona 可见性、工作区访问、记忆审核和 Plan 模式限制。调用归属到已有 main agent，既不是用户写入也不新建 seat 会话；桥的 token 无法访问普通 REST 端点或选择别的调用方会话，原生读取工具则声明 MCP 只读标记。通过上面的 Codex Full access 映射关闭厂商审批提示，不会授予额外的 Kiki 能力。
+原生桥以 `kiki_<原生工具名>` 命名工具，列目录和调用时都会重新检查当前注册表与策略。子 Agent 的已注册插件和 MCP 工具经过同一条执行链。旧 attached 上下文 seat 保留 `kiki_memory_read`、`kiki_history_search` 等小写命名；以当前连接返回的目录为准，不把两套名称互换。
+
+这些工具沿用 Kiki 原生参数和执行策略，包括审批、persona 可见性、工作区访问、记忆审核和 Plan 模式限制。调用和审批归属到准确的已有 Agent，无论 main 还是 child。桥的 token 无法访问普通 REST 端点、选择别的调用方，也无法借旧委派端点绕过原生策略。通过上面的 Codex Full access 映射关闭厂商审批提示，不会授予额外的 Kiki 能力。
 
 `hooks` 以消息形式发送记忆摘要和未送达的提醒、工作笔记，不改写系统提示词或工具 schema；桥存活期间相同内容只注入一次，hook 内容在 Kiki 时间线中以 `hook_result` 来源记录。Kiki 只写临时的进程或会话配置，不修改 harness 的全局 hook 设置。
 
@@ -279,8 +283,8 @@ disallowedTools:
 | `restrict_models_to_menu` | 否 | 布尔值，默认 `false`，仅放 profile 顶层。`true` 从作者原始默认 `model_alias` 与 `model_profiles[].alias` 派生一道**硬**模型上限，在 route / lease 改写前捕获并随绑定冻结。其他硬允许域继续求交，禁止项仍生效；显式 pin 与恢复不能绕过。见 [模型菜单与硬边界](./agent-profiles.md#模型菜单与硬边界) |
 | `thinking_effort` | 否 | 该 profile 作为新 subagent 启动时请求的思考强度。使用 `model_alias: inherit` 时，适用的显式档位 pin 优先于调用方的有效思考强度 |
 | `executor` | 否 | `agent-executors.toml` 中的 executor id；省略时使用原生引擎。进程内派发与外部委派表面都会为具名子 Agent 使用这份绑定。外部委派中，harness 的审批请求通过该 root 的 `interactions` / `respond` 操作暴露，并且只覆盖它自己的直属子 Agent。示例 profile 位于仓库中的 `docs/examples/agent-profiles/external-harnesses/` 目录 |
-| `allow_kiki_subagents` | 否 | 默认 `false`。该 profile 绑定到外部 main agent 时附加 Kiki 的同会话委派工具；需要本机 stdio MCP。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
-| `kiki_context` | 否 | 按需开启 `memory`、`board`、`cron`、`threads`、`history`、`hooks` 的列表；不设置或 `[]` 表示全部关闭。见 [外部 main agent 的 Kiki 上下文](#外部-main-agent-的-kiki-上下文) |
+| `allow_kiki_subagents` | 否 | 为外部 main agent 开启委派工具，main 未声明时保持关闭。兼容的子 Agent 在各层未作选择时继承获准的原生委派工具。明确的 `false` 关闭 `AgentRun`、`AgentList`、`AgentSend`，不关闭 `AgentNotify`。需要会话级 stdio MCP 与原生派发权限。见 [外部 main agent 的委派](#外部-main-agent-的委派) |
+| `kiki_context` | 否 | `memory`、`board`、`cron`、`threads`、`history`、`hooks` 的列表。main 未声明时保持关闭；兼容子 Agent 继承获准的原生上下文工具。明确的 `[]` 关闭上下文组，不影响无关原生工具。见 [外部 main agent 的 Kiki 上下文](#外部-main-agent-的-kiki-上下文) |
 | `allowed_models` | 否 | **硬**模型允许列表，支持 YAML 列表或逗号分隔字符串。原生 alias 按规范模型身份比较；外部 executor 按其实际生效模型 ID 检查。列表外绑定会被拒绝，包括显式 pin、人工选择与恢复。`[]` 不允许任何模型；省略、`null` 或单独的 `"*"` 表示不增加限制。不得将 `*` 与名称混写 |
 | `deny_models` | 否 | **硬**模型禁止列表。命中即拒绝，即使另一列表允许它。为空或省略表示无禁止项；不接受通配符。机器级 `[subagent].deny_models` 仍是额外硬边界 |
 | `allowed_efforts` | 否 | **硬**有效思考强度允许列表。Profile、lease、树策略与匹配的 model-profile 规则同时生效；`[]` 不允许任何档位。显式 pin 与宿主 forced 值均不能绕过。Provider / executor 不支持的档位仍是错误 |

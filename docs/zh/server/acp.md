@@ -77,6 +77,12 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 如果 IDE 需要提交 stdio MCP 服务器，请在 IDE 的 ACP agent 配置中显式使用 `kiki acp --allow-client-stdio-mcp` 启动 Kiki。这表示信任 IDE 选择本地可执行文件和参数：这些 MCP 服务器会作为 Kiki 的子进程启动、继承 Kiki 的环境，不再单独触发 `Bash` 审批。只对可信的 IDE 及其 MCP 配置启用此选项。HTTP 和 SSE MCP 服务器不需要此选项。
 
+### 外部 harness 中的 Kiki 工具
+
+上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时使用另一条出站连接。接受会话级 stdio MCP 的执行器可以使用绑定到准确 Kiki Agent 的工具桥，沿原生工具策略和审批执行。兼容的子 Agent 获得其获准的原生工具；原样 main agent 只有明确请求上下文或委派能力时才获得桥。明确的 `false` 和 `[]` 保持所辖能力组关闭。
+
+桥以 `kiki_<原生工具名>` 暴露工具，列目录和调用使用同一身份重新检查权限。子 Agent 获准的插件和 MCP 工具也走这条链，不通过第二条直接转发路径绕过策略。配置、父级通知与旧连接名称见 [外部 main agent 的委派](../customization/agents.md#外部-main-agent-的委派) 和 [外部 main agent 的 Kiki 上下文](../customization/agents.md#外部-main-agent-的-kiki-上下文)。MCP 连通不等于特定 adapter 接受图片或音频 prompt；输入能力仍以该 adapter 的实际合同为准。
+
 ## 下一步
 
 - [在 IDE 中使用](./ide.md) — Zed / JetBrains 配置步骤和故障排查
