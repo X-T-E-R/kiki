@@ -31,6 +31,7 @@ export interface TranscriptWireAdapterLookups {
     | undefined;
   readonly task?: (taskId: string) => TranscriptTask | undefined;
   readonly todo?: (todoId: string) => TranscriptTodo | undefined;
+  readonly prompt?: (promptId: string) => TranscriptPrompt | undefined;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -467,7 +468,7 @@ export class TranscriptWireAdapter {
       const operations = this.undo(numberOf(record['count']) ?? 1);
       const prompt = objectOf(record['replacementPrompt']);
       if (prompt !== undefined) {
-        operations.push(...this.legacyMessage({ ...record, type: 'context.append_message', message: prompt['message'] }, ordinal));
+        operations.push(...this.legacyMessage({ ...record, type: 'context.append_message', message: prompt['message'] }, ordinal, true));
         operations.push(...this.promptRecord({ ...prompt, type: 'prompt.enqueued', time: record.time }));
       }
       return operations;
@@ -564,14 +565,14 @@ export class TranscriptWireAdapter {
       const state = stringOf(terminal?.['state']);
       const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
         : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
-      const prior = this.#prompts.get(terminalPromptId);
+      const prior = this.lookups?.prompt?.(terminalPromptId) ?? this.#prompts.get(terminalPromptId);
       return [
         this.storePrompt({
           ...promptOrMinimal(prior, terminalPromptId, record),
           status,
-          finishedAt: isoOf(record.time) ?? previous?.finishedAt,
+          finishedAt: isoOf(record.time) ?? prior?.finishedAt,
           queuePosition: undefined,
-          abortedBeforeStart: status === 'aborted' ? previous?.abortedBeforeStart : undefined,
+          abortedBeforeStart: status === 'aborted' ? prior?.abortedBeforeStart : undefined,
         }),
       ];
     }
@@ -1257,10 +1258,11 @@ export class TranscriptWireAdapter {
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
+    const messageId = promptId === undefined ? undefined : this.#prompts.get(promptId)?.userMessageId ?? promptId;
     const previous = this.#turnHeaders.get(turnId);
-    const alreadyDelivered = promptId !== undefined && this.#deliveries.has(promptId);
-    if (alreadyDelivered && previous?.message?.messageId === promptId) return [];
-    const materialized = record['managed'] === true && promptId !== undefined && previous?.message?.messageId === promptId
+    const alreadyDelivered = messageId !== undefined && this.#deliveries.has(messageId);
+    if (alreadyDelivered && previous?.message?.messageId === messageId) return [];
+    const materialized = record['managed'] === true && messageId !== undefined && previous?.message?.messageId === messageId
       ? previous
       : undefined;
     const headerOnly = record['managed'] === true || alreadyDelivered;
@@ -1317,7 +1319,7 @@ export class TranscriptWireAdapter {
       origin: mapOrigin(record['origin']),
       promptId: stringOf(record['promptId']),
       message: {
-        messageId: promptId ?? `legacy:v1:r${ordinal}:message`,
+        messageId: messageId ?? `legacy:v1:r${ordinal}:message`,
         role: 'user',
         revision: numberOf(record['revision']) ?? 0,
         provenance: {
@@ -1451,7 +1453,7 @@ export class TranscriptWireAdapter {
     return true;
   }
 
-  private legacyMessage(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+  private legacyMessage(record: TranscriptWireRecord, ordinal: number, opensTurn = false): TranscriptOperation[] {
     const message = objectOf(record['message']);
     const role = stringOf(message?.['role']);
     const origin = objectOf(message?.['origin']);
@@ -1476,7 +1478,7 @@ export class TranscriptWireAdapter {
         notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
         origin?.['kind'] === 'injection' ||
-        (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
+        (!opensTurn && this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
       ) return this.deliveredMessage(record, message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];

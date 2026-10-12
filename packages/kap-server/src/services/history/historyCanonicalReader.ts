@@ -121,6 +121,56 @@ export class HistoryCanonicalReader {
     return { status: 'found', turnId: tool.turnId, stepId: tool.stepId, frame };
   }
 
+  async readTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): Promise<
+    { status: 'found'; turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] } |
+    { status: 'preparing' | 'not_found' }> {
+    const generation = this.generation;
+    const context = await this.sourceContext(session, agent, signal);
+    const db = await this.database.ready();
+    const manifest = db.readManifest(context.scope);
+    if (manifest === undefined || !db.hasCanonicalSources(context.scope)) return { status: 'preparing' };
+    const seed = db.canonicalSeed(context.scope, turnId);
+    if (seed === undefined) return { status: manifest.complete ? 'not_found' : 'preparing' };
+    const spans = db.canonicalSources(context.scope, turnId, -1, 32);
+    const draft = new AgentTranscriptDraft(agent);
+    const reducer = new TranscriptFactReducer(draft);
+    const adapter = new TranscriptWireAdapter(agent);
+    adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
+    const handle = await open(context.wirePath, 'r');
+    let bytesRead = 0;
+    try {
+      for (const span of spans) {
+        signal?.throwIfAborted();
+        const size = span.end - span.start;
+        if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
+        if (bytesRead + size > (1 << 20)) return { status: 'preparing' };
+        const bytes = Buffer.allocUnsafe(size);
+        let offset = 0;
+        while (offset < size) {
+          signal?.throwIfAborted();
+          const read = await handle.read(bytes, offset, size - offset, span.start + offset);
+          if (read.bytesRead === 0) throw new Error('history_source_changed');
+          offset += read.bytesRead;
+          bytesRead += read.bytesRead;
+          this.replayBytes += read.bytesRead;
+        }
+        if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
+        adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
+        reducer.apply(adapter.add(JSON.parse(bytes.toString('utf8'))));
+        this.replayRecords += 1;
+        const turn = draft.getTurn(turnId);
+        if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
+          const proof = await historyNavigationProof(context.wirePath, manifest.offset);
+          signal?.throwIfAborted();
+          if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
+            db.readManifest(context.scope)?.generation !== manifest.generation || db.readManifest(context.scope)?.offset !== manifest.offset) throw new Error('history_source_changed');
+          return { status: 'found', turn: { ...turn, steps: [] }, attachments: draft.snapshot().attachments };
+        }
+      }
+      return { status: manifest.complete && spans.length < 32 ? 'not_found' : 'preparing' };
+    } finally { await handle.close(); }
+  }
+
   async readEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal): Promise<CanonicalEntityLookup> {
     if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
@@ -129,10 +179,15 @@ export class HistoryCanonicalReader {
       const cached = await this.readDirectCached(session, agent, source, signal);
       if (cached !== undefined) return { status: 'found', entity: cached };
     }
+    const retained = await this.transcript.readRetainedColdTurn(session, agent, turnId, signal);
+    if (retained !== undefined) {
+      const entity = source.kind === 'turn' ? retained : retained.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) return { status: 'found', entity };
+    }
     const prepared = await this.prepare(session, agent, signal);
     if (prepared === undefined) {
       if (signal === undefined) return { status: 'preparing' };
-      this.startPreparation(session, agent);
       const entity = await this.readColdEntity(session, agent, source, signal);
       return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
     }
@@ -234,35 +289,6 @@ export class HistoryCanonicalReader {
     return cached.entity.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
   }
 
-  private startPreparation(session: string, agent: string): void {
-    const key = `${session}\0${agent}`;
-    if (this.preparationFlights.has(key)) return;
-    const generation = this.generation;
-    const controller = new AbortController();
-    const promise = (async (): Promise<void> => {
-      for (;;) {
-        controller.signal.throwIfAborted();
-        if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
-        const scan = await this.scan(session, agent, controller.signal);
-        if (scan === undefined) throw new Error('history_canonical_source_missing');
-        this.recordProjection(scan);
-        if (scan.complete) return;
-        if (scan.recordsRead === 0) throw new Error(`history_canonical_source_no_progress:${scan.incompleteReason ?? 'unknown'}`);
-        if (scan.incompleteReason !== 'byte_budget' && scan.incompleteReason !== 'record_budget') {
-          throw new Error(`history_canonical_source_incomplete:${scan.incompleteReason ?? 'unknown'}`);
-        }
-      }
-    })();
-    const flight = { controller, promise };
-    this.preparationFlights.set(key, flight);
-    void promise.then(() => { this.preparationsCompleted += 1; }, () => {
-      if (controller.signal.aborted) this.preparationsCancelled += 1;
-      else this.preparationsFailed += 1;
-    }).finally(() => {
-      if (this.preparationFlights.get(key) === flight) this.preparationFlights.delete(key);
-    });
-  }
-
   private async readColdEntity(session: string, agent: string, source: ContentSource,
     signal: AbortSignal): Promise<TranscriptTurn | TranscriptFrame | undefined> {
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
@@ -283,19 +309,20 @@ export class HistoryCanonicalReader {
         return entity;
       }
     }
-    const snapshot = await this.transcript.readColdSnapshot(session, agent, undefined, signal);
-    if (snapshot === undefined) return undefined;
-    signal.throwIfAborted();
-    const turn = snapshot.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
-    if (turn?.kind !== 'turn') return undefined;
-    const entity = source.kind === 'turn' ? turn : turn.steps.find((step) => step.stepId === source.stepId)
-      ?.frames.find((frame) => frame.frameId === source.id);
-    const proof = await historyNavigationProof(context.wirePath, before.size);
-    signal.throwIfAborted();
-    if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
-    if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
-    this.admit(directCacheKey(context.scope, turnId), directSourceFingerprint(before), turn, true);
-    return entity;
+    const snapshotTurn = await this.transcript.readProjectedColdTurn(session, agent, turnId, signal);
+    if (snapshotTurn !== undefined) {
+      const proof = await historyNavigationProof(context.wirePath, before.size);
+      signal.throwIfAborted();
+      if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+      if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
+      const entity = source.kind === 'turn' ? snapshotTurn : snapshotTurn.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) {
+        this.admit(directCacheKey(context.scope, turnId), directSourceFingerprint(before), snapshotTurn, true);
+        return entity;
+      }
+    }
+    return undefined;
   }
 
   private async readFrame(input: Prepared, agent: string, turnId: string, stepId: string | undefined,

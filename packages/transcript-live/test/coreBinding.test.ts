@@ -2155,6 +2155,43 @@ describe('bindSessionTranscript', () => {
     await binding.dispose();
   });
 
+  it.each([true, false])('keeps cancellation beforeStart=%s through the live aborted/outcome pair and cold replay', async (beforeStart) => {
+    const agents = new FakeAgents();
+    const main = agents.add('main');
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents));
+    const records: TranscriptWireRecord[] = [{ type: 'prompt.enqueued', promptId: 'cancel-request', userMessageId: 'cancel-message',
+      message: { id: 'cancel-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Cancel fixture' }] },
+      execution: { model: 'example/model' }, createdAt: '2026-01-01T00:00:00.000Z', time: 1000 }];
+    if (!beforeStart) records.push({ type: 'prompt.launch_committed', promptId: 'cancel-request', time: 1100 },
+      { type: 'turn.prompt', turnId: 0, promptId: 'cancel-request', origin: { kind: 'user' }, input: [{ type: 'text', text: 'Cancel fixture' }], managed: true, time: 1200 },
+      { type: 'context.append_message', message: { id: 'cancel-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Cancel fixture' }] }, time: 1250 });
+    records.push({ type: 'prompt.aborted', promptId: 'cancel-request', beforeStart, abortedAt: '2026-01-01T00:00:01.000Z', time: 2000 },
+      { type: 'prompt.outcome_committed', terminal: { promptId: 'cancel-request', turnId: beforeStart ? undefined : 0, state: 'cancelled' }, time: 2100 });
+    try {
+      for (const record of records) main.bus.emit(ev(record));
+      const live = store.getAgent('main')!.snapshot();
+      const cold = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main');
+      const reducer = new TranscriptFactReducer(cold);
+      for (const record of records) reducer.apply(adapter.add(record));
+      expect(live.prompts[0]).toMatchObject({ status: 'aborted', abortedBeforeStart: beforeStart ? true : undefined,
+        userMessageId: 'cancel-message', runtimeControls: { model: 'example/model' } });
+      expect(cold.getPrompt('cancel-request')).toMatchObject({ status: 'aborted', abortedBeforeStart: beforeStart ? true : undefined });
+      const project = (snapshot: AgentTranscriptSnapshot) => projectAgentTranscriptView(createViewState('s1'), 'main', snapshot);
+      const liveView = project(live);
+      const coldView = project(cold.snapshot());
+      expect(liveView.queuedPromptIds).toEqual([]);
+      if (beforeStart) {
+        expect(liveView.blocks).toEqual([]);
+        expect(coldView.blocks).toEqual([]);
+      } else {
+        expect(liveView.blocks.find(block => block.kind === 'user')).toMatchObject({ text: 'Cancel fixture', promptOutcome: { status: 'aborted', delivered: true } });
+        expect(coldView.blocks.find(block => block.kind === 'user')).toMatchObject({ text: 'Cancel fixture', promptOutcome: { status: 'aborted', delivered: true } });
+      }
+    } finally { await binding.dispose(); }
+  });
+
   it('settles an unlaunched queued prompt once from its durable outcome', async () => {
     const agents = new FakeAgents();
     const main = agents.add('main');

@@ -464,6 +464,21 @@ describe('withPendingSteers', () => {
 
 
 describe('queued submit acknowledgement before transcript recovery', () => {
+  it('retains the queued message for retry when cancelling it fails', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue(queuedReceipt('cancel-retry'));
+    await controller.sendPrompt({ promptId: 'cancel-retry', text: STEER_TEXT });
+    client.abortPrompt.mockRejectedValueOnce(new Error('Cancel request unavailable'));
+    await expect(controller.abortPrompt('cancel-retry')).rejects.toThrow('Cancel request unavailable');
+    expect(controller.getState().queuedPromptIds).toEqual(['cancel-retry']);
+    expect(controller.getState().blocks.find(block => block.kind === 'user')).toMatchObject({ text: STEER_TEXT, promptStatus: 'queued' });
+    expect(controller.getState().blocks.some(block => block.kind === 'notice')).toBe(false);
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['cancel-retry']);
+    controller.close();
+  });
+
   it('does not let an older empty reset erase a queued ack, and canonical abort prevents resurrection', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', emptySnapshot(), 1));
@@ -481,6 +496,7 @@ describe('queued submit acknowledgement before transcript recovery', () => {
     await deliver(controller, resetEvent('main', emptySnapshot(), 4));
     expect(controller.getState().queuedPromptIds).toEqual([]);
     expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'new-message')).toBe(false);
+    expect(controller.getState().blocks.some(block => block.kind === 'notice')).toBe(false);
     controller.close();
   });
   it('removes a held cron occurrence by prompt id and reconciles without removing ordinary drafts', async () => {

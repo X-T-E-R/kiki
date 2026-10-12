@@ -1108,7 +1108,6 @@ export class SessionController {
         setResyncing(
           {
             ...applyTranscriptShell(this.sessionId, snapshot, this.state),
-            transcriptReady: false,
             loadingOlder: false,
             olderError: undefined,
           },
@@ -1471,6 +1470,15 @@ export class SessionController {
         meta: currentSnapshot.meta,
         hasMoreOlder: page.coverage?.kind === 'unknown' ? true : page.has_more,
       };
+      const recoveredHeaders: TranscriptOperation[] = [];
+      for (const item of older.items) {
+        if (item.kind !== 'turn' || item.startedAt === undefined) continue;
+        const current = store.getTurn(item.turnId);
+        if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
+        const { steps: _steps, ...header } = item;
+        recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
+      }
+      if (recoveredHeaders.length > 0) store.apply(recoveredHeaders);
       const merged = prependOlderTranscriptSnapshot(this.olderPages.get(agentId) ?? emptyOlderSnapshot(), older);
       this.olderPages.set(agentId, merged);
       for (const item of older.items) if (item.kind === 'turn' && !this.historyPreviewPages.has(`${agentId}/${item.turnId}`))

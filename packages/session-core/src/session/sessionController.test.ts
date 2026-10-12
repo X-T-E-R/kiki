@@ -1649,6 +1649,20 @@ describe('SessionController transcript authority', () => {
     return { controller, client, socket, flushAll };
   }
 
+  it('repairs an orphan opening from a continuation without replacing its live steps or a newer message', async () => {
+    const { controller, client } = await openTranscriptController();
+    const orphan: import('@kiki/transcript').TranscriptTurn = { kind: 'turn', turnId: 't7', ordinal: 7, state: 'completed', origin: { kind: 'other' },
+      steps: [{ kind: 'step', stepId: 's7', turnId: 't7', ordinal: 1, state: 'completed', frames: [{ kind: 'text', frameId: 'a7', role: 'assistant', text: 'Retained assistant response' }] }] };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [orphan, historyTurn(8)] }), 1, true));
+    const recovered = { ...orphan, origin: { kind: 'user' as const }, prompt: 'Recovered opening', promptId: 'p7', startedAt: '2026-01-01T00:00:00Z', steps: [] };
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [recovered], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false } });
+    expect(await controller.loadOlderMessages()).toBe(true);
+    expect(controller.getState().blocks.filter(block => block.kind === 'user').map(block => block.text)).toEqual(['Recovered opening', 'History 8']);
+    expect(controller.getState().blocks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant', text: 'Retained assistant response' })]));
+    controller.close();
+  });
+
   it('restores an evicted history preview and its ContentRefs from the original bounded page cursor', async () => {
     const { controller, client, flushAll } = await openTranscriptController({ historyPreviewBytes: 1024 });
     const ref = { source: { kind: 'turn' as const, id: 'older' }, path: ['prompt'], revision: 'preview-revision', kind: 'text' as const, offset: 4000, total: 8000 };
@@ -3914,6 +3928,10 @@ describe('SessionController transcript authority', () => {
     });
     held.resolve(snapshot({ as_of_seq: 12 }));
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(controller.getState().transcriptReady).toBe(true);
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      id: 'user-um-anchor', userMessageId: 'um-anchor', text: 'First fixture question — edited resend.',
+    });
     controller.close();
   });
 

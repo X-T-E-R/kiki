@@ -684,6 +684,29 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('keeps the logical user message when an atomic edit launches with a new request id', () => {
+    const message = (text: string) => ({ id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }] });
+    const records: TranscriptWireRecord[] = [
+      { type: 'prompt.enqueued', promptId: 'request-original', userMessageId: 'logical-message', message: message('original'), time: 1_000 },
+      { type: 'turn.prompt', turnId: 0, promptId: 'request-original', input: message('original').content, origin: { kind: 'user' }, managed: true, time: 1_100 },
+      { type: 'context.append_message', message: message('original'), delivery: { messageId: 'logical-message', turnId: 0, stepId: 'step-0', origin: 'user' }, time: 1_200 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_300 },
+      { type: 'context.undo', count: 1, time: 2_000, replacementPrompt: {
+        promptId: 'request-edit', userMessageId: 'logical-message', message: message('edited'), alreadyMaterialized: true,
+      } },
+      { type: 'prompt.launch_committed', promptId: 'request-edit', time: 2_100 },
+      { type: 'turn.prompt', turnId: 1, promptId: 'request-edit', input: message('edited').content, origin: { kind: 'user' }, managed: true, time: 2_200 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-1' }, time: 2_300 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 1, stepUuid: 'step-1', uuid: 'reply', part: { type: 'text', text: 'edited reply' } }, time: 2_400 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 2_500 },
+    ];
+    const transcript = replay(records);
+    expect(transcript.getTurn('t0')).toBeUndefined();
+    expect(transcript.getTurn('t1')).toMatchObject({ prompt: 'edited', promptId: 'request-edit', message: { messageId: 'logical-message' }, state: 'completed' });
+    expect(transcript.getItems().filter(item => item.kind === 'turn')).toHaveLength(1);
+    expect(transcript.getTurn('t1')?.steps.flatMap(step => step.frames).filter(frame => frame.kind === 'text' && frame.role === 'user')).toEqual([]);
+  });
+
   it('replays a durable prompt outcome without requiring a legacy completion record', () => {
     const cold = replay([
       { type: 'prompt.enqueued', promptId: 'p-outcome', userMessageId: 'm-outcome', message: { id: 'm-outcome', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }, time: 1_000 },
@@ -691,6 +714,20 @@ describe('TranscriptWireAdapter', () => {
       { type: 'prompt.outcome_committed', terminal: { promptId: 'p-outcome', turnId: 2, state: 'blocked' }, time: 1_200 },
     ]);
     expect(cold.getPrompt('p-outcome')).toMatchObject({ status: 'blocked', finishedAt: new Date(1_200).toISOString(), userMessageId: 'm-outcome' });
+  });
+
+  it('commits an outcome from the canonical prompt instead of its stale wire cache', () => {
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main', { prompt: id => transcript.getPrompt(id) });
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'cancel-request', userMessageId: 'original-identity',
+      message: { role: 'user', content: [{ type: 'text', text: 'old body' }] }, time: 1000 }));
+    const canonical = { ...transcript.getPrompt('cancel-request')!, status: 'aborted' as const, abortedBeforeStart: true,
+      userMessageId: 'canonical-identity', revision: 3, runtimeControls: { model: 'example/model', thinking: 'high' as const },
+      content: [{ type: 'text', text: 'edited body', presentation: { spans: [{ start: 0, end: 6, kind: 'selection', quote: 'edited' }] } }] };
+    transcript.apply([{ op: 'prompt.upsert', prompt: canonical }]);
+    reducer.apply(adapter.add({ type: 'prompt.outcome_committed', terminal: { promptId: 'cancel-request', state: 'cancelled' }, time: 2000 }));
+    expect(transcript.getPrompt('cancel-request')).toEqual({ ...canonical, finishedAt: new Date(2000).toISOString(), queuePosition: undefined });
   });
 
   it('carries validated text presentation through queue replacement, delivery, steer, and cold replay', () => {

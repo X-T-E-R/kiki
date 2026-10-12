@@ -2784,7 +2784,7 @@ describe('TranscriptService live integration', () => {
         }
         expect(original).toMatchObject({ kind: 'turn', turnId: 't90', prompt: large });
         expect(scans).toBe(1);
-        expect(navigation.canonicalReadReport()).toMatchObject({ replays: 1, replayRecords: 1 });
+        expect(navigation.canonicalReadReport()).toMatchObject({ replays: 0, replayRecords: 0 });
         expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(51_000);
       } finally {
         service.dispose();
@@ -3031,7 +3031,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(11);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(12);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -3041,7 +3041,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -3066,6 +3066,14 @@ describe('TranscriptService live integration', () => {
         { type: 'goal.update', status: 'active', time: 22_000 },
         { type: 'executor.runtime.update', kind: 'usage', value: { used: 109786, size: 200000 }, time: 23_000 },
         { type: 'subagent.spawned', subagentId: 'external-child', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1', time: 24_000 },
+        { type: 'prompt.enqueued', promptId: 'original-request', userMessageId: 'logical-message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'original text' }] }, time: 24_100 },
+        { type: 'turn.prompt', turnId: 3, promptId: 'original-request', managed: true, origin: { kind: 'user' }, input: [{ type: 'text', text: 'original text' }], time: 24_200 },
+        { type: 'context.append_message', message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'original text' }] }, delivery: { messageId: 'logical-message', turnId: 3, origin: 'user' }, time: 24_300 },
+        { type: 'turn.ended', turnId: 3, reason: 'completed', time: 24_400 },
+        { type: 'context.undo', count: 1, time: 25_000, replacementPrompt: { promptId: 'edited-request', userMessageId: 'logical-message', alreadyMaterialized: true,
+          message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'accepted edited text' }] } } },
+        { type: 'turn.prompt', turnId: 4, promptId: 'edited-request', managed: true, origin: { kind: 'user' }, input: [{ type: 'text', text: 'accepted edited text' }], time: 25_100 },
+        { type: 'turn.ended', turnId: 4, reason: 'completed', time: 25_200 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -3101,7 +3109,8 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(11);
+        expect(checkpoint?.format).toBe(12);
+        expect(expected?.items.find(item => item.kind === 'turn' && item.turnId === 't4')).toMatchObject({ prompt: 'accepted edited text', promptId: 'edited-request', message: { messageId: 'logical-message' } });
         expect(expected?.meta.goal).toMatchObject({ budgetUsed: 200, turnsUsed: 1, wallClockMs: 50 });
         expect(expected?.items.flatMap((item) => item.kind === 'marker' && item.marker === 'goal'
           ? [(item.payload as { change: { kind: string } }).change.kind] : [])).toEqual(['created', 'paused', 'resumed']);
@@ -3969,15 +3978,20 @@ it('reads three cold pages of a few-record large source once, preserving canonic
   try {
     const size = (await fsPromises.stat(wirePath)).size;
     expect(size).toBeGreaterThan(4 << 20);
+    const firstPageStarted = Date.now();
     const items: AgentTranscriptSnapshot['items'][number][] = [];
     let cursor: string | undefined;
     let pages = 0;
+    let firstPageMs = 0;
     for (;;) {
       const beforeTurn = cursor?.startsWith('turn:') === true ? cursor.slice(5) : undefined;
       const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn, beforeItem: beforeTurn === undefined ? cursor : undefined, pageSize: 1 });
       expect(page?.items.length).toBeGreaterThan(0);
       items.unshift(...page!.items);
-      if (++pages === 3) expect(service.memoryReport().coldReads).toMatchObject({ completed: 1, bytes: size, records: records.length });
+      if (++pages === 1) {
+        expect(service.memoryReport().coldReads.bytes).toBeLessThan(size);
+        firstPageMs = Date.now() - firstPageStarted;
+      }
       if (page!.next_cursor === undefined) break;
       expect(page!.next_cursor).not.toBe(cursor);
       cursor = page!.next_cursor;
@@ -3987,7 +4001,8 @@ it('reads three cold pages of a few-record large source once, preserving canonic
     expect(items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t0', 't1', 't2', 't3', 't4']);
     expect(items.some((item) => item.kind === 'marker')).toBe(true);
     expect(items.some((item) => item.kind === 'taskref')).toBe(true);
-    expect(service.memoryReport().coldReads).toMatchObject({ completed: 1, bytes: size, records: records.length });
+    expect(service.memoryReport().coldReads.bytes).toBeGreaterThan(0);
+    expect(service.memoryReport().coldReads.records).toBeLessThanOrEqual(records.length);
     let last = items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't4')!;
     let reads = 0;
     while (last.contentRefs?.length) {
@@ -3997,13 +4012,13 @@ it('reads three cold pages of a few-record large source once, preserving canonic
       expect(++reads).toBeLessThan(100);
     }
     expect(last.prompt).toBe(`4:${large}`);
-    expect(navigation.canonicalReadReport()).toMatchObject({ replays: 1, replayRecords: 1 });
-    expect(service.memoryReport().coldReads.completed).toBe(1);
+    const readsBeforeAppend = service.memoryReport().coldReads.completed;
+    expect(navigation.canonicalReadReport().replayBytes).toBe(0);
     await appendFile(wirePath, `${JSON.stringify({ type: 'context.clear' })}\n${JSON.stringify(prompt(6))}\n`);
     const changed = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
     expect(changed?.items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t6']);
-    expect(service.memoryReport().coldReads.completed).toBe(2);
-    console.log('cold-page-preview-cache', JSON.stringify({ wireBytes: size, records: records.length, pages, coldReads: service.memoryReport().coldReads, target: navigation.canonicalReadReport() }));
+    expect(service.memoryReport().coldReads.completed).toBeGreaterThan(readsBeforeAppend);
+    console.log('cold-page-preview-cache', JSON.stringify({ wireBytes: size, records: records.length, pages, firstPageMs, coldReads: service.memoryReport().coldReads, target: navigation.canonicalReadReport() }));
   } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
@@ -4029,11 +4044,25 @@ it('continues the first unverified cold page from its tail turn without a second
     const size = (await fsPromises.stat(wirePath)).size;
     expect(size).toBeGreaterThan(8 << 20);
     const signal = new AbortController().signal;
+    const screen = service as unknown as {
+      readScreenSnapshot(sessionId: string, agentId: string): Promise<AgentTranscriptSnapshot | undefined>;
+    };
+    const openStarted = Date.now();
+    const opened = await screen.readScreenSnapshot('s1', 'main');
+    const openMs = Date.now() - openStarted;
+    const openedTail = opened?.items.find((item) => item.kind === 'turn' && item.prompt?.startsWith('tail ') === true);
+    if (openedTail?.kind !== 'turn') throw new Error('Expected the tail turn before the first page');
+    expect(service.memoryReport().coldReads.bytes).toBeLessThan(size);
+    expect(service.memoryReport().coldReads.completed).toBe(1);
+    const pageStarted = Date.now();
     const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', signal });
+    const firstPageMs = Date.now() - pageStarted;
     const shown = page?.items.find((item) => item.kind === 'turn' && item.prompt?.startsWith('tail ') === true);
     if (shown?.kind !== 'turn') throw new Error('Expected the bounded tail turn');
     expect(shown.contentRefs?.length).toBeGreaterThan(0);
-    expect(service.memoryReport().coldReads).toMatchObject({ completed: 1, bytes: size });
+    expect(service.memoryReport().coldReads.bytes).toBeLessThan(size);
+    expect(service.memoryReport().coldReads.bytes).toBeGreaterThan(0);
+    expect(page?.read).toMatchObject({ readiness: 'partial', reason: 'source_unverified' });
     const cancelled = new AbortController();
     cancelled.abort();
     await expect(readSessionViewTranscriptContent(service, 's1', {
@@ -4049,12 +4078,18 @@ it('continues the first unverified cold page from its tail turn without a second
       expect(++reads).toBeLessThan(100);
     }
     expect(last.prompt).toBe(tail);
-    expect(service.memoryReport().coldReads).toMatchObject({ completed: 1, bytes: size, records: records.length });
+    expect(service.memoryReport().coldReads.bytes).toBeLessThan(size);
+    const readsBeforeAppend = service.memoryReport().coldReads.completed;
     await appendFile(wirePath, `${JSON.stringify(prompt(161, 'appended-after-tail'))}\n`);
     const changed = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', signal });
     expect(changed?.items.some((item) => item.kind === 'turn' && item.prompt === 'appended-after-tail')).toBe(true);
-    expect(service.memoryReport().coldReads.completed).toBe(2);
+    expect(service.memoryReport().coldReads.completed).toBeGreaterThan(readsBeforeAppend);
     expect(navigation.canonicalReadReport().replayBytes).toBe(0);
+    console.log('current-first-screen', JSON.stringify({
+      wireBytes: size, records: records.length, openMs, firstPageMs,
+      openReads: { bytes: service.memoryReport().coldReads.bytes, records: service.memoryReport().coldReads.records, completed: service.memoryReport().coldReads.completed },
+      tailTurnId: openedTail.turnId, read: page?.read, hasMore: page?.has_more,
+    }));
   } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
@@ -4127,4 +4162,74 @@ it.each([0, 12])('continues a budget-clipped resident baseline from its tail bou
   expect(items.map(key)).toEqual(canonical.items.map(key));
   expect(new Set(items.map(key)).size).toBe(items.length);
   expect(items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(Array.from({ length: 820 }, (_, ordinal) => `t${ordinal}`));
+});
+
+
+it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId: 7, prepared: false }])(
+  'recovers only the opening header of a long orphan tail (%j)', async ({ turnId, prepared }) => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-orphan-header-'));
+    const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+    await mkdir(wireDir, { recursive: true });
+    const wirePath = join(wireDir, 'wire.jsonl');
+    const records: Record<string, unknown>[] = [];
+    for (let id = 0; id <= turnId; id += 1) {
+      if (id === 7) for (let index = 0; index < 32; index += 1) records.push({ type: 'fixture.padding', padding: 'before'.repeat(13_108) });
+      records.push({ type: 'turn.prompt', turnId: id,
+        promptId: `request-${id}`, input: [{ type: 'text', text: `opening-${id}` }], origin: { kind: 'user' }, time: 1000 + id });
+    }
+    for (let index = 0; index < 145; index += 1) records.push({ type: 'fixture.padding', padding: 'x'.repeat(64 << 10) });
+    records.push({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: 'tail-step', step: 1 }, time: 2000 },
+      { type: 'turn.ended', turnId, reason: 'completed', time: 3000 });
+    await writeFile(wirePath, `${records.map(record => JSON.stringify(record)).join('\n')}\n`);
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    try {
+      if (prepared) { while (!(await navigation.scan('s1', 'main'))?.complete) {} }
+      const projectionBefore = navigation.canonicalReadReport().projectionBytes;
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      const turn = page?.items.filter(item => item.kind === 'turn').find(item => item.turnId === `t${turnId}`);
+      expect(turn?.steps.length).toBeGreaterThan(0);
+      if (turnId === 0 || prepared) expect(turn).toMatchObject({ prompt: `opening-${turnId}`, promptId: `request-${turnId}`, origin: { kind: 'user' }, state: 'completed' });
+      else expect(turn).toMatchObject({ prompt: undefined, origin: { kind: 'other' } });
+      expect(page?.read).toMatchObject({ readiness: 'partial', reason: 'source_unverified' });
+      expect(page?.has_more).toBe(true);
+      expect(page?.next_cursor).toBeDefined();
+      expect(service.memoryReport().coldReads.bytes).toBeLessThan(3 << 20);
+      expect(service.memoryReport().coldReads.completed).toBe(turnId === 0 ? 2 : 1);
+      expect(navigation.canonicalReadReport().projectionBytes).toBe(projectionBefore);
+      expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(1024);
+      if (turnId === 7 && !prepared) {
+        let continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: page!.next_cursor! });
+        if (continued?.items.length === 0) continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: continued.next_cursor ?? page!.next_cursor! });
+        expect(continued?.items.find(item => item.kind === 'turn' && item.turnId === 't7')).toMatchObject({ prompt: 'opening-7', origin: { kind: 'user' } });
+      }
+      const cancelled = new AbortController(); cancelled.abort();
+      await expect(navigation.readCanonicalTurnHeader('s1', 'main', `t${turnId}`, cancelled.signal)).rejects.toThrow();
+      if (prepared) {
+        const header = await navigation.readCanonicalTurnHeader('s1', 'main', `t${turnId}`);
+        expect(header.status).toBe('found');
+        await writeFile(wirePath, (await fsPromises.readFile(wirePath, 'utf8')).replace(`opening-${turnId}`, `changed-${turnId}`));
+        await expect(navigation.readCanonicalTurnHeader('s1', 'main', `t${turnId}`)).rejects.toThrow('history_source_changed');
+      }
+    } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+it('keeps a truly headerless long tail unknown with a usable continuation', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-headerless-'));
+  const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(wireDir, { recursive: true });
+  await writeFile(join(wireDir, 'wire.jsonl'), `${Array.from({ length: 145 }, () => JSON.stringify({ type: 'fixture.padding', padding: 'x'.repeat(64 << 10) })).join('\n')}\n${JSON.stringify({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, uuid: 'orphan-step', step: 1 } })}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+    const orphan = page?.items.find(item => item.kind === 'turn');
+    expect(orphan).toMatchObject({ origin: { kind: 'other' } });
+    expect(orphan?.prompt).toBeUndefined();
+    expect(page?.read).toMatchObject({ readiness: 'partial', reason: 'source_unverified' });
+    expect(page?.has_more).toBe(true);
+    expect(page?.next_cursor).toBeDefined();
+    expect(service.memoryReport().coldReads.completed).toBe(2);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });

@@ -1255,7 +1255,34 @@ describe('transcript authority projection', () => {
     }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
     expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
       activity_status: 'idle', status_source: 'runtime', live: true,
-    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'completed', busy: false });
+  });
+
+  it('keeps a finite background task busy when the runtime row is idle', () => {
+    const running = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'finite-shell', kind: 'shell', state: 'running', detached: true,
+        description: 'bounded job', outputTail: '', startedAt: FIXED_AT_2,
+      }],
+    });
+    const idle = compactSnapshotSubagent({
+      id: 'agent-38', agent_id: 'agent-38', status: 'running',
+      activity_status: 'idle', status_source: 'runtime', live: true, started_at: FIXED_AT_1,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['agent-38', running]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'background', busy: true,
+    });
+    const finished = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'finite-shell', kind: 'shell', state: 'completed', detached: true,
+        description: 'bounded job', outputTail: '', startedAt: FIXED_AT_1, endedAt: FIXED_AT_2,
+      }],
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['agent-38', finished]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'idle', busy: false,
+    });
   });
 
   it('does not let a pre-launch runtime idle row overwrite the newer detached task', () => {
@@ -1273,7 +1300,7 @@ describe('transcript authority projection', () => {
     });
     expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
       started_at: startedAt, completed_at: '2026-01-01T00:00:04.000Z',
-    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
   });
 
   it('lets a run that starts after the retained row revive the forest node', () => {
@@ -4670,6 +4697,34 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const replayed = projectAgentTranscriptView(createViewState('session_test'), 'main', aborted);
     expect(replayed.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued')).toBe(false);
     expect(replayed.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(false);
+  });
+
+  it.each(['running', 'completed'] as const)('does not erase a %s turn when an unstarted request for its logical message is cancelled', (state) => {
+    const snapshot = emptySnapshot({ items: [{ kind: 'turn', turnId: 't-original', ordinal: 0, state,
+      origin: { kind: 'user' }, promptId: 'accepted-request', message: { messageId: 'logical-user', role: 'user', revision: 0, provenance: { source: 'engine' } },
+      prompt: 'Already delivered message', startedAt: FIXED_AT, steps: [] }],
+      prompts: [{ promptId: 'cancelled-retry', userMessageId: 'logical-user', status: 'aborted', abortedBeforeStart: true,
+        content: [{ type: 'text', text: 'Never delivered replacement' }], createdAt: FIXED_AT_1, finishedAt: FIXED_AT_2 }] });
+    for (const previous of [createViewState('session_test'), projectAgentTranscriptView(createViewState('session_test'), 'main', { ...snapshot, prompts: [] })]) {
+      const projected = projectAgentTranscriptView(previous, 'main', snapshot);
+      const users = projected.blocks.filter(block => block.kind === 'user');
+      expect(users).toEqual([expect.objectContaining({ turnId: 't-original', userMessageId: 'logical-user', text: 'Already delivered message' })]);
+      expect(users[0]?.promptOutcome).toBeUndefined();
+      expect(projected.blocks.some(block => block.kind === 'notice')).toBe(false);
+      expect(projected.queuedPromptIds).toEqual([]);
+    }
+  });
+
+  it('does not remove a newer queued resend with the same logical identity', () => {
+    const snapshot = emptySnapshot({ prompts: [
+      { promptId: 'new-request', userMessageId: 'logical-user', status: 'queued', content: [{ type: 'text', text: 'New draft' }], createdAt: FIXED_AT_2 },
+      { promptId: 'cancelled-request', userMessageId: 'logical-user', status: 'aborted', abortedBeforeStart: true,
+        content: [{ type: 'text', text: 'Cancelled draft' }], createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+    ] });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.filter(block => block.kind === 'user')).toEqual([expect.objectContaining({ promptId: 'new-request', text: 'New draft', promptStatus: 'queued' })]);
+    expect(projected.queuedPromptIds).toEqual(['new-request']);
+    expect(projected.blocks.some(block => block.kind === 'notice')).toBe(false);
   });
 
   it('keeps the settled user bubble and marks it when the matching prompt fails', () => {

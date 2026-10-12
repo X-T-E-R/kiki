@@ -1761,6 +1761,11 @@ function isPromptIdentity(block: Block, promptId: string, userMessageId?: string
   );
 }
 
+function isUnstartedPromptBlock(block: Block, prompt: TranscriptPrompt): boolean {
+  return block.kind === 'user' && block.turnId === undefined &&
+    (block.promptId !== undefined ? block.promptId === prompt.promptId : isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
+}
+
 function sameMedia(
   left: readonly MediaRef[] | undefined,
   right: readonly MediaRef[] | undefined,
@@ -2129,9 +2134,7 @@ function mergeTranscriptPromptBlocks(
     }
     if (prompt.status === 'aborted' || prompt.status === 'failed') {
       if (prompt.status === 'aborted' && prompt.abortedBeforeStart === true) {
-        next = next.filter(
-          (block) => block.kind !== 'user' || !isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
-        );
+        next = next.filter(block => !isUnstartedPromptBlock(block, prompt));
         continue;
       }
       next = next.map((block) =>
@@ -2227,11 +2230,7 @@ function dropAbortedBeforeStartPromptBlocks(
     (prompt) => prompt.status === 'aborted' && prompt.abortedBeforeStart === true,
   );
   if (removed.length === 0) return [...blocks];
-  return blocks.filter(
-    (block) =>
-      block.kind !== 'user' ||
-      !removed.some((prompt) => isPromptIdentity(block, prompt.promptId, prompt.userMessageId)),
-  );
+  return blocks.filter(block => !removed.some(prompt => isUnstartedPromptBlock(block, prompt)));
 }
 
 export function stabilizeProjectedBlocks(
