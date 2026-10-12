@@ -88,6 +88,7 @@ const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
 const DELIVERY_LEASE_MS = 30_000;
+const FAST_DELIVERY_TIMEOUT_MS = 5_000;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
 
@@ -184,6 +185,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     target: ThreadRef;
     content: string;
     idempotencyKey: string;
+    signal?: AbortSignal;
+    deliveryTimeoutMs?: number;
   }): Promise<SendThreadMessageResult> {
     if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
     await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
@@ -432,6 +435,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
     });
   }
 
@@ -444,6 +449,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
     }, input.requireCommunication === true);
   }
 
@@ -508,6 +515,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
     }, input.allowWhenDisabled !== true);
   }
 
@@ -517,6 +526,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly target: ThreadRef;
     readonly content: string;
     readonly idempotencyKey: string;
+    readonly signal?: AbortSignal;
+    readonly deliveryTimeoutMs?: number;
   }, requireCommunication = true): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
@@ -565,7 +576,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (delivery === 'undeliverable') this.roomDeliveryTargets.delete(accepted.message.messageId);
     }
     if (delivery === 'pending') {
-      delivery = await this.deliverMessage(accepted.message);
+      delivery = await waitBoundedDelivery(
+        this.deliverMessage(accepted.message),
+        input.signal,
+        input.deliveryTimeoutMs,
+      );
     }
     return {
       messageId: accepted.message.messageId,
@@ -1515,6 +1530,32 @@ function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
         reject(error);
       },
     );
+  });
+}
+
+function waitBoundedDelivery(
+  deliveryPromise: Promise<SendThreadMessageResult['delivery']>,
+  signal?: AbortSignal,
+  timeoutMs = FAST_DELIVERY_TIMEOUT_MS,
+): Promise<SendThreadMessageResult['delivery']> {
+  if (signal?.aborted || timeoutMs <= 0) return Promise.resolve('pending');
+  void deliveryPromise.catch(() => {});
+  let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
+  return new Promise<SendThreadMessageResult['delivery']>((resolve, reject) => {
+    onAbort = () => resolve('pending');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => resolve('pending'), timeoutMs);
+    timer.unref?.();
+    deliveryPromise.then(
+      (delivery) => resolve(delivery),
+      (error) => reject(error),
+    );
+  }).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (signal !== undefined && onAbort !== undefined) {
+      signal.removeEventListener('abort', onAbort);
+    }
   });
 }
 

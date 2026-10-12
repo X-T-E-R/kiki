@@ -70,6 +70,8 @@ export interface ReadThreadResult {
 }
 
 export interface SendThreadMessageInput {
+  readonly signal?: AbortSignal;
+  readonly deliveryTimeoutMs?: number;
   readonly caller?: ThreadCaller;
   readonly target: ThreadRef;
   readonly content: string;
@@ -85,6 +87,8 @@ export interface SendThreadMessageResult {
 }
 
 export interface SendRoomMessageInput {
+  readonly signal?: AbortSignal;
+  readonly deliveryTimeoutMs?: number;
   readonly target: ThreadRef;
   readonly roomId: string;
   readonly content: string;

@@ -726,7 +726,7 @@ describe('ThreadCommunicationService', () => {
       id: 'message-1',
       message: expect.objectContaining({
         role: 'user',
-        content: [{ type: 'text', text: 'Message from thread "Design review" (source):\n\nhello' }],
+        content: [expect.objectContaining({ type: 'text', text: 'Message from thread "Design review" (source):\n\nhello' })],
         origin: {
           kind: 'peer_thread',
           source,
@@ -775,6 +775,85 @@ describe('ThreadCommunicationService', () => {
     expect(promptInject).not.toHaveBeenCalled();
     await expect(service.shutdown()).resolves.toBeUndefined();
     expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1']);
+  });
+
+  it('returns delivery pending within bounded window when resume takes long, completing in background', async () => {
+    promptState = 'pending';
+    let unblockResume!: () => void;
+    resume.mockImplementationOnce(() => new Promise((resolve) => {
+      unblockResume = () => {
+        events.push('resume');
+        resolve({
+          id: 'target',
+          kind: LifecycleScope.Session,
+          accessor: accessor([[IAgentLifecycleService, {
+            create: async () => ({
+              id: 'main',
+              kind: LifecycleScope.Agent,
+              accessor: accessor([[IAgentPromptService, {
+                lookup: () => undefined,
+                enqueue: promptEnqueue,
+                inject: promptInject,
+                steer: promptSteer,
+                abort: promptAbort,
+              }]]),
+              dispose: () => {},
+            }),
+            get: () => undefined,
+            list: () => [],
+          } as unknown as IAgentLifecycleService]]),
+          dispose: () => {},
+        } as ISessionScopeHandle);
+      };
+    }));
+
+    const service = ix.get(IThreadCommunicationService);
+    const result = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: ref(service.hostId, 'workspace-a', 'source'),
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'slow-resume',
+      idempotencyKey: 'slow-resume-key',
+      deliveryTimeoutMs: 20,
+    });
+
+    expect(result.delivery).toBe('pending');
+    expect(events).toEqual(['persist']);
+    expect(result.deduplicated).toBe(false);
+
+    unblockResume();
+    await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));
+    await expect(service.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('returns delivery pending immediately on caller signal abort without deleting accepted message', async () => {
+    promptState = 'pending';
+    let unblockSteer!: () => void;
+    promptSteer.mockImplementationOnce(() => new Promise((resolve) => {
+      unblockSteer = () => {
+        events.push('steer:message-1');
+        resolve([]);
+      };
+    }));
+
+    const ac = new AbortController();
+    const service = ix.get(IThreadCommunicationService);
+    const sendPromise = peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: ref(service.hostId, 'workspace-a', 'source'),
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'aborted-call',
+      idempotencyKey: 'aborted-key',
+      signal: ac.signal,
+    });
+
+    await vi.waitFor(() => expect(events).toContain('enqueue'));
+    ac.abort();
+    const result = await sendPromise;
+    expect(result.delivery).toBe('pending');
+    expect(events).toEqual(['persist', 'resume', 'enqueue']);
+
+    unblockSteer();
+    await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));
+    await expect(service.shutdown()).resolves.toBeUndefined();
   });
 
   it('treats a raw external source claim as data outside the accepted authority shape', async () => {

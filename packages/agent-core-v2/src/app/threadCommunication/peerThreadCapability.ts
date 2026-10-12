@@ -26,6 +26,8 @@ export interface SpaceThreadCapability {
     target: ThreadRef;
     content: string;
     idempotencyKey: string;
+    signal?: AbortSignal;
+    deliveryTimeoutMs?: number;
   }): Promise<SendThreadMessageResult>;
 }
 
@@ -38,6 +40,7 @@ export const SEND_PEER_THREAD_MESSAGE: unique symbol = Symbol('sendPeerThreadMes
 
 export interface SendPeerThreadMessageInput {
   readonly signal?: AbortSignal;
+  readonly deliveryTimeoutMs?: number;
   readonly cause?: { readonly causeId: string; readonly hop: number };
   readonly source: ThreadRef;
   readonly target: ThreadRef;
