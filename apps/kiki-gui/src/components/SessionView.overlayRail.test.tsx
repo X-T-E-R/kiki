@@ -18,7 +18,11 @@ import { SessionRouteView, SessionTitle } from './SessionView';
 
 const { opened, fixture } = vi.hoisted(() => ({
   opened: [] as string[],
-  fixture: { session: undefined as Session | undefined },
+  fixture: {
+    session: undefined as Session | undefined,
+    partialPrompts: false,
+    seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
+  },
 }));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -61,6 +65,14 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
       const state = { ...actual.createViewState(sessionId), session: fixture.session };
+      if (fixture.partialPrompts) {
+        state.globalCoverage = {
+          version: 1,
+          tasks: { returned: 0, total: 0, hasMore: false },
+          attachments: { returned: 0, total: 0, hasMore: false },
+          prompts: { returned: 5, total: 34, hasMore: true },
+        };
+      }
       this.getState = () => state;
       this.getAgentState = () => state;
     }
@@ -77,7 +89,7 @@ vi.mock('./ConversationShell', () => ({
   EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
   useConversationShell: () => ({ slots }),
   useOptionalConversationShell: () => ({ slots }),
-  useRegisterSeat: () => {},
+  useRegisterSeat: (seat: import('./ConversationShell').ConversationSeat) => { fixture.seat = seat; },
 }));
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 vi.mock('./Transcript', async (importOriginal) => {
@@ -273,6 +285,21 @@ describe('message-view controls and the persona menu', () => {
 });
 
 describe('right rail responsive layout', () => {
+  it('does not place historical prompt pagination in an empty composer queue', async () => {
+    fixture.partialPrompts = true;
+    fixture.seat = undefined;
+    const view = await mountAt('wide');
+    try {
+      const provider = (fixture.seat as import('./ConversationShell').ConversationSeat | undefined)?.composer as { props: { children: { props: { header?: unknown } } } };
+      expect(provider).toBeDefined();
+      expect(provider.props.children.props.header).toBeUndefined();
+    } finally {
+      await view.unmount();
+      fixture.partialPrompts = false;
+      fixture.seat = undefined;
+    }
+  });
+
   it('opens the rail as a backdroped overlay layer below the lg breakpoint', async () => {
     const view = await mountAt('narrow');
     try {

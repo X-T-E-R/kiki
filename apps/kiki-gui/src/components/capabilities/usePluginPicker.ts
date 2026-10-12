@@ -19,14 +19,21 @@
  *   never offered as if it could be turned on.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import type { PluginSummary } from '../../lib/client';
 import { useConnection } from '../../state/connection';
+import {
+  currentPendingCapabilityScope,
+  pendingNewSessionCapabilities,
+  setPendingPluginChoice,
+  subscribePendingNewSessionCapabilities,
+} from './newSessionCapabilities';
 import { isStaleRevision, isStaleTarget, overrideSource, rowBlockedByHome, type OverrideSource } from './pluginUsage';
 import { PLUGIN_QUERY_KEYS, useInstalledPlugins } from './usePlugins';
 
@@ -56,20 +63,33 @@ export interface PluginPickerItem {
 /**
  * Read a conversation's plugins and turn one of them on or off.
  *
- * `sessionId` is required: a plugin scoped to a conversation only exists
- * relative to one, and a picker on a draft that has no conversation yet would
- * be promising a scope it cannot name.
+ * Without a session the choice stays local until the conversation is created.
+ * It does not send a message, write a global default, or turn the plugin on
+ * in any other workspace. A master switch that is off cannot be turned on.
  */
-export function usePluginPicker(sessionId: string | undefined) {
-  const { client } = useConnection();
+export function usePluginPicker(sessionId: string | undefined, workspaceId?: string) {
+  const { client, scopeId, spaceKey, connectionId } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const installed = useInstalledPlugins();
+  const readPending = useCallback(
+    () => pendingNewSessionCapabilities(currentPendingCapabilityScope({ scopeId, spaceKey, connectionId })),
+    [connectionId, scopeId, spaceKey],
+  );
+  const pending = useSyncExternalStore(subscribePendingNewSessionCapabilities, readPending, readPending);
   const [state, setState] = useState<PluginPickState>({ kind: 'idle' });
   const target: PluginUsageTarget | undefined = useMemo(
     () => (sessionId === undefined || sessionId === '' ? undefined : { session_id: sessionId }),
     [sessionId],
   );
+  const draft = target === undefined;
+  const workspaceUsage = useQuery({
+    queryKey: typeof workspaceId === 'string' && workspaceId !== '' ? PLUGIN_QUERY_KEYS.usage(workspaceId) : ['plugin-usage', 'draft-none'],
+    queryFn: () => client.getPluginUsage({ workspace_id: workspaceId! }),
+    enabled: draft && typeof workspaceId === 'string' && workspaceId !== '' && typeof client.getPluginUsage === 'function',
+    staleTime: 5_000,
+    retry: false,
+  });
   // Read by a write that outlives this render, so a late failure is written in
   // the language the reader is actually looking at when it lands.
   const localeRef = useRef(locale);
@@ -119,11 +139,25 @@ export function usePluginPicker(sessionId: string | undefined) {
    * cannot ask for an override the row never meant.
    */
   const toggle = useCallback((pluginId: string, enabled: boolean) => {
-    if (target === undefined) return;
+    if (target === undefined) {
+      const plugin = (installed.data?.plugins ?? []).find((item) => item.id === pluginId);
+      if (plugin === undefined || !plugin.enabled || plugin.state !== 'ok') return;
+      const usageRow = workspaceUsage.data?.plugins.find((item) => item.id === pluginId);
+      const inherited = usageRow !== undefined ? usageRow.effective : plugin.globalEnabled;
+      const next = enabled ? 'on' : 'off';
+      setPendingPluginChoice(
+        pluginId,
+        next === (inherited ? 'on' : 'off') ? 'inherit' : next,
+        currentPendingCapabilityScope({ scopeId, spaceKey, connectionId }),
+      );
+      setState({ kind: 'idle' });
+      return;
+    }
     void write.mutateAsync({ pluginId, override: enabled ? 'on' : 'off', target }).catch(() => undefined);
-  }, [write, target]);
+  }, [connectionId, installed.data, scopeId, spaceKey, target, workspaceUsage.data, write]);
 
   const items: readonly PluginPickerItem[] = useMemo(() => {
+    if (draft) return draftPluginItems(installed.data?.plugins ?? [], workspaceUsage.data, pending, t);
     const usage = read.data;
     if (usage === undefined) return [];
     const names = new Map((installed.data?.plugins ?? []).map((plugin) => [plugin.id, plugin.displayName]));
@@ -141,14 +175,14 @@ export function usePluginPicker(sessionId: string | undefined) {
       source: overrideSource(row),
       contributions: contributionsOf(row, t),
     }));
-  }, [read.data, installed.data, state, t]);
+  }, [draft, installed.data, pending, read.data, state, t, workspaceUsage.data]);
 
   return {
     items,
-    /** False where this server has no conversation to scope a plugin to. */
-    available: target !== undefined,
-    loading: target !== undefined && read.isPending,
-    failed: read.isError,
+    /** A live conversation, or a /new draft whose installed list has loaded. */
+    available: target !== undefined || installed.isSuccess,
+    loading: draft ? installed.isPending : read.isPending,
+    failed: draft ? installed.isError : read.isError,
     failure: state.kind === 'failed' ? state : undefined,
     toggle,
     busyId: write.isPending ? write.variables?.pluginId : undefined,
@@ -163,6 +197,32 @@ export function usePluginPicker(sessionId: string | undefined) {
  */
 function targetKey(target: PluginUsageTarget): string {
   return 'session_id' in target ? target.session_id : target.workspace_id;
+}
+
+function draftPluginItems(
+  installed: readonly PluginSummary[],
+  usage: PluginUsageResponse | undefined,
+  pending: ReturnType<typeof pendingNewSessionCapabilities>,
+  t: (key: 'rail.plugins.counts.skill' | 'rail.plugins.counts.mcp', params: { count: number }) => string,
+): readonly PluginPickerItem[] {
+  return installed.map((plugin) => {
+    const row = usage?.plugins.find((item) => item.id === plugin.id);
+    const choice = pending.plugins.find((item) => item.pluginId === plugin.id);
+    const blocked = !plugin.enabled || plugin.state !== 'ok';
+    const inherited = row !== undefined ? row.effective : plugin.enabled && plugin.state === 'ok' && plugin.globalEnabled;
+    return {
+      id: plugin.id,
+      name: plugin.displayName,
+      icon: plugin.icon,
+      enabled: blocked ? false : choice !== undefined ? choice.override === 'on' : inherited,
+      available: !blocked,
+      source: choice !== undefined ? 'session' : row !== undefined ? overrideSource(row) : plugin.globalEnabled ? 'home' : 'global',
+      contributions: [
+        ...(plugin.skillCount > 0 ? [t('rail.plugins.counts.skill', { count: plugin.skillCount })] : []),
+        ...(plugin.mcpServerCount > 0 ? [t('rail.plugins.counts.mcp', { count: plugin.mcpServerCount })] : []),
+      ].join(' · '),
+    };
+  });
 }
 
 /** The rows' one-line "what it adds", or an empty string when it adds none. */

@@ -17,11 +17,13 @@ import {
   useNewSessionDraft,
   type NewSessionDraftState,
 } from './NewSessionDraft';
+import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
-  scope: { id: 'local', label: null as string | null },
+  scope: { id: 'local', spaceKey: 'local-space', connectionId: null as string | null, label: null as string | null },
   client: {
     listWorkspaces: vi.fn(),
+    listWorkspaceCatalog: vi.fn(),
     klient: { rest: { agents: { previewFile: vi.fn() }, workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
@@ -29,13 +31,14 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     getAuth: vi.fn(),
     createSession: vi.fn(),
     getPersona: vi.fn(),
+    setPluginUsage: vi.fn(),
     previewAgentProfileFile: vi.fn((...args: unknown[]) => client.klient.rest.agents.previewFile(...args)),
   },
   navigate: vi.fn(),
 }));
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }),
+  useConnection: () => ({ client, scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, sshLabel: scope.label }),
 }));
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -59,11 +62,13 @@ beforeAll(() => {
 
 beforeEach(() => {
   scope.id = 'local';
+  scope.spaceKey = 'local-space';
+  scope.connectionId = null;
   scope.label = null;
   latestDraftState = undefined;
   localStorage.clear();
   navigate.mockReset();
-  client.listWorkspaces.mockReset().mockResolvedValue({ items: [] });
+  client.listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [] });
   client.klient.rest.workspaces.inspect.mockReset().mockResolvedValue({ isGit: false });
   client.klient.rest.agents.previewFile.mockReset();
   client.getConfig.mockReset().mockResolvedValue({});
@@ -72,6 +77,8 @@ beforeEach(() => {
   client.getAuth.mockReset().mockResolvedValue({ ready: true });
   client.createSession.mockReset().mockResolvedValue({ id: 'session-new' });
   client.getPersona.mockReset();
+  client.setPluginUsage.mockReset().mockResolvedValue({});
+  clearPendingNewSessionCapabilities();
 });
 
 afterEach(async () => {
@@ -649,8 +656,29 @@ describe('useNewSessionDraft agent profile scope', () => {
     return client.createSession.mock.calls.at(-1)?.[0] as SessionCreate;
   };
 
+  it('can send from catalog metadata while only the chosen root is being inspected', async () => {
+    client.listWorkspaces.mockReset().mockImplementation(() => new Promise(() => {}));
+    const entry = { id: 'wd_selected', name: 'Selected', root: '/workspace/selected', pinned: false, created_at: '2026-09-05T00:00:00.000Z', last_opened_at: '2026-09-05T00:00:00.000Z' };
+    const other = { ...entry, id: 'wd_other', name: 'Other', root: '/workspace/other' };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [entry, other] });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    const inspection = deferred<{ isGit: boolean }>();
+    client.klient.rest.workspaces.inspect.mockReturnValue(inspection.promise);
+    const queryClient = await renderDraft({ initialWorkspaceId: 'wd_selected' });
+    const state = await settleDraft((value) => value.selectionReady);
+    expect(state.targetReady).toBe(true);
+    expect(state.effectiveWorkspace?.id).toBe('wd_selected');
+    expect(state.worktreeAvailability.kind).toBe('hidden');
+    expect(client.listWorkspaces).not.toHaveBeenCalled();
+    expect(client.klient.rest.workspaces.inspect).toHaveBeenCalledExactlyOnceWith('/workspace/selected');
+    expect(queryClient.getQueryData(['workspaces'])).toBeUndefined();
+    expect(queryClient.getQueryData(['workspaces', 'catalog'])).toEqual({ items: [entry, other] });
+    await act(async () => { await state.send('Use the selected workspace', []); });
+    expect(client.createSession).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ workspace_id: 'wd_selected' }));
+  });
+
   it.each([40001, 50001])('does not infer automatic creation from workspace error %s and retries without losing the draft', async (code) => {
-    client.listWorkspaces.mockRejectedValue(new ApiError({ code, msg: 'Workspace read failed', data: null }));
+    client.listWorkspaceCatalog.mockRejectedValue(new ApiError({ code, msg: 'Workspace read failed', data: null }));
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     await renderDraft();
     let state = await settleDraft((value) => value.workspacesError !== null);
@@ -663,7 +691,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { await state.send(state.draft, state.attachments); });
     expect(client.createSession).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
     await act(async () => { state.retryWorkspaces(); });
     state = await settleDraft((value) => value.selectionReady);
     expect(state.workspacesError).toBeNull();
@@ -676,7 +704,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('keeps a selected workspace blocked during its pending or failed read instead of falling back to automatic creation', async () => {
     const listing = deferred<{ items: ReturnType<typeof workspace>[] }>();
-    client.listWorkspaces.mockReturnValue(listing.promise);
+    client.listWorkspaceCatalog.mockReturnValue(listing.promise);
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     await renderDraft({ initialWorkspaceId: 'wd_selected' });
     let state = latestDraftState!;
@@ -696,7 +724,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('allows an explicit directory to recover from a failed workspace list without clearing its error or draft', async () => {
-    client.listWorkspaces.mockRejectedValue(new Error('workspace list offline'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('workspace list offline'));
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     await renderDraft();
     let state = await settleDraft((value) => value.workspacesError !== null);
@@ -709,7 +737,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it.each([40001, 50001, -2])('shows create error %s without navigation or automatic resubmission and retains prompt, attachments and choices', async (code) => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_selected', 'Selected')] });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     client.createSession.mockRejectedValue(new ApiError({ code, msg: 'Create failed', data: null }));
     await renderDraft({ initialWorkspaceId: 'wd_selected' });
@@ -820,15 +848,15 @@ describe('useNewSessionDraft agent profile scope', () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     const queryClient = await renderDraft();
     let state = await settleDraft((value) => !value.agentProfileCatalogPending);
-    const before = client.listWorkspaces.mock.calls.length;
+    const before = client.listWorkspaceCatalog.mock.calls.length;
     client.createSession.mockRejectedValueOnce(new Error('directory unavailable'));
     await act(async () => { await state.send('Start work', []); });
-    expect(client.listWorkspaces).toHaveBeenCalledTimes(before);
+    expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(before);
     state = await settleDraft((value) => value.error === 'directory unavailable' && !value.busy);
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_new', 'New')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_new', 'New')] });
     await act(async () => { await state.send('Start work', []); });
     state = await settleDraft((value) => value.workspaces.some((item) => item.id === 'wd_new'));
-    expect(queryClient.getQueryData<{ items: { id: string }[] }>(['workspaces'])?.items[0]?.id).toBe('wd_new');
+    expect(queryClient.getQueryData<{ items: { id: string }[] }>(['workspaces', 'catalog'])?.items[0]?.id).toBe('wd_new');
     expect(client.createSession).toHaveBeenCalledTimes(2);
     expect(navigate).toHaveBeenCalledTimes(1);
   });
@@ -852,12 +880,12 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('uses workspace Git metadata and refreshes it with the workspace list', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     const queryClient = await renderDraft();
     let state = await settleDraft((value) => !value.workspacesLoading);
     expect(state.worktreeAvailability).toEqual({ kind: 'not-git' });
     expect(client.klient.rest.workspaces.inspect).not.toHaveBeenCalled();
-    client.listWorkspaces.mockResolvedValue({ items: [{ ...workspace('wd_alpha', 'Alpha'), isGit: true }] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [{ ...workspace('wd_alpha', 'Alpha'), isGit: true }] });
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ['workspaces'] }); });
     state = await settleDraft((value) => value.worktreeAvailability.kind === 'ready');
     expect(state.worktreeAvailability).toEqual({ kind: 'ready', root: '/workspace/alpha' });
@@ -931,7 +959,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('sends the preserved initial agent before catalog completion and enriches its workspace pins later', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
     client.listNamedAgentProfiles.mockReturnValue(catalog.promise);
 
@@ -977,7 +1005,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   it.each(['missing-main', 'workspace-helper', 'disabled-main'])(
     'preserves invalid initial profile %s until an enabled main is explicitly selected',
     async (initialProfile) => {
-      client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
+      client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
       client.listModels.mockResolvedValue({ items: [model('provider/beta', 'high')] });
       client.listNamedAgentProfiles.mockResolvedValue({
         items: [
@@ -1020,7 +1048,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('keeps the initial selection sendable through a catalog error and background retry', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
     client.listNamedAgentProfiles.mockReturnValue(catalog.promise);
 
@@ -1089,7 +1117,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('preserves selection and pins after a workspace catalog error until a valid workspace is reselected', async () => {
     const nextCatalog = deferred<{ items: NamedAgentProfile[] }>();
-    client.listWorkspaces.mockResolvedValue({
+    client.listWorkspaceCatalog.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
@@ -1157,7 +1185,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('keeps a confirmed missing workspace profile and its pins blocked until a valid main is selected', async () => {
-    client.listWorkspaces.mockResolvedValue({
+    client.listWorkspaceCatalog.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({
@@ -1209,7 +1237,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('reapplies the next workspace definition to profile-derived pins after remount', async () => {
-    client.listWorkspaces.mockResolvedValue({
+    client.listWorkspaceCatalog.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({
@@ -1269,7 +1297,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('restores the profile selection immediately and enriches its pins after the remounted catalog resolves', async () => {
     const items = [profile('agent'), profile('workspace-choice', 'provider/alpha', 'low')];
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
     client.listNamedAgentProfiles.mockResolvedValue({ items });
 
@@ -1334,7 +1362,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     { label: 'different-valued', selectedModel: 'provider/manual', selectedEffort: 'medium' },
     { label: 'same-valued', selectedModel: 'provider/alpha', selectedEffort: 'low' },
   ])('persists $label manual overrides through remount and a same-name workspace profile refresh', async ({ selectedModel, selectedEffort }) => {
-    client.listWorkspaces.mockResolvedValue({
+    client.listWorkspaceCatalog.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({
@@ -1401,7 +1429,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it.each(['workspace', 'cwd'])('does not replay an old prefill over edited %s/profile/manual choices on remount', async (target) => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low'), model('provider/beta', 'high')] });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('profile-p', 'provider/alpha', 'low'), profile('profile-q', 'provider/beta', 'high')] });
     const prefill = { initialWorkspaceId: 'wd_alpha', initialProfile: 'profile-p', prefillNavigationKey: 'entry-a' };
@@ -1438,7 +1466,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('applies a different deep link and a new navigation to the same deep link instead of permanently preferring saved choices', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low'), model('provider/beta', 'high')] });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('profile-p', 'provider/alpha', 'low'), profile('profile-q', 'provider/beta', 'high')] });
     const first = { initialWorkspaceId: 'wd_alpha', initialProfile: 'profile-p', prefillNavigationKey: 'entry-a' };
@@ -1462,7 +1490,7 @@ describe('useNewSessionDraft agent profile scope', () => {
 
   it('queries an effective cwd catalog and allows selecting its main profile without using workspace pins', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({
       items: [model('provider/alpha', 'low'), model('provider/custom', 'high')],
     });
@@ -1527,7 +1555,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('keeps a deleted model selected after remount and blocks creation until a valid model is chosen', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({
       items: [model('provider/removed', 'low'), model('provider/available', 'high')],
     });
@@ -1572,7 +1600,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('retains an explicit automatic choice across remount and excludes workspace-only profiles', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'low')] });
     client.listNamedAgentProfiles.mockResolvedValue({
       items: [
@@ -1614,7 +1642,7 @@ describe('useNewSessionDraft agent profile scope', () => {
   });
 
   it('keeps a deleted workspace id after remount instead of falling back to another workspace', async () => {
-    client.listWorkspaces.mockResolvedValue({
+    client.listWorkspaceCatalog.mockResolvedValue({
       items: [workspace('wd_alpha', 'Alpha'), workspace('wd_beta', 'Beta')],
     });
     client.listModels.mockResolvedValue({
@@ -1636,7 +1664,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     await unmountDraft();
     expect(localStorage.getItem('kiki.newSessionDraft')).toBe(stored);
 
-    client.listWorkspaces.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_beta', 'Beta')] });
     await renderDraft();
     state = await settleDraft((value) => !value.workspacesLoading && !value.agentProfileCatalogPending);
     expect(state.workspaceId).toBe('wd_alpha');
@@ -1863,6 +1891,68 @@ describe('new-session SSH creation handoff', () => {
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledTimes(1);
   });
+
+  it('applies a pending plugin choice before handing off the first prompt', async () => {
+    const capabilityScope: PendingCapabilityScope = { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' };
+    setPendingPluginChoice('media', 'on', capabilityScope);
+    let accept: (() => void) | undefined;
+    client.setPluginUsage.mockImplementation(() => new Promise<void>((resolve) => { accept = resolve; }));
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady);
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send('Create an image', []); });
+    await settleDraft(() => client.setPluginUsage.mock.calls.length > 0);
+    expect(client.setPluginUsage).toHaveBeenCalledExactlyOnceWith({ target: { session_id: 'session-new' }, plugin_id: 'media', override: 'on' });
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { accept!(); await sending; });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate.mock.calls[0]?.[1].state.initialPrompt).toBe('Create an image');
+    expect(pendingNewSessionCapabilities(capabilityScope).plugins).toEqual([]);
+  });
+
+  it('keeps the draft and the confirmed session when applying a plugin fails, then retries that session', async () => {
+    const capabilityScope: PendingCapabilityScope = { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' };
+    setPendingPluginChoice('media', 'on', capabilityScope);
+    client.setPluginUsage.mockRejectedValueOnce(new Error('Plugin apply failed'));
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => { state.updateDraft('Use media'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send('Use media', []); });
+    expect(navigate).not.toHaveBeenCalled();
+    state = await settleDraft((value) => !value.busy && value.error === 'Plugin apply failed');
+    expect(state.draft).toBe('Use media');
+    expect(pendingNewSessionCapabilities(capabilityScope).plugins).toEqual([{ pluginId: 'media', override: 'on' }]);
+    await act(async () => { await state.send('Use media', []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(client.setPluginUsage).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(pendingNewSessionCapabilities(capabilityScope).plugins).toEqual([]);
+  });
+
+  it('applies only this connection and draft, retaining other homes and choices made during apply', async () => {
+    const submitted: PendingCapabilityScope = { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' };
+    const others: PendingCapabilityScope[] = [
+      { ...submitted, spaceKey: 'other-space' },
+      { ...submitted, connectionId: 'other-connection' },
+      { ...submitted, draftKey: 'persona-daily-example' },
+    ];
+    setPendingPluginChoice('media', 'on', submitted);
+    for (const other of others) setPendingPluginChoice('other-plugin', 'off', other);
+    const apply = deferred<object>();
+    client.setPluginUsage.mockReturnValue(apply.promise);
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady);
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send('Use media in this draft', []); });
+    await settleDraft(() => client.setPluginUsage.mock.calls.length > 0);
+    setPendingPluginChoice('media', 'off', submitted);
+    await act(async () => { apply.resolve({}); await sending; });
+    expect(client.setPluginUsage).toHaveBeenCalledExactlyOnceWith({ target: { session_id: 'session-new' }, plugin_id: 'media', override: 'on' });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(pendingNewSessionCapabilities(submitted).plugins).toEqual([{ pluginId: 'media', override: 'off' }]);
+    for (const other of others) expect(pendingNewSessionCapabilities(other).plugins).toEqual([{ pluginId: 'other-plugin', override: 'off' }]);
+  });
 });
 
 
@@ -2019,14 +2109,14 @@ describe('explicit profile file drafts', () => {
   });
 
   it('restores a non-main file, previews in its workspace, and creates with its canonical source', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [{ id: 'workspace-example', root: '/workspace', sessions: 0, lastSessionTime: null }] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'workspace-example', root: '/workspace', sessions: 0, lastSessionTime: null }] });
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
       workspaceId: 'workspace-example', execution: { executor: 'native', profile_file: 'profiles/helper.md' },
       modelFromProfile: true, effortFromProfile: true,
     }));
     await renderDraft();
     const state = await settleDraft((value) => value.selectionReady && value.modelOverride === 'fixture/model');
-    expect(client.klient.rest.agents.previewFile).toHaveBeenCalledWith({ path: 'profiles/helper.md', cwd: undefined, workspace_id: 'workspace-example' });
+    expect(client.klient.rest.agents.previewFile).toHaveBeenCalledWith({ path: 'profiles/helper.md', cwd: undefined, workspace_id: 'workspace-example' }, { signal: expect.any(AbortSignal) });
     expect(state.execution.profile_file).toBe(profile.source_file);
     expect(state.effectiveEffort).toBe('high');
     expect(readStoredDraft()).toMatchObject({ execution: { executor: 'native', profile_file: profile.source_file } });
@@ -2069,7 +2159,7 @@ describe('workspace list failures on /new', () => {
   });
 
   it('reports a failed read instead of reading it as a home with no workspaces', async () => {
-    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('workspace list unavailable'));
     await renderDraft();
     const state = await settleDraft((value) => value.workspacesFailed);
 
@@ -2080,11 +2170,11 @@ describe('workspace list failures on /new', () => {
     expect(state.autoWorkspace).toBe(false);
     expect(state.effectiveWorkspace).toBeUndefined();
     // A non-index failure is not a cold home: it is reported at once, not retried.
-    expect(client.listWorkspaces).toHaveBeenCalledTimes(1);
+    expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the draft and the explicit automatic option while the read has failed', async () => {
-    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('workspace list unavailable'));
     await renderDraft();
     const state = await settleDraft((value) => value.workspacesFailed);
 
@@ -2101,7 +2191,7 @@ describe('workspace list failures on /new', () => {
   });
 
   it('distinguishes an empty home: a resolved empty list is not a failure', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     await renderDraft();
     const state = await settleDraft((value) => value.workspacesLoading === false && !value.workspacesFailed);
 
@@ -2113,14 +2203,14 @@ describe('workspace list failures on /new', () => {
 
   it('retries a cold index within the shared bounded window, then lists the folder', async () => {
     const building = new ApiError({ code: 40939, msg: 'session index is building', data: null });
-    client.listWorkspaces
+    client.listWorkspaceCatalog
       .mockRejectedValueOnce(building)
       .mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
     await renderDraft();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
     const state = await settleDraft((value) => value.workspaces.length > 0);
 
-    expect(client.listWorkspaces).toHaveBeenCalledTimes(2);
+    expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(2);
     expect(state.workspacesFailed).toBe(false);
     expect(state.effectiveWorkspace?.id).toBe('wd_alpha');
   });

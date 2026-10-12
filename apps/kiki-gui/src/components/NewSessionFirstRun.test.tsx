@@ -227,7 +227,7 @@ describe('WorkspacePickerFields first-run affordances', () => {
   it('explains the first-run automatic workspace only while the catalog is empty', async () => {
     const empty = await mount(draftState());
     expect(empty.textContent).toContain('Choose a project folder, or send now');
-    expect(empty.textContent).toContain('create a new folder in Kiki Home');
+    expect(empty.textContent).toContain('create a workspace in Kiki Home');
     expect(empty.querySelector<HTMLButtonElement>('#new-workspace-select')?.disabled).toBe(false);
 
     const loading = await mount(draftState({ workspacesLoading: true }));
@@ -243,9 +243,7 @@ describe('WorkspacePickerFields first-run affordances', () => {
             name: 'proj',
             created_at: '2026-01-01T00:00:00.000Z',
             last_opened_at: '2026-01-01T00:00:00.000Z',
-            session_count: 0,
             pinned: false,
-            isGit: false,
           },
         ],
       }),
@@ -283,13 +281,13 @@ describe('WorkspacePickerFields first-run affordances', () => {
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false, isGit: false,
+        pinned: false,
       },
       workspaces: [{
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false, isGit: false,
+        pinned: false,
       }],
       selectWorkspace,
     }));

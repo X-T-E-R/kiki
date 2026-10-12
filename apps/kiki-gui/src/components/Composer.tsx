@@ -26,7 +26,8 @@
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { useNavigate } from 'react-router-dom';
 
 import type { DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
@@ -163,7 +164,6 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 };
 
 const MENTION_DEBOUNCE_MS = 250;
-const MENTION_ROW_LIMIT = 8;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
 
 const isTransientCatalogError = (error: unknown): boolean =>
@@ -332,6 +332,8 @@ export function Composer({
   attachments,
   quote,
   onRemoveQuote,
+  quotes,
+  onRemoveQuoteItem,
   annotations,
   onRemoveAnnotation,
   onChangeAttachments,
@@ -493,7 +495,7 @@ export function Composer({
    * File-picker feed for `@` mentions (session `fs:search` on /s, workspace
    * `fs:search` on /new). Omit to disable the picker.
    */
-  fsSearch?: (query: string) => Promise<FsSearchHit[]>;
+  fsSearch?: FsSearchFeedSearch;
   /** Cache scope for picker results (workspace id on /new); defaults to sessionId. */
   mentionScopeKey?: string;
   /** Controlled attachment chips (parent owns them beside the draft). */
@@ -501,6 +503,8 @@ export function Composer({
   /** Selected transcript text quoted into this prompt; rendered as a chip. */
   quote?: string | null;
   onRemoveQuote?: () => void;
+  quotes?: readonly import('@kiki/session-core/composer').SelectionQuote[];
+  onRemoveQuoteItem?: (id: string) => void;
   /** Selection annotations (quote + comment) accumulating beside the quote. */
   annotations?: readonly SelectionAnnotation[];
   onRemoveAnnotation?: (id: string) => void;
@@ -669,6 +673,7 @@ export function Composer({
    */
   engine?: ComposerEngine;
 }) {
+  const quoteItems = quotes ?? (quote == null ? [] : [{ id: 'legacy-quote', quote }]);
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
   const vscodeConversationRef = useRef<
@@ -727,6 +732,14 @@ export function Composer({
     return () => { mountedRef.current = false; };
   }, []);
   const ownsAttachmentResult = () => mountedRef.current && attachmentOwnerRef.current === owner;
+  // The inline message editor opens ready to type: it takes the caret itself,
+  // once its field can hold one (an attachment load disables it first). Gated
+  // on props it already takes, so the main composer never steals focus and no
+  // draft is touched (focus alone changes neither).
+  useEffect(() => {
+    if (!messageEditing || !autoFocus || disabled) return;
+    textareaRef.current?.focus();
+  }, [messageEditing, autoFocus, disabled]);
   const pasteDraftRef = useRef({ text, sessionId, connectionId, scopeId });
   pasteDraftRef.current = { text, sessionId, connectionId, scopeId };
   const ownsReservedAttachmentResult = () => mountedRef.current &&
@@ -971,39 +984,37 @@ export function Composer({
       description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
   }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
+  const selectedExecution = execution ?? boundExecution;
+  const externalExecution = selectedExecution !== undefined && !isNativeExecutor(selectedExecution.executor);
+  const executorId = externalExecution ? selectedExecution.executor : undefined;
   const validateProfile = !fromFile && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
-  const validatingModel = model ?? selectionDefaultModel ?? serverDefaultModel;
+  const validatingModel = externalExecution
+    ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : executionPending ? undefined : model || defaultModel)
+    : model || selectionDefaultModel || serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
-  const modelDomainState = externalFile ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
-  const externalExecution = execution !== undefined && !isNativeExecutor(execution.executor);
-  const executorId = externalExecution && execution !== undefined ? execution.executor : undefined;
+  const queryClient = useQueryClient();
+  const executorModelsKey = ['executor-models', connectionId, scopeId, executorId] as const;
+  const executorRefresh = useMutation({
+    mutationFn: ({ id }: { id: string; key: readonly unknown[] }) => client.klient.rest!.executors.refreshModels(id),
+    onSuccess: (response, variables) => { queryClient.setQueryData(variables.key, response); },
+  });
+  const executorRefreshCurrent = executorRefresh.variables?.key.join('\0') === executorModelsKey.join('\0');
   const executorModelsQuery = useQuery({
-    queryKey: ['executor-models', executorId],
+    queryKey: executorModelsKey,
     queryFn: () => client.klient.rest!.executors.getModels(executorId!),
     enabled: executorId !== undefined,
     staleTime: 60_000,
     retry: false,
   });
-  const [manualExecutorResponse, setManualExecutorResponse] = useState<{
-    readonly executorId: string;
-    readonly response: ExecutorModelCatalogResponse;
-  }>();
-  const [executorRefreshBusy, setExecutorRefreshBusy] = useState(false);
-  const [executorRefreshFailed, setExecutorRefreshFailed] = useState(false);
-  useEffect(() => {
-    setExecutorRefreshBusy(false);
-    setExecutorRefreshFailed(false);
-  }, [executorId]);
-  const executorModelResponse = executorId !== undefined && manualExecutorResponse?.executorId === executorId
-    ? manualExecutorResponse.response
-    : executorModelsQuery.data;
+  const executorModelResponse = executorModelsQuery.data;
   const capabilityExecution = boundExecution ?? execution;
   const boundExecutorId = capabilityExecution !== undefined && !isNativeExecutor(capabilityExecution.executor)
     ? capabilityExecution.executor
     : undefined;
   const boundExecutorModelsQuery = useQuery({
-    queryKey: ['executor-models', boundExecutorId],
+    queryKey: ['executor-models', connectionId, scopeId, boundExecutorId],
     queryFn: () => client.klient.rest!.executors.getModels(boundExecutorId!),
     enabled: boundExecutorId !== undefined,
     staleTime: 60_000,
@@ -1022,32 +1033,42 @@ export function Composer({
     ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
     return { available: false, reason };
   }, [boundExecutorId, executorId, executorModelResponse, boundExecutorModelsQuery.data, capabilityNow, t]);
-  const selectedModel = validatingModel !== undefined
+  const executorCapabilities = mapExecutorCapabilities(executorModelResponse, capabilityNow);
+  const executorModelValues = executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial'
+    ? executorCapabilities.models.values ?? [] : [];
+  const executorModelOptions: readonly SearchableSelectOption[] = [
+    ...(variant === 'subagent' ? [] : [{ value: '', label: t('composer.engineModelFollow') }]),
+    ...executorModelValues.map((value) => ({ value, label: value })),
+    ...(validatingModel !== undefined && !executorModelValues.includes(validatingModel)
+      ? [{ value: validatingModel, label: validatingModel }] : []),
+  ];
+  const executorModelWritable = isExecutorActionAvailable(executorCapabilities.controls.model_switch)
+    && (executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial');
+  const executorEfforts = isExecutorActionAvailable(executorCapabilities.controls.thinking_switch)
+    && (executorCapabilities.thinking_levels.kind === 'ready' || executorCapabilities.thinking_levels.kind === 'partial')
+    ? executorCapabilities.thinking_levels.values : undefined;
+  const selectedModel = !externalExecution && validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
   // An override holding a bare alias (e.g. a profile-pinned k3-256k) displays
   // as the resolved catalog row, so the trigger names the serving provider's
   // model instead of an unmatched raw id.
-  const resolvedModelKey = model !== undefined
+  const resolvedModelKey = !externalExecution && model !== undefined
     ? resolveCatalogModel(models, model)?.id
     : undefined;
-  // A transport failure says nothing about whether a preserved selection is valid.
-  // During its background retry, React Query is still pending but must not hold send.
-  const selectionLoading =
-    (!externalFile && modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
-    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason)) ||
-    (validateFile && filePreviewQuery.isPending);
+  // Catalog reads enrich the selection; the server validates the submitted binding.
   const selectionCatalogError = (validateFile ? filePreviewQuery.error : null) ??
-    [externalFile ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
+    [externalExecution ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
       .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
-  const invalidFile = validateFile && (!filePreviewQuery.isSuccess || filePreviewQuery.data?.profile.source_file === undefined);
+  const invalidFile = validateFile && (filePreviewQuery.isError ||
+    (filePreviewQuery.isSuccess && filePreviewQuery.data?.profile.source_file === undefined));
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
-  const invalidModel = !externalFile && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
-  const invalidEffort = !externalFile && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
+  const invalidModel = !externalExecution && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = !externalExecution && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
   const isExternalClient = execution?.external_connection_id !== undefined;
-  const selectionBlocked = !isExternalClient && (selectionLoading || selectionCatalogError !== null || invalidFile || invalidProfile || invalidModel || invalidEffort || invalidModelDomain);
+  const selectionBlocked = !isExternalClient && (invalidFile || invalidProfile || invalidModel || invalidEffort || modelDomainState === 'blocked');
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -1081,7 +1102,7 @@ export function Composer({
     retry: false,
   });
   const skills = skillsQuery.data?.skills ?? [];
-  const pluginPick = usePluginPicker(sessionId);
+  const pluginPick = usePluginPicker(sessionId, workspaceId);
   const mcpPick = useMcpPicker(sessionId);
   const externalEngine = execution !== undefined && execution.executor !== undefined && execution.executor !== '' && execution.executor !== 'native'
     ? engineLabel(execution.executor, execution.executor, executorCatalog)
@@ -1116,16 +1137,13 @@ export function Composer({
     const timer = setTimeout(() => { setMentionQuery(menu.query); }, MENTION_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
   }, [menu]);
-  const fsQuery = useQuery({
-    queryKey: ['fs-search', mentionScopeKey ?? sessionId ?? 'none', mentionQuery],
-    queryFn: () => fsSearch!(mentionQuery),
-    enabled: menu?.kind === 'mention' && fsSearch !== undefined,
-    staleTime: 30_000,
+  const fsFeed = useFsSearchFeed({
+    scopeKey: mentionScopeKey ?? sessionId ?? 'none',
+    query: mentionQuery,
+    search: fsSearch ?? (() => Promise.resolve([])),
+    enabled: menu?.kind === 'mention' && menu.query === mentionQuery && fsSearch !== undefined,
   });
-  const mentionItems = useMemo(
-    () => (menu?.kind === 'mention' ? (fsQuery.data ?? []).slice(0, MENTION_ROW_LIMIT) : []),
-    [menu, fsQuery.data],
-  );
+  const mentionItems = menu?.kind === 'mention' && menu.query === mentionQuery ? fsFeed.items : [];
 
   const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionItems.length;
   const menuQuery = menu?.query ?? null;
@@ -1169,12 +1187,12 @@ export function Composer({
 
   // Edits bypass send-only model selection, but still wait for all media.
   const canSend = queueEditing || messageEditing
-    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quote != null) &&
+    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quoteItems.length > 0) &&
       !disabled && !sendDisabled && !turnInFlight && !pendingAttachments
     : (text.trim() !== '' ||
         attachments.length > 0 ||
         (annotations !== undefined && annotations.length > 0) ||
-        (quote !== undefined && quote !== null)) &&
+        (quoteItems.length > 0)) &&
       !disabled &&
       !sendDisabled &&
       !selectionBlocked &&
@@ -1227,7 +1245,7 @@ export function Composer({
   const hasTray =
     conversationRefs.length > 0 ||
     draftSkill !== undefined ||
-    (quote !== undefined && quote !== null) ||
+    (quoteItems.length > 0) ||
     (annotations !== undefined && annotations.length > 0) ||
     attachments.length > 0;
   const hasChips =
@@ -1274,7 +1292,7 @@ export function Composer({
   const draftHasContent =
     text.trim() !== '' ||
     attachments.length > 0 ||
-    (quote !== undefined && quote !== null) ||
+    (quoteItems.length > 0) ||
     (annotations !== undefined && annotations.length > 0);
   const takenOver =
     needsYou !== undefined && needsYouCount > 0 && !queueEditing &&
@@ -2375,26 +2393,43 @@ export function Composer({
   if (!isExternalClient) {
     statusSegments.push({
       key: 'model',
-      node: (
+      node: externalExecution && variant !== 'subagent' ? (
+        <ExternalModelChoice
+          key={executorModelsKey.join('\0')}
+          choice={{ ...selectedExecution, overrides: { ...selectedExecution.overrides, model: validatingModel } }}
+          engineLabel={engineLabel(executorId!, executorId!, executorCatalog)}
+          executorResponse={executorModelResponse}
+          executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
+          executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
+          onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+          onChange={(next) => {
+            if (onChangeExecution !== undefined) onChangeExecution({ ...selectedExecution, overrides: { ...selectedExecution.overrides, model: next ?? null, thinking: next === undefined ? null : selectedExecution.overrides?.thinking } });
+            else void onChangeModel(next);
+          }}
+        />
+      ) : (
         <ModelChip
-          modelOptions={modelOptions}
-          // An external engine's model is its own id, set on the profile: shown
-          // read-only here, with the engine named in the tooltip.
-          hasCatalog={!externalFile && engine === undefined && models.length > 0}
-          engineLabel={externalFile ? executorCatalog.find((item) => item.id === execution?.executor)?.label ?? execution?.executor : engine?.label}
+          modelOptions={externalExecution ? executorModelOptions : modelOptions}
+          hasCatalog={externalExecution ? executorModelWritable : engine === undefined && models.length > 0}
+          engineLabel={externalExecution && !executorModelWritable ? engineLabel(executorId!, executorId!, executorCatalog) : engine?.label}
+          executorLabel={externalExecution ? engineLabel(executorId!, executorId!, executorCatalog) : undefined}
           openSignal={modelMenuSignal}
-          model={model}
+          model={externalExecution ? validatingModel : model}
           resolvedModelKey={resolvedModelKey}
           effectiveModel={effectiveModel}
           shortLabel={modelShortLabel}
           modelSource={modelSource}
           disabled={variant === 'subagent' && disabled}
           onChangeModel={(next) => {
+            if (externalExecution) {
+              if (!executorModelWritable) return;
+              return onChangeModel(next);
+            }
             const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
             if (state === 'blocked' || state === 'unknown') return;
             return onChangeModel(next);
           }}
-          efforts={efforts}
+          efforts={externalExecution ? executorEfforts : efforts}
           effort={effort}
           onChangeEffort={onChangeEffort}
         />
@@ -2625,9 +2660,9 @@ export function Composer({
                 <>
                   <span className="shrink-0">{t('composer.needsYou.draftKept')}</span>
                   <span data-needs-you-draft className="min-w-0 flex-1 truncate text-ink-soft">{text.split('\n')[0]}</span>
-                  {attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0) > 0 ? (
+                  {attachments.length + (annotations?.length ?? 0) + quoteItems.length > 0 ? (
                     <span className="shrink-0 tabular-nums">
-                      {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0))}
+                      {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + quoteItems.length)}
                     </span>
                   ) : null}
                   <span className="shrink-0 font-medium text-ink-soft">{t('composer.needsYou.backToInput')}</span>
@@ -2719,9 +2754,9 @@ export function Composer({
               {draftSkill !== undefined ? (
                 <SkillChip name={draftSkill.name} description={draftSkill.description} onRemove={removeDraftSkill} />
               ) : null}
-              {quote !== undefined && quote !== null ? (
-                <QuoteChip quote={quote} onRemove={onRemoveQuote} />
-              ) : null}
+              {quoteItems.map((item) => (
+                <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
+              ))}
               {annotations !== undefined && annotations.length > 0 ? (
                 <ComposerNotes
                   annotations={annotations}
@@ -2751,9 +2786,9 @@ export function Composer({
                     }
                     if (attachment.kind === 'retained') {
                       const part = attachment.content;
-                      const src = part.type === 'image' && part.source.kind === 'base64'
+                      const src = attachment.previewUrl ?? (part.type === 'image' && part.source.kind === 'base64'
                         ? `data:${part.source.media_type};base64,${part.source.data}`
-                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined;
+                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
                       if (src !== undefined) return (
                         <ImageTile key={`retained-${index}`} src={src} name={attachment.name}
                           onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
@@ -2901,8 +2936,8 @@ export function Composer({
                   <MentionMenuBody
                     items={mentionItems}
                     activeIndex={activeIndex}
-                    loading={fsQuery.isLoading || fsQuery.isFetching}
-                    failed={fsQuery.isError}
+                    feed={fsFeed}
+                    loading={fsFeed.pendingInitial || menu.query !== mentionQuery}
                     query={menu.query}
                     onAccept={acceptMentionItem}
                   />
@@ -3205,6 +3240,24 @@ export function Composer({
                   has a mouse path too (Enter works as before). The wrapper is
                   the send-timing menu's hover/focus zone and its positioning
                   context; the menu floats above the button. */}
+              {/* Message editing ends where it is decided: one quiet circular X
+                  left of Send abandons this edit (the message itself is never
+                  touched) instead of a second row of controls below the
+                  composer. Escape keeps the same meaning, and the X waits while
+                  the edit is in flight. */}
+              {messageEditing && onQueueEditCancel !== undefined ? (
+                <button
+                  type="button"
+                  data-edit-cancel=""
+                  disabled={turnInFlight}
+                  onClick={() => { onQueueEditCancel(); }}
+                  title={t('common.cancel')}
+                  aria-label={t('common.cancel')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              ) : null}
               <div
                 ref={sendTimingRootRef}
                 data-send-timing-root
@@ -3510,41 +3563,32 @@ function MentionMenuBody({
   items,
   activeIndex,
   loading,
-  failed,
+  feed,
   query,
   onAccept,
 }: {
   items: readonly FsSearchHit[];
   activeIndex: number;
   loading: boolean;
-  failed: boolean;
+  feed: FsSearchFeedView;
   query: string;
   onAccept: (item: FsSearchHit) => void;
 }) {
   const { t } = useI18n();
-  if (failed) {
-    return (
-      <p className="px-3 py-2 text-[12px] text-danger">
-        {t('composer.filesFailed')}
-      </p>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <p className="px-3 py-2 text-[11.5px] text-ink-faint">
-        {loading
-          ? t('composer.filesSearching')
-          : query === ''
-            ? t('composer.filesEmpty')
-            : t('composer.filesNoMatch', { query })}
-      </p>
-    );
-  }
+  const pending = feed.pendingMore || feed.pendingRestart;
   return (
     <>
-      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-        {t('composer.filesHeader')}
-      </p>
+      {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
+      {loading || (items.length === 0 && feed.exhausted && !feed.failed) ? (
+        <p className="px-3 py-2 text-[12px] text-ink-faint">
+          {loading ? t('composer.filesSearching') : query === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query })}
+        </p>
+      ) : null}
+      {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
+      <div data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
+        const node = event.currentTarget;
+        if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
+      }}>
       {items.map((item, index) => {
         const active = index === activeIndex;
         const isDir = item.kind === 'directory';
@@ -3570,6 +3614,14 @@ function MentionMenuBody({
           </button>
         );
       })}
+      </div>
+      {!loading && (!feed.exhausted || feed.failed || pending) ? (
+        <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}
+          disabled={pending} onClick={feed.failed ? feed.retry : feed.loadMore}
+          className="flex w-full rounded-md px-3 py-2 text-left text-[12px] text-ink-soft hover:bg-paper disabled:cursor-wait">
+          {feed.failed ? t('common.retry') : pending ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
+        </button>
+      ) : null}
     </>
   );
 }
@@ -3592,7 +3644,7 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
   const reportedValues = modelState === 'ready' || modelState === 'partial'
     ? modelDimension.values ?? []
     : [];
-  const currentModelIsUnlisted = (modelState === 'ready' || modelState === 'partial')
+  const currentModelIsUnlisted = modelState === 'ready'
     && model !== undefined
     && model !== ''
     && !reportedValues.includes(model);
@@ -3672,15 +3724,25 @@ function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRe
       </button>
     </div>
   );
+  const writable = isExecutorActionAvailable(switchControl) && (modelState === 'ready' || modelState === 'partial');
+  if (!writable) return <span className="flex min-w-0 items-center gap-1" data-external-model-readonly>
+    <span data-composer-engine-model={engineLabel} className="max-w-56 truncate px-1.5 text-[13px] text-ink-soft" title={[engineLabel, statusLine, switchLine].filter(Boolean).join(' · ')}>
+      {model ?? t('composer.engineModelFollow')}
+    </span>
+    <button type="button" data-external-model-refresh disabled={executorRefreshBusy} onClick={onRefreshExecutorModels}
+      aria-label={t('composer.engineCapabilityRefreshAria')} title={statusLine ?? t('composer.engineCapabilityRefreshAria')}
+      className="rounded p-1 text-ink-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+      <Icon name="refresh" size={12} />
+    </button>
+  </span>;
   return (
     <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
       <SearchableSelect
         id="composer-engine-model-select"
         value={model ?? ''}
         options={modelOptions}
-        allowCustomValue
-        customValueLabel={(value) => value}
         searchPlaceholder={t('composer.engineModelId')}
+        allowCustomValue
         onChange={(next) => { onChange(next === '' ? undefined : next); }}
         ariaLabel={t('composer.modelAria')}
         title={engineLabel}
@@ -3719,11 +3781,13 @@ function ModelChip({
   effort,
   onChangeEffort,
   engineLabel,
+  executorLabel,
   openSignal,
 }: {
   readonly modelOptions: readonly SearchableSelectOption[];
   /** Set when an external engine serves the model: the label is read-only. */
   readonly engineLabel?: string;
+  readonly executorLabel?: string;
   /** The invalid-model diagnostic bumps this to open the menu as its recovery. */
   readonly openSignal?: number;
   /** False when `GET /models` returned nothing — no model is pickable. */
@@ -3748,9 +3812,10 @@ function ModelChip({
   const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelProvenance.${modelSource}`) });
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
-  const title = engineLabel !== undefined
-    ? t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: engineLabel })
-    : effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
+  const servingEngine = executorLabel ?? engineLabel;
+  const title = servingEngine !== undefined
+    ? `${t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: servingEngine })} · ${sourceTitle}`
+    : effectiveModel !== undefined ? `${effectiveModel} · ${sourceTitle}` : sourceTitle;
 
   if (engineLabel !== undefined) {
     return (
@@ -3792,7 +3857,7 @@ function ModelChip({
       openSignal={openSignal}
       title={title}
       ariaLabel={t('composer.modelAria')}
-      emptyText={t('composer.inheritDefault')}
+      emptyText={t(effectiveModel === undefined ? 'composer.chooseModel' : 'composer.inheritDefault')}
       searchPlaceholder={t('composer.modelSearchPlaceholder')}
       density="compact"
       placement="above"
@@ -3821,9 +3886,9 @@ function ModelChip({
       panelHeader={
         <div data-model-provenance className="flex items-center gap-2 border-b border-hairline px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-faint">
-            {t(`composer.modelProvenance.${modelSource}`)}
+            {[executorLabel, t(`composer.modelProvenance.${modelSource}`)].filter(Boolean).join(' · ')}
           </span>
-          {model !== undefined && hasCatalog && !disabled ? (
+          {executorLabel === undefined && model !== undefined && hasCatalog && !disabled ? (
             <button
               type="button"
               data-model-reset
@@ -3868,14 +3933,14 @@ function ModelChip({
             </div>
           </div>
         ) : null}
-        <button
+        {executorLabel === undefined ? <button
           type="button"
           data-model-configure
           onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
           className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-medium text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
         >
           {t('composer.configureModels')}
-        </button>
+        </button> : null}
         </>
       }
     />

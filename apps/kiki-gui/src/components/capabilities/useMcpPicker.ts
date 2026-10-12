@@ -24,7 +24,7 @@
  *   than a row that explains itself.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import type { Klient, McpServerEntry, McpServerLocator, McpSessionCapability } from '@kiki/klient';
@@ -34,6 +34,13 @@ import { useI18n } from '../../i18n';
 import type { KikiClient } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import {
+  currentPendingCapabilityScope,
+  pendingNewSessionCapabilities,
+  setPendingMcpChoice,
+  subscribePendingNewSessionCapabilities,
+} from './newSessionCapabilities';
+import {
+  draftMcpRows,
   mcpFallbackRows,
   mcpSessionRows,
   sameLocator,
@@ -167,6 +174,11 @@ export function useMcpPicker(sessionId: string | undefined) {
   localeRef.current = locale;
 
   const scoped = sessionId !== undefined && sessionId !== '';
+  const readPending = useCallback(
+    () => pendingNewSessionCapabilities(currentPendingCapabilityScope({ scopeId, spaceKey, connectionId })),
+    [connectionId, scopeId, spaceKey],
+  );
+  const pending = useSyncExternalStore(subscribePendingNewSessionCapabilities, readPending, readPending);
   const surface = useMemo(
     () => (scoped ? agentMcpSurface(client, sessionId) : undefined),
     [client, sessionId, scoped],
@@ -182,6 +194,15 @@ export function useMcpPicker(sessionId: string | undefined) {
     () => ['session-mcp-capabilities', connectionKey, sessionId ?? 'none'] as const,
     [connectionKey, sessionId],
   );
+
+  const catalogList = client.klient?.global?.mcp?.list;
+  const draftCatalog = useQuery({
+    queryKey: ['draft-mcp-catalog', connectionKey] as const,
+    queryFn: () => catalogList!(),
+    enabled: !scoped && typeof catalogList === 'function',
+    staleTime: 5_000,
+    retry: false,
+  });
 
   const read = useQuery({
     queryKey: key,
@@ -205,12 +226,13 @@ export function useMcpPicker(sessionId: string | undefined) {
   });
 
   const items: readonly McpSessionRow[] = useMemo(() => {
+    if (!scoped) return draftMcpRows({ servers: draftCatalog.data ?? [], pending: pending.mcp });
     const data = read.data;
     if (data === undefined) return [];
     return data.kind === 'port'
       ? mcpSessionRows({ capabilities: data.capabilities, writable: true })
       : data.rows;
-  }, [read.data]);
+  }, [draftCatalog.data, pending.mcp, read.data, scoped]);
 
   const revalidate = useCallback(async () => {
     await Promise.all([
@@ -315,12 +337,12 @@ export function useMcpPicker(sessionId: string | undefined) {
 
   return {
     items,
-    /** False where this server has no conversation to scope a server to. */
-    available: scoped,
+    /** A live conversation, or a /new draft whose MCP catalog has loaded. */
+    available: scoped || draftCatalog.isSuccess,
     /** True where this build can really add, remove, and restore a server. */
-    writable: port !== undefined,
-    loading: scoped && read.isPending,
-    failed: read.isError,
+    writable: scoped ? port !== undefined : draftCatalog.isSuccess,
+    loading: scoped ? read.isPending : draftCatalog.isPending && typeof catalogList === 'function',
+    failed: scoped ? read.isError : draftCatalog.isError,
     failure: currentFailure,
     dismissFailure: useCallback(() => { setFailure(undefined); }, []),
     busyName: currentBusy?.name,
@@ -328,13 +350,21 @@ export function useMcpPicker(sessionId: string | undefined) {
     busyOn: currentBusy?.on,
     /** Add, remove, or return a server to the configuration — for this conversation only. */
     setOverride: useCallback((locator: McpServerLocator, override: McpOverride, name: string) => {
+      if (sessionId === undefined || sessionId === '') {
+        setPendingMcpChoice({ locator, override, name }, currentPendingCapabilityScope({ scopeId, spaceKey, connectionId }));
+        return;
+      }
       write.mutate({ locator, override, name });
-    }, [write]),
+    }, [connectionId, scopeId, sessionId, spaceKey, write]),
     /** Retry this conversation's connection to a server that failed or needs sign-in. */
     reconnect: useCallback((name: string) => { reconnect.mutate({ name }); }, [reconnect]),
     /** A list about to show re-reads, so an open menu is never yesterday's answer. */
     onShow: useCallback(() => {
+      if (sessionId === undefined || sessionId === '') {
+        if (draftCatalog.isStale && !draftCatalog.isFetching) void draftCatalog.refetch();
+        return;
+      }
       if (read.isStale && !read.isFetching) void read.refetch();
-    }, [read]),
+    }, [draftCatalog, read, sessionId]),
   };
 }

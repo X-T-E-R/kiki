@@ -17,6 +17,7 @@ import {
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type SubagentBlock,
+  type Block,
 } from '@kiki/session-core/session';
 import {
   capabilityMatrixSnapshot,
@@ -965,7 +966,7 @@ describe('store-controlled mode pills', () => {
 });
 
 describe('resolveProfileSwitchSubmission', () => {
-  it('passes model/thinking through untouched when no switch is pending', () => {
+  it('inherits displayed model/thinking when no control was chosen', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -975,7 +976,7 @@ describe('resolveProfileSwitchSubmission', () => {
         model: 'provider/model',
         thinking: 'high',
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high' });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('treats a pending pick equal to the live binding as no switch', () => {
@@ -988,7 +989,7 @@ describe('resolveProfileSwitchSubmission', () => {
         model: 'provider/model',
         thinking: undefined,
       }),
-    ).toEqual({ model: 'provider/model', thinking: undefined });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('withholds model/thinking on a switch so the new profile pins apply', () => {
@@ -1125,7 +1126,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: { ...bound },
         boundExecution: { ...bound },
       }),
-    ).toEqual({ model: 'provider/model', thinking: undefined });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('keeps the user model when they re-picked it after confirming an engine switch', () => {
@@ -1186,7 +1187,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
   });
 
-  it('keeps sending model and effort on a plain message of a native session', () => {
+  it('does not promote a native binding into message overrides', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1199,7 +1200,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'manual' });
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: 'manual' });
   });
 
   it('sends a model or effort the user picked on a plain message of a bare session', () => {
@@ -1296,9 +1297,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: undefined });
   });
 
-  it('keeps a native session sending both after only the model was moved', () => {
-    // Per-control tracking is about what may be withheld, not about dropping a
-    // control the session would have sent anyway. Native behaviour is unchanged.
+  it('sends only the chosen model on a native session', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1311,7 +1310,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/other', thinking: 'high', permissionMode: 'manual' });
+    ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: 'manual' });
   });
 
   it('does not let a stale touched flag re-send a control the incoming execution owns', () => {
@@ -1393,8 +1392,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: undefined });
   });
 
-  it('keeps model and effort on a plain message of an external engine that has a profile', () => {
-    // A profile is what supplies the configuration, so the session's values go.
+  it('inherits the external profile binding without message model overrides', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1407,7 +1405,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'auto' });
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: 'auto' });
   });
 });
 
@@ -1475,6 +1473,15 @@ describe('optimistic submission', () => {
     expect(render(false)).toContain('New message');
     expect(render(true)).toContain('data-optimistic-status="slow"');
     expect(withOptimisticUserBlock(state.blocks, undefined)).toBe(state.blocks);
+  });
+
+  it.each(['queued', 'running', undefined] as const)('replaces the pending echo on a canonical %s event before the REST receipt', (promptStatus) => {
+    const pending = { id: 'prompt-new', text: 'Repeated text', createdAt: '2026-08-23T00:00:00Z', slow: true };
+    const blocks: readonly Block[] = [{ kind: 'user', id: 'message-new', promptId: pending.id,
+      text: pending.text, createdAt: pending.createdAt, promptStatus }];
+    expect(withOptimisticUserBlock(blocks, pending)).toBe(blocks);
+    const unrelated = [{ ...blocks[0]!, promptId: 'another-prompt' }] as readonly Block[];
+    expect(withOptimisticUserBlock(unrelated, pending)).toHaveLength(2);
   });
 
   it('restores a failed send only when the composer is still empty', () => {

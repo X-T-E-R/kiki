@@ -49,6 +49,8 @@ export interface RetainedAttachment {
   kind: 'retained';
   name: string;
   content: Extract<MessageContent, { type: 'image' | 'video' | 'file' }>;
+  /** In-memory preview of the original; submissions retain the canonical content. */
+  previewUrl?: string;
 }
 
 export interface SshHostAttachment {

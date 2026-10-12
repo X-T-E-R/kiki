@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { McpServerLocator, McpSessionCapability } from '@kiki/klient';
 
 import { I18nProvider } from '../../i18n';
+import { bindPendingNewSessionDraft, clearPendingNewSessionCapabilities, pendingNewSessionCapabilities } from './newSessionCapabilities';
 import { useMcpPicker } from './useMcpPicker';
 
 const surface = vi.hoisted(() => {
@@ -84,6 +85,7 @@ afterEach(async () => {
   });
   for (const container of containers.splice(0)) container.remove();
   vi.clearAllMocks();
+  clearPendingNewSessionCapabilities();
   surface.sessionId = 'session-a';
   surface.scopeId = 'scope-a';
   surface.spaceKey = 'space-a';
@@ -263,5 +265,64 @@ describe('an MCP write that outlives its conversation', () => {
     surface.client = initialClient;
     await render();
     expect(picker?.failure?.message).toContain('the old host refused the write');
+  });
+
+  it('keeps a /new choice local until a conversation exists', async () => {
+    const listed = vi.fn(async () => [{
+      name: 'files',
+      source: 'global',
+      origin: 'global',
+      mutable: true,
+      config: { transport: 'stdio', command: 'npx', enabled: true },
+    }]);
+    const klient = (surface.client as { klient: { global: { mcp: { list: typeof listed } } } }).klient;
+    const original = klient.global.mcp.list;
+    klient.global.mcp.list = listed;
+    surface.sessionId = '';
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const render = harness(queryClient);
+    try {
+      await render();
+      expect(picker?.available).toBe(true);
+      expect(picker?.writable).toBe(true);
+      expect(listed).toHaveBeenCalled();
+      await act(async () => { picker!.setOverride(LOCATOR, 'off', 'files'); });
+      expect(surface.write).not.toHaveBeenCalled();
+      expect(picker?.items[0]?.override).toBe('off');
+      expect(pendingNewSessionCapabilities().mcp).toEqual([{ locator: LOCATOR, override: 'off', name: 'files' }]);
+    } finally {
+      klient.global.mcp.list = original;
+      clearPendingNewSessionCapabilities();
+    }
+  });
+
+  it('keeps a /new choice on the bound draft when another bucket already has a choice', async () => {
+    const scope = { scopeId: 'scope-a', spaceKey: 'space-a', connectionId: null as string | null, draftKey: 'draft-a' };
+    const other = { scopeId: 'scope-b', spaceKey: 'space-b', connectionId: 'other', draftKey: 'draft-b' };
+    bindPendingNewSessionDraft(scope);
+    const listed = vi.fn(async () => [{
+      name: 'files',
+      source: 'global',
+      origin: 'global',
+      mutable: true,
+      config: { transport: 'stdio', command: 'npx', enabled: true },
+    }]);
+    const klient = (surface.client as { klient: { global: { mcp: { list: typeof listed } } } }).klient;
+    const original = klient.global.mcp.list;
+    klient.global.mcp.list = listed;
+    surface.sessionId = '';
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const render = harness(queryClient);
+    try {
+      await render();
+      await act(async () => { picker!.setOverride(LOCATOR, 'off', 'files'); });
+      expect(surface.write).not.toHaveBeenCalled();
+      expect(pendingNewSessionCapabilities().mcp).toEqual([]);
+      expect(pendingNewSessionCapabilities(other).mcp).toEqual([]);
+      expect(pendingNewSessionCapabilities(scope).mcp).toEqual([{ locator: LOCATOR, override: 'off', name: 'files' }]);
+    } finally {
+      klient.global.mcp.list = original;
+      clearPendingNewSessionCapabilities();
+    }
   });
 });

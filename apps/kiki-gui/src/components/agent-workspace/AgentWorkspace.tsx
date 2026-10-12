@@ -19,7 +19,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@kiki/protocol';
-import { buildPromptContent, buildSkillActivation, flushDrafts, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment } from '@kiki/session-core/composer';
+import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import {
   agentPath,
   createViewState,
@@ -518,7 +518,7 @@ function ChildAgentWorkspace({
   mediaPreviewProvider: MediaPreviewProvider,
 }: WorkspaceCompositionProps) {
   const { t } = useI18n();
-  const { client, scopeId } = useConnection();
+  const { client, klient, scopeId } = useConnection();
   const queryClient = useQueryClient();
   // 派发处 is an explicit visit, not a plain scroll: the arrow returns to what
   // the reader was looking at before the jump.
@@ -697,7 +697,20 @@ function ChildAgentWorkspace({
   // a new prompt, so terminal status is not an input gate. Only a node the
   // forest does not know at all is genuinely unreachable.
   const agentKnown = selectedNode !== undefined;
-  const composerDisabled = !agentKnown;
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId;
+  const executorBindingQuery = useQuery({
+    queryKey: ['agentExecutor', scopeId, sessionId, agentId],
+    queryFn: () => klient.session(sessionId).getAgentExecutor(agentId),
+    enabled: agentKnown && reportedExecutorId === undefined,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+  const externalExecutor = executorId !== undefined && !isNativeExecutor(executorId);
+  const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
+    executor: executorId, profile: undefined, overrides: undefined,
+  };
+  const composerDisabled = !agentKnown || executorId === undefined;
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -1001,10 +1014,10 @@ function ChildAgentWorkspace({
   }), [agentId, client, modelSwitchActionPending, modelSwitches.switches, modelsQuery.data, runModelSwitchAction, sessionId]);
   const handleChangeAgentModel = async (model: string | undefined) => {
     if (!agentKnown || model === undefined) return;
-    const target = resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
+    const target = externalExecutor ? model : resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
     const current = displayModel === undefined
       ? undefined
-      : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
+      : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
     if (current !== undefined && target === current) return;
     // A child with no conversation yet has nothing to hand over: the pick is a
     // plain rebind, exactly the pre-switch behaviour.
@@ -1170,8 +1183,14 @@ function ChildAgentWorkspace({
             {sendNotice.text}
           </p>
         ) : null}
+        {executorBindingQuery.isError && reportedExecutorId === undefined ? <p role="status" className="text-[12px] text-ink-faint">
+          {t('diagnostics.error')} · {executorBindingQuery.error.message}
+          <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
+        </p> : null}
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
+          execution={childExecution} boundExecution={childExecution}
+          engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}

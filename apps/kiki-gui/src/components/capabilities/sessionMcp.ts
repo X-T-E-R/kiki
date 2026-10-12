@@ -229,6 +229,44 @@ export function mcpFallbackRows(input: {
     });
 }
 
+/**
+ * Rows for /new, before a conversation exists. The management catalog is the
+ * source; a choice the reader already made on this draft replaces inherit.
+ * A plugin that has switched its own server off stays unaddressable.
+ */
+export function draftMcpRows(input: {
+  readonly servers: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly origin?: string;
+    readonly config: { readonly transport: string; readonly enabled?: boolean };
+    readonly plugin?: { readonly id: string; readonly name: string };
+  }[];
+  readonly pending: readonly { readonly locator: McpServerLocator; readonly override: McpOverride; readonly name: string }[];
+}): readonly McpSessionRow[] {
+  return input.servers.map((server) => {
+    const plugin = server.source === 'plugin' && server.plugin !== undefined;
+    const locator = plugin
+      ? { source: 'plugin' as const, pluginId: server.plugin!.id, serverName: server.plugin!.name }
+      : server.source === 'global'
+        ? { source: 'global' as const, name: server.name }
+        : undefined;
+    const pending = input.pending.find((choice) => sameLocator(choice.locator, locator));
+    return rowsFrom({
+      runtimeName: server.name,
+      locator,
+      origin: plugin ? 'plugin' : 'global',
+      pluginLabel: plugin ? server.origin ?? server.plugin!.id : undefined,
+      transport: server.config.transport,
+      configEnabled: server.config.enabled !== false,
+      authStatus: 'unavailable',
+      connection: server.config.enabled === false ? 'disabled' : 'enabled',
+      override: pending?.override ?? 'inherit',
+      error: undefined,
+    }, true);
+  });
+}
+
 /** The runtime entry's own status word, in the capability vocabulary. */
 function runtimeConnection(status: string): McpConnection {
   if (status === 'pending') return 'connecting';

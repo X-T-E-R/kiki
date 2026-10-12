@@ -8,9 +8,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session } from '@kiki/protocol';
+import { mediaFromContentParts } from '@kiki/session-core/composer/media';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, PanelIcon, ResyncStatusBanner, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -33,6 +35,7 @@ import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, Recove
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
+import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
 import { ModelSwitchActionsContext, type ModelSwitchNoticeActions } from './model-switch/ModelSwitchNotice';
@@ -92,7 +95,11 @@ import {
   type ComposerModelChoice,
   type ComposerModelBindingChange,
   type SelectionAnnotation,
+  type SelectionQuote,
   type SelectionSourceAnchor,
+  addQuote,
+  createQuote,
+  removeQuote,
   collectDraftAnnotationTargets,
   boundExecutionChoice,
   sendsLegacyControl,
@@ -1187,40 +1194,17 @@ export function resolveProfileSwitchSubmission(input: {
 } {
   const executionSwitching = input.pendingExecution !== undefined
     && !sameExecutionChoice(input.pendingExecution, input.boundExecution);
-  const switching =
-    (input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile) || executionSwitching;
   // The execution that governs THIS message: the confirmed pick when one is
   // waiting, otherwise the session's own binding — a session already running a
   // bare harness must keep withholding Kiki's controls on later messages too,
   // not only on the message that switched.
   const governing = executionSwitching ? input.pendingExecution : input.boundExecution;
-  // A switch opens a new generation that runs the incoming binding's own
-  // configuration, so model and effort are left to it unless the user re-picked
-  // them after confirming. The same holds for a profile change — that is the
-  // "old pins must not ride along" rule, and it belongs to the switch itself.
-  //
-  // The one thing a switch does NOT get to relax is ownership. If the incoming
-  // execution names a control in `overrides` — including the `null` fall-through
-  // form — that selection owns the value, and a stale touched flag from before
-  // the switch must not re-send the legacy field and overwrite it. So the
-  // ownership test runs on both paths; only the bare-external default is
-  // switch-specific.
-  //
-  // A plain continuation has no incoming generation to absorb the display
-  // values at all, so there both controls also need the full rule: a control
-  // the user moved is sent, and everything else on a bare external engine stays
-  // with the engine. Gating only the switching branch let the composer's display
-  // value through on every later message of a bare session.
-  const sendModel = namesLegacyControl(governing, 'model')
-    ? false
-    : switching
-      ? input.modelTouched
-      : sendsLegacyControl(governing, 'model', input.modelTouched);
-  const sendThinking = namesLegacyControl(governing, 'thinking')
-    ? false
-    : switching
-      ? input.effortTouched
-      : sendsLegacyControl(governing, 'thinking', input.effortTouched);
+  // Displayed bindings are inherited, not message overrides. Carry only the
+  // control the user picked, on continuations as well as binding switches.
+  // Execution-owned overrides (including null) must not be overwritten by a
+  // legacy field even when an earlier composer pick left its touched flag set.
+  const sendModel = input.modelTouched && !namesLegacyControl(governing, 'model');
+  const sendThinking = input.effortTouched && !namesLegacyControl(governing, 'thinking');
   const sendPermission = sendsLegacyControl(governing, 'permission_mode', input.permissionTouched === true);
   return {
     ...(input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile
@@ -1306,25 +1290,62 @@ export function executionSwitchName(
   return labels[choice.executor] ?? choice.executor;
 }
 
+function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNullable<Parameters<typeof QueueStrip>[0]['promptContinuation']> }): ReactNode {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  return <section data-prompt-records-remainder className="relative flex min-w-0 flex-col">
+    <button type="button" aria-expanded={open} onClick={() => { setOpen(value => !value); }}
+      className="inline-flex w-fit items-center gap-1.5 text-[12px] leading-4 text-ink-faint transition-colors hover:text-ink-soft focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink">
+      <Icon name="chevron" size={12} className={open ? 'rotate-90' : ''} />
+      {t('queue.moreRecords')}
+    </button>
+    {open ? <div className="absolute bottom-full right-0 z-30 mb-1.5 w-72 rounded-lg border border-hairline bg-paper p-2 shadow-lg">
+      <ContinuationRow kind="prompt" state={continuation.status?.status ?? 'idle'}
+        progress={t('queue.recordsLoaded', { shown: continuation.coverage.returned, total: continuation.coverage.total })}
+        error={t('queue.recordsFailed')} label={t('queue.records')} onRequest={continuation.onRequest} />
+    </div> : null}
+  </section>;
+}
+
 export function withOptimisticUserBlock(
   blocks: readonly Block[],
   pending: { id: string; text: string; createdAt: string; slow: boolean } | undefined,
 ): readonly Block[] {
-  if (pending === undefined) return blocks;
+  if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
   return [...blocks, {
-    kind: 'user', id: `optimistic-${pending.id}`, text: pending.text,
+    kind: 'user', id: `optimistic-${pending.id}`, promptId: pending.id, text: pending.text,
     createdAt: pending.createdAt, optimisticStatus: pending.slow ? 'slow' : 'sending',
   } satisfies UserBlock];
 }
 
 /** Put a failed prompt's notes back in front of any the user added since. */
-export function restoreSentAnnotations(
-  current: readonly SelectionAnnotation[],
-  sent: readonly SelectionAnnotation[],
-): readonly SelectionAnnotation[] {
+export function restoreSentAnnotations<T extends { readonly id: string }>(
+  current: readonly T[],
+  sent: readonly T[],
+): readonly T[] {
   const present = new Set(current.map((annotation) => annotation.id));
   const missing = sent.filter((annotation) => !present.has(annotation.id));
   return missing.length === 0 ? current : [...missing, ...current];
+}
+
+function updateStoredSelectionCarryovers(
+  sessionId: string,
+  updateQuotes: (current: readonly SelectionQuote[]) => readonly SelectionQuote[],
+  updateAnnotations: (current: readonly SelectionAnnotation[]) => readonly SelectionAnnotation[],
+): void {
+  const saved = readComposerState(sessionId);
+  writeComposerState(sessionId, {
+    ...saved,
+    attachments: saved.attachments ?? [],
+    quotes: updateQuotes(saved.quotes ?? []),
+    annotations: updateAnnotations(saved.annotations ?? []),
+    permissionMode: saved.permissionMode,
+    planMode: saved.planMode,
+    planGate: saved.planGate,
+    goalObjective: saved.goalObjective,
+    modelOverride: saved.modelOverride,
+    effortOverride: saved.effortOverride,
+  });
 }
 
 export function recoverFailedSubmission(
@@ -1844,8 +1865,7 @@ export function SessionView({
     readonly owner: string;
     readonly attachments: readonly ComposerAttachment[];
     readonly savedDraft: string;
-    readonly savedQuote: string | null;
-    readonly savedQuoteSource?: SelectionSourceAnchor | null;
+    readonly savedQuotes: readonly SelectionQuote[];
     readonly savedAnnotations: readonly SelectionAnnotation[];
   } | null>(null);
   const queueEditRef = useRef(queueEdit);
@@ -1877,29 +1897,29 @@ export function SessionView({
   attachmentsRef.current = attachments;
   // Unsent quotes share the session's in-memory chrome with annotations;
   // send (and the chip's ×) clear them explicitly.
-  const [quote, setQuote] = useState<string | null>(restoredComposer.quote ?? null);
-  const [quoteSource, setQuoteSource] = useState<SelectionSourceAnchor | null | undefined>(restoredComposer.quoteSource);
+  const [quotes, setQuotes] = useState<readonly SelectionQuote[]>(() => restoredComposer.quotes ?? (restoredComposer.quote == null ? [] : [createQuote(restoredComposer.quote, restoredComposer.quoteSource)]));
   // Selection annotations (quote + one-line comment) accumulate independently
   // of the quote chip — any number ride the same prompt, and unsent ones return
   // with the session's in-memory composer chrome after navigation.
   const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(
     () => restoredComposer.annotations ?? [],
   );
+  const draftSelectionsRef = useRef({ quotes, annotations });
+  draftSelectionsRef.current = { quotes, annotations };
   const transcriptQuoteRef = useRef<HTMLDivElement>(null);
   const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
     document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus();
   }, []);
   const handleQuoteSelection = useCallback((text: string, source?: SelectionSourceAnchor | null) => {
-    setQuote(text);
-    setQuoteSource(source);
+    setQuotes((current) => addQuote(current, text, source));
     focusComposer();
   }, [focusComposer]);
   const handleAnnotateSelection = useCallback((text: string, comment: string, source?: SelectionSourceAnchor | null) => {
     setAnnotations((current) => addAnnotation(current, text, comment, source));
     focusComposer();
   }, [focusComposer]);
-  const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
+  const handleRemoveQuoteItem = useCallback((id: string) => { setQuotes((current) => removeQuote(current, id)); }, []);
   const handleRemoveAnnotation = useCallback((id: string) => {
     setAnnotations((current) => removeAnnotation(current, id));
   }, []);
@@ -2034,8 +2054,9 @@ export function SessionView({
           ...chrome,
           attachments: attachmentsRef.current,
           annotations: edit.savedAnnotations,
-          quote: edit.savedQuote,
-          quoteSource: edit.savedQuoteSource,
+          quotes: edit.savedQuotes,
+          quote: null,
+          quoteSource: undefined,
           permissionMode: chrome.permissionMode,
           planMode: chrome.planMode,
           planGate: chrome.planGate,
@@ -2095,8 +2116,9 @@ export function SessionView({
     writeComposerState(sessionId, {
       attachments,
       annotations,
-      quote,
-      quoteSource,
+      quotes,
+      quote: null,
+      quoteSource: undefined,
       permissionMode: permissionOverride,
       planMode: planOverride,
       planGate: planGateOverride,
@@ -2112,8 +2134,7 @@ export function SessionView({
     sessionId,
     attachments,
     annotations,
-    quote,
-    quoteSource,
+    quotes,
     permissionOverride,
     planOverride,
     planGateOverride,
@@ -2794,7 +2815,7 @@ export function SessionView({
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const carry = selectionCarryoverPresentation(annotations, quote, quoteSource);
+        const carry = selectionCarryoverPresentation(annotations, quotes);
         const quotedText = `${carry.prefix}${text}`;
         const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
         const content = buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
@@ -2848,16 +2869,25 @@ export function SessionView({
         if (options?.now === true && !rebindsAgent) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
+          const sentQuotesNow = quotes;
+          const sentQuoteNowIds = new Set(sentQuotesNow.map((item) => item.id));
           let compositionReleased = false;
           const releaseComposition = () => {
             if (compositionReleased) return;
             compositionReleased = true;
-            if (draftRef.current === stripThreadRefContext(text)
+            if (composerOwnerActive.current && draftRef.current === stripThreadRefContext(text)
               && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments)) {
               updateDraft('');
               updateAttachments([]);
             }
-            setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
+            if (composerOwnerActive.current) {
+              setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
+              setQuotes((current) => current.filter((item) => !sentQuoteNowIds.has(item.id)));
+            } else {
+              updateStoredSelectionCarryovers(sessionId,
+                (current) => current.filter((item) => !sentQuoteNowIds.has(item.id)),
+                (current) => current.filter((item) => !sentNowIds.has(item.id)));
+            }
           };
           return controller
             .sendPromptNow({
@@ -2883,7 +2913,6 @@ export function SessionView({
             })
             .then((result) => {
               releaseComposition();
-              setQuote(null);
               completeControls();
               if (result.outcome === 'queued') {
                 // The turn ended while it was on the way: it runs next, from
@@ -2895,11 +2924,19 @@ export function SessionView({
               const reason = error instanceof SendNowError ? error.reason : 'submit';
               if (reason !== 'unknown') {
                 // Nothing reached the turn: the text goes back to its author.
-                setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
-                const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
-                if (recovery !== undefined) {
-                  updateDraft(recovery.text);
-                  updateAttachments(recovery.attachments);
+                if (composerOwnerActive.current) {
+                  setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                  setQuotes((current) => restoreSentAnnotations(current, sentQuotesNow));
+                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                  if (recovery !== undefined) {
+                    updateDraft(recovery.text);
+                    updateAttachments(recovery.attachments);
+                  }
+                } else {
+                  recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
+                  updateStoredSelectionCarryovers(sessionId,
+                    (current) => restoreSentAnnotations(current, sentQuotesNow),
+                    (current) => restoreSentAnnotations(current, sentAnnotationsNow));
                 }
               }
               const cause = error instanceof SendNowError ? error.cause : error;
@@ -2920,6 +2957,8 @@ export function SessionView({
         // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
+        const sentQuotes = quotes;
+        const sentQuoteIds = new Set(sentQuotes.map((item) => item.id));
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
@@ -2948,12 +2987,19 @@ export function SessionView({
             if (compositionReleased) return;
             compositionReleased = true;
             // Only X's recovered composition leaves; a newer Y stays untouched.
-            if (force || (draftRef.current === stripThreadRefContext(text)
-              && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments))) {
+            if (composerOwnerActive.current && (force || (draftRef.current === stripThreadRefContext(text)
+              && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments)))) {
               updateDraft('');
               updateAttachments([]);
             }
-            setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+            if (composerOwnerActive.current) {
+              setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+              setQuotes((current) => current.filter((item) => !sentQuoteIds.has(item.id)));
+            } else {
+              updateStoredSelectionCarryovers(sessionId,
+                (current) => current.filter((item) => !sentQuoteIds.has(item.id)),
+                (current) => current.filter((item) => !sentIds.has(item.id)));
+            }
           };
           setPendingSubmission({ id: submissionId, text: echoText, createdAt: new Date().toISOString(), slow: false });
           return controller.sendPrompt({
@@ -2967,7 +3013,6 @@ export function SessionView({
           .then((result) => {
             accepted = true;
             releaseComposition();
-            setQuote((current) => current === quote ? null : current);
             setGoalMode(false);
             // "Send now" (⌘/Ctrl+Enter while busy): the prompt parked behind the
             // running turn joins it right away through the queue's steer route.
@@ -2990,6 +3035,7 @@ export function SessionView({
           .catch((error: unknown) => {
             if (composerOwnerActive.current) {
               setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
+              setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
               const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
               if (recovery !== undefined) {
                 updateDraft(recovery.text);
@@ -2997,6 +3043,9 @@ export function SessionView({
               }
             } else {
               recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
+              updateStoredSelectionCarryovers(sessionId,
+                (current) => restoreSentAnnotations(current, sentQuotes),
+                (current) => restoreSentAnnotations(current, sentAnnotations));
             }
             const isApi = error instanceof ApiError;
             pushToast({
@@ -3224,8 +3273,7 @@ boundExecution,
     liveSettings.defaultAppendTiming,
     modelSwitches.switches,
     modelSwitches.refresh,
-    quote,
-    quoteSource,
+    quotes,
     annotations,
     sessionId,
     t,
@@ -3373,9 +3421,10 @@ boundExecution,
 
   // ---- message-closure row actions (edit-resend / regenerate / fork) ----
 
-  const loadMessageEditAttachments = useCallback(async (block: UserBlock): Promise<readonly ComposerAttachment[]> => {
-    if (block.queuedContent !== undefined) return retainedAttachmentsFromContent(block.queuedContent);
-    return Promise.all((block.media ?? []).map(async (media): Promise<ComposerAttachment> => {
+  const loadMessageEditAttachments = useCallback(async (block: Pick<UserBlock, 'queuedContent' | 'media'>): Promise<readonly ComposerAttachment[]> => {
+    const mediaItems = block.queuedContent === undefined ? block.media ?? [] : mediaFromContentParts(block.queuedContent);
+    const retained = block.queuedContent === undefined ? [] : retainedAttachmentsFromContent(block.queuedContent);
+    return Promise.all(mediaItems.map(async (media, index): Promise<ComposerAttachment> => {
       let url = media.blobHash === undefined ? media.url : `blobref:${media.mime};${media.blobHash}`;
       let fileId = media.fileId;
       if (media.detail !== undefined) {
@@ -3389,17 +3438,18 @@ boundExecution,
       }
       if (media.kind === 'file') {
         if (fileId === undefined) throw new Error(t('preview.failed'));
-        return { kind: 'retained', name: media.name ?? fileId, content: { type: 'file', file_id: fileId, name: media.name ?? fileId, media_type: media.mime ?? 'application/octet-stream', size: media.size ?? 0 } };
+        return retained[index] ?? { kind: 'retained', name: media.name ?? fileId, content: { type: 'file', file_id: fileId, name: media.name ?? fileId, media_type: media.mime ?? 'application/octet-stream', size: media.size ?? 0 } };
       }
       const blob = /^blobref:([^;]+);([0-9a-f]{64})$/.exec(url ?? '');
       const originalId = blob === null ? fileId : `blobref:main:${blob[2]}`;
-      if (originalId !== undefined && (originalId.startsWith('inline:') || originalId.startsWith('blobref:'))) {
+      if (originalId !== undefined) {
         const original = await client.readSessionMediaBytes(sessionId, originalId, client.readingOptions());
         const bytes = await fileToImageAttachment(new File([original.bytes as Uint8Array<ArrayBuffer>], media.name ?? media.kind, { type: media.mime ?? blob?.[1] ?? original.mime }));
-        if (media.kind === 'image') return bytes;
-        return { kind: 'retained', name: bytes.name, content: { type: 'video', source: { kind: 'base64', media_type: bytes.mediaType, data: bytes.data } } };
+        if (media.kind === 'image') return retained[index] === undefined ? bytes : { ...retained[index]!, previewUrl: bytes.previewUrl };
+        return retained[index] ?? { kind: 'retained', name: bytes.name, content: { type: 'video', source: { kind: 'base64', media_type: bytes.mediaType, data: bytes.data } } };
       }
       if (url === undefined && fileId === undefined) throw new Error(t('preview.failed'));
+      if (retained[index] !== undefined) return retained[index]!;
       return {
         kind: 'retained', name: media.name ?? media.kind,
         content: { type: media.kind, source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: fileId! } },
@@ -3745,69 +3795,48 @@ boundExecution,
         (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
       );
       if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
-      setQueueEdit({
-        promptId,
-        owner: crypto.randomUUID(),
-        attachments: retainedAttachmentsFromContent(item.content ?? []),
-        savedDraft: draftRef.current,
-        savedQuote: quote,
-        savedQuoteSource: quoteSource,
-        savedAnnotations: annotations,
-      });
-      // The composer re-attaches the thread context on confirm. The parked
-      // text's selection carry-overs come back as composer chips, so notes and
-      // the plain quote stay editable (and keep marking the timeline) instead
-      // of flattening into plain text.
-      const carryovers = parseSelectionCarryovers(
-        block?.text ?? item.text,
-        block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n'),
-      );
-      updateDraft(carryovers.body);
-      setQuote(carryovers.quote);
-      setQuoteSource(carryovers.quoteSource);
-      setAnnotations(
-        carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
-          (current, note) => addAnnotation(current, note.quote, note.comment, note.source),
-          [],
-        ),
-      );
-      if (item === undefined || (item.text === '' && (item.media?.length ?? 0) === 0)) return;
       const pathFileMentions = (block?.media ?? item.media ?? []).flatMap((media) => {
         const mention = fileMentionFromPathMedia(media);
         return mention === undefined ? [] : [mention];
       });
-      const open = (content: readonly MessageContent[], text: string) => {
-        if (!composerOwnerActive.current || queueEditRef.current !== null) return;
+      const parkedDraft = draftRef.current;
+      const open = async (content: readonly MessageContent[], text: string) => {
+        const attachments = await loadMessageEditAttachments({ queuedContent: [...content] });
+        if (!composerOwnerActive.current || sessionIdRef.current !== sessionId || queueEditRef.current !== null || draftRef.current !== parkedDraft) return false;
         setQueueEdit({
           promptId,
           owner: crypto.randomUUID(),
-          attachments: [...retainedAttachmentsFromContent(content), ...pathFileMentions],
+          attachments: [...attachments, ...pathFileMentions],
           savedDraft: draftRef.current,
-          savedQuote: quote,
-          savedQuoteSource: quoteSource,
-          savedAnnotations: annotations,
+          savedQuotes: draftSelectionsRef.current.quotes,
+          savedAnnotations: draftSelectionsRef.current.annotations,
         });
         const carryovers = parseSelectionCarryovers(
           block?.text ?? text,
           block?.presentation ?? contentTextPresentation(content, '\n\n'),
         );
         updateDraft(carryovers.body);
-        setQuote(carryovers.quote);
-        setQuoteSource(carryovers.quoteSource);
+        setQuotes(carryovers.quotes.map((item) => createQuote(item.quote, item.source)));
         setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
           (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
         ));
+        return true;
       };
       const incomplete = controller?.contentRefsFor(MAIN_AGENT_ID, { kind: 'prompt', id: promptId }).some((ref) => ref.path[0] === 'content') === true;
-      if (!incomplete) { open(item.content ?? [], item.text); return; }
-      const parkedDraft = draftRef.current;
-      void controller?.readQueuedPromptContent(promptId).then((content) => {
-        if (content !== undefined && draftRef.current === parkedDraft) open(content, content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n'));
-      }).catch((error: unknown) => {
-        pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
+      void (async () => {
+        await controller?.holdQueued(promptId, true);
+        let opened = false;
+        try {
+          const content = incomplete ? await controller?.readQueuedPromptContent(promptId) : item.content ?? [];
+          if (content !== undefined) opened = await open(content, incomplete ? content.filter((part) => part.type === 'text').map((part) => part.text).join('\n\n') : item.text);
+        } finally {
+          if (!opened) await controller?.holdQueued(promptId, false);
+        }
+      })().catch((error: unknown) => {
+        if (composerOwnerActive.current && sessionIdRef.current === sessionId) pushToast({ tone: 'error', text: t('sv.editQueuedFailed', { detail: error instanceof Error ? error.message : String(error) }) });
       });
     },
-    [queueEdit, queuedItems, state.blocks, quote, quoteSource, annotations, updateDraft],
+    [queueEdit, queuedItems, state.blocks, updateDraft, controller, loadMessageEditAttachments, sessionId, t],
   );
   const updateQueueEditAttachments = useCallback((next: readonly ComposerAttachment[] | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[])) => {
     const owner = queueEdit?.owner;
@@ -3825,12 +3854,11 @@ boundExecution,
         queueEditRef.current = null;
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
-        setQuote(edit.savedQuote);
-        setQuoteSource(edit.savedQuoteSource);
+        setQuotes(edit.savedQuotes);
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
-      const carry = selectionCarryoverPresentation(annotations, quote, quoteSource);
+      const carry = selectionCarryoverPresentation(annotations, quotes);
       const presentation: import('@kiki/transcript').TextPresentation = {
         spans: [
           ...carry.presentation.spans,
@@ -3854,13 +3882,12 @@ boundExecution,
         .then(exit)
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, quote, quoteSource, annotations, actions, updateDraft],
+    [queueEdit, queuedItems, quotes, annotations, actions, updateDraft],
   );
   const handleQueueEditCancel = useCallback(() => {
     if (queueEdit === null) return;
     updateDraft(queueEdit.savedDraft);
-    setQuote(queueEdit.savedQuote);
-    setQuoteSource(queueEdit.savedQuoteSource);
+    setQuotes(queueEdit.savedQuotes);
     setAnnotations(queueEdit.savedAnnotations);
     queueEditRef.current = null;
     setQueueEdit(null);
@@ -3870,8 +3897,7 @@ boundExecution,
     if (edit === null) return;
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
-    setQuote(edit.savedQuote);
-    setQuoteSource(edit.savedQuoteSource);
+    setQuotes(edit.savedQuotes);
     setAnnotations(edit.savedAnnotations);
     void handleCancelQueued(edit.promptId);
   }, [queueEdit, updateDraft, handleCancelQueued]);
@@ -4056,8 +4082,8 @@ boundExecution,
   // — the registration effect keys on identity — so every reactive value the
   // composer element reads is a dep below, and every handler is stabilized.
   const handleFsSearch = useCallback(
-    (query: string) =>
-      client.fsSearch(sessionId, { query, limit: 30 }).then((result) => result.items),
+    (query: string, page?: FsSearchPageArgs) =>
+      client.fsSearch(sessionId, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal),
     [client, sessionId],
   );
   const handleActivateSkill = useCallback(
@@ -4135,7 +4161,7 @@ boundExecution,
     // control row can be changed or cancelled before it runs. A scheduled
     // prompt held ahead of the send order counts too — otherwise a session
     // waiting only on one would show nothing at all.
-    if (queueRowCount === 0 && !hasPromptContinuation) return undefined;
+    if (queueRowCount === 0) return undefined;
     const idleCount = heldCronItems.filter((item) => item.cronDeliveryMode === 'idle').length;
     const total = queueRowCount - Math.max(0, idleCount - 1);
     return {
@@ -4148,7 +4174,7 @@ boundExecution,
           }}
         />
       ),
-      ariaLabel: t(queueRowCount === 0 ? 'queue.records' : 'composer.queueStack.openAria'),
+      ariaLabel: t('composer.queueStack.openAria'),
       count: total,
       // The round-trip edit keeps its row (and the hold notice) in sight.
       forceOpen: queueEdit !== null,
@@ -4163,7 +4189,6 @@ boundExecution,
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
           timingReady={queueTimingReady}
-          promptContinuation={promptCoverage === undefined ? undefined : { coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }}
         />
       ),
     };
@@ -4260,13 +4285,16 @@ boundExecution,
     const blockId = collectDraftAnnotationTargets(mainTranscriptBlocks, [annotation]).keys().next().value;
     if (blockId !== undefined) navigateTimeline({ kind: 'annotation', blockId, annotationId: annotation.id }, { sessionId });
   }, [mainTranscriptBlocks, navigateTimeline, sessionId]);
-  // The one connection fact the line under the card carries.
+  // Missing canonical records are reading work, not queued messages. Keep their
+  // continuation in the footer even when there is no queue header to open.
   const composerStatusNotice = useMemo(() => {
-    if (wsStatus === 'connecting') return <span className="truncate">{t('app.reconnecting')}</span>;
-    if (wsStatus === 'closed') return <span className="truncate">{t('app.disconnected')}</span>;
-    // Resync already has its own banner in the dock; the line stays quiet about it.
-    return undefined;
-  }, [wsStatus, t]);
+    const connectionNotice = wsStatus === 'connecting' ? t('app.reconnecting') : wsStatus === 'closed' ? t('app.disconnected') : undefined;
+    if (!hasPromptContinuation && connectionNotice === undefined) return undefined;
+    return <>
+      {hasPromptContinuation && promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null}
+      {connectionNotice === undefined ? null : <span className="truncate">{connectionNotice}</span>}
+    </>;
+  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, wsStatus, t]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is
@@ -4405,6 +4433,7 @@ boundExecution,
             agentProfile={pendingProfile ?? boundProfile}
             agentProfilePending={profilePending}
             execution={shownExecution}
+            boundExecution={boundExecution}
             executionPending={executionPending}
             onCancelExecution={cancelPendingExecution}
             executionGrants={{
@@ -4432,8 +4461,8 @@ boundExecution,
             attachments={queueEdit?.attachments ?? attachments}
             attachmentScopeKey={queueEdit?.owner}
             onChangeAttachments={queueEdit === null ? updateAttachments : updateQueueEditAttachments}
-            quote={quote}
-            onRemoveQuote={handleRemoveQuote}
+            quotes={quotes}
+            onRemoveQuoteItem={handleRemoveQuoteItem}
             annotations={annotations}
             onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
@@ -4517,10 +4546,9 @@ boundExecution,
     handleFsSearch,
     attachments,
     updateAttachments,
-    quote,
-    quoteSource,
+    quotes,
     annotations,
-    handleRemoveQuote,
+    handleRemoveQuoteItem,
     handleRemoveAnnotation,
     handleActivateSkill,
     runSessionAction,
@@ -4675,9 +4703,9 @@ boundExecution,
             forest,
             onOpenAgent: openAgent,
             rowActions: transcriptRowActions,
-            draftAnnotations: quote === null ? annotations : [...annotations, { id: 'draft-quote', quote, comment: null, source: quoteSource }],
+            draftAnnotations: [...annotations, ...quotes.map((item) => ({ ...item, comment: null }))],
             onSaveDraftAnnotation: handleUpdateAnnotation,
-            onRemoveDraftAnnotation: (id) => { if (id === 'draft-quote') handleRemoveQuote(); else handleRemoveAnnotation(id); },
+            onRemoveDraftAnnotation: (id) => { if (quotes.some((item) => item.id === id)) handleRemoveQuoteItem(id); else handleRemoveAnnotation(id); },
           },
           timelineRef: transcriptQuoteRef,
           timelineOverlay: <SelectionQuoteButton

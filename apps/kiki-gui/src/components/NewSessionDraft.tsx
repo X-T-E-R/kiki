@@ -19,7 +19,7 @@ import type {
   PermissionMode,
   PersonaSnapshot,
   SessionCreate,
-  Workspace,
+  WorkspaceCatalogEntry,
 } from '@kiki/protocol';
 
 import {
@@ -59,6 +59,7 @@ import {
   subscribeSettings,
 } from '@kiki/session-core/settings';
 import { DEFAULT_AGENT_PROFILE } from './Composer';
+import { applyPendingNewSessionCapabilities, bindPendingNewSessionDraft } from './capabilities/newSessionCapabilities';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 import { useHost } from '../host';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
@@ -171,7 +172,7 @@ export const AUTO_WORKSPACE_ID = '__auto__';
 const AUTO_WORKSPACE_NAME = /^Untitled workspace \d{4}-\d{2}-\d{2} [0-9a-f]{8}$/;
 
 /** Whether this workspace is one the server allocated rather than one the user named. */
-export function isAutoCreatedWorkspace(workspace: Workspace | undefined): boolean {
+export function isAutoCreatedWorkspace(workspace: WorkspaceCatalogEntry | undefined): boolean {
   return workspace !== undefined && AUTO_WORKSPACE_NAME.test(workspace.name);
 }
 
@@ -373,7 +374,7 @@ export function useNewSessionDraft({
 } = {}) {
   const host = useHost();
   const queryClient = useQueryClient();
-  const { client, scopeId, sshLabel } = useConnection();
+  const { client, scopeId, spaceKey, connectionId, sshLabel } = useConnection();
   const draftScopeId = sshLabel === null ? 'local' : scopeId;
   /**
    * A daily draft is the persona's, not the shared `/new` scratch pad: its own
@@ -387,6 +388,7 @@ export function useNewSessionDraft({
   const draftKey = dailyPersonaId !== undefined
     ? personaDailyDraftKey(scopeId, dailyPersonaId)
     : draftScopeId === 'local' ? DRAFT_KEY : `${DRAFT_KEY}:${draftScopeId}`;
+  bindPendingNewSessionDraft({ scopeId, spaceKey, connectionId, draftKey });
   const navigate = useGuardedNavigate();
   const { t, locale } = useI18n();
   const liveSettings = useSyncExternalStore(
@@ -471,11 +473,11 @@ export function useNewSessionDraft({
   const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
   const permissionTouched = useRef(false);
 
-  // Shares App's `['workspaces']` read, including its bounded cold-index retry,
-  // so /new can tell a failed read from a home with no workspaces yet.
+  // Shares App's metadata catalog without waiting for session counts or Git.
+  // A failed read is still distinct from a home with no workspaces yet.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
     retry: retryRootReadModelQuery,
     retryDelay: retryRootReadModelDelay,
@@ -487,7 +489,7 @@ export function useNewSessionDraft({
   const workspacesError = workspacesQuery.isError ? errorText(locale, workspacesQuery.error) : null;
   const retryWorkspaces = useCallback(() => { void workspacesQuery.refetch(); }, [workspacesQuery.refetch]);
 
-  const effectiveWorkspace: Workspace | undefined = useMemo(
+  const effectiveWorkspace: WorkspaceCatalogEntry | undefined = useMemo(
     () =>
       workspaceId === '' ? (dailyPersonaId === undefined && workspacesReady ? sortWorkspacesByRecency(workspaces)[0] : undefined)
         : workspaceId === AUTO_WORKSPACE_ID ? undefined
@@ -854,6 +856,8 @@ export function useNewSessionDraft({
           }
         }
         if (intent.cancelled) return;
+        await applyPendingNewSessionCapabilities(client, session.id, { scopeId, spaceKey, connectionId, draftKey });
+        if (intent.cancelled) return;
         createdForRetry.current = undefined;
         if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
         clearScopedNewSessionDraft(draftScopeId);
@@ -904,7 +908,7 @@ export function useNewSessionDraft({
         setCreationPending(false);
         if (intent.cancelled && createdForRetry.current !== undefined) setCreationNotice(t('new.creationAccepted'));
       });
-  }, [client, draftKey, draftScopeId, locale, scopeId, sshLabel, navigate, queryClient, t]);
+  }, [client, connectionId, draftKey, draftScopeId, locale, scopeId, spaceKey, sshLabel, navigate, queryClient, t]);
 
   const send = useCallback((
     text: string,

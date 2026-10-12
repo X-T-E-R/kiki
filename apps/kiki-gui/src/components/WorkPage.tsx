@@ -23,6 +23,7 @@ import type { WorkPresetItem } from '@kiki/protocol';
 import { useI18n } from '../i18n';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
 import { Composer } from './Composer';
+import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { Icon, type IconName } from './icons';
 import { isAbsoluteCwdPath, useNewSessionDraft } from './NewSessionDraft';
@@ -75,11 +76,11 @@ export function WorkPage({ onSetupMode, modeMenu, enabled = true }: WorkPageProp
 
   const fsSearch = useMemo(() => (
     cwd !== '' || state.effectiveWorkspace !== undefined
-      ? (query: string) => {
+      ? (query: string, page?: FsSearchPageArgs) => {
           const target = cwd !== '' ? cwd : state.effectiveWorkspace!.id;
           return client === undefined
             ? Promise.resolve([])
-            : client.workspaceFsSearch(target, { query, limit: 30 }).then((result) => result.items);
+            : client.workspaceFsSearch(target, fsSearchRequestBody(query, page, { limit: 30 }), page?.signal);
         }
       : undefined
   ), [client, cwd, state.effectiveWorkspace]);

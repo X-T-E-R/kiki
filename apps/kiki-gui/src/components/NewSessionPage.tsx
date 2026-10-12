@@ -22,6 +22,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
+import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { Icon } from './icons';
 import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -334,13 +335,9 @@ function NewSessionPageContent({
       // (kap-server `POST /workspace/fs:search`); a custom cwd rides
       // the same `workspace` slot as an absolute root.
       cwd !== '' || state.effectiveWorkspace !== undefined
-        ? (query: string) =>
-            client
-              .workspaceFsSearch(cwd !== '' ? cwd : state.effectiveWorkspace!.id, {
-                query,
-                limit: 30,
-              })
-              .then((result) => result.items)
+        ? (query: string, page?: FsSearchPageArgs) =>
+            client.workspaceFsSearch(cwd !== '' ? cwd : state.effectiveWorkspace!.id,
+              fsSearchRequestBody(query, page, { limit: 30 }), page?.signal)
         : undefined,
     [client, cwd, state.effectiveWorkspace],
   );
