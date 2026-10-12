@@ -14,6 +14,11 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -591,6 +596,11 @@ describe('AgentExecutorPreflightService', () => {
     services.stub(IAgentLoopService, {});
     services.stub(IAgentPromptService, {});
     services.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+    services.stub(ISessionMetadata, { read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false }) });
+    services.stub(ISessionContext, { sessionId: 'session-test' });
+    services.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', background: [] }) });
+    services.stub(IModelCatalog, {});
+    services.stub(IRequestGovernance, { acquireAgent: async () => ({ release: () => {} }) });
     services.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
     const execution = services.get(IAgentExecutionService);
 
