@@ -20,7 +20,7 @@ const resume = vi.fn();
 const archives = vi.fn();
 const read = vi.fn();
 const meta = vi.fn();
-const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const listPlugins = vi.fn();
 const getPluginSettings = vi.fn();
 let remote = false;
@@ -29,7 +29,7 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       meta,
-      listWorkspaces,
+      listWorkspaceCatalog,
       listPlugins,
       getPluginSettings,
       klient: { global: { imports: { sources, discover, preview, start, jobs, job: jobById, cancel, resume, archives, read } } },
@@ -113,7 +113,7 @@ beforeEach(() => {
   archives.mockReset().mockResolvedValue({ items: [], cursor: null });
   jobById.mockReset().mockRejectedValue(new Error('no such job'));
   read.mockReset().mockResolvedValue({ records: [], nextCursor: null });
-  listWorkspaces.mockReset().mockResolvedValue(WORKSPACES);
+  listWorkspaceCatalog.mockReset().mockResolvedValue(WORKSPACES);
   // A first-party importer is served by the host and is deliberately absent
   // from the installed list; the page must still be fully usable.
   listPlugins.mockReset().mockResolvedValue({ plugins: [] });

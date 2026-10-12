@@ -21,7 +21,7 @@ const client = vi.hoisted(() => ({
   previewHostFile: vi.fn<(path: string, maxBytes?: number, options?: { signal?: AbortSignal }) => Promise<{ text: string; truncated: boolean }>>(),
   readBuiltinSkill: vi.fn<(name: string, options?: { signal?: AbortSignal }) => Promise<string>>(),
   listWorkspaceSkills: vi.fn<(id: string) => Promise<{ skills: SkillDescriptor[] }>>(),
-  listWorkspaces: vi.fn<() => Promise<{ items: Workspace[] }>>(),
+  listWorkspaceCatalog: vi.fn<() => Promise<{ items: Workspace[] }>>(),
 }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client }),
@@ -681,7 +681,7 @@ describe('CapabilitiesPage workspace skills', () => {
   const beta = workspace('ws_beta', 'Beta');
 
   beforeEach(() => {
-    client.listWorkspaces.mockReset();
+    client.listWorkspaceCatalog.mockReset();
     client.listWorkspaceSkills.mockReset().mockImplementation(async (id) => ({
       skills: [{ ...sampleSkill, name: `${id}-review` }],
     }));
@@ -717,7 +717,7 @@ describe('CapabilitiesPage workspace skills', () => {
 
   it('shows loading, not an empty workspace, until the workspace request resolves', async () => {
     let resolve!: (value: { items: Workspace[] }) => void;
-    client.listWorkspaces.mockReturnValue(new Promise((done) => { resolve = done; }));
+    client.listWorkspaceCatalog.mockReturnValue(new Promise((done) => { resolve = done; }));
     await renderPage();
     expect(container.querySelector('[data-capability-workspaces-loading]')?.textContent).toBe('正在加载工作区…');
     expect(container.querySelector('[data-capability-empty]')).toBeNull();
@@ -729,8 +729,8 @@ describe('CapabilitiesPage workspace skills', () => {
   });
 
   it('shows a retryable failure, never the no-workspace message', async () => {
-    client.listWorkspaces.mockRejectedValueOnce(new Error('Session index is building'));
-    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    client.listWorkspaceCatalog.mockRejectedValueOnce(new Error('Session index is building'));
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha] });
     await renderPage();
     await settleUntil('[data-capability-workspaces-error]');
     expect(container.textContent).toContain('工作区列表加载失败，请重试。');
@@ -738,11 +738,11 @@ describe('CapabilitiesPage workspace skills', () => {
     expect(client.listWorkspaceSkills).not.toHaveBeenCalled();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-capability-workspaces-error] button')!.click(); });
     await settleUntil('[data-skill-row="ws_alpha-review"]');
-    expect(client.listWorkspaces).toHaveBeenCalledTimes(2);
+    expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(2);
   });
 
   it('offers a new session only for a successfully loaded empty catalog and refreshes the catalog', async () => {
-    client.listWorkspaces.mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [alpha] });
+    client.listWorkspaceCatalog.mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [alpha] });
     await renderPage();
     await settleUntil('[data-capability-empty]');
     expect(container.textContent).toContain('还没有可查看技能的工作区');
@@ -751,11 +751,11 @@ describe('CapabilitiesPage workspace skills', () => {
     expect(container.textContent).not.toContain('已注册');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-capabilities-refresh]')!.click(); });
     await settleUntil('[data-skill-row="ws_alpha-review"]');
-    expect(client.listWorkspaces).toHaveBeenCalledTimes(2);
+    expect(client.listWorkspaceCatalog).toHaveBeenCalledTimes(2);
   });
 
   it('switches between every workspace and honors URL changes and browser Back', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [alpha, beta] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha, beta] });
     await renderPage('/capabilities?tab=skills&workspace=ws_beta');
     await settleUntil('[data-skill-row="ws_beta-review"]');
     const trigger = container.querySelector<HTMLButtonElement>('#capabilities-workspace')!;
@@ -775,14 +775,14 @@ describe('CapabilitiesPage workspace skills', () => {
   });
 
   it('falls back from a removed URL workspace rather than using its stale id', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha] });
     await renderPage('/capabilities?tab=skills&workspace=ws_deleted');
     await settleUntil('[data-skill-row="ws_alpha-review"]');
     expect(client.listWorkspaceSkills).not.toHaveBeenCalledWith('ws_deleted');
   });
 
   it('scrolls the tab strip on the horizontal axis only, so no vertical bar appears beside the labels', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha] });
     await renderPage('/capabilities?tab=skills');
     await settleUntil('[data-capabilities-tab]');
     const strip = container.querySelector<HTMLElement>('[data-capabilities-tab]')!;
@@ -799,7 +799,7 @@ describe('CapabilitiesPage workspace skills', () => {
   });
 
   it('brings a focused tab into view by moving only the strip, never the page', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [alpha] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [alpha] });
     await renderPage('/capabilities?tab=skills');
     await settleUntil('[data-capabilities-tab]');
     const strip = container.querySelector<HTMLElement>('[data-capabilities-tab]')!;

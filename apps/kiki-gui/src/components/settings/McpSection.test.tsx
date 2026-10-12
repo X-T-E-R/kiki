@@ -23,13 +23,13 @@ import { I18nProvider } from '../../i18n';
 import { McpSection } from './McpSection';
 
 const list = vi.hoisted(() => vi.fn());
-const listWorkspaces = vi.hoisted(() => vi.fn());
+const listWorkspaceCatalog = vi.hoisted(() => vi.fn());
 const getConfig = vi.hoisted(() => vi.fn());
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     klient: { global: { mcp: { list } } },
-    client: { listWorkspaces, getConfig },
+    client: { listWorkspaceCatalog, getConfig },
     scopeId: 'fixture-server',
   }),
 }));
@@ -62,7 +62,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   list.mockReset().mockResolvedValue(ENTRIES);
-  listWorkspaces.mockReset().mockResolvedValue({ items: [RECENT, TWO] });
+  listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [RECENT, TWO] });
   getConfig.mockReset().mockResolvedValue({ mcp: {} });
 });
 afterEach(async () => {

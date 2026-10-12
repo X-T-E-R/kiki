@@ -45,6 +45,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 
+import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../host';
@@ -719,12 +720,12 @@ function WorkDirField({
   // The same query the new-session page reads, so a workspace the reader already
   // uses is one click away and never has to be retyped.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
     retry: false,
   });
-  const workspaces = workspacesQuery.data?.items ?? [];
+  const workspaces: readonly WorkspaceCatalogEntry[] = workspacesQuery.data?.items ?? [];
   const trimmed = value.trim();
   return (
     <div className="min-w-0" data-plugin-import-workdir={trimmed === '' ? 'unset' : trimmed}>

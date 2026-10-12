@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { mcpTimeoutsPatch, workspacesSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
@@ -145,11 +146,11 @@ function WorkspaceMcpEntries({ workspaceId }: { readonly workspaceId: string }) 
   const queryClient = useQueryClient();
   const reportScope = useContext(SettingsWorkspaceScopeContext);
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
-  const workspace = workspacesQuery.data?.items.find((item) => item.id === workspaceId);
+  const workspace = workspacesQuery.data?.items.find((item: WorkspaceCatalogEntry) => item.id === workspaceId);
   const entriesQuery = useQuery({
     queryKey: ['mcp-managed-servers', workspace?.root ?? ''],
     queryFn: () => klient.global.mcp.list({ cwd: workspace!.root }),

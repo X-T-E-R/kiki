@@ -13,7 +13,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
-import type { Workspace } from '@kiki/protocol';
+import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { toolDisplayName } from '../../lib/pluginCatalog';
@@ -37,11 +37,11 @@ function pathKey(path: string): string | undefined {
   return prefix + segments.join('/');
 }
 
-/** Workspaces come from the active connection's scoped query cache; match the deepest directory, never a string prefix. */
-export function findMcpWorkspace(cwd: string, workspaces: readonly Workspace[]): Workspace | undefined {
+/** Catalog entries from the active connection; match the deepest directory, never a string prefix. */
+export function findMcpWorkspace(cwd: string, workspaces: readonly WorkspaceCatalogEntry[]): WorkspaceCatalogEntry | undefined {
   const target = pathKey(cwd);
   if (target === undefined) return undefined;
-  let matched: Workspace | undefined;
+  let matched: WorkspaceCatalogEntry | undefined;
   let depth = -1;
   for (const workspace of workspaces) {
     const root = pathKey(workspace.root);
@@ -61,8 +61,8 @@ export function McpView({ cwd }: { readonly cwd: string }) {
   const [trustBusy, setTrustBusy] = useState(false);
 
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     enabled: cwd !== '',
     staleTime: 30_000,
   });

@@ -85,7 +85,7 @@ export function useCapabilityWorkspace() {
   const { client } = useConnection();
   const [params, setParams] = useSearchParams();
   const requested = params.get('workspace') ?? undefined;
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
   const workspace = pickWorkspace(sorted, requested);
   const workspaceId = workspace?.id ?? '';
