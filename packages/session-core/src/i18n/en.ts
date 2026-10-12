@@ -10759,6 +10759,8 @@ export const en = {
   'media.copyImage': 'Copy image',
   'media.imagePosition': '{current} / {total}',
   'media.annotate': 'Annotate',
+  'media.startAnnotation': 'Annotate image',
+  'media.annotationMode': 'Annotation mode',
   'media.annotationDone': 'Done',
   'media.annotationSelect': 'Select / move',
   'media.annotationArrow': 'Arrow',

@@ -10663,6 +10663,8 @@ export const zh = {
   'media.copyImage': '复制图片',
   'media.imagePosition': '{current} / {total}',
   'media.annotate': '标注',
+  'media.startAnnotation': '标注图片',
+  'media.annotationMode': '标注模式',
   'media.annotationDone': '完成',
   'media.annotationSelect': '选择 / 移动',
   'media.annotationArrow': '箭头',

@@ -1,12 +1,13 @@
-import { useMemo, useState, type ComponentProps } from 'react';
+import { useMemo, useRef, useState, type ComponentProps } from 'react';
 
 import { resolveFileReference, unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
 import { parseDaemonFileRefFileId } from '@kiki/transcript';
 
 import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
+import { mediaOutcomeKey, useMediaReady } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
-import { MediaPart, useSessionMedia } from '../mediaParts';
+import { MediaPart, useGalleryImage, useSessionMedia } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 
 type ImageProps = ComponentProps<'img'>;
@@ -31,9 +32,18 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   const mediaItem = useMemo<MediaRef>(() => ({ kind: 'image', path: localPath }), [localPath]);
   const load = useSessionMedia(mediaItem, preview?.sessionId, localPath !== undefined && client !== undefined, true, attempt);
   const failure = failedMedia !== null && failedMedia.client === client && failedMedia.path === path;
-  if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
-
+  const failedRef = useRef(false);
+  failedRef.current = failure || load.status === 'failed';
+  useMediaReady(mediaOutcomeKey({ sessionId: preview?.sessionId, fileId, path: localPath, url: localPath === undefined && typeof src === 'string' ? src : undefined }), () => {
+    if (fileId !== undefined || !failedRef.current) return;
+    setFailedMedia(null);
+    setAttempt((value) => value + 1);
+  });
   const name = safeImagePreviewName({ metadataName: load.status === 'ready' ? load.name : undefined, path });
+  const galleryItem = useMemo<MediaRef>(() => ({ kind: 'image', fileId, path: localPath, url: localPath === undefined && typeof src === 'string' ? src : undefined, name }), [fileId, localPath, src, name]);
+  const offset = (_node as { position?: { start?: { offset?: number } } } | undefined)?.position?.start?.offset ?? 0;
+  const openImage = useGalleryImage(galleryItem, 0, undefined, offset);
+  if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
   const label = name ?? t('media.image');
   const description = safeImagePreviewName({ name: alt }) ?? label;
 
@@ -62,7 +72,7 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
       aria-label={label}
       className="inline-block max-w-full bg-transparent p-0 align-middle focus-visible:outline-2 focus-visible:outline-selected-ink"
       onClick={() => {
-        if (typeof url === 'string') preview.openImage(url, name);
+        if (typeof url === 'string') openImage(url);
       }}
     >
       {content}

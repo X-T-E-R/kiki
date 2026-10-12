@@ -104,10 +104,9 @@ async function openAttachment() {
   });
   expect(container.querySelector('button')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-  await act(async () => {
-    document.querySelector('[data-attachment-preview]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
-  });
-  return document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
+  const download = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Download');
+  expect(download).toBeDefined();
+  return download!;
 }
 
 describe('media original GUI stream', () => {
@@ -268,7 +267,10 @@ describe('media preview budget and ownership', () => {
     expect(document.querySelector('[role="dialog"]')).toBe(dialog);
     await act(async () => { surface.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })); });
     const save = document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
-    expect(document.activeElement).toBe(save);
+    expect(document.activeElement?.getAttribute('data-menu-item')).toBe('copy-image');
+    expect(document.querySelector('[data-attachment-image-menu] [data-menu-item="copy-path"]')).toBeNull();
+    expect(document.querySelector('[data-attachment-image-menu] [data-menu-item="show-in-folder"]')).toBeNull();
+    expect(document.querySelector('[data-attachment-image-menu] [data-menu-item="copy-link"]')).toBeNull();
     fixture.openSaveSink.mockResolvedValue(null);
     await act(async () => { save.click(); });
     expect(fixture.openSaveSink).toHaveBeenCalledWith('step-after.png');
@@ -290,7 +292,8 @@ it('saves a lightbox image from the keyboard context menu without a persistent D
     const image = document.querySelector('img')!;
     await act(async () => { image.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })); });
     const save = document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!;
-    expect(document.activeElement).toBe(save);
+    expect(document.activeElement?.getAttribute('data-menu-item')).toBe('copy-image');
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="copy-path"]')).toBeNull();
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
     expect(close).not.toHaveBeenCalled();
     await act(async () => { image.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });

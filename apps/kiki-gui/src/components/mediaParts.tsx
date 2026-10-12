@@ -8,7 +8,31 @@ import { useOptionalConnection } from '../state/connection';
 import { Icon } from './icons';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
-import { useMediaPreview } from './mediaPreviewContext';
+import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
+import { isRemoteConnection, mediaOutcomeKey, useMediaReady } from './imageActions';
+import { canonicalGalleryItem, galleryImageId } from './mediaGallery';
+
+export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: string, markdownOffset?: number) {
+  const preview = useMediaPreview();
+  const order = useMediaGalleryOrder();
+  const owner = order?.agentId ?? agentId ?? 'main';
+  const id = galleryImageId(item, owner);
+  const register = preview?.registerGalleryImage;
+  useEffect(() => {
+    if (item.kind !== 'image' || id === undefined || item.detail !== undefined || register === undefined) return;
+    register({ id, agentId: owner, order: [order?.order ?? 0, markdownOffset === undefined ? 1 : 0, markdownOffset ?? attachmentIndex], item: canonicalGalleryItem(item, owner) });
+  }, [register, id, owner, order?.order, attachmentIndex, markdownOffset, item]);
+  return (initialSrc?: string) => {
+    const prepared = canonicalGalleryItem(item, owner);
+    if (preview?.openGalleryImage !== undefined) {
+      preview.openGalleryImage(prepared, owner, initialSrc);
+    } else if (initialSrc !== undefined || item.url !== undefined) {
+      preview?.openImage(initialSrc ?? item.url!, safeImagePreviewName({ name: item.name, path: item.path }));
+    } else {
+      preview?.openAttachment(item, owner);
+    }
+  };
+}
 import { useTranscriptDetail } from './transcriptDetail';
 
 type SessionMediaLoad =
@@ -94,17 +118,25 @@ export function attachmentName(item: MediaRef, loadedName?: string, fallback = '
   return imagePreviewLabel({ name: item.name, metadataName: loadedName, path: item.path }, fallback);
 }
 
-function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: MediaThumbSize }) {
+function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef; size?: MediaThumbSize; onOpen?: () => void }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const [hostRef, visible] = useVisibleOnce();
-  const load = useSessionMedia(item, preview?.sessionId, visible);
+  const [attempt, setAttempt] = useState(0);
+  const load = useSessionMedia(item, preview?.sessionId, visible, true, attempt);
   const [failedUrl, setFailedUrl] = useState<string>();
+  const failedRef = useRef(false);
+  failedRef.current = load.status === 'failed' || (load.status === 'ready' && failedUrl === load.url);
+  useMediaReady(mediaOutcomeKey({ sessionId: preview?.sessionId, url: item.url, fileId: item.fileId, path: item.path }), () => {
+    if (!failedRef.current) return;
+    setFailedUrl(undefined);
+    setAttempt((value) => value + 1);
+  });
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, fallback);
   let body: ReactNode;
   if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
-    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { preview?.openAttachment(item); }} />;
+    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }} />;
   } else if (load.status === 'loading') {
     body = (
       <span aria-busy="true" className={`flex ${THUMB_SIZE[size].slot} items-center justify-center ${THUMB_SIZE[size].frame} text-[11px] text-ink-faint`}>
@@ -116,7 +148,7 @@ function SessionMediaThumb({ item, size = 'default' }: { item: MediaRef; size?: 
       <button
         type="button"
         title={name}
-        onClick={() => { preview?.openAttachment(item); }}
+        onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
@@ -174,8 +206,8 @@ function FileChip({ item }: { item: MediaRef }) {
 }
 
 /** Host media uses the same bounded source-preview and explicit-original UI. */
-function HostMediaThumb({ item, size = 'default' }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize }) {
-  return <SessionMediaThumb item={item} size={size} />;
+function HostMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef & { kind: 'image' | 'video'; path: string }; size?: MediaThumbSize; onOpen?: () => void }) {
+  return <SessionMediaThumb item={item} size={size} onOpen={onOpen} />;
 }
 
 export type MediaThumbSize = 'default' | 'strip' | 'preview';
@@ -186,7 +218,7 @@ const THUMB_SIZE: Record<MediaThumbSize, { img: string; slot: string; frame: str
 };
 const LOADABLE_MEDIA_URL = /^(?:data:|blob:|https?:\/\/)/i;
 
-function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: MediaThumbSize }) {
+function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }; size: MediaThumbSize; onOpen?: () => void }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const client = useOptionalConnection()?.client;
@@ -194,6 +226,15 @@ function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: 
   const [failed, setFailed] = useState<typeof source | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [hostRef, visible] = useVisibleOnce();
+  const failedRef = useRef(failed);
+  const sourceRef = useRef(source);
+  failedRef.current = failed;
+  sourceRef.current = source;
+  useMediaReady(mediaOutcomeKey({ sessionId: preview?.sessionId, url: item.url, fileId: item.fileId, path: item.path }), () => {
+    if (failedRef.current !== sourceRef.current) return;
+    setFailed(null);
+    setAttempt((value) => value + 1);
+  });
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const name = attachmentName(item, undefined, fallback);
   const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
@@ -201,7 +242,7 @@ function UrlMediaPart({ item, size }: { item: MediaRef & { url: string }; size: 
   const body = failed === source ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
     : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
-    : <button type="button" onClick={() => { preview?.openImage(item.url, downloadName); }} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
+    : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
   return <span ref={hostRef} className="inline-flex">{body}</span>;
 }
 
@@ -266,22 +307,18 @@ function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNulla
   );
 }
 
-export function MediaPart({ item, agentId, size = 'default' }: { item: MediaRef; agentId?: string; size?: MediaThumbSize }) {
+export function MediaPart({ item, agentId, size = 'default', galleryIndex = 0 }: { item: MediaRef; agentId?: string; size?: MediaThumbSize; galleryIndex?: number }) {
+  const order = useMediaGalleryOrder();
+  const openImage = useGalleryImage(item, galleryIndex, agentId);
   if (item.detail !== undefined) return <DeferredMediaPart item={{ ...item, detail: item.detail }} size={size} />;
   if (item.blobHash !== undefined) {
-    const savedItem = {
-      ...item,
-      path: undefined,
-      name: item.name ?? safeImagePreviewName({ path: item.path }),
-      fileId: item.fileId ?? (agentId === undefined ? undefined : `blobref:${agentId}:${item.blobHash}`),
-    };
-    return savedItem.fileId === undefined ? <FileChip item={savedItem} /> : <SessionMediaThumb item={savedItem} size={size} />;
+    const savedItem = canonicalGalleryItem({ ...item, name: item.name ?? safeImagePreviewName({ path: item.path }) }, order?.agentId ?? agentId ?? 'main');
+    return <SessionMediaThumb item={savedItem} size={size} onOpen={item.kind === 'image' ? openImage : undefined} />;
   }
   if (item.kind === 'image') {
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
-    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} />;
-    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} />;
-    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} size={size} onOpen={openImage} />;
+    if (item.url !== undefined) return <UrlMediaPart item={{ ...item, url: item.url }} size={size} onOpen={openImage} />;
+    if (item.path !== undefined) return <HostMediaThumb item={{ ...item, kind: 'image', path: item.path }} size={size} onOpen={openImage} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'video') {
@@ -299,7 +336,7 @@ export function MediaPartList({ media, align = 'start', agentId }: { media: read
   if (media.length === 0) return null;
   return (
     <div className={`mt-1.5 flex flex-wrap gap-2 ${align === 'end' ? 'justify-end' : ''}`}>
-      {media.map((item, index) => <MediaPart key={index} item={item} agentId={agentId} />)}
+      {media.map((item, index) => <MediaPart key={index} item={item} agentId={agentId} galleryIndex={index} />)}
     </div>
   );
 }
@@ -309,20 +346,20 @@ export function FilePathLink({ path, className }: { path: string; className?: st
   const host = useHost();
   const { t } = useI18n();
   const preview = useMediaPreview();
-  const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const connection = useOptionalConnection();
+  const remoteScope = isRemoteConnection(connection);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{path}</span>;
   const filePath = /^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path;
+  const hostEntries: MiniMenuEntry[] = [];
+  if (!remoteScope) {
+    if (host.revealPath !== undefined) hostEntries.push({ key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath?.(filePath) });
+    if (host.openPath !== undefined) hostEntries.push({ key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath?.(filePath) });
+  }
   const entries: MiniMenuEntry[] = [
     { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
     { key: 'copy-path', label: t('file.copyPath'), run: () => copyTextToClipboard(path) },
-    ...(!remoteScope && host.revealPath !== undefined && host.openPath !== undefined
-      ? [
-          { separator: true } as const,
-          { key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath?.(filePath) } as const,
-          { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath?.(filePath) } as const,
-        ]
-      : []),
+    ...(hostEntries.length > 0 ? [{ separator: true } as const, ...hostEntries] : []),
   ];
   return (
     <>

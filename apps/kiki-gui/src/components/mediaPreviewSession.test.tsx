@@ -453,7 +453,9 @@ describe('sent image loading and recovery', () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     expect(dialog?.getAttribute('aria-label')).toBe('Image');
     expect(dialog?.querySelector<HTMLImageElement>('img')?.alt).toBe('Image');
-    await act(async () => { findDialogButton(dialog, 'Download')?.click(); });
+    expect(findDialogButton(dialog, 'Download')).toBeUndefined();
+    await act(async () => { dialog?.querySelector('img')?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 8, clientY: 8 })); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')?.click(); });
     expect(downloadClick).toHaveBeenCalledOnce();
   });
 

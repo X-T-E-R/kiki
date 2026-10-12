@@ -4,7 +4,16 @@
  * module graph stays acyclic.
  */
 
-import { createContext, useContext } from 'react';
+import { createContext, createElement, useContext, type ReactNode } from 'react';
+import type { GalleryImage } from './mediaGallery';
+
+const GalleryOrderContext = createContext<{ agentId: string; order: number; blockId: string } | null>(null);
+
+export function MediaGalleryOrder({ children, ...value }: { agentId: string; order: number; blockId: string; children: ReactNode }) {
+  return createElement(GalleryOrderContext.Provider, { value }, children);
+}
+
+export function useMediaGalleryOrder() { return useContext(GalleryOrderContext); }
 
 import type { FileReference, MediaRef } from '@kiki/session-core/composer/media';
 
@@ -15,6 +24,10 @@ export interface MediaPreviewApi {
   readonly cwd: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
+  /** Canonical source remains valid when virtualized thumbnails unmount. */
+  readonly openGalleryImage?: (item: MediaRef, agentId?: string, initialSrc?: string) => void;
+  /** Retain source descriptors, never a thumbnail's expiring blob URL. */
+  readonly registerGalleryImage?: (image: GalleryImage) => void;
   /** Open a raw filesystem path or an already-resolved FileReference. Strings
    * are never URI-decoded or stripped of citation suffixes. Citation entrances
    * resolve text or hrefs to FileReference first; navigation never enters a
@@ -25,7 +38,7 @@ export interface MediaPreviewApi {
   /** Open a read-only built-in skill in the preview workspace. */
   readonly openBuiltinSkill: (name: string) => void;
   /** Open an attachment backed by a canonical session media id. */
-  readonly openAttachment: (item: MediaRef) => void;
+  readonly openAttachment: (item: MediaRef, galleryAgentId?: string) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */
   readonly previewTabCount: number;
   /** Whether the preview workspace panel is currently expanded. */
