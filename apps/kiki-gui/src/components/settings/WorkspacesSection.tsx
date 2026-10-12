@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ListWorkspacesResponse, Workspace } from '@kiki/protocol';
+import type { ListWorkspaceCatalogResponse, WorkspaceCatalogEntry as Workspace } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 import { workspaceSettingsPath } from '@kiki/session-core/settings';
@@ -50,10 +50,10 @@ export function WorkspacesSection({ workspaceId }: { readonly workspaceId?: stri
 
 function WorkspacesList() {
   const { client, scopeId, sshLabel, activateSshProfile, activateLocal } = useConnection();
-  const { t, tp, locale } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
-  const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const query = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const [renaming, setRenaming] = useState<Workspace | null>(null);
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [bulkRemoving, setBulkRemoving] = useState<readonly Workspace[] | null>(null);
@@ -69,9 +69,9 @@ function WorkspacesList() {
     setPinBusy(workspace.id);
     setFeedback(null);
     void client
-      .setWorkspacePinned(workspace.id, !workspace.pinned)
+      .setWorkspacePinnedCatalog(workspace.id, !workspace.pinned)
       .then((echoed) => {
-        queryClient.setQueryData(['workspaces'], (current: ListWorkspacesResponse | undefined) =>
+        queryClient.setQueryData(['workspaces', 'catalog'], (current: ListWorkspaceCatalogResponse | undefined) =>
           current === undefined
             ? current
             : { items: current.items.map((ws) => (ws.id === echoed.id ? echoed : ws)) },
@@ -88,7 +88,7 @@ function WorkspacesList() {
   const bulkPin = (targets: readonly Workspace[], pinned: boolean) => {
     setPinBusy('bulk');
     setFeedback(null);
-    void Promise.all(targets.filter((ws) => ws.pinned !== pinned).map((ws) => client.setWorkspacePinned(ws.id, pinned)))
+    void Promise.all(targets.filter((ws) => ws.pinned !== pinned).map((ws) => client.setWorkspacePinnedCatalog(ws.id, pinned)))
       .then(invalidate)
       .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); })
       .finally(() => { setPinBusy(null); });
@@ -138,7 +138,7 @@ function WorkspacesList() {
           workspace={renaming}
           onClose={() => setRenaming(null)}
           onRenamed={(echoed) => {
-            queryClient.setQueryData(['workspaces'], (current: ListWorkspacesResponse | undefined) =>
+            queryClient.setQueryData(['workspaces', 'catalog'], (current: ListWorkspaceCatalogResponse | undefined) =>
               current === undefined ? current : { items: current.items.map((ws) => ws.id === echoed.id ? echoed : ws) },
             );
             setRenaming(null);
@@ -152,14 +152,7 @@ function WorkspacesList() {
           overlayId="confirm-workspace-remove"
           title={t('st.workspaces.removeTitle', { name: removing.name })}
           body={t('st.workspaces.removeBody')}
-          consequences={
-            removing.session_count > 0
-              ? [
-                  tp('st.workspaces.removeKeepSessions', removing.session_count),
-                  t('st.workspaces.removeNoNewSessions'),
-                ]
-              : [t('st.workspaces.removeNoNewSessions')]
-          }
+          consequences={[t('st.workspaces.removeNoNewSessions')]}
           confirmLabel={t('st.workspaces.remove')}
           tone="danger"
           onCancel={() => setRemoving(null)}
@@ -215,7 +208,7 @@ const byRecent = (a: Workspace, b: Workspace) => Date.parse(b.last_opened_at) - 
 
 /**
  * The registered-workspace list on the shared list pattern: search by name
- * or path, chips for pinned / unused, sort, density, folding groups
+ * or path, pinned chip, sort, density, folding groups
  * (pinned · this week · older), row selection with bulk pin / unregister.
  * Each row keeps one visible verb (New session) and the pin mark; rename
  * and unregister live in the row's ⋯ menu so 80 rows are not 320 buttons.
@@ -235,17 +228,15 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
   const { t } = useI18n();
   const filters = useMemo<ListFilterSpec<Workspace>[]>(() => [
     { id: 'pinned', label: t('st.workspaces.filter.pinned'), test: (ws) => ws.pinned },
-    { id: 'unused', label: t('st.workspaces.filter.unused'), test: (ws) => ws.session_count === 0 },
   ], [t]);
   const sorts = useMemo<ListSortSpec<Workspace>[]>(() => [
     { id: 'recent', label: t('st.list.sort.recent'), compare: byRecent },
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.name.localeCompare(b.name) },
-    { id: 'sessions', label: t('st.list.sort.sessions'), compare: (a, b) => b.session_count - a.session_count || byRecent(a, b) },
   ], [t]);
   const keyOf = useCallback((ws: Workspace) => ws.id, []);
   const textOf = useCallback((ws: Workspace) => [ws.name, ws.root], []);
   const view = useListView({ listId: 'workspaces', items, keyOf, textOf, filters, sorts });
-  // Group only when sorted by recency; a name or count sort is one flat list.
+  // Group only when sorted by recency; a name sort is one flat list.
   const [now] = useState(() => Date.now());
   const groups = useMemo(() => {
     if (view.sort !== 'recent') return [{ key: 'all', label: '', items: view.visible, total: items.length }];
@@ -323,7 +314,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
 }) {
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { t, tp, time, locale } = useI18n();
+  const { t, time, locale } = useI18n();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [trustBusy, setTrustBusy] = useState(false);
   const [trustFeedback, setTrustFeedback] = useState<Feedback>(null);
@@ -353,7 +344,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   };
 
   const compact = density === 'compact';
-  const facts = `${tp('st.workspaces.sessionCount', workspace.session_count)} · ${t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) })}`;
+  const facts = t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) });
   return (
     <div data-workspace-row={workspace.id} data-selected={checked ? '' : undefined}
       style={{ minHeight: LIST_ROW_HEIGHT[density] }}
@@ -467,7 +458,7 @@ function WorkspaceRenameDialog({
     setBusy(true);
     setError(null);
     void client
-      .renameWorkspace(workspace.id, trimmed)
+      .renameWorkspaceCatalog(workspace.id, trimmed)
       .then(onRenamed)
       .catch((cause: unknown) => {
         setBusy(false);

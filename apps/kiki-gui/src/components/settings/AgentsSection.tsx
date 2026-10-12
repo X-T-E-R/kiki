@@ -483,9 +483,11 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   // with the most recently opened workspace, exactly as a first visit does.
   const [params, setParams] = useSearchParams();
   const requestedWorkspaceId = params.get('workspace') ?? undefined;
+  // The picker and the effective-workspace default need identity, name and
+  // recency only, so the metadata-only catalog answers this section.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
   const selectedWorkspaceId = requestedWorkspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;

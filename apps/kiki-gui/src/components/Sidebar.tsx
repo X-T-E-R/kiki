@@ -25,7 +25,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
-import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   compactSessionContext,
@@ -525,7 +525,7 @@ export function Sidebar({
   };
   /** The room summaries fetch; a failure is shown, never read as "no rooms". */
   roomsQuery?: { readonly isError: boolean };
-  workspaceOptions: readonly Workspace[];
+  workspaceOptions: readonly WorkspaceCatalogEntry[];
   filters: SessionListFilters;
   onFiltersChange: (filters: SessionListFilters) => void;
   groupBy: 'time' | 'workspace' | 'none';
@@ -779,11 +779,11 @@ export function Sidebar({
 
   // Workspace pin: one toggle per row inside the filter menu. It writes the
   // server-side `pinned` field, so the order it produces is shared by every client.
-  const toggleWorkspacePin = (workspace: Workspace) => {
+  const toggleWorkspacePin = (workspace: WorkspaceCatalogEntry) => {
     setWorkspacePinBusy(true);
     setActionError(null);
     void client
-      .setWorkspacePinned(workspace.id, !workspace.pinned)
+      .setWorkspacePinnedCatalog(workspace.id, !workspace.pinned)
       .then(() => queryClient.invalidateQueries({ queryKey: ['workspaces'] }))
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -2681,7 +2681,7 @@ function WorkspaceGroupHeader({
   foldable: boolean;
   current: boolean;
   foldedLife: LifeState;
-  workspace: Workspace | undefined;
+  workspace: WorkspaceCatalogEntry | undefined;
   pinBusy: boolean;
   onToggle: () => void;
   onTogglePin: (() => void) | undefined;
@@ -3190,9 +3190,9 @@ function SidebarFilterMenu({
   onToggleStatus: (status: SessionStatusFilter) => void;
   onToggleWorkspace: (workspaceId: string) => void;
   onArchived: (archived: SessionArchivedFilter) => void;
-  workspaceOptions: readonly Workspace[];
+  workspaceOptions: readonly WorkspaceCatalogEntry[];
   workspacePinBusy: boolean;
-  onToggleWorkspacePin: (workspace: Workspace) => void;
+  onToggleWorkspacePin: (workspace: WorkspaceCatalogEntry) => void;
   onManageWorkspaces: () => void;
 }) {
   const { t } = useI18n();

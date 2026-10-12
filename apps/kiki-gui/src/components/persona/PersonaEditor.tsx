@@ -24,7 +24,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PersonaSnapshot, PersonaSummary, Workspace } from '@kiki/protocol';
+import type { PersonaSnapshot, PersonaSummary, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { resolveCatalogModel, sortThinkingEffortsForDisplay } from '@kiki/session-core/settings';
 
@@ -67,7 +67,7 @@ import { downloadBlob, invalidatePersonas, personaQueryKey } from './usePersonas
 
 const TEXTAREA = `${INPUT} resize-y leading-relaxed`;
 /** Stable stand-in while the workspace list is on its way. */
-const NO_WORKSPACES: readonly Workspace[] = [];
+const NO_WORKSPACES: readonly WorkspaceCatalogEntry[] = [];
 
 export function PersonaEditor({
   personaId,
@@ -150,10 +150,11 @@ function PersonaForm({
   // The workspace list is what turns a stored location into a picker choice;
   // until it arrives the draft keeps whatever the asset holds. Both the array
   // and the draft derived from it keep a stable identity until the data really
-  // changes, so the baseline below is not rebuilt on every render.
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 60_000 });
+  // changes, so the baseline below is not rebuilt on every render. Only the
+  // identity, root and name take part, so the metadata-only catalog is enough.
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 60_000 });
   const workspaceItems = workspacesQuery.data?.items;
-  const workspaces = useMemo<readonly Workspace[]>(() => workspaceItems ?? NO_WORKSPACES, [workspaceItems]);
+  const workspaces = useMemo<readonly WorkspaceCatalogEntry[]>(() => workspaceItems ?? NO_WORKSPACES, [workspaceItems]);
 
   const initial = useMemo(
     () => (snapshot === undefined ? EMPTY_PERSONA_DRAFT : draftFromDefinition(snapshot.definition, workspaces)),

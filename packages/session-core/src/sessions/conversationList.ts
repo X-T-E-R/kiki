@@ -20,7 +20,14 @@ export type ConversationListItem = ConversationFields & (
   | { readonly kind: 'room'; readonly room: RoomListItem; readonly member_count: number }
 );
 
+/** The workspace identity a room's own reference resolves against, plus the
+ * root used to match a reference that travelled as a path. */
 export type ConversationWorkspace = Pick<Workspace, 'id'> & Partial<Pick<Workspace, 'root'>>;
+
+/** The same identity plus the display name a workspace group header renders.
+ * The metadata-only catalog entry satisfies this, and so does the full
+ * `Workspace` — workspace grouping never reads `session_count` / `isGit`. */
+export type NamedConversationWorkspace = ConversationWorkspace & Pick<Workspace, 'name'>;
 
 /** Resolve the room's own workspace reference, never a member thread's workspace. */
 export function roomWorkspaceId(workspace: string, workspaces: readonly ConversationWorkspace[]): string {
@@ -55,10 +62,12 @@ export function mergeConversationItems(sessions: readonly Session[], rooms: read
   return sortSessionItems([...threads, ...roomItems], order);
 }
 
-/** Shared time/workspace/no-group layout, with the same pin and filter semantics as threads. */
+/** Shared time/workspace/no-group layout, with the same pin and filter semantics as threads. The
+ * workspace list only needs identity, a group label and the root that resolves a room's own
+ * reference, so the metadata-only catalog entry groups exactly like the full wire `Workspace`. */
 export function groupConversationItems(items: readonly ConversationListItem[], options: {
   readonly groupBy: 'time' | 'workspace' | 'none';
-  readonly workspaces: readonly Workspace[];
+  readonly workspaces: readonly NamedConversationWorkspace[];
   readonly filters: SessionFilterInput;
   readonly nowMs: number;
   readonly order?: SessionSortOrder;

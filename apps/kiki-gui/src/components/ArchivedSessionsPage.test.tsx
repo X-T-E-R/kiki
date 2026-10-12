@@ -176,7 +176,7 @@ async function typeSearch(container: HTMLElement, value: string) {
 describe('ArchivedSessionsPage', () => {
   it('lists archived conversations with their workspace and time, and never asks for the unarchived list', async () => {
     const list = listSpy(archiveFixture([archived('one'), archived('two', { workspace_id: 'ws-2' })]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
 
@@ -192,7 +192,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('walks older pages with the server cursor and says when the archive ends', async () => {
     const list = listSpy(archiveFixture([archived('page-1-a'), archived('page-1-b'), archived('page-2-a')], 2));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
     expect(rowIds(container)).toEqual(['page-1-a', 'page-1-b']);
@@ -208,7 +208,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('sends the typed text as the server query and drops it from an empty page', async () => {
     const list = listSpy(archiveFixture([archived('matching', { title: 'Release notes' }), archived('other', { title: 'Unrelated' })]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
     await typeSearch(container, 'release');
@@ -221,7 +221,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('opens an archived conversation on the existing read route', async () => {
     listSpy(archiveFixture([archived('open-me')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
     await click(container.querySelector('[data-archive-open="open-me"]'));
@@ -231,7 +231,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('returns to session settings from the archive page', async () => {
     listSpy(archiveFixture([archived('one')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
     await click(container.querySelector('[data-archive-back]'));
@@ -241,7 +241,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('cancelling a single delete writes nothing and keeps the row', async () => {
     listSpy(archiveFixture([archived('keep-me')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const deleteOne = vi.spyOn(client, 'deleteArchivedSession');
 
     const { container } = await mountPage();
@@ -263,7 +263,7 @@ describe('ArchivedSessionsPage', () => {
     writeTopLevelThreads('local', new Set(['promoted']));
     const server = archiveFixture([archived('root'), archived('promoted')]);
     listSpy(server);
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     let release = (): void => {};
     const deleteOne = vi.spyOn(client, 'deleteArchivedSession').mockImplementation((id, options) => new Promise((resolve) => {
       release = () => {
@@ -300,7 +300,7 @@ describe('ArchivedSessionsPage', () => {
   it('lists every member a partial family delete could not remove, not just a count', async () => {
     const server = archiveFixture([archived('root'), archived('child-a'), archived('child-b')]);
     listSpy(server);
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const deleteOne = vi.spyOn(client, 'deleteArchivedSession').mockImplementation(async () => {
       // The root goes, two members do not: a toast count would hide both.
       server.forget('root');
@@ -331,7 +331,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('holds a partial result until it is dismissed or replaced', async () => {
     listSpy(archiveFixture([archived('stuck')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     vi.spyOn(client, 'deleteArchivedSession')
       .mockResolvedValue({ deleted_ids: [], failed: [{ id: 'stuck', message: 'conversation is still attached to a live run' }] });
 
@@ -358,7 +358,7 @@ describe('ArchivedSessionsPage', () => {
       if (reads > 1) await new Promise<void>((resolve) => { releaseFresh = resolve; });
       return server(query ?? {});
     });
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     // The delete itself answers at once: the pending state has to outlive it.
     const deleteOne = vi.spyOn(client, 'deleteArchivedSession').mockImplementation(async () => {
       server.forget('root');
@@ -407,7 +407,7 @@ describe('ArchivedSessionsPage', () => {
     localDelete.mockImplementation(() => new Promise((resolve) => {
       settleDelete = () => { local.forget('local-only'); resolve({ deleted_ids: ['local-only'], failed: [] }); };
     }));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     // One QueryClient per scope, as the connection provider does.
     const localQueries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -449,7 +449,7 @@ describe('ArchivedSessionsPage', () => {
     scopeId = 'remote:example.test';
     queries = remoteQueries;
     vi.spyOn(remoteClient, 'listSessions').mockImplementation(async (query = {}) => remote(query ?? {}));
-    vi.spyOn(remoteClient, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(remoteClient, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     await render();
 
     expect(rowIds(container)).toEqual(['remote-only']);
@@ -473,7 +473,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('names an unnamed failure by its loaded title, or "Untitled" plus the id that tells it apart', async () => {
     listSpy(archiveFixture([archived('listed')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const deleteAll = vi.spyOn(client, 'deleteAllArchivedSessions').mockResolvedValue({
       deleted_ids: [],
       failed: [
@@ -500,7 +500,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('keeps delete all reachable when the search matches nothing, because its scope is the whole archive', async () => {
     listSpy(archiveFixture([archived('findable')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const deleteAll = vi.spyOn(client, 'deleteAllArchivedSessions').mockResolvedValue({ deleted_ids: [], failed: [] });
 
     const { container } = await mountPage();
@@ -519,7 +519,7 @@ describe('ArchivedSessionsPage', () => {
   it('delete all reaches past the current search and page, and a partial result is not a success', async () => {
     const server = archiveFixture([archived('listed-a'), archived('listed-b')], 1);
     listSpy(server);
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const deleteAll = vi.spyOn(client, 'deleteAllArchivedSessions').mockImplementation(async () => {
       // Four archived conversations across both pages; the route deletes the
       // three it can and reports the one it cannot.
@@ -561,7 +561,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('withdraws the bulk action only when the unfiltered archive is genuinely empty', async () => {
     listSpy(archiveFixture([]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
 
     const { container } = await mountPage();
     expect(container.querySelector('[data-archive-empty]')?.textContent).toContain('No archived conversations');
@@ -571,7 +571,7 @@ describe('ArchivedSessionsPage', () => {
 
   it('re-reads under the new scope instead of showing the previous connection archive', async () => {
     const list = listSpy(archiveFixture([archived('local-only')]));
-    vi.spyOn(client, 'listWorkspaces').mockResolvedValue({ items: [...WORKSPACES] } as never);
+    vi.spyOn(client, 'listWorkspaceCatalog').mockResolvedValue({ items: [...WORKSPACES] } as never);
     const first = await mountPage();
     expect(rowIds(first.container)).toEqual(['local-only']);
     // Unmount so the next mount reads under the new scope's own query key.

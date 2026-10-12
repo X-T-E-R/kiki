@@ -21,7 +21,7 @@ export const worktreeKeys = {
   workspaceInspect: (root: string) => ['workspaces', 'inspect', root] as const,
 };
 
-export function workspaceGitState(root: string | undefined, workspaces: readonly { readonly root: string; readonly isGit: boolean }[]): boolean | undefined {
+export function workspaceGitState(root: string | undefined, workspaces: readonly { readonly root: string; readonly isGit?: boolean }[]): boolean | undefined {
   if (root === undefined) return undefined;
   const pathKey = (path: string): string => {
     const windows = /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path);

@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { WorkPresetItem, Workspace } from '@kiki/protocol';
+import type { WorkPresetItem, WorkspaceCatalogEntry } from '@kiki/protocol';
 import {
   Navigate,
   Route,
@@ -528,15 +528,15 @@ export function App() {
   }, [client, queryClient, showArchived, workspaceFilter]);
 
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
     retry: retryRootReadModelQuery,
     retryDelay: retryRootReadModelDelay,
   });
   // Pinned workspaces lead the sidebar scope list, and — because the same
   // order seeds workspace grouping — their session buckets come first too.
-  const workspaceOptions = useMemo<readonly Workspace[]>(
+  const workspaceOptions = useMemo<readonly WorkspaceCatalogEntry[]>(
     () => sortWorkspacesByPinnedThenRecency(workspacesQuery.data?.items ?? []),
     [workspacesQuery.data],
   );

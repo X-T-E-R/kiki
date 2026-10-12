@@ -295,11 +295,13 @@ export const WORKSPACE_UNGROUPED_KEY = '__none';
  * bucket. `pinnedLabel`, when given, pulls pinned sessions out of their
  * workspace bucket into one leading global `pinned` group — pinning means
  * "keep this at the top of my list", which a per-workspace bucket would bury.
+ * The workspace list only needs identity and a display name, so the
+ * metadata-only catalog entry groups exactly like the full wire `Workspace`.
  */
-export function groupSessionsByWorkspace<T extends SessionListEntry>(
+export function groupSessionsByWorkspace<T extends SessionListEntry, W extends Pick<Workspace, 'id' | 'name'>>(
   sessions: readonly T[],
-  workspaces: readonly Workspace[],
-  resolveName: (workspace: Workspace) => string = (workspace) => workspace.name,
+  workspaces: readonly W[],
+  resolveName: (workspace: W) => string = (workspace) => workspace.name,
   ungroupedLabel = 'ungrouped',
   pinnedLabel?: string,
 ): SessionGroup<T>[] {

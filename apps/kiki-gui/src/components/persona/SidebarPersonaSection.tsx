@@ -13,7 +13,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
@@ -39,7 +39,7 @@ export interface SidebarPersonaSectionProps {
   readonly sessions: readonly Session[];
   readonly activeSessionId?: string;
   readonly seen: SessionSeenMap;
-  readonly workspaceOptions?: readonly Workspace[];
+  readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
   /** Room names for the switcher's member rows; the ids are what the row opens. */
   readonly rooms?: readonly RoomListItem[];
 }

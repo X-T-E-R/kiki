@@ -31,7 +31,7 @@ import { useMemorySources, type MemorySource } from './useMemorySources';
 import { MemorySharingControls } from './MemorySharingControls';
 import { useSearchParams, type To } from 'react-router-dom';
 
-import type { Workspace } from '@kiki/protocol';
+import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { errorText } from '@kiki/session-core/i18n';
 
@@ -71,7 +71,7 @@ const MEMORY_EDITOR_DIRTY_ID = 'memory-editor';
 const MEMORY_WORKSPACE_SETTINGS_KEY = ['memory-workspace-settings'] as const;
 
 export interface MemoryPageProps {
-  readonly workspaceOptions: readonly Workspace[];
+  readonly workspaceOptions: readonly WorkspaceCatalogEntry[];
   readonly workspacesLoading?: boolean;
   readonly onNavigate: (target: To) => void;
   readonly onToggleSidebar: () => void;
@@ -115,8 +115,8 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
   // Observe App's directory query without starting a second request. Its error
   // and refetch remain available even though the route only passes isPending.
   const workspaceDirectory = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     enabled: false,
   });
   const [emptyKind, setEmptyKind] = useState<{ search: string; kind: 'workspace' | 'persona' }>();

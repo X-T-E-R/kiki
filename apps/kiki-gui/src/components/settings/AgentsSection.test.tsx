@@ -12,7 +12,7 @@ import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
 const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), client: {
-  listNamedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
+  listNamedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
   patchConfig: vi.fn(), updateNamedAgentProfile: vi.fn(), getAgentCapabilities: vi.fn(),
   readHostFile: vi.fn(), meta: vi.fn(),
   listShippedAgentProfiles: vi.fn(), restoreShippedAgentProfile: vi.fn(), listModels: vi.fn(),
@@ -63,7 +63,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   client.listNamedAgentProfiles.mockResolvedValue({ items: [profile] });
   client.listModels.mockResolvedValue({ items: [] });
-  client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture', last_opened_at: '2026-09-01T00:00:00Z' }] });
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture', last_opened_at: '2026-09-01T00:00:00Z' }] });
   client.getConfig.mockResolvedValue({});
   client.meta.mockResolvedValue({ experimental_flags: { 'agent-profile-routes': true } });
   client.patchConfig.mockResolvedValue({ disabled_named_profiles: ['agent'] });
@@ -522,7 +522,7 @@ describe('default main profile settings', () => {
       source_file: '/fixture/user/agents/agent.md',
       description: 'Unmanaged same-name copy',
     };
-    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     client.listNamedAgentProfiles.mockResolvedValue({ items: [builtinCopy, shadowingCopy] });
     client.listShippedAgentProfiles.mockResolvedValue({ items: [{
       template_id: 'agent', status: 'clean', managed: true, main: true,
@@ -899,7 +899,7 @@ it('previews menu permission changes in the legacy profile dialog before saving'
  */
 describe('the workspace a profile page was linked to', () => {
   beforeEach(() => {
-    client.listWorkspaces.mockResolvedValue({ items: [
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
       // Most recently opened: the fallback this must NOT silently take.
       { id: 'ws-recent', root: '/fixture/recent', name: 'Recent', last_opened_at: '2026-09-30T00:00:00Z' },
       { id: 'ws-two', root: '/fixture/two', name: 'Two', last_opened_at: '2026-01-02T00:00:00Z' },

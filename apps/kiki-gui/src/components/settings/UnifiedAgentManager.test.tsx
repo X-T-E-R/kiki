@@ -11,7 +11,7 @@ import { UnifiedAgentManager } from './UnifiedAgentManager';
 const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
   reportDirty: vi.fn(), navigate: vi.fn(), confirmDiscard: vi.fn((_id: string, action: () => void) => action()),
   client: {
-    listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
+    listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
     previewExecutorPrompt: vi.fn(), createSession: vi.fn(),
@@ -82,7 +82,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore], complete: true });
   client.listShippedAgentProfiles.mockResolvedValue({ items: [] });
-  client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture' }] });
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture' }] });
   client.getConfig.mockResolvedValue({});
   client.listExecutors.mockResolvedValue({ items: [] });
   client.previewExecutorPrompt.mockRejectedValue(new Error('preview unavailable'));
@@ -796,7 +796,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('addresses the workspace the picker actually shows, not the first one', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
       { id: 'ws-old', root: '/old', name: 'Older' },
       { id: 'ws-new', root: '/new', name: 'Chosen' },
     ] });
@@ -815,7 +815,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('refuses the handoff, and says why, while the workspace list has failed', async () => {
-    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('workspace list unavailable'));
     client.createSession.mockResolvedValue({ id: 'agent-ask-unknown' });
     await render();
 
@@ -835,7 +835,7 @@ describe('handing a new agent to Kiki', () => {
 
   it('refuses the handoff while the workspace list is still loading', async () => {
     let release: (value: { items: unknown[] }) => void = () => {};
-    client.listWorkspaces.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    client.listWorkspaceCatalog.mockReturnValue(new Promise((resolve) => { release = resolve; }));
     client.createSession.mockResolvedValue({ id: 'agent-ask-loading' });
     await render();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -857,7 +857,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('keeps a working handoff when this machine truly has no workspace', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     client.createSession.mockResolvedValue({ id: 'agent-ask-none' });
     await render();
 

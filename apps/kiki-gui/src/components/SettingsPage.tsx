@@ -380,9 +380,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const activeWorkspaceId = active === 'workspaces' && hash.replace(/^#/, '') === ''
     ? workspaceSettingsIdFromQuery(search)
     : null;
-  // Leaving one workspace's page clears the breadcrumb name it set, so the next
-  // visit does not inherit the previous object's name.
-  useEffect(() => { setWorkspaceDetailName(null); }, [activeWorkspaceId]);
 
   // Import history is a built-in session surface, not a plugin sub-view. It
   // answers `/settings/sessions/import` directly; the legacy plugin address is
@@ -412,7 +409,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
     : active === 'spaces' ? <SpacesSection />
-    : active === 'workspaces' ? <WorkspacesSection workspaceId={activeWorkspaceId} />
+    : active === 'workspaces' ? <WorkspacesSection key={activeWorkspaceId ?? 'catalog'} workspaceId={activeWorkspaceId} />
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />

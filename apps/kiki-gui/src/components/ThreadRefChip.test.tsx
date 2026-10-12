@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ThreadRefText } from './ThreadRefChip';
@@ -41,9 +41,10 @@ function record(overrides: Partial<Session> = {}): Session {
   };
 }
 
-const workspace: Workspace = {
+/** The metadata-only catalog row App caches: no `session_count` / `isGit`. */
+const workspace: WorkspaceCatalogEntry = {
   id: 'wd_kiki', root: 'C:/src/kiki', name: 'kiki', created_at: '2026-01-01T00:00:00.000Z',
-  last_opened_at: '2026-01-01T00:00:00.000Z', session_count: 1, pinned: false, isGit: true,
+  last_opened_at: '2026-01-01T00:00:00.000Z', pinned: false,
 };
 
 function Where() {
@@ -59,7 +60,7 @@ async function render(text: string, sessions: Session[]) {
   roots.push(root);
   const client = new QueryClient();
   client.setQueryData(['sessions', false, undefined], { pages: [{ items: sessions, has_more: false }], pageParams: [undefined] });
-  client.setQueryData(['workspaces'], { items: [workspace] });
+  client.setQueryData(['workspaces', 'catalog'], { items: [workspace] });
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>

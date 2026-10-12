@@ -73,6 +73,14 @@ const client = {
     },
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
+  listWorkspaceCatalog: vi.fn(async () => WORKSPACES),
+  klient: { rest: undefined },
+  getWorkspaceDetails: vi.fn(() => new Promise(() => {})),
+  getWorkspaceTrust: vi.fn(async () => ({ trusted: false })),
+  getPluginUsage: vi.fn(async ({ workspace_id }: { workspace_id: string }) => ({
+    home_id: 'test-home', target: { workspace_id, ...WORKSPACES.items.find((workspace) => workspace.id === workspace_id) },
+    revision: 1, apply_state: 'applied', errors: [], plugins: [],
+  })),
   listDiscoveredModels: vi.fn(async () => ({ items: [] })),
   refreshAllProviders: vi.fn(async () => ({ changed: [], unchanged: [], failed: [], discovered: [] })),
   createModel: vi.fn(),
@@ -132,7 +140,7 @@ vi.mock('../state/connection', () => ({
 }));
 
 vi.mock('../host', () => ({
-  useHost: () => ({ kind: 'browser' }),
+  useHost: () => ({ kind: 'browser', connection: {} }),
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -271,6 +279,27 @@ function scopeHeader(container: HTMLDivElement): HTMLElement {
 }
 
 describe('SettingsPage panel scopes', () => {
+  it('keeps the workspace breadcrumb for a cached catalog row and clears it on return', async () => {
+    const container = await renderSettings('/settings/workspaces');
+    const title = () => container.querySelector('[data-settings-page-title]')?.textContent;
+    await click(container.querySelector('[data-workspace-open="ws-alpha"]')!);
+    await flush();
+    expect(title()).toBe('Alpha');
+    await click(container.querySelector('[data-workspace-detail-back]')!);
+    await flush();
+    expect(title()).toBe('Workspaces');
+    await click(container.querySelector('[data-workspace-open="ws-beta"]')!);
+    await flush();
+    expect(title()).toBe('Beta');
+    expect(container.querySelector('[data-workspace-detail-name]')?.getAttribute('value')).toBe('Beta');
+  });
+
+  it('names a cold workspace detail breadcrumb from the catalog without waiting for stats', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-beta');
+    await flush();
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Beta');
+    expect(container.querySelector('[data-workspace-detail-stats]')?.textContent).toContain('Loading');
+  });
   it('keeps MCP management on the Capabilities page and only timeouts in settings', async () => {
     const container = await renderSettings('/settings/mcp');
     expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')?.getAttribute('href')).toBe('/capabilities?tab=mcp');

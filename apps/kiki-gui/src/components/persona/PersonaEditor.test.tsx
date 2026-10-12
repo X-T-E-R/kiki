@@ -26,7 +26,7 @@ import { PersonaEditor } from './PersonaEditor';
 const navigate = vi.fn();
 const getPersona = vi.fn();
 const putPersona = vi.fn();
-const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listModels = vi.fn();
 
@@ -37,7 +37,7 @@ vi.mock('../dirtyGuard', async (importOriginal) => ({
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../../state/connection', () => {
   const value = () => ({
-    client: { getPersona, putPersona, listWorkspaces, listNamedAgentProfiles, listModels, klient: { rest: { personas: {} } } },
+    client: { getPersona, putPersona, listWorkspaceCatalog, listNamedAgentProfiles, listModels, klient: { rest: { personas: {} } } },
     scopeId: 'local',
     sshLabel: null,
   });
@@ -49,7 +49,7 @@ const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT
 beforeAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = true; });
 afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
-  for (const fn of [navigate, getPersona, putPersona, listWorkspaces, listNamedAgentProfiles, listModels]) fn.mockReset();
+  for (const fn of [navigate, getPersona, putPersona, listWorkspaceCatalog, listNamedAgentProfiles, listModels]) fn.mockReset();
   clearToasts();
   localStorage.setItem('kiki.locale', 'zh');
   listNamedAgentProfiles.mockResolvedValue({ items: [] });
@@ -132,7 +132,7 @@ describe('PersonaEditor thinking effort display order', () => {
   it('keeps follow first and the persona effort selected without rewriting supported values', async () => {
     const support_efforts = ['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA'];
     listModels.mockResolvedValue({ items: [{ id: 'example-model', provider_id: 'example', remote_id: 'example-model', support_efforts }] });
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'example', name: 'Example', description: 'Example persona', modelAlias: 'example-model', thinkingEffort: 'high' }));
     const container = await render('example');
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="思考强度"]')!;
@@ -147,7 +147,7 @@ describe('PersonaEditor thinking effort display order', () => {
 
 describe('what each field says about itself', () => {
   it('keeps description and greeting off the first screen and one hover away', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
     const container = await render('lin-lan');
 
@@ -163,7 +163,7 @@ describe('what each field says about itself', () => {
   it('leaves the irreversible id consequence and the profile meaning on screen', async () => {
     // These two prevent a mistake rather than explain a mechanism, so they
     // stay where the reader meets the decision.
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     const created = await render(undefined);
     expect(created.textContent).toContain('用于目录名和记忆路径，创建后不能修改。');
 
@@ -173,7 +173,7 @@ describe('what each field says about itself', () => {
   });
 
   it('saves what was typed whether or not the help was opened', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', greeting: '早上好。' }));
     putPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。', greeting: '早上好。今天发 0.9。' }));
     const container = await render('lin-lan');
@@ -190,7 +190,7 @@ describe('what each field says about itself', () => {
 
 describe('new persona', () => {
   it('creates with the id derived from the name and no revision', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     putPersona.mockResolvedValue(snapshot({ id: 'orin-hale', name: 'Orin Hale', description: '归档整理' }));
     const container = await render(undefined);
     await fill(field(container, 'name') as HTMLInputElement, 'Orin Hale');
@@ -205,7 +205,7 @@ describe('new persona', () => {
 
   it('stays on screen while the workspace list is still on its way', async () => {
     // A pending workspace query must not rebuild the baseline every render.
-    listWorkspaces.mockReturnValue(new Promise(() => {}));
+    listWorkspaceCatalog.mockReturnValue(new Promise(() => {}));
     const container = await render(undefined);
     expect(container.querySelector('[data-persona-editor="new"]')).not.toBeNull();
     expect(container.querySelector('[data-persona-field="name"]')).not.toBeNull();
@@ -214,7 +214,7 @@ describe('new persona', () => {
 
 describe('existing persona', () => {
   it('shows the stored workspace as the registered workspace it is, and saves its directory', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({
       id: 'lin-lan', name: '林岚', description: '负责发布节奏。', homeWorkspace: 'C:/work/workshop',
     }));
@@ -234,7 +234,7 @@ describe('existing persona', () => {
   });
 
   it('keeps the typed draft and says why when the save fails', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
     putPersona.mockRejectedValue(new Error('disk is read-only'));
     const container = await render('lin-lan');
@@ -253,7 +253,7 @@ describe('existing persona', () => {
     // An older persona asset may point at an absolute directory this server
     // does not list. That is a valid value, not a missing one: the editor shows
     // it, edits it and writes it back exactly as it stands.
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'archive-bot', name: '归档员', description: '整理旧稿。', homeWorkspace: 'C:/legacy/notes' }));
     putPersona.mockResolvedValue(snapshot({ id: 'archive-bot', name: '归档员', description: '整理旧稿。', homeWorkspace: 'C:/legacy/notes' }));
     const container = await render('archive-bot');
@@ -269,7 +269,7 @@ describe('existing persona', () => {
   });
 
   it('re-seeds the form when another persona is opened', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue(snapshot({ id: 'lin-lan', name: '林岚', description: '负责发布节奏。' }));
     const first = await render('lin-lan');
     expect((field(first, 'name') as HTMLInputElement).value).toBe('林岚');
@@ -287,7 +287,7 @@ describe('existing persona', () => {
  */
 describe('a new revision read back while the editor is open', () => {
   it('keeps the unsaved draft, and still saves against the revision it started from', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
     const { container, queryClient, rerender } = await renderWith('lin-lan');
 
@@ -315,7 +315,7 @@ describe('a new revision read back while the editor is open', () => {
   });
 
   it('takes the new revision when the form is clean, and offers it as the conflict reload does', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
     const { container, queryClient, rerender } = await renderWith('lin-lan');
 
@@ -336,7 +336,7 @@ describe('a new revision read back while the editor is open', () => {
   });
 
   it('reads the newer text and the newer revision when the reader takes the conflict reload', async () => {
-    listWorkspaces.mockResolvedValue({ items: WORKSPACES });
+    listWorkspaceCatalog.mockResolvedValue({ items: WORKSPACES });
     getPersona.mockResolvedValue({ definition: { id: 'lin-lan', name: '林岚', description: '负责发布节奏。' } as PersonaDefinition, revision: 'revision-1' });
     const { container, queryClient, rerender } = await renderWith('lin-lan');
 

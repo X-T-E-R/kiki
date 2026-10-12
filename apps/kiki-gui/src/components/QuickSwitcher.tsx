@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   buildSwitcherItems,
@@ -35,7 +35,7 @@ export function QuickSwitcher({
   onClose,
 }: {
   sessions: readonly Session[];
-  workspaces?: readonly Workspace[];
+  workspaces?: readonly WorkspaceCatalogEntry[];
   /** Seeds the search (the conversation find bar hands its query over). */
   initialQuery?: string;
   onClose: () => void;

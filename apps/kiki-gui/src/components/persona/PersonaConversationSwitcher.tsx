@@ -22,7 +22,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
@@ -74,7 +74,7 @@ export interface PersonaConversationSwitcherProps {
    */
   readonly status?: { readonly loading?: boolean; readonly error?: string };
   readonly activeSessionId?: string;
-  readonly workspaceOptions?: readonly Workspace[];
+  readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
   readonly seen?: SessionSeenMap;
   /** Room names, when the opener already has them; ids resolve to titles otherwise. */
   readonly roomNames?: ReadonlyMap<string, string>;

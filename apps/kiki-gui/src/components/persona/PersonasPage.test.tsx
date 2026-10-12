@@ -27,7 +27,7 @@ const listPersonas = vi.fn();
 const getPersona = vi.fn();
 const putPersona = vi.fn();
 const createSession = vi.fn();
-const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const listModels = vi.fn();
 const listCronTasks = vi.fn();
@@ -50,7 +50,7 @@ vi.mock('../../state/connection', () => {
       getPersona,
       putPersona,
       createSession,
-      listWorkspaces,
+      listWorkspaceCatalog,
       listNamedAgentProfiles,
       listModels,
       listCronTasks,
@@ -69,11 +69,11 @@ const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT
 beforeAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = true; });
 afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
-  for (const fn of [navigate, listPersonas, getPersona, putPersona, createSession, listWorkspaces, listNamedAgentProfiles, listModels, listCronTasks, listSessions, listRooms, listAgentCapabilities]) fn.mockReset();
+  for (const fn of [navigate, listPersonas, getPersona, putPersona, createSession, listWorkspaceCatalog, listNamedAgentProfiles, listModels, listCronTasks, listSessions, listRooms, listAgentCapabilities]) fn.mockReset();
   clearToasts();
   resetDraftMemoryForTests();
   localStorage.setItem('kiki.locale', 'zh');
-  listWorkspaces.mockResolvedValue({ items: [] });
+  listWorkspaceCatalog.mockResolvedValue({ items: [] });
   listNamedAgentProfiles.mockResolvedValue({ items: [] });
   listModels.mockResolvedValue({ items: [] });
   listCronTasks.mockResolvedValue({ items: [], has_more: false });
@@ -148,7 +148,7 @@ describe('handing a new persona to Kiki', () => {
     writeDraft('new', 'half-typed question about personas');
     writeDraft('session-other', 'another conversation unsent');
     // The most recent workspace is what a plain New conversation here inherits.
-    listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
+    listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_recent_000000000000', name: 'Recent', root: '/recent' }] });
   });
 
   it('sits beside New persona as a short secondary action, and carries the full intent for assistive tech', async () => {
@@ -195,7 +195,7 @@ describe('handing a new persona to Kiki', () => {
 
   it('falls back to the auto-workspace mechanism only when this machine truly has none', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
-    listWorkspaces.mockResolvedValue({ items: [] });
+    listWorkspaceCatalog.mockResolvedValue({ items: [] });
     createSession.mockResolvedValue({ id: 'persona-ask-empty' });
     const container = await render('/personas');
 
@@ -209,7 +209,7 @@ describe('handing a new persona to Kiki', () => {
 
   it('does not pretend a failed workspace list is an empty one', async () => {
     listPersonas.mockResolvedValue([LIN_LAN]);
-    listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    listWorkspaceCatalog.mockRejectedValue(new Error('list unavailable'));
     createSession.mockResolvedValue({ id: 'persona-ask-unknown' });
     const container = await render('/personas');
 

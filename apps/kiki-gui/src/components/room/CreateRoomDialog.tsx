@@ -29,7 +29,9 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const personasQuery = usePersonaList();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  // Only identity, name and root are read, so the metadata-only workspace
+  // catalog answers this dialog without the full listing's counts and Git probe.
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const personas = useMemo(() => sortPersonas((personasQuery.data ?? []).filter((item) => !item.archived)), [personasQuery.data]);
   const workspaces = useMemo(() => sortWorkspacesByPinnedThenRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
 

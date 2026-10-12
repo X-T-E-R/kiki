@@ -2069,6 +2069,14 @@ export class KikiClient {
     return this.run(this.rest.workspaces.list());
   }
 
+  listWorkspaceCatalog(): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse> {
+    return this.run(this.rest.workspaces.listCatalog());
+  }
+
+  getWorkspaceDetails(workspaceId: string): Promise<Workspace> {
+    return this.run(this.rest.workspaces.detail(workspaceId));
+  }
+
   /** `PATCH /api/workspaces/{id}` — display-name rename. */
   renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
     return this.run(this.rest.workspaces.rename(workspaceId, name));
@@ -2077,6 +2085,20 @@ export class KikiClient {
   /** `PATCH /api/workspaces/{id}` — pin / unpin. */
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<Workspace> {
     return this.run(this.rest.workspaces.setPinned(workspaceId, pinned));
+  }
+
+  /**
+   * `PATCH /api/workspaces/{id}?view=catalog` — metadata-only rename. The answer
+   * is the six-field catalog entry, not a full workspace carrying session stats;
+   * prefer it wherever the caller only needs the directory row back.
+   */
+  renameWorkspaceCatalog(workspaceId: string, name: string): Promise<import('@kiki/protocol').WorkspaceCatalogEntry> {
+    return this.run(this.rest.workspaces.updateCatalog(workspaceId, { name }));
+  }
+
+  /** `PATCH /api/workspaces/{id}?view=catalog` — metadata-only pin / unpin. */
+  setWorkspacePinnedCatalog(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').WorkspaceCatalogEntry> {
+    return this.run(this.rest.workspaces.updateCatalog(workspaceId, { pinned }));
   }
 
   setWorkspaceTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }> {

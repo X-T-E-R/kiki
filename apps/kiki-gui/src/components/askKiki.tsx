@@ -36,7 +36,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { writeDraft } from '@kiki/session-core/composer';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
-import type { SessionCreate, Workspace } from '@kiki/protocol';
+import type { SessionCreate, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../i18n';
@@ -235,7 +235,7 @@ export function useAskKikiWorkspace(): {
   readonly resolved: boolean;
 } {
   const { client } = useConnection();
-  const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const query = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const workspaces = query.data?.items;
   const location = useMemo(
     () => (workspaces === undefined ? undefined : asWorkspaceLocation(sortWorkspacesByRecency(workspaces)[0])),
@@ -245,6 +245,6 @@ export function useAskKikiWorkspace(): {
 }
 
 /** A workspace the user can already see, addressed by id rather than by label. */
-function asWorkspaceLocation(workspace: Workspace | undefined): AskKikiLocation | undefined {
+function asWorkspaceLocation(workspace: Pick<WorkspaceCatalogEntry, 'id'> | undefined): AskKikiLocation | undefined {
   return workspace === undefined ? undefined : { kind: 'workspace', workspaceId: workspace.id };
 }

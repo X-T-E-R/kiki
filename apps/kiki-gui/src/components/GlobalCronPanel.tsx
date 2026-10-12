@@ -27,7 +27,7 @@
 
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import type { CronDeliveryMode, Session, Workspace } from '@kiki/protocol';
+import type { CronDeliveryMode, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { ErrorCode } from '@kiki/protocol';
 import { useSearchParams } from 'react-router-dom';
 import type { To } from 'react-router-dom';
@@ -57,7 +57,7 @@ export const CRON_TASKS_QUERY_KEY = ['cron-tasks'] as const;
 
 export interface CronPageProps {
   readonly sessions: readonly Session[];
-  readonly workspaceOptions: readonly Workspace[];
+  readonly workspaceOptions: readonly WorkspaceCatalogEntry[];
   readonly onNavigate: (target: To) => void;
   readonly onToggleSidebar: () => void;
 }

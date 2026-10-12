@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 
-import type { PersonaSummary, Workspace } from '@kiki/protocol';
+import type { PersonaSummary, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { BOTS_QUERY_KEY, useBotRoomApi } from '../lib/botRooms';
@@ -50,7 +50,8 @@ export function useMemorySources({
   settings,
 }: {
   readonly workspaceId: string | undefined;
-  readonly workspaces: readonly Workspace[];
+  /** Identity and display name only — the metadata-only catalog listing is enough. */
+  readonly workspaces: readonly Pick<WorkspaceCatalogEntry, 'id' | 'name'>[];
   readonly workspacesLoading?: boolean;
   readonly workspacesError?: Error | null;
   readonly persona: PersonaSummary | undefined;

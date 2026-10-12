@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { buildConversationInbox, groupConversationItems, mergeConversationItems, roomWorkspaceId } from './conversationList';
 import { conversationRefLink, parseConversationLink, roomRefLink } from './conversationLinks';
 import { projectAttachedConversationGroups } from './attachedRecency';
@@ -13,6 +13,11 @@ function session(patch: Partial<Session> = {}): Session {
   return { id: 'example', title: 'Thread', workspace_id: 'ws-thread', created_at: '2026-01-01T00:00:00Z', updated_at: new Date(2026, 0, 3, 10).toISOString(), metadata: { cwd: '/example' }, busy: false, last_seq: 10, ...patch } as Session;
 }
 const workspaces = [{ id: 'ws-thread', name: 'Threads', root: '/example' }, { id: 'ws-room', name: 'Rooms', root: '/rooms' }] as Workspace[];
+/** The metadata-only listing the catalog route returns: no `session_count` / `isGit`. */
+const catalogWorkspaces: WorkspaceCatalogEntry[] = [
+  { id: 'ws-thread', name: 'Threads', root: '/example', created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', pinned: false },
+  { id: 'ws-room', name: 'Rooms', root: '/rooms', created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', pinned: false },
+];
 const filters = { archived: 'hide' as const, status: [], workspaces: [] };
 afterEach(() => resetSessionSeen());
 
@@ -39,6 +44,17 @@ describe('conversation list and read state', () => {
     ['\\\\HOST\\Share\\Project', 'ws-unc'], ['ssh://other/project', 'ssh://other/project'],
   ])('resolves only registered room workspace identities: %s', (reference, expected) => {
     expect(roomWorkspaceId(reference, [...workspaces, { id: 'ws-windows', root: 'C:/Example/Project' }, { id: 'ws-unc', root: '//host/share/project' }])).toBe(expected);
+  });
+  it('groups the same workspace buckets from a metadata-only catalog listing', () => {
+    const rooms = [room({ workspace: '/rooms' })];
+    const items = mergeConversationItems([session()], rooms, {}, 'updated-desc', catalogWorkspaces);
+    const fromCatalog = groupConversationItems(items, { groupBy: 'workspace', workspaces: catalogWorkspaces, filters, nowMs: 0 });
+    const fromFull = groupConversationItems(items, { groupBy: 'workspace', workspaces, filters, nowMs: 0 });
+    expect(fromCatalog.map((group) => [group.key, group.label])).toEqual([['ws-thread', 'Threads'], ['ws-room', 'Rooms']]);
+    expect(fromCatalog.map((group) => [group.key, group.label, group.items.map((item) => item.key)]))
+      .toEqual(fromFull.map((group) => [group.key, group.label, group.items.map((item) => item.key)]));
+    expect(buildConversationInbox([session()], rooms, {}, catalogWorkspaces).unread.map((item) => [item.sessionId, item.workspaceId]))
+      .toEqual([['room:example', 'ws-room'], ['example', 'ws-thread']]);
   });
   it('sorts and groups by own recency without changing aggregate session facts, with an old-server fallback', () => {
     const nowMs = new Date(2026, 9, 6, 12).getTime();

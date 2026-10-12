@@ -5,7 +5,7 @@
  * select switches between one workspace and all of them.
  */
 import { useCallback, useMemo } from 'react';
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import type { To } from 'react-router-dom';
 
 import { useI18n } from '../i18n';
@@ -25,7 +25,7 @@ export interface GlobalTaskBoardScope {
 export function resolveGlobalTaskBoardScope(input: {
   readonly activeSessionId: string | undefined;
   readonly sessions: readonly Pick<Session, 'id' | 'title' | 'workspace_id'>[];
-  readonly workspaceOptions: readonly Pick<Workspace, 'id' | 'name'>[];
+  readonly workspaceOptions: readonly Pick<WorkspaceCatalogEntry, 'id' | 'name'>[];
 }): GlobalTaskBoardScope {
   const workspaceIds = input.workspaceOptions.map((workspace) => workspace.id);
   const registeredWorkspaceIds = new Set(workspaceIds);
@@ -90,7 +90,7 @@ export interface TaskBoardPageProps {
   /** The session the user came from (last session route), for the create default. */
   readonly originSessionId: string | undefined;
   readonly sessions: readonly Session[];
-  readonly workspaceOptions: readonly Workspace[];
+  readonly workspaceOptions: readonly WorkspaceCatalogEntry[];
   readonly workspacesLoading?: boolean;
   readonly onNavigate: (target: To) => void;
   readonly onToggleSidebar: () => void;

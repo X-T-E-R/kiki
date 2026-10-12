@@ -58,7 +58,7 @@ export function UnifiedAgentManager() {
   const { ask: askKiki, busy: askingKiki } = useAskKiki();
   // Only consulted when this page has no workspace of its own to address.
   const kikiFallbackWorkspace = useAskKikiWorkspace();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles', selectedWorkspaceId ?? 'global'],

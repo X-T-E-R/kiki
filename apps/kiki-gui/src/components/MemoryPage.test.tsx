@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PersonaSnapshot, Session, Workspace } from '@kiki/protocol';
+import type { PersonaSnapshot, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { KikiClient, MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemorySettings } from '../lib/client';
 import { MemoryPage } from './MemoryPage';
@@ -99,17 +99,18 @@ function RouteProbe() {
 
 const routeParams = (container: HTMLElement) => new URLSearchParams(container.querySelector('[data-memory-route]')!.textContent!);
 
-async function mountPage(path = '/memory', workspaces: readonly Workspace[] = [], workspacesLoading = false, liveDirectory = false) {
+async function mountPage(path = '/memory', workspaces: readonly WorkspaceCatalogEntry[] = [], workspacesLoading = false, liveDirectory = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mounted.push({ root, container, queryClient });
   function DirectoryPage() {
-    const directory = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces() });
+    // App's own directory read: metadata-only catalog rows.
+    const directory = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog() });
     return <MemoryPage workspaceOptions={directory.data?.items ?? []} workspacesLoading={directory.isPending} onNavigate={() => {}} onToggleSidebar={() => {}} />;
   }
-  const rerender = async (nextWorkspaces: readonly Workspace[], loading = false) => {
+  const rerender = async (nextWorkspaces: readonly WorkspaceCatalogEntry[], loading = false) => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -130,7 +131,7 @@ async function mountPage(path = '/memory', workspaces: readonly Workspace[] = []
 
 /** The same page inside the app-wide dirty guard, so the editor's own
  *  reporting is observed where the shell really keeps it. */
-async function mountGuardedPage(path = '/memory', workspaces: readonly Workspace[] = []) {
+async function mountGuardedPage(path = '/memory', workspaces: readonly WorkspaceCatalogEntry[] = []) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
   document.body.append(container);
@@ -166,7 +167,7 @@ async function mountGuardedPage(path = '/memory', workspaces: readonly Workspace
   return { container, queryClient };
 }
 
-async function renderPage(path = '/memory', workspaces: readonly Workspace[] = []) {
+async function renderPage(path = '/memory', workspaces: readonly WorkspaceCatalogEntry[] = []) {
   return (await mountPage(path, workspaces)).container;
 }
 
@@ -585,16 +586,16 @@ describe('MemoryPage history detail', () => {
 });
 
 describe('MemoryPage scope switcher', () => {
+  // The hundred-plus listing the App-level query hands the page: catalog rows
+  // carry no `session_count` / `isGit`, and the picker still searches and scopes.
   const manyWorkspaces = Array.from({ length: 120 }, (_, index) => ({
     id: `wd_${String(index).padStart(3, '0')}`,
     name: index === 42 ? 'docs-site' : `project-${String(index).padStart(3, '0')}`,
     root: `/fixture/ws/${index}`,
     created_at: '2026-01-01',
     last_opened_at: '2026-01-01',
-    session_count: 0,
     pinned: false,
-    isGit: false,
-  } satisfies Workspace));
+  } satisfies WorkspaceCatalogEntry));
 
   const scopeKind = (container: HTMLElement) => container.querySelector('[data-memory-scope-kind]')?.getAttribute('data-memory-scope-kind');
   const sourceKeys = (container: HTMLElement) => [...container.querySelectorAll('[data-memory-source]')].map((node) => node.getAttribute('data-memory-source'));
@@ -972,8 +973,8 @@ describe('MemoryPage pending range regressions', () => {
     seedBot([]);
     const list = seedMemories({ 'persona_workspace:wd_current:lin-lan': [fixtureEntry({ id: 'm_current' })] });
     const put = vi.spyOn(client, 'putMemory');
-    const directory = deferred<Awaited<ReturnType<KikiClient['listWorkspaces']>>>();
-    const readDirectory = vi.spyOn(client, 'listWorkspaces').mockReturnValueOnce(directory.promise).mockResolvedValue({ items: [workspace] });
+    const directory = deferred<Awaited<ReturnType<KikiClient['listWorkspaceCatalog']>>>();
+    const readDirectory = vi.spyOn(client, 'listWorkspaceCatalog').mockReturnValueOnce(directory.promise).mockResolvedValue({ items: [workspace] });
     const { container } = await mountPage('/memory?persona=lin-lan&workspace=wd_current', [], false, true);
     expect(list).not.toHaveBeenCalled();
     await act(async () => { directory.reject(new Error('Directory unavailable')); });

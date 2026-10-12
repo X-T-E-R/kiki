@@ -60,8 +60,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
 
   const { client } = useConnection();
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 60_000,
   });
 

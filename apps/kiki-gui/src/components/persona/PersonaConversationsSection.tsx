@@ -13,7 +13,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';import type { PersonaSummary, Session, Workspace } from '@kiki/protocol';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';import type { PersonaSummary, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
@@ -37,7 +37,7 @@ const PAGE_SIZE = 100;
 
 export interface PersonaConversationsSectionProps {
   readonly persona: PersonaSummary;
-  readonly workspaceOptions?: readonly Workspace[];
+  readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
   readonly seen?: SessionSeenMap;
 }
 

@@ -43,7 +43,7 @@ import {
 const searchMessages = vi.fn();
 const getSession = vi.fn<(id: string) => Promise<Session>>();
 const retrySearchIndexer = vi.fn(async () => ({ retried: true }));
-const setWorkspacePinned = vi.fn(async () => {});
+const setWorkspacePinnedCatalog = vi.fn(async () => {});
 const listEphemeralSessions = vi.fn(async (_query?: { before_id?: string; page_size?: number }): Promise<{ items: Session[]; has_more?: boolean; next_cursor?: string }> => ({ items: [] }));
 /** The persona roster the 角色 group reads; empty unless a test wants one. */
 const listPersonas = vi.fn(async (): Promise<readonly unknown[]> => []);
@@ -81,7 +81,7 @@ vi.mock('../state/connection', () => ({
       getRequestGovernance: async () => ({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] }),
       searchMessages,
       retrySearchIndexer,
-      setWorkspacePinned,
+      setWorkspacePinnedCatalog,
       listEphemeralSessions,
       listTasks,
       listPrompts,
@@ -171,6 +171,15 @@ function session(id: string): Session {
   };
 }
 
+/** A fixture instant inside the pinned clock's own day, so a time-bucketed
+ * group does not depend on the machine's date. */
+function fixtureStamp(day: number, hour = 10): string {
+  return new Date(2026, 9, day, hour).toISOString();
+}
+
+/** The clock the time-bucketed fixtures are pinned to (Oct 6, 12:00 local). */
+const FIXTURE_NOW_MS = new Date(2026, 9, 6, 12).getTime();
+
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
@@ -204,7 +213,7 @@ beforeEach(() => {
   getSession.mockReset();
   getSession.mockRejectedValue(new Error('Thread not found'));
   retrySearchIndexer.mockClear();
-  setWorkspacePinned.mockClear();
+  setWorkspacePinnedCatalog.mockClear();
   listEphemeralSessions.mockReset();
   listEphemeralSessions.mockResolvedValue({ items: [] });
   listPersonas.mockReset();
@@ -1035,10 +1044,11 @@ describe('Sidebar background tasks', () => {
 
 describe('Sidebar temporary conversations', () => {
   it('lists them in their own block above the history, without row actions', async () => {
-    const saved = session('s-saved');
+    const saved = { ...session('s-saved'), updated_at: fixtureStamp(6) };
     listEphemeralSessions.mockResolvedValue({ items: [{ ...session('s-temp'), ephemeral: true }] });
     const { container } = await mount({
       sessions: [saved],
+      nowMs: FIXTURE_NOW_MS,
       sessionGroups: [{ key: 'today', label: 'Today', items: [saved] }],
     });
     await settle();
@@ -1164,15 +1174,16 @@ describe('Sidebar entry distribution', () => {
 
 describe('Sidebar semantic structure', () => {
   it('names the landmark, labels each group, and marks the active session', async () => {
-    const active = session('active');
-    const other = session('other');
+    const active = { ...session('active'), updated_at: fixtureStamp(6, 11) };
+    const other = { ...session('other'), updated_at: fixtureStamp(6, 10) };
     const groups: SessionGroup[] = [
       { key: 'today', label: 'Today', items: [active, other] },
-      { key: 'week', label: 'Past 7 days', items: [session('older')] },
+      { key: 'week', label: 'Past 7 days', items: [{ ...session('older'), updated_at: fixtureStamp(2) }] },
     ];
     const { container } = await mount({
       activeSessionId: 'active',
       sessions: [active, other, ...groups[1]!.items],
+      nowMs: FIXTURE_NOW_MS,
       sessionGroups: groups,
     });
 
@@ -1208,11 +1219,12 @@ describe('Sidebar semantic structure', () => {
 
   it('adds the persona group above the session list without disturbing its time groups', async () => {
     listPersonas.mockResolvedValue([{ id: 'lin-lan', name: '小岚', revision: 'revision-1', archived: false, homeSessionId: 'home_lin' }]);
-    const active = session('active');
+    const active = { ...session('active'), updated_at: fixtureStamp(6, 11) };
     const { container } = await mount({
       activeSessionId: 'active',
       sessions: [active],
-      workspaceOptions: [{ id: 'ws_a', name: 'EasyAgent', root: '/a', created_at: '', last_opened_at: '', pinned: false, session_count: 0, isGit: false }],
+      workspaceOptions: [{ id: 'ws_a', name: 'EasyAgent', root: '/a', created_at: '', last_opened_at: '', pinned: false }],
+      nowMs: FIXTURE_NOW_MS,
       sessionGroups: [{ key: 'today', label: 'Today', items: [active] }],
     });
     await settle();
@@ -1403,7 +1415,7 @@ describe('Sidebar filters', () => {
     expect(pins[0]?.getAttribute('aria-label')).toBe('Unpin the workspace workshop');
     expect(pins[1]?.getAttribute('aria-label')).toBe('Pin the workspace another-ws to the top');
     await act(async () => { pins[1]?.click(); });
-    expect(setWorkspacePinned).toHaveBeenCalledWith(wsB.id, true);
+    expect(setWorkspacePinnedCatalog).toHaveBeenCalledWith(wsB.id, true);
   });
 
   it('hides the workspace section when the server reports none', async () => {
@@ -2113,7 +2125,7 @@ describe('Sidebar workspace groups', () => {
     expect(pin.getAttribute('aria-label')).toBe('Pin the workspace beta to the top');
     expect(container.querySelector('[data-session-group-header="ws_a"] [data-session-group-pinned]')).not.toBeNull();
     await act(async () => { pin.click(); });
-    expect(setWorkspacePinned).toHaveBeenCalledWith('ws_b', true);
+    expect(setWorkspacePinnedCatalog).toHaveBeenCalledWith('ws_b', true);
     // Pinning does not fold the group.
     expect(container.querySelector('[data-session-group="ws_b"]')?.getAttribute('aria-expanded')).toBe('true');
   });
@@ -2582,9 +2594,9 @@ describe('collapsed icon rail', () => {
 
 it('keeps time-group headings in nonshrinking normal flow instead of overlaying long session titles', async () => {
   writeLayoutPreferences({ sidebarCollapsed: false });
-  const one = { ...session('one'), title: 'A very long session title '.repeat(10) };
-  const two = { ...session('two'), title: 'Another long title '.repeat(10) };
-  const { container } = await mount({ sessions: [one, two], groupBy: 'time', sessionGroups: [
+  const one = { ...session('one'), title: 'A very long session title '.repeat(10), updated_at: fixtureStamp(6, 10) };
+  const two = { ...session('two'), title: 'Another long title '.repeat(10), updated_at: fixtureStamp(2, 10) };
+  const { container } = await mount({ sessions: [one, two], groupBy: 'time', nowMs: FIXTURE_NOW_MS, sessionGroups: [
     { key: 'today', label: 'Today', items: [one] },
     { key: 'week', label: 'Last 7 days', items: [two] },
   ] });

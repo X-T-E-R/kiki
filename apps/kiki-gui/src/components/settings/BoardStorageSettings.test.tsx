@@ -9,7 +9,7 @@ import { ResourceLimitsCard } from './EngineLimitSettings';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { TasksSection } from './TasksSection';
 import { openOptions } from './testControls';
-const { client, board } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), patchConfig: vi.fn(), listWorkspaces: vi.fn(), meta: vi.fn() }, board: { read: vi.fn(), write: vi.fn() } }));
+const { client, board } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), patchConfig: vi.fn(), listWorkspaceCatalog: vi.fn(), meta: vi.fn() }, board: { read: vi.fn(), write: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, klient: { global: { board } } }) }));
 let root: Root, element: HTMLDivElement, cache: QueryClient;
 beforeEach(() => {
@@ -17,7 +17,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   client.getConfig.mockResolvedValue({ task_board: { storage: { mode: 'fixed', path: 'cards' } }, subagent: { timeoutMs: 18000000, maxDirectChildren: 16, maxTotalSubagents: 0 } });
   client.meta.mockResolvedValue({ experimental_flags: { task_board: true } });
-  client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture/project' }, { id: 'ws-two', root: '/fixture/other' }] });
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture/project' }, { id: 'ws-two', root: '/fixture/other' }] });
   element = document.createElement('div'); document.body.append(element); root = createRoot(element);
   cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });

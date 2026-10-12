@@ -28,7 +28,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
-import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget, Workspace } from '@kiki/protocol';
+import type { PluginUsageItem, PluginUsageResponse, PluginUsageTarget, WorkspaceCatalogEntry as Workspace } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { workspacesSettingsPath } from '@kiki/session-core/settings';
 
@@ -74,14 +74,21 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
   const queryClient = useQueryClient();
 
   const workspaceQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
   const workspace: Workspace | undefined = useMemo(
     () => workspaceQuery.data?.items.find((item) => item.id === workspaceId),
     [workspaceQuery.data, workspaceId],
   );
+  const details = useQuery({
+    queryKey: ['workspace-details', workspaceId],
+    queryFn: () => client.getWorkspaceDetails(workspaceId),
+    enabled: workspace !== undefined,
+    staleTime: 30_000,
+    retry: false,
+  });
 
   const [name, setName] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -90,7 +97,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
   const reportDetailName = useContext(WorkspaceDetailNameContext);
 
   const rename = useMutation({
-    mutationFn: (next: string) => client.renameWorkspace(workspaceId, next),
+    mutationFn: (next: string) => client.renameWorkspaceCatalog(workspaceId, next),
     onSuccess: (echoed) => {
       setName(null);
       setFeedback({ tone: 'success', text: t('st.workspaces.detail.renamed', { name: echoed.name }) });
@@ -100,7 +107,7 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
   });
 
   const pinned = useMutation({
-    mutationFn: (value: boolean) => client.setWorkspacePinned(workspaceId, value),
+    mutationFn: (value: boolean) => client.setWorkspacePinnedCatalog(workspaceId, value),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ['workspaces'] }); },
     onError: (error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); },
   });
@@ -168,6 +175,18 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
         <p className="min-w-0 truncate font-mono text-[12px] text-ink-faint" data-workspace-detail-root title={workspace.root}>
           {workspace.root}
         </p>
+        <div className="mt-1 text-[12px] text-ink-faint" data-workspace-detail-stats>
+          {details.isError ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <InlineError error={details.error} />
+              <button type="button" className={SECONDARY_BUTTON} onClick={() => { void details.refetch(); }}>{t('common.retry')}</button>
+            </div>
+          ) : (
+            <p role={details.isPending ? 'status' : undefined}>
+              {t('st.list.sort.sessions')} · {details.data === undefined ? t('cap.loading') : details.data.session_count}
+            </p>
+          )}
+        </div>
         <div className="mt-4 space-y-3">
           <SettingField label={t('st.workspaces.renameTitle')}>
             <div className="flex flex-wrap items-center gap-2">

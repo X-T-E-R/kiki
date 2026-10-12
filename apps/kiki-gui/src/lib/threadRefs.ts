@@ -1,9 +1,9 @@
 /**
  * Thread-reference directory: resolves a linked session id to the record and
- * workspace the GUI already holds. Reads every cached session list (the
- * sidebar's pages, temporary conversations) and the workspace list from the
- * query cache, and fetches a record once for an id none of them carries (an
- * archived thread, another workspace outside the current filter).
+ * workspace label the GUI already holds. Reads every cached session list (the
+ * sidebar's pages, temporary conversations) and the metadata-only workspace
+ * catalog from the query cache, and fetches a record once for an id none of
+ * them carries (an archived thread, another workspace outside the current filter).
  *
  * The fetch is opt-in (`fetchSession`): the composer, which owns a client,
  * passes it; read-only surfaces (the transcript) read the cache only, which
@@ -18,9 +18,17 @@ import type { Session, Workspace } from '@kiki/protocol';
 
 import { threadRefInfoOf, type ThreadRefInfo } from '@kiki/session-core/composer';
 
+/** The workspace label a chip and the context block show. Only `name` is read,
+ * so the metadata-only catalog entry (`WorkspaceCatalogEntry`, no
+ * `session_count` / `isGit`) serves it exactly like the full wire `Workspace`. */
+type ThreadRefWorkspace = Pick<Workspace, 'name'>;
+
+/** The catalog row as the cache holds it: the lookup id plus that label. */
+type CachedWorkspaceLabel = Pick<Workspace, 'id' | 'name'>;
+
 export interface ThreadRefEntry {
   readonly session: Session | undefined;
-  readonly workspace: Workspace | undefined;
+  readonly workspace: ThreadRefWorkspace | undefined;
 }
 
 export interface ThreadRefDirectory {
@@ -44,9 +52,9 @@ function sessionsIn(data: unknown): Session[] {
   return Array.isArray(items) ? items.filter(isSession) : [];
 }
 
-function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Session>; workspaces: Map<string, Workspace> } {
+function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Session>; workspaces: Map<string, ThreadRefWorkspace> } {
   const sessions = new Map<string, Session>();
-  const workspaces = new Map<string, Workspace>();
+  const workspaces = new Map<string, ThreadRefWorkspace>();
   if (client === undefined) return { sessions, workspaces };
   for (const [, data] of client.getQueriesData({ queryKey: ['sessions'] })) {
     for (const session of sessionsIn(data)) sessions.set(session.id, session);
@@ -54,7 +62,9 @@ function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Se
   for (const [, data] of client.getQueriesData({ queryKey: ['thread-ref'] })) {
     if (isSession(data) && !sessions.has(data.id)) sessions.set(data.id, data);
   }
-  const listed = client.getQueryData<{ items?: Workspace[] }>(['workspaces']);
+  // App's metadata-only directory: the same key every picker reads, so a
+  // rename invalidation reaches these labels with no second workspace listing.
+  const listed = client.getQueryData<{ items?: readonly CachedWorkspaceLabel[] }>(['workspaces', 'catalog']);
   for (const workspace of listed?.items ?? []) workspaces.set(workspace.id, workspace);
   return { sessions, workspaces };
 }

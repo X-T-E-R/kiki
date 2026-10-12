@@ -131,7 +131,7 @@ export function MemoryWorkspaceSettingsCard() {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [saved, ping] = useSavedTick();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const settingsQuery = useQuery({ queryKey: MEMORY_SETTINGS_KEY, queryFn: () => client.getMemorySettings(), staleTime: 15_000 });
   const workspaces = workspacesQuery.data?.items ?? [];
   const requestedWorkspace = params.get('workspace');

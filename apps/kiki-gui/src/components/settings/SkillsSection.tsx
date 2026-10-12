@@ -157,7 +157,7 @@ export function SkillsSection() {
   const { client } = useConnection();
   const { t } = useI18n();
   const [searchParams] = useSearchParams();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const sorted = useMemo(() => sortWorkspacesByRecency(workspacesQuery.data?.items ?? []), [workspacesQuery.data]);
   const workspace = pickWorkspace(sorted, searchParams.get('workspace') ?? undefined);
   return (

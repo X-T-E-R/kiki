@@ -112,9 +112,11 @@ function ArchivedSessionsScope({ onToggleSidebar }: { readonly onToggleSidebar: 
     return () => { active.current = false; };
   }, []);
 
+  // The archived list only labels rows with the owning workspace's name, so it
+  // reads the metadata-only catalog instead of the full workspace listing.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
   const workspaceNames = useMemo(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PageResponse, Session, Workspace } from '@kiki/protocol';
+import type { PageResponse, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   adjacentRunningSession,
@@ -179,6 +179,18 @@ function workspace(id: string, name: string): Workspace {
   };
 }
 
+/** Exactly the fields the catalog route sends: no `session_count` / `isGit`. */
+function catalogEntryOf(workspace: Workspace): WorkspaceCatalogEntry {
+  return {
+    id: workspace.id,
+    root: workspace.root,
+    name: workspace.name,
+    created_at: workspace.created_at,
+    last_opened_at: workspace.last_opened_at,
+    pinned: workspace.pinned,
+  };
+}
+
 describe('groupSessionsByWorkspace', () => {
   const wa = workspace('wd_a_000000000000', 'Alpha');
   const wb = workspace('wd_b_000000000000', 'Beta');
@@ -244,6 +256,31 @@ describe('groupSessionsByWorkspace', () => {
     });
     const groups = groupSessionsByWorkspace([pinned], [wa, wb]);
     expect(groups.map((g) => g.key)).toEqual([wb.id]);
+  });
+
+  it('groups and labels a metadata-only catalog listing exactly like full workspaces', () => {
+    const rows = [
+      session('s2', '2026-01-03T00:00:00.000Z', { workspace_id: wb.id }),
+      session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id }),
+    ];
+    const list = [wc, wa, wb];
+    const catalog = list.map((entry) => catalogEntryOf(entry));
+    const full = groupSessionsByWorkspace(rows, list);
+    const fromCatalog = groupSessionsByWorkspace(rows, catalog);
+    expect(fromCatalog.map((group) => [group.key, group.label, group.items.map((s) => s.id)]))
+      .toEqual(full.map((group) => [group.key, group.label, group.items.map((s) => s.id)]));
+    expect(fromCatalog.map((group) => [group.key, group.label])).toEqual([[wa.id, 'Alpha'], [wb.id, 'Beta']]);
+  });
+
+  it('resolves labels through the caller own element type', () => {
+    const rows = [wa, wb].map((entry) => ({ id: entry.id, name: entry.name, label: `${entry.name} ~ ${entry.root}` }));
+    const groups = groupSessionsByWorkspace(
+      [session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id })],
+      rows,
+      (row) => row.label,
+      'Ungrouped',
+    );
+    expect(groups.map((group) => [group.key, group.label])).toEqual([[wa.id, `${wa.name} ~ ${wa.root}`]]);
   });
 });
 

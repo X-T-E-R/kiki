@@ -25,6 +25,8 @@ const client = {
   }),
   createSession: vi.fn(async () => ({ id: 'hooks-ask-session' })),
   listWorkspaces: vi.fn(async () => ({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] })),
+  // The picker behind the handoff button reads the metadata-only catalog.
+  listWorkspaceCatalog: vi.fn(async () => ({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] })),
 };
 vi.mock('../../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local' }) }));
 // No `runAction` here on purpose: this file drives the guard away so the form
@@ -104,6 +106,8 @@ beforeEach(() => {
   client.createSession.mockClear();
   client.listWorkspaces.mockClear();
   client.listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] });
+  client.listWorkspaceCatalog.mockClear();
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] });
   navigate.mockClear();
   resetDraftMemoryForTests();
   query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -420,6 +424,7 @@ describe('handing a new hook rule to Kiki', () => {
 
   it('falls back to the auto-workspace mechanism when this machine truly has none', async () => {
     client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     client.createSession.mockResolvedValue({ id: 'hooks-ask-empty' });
     await mount();
 
@@ -435,6 +440,7 @@ describe('handing a new hook rule to Kiki', () => {
 
   it('refuses to press while the workspace list is unknown, rather than guessing', async () => {
     client.listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('list unavailable'));
     client.createSession.mockResolvedValue({ id: 'hooks-ask-unknown' });
     await mount();
 

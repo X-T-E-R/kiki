@@ -24,6 +24,58 @@ import { memoryApplicability } from '../components/memory/memoryReceipt';
 import { refreshSessionAttention } from '../state/connection';
 import { saveOnboardingReplyParagraph } from './onboardingReplyStyle';
 
+describe('KikiClient workspace catalog', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the light directory endpoint and keeps detail reads explicitly addressed', async () => {
+    const catalog = { items: [{ id: 'workspace-a', name: 'Example', root: '/example', created_at: '2026-01-01', last_opened_at: '2026-01-01' }] };
+    const detail = { ...catalog.items[0], session_count: 4, isGit: true };
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      return Response.json({ code: 0, msg: 'success', data: url.pathname.endsWith('/workspace-a') ? detail : catalog });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.listWorkspaceCatalog()).resolves.toEqual(catalog);
+      await expect(client.getWorkspaceDetails('workspace-a')).resolves.toEqual(detail);
+      expect(calls).toEqual(['/api/workspaces?view=catalog', '/api/workspaces/workspace-a']);
+    } finally { await client.klient.close(); }
+  });
+
+  it('forwards metadata-only rename and pin to the catalog view while the full PATCH stays available', async () => {
+    const entry = {
+      id: 'wd_example_0123456789ab',
+      root: 'C:/example/project',
+      name: 'Renamed',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      pinned: true,
+    };
+    const full = { ...entry, session_count: 7, isGit: true };
+    const calls: { method: string; path: string; search: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ method: init?.method ?? 'GET', path: url.pathname, search: url.search, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      return Response.json({ code: 0, msg: 'success', data: url.searchParams.get('view') === 'catalog' ? entry : full });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.renameWorkspaceCatalog(entry.id, 'Renamed')).resolves.toEqual(entry);
+      await expect(client.setWorkspacePinnedCatalog(entry.id, true)).resolves.toEqual(entry);
+      await expect(client.renameWorkspace(entry.id, 'Renamed')).resolves.toEqual(full);
+      await expect(client.setWorkspacePinned(entry.id, false)).resolves.toEqual(full);
+      expect(calls).toEqual([
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '?view=catalog', body: { name: 'Renamed' } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '?view=catalog', body: { pinned: true } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { name: 'Renamed' } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { pinned: false } },
+      ]);
+    } finally { await client.klient.close(); }
+  });
+});
+
 describe('KikiClient onboarding prompt preservation', () => {
   afterEach(() => vi.unstubAllGlobals());
   it('round-trips the canonical reply paragraph over HTTP without touching memory or other prompt branches', async () => {

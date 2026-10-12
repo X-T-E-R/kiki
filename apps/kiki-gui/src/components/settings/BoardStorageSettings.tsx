@@ -16,7 +16,7 @@ export function BoardStorageSettings({ board }: { board?: BoardClient }) {
   const { t } = useI18n();
   const cache = useQueryClient();
   const config = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces() });
+  const workspaces = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog() });
   const [workspaceId, setWorkspaceId] = useState('');
   const [storage, setStorage] = useState<TaskBoardStorage>({ mode: 'auto' });
   const [dirty, setDirty] = useState(false);

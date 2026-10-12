@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { requestComposerInsert } from '@kiki/session-core/composer';
 import { writeSettings } from '@kiki/session-core/settings';
@@ -62,9 +62,10 @@ function referenced(): Session {
   };
 }
 
-const workspace: Workspace = {
+/** The metadata-only catalog row App caches: no `session_count` / `isGit`. */
+const workspace: WorkspaceCatalogEntry = {
   id: 'wd_kiki', root: 'C:/src/kiki', name: 'kiki', created_at: '2026-01-01T00:00:00.000Z',
-  last_opened_at: '2026-01-01T00:00:00.000Z', session_count: 1, pinned: false, isGit: true,
+  last_opened_at: '2026-01-01T00:00:00.000Z', pinned: false,
 };
 
 beforeAll(() => {
@@ -134,7 +135,8 @@ async function render(props: Props & { initial?: string }, seed?: (client: Query
 
 const seedLists = (client: QueryClient) => {
   client.setQueryData(['sessions', false, undefined], { pages: [{ items: [referenced()], has_more: false }], pageParams: [undefined] });
-  client.setQueryData(['workspaces'], { items: [workspace] });
+  // App's directory cache: the metadata-only catalog key, not a full listing.
+  client.setQueryData(['workspaces', 'catalog'], { items: [workspace] });
 };
 
 const textarea = (container: HTMLDivElement) => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
@@ -203,6 +205,23 @@ describe('Composer thread links', () => {
     await settle();
     expect(textarea(container).value).toBe('see now');
     expect(container.querySelector('[data-thread-ref-chip]')).toBeNull();
+  });
+
+  it('names a thread from the catalog cache and follows a workspace rename in it', async () => {
+    let queryClient: QueryClient | undefined;
+    const container = await render({ sessionId: 'session_current', initial: `see /s/${REF_ID} now` }, (client) => {
+      seedLists(client);
+      // A stale full listing under the retired key: the chip must ignore it.
+      client.setQueryData(['workspaces'], { items: [{ id: 'wd_kiki', name: 'stale-full-list-name' }] });
+      queryClient = client;
+    });
+    const chip = () => container.querySelector<HTMLElement>(`[data-thread-ref-chip="${REF_ID}"]`);
+    expect(chip()?.textContent).toContain('kiki');
+    await act(async () => {
+      queryClient!.setQueryData(['workspaces', 'catalog'], { items: [{ ...workspace, name: 'kiki-renamed' }] });
+    });
+    await settle();
+    expect(chip()?.textContent).toContain('kiki-renamed');
   });
 
   it('falls back to the short id for a thread it cannot resolve', async () => {

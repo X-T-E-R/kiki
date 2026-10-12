@@ -7,6 +7,16 @@
  * workspace's scope with the real client call, that a plugin row reads the
  * workspace override rather than the session's, and that a link to a workspace
  * the server no longer has says so instead of quietly showing another one.
+ *
+ * The page has two reads and they are deliberately not one: the identity it
+ * renders — name, path, the way back, what a rename writes — comes from the
+ * catalog entry, while the count and the Git mark are a separate, slower read
+ * of that one workspace. So a slow or failed stats read may not take the page
+ * down with it, and an unknown count may never be printed as `0`.
+ *
+ * Its writes are scoped to the same entry for the same reason: a rename or a
+ * pin answers with the catalog entry it changed, so it does not have to wait
+ * for a count or a Git probe either.
  */
 
 import { act } from 'react';
@@ -16,13 +26,20 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ErrorCode } from '@kiki/protocol';
-import type { PluginUsageItem, PluginUsageResponse, Workspace } from '@kiki/protocol';
+import type { PluginUsageItem, PluginUsageResponse, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
 import { WorkspaceSettingsPage } from './WorkspaceSettingsPage';
 
 const mocks = vi.hoisted(() => ({
+  // Identity and stats come from the catalog and the detail route; the writes
+  // this page makes are the scoped catalog ones, so a call to a legacy
+  // full-projection write from here is a regression.
   listWorkspaces: vi.fn(),
+  listWorkspaceCatalog: vi.fn(),
+  getWorkspaceDetails: vi.fn(),
+  renameWorkspaceCatalog: vi.fn(),
+  setWorkspacePinnedCatalog: vi.fn(),
   renameWorkspace: vi.fn(),
   setWorkspacePinned: vi.fn(),
   getPluginUsage: vi.fn(),
@@ -45,6 +62,10 @@ vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listWorkspaces: mocks.listWorkspaces,
+      listWorkspaceCatalog: mocks.listWorkspaceCatalog,
+      getWorkspaceDetails: mocks.getWorkspaceDetails,
+      renameWorkspaceCatalog: mocks.renameWorkspaceCatalog,
+      setWorkspacePinnedCatalog: mocks.setWorkspacePinnedCatalog,
       renameWorkspace: mocks.renameWorkspace,
       setWorkspacePinned: mocks.setWorkspacePinned,
       getPluginUsage: mocks.getPluginUsage,
@@ -68,16 +89,25 @@ vi.mock('../../../state/connection', () => ({
 let container: HTMLDivElement;
 let root: Root;
 
-const WORKSPACE: Workspace = {
+/** What the catalog answers with: identity only, never a count or a Git mark. */
+const CATALOG_ENTRY: WorkspaceCatalogEntry = {
   id: 'ws-a',
   root: 'C:/work/alpha',
   name: 'Alpha',
   created_at: '2026-01-01T00:00:00.000Z',
   last_opened_at: '2026-01-02T00:00:00.000Z',
-  session_count: 3,
   pinned: false,
-  isGit: true,
 };
+
+/**
+ * The catalog these tests answer with, so a scoped write is visible on the
+ * read that follows it — the page renders what the catalog holds, and a write
+ * whose only effect is a stripped catalog entry has to reach that read.
+ */
+let catalogEntries: WorkspaceCatalogEntry[] = [];
+
+/** What the one-workspace detail route answers with, stats included. */
+const WORKSPACE: Workspace = { ...CATALOG_ENTRY, session_count: 3, isGit: true };
 
 function usageItem(overrides: Partial<PluginUsageItem> = {}): PluginUsageItem {
   return {
@@ -113,7 +143,21 @@ beforeEach(() => {
   root = createRoot(container);
   localStorage.clear();
   localStorage.setItem('kiki.locale', 'en');
-  mocks.listWorkspaces.mockResolvedValue({ items: [WORKSPACE] });
+  catalogEntries = [{ ...CATALOG_ENTRY }];
+  mocks.listWorkspaceCatalog.mockImplementation(() => Promise.resolve({ items: catalogEntries.map((entry) => ({ ...entry })) }));
+  mocks.getWorkspaceDetails.mockResolvedValue(WORKSPACE);
+  // The scoped catalog writes answer with the stripped entry they changed, and
+  // they change what the next catalog read returns.
+  mocks.renameWorkspaceCatalog.mockImplementation((id: string, name: string) => {
+    catalogEntries = catalogEntries.map((entry) => entry.id === id ? { ...entry, name } : entry);
+    return Promise.resolve({ ...CATALOG_ENTRY, id, name });
+  });
+  mocks.setWorkspacePinnedCatalog.mockImplementation((id: string, pinned: boolean) => {
+    catalogEntries = catalogEntries.map((entry) => entry.id === id ? { ...entry, pinned } : entry);
+    return Promise.resolve({ ...CATALOG_ENTRY, id, pinned });
+  });
+  // The full-projection writes still exist for other surfaces. This page must
+  // not reach for them, so they are mocked to succeed and asserted unused.
   mocks.renameWorkspace.mockImplementation((id: string, name: string) => Promise.resolve({ ...WORKSPACE, id, name }));
   mocks.setWorkspacePinned.mockImplementation((id: string, pinned: boolean) => Promise.resolve({ ...WORKSPACE, id, pinned }));
   mocks.getPluginUsage.mockResolvedValue(usageAnswer());
@@ -156,6 +200,20 @@ async function renderPage(workspaceId = 'ws-a') {
   for (let i = 0; i < 6; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
+/** Type a draft name the way the input reports it, without the React test utils. */
+async function typeName(value: string): Promise<HTMLInputElement> {
+  const input = container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  return input;
+}
+
+/** Press save and let the mutation settle. */
+async function clickSave(): Promise<void> {
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!.click(); });
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+}
+
 describe('WorkspaceSettingsPage', () => {
   it('makes the workspace itself the subject: its name, its path, a way back', async () => {
     await renderPage();
@@ -163,6 +221,71 @@ describe('WorkspaceSettingsPage', () => {
     expect(container.querySelector('[data-workspace-detail-root]')!.textContent).toBe('C:/work/alpha');
     expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
     expect(container.querySelector('[data-autofocus]')!.getAttribute('value')).toBe('Alpha');
+  });
+
+  it('takes identity from the catalog and stats from this workspace alone, not the full list', async () => {
+    mocks.listWorkspaceCatalog.mockResolvedValue({
+      items: [CATALOG_ENTRY, { ...CATALOG_ENTRY, id: 'ws-b', name: 'Beta', root: 'C:/work/beta' }],
+    });
+    await renderPage();
+    expect(mocks.listWorkspaceCatalog).toHaveBeenCalledTimes(1);
+    expect(mocks.listWorkspaces).not.toHaveBeenCalled();
+    // One workspace is open, so one stats read happens: the page does not fan
+    // out over the catalog it just listed.
+    expect(mocks.getWorkspaceDetails).toHaveBeenCalledExactlyOnceWith('ws-a');
+    expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Sessions · 3');
+  });
+
+  it('completes the save while the stats are still pending, and does not invent a count', async () => {
+    mocks.getWorkspaceDetails.mockImplementation(() => new Promise<Workspace>(() => {}));
+    await renderPage();
+    const stats = container.querySelector('[data-workspace-detail-stats]')!;
+    expect(stats.querySelector('[role=status]')).not.toBeNull();
+    expect(stats.textContent).toContain('Loading');
+    // An unanswered count is not a count of zero.
+    expect(stats.textContent).not.toMatch(/\b0\b/);
+
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha');
+    await typeName('Alpha Prime');
+    expect(container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!.disabled).toBe(false);
+    await clickSave();
+
+    // Not merely sent: the scoped write answered, and the page shows it landed.
+    expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
+    expect(mocks.renameWorkspace).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-feedback-tone="success"]')!.textContent).toContain('Renamed to Alpha Prime.');
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
+    // The save neither waited for nor re-kicked the stats read.
+    expect(mocks.getWorkspaceDetails).toHaveBeenCalledTimes(1);
+    expect(stats.textContent).toContain('Loading');
+    expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
+  });
+
+  it('says the stats read failed, completes the save anyway, and retries without inventing a count', async () => {
+    mocks.getWorkspaceDetails.mockRejectedValue(new Error('Stats unavailable'));
+    await renderPage();
+    const stats = container.querySelector('[data-workspace-detail-stats]')!;
+    expect(stats.textContent).toContain('Stats unavailable');
+    expect(stats.textContent).not.toMatch(/\b0\b/);
+    const retry = stats.querySelector<HTMLButtonElement>('button')!;
+    expect(retry.textContent?.trim()).toBe('Retry');
+
+    // The failure is scoped to the stats: the save still lands on this
+    // workspace, through the scoped catalog write.
+    await typeName('Alpha Prime');
+    await clickSave();
+    expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
+    expect(mocks.renameWorkspace).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-feedback-tone="success"]')!.textContent).toContain('Renamed to Alpha Prime.');
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
+    expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Stats unavailable');
+    expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
+
+    mocks.getWorkspaceDetails.mockResolvedValue(WORKSPACE);
+    await act(async () => { retry.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    expect(mocks.getWorkspaceDetails).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Sessions · 3');
   });
 
   it('reads plugin usage for this workspace and writes the workspace override', async () => {
@@ -215,25 +338,26 @@ describe('WorkspaceSettingsPage', () => {
     expect(card.querySelector('[data-workspace-plugins-list]')).toBeNull();
   });
 
-  it('renames and pins through the existing calls, for this workspace only', async () => {
+  it('renames and pins this workspace through the scoped catalog writes', async () => {
     await renderPage();
-    const input = container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => { setter.call(input, 'Alpha Prime'); input.dispatchEvent(new Event('input', { bubbles: true })); });
-    const rename = container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!;
-    await act(async () => { rename.click(); });
-    for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
-    expect(mocks.renameWorkspace).toHaveBeenCalledWith('ws-a', 'Alpha Prime');
+    await typeName('Alpha Prime');
+    await clickSave();
+    expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
+    expect(mocks.renameWorkspace).not.toHaveBeenCalled();
+    // The write answered with the stripped entry, and the page reads it back.
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
 
-    // The pin label names what a click would do, not what is currently true.
-    const pinLabel = container.querySelector('#workspace-trust-toggle')?.closest('label')
-      ?? container.querySelector('[data-workspace-detail] label');
+    // The pin label names what a click would DO, not what is currently true.
     const pinRow = [...container.querySelectorAll('label')].find((node) => node.textContent === 'Pin to the top');
     expect(pinRow).toBeDefined();
     const pin = container.querySelectorAll<HTMLInputElement>('[data-workspace-detail] input[type=checkbox]')[0]!;
     await act(async () => { pin.click(); });
-    for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
-    expect(mocks.setWorkspacePinned).toHaveBeenCalledWith('ws-a', true);
+    for (let i = 0; i < 8; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+    expect(mocks.setWorkspacePinnedCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', true);
+    expect(mocks.setWorkspacePinned).not.toHaveBeenCalled();
+    // And the pinned state reaches the label from the catalog, not from a
+    // hope that the write succeeded.
+    expect([...container.querySelectorAll('label')].some((node) => node.textContent === 'Unpin')).toBe(true);
   });
 
   it('reads trust, and writes it only when the reader asks', async () => {

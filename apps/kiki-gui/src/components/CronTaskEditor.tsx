@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { CronDeliveryMode, Session, Workspace } from '@kiki/protocol';
+import type { CronDeliveryMode, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import {
   DEFAULT_CRON_FORM,
   isValidCron,
@@ -87,7 +87,7 @@ export interface CronTaskEditorProps {
     readonly delivery_mode?: CronDeliveryMode;
   } | undefined;
   readonly sessions: readonly Session[];
-  readonly workspaceOptions: readonly Workspace[];
+  readonly workspaceOptions: readonly WorkspaceCatalogEntry[];
   /** Source conversation id, for the update route's disambiguation query. */
   readonly sourceSessionId: string | undefined;
   /** Conversation the page is scoped to; the form opens on it. */
