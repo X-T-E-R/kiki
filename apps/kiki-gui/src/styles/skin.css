@@ -265,6 +265,20 @@
 :root:is([data-kiki-bg='window'], [data-kiki-bg='main']) [data-room-page] aside[data-room-members] {
   background-color: var(--kiki-surface-panel);
 }
+/* The first-run dialog floats on the picture. It takes the solved panel floor
+ * and the shared frost, and the scroll hint and chosen palette stay on that
+ * floor instead of an opaque slab. */
+:root[data-kiki-bg] [data-onboarding-dialog] [role='dialog'] {
+  background-color: var(--kiki-solid-panel, var(--kiki-surface-panel));
+  -webkit-backdrop-filter: var(--kiki-surface-filter);
+  backdrop-filter: var(--kiki-surface-filter);
+}
+:root[data-kiki-bg] [data-onboarding-dialog] [data-onboarding-scroll-more] {
+  background: linear-gradient(to top, var(--kiki-solid-panel, var(--kiki-surface-panel)), transparent);
+}
+:root[data-kiki-bg] [data-onboarding-dialog] [data-onboarding-palette][aria-checked='true'] {
+  background-color: var(--kiki-surface-paper);
+}
 
 /* ---- text layer (readability assist) ----
  * The canvas above is exactly the requested panel opacity, so most of the

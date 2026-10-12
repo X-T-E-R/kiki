@@ -164,7 +164,19 @@ describe('wallpaper material', () => {
       expect(reading).toContain('backdrop-filter: var(--kiki-reading-filter);');
       expect(reading).not.toMatch(/background(?:-color)?:/);
     }
-    expect(rule(`${scope} .app-sheet > .bg-paper`)).toContain('background-color: transparent;');
+    const pageWashStart = css.indexOf(`${scope} .app-sheet > :is(`);
+    expect(pageWashStart, `${scope} .app-sheet > :is(`).toBeGreaterThanOrEqual(0);
+    const pageWash = css.slice(pageWashStart, css.indexOf('\n}', pageWashStart));
+    expect(pageWash).toContain('\n  .bg-paper,');
+    expect(pageWash).toContain('[data-capabilities-page],');
+    expect(pageWash).toContain('[data-discovery-page],');
+    expect(pageWash).toContain('[data-cron-page],');
+    expect(pageWash).toContain('[data-memory-page],');
+    expect(pageWash).toContain('[data-activity-page],');
+    expect(pageWash).toContain('[data-personas-page],');
+    expect(pageWash).toContain('[data-room-page],');
+    expect(pageWash).toContain('[data-task-board-page]');
+    expect(pageWash).toContain('background-color: transparent;');
     expect(rule(`${scope} [data-task-board-page] [data-task-board-container]`)).toContain('background-color: transparent;');
     expect(css).toContain('--kiki-reading-filter: blur(max(6px, var(--kiki-surface-blur, 0px))) saturate(1.1);');
     expect(rule('@media (prefers-reduced-transparency: reduce)')).toContain('--kiki-reading-filter: none;');
@@ -295,6 +307,16 @@ describe('wallpaper material', () => {
     const media = css.lastIndexOf('@media (min-width: 768px)', start);
     expect(media).toBeGreaterThanOrEqual(0);
     expect(css.slice(media, start)).not.toMatch(/\n\}\n/);
+  });
+
+  it('keeps the first-run dialog on the solved panel floor over a picture', () => {
+    const dialog = rule(":root[data-kiki-bg] [data-onboarding-dialog] [role='dialog']");
+    expect(dialog).toContain('background-color: var(--kiki-solid-panel, var(--kiki-surface-panel));');
+    expect(dialog).toContain('backdrop-filter: var(--kiki-surface-filter);');
+    const more = rule(":root[data-kiki-bg] [data-onboarding-dialog] [data-onboarding-scroll-more]");
+    expect(more).toContain('background: linear-gradient(to top, var(--kiki-solid-panel, var(--kiki-surface-panel)), transparent);');
+    const chosen = rule(":root[data-kiki-bg] [data-onboarding-dialog] [data-onboarding-palette][aria-checked='true']");
+    expect(chosen).toContain('background-color: var(--kiki-surface-paper);');
   });
 });
 

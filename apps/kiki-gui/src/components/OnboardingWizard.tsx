@@ -388,6 +388,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       onClose={dismiss}
       ariaLabel={t('onboarding.title')}
       overlayId="onboarding-wizard"
+      overlayData={{ 'data-onboarding-dialog': '' }}
       // This run ends when it closes, and it carries choices the user has made
       // about their own setup, so it leaves on the header's close button or on
       // an explicit action inside it — never on a backdrop click or a stray

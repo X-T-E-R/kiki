@@ -296,6 +296,7 @@ describe('OnboardingWizard', () => {
   it('opens on what Kiki is for: four uses, a language switch, and appearance folded away', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
+    expect(dialog().parentElement?.getAttribute('data-onboarding-dialog')).toBe('');
     expect(dialog().textContent).toContain('Step 1 of 3');
     expect(dialog().textContent).toContain('What Kiki can help you do');
     expect(dialog().querySelector('[data-onboarding-header="full"]')).not.toBeNull();
