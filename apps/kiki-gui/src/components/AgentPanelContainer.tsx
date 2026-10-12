@@ -15,9 +15,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import type { AgentForest, ApprovalBlock, QuestionBlock, SessionController, SessionViewState } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
 import { sumAgentTreeMetrics, UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
+import type { AgentPanelMetrics } from '@kiki/protocol';
 import type { TranscriptTodoNotes, TranscriptTodoNotesMeta } from '@kiki/transcript';
 import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 import { useI18n } from '../i18n';
@@ -43,6 +45,75 @@ import {
   mapPanelSubagentTargets,
   mapPanelTools,
 } from './agent-panel/mapCapabilities';
+import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsSettleKey, panelMetricsSourceRevision } from './agent-panel/panelMetricsQuery';
+
+const EMPTY_PANEL_METRICS: Readonly<Record<string, AgentPanelMetrics>> = {};
+
+function isCancelledMetricsRead(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'CancelledError');
+}
+
+const SETTLED_METRICS_KEY = 'agentPanel.metrics.settleFailed' as I18nKey;
+
+type KeptPanelMetric = {
+  readonly revision: string;
+  readonly metrics: AgentPanelMetrics;
+  readonly stamp: number;
+};
+
+type KeptPanelMetrics = {
+  identity: string;
+  once: boolean;
+  readonly byId: Map<string, KeptPanelMetric>;
+  readonly accepted: Map<string, string>;
+};
+
+function sourceRevisionFor(controller: SessionController | undefined, forest: AgentForest, id: string): string {
+  const state = controller === undefined
+    ? undefined
+    : id === MAIN_AGENT_ID ? controller.getState() : controller.getAgentState(id);
+  return panelMetricsSourceRevision({
+    cursorSeq: state?.cursor.seq,
+    cursorEpoch: state?.cursor.epoch,
+    transcriptResetVersion: state?.transcriptResetVersion,
+    usage: state?.usage,
+    rosterUsage: forest.byId[id]?.usage,
+  });
+}
+
+function revisionToken(ids: readonly string[], revisions: ReadonlyMap<string, string>): string {
+  return ids.map((id) => `${id}\u0001${revisions.get(id) ?? ''}`).join('\u0002');
+}
+
+function usePanelSourceRevisions(
+  controller: SessionController | undefined,
+  forest: AgentForest,
+  ids: readonly string[],
+): ReadonlyMap<string, string> {
+  const idsKey = ids.join('\0');
+  const forestRef = useRef(forest);
+  const idsRef = useRef(ids);
+  forestRef.current = forest;
+  idsRef.current = ids;
+  const subscribe = useCallback((listener: () => void) => {
+    if (controller === undefined) return () => {};
+    const unsubs = idsRef.current.map((id) => id === MAIN_AGENT_ID
+      ? controller.subscribe(listener)
+      : controller.subscribeAgent(id, listener));
+    return () => { for (const unsub of unsubs) unsub(); };
+  }, [controller, idsKey]);
+  const read = useCallback(
+    () => idsRef.current.map((id) => sourceRevisionFor(controller, forestRef.current, id)).join('\n'),
+    [controller],
+  );
+  const packed = useSyncExternalStore(subscribe, read, read);
+  return useMemo(() => {
+    const revisions = new Map<string, string>();
+    const parts = packed.split('\n');
+    ids.forEach((id, index) => { revisions.set(id, parts[index] ?? ''); });
+    return revisions;
+  }, [packed, ids]);
+}
 
 const noopSubscribe = (): (() => void) => () => {};
 const NO_BRANCHES: ReadonlySet<string> = new Set();
@@ -163,9 +234,14 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     return () => { lease.release(); todoRead.current = undefined; };
   }, [controller, agentId, readsTodos]);
   const todoCoverage = agentState?.globalCoverage?.todos;
+  const todoEntitiesFailed = agentState?.detailLoads['entities:todo']?.status === 'error';
   useEffect(() => {
-    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore) void controller?.loadTranscriptEntities(agentId, 'todo');
-  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned]);
+    // A failed entity page stays on its retry button. Selecting the agent
+    // must not start that read, or the next agent's retry is blamed for it.
+    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore && !todoEntitiesFailed) {
+      void controller?.loadTranscriptEntities(agentId, 'todo');
+    }
+  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, todoEntitiesFailed]);
   const todoRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
   const todoReadFailed = todoRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
     todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
@@ -214,19 +290,25 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const active = agentState?.busy === true || node?.busy === true ||
     (agentId === MAIN_AGENT_ID && Object.values(forest.byId).some((entry) => entry.busy));
   const capabilities = useQuery({
-    queryKey: ['agentCapabilities', query],
+    queryKey: panelMetricsCapabilitiesKey(query, connection.spaceKey, connection.scopeId, connection.meta?.server_id ?? ''),
     queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
     // The `work` slice (todo + plan) reads only the live agent state; it never
     // needs the capability/metrics read, so it does not start one.
     enabled: part !== 'work' && visible && state.loaded && !state.resyncing,
     // Overview and setup render side by side and read the same answer.
+    // This refresh stays a header read: it must not send metrics_settle, or an
+    // active agent would restart a full wire scan under the 30s mutable TTL.
     staleTime: 5_000,
     refetchInterval: (current) => visible && active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: visible && active,
     retry: false,
   });
+  const serverId = connection.meta?.server_id ?? '';
   const refreshSignature = JSON.stringify([
+    connection.spaceKey,
+    connection.scopeId,
+    serverId,
     state.sessionId,
     agentId,
     active,
@@ -243,10 +325,216 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   }, [part, visible, refreshSignature, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch]);
   const data = capabilities.data;
   const profile = data?.profile;
-  const metrics = data?.metrics ?? {};
+  const metricsIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}:${state.sessionId}:${agentId}`;
+  const headerHold = useRef<{ space: string; updatedAt: number } | undefined>(undefined);
+  const spaceIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}`;
+  if (headerHold.current === undefined) headerHold.current = { space: spaceIdentity, updatedAt: -1 };
+  else if (headerHold.current.space !== spaceIdentity) headerHold.current = { space: spaceIdentity, updatedAt: capabilities.dataUpdatedAt };
+  const headerHeld = headerHold.current.updatedAt !== -1 && capabilities.dataUpdatedAt === headerHold.current.updatedAt;
+  const rawHeader = data?.metrics ?? EMPTY_PANEL_METRICS;
+  const headerMetrics = headerHeld ? EMPTY_PANEL_METRICS : rawHeader;
+  // The open agent, plus the whole tree when this surface actually shows it.
+  // Scope switches stay local: they read this set and do not start a read.
+  const showsTree = part !== 'work' && (agentId === MAIN_AGENT_ID || (part === 'overview' && overviewMode === 'cockpit'));
+  const settleKeyIds = useMemo(() => {
+    const treeIds = new Set<string>([MAIN_AGENT_ID, agentId]);
+    for (const id of Object.keys(forest.byId)) treeIds.add(id);
+    for (const id of Object.keys(rawHeader)) treeIds.add(id);
+    return [...(showsTree ? treeIds : [agentId])].sort();
+  }, [agentId, forest, rawHeader, showsTree]);
+  const revisions = usePanelSourceRevisions(controller, forest, settleKeyIds);
+  const kept = useRef<KeptPanelMetrics>({ identity: '', once: false, byId: new Map(), accepted: new Map() });
+  const initialFlight = useRef<{ identity: string; ids: readonly string[] } | undefined>(undefined);
+  const stampClock = useRef(0);
+  const headerStamp = useRef(0);
+  const seenHeader = useRef(data);
+  const startedToken = useRef<string | undefined>(undefined);
+  if (kept.current.identity !== metricsIdentity) {
+    kept.current = { identity: metricsIdentity, once: false, byId: new Map(), accepted: new Map() };
+    initialFlight.current = undefined;
+    stampClock.current = 0;
+    headerStamp.current = 0;
+    seenHeader.current = undefined;
+    startedToken.current = undefined;
+  }
+  if (seenHeader.current !== data) {
+    seenHeader.current = data;
+    stampClock.current += 1;
+    headerStamp.current = stampClock.current;
+  }
+  const [keptEpoch, setKeptEpoch] = useState(0);
+  const [settleBlock, setSettleBlock] = useState<{ identity: string; token: string } | undefined>(undefined);
+  const reopenRefetch = useRef<string | undefined>(undefined);
+  const revisionOf = (id: string) => revisions.get(id) ?? '';
+  const dirtyIds = kept.current.once
+    ? settleKeyIds.filter((id) => {
+        const accepted = kept.current.accepted.get(id);
+        return accepted !== undefined && accepted !== revisionOf(id);
+      })
+    : [];
+  const missingIds = settleKeyIds.filter((id) => {
+    if (dirtyIds.includes(id)) return false;
+    const keptRow = kept.current.byId.get(id);
+    if (keptRow !== undefined && !isUnsettledPanelMetrics(keptRow.metrics) && keptRow.revision === revisionOf(id)) return false;
+    if (isCompletePanelMetrics(headerMetrics[id])) return false;
+    return isUnsettledPanelMetrics(headerMetrics[id]);
+  });
+  const canSettle = part !== 'work' && visible && state.loaded && !state.resyncing && capabilities.isSuccess && !headerHeld;
+  let requestIds: readonly string[] = [];
+  if (!headerHeld && dirtyIds.length > 0) requestIds = dirtyIds;
+  else if (!headerHeld && kept.current.once) requestIds = missingIds;
+  else if (!headerHeld && missingIds.length > 0) {
+    if (canSettle && initialFlight.current?.identity !== metricsIdentity) {
+      initialFlight.current = { identity: metricsIdentity, ids: settleKeyIds };
+    }
+    requestIds = initialFlight.current?.identity === metricsIdentity ? initialFlight.current.ids : settleKeyIds;
+  }
+  if (requestIds.length === 0 && !headerHeld) {
+    if (!kept.current.once && missingIds.length === 0) kept.current.once = true;
+    if (kept.current.once) {
+      for (const id of settleKeyIds) {
+        if (!kept.current.accepted.has(id)) kept.current.accepted.set(id, revisionOf(id));
+      }
+    }
+  }
+  const requestToken = requestIds.length === 0
+    ? `idle:${metricsIdentity}`
+    : `${spaceIdentity}\0${revisionToken(requestIds, revisions)}`;
+  const settleBlocked = settleBlock?.identity === metricsIdentity && settleBlock.token === requestToken;
+  const requestTokenRef = useRef(requestToken);
+  requestTokenRef.current = requestToken;
+  const settleReadAbort = useRef<AbortController | undefined>(undefined);
+  const settleContext = useRef({ headerMetrics, settleKeyIds, revisions });
+  settleContext.current = { headerMetrics, settleKeyIds, revisions };
+  const metricsSettle = useQuery({
+    queryKey: panelMetricsSettleKey(
+      state.sessionId,
+      agentId,
+      requestIds.length > 0 ? requestIds : settleKeyIds,
+      requestToken,
+      serverId,
+    ),
+    queryFn: ({ signal, queryKey }) => {
+      const ids = [...(queryKey[3] as readonly string[])];
+      const token = String(queryKey[4] ?? '');
+      startedToken.current = token;
+      const abortController = new AbortController();
+      settleReadAbort.current = abortController;
+      const abort = () => { abortController.abort(signal.reason); };
+      signal.addEventListener('abort', abort);
+      if (signal.aborted) abort();
+      const request = klient.global.agentPanel.read({
+        session_id: state.sessionId,
+        agent_id: agentId,
+        metrics_settle: true,
+        metrics_agent_ids: ids,
+      }, { signal: abortController.signal });
+      void request.catch(() => {});
+      const aborted = new Promise<never>((_resolve, reject) => {
+        if (abortController.signal.aborted) {
+          reject(abortController.signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+          return;
+        }
+        abortController.signal.addEventListener('abort', () => {
+          reject(abortController.signal.reason ?? new DOMException('The request was aborted', 'AbortError'));
+        }, { once: true });
+      });
+      return Promise.race([request, aborted]).finally(() => {
+        signal.removeEventListener('abort', abort);
+        if (settleReadAbort.current === abortController) settleReadAbort.current = undefined;
+      });
+    },
+    // The first read counts the ids on screen. After that, only an agent whose
+    // controller, transcript or roster revision moved is read again. Hiding
+    // drops the waiter; it does not start another read when the panel returns.
+    enabled: canSettle && requestIds.length > 0 && !settleBlocked,
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  useEffect(() => {
+    if (kept.current.identity !== metricsIdentity) return;
+    const settled = metricsSettle.data?.metrics;
+    if (settled === undefined) return;
+    const token = requestTokenRef.current;
+    const prefix = `${spaceIdentity}\0`;
+    if (!token.startsWith(prefix) || token.startsWith('idle:')) return;
+    const requested = new Map<string, string>();
+    for (const part of token.slice(prefix.length).split('\u0002')) {
+      const cut = part.indexOf('\u0001');
+      if (cut <= 0) continue;
+      requested.set(part.slice(0, cut), part.slice(cut + 1));
+    }
+    let changed = false;
+    for (const [id, revision] of requested) {
+      const row = settled[id];
+      if (row === undefined || isUnsettledPanelMetrics(row)) {
+        if (kept.current.accepted.get(id) !== revision) {
+          kept.current.accepted.set(id, revision);
+          changed = true;
+        }
+        continue;
+      }
+      const previous = kept.current.byId.get(id);
+      if (previous?.revision === revision && previous.metrics === row) continue;
+      stampClock.current += 1;
+      kept.current.byId.set(id, { revision, metrics: row, stamp: stampClock.current });
+      kept.current.accepted.set(id, revision);
+      changed = true;
+    }
+    const covered = settleContext.current.settleKeyIds.every((id) => {
+      const row = kept.current.byId.get(id);
+      return (row !== undefined && !isUnsettledPanelMetrics(row.metrics)) || isCompletePanelMetrics(settleContext.current.headerMetrics[id]);
+    });
+    if (covered && !kept.current.once) {
+      kept.current.once = true;
+      for (const id of settleContext.current.settleKeyIds) {
+        if (!kept.current.accepted.has(id)) {
+          const revision = requested.get(id) ?? settleContext.current.revisions.get(id) ?? '';
+          kept.current.accepted.set(id, revision);
+        }
+      }
+      changed = true;
+    }
+    if (changed) setKeptEpoch((epoch) => epoch + 1);
+  }, [metricsSettle.data, metricsSettle.dataUpdatedAt, metricsIdentity, spaceIdentity]);
+  // Hiding drops the waiter. The query stays disabled for that same source,
+  // so showing the panel again does not start a second scan.
+  useEffect(() => {
+    if (visible || requestIds.length === 0 || startedToken.current !== requestToken) return;
+    settleReadAbort.current?.abort();
+    setSettleBlock({ identity: metricsIdentity, token: requestToken });
+  }, [visible, requestToken, requestIds.length, metricsIdentity]);
+
+  // When an idle panel reopens under a settleBlock without active wire scan,
+  // re-read the capabilities header once so completed server cache is observed
+  // without triggering a full metrics_settle scan.
+  useEffect(() => {
+    if (!visible || !settleBlocked || part === 'work' || !state.loaded || state.resyncing || capabilities.isFetching) return;
+    if (reopenRefetch.current === requestToken) return;
+    reopenRefetch.current = requestToken;
+    void capabilities.refetch({ cancelRefetch: false });
+  }, [visible, settleBlocked, part, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch, requestToken]);
+
+  useEffect(() => () => { settleReadAbort.current?.abort(); }, []);
+  const settledView = useMemo(() => {
+    const rows: Record<string, AgentPanelMetrics> = {};
+    const stamps: Record<string, number> = {};
+    if (kept.current.identity !== metricsIdentity) return { rows, stamps };
+    for (const [id, row] of kept.current.byId) {
+      rows[id] = row.metrics;
+      stamps[id] = row.stamp;
+    }
+    return { rows, stamps };
+  }, [keptEpoch, metricsIdentity]);
+  const metrics = mergePanelMetrics(headerMetrics, settledView.rows, {
+    headerStamp: headerStamp.current,
+    settledStamp: settledView.stamps,
+  });
   const usage = metrics[agentId] ?? UNKNOWN_AGENT_PANEL_METRICS;
   const ids = [...new Set([MAIN_AGENT_ID, ...Object.keys(forest.byId), ...Object.keys(metrics)])];
-  const treeComplete = ids.every((id) => metrics[id] !== undefined);
+  const treeComplete = ids.every((id) => !isUnsettledPanelMetrics(metrics[id]));
   // Sums the agents the server has actually reported, and `null` only when
   // none are known. Callers label an incomplete sum as such rather than
   // passing it off as the whole tree.
@@ -391,8 +679,18 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     } : undefined,
     onOpenUsageDetail: () => { void navigate(usageSessionDeepLink(state.sessionId)); },
   };
+  const settleFailed = metricsSettle.isError && !isCancelledMetricsRead(metricsSettle.error);
+  const settleError = settleFailed ? (
+    <p role="status" data-metrics-settle-error className="text-[12px] leading-relaxed text-ink-faint">
+      {t(SETTLED_METRICS_KEY)}
+      <button type="button" className="ml-1.5 font-medium text-ink-soft transition-colors hover:text-ink" onClick={() => { setSettleBlock(undefined); void metricsSettle.refetch(); }}>{t('common.retry')}</button>
+    </p>
+  ) : null;
   if (part === 'usage') {
-    return <AgentIdentitySection {...identityProps} part="usage" />;
+    return <>
+      <AgentIdentitySection {...identityProps} part="usage" />
+      {settleError}
+    </>;
   }
   const facts = overviewFacts({
     t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree,
@@ -439,6 +737,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
           toolCalls={facts.toolCalls}
         />
       )}
+      {settleError}
     </div>;
   }
   if (part === 'profile') {
@@ -475,6 +774,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     ) : null;
     return <div data-agent-panel-container data-agent-panel-part="profile">
       <AgentIdentitySection {...identityProps} part="profile" capabilities={capabilityBody} capabilitySummary={summary} />
+      {settleError}
     </div>;
   }
   return <div data-agent-panel-container className="space-y-5">
@@ -515,7 +815,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     {capabilities.isError && !isCapabilityUnsupportedError(capabilities.error) ? <div role="alert" className="border-l-2 border-danger pl-3 text-[12.5px] text-danger">
       {t('diagnostics.error')} · {agentCapabilitiesErrorText(capabilities.error, t)}
       <button type="button" className="ml-2 font-medium text-ink underline underline-offset-2" onClick={() => { void capabilities.refetch(); }}>{t('common.retry')}</button>
-    </div> : null}
+    </div> : settleError}
     {todoSection}
     {notesSection}
     {agentState !== undefined ? <AgentPlanSection
