@@ -2,16 +2,31 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 
 import type { RecordDehydrator, WireRecord } from './record';
 
+export const JOURNAL_HEAD_HASH_BYTES = 64 * 1024;
+
 /**
- * Coordinate of the durable journal's current byte content. Consumers compare
- * `size` and `mtimeMs` first as the cheap negative check; `headHash` is the
- * deciding check — it binds the journal's leading bytes into the identity so a
- * same-size rewrite can no longer alias an older engine state.
+ * Coordinate of the durable journal's current byte content. An exact checkpoint
+ * matches `size`, `mtimeMs`, and `headHash`. `headHash` binds the leading bytes
+ * so a same-size rewrite cannot alias an older engine state. A stored prefix
+ * digest can prove those bytes when the file has grown or the mtime moved, so
+ * restore replays only the verified tail.
  */
 export interface WireJournalIdentity {
   readonly size: number;
   readonly mtimeMs: number;
   readonly headHash: string;
+}
+
+/** `startByte` reads the appended tail without migrating or rewriting the prefix. */
+export interface WireJournalReadOptions {
+  readonly startByte?: number;
+}
+
+export class JournalTailUnreadableError extends Error {
+  constructor() {
+    super('Journal tail cannot be replayed');
+    this.name = 'JournalTailUnreadableError';
+  }
 }
 
 export interface IWireService {
@@ -23,8 +38,15 @@ export interface IWireService {
   verifyTranscriptLiveEpoch?(): Promise<boolean>;
   isTranscriptLiveEpochVerified?(): boolean;
   appendRecord(record: WireRecord, dehydrate?: RecordDehydrator): void;
-  readJournal(): AsyncIterable<WireRecord>;
+  readJournal(options?: WireJournalReadOptions): AsyncIterable<WireRecord>;
   journalIdentity?(): Promise<WireJournalIdentity>;
+  /** SHA-256 of the first `byteLength` bytes, or undefined if the journal is shorter. */
+  journalSha256?(byteLength: number): Promise<string | undefined>;
+  /**
+   * Trusted sealed digest observed when this epoch opened, even if the journal
+   * has since grown. Undefined when no trusted seal was observed.
+   */
+  sealedJournalDigest?(): { readonly size: number; readonly sha256: string } | undefined;
   /**
    * Drains this journal's pending writes. A record rejected before store acceptance
    * remains a durability failure for this service's lifetime, even after later writes

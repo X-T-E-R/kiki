@@ -15,7 +15,7 @@ import {
 } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 
-import { IWireService, type WireJournalIdentity } from './wire';
+import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError, type WireJournalIdentity, type WireJournalReadOptions } from './wire';
 import { WireError, WireErrors } from './errors';
 import { repairWireJournal } from './repair';
 import {
@@ -41,7 +41,6 @@ import {
   type WireTranscriptReceipt,
 } from './transcriptReceipt';
 
-const JOURNAL_HEAD_HASH_BYTES = 64 * 1024;
 const JOURNAL_HEAD_HASH_HEX_LENGTH = 32;
 
 export class WireService extends Service implements IWireService {
@@ -60,6 +59,7 @@ export class WireService extends Service implements IWireService {
   private epochExpectedHash: Hash | undefined;
   private epochExpectedSize = 0;
   private verifiedAcceptedRecords = -1;
+  private sealedPrefix: { readonly size: number; readonly sha256: string } | undefined;
   private transcriptVerification: {
     readonly epoch: WireTranscriptReceipt;
     readonly accepted: number;
@@ -109,6 +109,9 @@ export class WireService extends Service implements IWireService {
         previous = parseWireTranscriptReceipt(JSON.parse(Buffer.from(previousBytes).toString('utf8')));
       } catch {
         previous = undefined;
+      }
+      if (previous?.state === 'sealed' && previous.trusted && previous.wire !== undefined) {
+        this.sealedPrefix = { size: previous.wire.size, sha256: previous.wire.sha256 };
       }
       trusted = previous?.state === 'sealed' && previous.trusted && previous.wire !== undefined &&
         identity.size === previous.wire.size && identity.sha256 === previous.wire.sha256;
@@ -230,7 +233,11 @@ export class WireService extends Service implements IWireService {
     });
   }
 
-  async *readJournal(): AsyncIterable<WireRecord> {
+  async *readJournal(options?: WireJournalReadOptions): AsyncIterable<WireRecord> {
+    if (options?.startByte !== undefined && options.startByte > 0) {
+      yield* this.readJournalTail(options.startByte);
+      return;
+    }
     let truncation: AppendLogTruncation | undefined;
     const source = this.log.read<WireRecord>(this.wireScope, AGENT_WIRE_RECORD_KEY, {
       onTruncate: (info) => {
@@ -355,6 +362,70 @@ export class WireService extends Service implements IWireService {
       throw error;
     }
     if (this.persistFailure !== undefined) throw this.persistFailure.error;
+  }
+
+  sealedJournalDigest(): { readonly size: number; readonly sha256: string } | undefined {
+    return this.sealedPrefix;
+  }
+
+  async journalSha256(byteLength: number): Promise<string | undefined> {
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) return undefined;
+    await this.flush();
+    const hash = createHash('sha256');
+    let read = 0;
+    if (byteLength > 0) {
+      for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+        start: 0,
+        end: byteLength - 1,
+      })) {
+        hash.update(chunk);
+        read += chunk.byteLength;
+      }
+    }
+    if (read !== byteLength) return undefined;
+    return hash.digest('hex');
+  }
+
+  private async *readJournalTail(startByte: number): AsyncIterable<WireRecord> {
+    if (!Number.isSafeInteger(startByte) || startByte <= 0) throw new JournalTailUnreadableError();
+    const size = await this.storage.size(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0;
+    if (startByte > size) throw new JournalTailUnreadableError();
+    let marker: number | undefined;
+    for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+      start: startByte - 1,
+      end: startByte - 1,
+    })) {
+      marker = chunk[0];
+    }
+    if (marker !== 0x0a) throw new JournalTailUnreadableError();
+    if (startByte === size) return;
+    const decoder = new TextDecoder();
+    let pending = '';
+    for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+      start: startByte,
+      end: size - 1,
+    })) {
+      pending += decoder.decode(chunk, { stream: true });
+      let newline = pending.indexOf('\n');
+      while (newline !== -1) {
+        const raw = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (line.length > 0) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            throw new JournalTailUnreadableError();
+          }
+          if (!isWireRecord(parsed)) throw new JournalTailUnreadableError();
+          yield parsed;
+        }
+        newline = pending.indexOf('\n');
+      }
+    }
+    pending += decoder.decode();
+    if (pending.length > 0) throw new JournalTailUnreadableError();
   }
 
   async journalIdentity(): Promise<WireJournalIdentity> {

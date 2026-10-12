@@ -15,7 +15,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { ContentPart } from '#/kosong/contract/message';
 import { OrderedHookSlot } from '#/hooks';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IWireService } from '#/wire/wire';
+import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError } from '#/wire/wire';
 import { WireError, WireErrors } from '#/wire/errors';
 import type { PartsTransformer } from '#/wire/record';
 
@@ -52,6 +52,7 @@ interface ReplayCheckpointEnvelope {
     readonly size: number;
     readonly mtimeMs: number;
     readonly headHash?: string;
+    readonly prefixSha256?: string;
   };
   readonly stateNames: readonly string[];
   readonly graph: ReplayCheckpointGraph;
@@ -459,10 +460,15 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const graph = encodeReplayCheckpointGraph(payload);
       const wire = await this.wire.journalIdentity();
       if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      const prefixSha256 = this.wire.journalSha256 === undefined
+        ? undefined
+        : await this.wire.journalSha256(wire.size);
+      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return false;
+      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
         replayAbi: REPLAY_ABI_VERSION,
-        wire,
+        wire: prefixSha256 === undefined ? wire : { ...wire, prefixSha256 },
         stateNames: keys.map((key) => key.name),
         graph,
       };
@@ -473,23 +479,21 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
   }
 
-  private async restoreReplayCheckpoint(): Promise<boolean> {
+  private async restoreReplayCheckpoint(): Promise<{ readonly tailByte?: number } | undefined> {
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
-      return false;
+      return undefined;
     }
     try {
       const envelope = await docs.get<ReplayCheckpointEnvelope>(
         checkpointScope,
         REPLAY_CHECKPOINT_KEY,
       );
-      if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return false;
+      if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
       const wire = await this.wire.journalIdentity();
-      if (wire.size !== envelope.wire.size || wire.mtimeMs !== envelope.wire.mtimeMs) return false;
-      if (envelope.wire.headHash === undefined || envelope.wire.headHash !== wire.headHash) {
-        return false;
-      }
+      if (envelope.wire.headHash === undefined) return undefined;
+      const headMatches = envelope.wire.headHash === wire.headHash;
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
@@ -497,17 +501,32 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         keys.length !== envelope.stateNames.length ||
         keys.some((key, index) => key.name !== envelope.stateNames[index])
       ) {
-        return false;
+        return undefined;
+      }
+      const exact = headMatches && wire.size === envelope.wire.size && wire.mtimeMs === envelope.wire.mtimeMs;
+      let tailByte: number | undefined;
+      if (!exact) {
+        if (wire.size < envelope.wire.size) return undefined;
+        if (!headMatches && envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
+        const sealed = this.wire.sealedJournalDigest?.();
+        const prefixSha256 = isSha256(envelope.wire.prefixSha256)
+          ? envelope.wire.prefixSha256
+          : sealed !== undefined && sealed.size === envelope.wire.size && isSha256(sealed.sha256)
+            ? sealed.sha256
+            : undefined;
+        if (prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
+        if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
+        if (wire.size > envelope.wire.size) tailByte = envelope.wire.size;
       }
       const payload = decodeReplayCheckpointGraph(envelope.graph) as ReplayCheckpointPayload;
-      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return false;
+      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return undefined;
       const restored: { readonly key: ReplayableStateKey<any>; readonly value: unknown; readonly meta: StateMeta }[] = [];
       for (let index = 0; index < keys.length; index += 1) {
         const key = keys[index]!;
         const saved = payload.states[index];
-        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return false;
+        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return undefined;
         const parsed = key.replayable.schema.safeParse(saved.value);
-        if (!parsed.success) return false;
+        if (!parsed.success) return undefined;
         const meta: StateMeta = saved.meta;
         meta.history = meta.history.map((entry) => ({
           ...entry,
@@ -519,10 +538,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         this.agentState.set(entry.key, Object.freeze(entry.value));
         this.metas.set(entry.key, entry.meta);
       }
-      return true;
+      return { tailByte };
     } catch {
       this.resetReplayableState();
-      return false;
+      return undefined;
     }
   }
 
@@ -542,23 +561,16 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     this.restorePhase = 'restoring';
     try {
       const checkpointRestored = await this.restoreReplayCheckpoint();
-      let recordIndex = 0;
-      if (!checkpointRestored) for await (const record of this.wire.readJournal()) {
-        if (record.type === 'metadata') continue;
-        const cls = this.folded.events.get(record.type);
-        if (cls === undefined) {
-          this.reportSkippedRecord(record.type, recordIndex, false);
-          recordIndex++;
-          continue;
+      if (checkpointRestored === undefined) {
+        await this.replayJournal();
+      } else if (checkpointRestored.tailByte !== undefined) {
+        try {
+          await this.replayJournal(checkpointRestored.tailByte);
+        } catch (error) {
+          if (!(error instanceof JournalTailUnreadableError)) throw error;
+          this.resetReplayableState();
+          await this.replayJournal();
         }
-        const event = event2FromRecord(cls, record);
-        if (event === undefined) {
-          this.reportSkippedRecord(record.type, recordIndex, true);
-          recordIndex++;
-          continue;
-        }
-        this.executeEvent(event, true);
-        recordIndex++;
       }
       await this.rehydrateStates();
       this.restorePhase = 'ready';
@@ -566,6 +578,30 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     } catch (error) {
       this.restorePhase = 'failed';
       throw error;
+    }
+  }
+
+  private async replayJournal(startByte?: number): Promise<void> {
+    let recordIndex = 0;
+    const source = startByte === undefined
+      ? this.wire.readJournal()
+      : this.wire.readJournal({ startByte });
+    for await (const record of source) {
+      if (record.type === 'metadata') continue;
+      const cls = this.folded.events.get(record.type);
+      if (cls === undefined) {
+        this.reportSkippedRecord(record.type, recordIndex, false);
+        recordIndex++;
+        continue;
+      }
+      const event = event2FromRecord(cls, record);
+      if (event === undefined) {
+        this.reportSkippedRecord(record.type, recordIndex, true);
+        recordIndex++;
+        continue;
+      }
+      this.executeEvent(event, true);
+      recordIndex++;
     }
   }
 
@@ -636,6 +672,10 @@ function isDenseArray(value: unknown): value is readonly unknown[] {
     if (!Object.hasOwn(value, index)) return false;
   }
   return true;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
 function isStateMeta(value: unknown): value is StateMeta {
