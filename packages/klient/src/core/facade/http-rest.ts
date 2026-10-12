@@ -409,7 +409,7 @@ export interface HttpRestFacade {
   };
 
   readonly sessions: {
-    list(query?: HttpRestListSessionsQuery): Promise<import('@kiki/protocol').ListSessionsResponse>;
+    list(query?: HttpRestListSessionsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListSessionsResponse>;
     listEphemeral(query?: Pick<HttpRestListSessionsQuery, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
     saveEphemeral(sessionId: string): Promise<Session>;
@@ -446,7 +446,7 @@ export interface HttpRestFacade {
     ): Promise<ActivateSkillResult>;
     fsSearch(
       sessionId: string,
-      body: { readonly query: string; readonly limit?: number },
+      body: Partial<import('@kiki/protocol').FsSearchRequest> & { readonly query: string },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
     media(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
@@ -640,7 +640,7 @@ export interface HttpRestFacade {
     downloadHostFile(path: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
     workspaceFsSearch(
       workspace: string,
-      body: { readonly query: string; readonly limit?: number },
+      body: Partial<import('@kiki/protocol').FsSearchRequest> & { readonly query: string },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
   };

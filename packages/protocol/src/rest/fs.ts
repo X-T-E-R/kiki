@@ -25,11 +25,13 @@
  *     path-safety (41304) fails the whole call.
  *   POST /v1/sessions/{sid}/fs:search
  *     Body: FsSearchRequest   { query, limit?, include_globs?, exclude_globs?,
- *                               follow_gitignore? }
- *     Response data: FsSearchResponse  { items, truncated }
+ *                               follow_gitignore?, cursor? }
+ *     Response data: FsSearchResponse  { items, truncated, next_cursor?, sort_scope }
+ *     Each bounded page is sorted locally. Continue next_cursor to retrieve
+ *     the remaining entries; an empty page can still have a cursor.
  *     An empty query lists the workspace root's top-level entries (dirs
- *     first) instead of fuzzy-matching.
- *     Errors: 40401, 41303, 41304
+ *     first within each page) instead of fuzzy-matching.
+ *     Errors: 40001 (invalid or changed cursor), 40401, 41303, 41304
  *
  *   POST /v1/sessions/{sid}/fs:grep
  *     Body: FsGrepRequest
@@ -232,12 +234,16 @@ export const fsSearchRequestSchema = z.object({
   include_globs: z.array(z.string()).optional(),
   exclude_globs: z.array(z.string()).optional(),
   follow_gitignore: z.boolean().default(true),
+  cursor: z.string().max(1_048_576).optional(),
 });
 export type FsSearchRequest = z.infer<typeof fsSearchRequestSchema>;
 
+/** Each page is sorted independently. Drain next_cursor and merge by score descending, path ascending for global order; empty-query pages place directories first. An empty page with next_cursor still has unsearched entries. */
 export const fsSearchResponseSchema = z.object({
   items: z.array(fsSearchHitSchema),
   truncated: z.boolean(),
+  next_cursor: z.string().optional(),
+  sort_scope: z.literal('page'),
 });
 export type FsSearchResponse = z.infer<typeof fsSearchResponseSchema>;
 

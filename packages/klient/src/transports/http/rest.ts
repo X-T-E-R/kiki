@@ -187,7 +187,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     sessions: {
-      list: (query: HttpRestListSessionsQuery = {}) => transport.json<import('@kiki/protocol').ListSessionsResponse>('/sessions', {
+      list: (query: HttpRestListSessionsQuery = {}, options) => transport.json<import('@kiki/protocol').ListSessionsResponse>('/sessions', {
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
         query: {
           page_size: query.page_size ?? 50,
           before_id: query.before_id,

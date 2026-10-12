@@ -60,8 +60,11 @@ export function shortCwd(cwd: string): string {
 export async function readSessionFirstPage(
   read: (beforeId?: string) => Promise<SessionListPage>,
   loaded: SessionListData | undefined,
+  signal?: AbortSignal,
 ): Promise<SessionListPage> {
+  signal?.throwIfAborted();
   let head = await read();
+  signal?.throwIfAborted();
   const ids = new Set(loaded?.pages[0]?.items.map((item) => item.id));
   const cursors = new Set<string>();
   while (ids.size > 0 && head.has_more && !head.items.some((item) => ids.has(item.id))) {
@@ -69,6 +72,7 @@ export async function readSessionFirstPage(
     if (cursor === undefined || cursors.has(cursor)) throw new Error('Session list cursor did not advance');
     cursors.add(cursor);
     const page = await read(cursor);
+    signal?.throwIfAborted();
     head = { ...page, items: [...head.items, ...page.items] };
   }
   return head;

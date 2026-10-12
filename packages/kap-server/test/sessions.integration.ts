@@ -1007,6 +1007,65 @@ describe('server-v2 /api/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('serves and drains the sidebar without global workspace discovery', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const discovery = vi.spyOn(server!.core.accessor.get(IWorkspaceService), 'list').mockRejectedValue(new Error('Global discovery is unavailable'));
+    const rows: SessionSummary[] = Array.from({ length: 75 }, (_, index) => ({
+      id: `catalog-sidebar-${index}`, workspaceId: index % 2 === 0 ? created.workspace_id : 'wd_legacy_000000000001',
+      cwd: index % 2 === 0 ? undefined : home,
+      createdAt: 1, updatedAt: 1000 - index, archived: false,
+    }));
+    const index = server!.core.accessor.get(ISessionIndex);
+    vi.spyOn(index, 'count').mockImplementation(async (query) => rows.filter((row) => query.workspaceIds === undefined || query.workspaceIds.includes(row.workspaceId)).length);
+    vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      const before = query.before === undefined ? -1 : rows.findIndex((row) => row.id === query.before);
+      const candidates = rows.slice(before + 1).filter((row) => query.workspaceIds === undefined || query.workspaceIds.includes(row.workspaceId));
+      const items = candidates.slice(0, query.limit);
+      return { items, nextCursor: items.length < candidates.length ? items.at(-1)?.id : undefined };
+    });
+    const first = (await getJson<PageWire>('/api/sessions?page_size=50')).body;
+    expect(first.code).toBe(0);
+    expect(first.data.items).toHaveLength(50);
+    expect(first.data.items.every((row) => row.metadata.cwd === home)).toBe(true);
+    expect(first.data.has_more).toBe(true);
+    const second = (await getJson<PageWire>(`/api/sessions?page_size=50&before_id=${first.data.next_cursor}`)).body;
+    expect(second.code).toBe(0);
+    expect(second.data.has_more).toBe(false);
+    expect([...first.data.items, ...second.data.items].map((row) => row.id)).toEqual(rows.map((row) => row.id));
+    const filtered = (await getJson<PageWire>(`/api/sessions?workspace_id=${created.workspace_id}`)).body;
+    expect(filtered.code).toBe(0);
+    expect(filtered.data.items.map((row) => row.id)).toEqual(rows.filter((row) => row.workspaceId === created.workspace_id).map((row) => row.id));
+    const legacy = (await getJson<PageWire>('/api/sessions?workspace_id=wd_legacy_000000000001')).body;
+    expect(legacy.code).toBe(0);
+    expect(legacy.data.items.map((row) => row.id)).toEqual(rows.filter((row) => row.workspaceId === 'wd_legacy_000000000001').map((row) => row.id));
+    expect(discovery).not.toHaveBeenCalled();
+  });
+
+  it('stops filtered list paging when its HTTP reader disconnects', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const index = server!.core.accessor.get(ISessionIndex);
+    const original = index.listRecent.bind(index);
+    let routePages = 0;
+    vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      if (query.limit !== 51 || query.includeArchived === true) return original(query);
+      routePages += 1;
+      await gate;
+      return { items: [{ id: 'filtered-row', workspaceId: 'wd_example_000000000001', cwd: home, title: 'unmatched', createdAt: 1, updatedAt: 1, archived: false }], nextCursor: routePages < 3 ? 'filtered-row' : undefined };
+    });
+    const controller = new AbortController();
+    const request = fetch(`${base}/api/sessions?q=absent`, { headers: authHeaders(server!), signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(routePages).toBe(1));
+      controller.abort();
+      expect(await request).toBeInstanceOf(Error);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(routePages).toBe(1);
+    } finally { release(); }
+  });
+
   it('projects cold sidebar personas from summaries without replaying agent wires', async () => {
     const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
     const rows: SessionSummary[] = Array.from({ length: 50 }, (_, index) => ({

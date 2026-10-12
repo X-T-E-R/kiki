@@ -45,6 +45,7 @@ import {
   IWorkspaceInstanceManager,
   IWorktreeService,
   IWorkspaceService,
+  IWorkspacePersistence,
   MAIN_AGENT_ID,
   ProfileError,
   getLiveSessionById,
@@ -100,6 +101,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireSessionOperation, withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import {
@@ -565,7 +567,7 @@ export function registerSessionsRoutes(
       description: 'List sessions',
       tags: ['sessions'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const raw = req.query;
       let before = raw.before_id;
       let after = raw.after_id;
@@ -582,14 +584,15 @@ export function registerSessionsRoutes(
       const archivedOnly = raw.archived_only === true;
       const needle = raw.q?.trim().toLocaleLowerCase();
 
-      const workspaces = await core.accessor.get(IWorkspaceService).list();
-      const roots = new Map(workspaces.map((w) => [w.id, w.root]));
-
+      const catalog = await core.accessor.get(IWorkspacePersistence).load();
+      const roots = new Map((catalog?.workspaces ?? []).map((w) => [w.id, w.root]));
+      const index = core.accessor.get(ISessionIndex);
       const workspaceIds =
         raw.workspace_id === undefined
           ? undefined
           : await core.accessor.get(IWorkspaceAliases).resolveAliasIds(raw.workspace_id);
-      if (workspaceIds !== undefined && !workspaceIds.some((id) => roots.has(id))) {
+      if (workspaceIds !== undefined && !workspaceIds.some((id) => roots.has(id)) &&
+        (workspaceIds.some((id) => catalog?.deletedIds.includes(id)) || await index.count({ workspaceIds, includeArchived: true }) === 0)) {
         reply.send(
           errEnvelope(
             ErrorCode.WORKSPACE_NOT_FOUND,
@@ -599,7 +602,6 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      const index = core.accessor.get(ISessionIndex);
       const includeArchived = archivedOnly ? true : raw.include_archive;
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
@@ -636,6 +638,7 @@ export function registerSessionsRoutes(
           summary.updatedAt > afterCursor.updatedAt ||
           (summary.updatedAt === afterCursor.updatedAt && summary.id > afterCursor.id);
         while (collected.length < wanted) {
+          signal.throwIfAborted();
           const page = await index.listRecent({
             workspaceIds,
             includeArchived,
@@ -646,6 +649,7 @@ export function registerSessionsRoutes(
           if (page.items.length === 0) break;
           let exhausted = false;
           for (const summary of page.items) {
+            signal.throwIfAborted();
             if (!newerThanCursor(summary)) {
               exhausted = true;
               break;
@@ -682,8 +686,9 @@ export function registerSessionsRoutes(
       const last = items.at(-1)?.id;
       const nextCursor = more && last !== undefined ? after === undefined ? last : `next:${Buffer.from(JSON.stringify({ before: last, after })).toString('base64url')}` : undefined;
       const busyCount = core.accessor.get(ISessionManager).list().filter((session) => session.accessor.get(ISessionActivityView).state().busy).length;
+      signal.throwIfAborted();
       reply.send(okEnvelope({ items, has_more: more, next_cursor: nextCursor, busy_count: busyCount, ephemeral: ephemeral?.items, ephemeral_has_more: ephemeral?.has_more, ephemeral_next_cursor: ephemeral?.next_cursor }, req.id));
-    },
+    }),
   );
   app.get(
     listRoute.path,

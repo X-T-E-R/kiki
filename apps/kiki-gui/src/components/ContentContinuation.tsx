@@ -55,7 +55,7 @@ export function contentRefProgress(
     const percent = ref.total === 0 ? 0 : Math.floor((ref.offset / ref.total) * 100);
     return t('transcript.content.percent', { percent: percent < 1 ? '<1' : String(percent) });
   }
-  return t('transcript.content.items', { shown: ref.offset, total: ref.total });
+  return t('transcript.content.items', { shown: ref.direction === 'backward' ? ref.total - ref.offset : ref.offset, total: ref.total });
 }
 
 /** One continuation line, wherever it sits: a body's tail or the session's own. */

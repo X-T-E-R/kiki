@@ -421,6 +421,23 @@ describe('poll boundary coverage', () => {
     expect(calls).toEqual([undefined]);
   });
 
+  it('stops a displaced-head bridge on scope cancellation before any later page or merge', async () => {
+    const { readSessionFirstPage } = await import('./sessionList');
+    const controller = new AbortController();
+    const old = data(page(['s3', 's2'], true), page(['s1'], false));
+    const calls: (string | undefined)[] = [];
+    const read = async (cursor?: string) => {
+      calls.push(cursor);
+      controller.abort();
+      return { ...page(['new-b', 'new-a'], true), next_cursor: 'new-a' };
+    };
+    await expect(readSessionFirstPage(read, old, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toEqual([undefined]);
+    expect(dedupeSessions(old).map((entry) => entry.id)).toEqual(['s3', 's2', 's1']);
+    await expect(readSessionFirstPage(read, old, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toEqual([undefined]);
+  });
+
   it('drops absent cached rows only when the refreshed head is complete', () => {
     const merged = mergeSessionFirstPage(data(page(['deleted', 's2'], true), page(['s1'], false)), page(['s2'], false));
     expect(dedupeSessions(merged).map((entry) => entry.id)).toEqual(['s2']);

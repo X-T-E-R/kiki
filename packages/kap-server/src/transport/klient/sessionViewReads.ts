@@ -200,11 +200,12 @@ async function readSessionViewTranscriptPageRaw(
     if (transcript === undefined) return undefined;
     const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     if (transcript.hasMoreOlder && (input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined)) {
-      await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection);
+      const query = pageQueryFor(pageQueryInput, 'derived');
+      await readColdTranscriptPage(transcriptService, sessionId, { ...input, ...query }, sourceDirection);
       const cold = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal,
         (source) => boundedTranscriptPageSource(source, input.agentId, sourceDirection));
       if (cold === undefined) return undefined;
-      const page = paginateTurns(cold.items, pageQueryFor(pageQueryInput, 'derived'));
+      const page = paginateTurns(cold.items, query);
       const verified = liveVerified && transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId) &&
         cold.toolCallCountKnown === true;
       const cursor = transcriptService.getTranscriptCursor(sessionId, input.agentId);

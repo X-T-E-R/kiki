@@ -567,6 +567,10 @@ In-session file operations go through `POST /api/sessions/{session_id}/fs:{actio
 
 The session `fs:{action}` workspace API accepts workspace-relative paths only and rejects absolute paths and symlink escapes. This GUI boundary does not restrict the separate agent `Read` tool's explicit absolute paths. `/api/fs:content` is for an authenticated user's preview, not an agent file tool: do not expose the bearer token or disable authentication on an untrusted network.
 
+Both session and workspace `fs:search` return one bounded page. Send `query`, `limit`, and optional `include_globs`, `exclude_globs`, and `follow_gitignore`; to continue, repeat the same conditions with the returned `next_cursor` as `cursor`. Each response contains `items`, `sort_scope: "page"`, and `truncated`, which is true exactly when `next_cursor` is present. An empty page with a cursor still has work remaining. Fetch another page only when more results are requested; an absent cursor means the search is exhausted.
+
+Pages are sorted by score descending, then path; an empty query lists the root directory with directories first, then path. Page order is not a global best-match ranking. Cancel the request when its query changes or its picker closes; cancellation stops subsequent traversal after any in-flight file-system call finishes. A single wide directory still requires a full directory read and sort. If a continuation returns `40001` because its conditions or traversed directories changed, retain the displayed candidates and restart without a cursor.
+
 ### File uploads
 
 | Method and path | Description |

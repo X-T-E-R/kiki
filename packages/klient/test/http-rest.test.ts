@@ -1168,6 +1168,31 @@ describe('native HTTP response lifecycle', () => {
     await vi.waitFor(() => expect(disconnected).toBe(true));
   });
 
+  it('cancels session-list body reads and applies explicit list deadlines', async () => {
+    const document = JSON.stringify({ code: 0, msg: 'success', data: { items: [], has_more: false } });
+    handler = (response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write(document.slice(0, 1));
+      later(() => response.end(document.slice(1)), 180);
+    };
+    await expect(channel.rest.sessions.list({}, { timeoutMs: 10 })).rejects.toMatchObject({ reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    let notifyHeaders!: () => void;
+    const headers = new Promise<void>((resolve) => { notifyHeaders = resolve; });
+    let disconnected = false;
+    handler = (response) => {
+      response.once('close', () => { disconnected = true; });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write(document.slice(0, 1));
+      notifyHeaders();
+    };
+    const controller = new AbortController();
+    const operation = channel.rest.sessions.list({ page_size: 50 }, { signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    await headers;
+    controller.abort();
+    expect(await operation).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(disconnected).toBe(true));
+  });
+
   it('keeps long export body consumption alive without the default deadline', async () => {
     handler = (response) => {
       response.writeHead(200, { 'content-type': 'application/zip' });

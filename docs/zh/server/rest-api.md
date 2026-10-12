@@ -563,6 +563,10 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 会话 `fs:{action}` 工作区 API 只接受工作区相对路径，拒绝绝对路径及符号链接逃逸。这条 GUI 边界不限制另一路 Agent `Read` 工具显式指定的绝对路径。`/api/fs:content` 供已认证用户主动预览，不走 Agent 文件工具审批；不要泄露 bearer token，也不要在不可信网络上关闭认证。
 
+会话与工作区的 `fs:search` 都按页返回，并限制每页遍历量。请求传入 `query`、`limit` 及可选的 `include_globs`、`exclude_globs`、`follow_gitignore`；续页时保持这些条件不变，将响应中的 `next_cursor` 作为 `cursor` 传入。响应包含 `items`、`sort_scope: "page"` 和 `truncated`，其中 `truncated` 当且仅当存在 `next_cursor` 时为 true。空页若带有 cursor，仍有待遍历内容；只在用户请求更多结果时续页，没有 cursor 才表示检索结束。
+
+每页按分数降序、路径升序排列；空 query 只列出根目录，目录优先，再按路径排序。页内顺序不代表全局最佳匹配排名。query 改变或选择器关闭时取消请求；正在执行的文件系统调用结束后，取消会阻止后续遍历。单个超宽目录仍需完整读取并排序。若续页因条件或已遍历目录变化返回 `40001`，保留已显示的候选，并去掉 cursor 重新检索。
+
 ### 文件上传
 
 | 方法与路径 | 说明 |

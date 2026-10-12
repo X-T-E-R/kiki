@@ -493,13 +493,13 @@ export function App() {
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived, workspaceFilter],
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       client.listSessions({
         page_size: 50,
         include_archive: showArchived || undefined,
         workspace_id: workspaceFilter,
         before_id: pageParam,
-      }),
+      }, { signal }),
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
@@ -510,7 +510,8 @@ export function App() {
   // overlaps. Older loaded pages are not interval-refetched.
   const queryClient = useQueryClient();
   useEffect(() => {
-    return startVisiblePoll({
+    const controller = new AbortController();
+    const stop = startVisiblePoll({
       intervalMs: SESSION_FIRST_PAGE_POLL_INTERVAL_MS,
       task: async () => {
         const first = await readSessionFirstPage((before_id) => client.listSessions({
@@ -518,13 +519,18 @@ export function App() {
           include_archive: showArchived || undefined,
           workspace_id: workspaceFilter,
           before_id,
-        }), queryClient.getQueryData<SessionListData>(['sessions', showArchived, workspaceFilter]));
+        }, { signal: controller.signal }), queryClient.getQueryData<SessionListData>(['sessions', showArchived, workspaceFilter]), controller.signal);
+        if (controller.signal.aborted) return;
         queryClient.setQueryData(
           ['sessions', showArchived, workspaceFilter],
           (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
         );
       },
     });
+    return () => {
+      stop();
+      controller.abort();
+    };
   }, [client, queryClient, showArchived, workspaceFilter]);
 
   const workspacesQuery = useQuery({

@@ -53,6 +53,7 @@ import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   fsOpenInRequestSchema,
@@ -290,7 +291,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       tags: ['fs'],
       operationId: 'fsAction',
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const { session_id, tail } = req.params as { session_id: string; tail: string };
 
       if (!tail.startsWith(FS_TAIL_PREFIX)) {
@@ -359,7 +360,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             await handleMkdir(runtimeFs.fs, req, reply);
             return;
           case 'search':
-            await handleSearch(runtimeFs.fs, req, reply);
+            await handleSearch(runtimeFs.fs, req, reply, signal);
             return;
           case 'grep':
             await handleGrep(runtimeFs.fs, req, reply);
@@ -381,12 +382,12 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
             return;
         }
       } catch (err) {
-        sendMappedError(reply, req, err);
+        if (!signal.aborted) sendMappedError(reply, req, err);
       } finally {
         await runtimeFs?.lease.dispose();
         await operation?.dispose();
       }
-    },
+    }),
   );
   app.post(
     fsActionRoute.path,
@@ -410,7 +411,7 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
       tags: ['fs'],
       operationId: 'workspaceFsSearch',
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const { workspace, runtime_id, ...searchRequest } = req.body;
       let runtimeFs: RuntimeFsScope | undefined;
       try {
@@ -425,14 +426,14 @@ export function registerFsRoutes(app: FsRouteHost, core: Scope): void {
           );
           return;
         }
-        const data = await runtimeFs.fs.search(searchRequest);
+        const data = await runtimeFs.fs.search(searchRequest, signal);
         reply.send(okEnvelope(data, req.id));
       } catch (err) {
-        sendMappedError(reply, req, err);
+        if (!signal.aborted) sendMappedError(reply, req, err);
       } finally {
         await runtimeFs?.lease.dispose();
       }
-    },
+    }),
   );
   app.post(
     workspaceSearchRoute.path,
@@ -691,13 +692,13 @@ async function handleMkdir(fs: IWorkspaceFsService, req: Req, reply: Reply): Pro
   reply.send(okEnvelope(data, req.id));
 }
 
-async function handleSearch(fs: IWorkspaceFsService, req: Req, reply: Reply): Promise<void> {
+async function handleSearch(fs: IWorkspaceFsService, req: Req, reply: Reply, signal: AbortSignal): Promise<void> {
   const parsed = fsSearchRequestSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
     reply.send(buildValidationEnvelope(parsed.error.issues, req.id));
     return;
   }
-  const data = await fs.search(parsed.data);
+  const data = await fs.search(parsed.data, signal);
   reply.send(okEnvelope(data, req.id));
 }
 
@@ -790,6 +791,9 @@ function sendMappedError(reply: Reply, req: { id: string }, err: unknown): void 
   const log = requestLog(req);
   if (isError2(err)) {
     switch (err.code) {
+      case ErrorCodes.VALIDATION_FAILED:
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId));
+        return;
       case ErrorCodes.FS_PATH_ESCAPES:
         reply.send(errEnvelope(ErrorCode.FS_PATH_ESCAPES_SESSION, err.message, requestId, err.stack));
         return;

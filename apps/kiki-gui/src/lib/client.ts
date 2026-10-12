@@ -1279,8 +1279,8 @@ export class KikiClient {
     if (lease !== undefined) this.serverLeaseId = lease.lease_id;
   }
 
-  listSessions(query: ListSessionsOptions = {}): Promise<import('@kiki/protocol').ListSessionsResponse> {
-    return this.run(() => this.rest.sessions.list(query));
+  listSessions(query: ListSessionsOptions = {}, options?: import('@kiki/klient').HttpRestRequestOptions): Promise<import('@kiki/protocol').ListSessionsResponse> {
+    return this.run(() => this.rest.sessions.list(query, options));
   }
 
   listEphemeralSessions(query?: Pick<ListSessionsOptions, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse> {
@@ -2681,7 +2681,7 @@ export class KikiClient {
   /** Session-scoped fuzzy file search. */
   fsSearch(
     sessionId: string,
-    body: { query: string; limit?: number },
+    body: { query: string; limit?: number; cursor?: string },
     signal?: AbortSignal,
   ): Promise<FsSearchResponse> {
     return this.run(this.rest.sessions.fsSearch(sessionId, body, { signal }));
@@ -2690,7 +2690,7 @@ export class KikiClient {
   /** Session-less fuzzy file search for the /new draft. */
   workspaceFsSearch(
     workspace: string,
-    body: { query: string; limit?: number },
+    body: { query: string; limit?: number; cursor?: string },
     signal?: AbortSignal,
   ): Promise<FsSearchResponse> {
     return this.run(this.rest.filesystem.workspaceFsSearch(workspace, body, { signal }));

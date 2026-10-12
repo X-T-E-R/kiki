@@ -18,7 +18,7 @@ import type { ContentRef } from '@kiki/transcript';
 import { I18nProvider } from '../i18n';
 import * as clipboard from '../lib/clipboard';
 import { CopyButton } from './timeline/ContentCopyButton';
-import { ContentContinuation } from './ContentContinuation';
+import { ContentContinuation, contentRefProgress } from './ContentContinuation';
 import { MediaPartList } from './mediaPreview';
 import { ShellMessage } from './Transcript';
 import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
@@ -1153,4 +1153,67 @@ it('restores a range-backed write receipt action metadata from the original, ret
   await click(container.querySelector('[data-memory-tool-toggle]'));
   await click(container.querySelector('[data-memory-tool-toggle]'));
   expect(copy).toHaveBeenCalledTimes(2);
+});
+
+
+it('renders a failed 9-of-17 structural read, retries to every step, and cancels on leaving the reader', async () => {
+  const source = { kind: 'turn' as const, id: 't17' };
+  const ref: ContentRef = { source, revision: 'fixed-seventeen', path: ['steps'], kind: 'array', offset: 8, total: 17, direction: 'backward' };
+  const steps = Array.from({ length: 17 }, (_, ordinal) => ({ kind: 'step' as const, stepId: `step-${ordinal}`, turnId: source.id, ordinal, state: 'completed' as const, frames: [{ kind: 'text' as const, frameId: `frame-${ordinal}`, role: 'assistant' as const, text: `Step ${ordinal + 1}` }] }));
+  const content = vi.fn<NonNullable<import('@kiki/klient/session-view').SessionViewFacade['transcript']['content']>>()
+    .mockRejectedValueOnce(new Error('failed segment'))
+    .mockImplementation(async ({ ref: requested }) => {
+      const start = Math.max(0, requested.offset - 4);
+      return { ref: requested, start, value: steps.slice(start, requested.offset), next: start === 0 ? undefined : { ...requested, offset: start }, contentRefs: [] };
+    });
+  const view = { snapshot: async () => ({ session: {}, in_flight_turn: null }), subscribe: () => ({ restart() {}, nudge() {}, updateSessionCursor() {}, setTranscriptGrades() {}, updateTranscriptCursor() {}, close() {} }), transcript: { content } } as unknown as import('@kiki/klient/session-view').SessionViewFacade;
+  const controller = new SessionController({} as import('@kiki/session-core/transport').SessionTransport, view, 'test', { scheduler: { schedule: (callback) => { callback(); return 0; }, cancel() {} } });
+  await controller.open();
+  const reset = () => controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'main', grade: 'delta', cursor: { seq: 1, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: source.id, ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: steps.slice(8), contentRefs: [ref] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+  reset();
+  function Reader() {
+    const state = useSyncExternalStore(controller.subscribe, controller.getState);
+    return <TranscriptDetailProvider controller={controller} load={async () => false} loads={state.detailLoads} contentRefs={state.contentRefs} sessionId="test" agentId="main"><div data-step-body>{state.blocks.filter((block) => block.kind === 'assistant').map((block) => <p key={block.id}>{block.kind === 'assistant' ? block.text : ''}</p>)}</div><ContentContinuation source={source} roots={['steps']} label="Steps" /></TranscriptDetailProvider>;
+  }
+  try {
+    const container = await render(<Reader />);
+    await act(async () => { await vi.waitFor(() => expect(container.querySelector('[data-content-continuation]')?.getAttribute('data-content-continuation')).toBe('error')); });
+    expect(container.querySelector('[data-content-continuation-progress]')?.textContent).toContain('9 / 17');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('Could not load the rest of this content.');
+    await click(container.querySelector('[data-content-continuation-action]'));
+    await act(async () => { await vi.waitFor(() => expect(controller.getState().contentRefs).toEqual([])); });
+    expect(container.querySelector('[data-content-continuation]')).toBeNull();
+    const text = container.querySelector('[data-step-body]')?.textContent ?? '';
+    for (let ordinal = 1; ordinal <= 17; ordinal += 1) expect(text).toContain(`Step ${ordinal}`);
+    expect(container.querySelectorAll('[data-step-body] p')).toHaveLength(17);
+    expect(content).toHaveBeenCalledTimes(3);
+    let settle!: (segment: import('@kiki/transcript').ContentSegment) => void;
+    let signal: AbortSignal | undefined;
+    content.mockImplementation((_input, options) => {
+      signal = options?.signal;
+      return new Promise((resolve) => { settle = resolve; });
+    });
+    const replacementRef = { ...ref, revision: 'replacement-seventeen' };
+    await act(async () => {
+      controller.handleTranscript({ type: 'transcript.reset', session_id: 'test', agent_id: 'main', grade: 'delta', cursor: { seq: 2, epoch: 'e' }, coverage: { kind: 'full', hasMoreOlder: false }, snapshot: { items: [{ kind: 'turn', turnId: source.id, ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: steps.slice(8), contentRefs: [replacementRef] }], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} } });
+      await vi.waitFor(() => expect(content).toHaveBeenCalledTimes(4));
+    });
+    await act(async () => { roots.pop()!.unmount(); });
+    expect(signal?.aborted).toBe(true);
+    const before = controller.getState();
+    settle({ ref: replacementRef, start: 0, value: steps.slice(0, 8), contentRefs: [] });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(controller.getState().blocks).toEqual(before.blocks);
+    expect(controller.getState().contentRefs).toEqual(before.contentRefs);
+  } finally { controller.close(); }
+});
+
+
+it('counts backward structural progress from the suffix while preserving forward progress and empty windows', () => {
+  const base: ContentRef = { source: { kind: 'turn', id: 'example' }, revision: 'fixed', path: ['steps'], kind: 'array', offset: 9, total: 17 };
+  const translate: Parameters<typeof contentRefProgress>[1] = (_key, params) => `${params?.['shown']}/${params?.['total']}`;
+  expect(contentRefProgress(base, translate)).toBe('9/17');
+  expect(contentRefProgress({ ...base, direction: 'backward' }, translate)).toBe('8/17');
+  expect(contentRefProgress({ ...base, direction: 'backward', offset: 17 }, translate)).toBe('0/17');
+  expect(contentRefProgress({ ...base, direction: 'backward', offset: 0, total: 0 }, translate)).toBe('0/0');
 });

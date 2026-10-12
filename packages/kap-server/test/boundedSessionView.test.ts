@@ -52,6 +52,28 @@ describe('bounded session-view canonical reads', () => {
     expect(legacy?.items).toMatchObject([{ taskId: 'task-1' }, { taskId: 'task-2' }]);
     await expect(readSessionViewTranscriptDetails(cold, 'fixture-session', { agentId: 'main', kind: 'task', cursor: 'invalid' })).rejects.toThrow('invalid transcript detail cursor');
   });
+  it('drains a stable derived live-history cursor while preparing its cold source', async () => {
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true,
+      items: [0, 1, 2, 3].map((ordinal) => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] })),
+    };
+    const service = canonicalService({ ...snapshot, hasMoreOlder: true });
+    Object.assign(service, {
+      forSessionLive: () => ({ agents: () => [] }), verifyTranscriptLiveCoverage: async () => true,
+      isTranscriptLiveCoverageVerified: () => true, getTranscriptCursor: () => ({ seq: 4, epoch: 'same-live-epoch' }),
+      readColdPageSnapshot: async () => snapshot, readFullAgentSnapshot: async () => snapshot,
+    });
+    const first = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeTurn: 't3', pageSize: 1 });
+    expect(first?.items).toMatchObject([{ turnId: 't2' }]);
+    expect(first?.read?.source).toBe('derived');
+    expect(first?.next_cursor).toBeDefined();
+    const second = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: first!.next_cursor, pageSize: 1 });
+    expect(second?.read?.stale).toBeUndefined();
+    expect(second?.items).toMatchObject([{ turnId: 't1' }]);
+    const last = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: second!.next_cursor, pageSize: 1 });
+    expect(last?.items).toMatchObject([{ turnId: 't0' }]);
+    expect(last?.has_more).toBe(false);
+  });
+
   it('continues a canonical older frame from cold history when the live tail has evicted it', async () => {
     const frame = { kind: 'text' as const, frameId: 'f-old', role: 'assistant' as const, text: '旧正文😀'.repeat(10_000) };
     const older: AgentTranscriptSnapshot = { ...empty(), items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's-old', turnId: 't0', ordinal: 0, state: 'completed', frames: [frame] }] }] };
