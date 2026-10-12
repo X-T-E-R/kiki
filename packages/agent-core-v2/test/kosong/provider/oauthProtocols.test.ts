@@ -134,7 +134,7 @@ describe('managed OAuth through the real model request consumers', () => {
     applyOAuthMethodConfig(config, method, { baseUrl: method.baseUrlFor(access), headers: method.requestHeaders(access), models: await method.listModels(access) });
     await methods.tokenProvider('openai-codex').getAccessToken({ force: true });
     const events = await requestFromConfig(config, (provider, _ref, options) => methods.tokenProvider(provider).getAccessToken(options));
-    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' } });
+    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' }, responseInstanceId: expect.any(String) });
     expect(events).toContainEqual(expect.objectContaining({ type: 'finish', providerFinishReason: 'completed' }));
     expect(inferenceRequests).toBe(1);
     await methods.logout('openai-codex');
@@ -181,7 +181,7 @@ describe('managed OAuth through the real model request consumers', () => {
     const config: ManagedKimiConfigShape = { providers: {} };
     applyOAuthMethodConfig(config, method, { baseUrl: method.baseUrlFor(access), headers: method.requestHeaders(access), models });
     const events = await requestFromConfig(config, (provider, _ref, options) => methods.tokenProvider(provider).getAccessToken(options));
-    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' } });
+    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' }, responseInstanceId: expect.any(String) });
     const apiKeyProvider = new OpenAILegacyChatProvider({ model: 'grok-example', baseUrl: 'https://api.x.ai/v1', apiKey: 'YOUR_API_KEY' });
     for await (const _part of await apiKeyProvider.generate('System example', [], [])) {}
     expect(inferenceRequests).toBe(2);
@@ -248,7 +248,7 @@ describe('OAuth runtime authentication survives the selected request identity at
       : { Authorization: 'Bearer override-example', 'X-XAI-Token-Auth': 'override-mode',
         'x-authenticateresponse': 'override-response', 'x-userid': 'override-user' };
     const events = await requestFromConfig(config, tokenSource, { global: { profile: 'none' }, headers });
-    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' } });
+    expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' }, responseInstanceId: expect.any(String) });
     expect(sink).toHaveBeenCalledTimes(1);
     expect(tokenSource).toHaveBeenCalledWith(method.providerName, { storage: 'file', key: method.oauthKey }, { force: false });
   });
@@ -332,7 +332,7 @@ describe('original OAuth storage through the SDK request consumer', () => {
       applyOAuthMethodConfig(config, method, { baseUrl: method.defaultBaseUrl, models: [{ id: codex ? 'gpt-5.5' : 'grok-example', contextLength: 128000, capabilities: ['tool_use'] }] });
       config.providers[method.providerName] = { ...config.providers[method.providerName], oauth: { storage: 'file', key: method.oauthKey, source } };
       const events = await requestFromConfig(config, (_provider, ref, options) => originals.getAccessToken(ref.source!, options));
-      expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' } });
+      expect(events).toContainEqual({ type: 'part', part: { type: 'text', text: 'Hello' }, responseInstanceId: expect.any(String) });
       expect(grants).toBe(1); expect(inference).toBe(1);
       const saved = JSON.parse(await readFile(join(home, 'auth.json'), 'utf8'));
       expect(codex ? saved.tokens.refresh_token : saved[scope].refresh_token).toBe('original-rotated');
