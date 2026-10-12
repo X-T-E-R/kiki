@@ -53,14 +53,12 @@ export const ALL_SIDEBAR_NAV_KEYS: readonly SidebarNavKey[] = [
   'discover',
 ];
 
-/** Task board, scheduled tasks and capabilities start tucked into "More
- * tools": the everyday destinations (what Kiki remembers, who talks to you,
- * what it costs, where the tour of the product starts) lead the nav. */
+/** Task board, scheduled tasks, capabilities and discovery start in "More
+ * tools"; memory, personas and usage lead the navigation. */
 export const DEFAULT_PINNED_NAV_ITEMS: readonly SidebarNavKey[] = [
   'memory',
   'personas',
   'usage',
-  'discover',
 ];
 
 export interface LayoutPreferences extends SessionListPreferences {
