@@ -18,7 +18,7 @@ No comments — no file headers, no section banners, no statement-level narratio
 
 ## Usage aggregation cache
 
-Usage aggregation compares agent inventories, wire size, mtime and offset when reusing cached or checkpointed results. An external rewrite that preserves both file size and mtime is not detected; its previously cached usage may remain marked complete until another fingerprint input changes.
+Usage aggregation reuses complete verified source snapshots until a targeted append, rewrite or filesystem event invalidates them, with a ten-minute source-fingerprint check to repair missed events. Verification compares agent inventories, wire size, mtime and offset; hot reads and range-view conversion do not extend the verification deadline. Sources without a working tracker retain per-request verification, and explicit rescan/export paths force verification. An external rewrite that preserves both file size and mtime and produces no observed change event is not detected until another fingerprint input changes.
 
 ## Advanced session and MCP surfaces
 

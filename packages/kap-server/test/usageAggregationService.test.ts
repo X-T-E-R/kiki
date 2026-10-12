@@ -1,4 +1,9 @@
+import { join } from 'node:path';
+
 import {
+  AppendLogStore,
+  IAppendLogStore,
+  ILogService,
   IFileSystemStorageService,
   IRetainedUsageService,
   ISessionIndex,
@@ -12,12 +17,13 @@ import {
   type SessionSummary,
   type WireRecord,
 } from '@kiki/agent-core-v2';
-import { Event } from '@kiki/agent-core-v2/_base/event';
+import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
 import type { UsageQuery } from '@kiki/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 
 interface Fixture {
   readonly service: UsageAggregationService;
@@ -105,6 +111,7 @@ function fixture(
   ephemeral: readonly EphemeralUsageTotal[] = [],
   beforeWireRead: () => Promise<void> = async () => {},
   beforeMetadataRead: () => Promise<void> = async () => {},
+  sourceChanges?: UsageSourceChanges,
 ): Fixture {
   const reads = new Map<string, number>();
   const readBytes = new Map<string, number>();
@@ -207,13 +214,13 @@ function fixture(
     },
   } as unknown as Scope;
   return {
-    service: new UsageAggregationService(core, now, limits),
+    service: new UsageAggregationService(core, now, limits, sourceChanges),
     reads,
     readBytes,
     checkpointReads,
     retainedQueries,
     setWire,
-    restart: () => new UsageAggregationService(core, now, limits),
+    restart: () => new UsageAggregationService(core, now, limits, sourceChanges),
     setAgentIds: (ids) => { agentIds = ids; },
     setPrice: (value) => { price = value; },
     persistedRecordCounts: () => [...persisted.values()].flatMap((bytes) => {
@@ -409,6 +416,36 @@ describe('UsageAggregationService record-level sources', () => {
 });
 
 describe('UsageAggregationService first load', () => {
+  it('measures cold and warm source probes before and after tracked invalidation on the same complete fleet', async () => {
+    const now = Date.UTC(2026, 9, 6, 12);
+    const sessions = Array.from({ length: 285 }, (_, i) => summary(`example-${i}`, 'example-workspace'));
+    const records = Object.fromEntries(sessions.map((session) => [scope(session.workspaceId, session.id), [
+      usageRecord(now - 9 * 86_400_000), usageRecord(now, 1),
+    ]]));
+    const measurements: Array<{ tracked: boolean; coldMs: number; warmMs: number; coldProbes: number; warmProbes: number }> = [];
+    const responses = [];
+    for (const tracked of [false, true]) {
+      let probes = 0;
+      const changes = { ready: tracked, onDidChange: () => ({ dispose: () => {} }) };
+      const f = fixture(sessions, records, () => now, {}, undefined, undefined, undefined, undefined,
+        async () => { probes++; await new Promise<void>((resolve) => setTimeout(resolve, 2)); }, changes);
+      const started = performance.now();
+      const cold = await query(f.service, { range: 'today' });
+      const coldMs = performance.now() - started;
+      const coldProbes = probes;
+      const warmed = performance.now();
+      const warm = await query(f.service, { range: 'today' });
+      measurements.push({ tracked, coldMs, warmMs: performance.now() - warmed, coldProbes, warmProbes: probes - coldProbes });
+      expect(warm).toEqual(cold);
+      expect(warm.reliability.complete).toBe(true);
+      expect(warm.summary.tokens.output).toBe(285);
+      responses.push(warm);
+    }
+    expect(responses[1]).toEqual(responses[0]);
+    expect(measurements[0]?.warmProbes).toBe(855);
+    expect(measurements[1]?.warmProbes).toBe(0);
+    console.log(JSON.stringify({ syntheticFleetSourceProbeBenchmark: { metadataDelayMs: 2, sessions: 285, measurements } }));
+  });
   it('measures checkpoint validation without dropping old long sessions or filtered details', async () => {
     const now = Date.UTC(2026, 8, 2, 12);
     const today = Date.UTC(2026, 8, 1, 16);
@@ -570,6 +607,87 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
+  it('skips warmed fleet probes and refreshes only signalled sources, with a periodic missed-event repair', async () => {
+    const day = Date.UTC(2026, 9, 6);
+    let now = day;
+    let metadataReads = 0;
+    let listener: (key?: string) => void = () => {};
+    const changes: UsageSourceChanges = {
+      ready: true,
+      onDidChange: (callback) => { listener = callback; return { dispose: () => {} }; },
+    };
+    const f = fixture([summary('s', 'w'), summary('other', 'w')], {
+      [scope('w', 's')]: [usageRecord(day - 9 * 86_400_000), usageRecord(day)],
+      [scope('w', 'other')]: [usageRecord(day)],
+    }, () => now, {}, undefined, undefined, undefined, undefined, async () => { metadataReads++; }, changes);
+    const input: UsageQuery = { range: 'today' };
+    const cold = await query(f.service, input);
+    const baseline = metadataReads;
+    expect(await query(f.service, input)).toEqual(cold);
+    expect(metadataReads).toBe(baseline);
+    f.setWire(scope('w', 's'), [usageRecord(day - 9 * 86_400_000), usageRecord(day), usageRecord(day + 1)]);
+    listener('w\0s');
+    expect((await query(f.service, input)).summary.tokens.output).toBe(3);
+    expect(metadataReads - baseline).toBe(6);
+    const afterAppend = metadataReads;
+    await query(f.service, input);
+    expect(metadataReads).toBe(afterAppend);
+    f.setWire(scope('w', 's'), [usageRecord(day + 2)]);
+    listener('w\0s');
+    expect((await query(f.service, input)).summary.tokens.output).toBe(2);
+    f.setAgentIds(['main', 'child']);
+    f.setWire('sessions/w/s/agents/child', [usageRecord(day + 3)]);
+    listener();
+    expect((await query(f.service, input)).summary.tokens.output).toBe(3);
+    f.setWire(scope('w', 's'), [usageRecord(day + 2), usageRecord(day + 4)]);
+    now += 9 * 60_000;
+    const beforeRepair = metadataReads;
+    await query(f.service, input);
+    expect(metadataReads).toBe(beforeRepair);
+    now += 60_000;
+    expect((await query(f.service, input)).summary.tokens.output).toBe(4);
+    expect(metadataReads).toBeGreaterThan(beforeRepair);
+    expect((await query(f.service)).summary.tokens.output).toBe(4);
+  });
+
+  it('does not trust tracked cache when the watcher is unavailable or an export requires validation', async () => {
+    let listener: (key?: string) => void = () => {};
+    const changes = { ready: true, onDidChange: (callback: typeof listener) => { listener = callback; return { dispose: () => {} }; } };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(1)] }, () => 100,
+      {}, undefined, undefined, undefined, undefined, undefined, changes);
+    await query(f.service);
+    f.setWire(scope('w', 's'), [usageRecord(1), usageRecord(2)]);
+    const exported: number[] = [];
+    await f.service.readExportSources(async (source) => { exported.push(source.records.length); });
+    expect(exported).toEqual([2]);
+    changes.ready = false;
+    f.setWire(scope('w', 's'), [usageRecord(3)]);
+    expect((await query(f.service)).summary.tokens.output).toBe(1);
+  });
+  it('does not extend all-history source verification on hot reads or lose invalidation during a load', async () => {
+    let now = 100;
+    let probes = 0;
+    let listener: (key?: string) => void = () => {};
+    let signalDuringRead = true;
+    const changes = { ready: true, onDidChange: (callback: typeof listener) => { listener = callback; return { dispose: () => {} }; } };
+    const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(1)] }, () => now,
+      {}, undefined, undefined, undefined, async () => { if (signalDuringRead) listener('w\0s'); }, async () => { probes++; }, changes);
+    await query(f.service);
+    signalDuringRead = false;
+    const first = probes;
+    await query(f.service);
+    expect(probes - first).toBe(3);
+    const checked = probes;
+    now += 5 * 60_000;
+    await query(f.service);
+    await query(f.service, { range: 'today' });
+    expect(probes).toBe(checked);
+    f.setWire(scope('w', 's'), [usageRecord(1), usageRecord(2)]);
+    now += 5 * 60_000;
+    expect((await query(f.service, { range: 'today' })).summary.tokens.output).toBe(2);
+    expect(probes).toBeGreaterThan(checked);
+  });
+
   it('retains bounded fleet views above the per-entry cap while validating every source', async () => {
     const day = Date.UTC(2026, 9, 6);
     let metadataReads = 0;
@@ -1186,5 +1304,79 @@ describe('UsageAggregationService full rescan', () => {
     const f = fixture([summary('s', 'ws')], { [scope('ws', 's')]: [usageRecord(1)] }, () => clock,
       {}, undefined, undefined, [], async () => { clock = 9000; });
     expect((await query(f.service)).reliability.complete).toBe(true);
+  });
+});
+
+
+describe('UsageSourceTracker', () => {
+  it('uses committed append/rewrite events and lazy targeted filesystem invalidation, pruning unrelated trees', async () => {
+    const root = join(process.cwd(), '.tmp', 'usage-tracker', 'sessions');
+    const storage = {
+      pathFor: () => root,
+      append: async () => {},
+      write: async () => {},
+    } as unknown as IFileSystemStorageService;
+    const logs = new AppendLogStore(storage);
+    let signal: (filename: string | null) => void = () => {};
+    let failed: (error: unknown) => void = () => {};
+    let watches = 0;
+    let disposed = false;
+    const core = { accessor: { get: (id: unknown) => {
+      if (id === IFileSystemStorageService) return storage;
+      if (id === IAppendLogStore) return logs;
+      if (id === ILogService) return { warn: () => {} };
+      throw new Error('unexpected service');
+    } } } as unknown as Scope;
+    const tracker = new UsageSourceTracker(core, (_root, listener) => {
+      watches++; signal = listener;
+      return { close: () => { disposed = true; }, on: (_event, listener) => { failed = listener; } };
+    });
+    const changes: Array<string | undefined> = [];
+    tracker.onDidChange((key) => { changes.push(key); });
+    expect(watches).toBe(0);
+    logs.append('sessions/w/s/agents/main', 'wire.jsonl', usageRecord(1));
+    await logs.flush();
+    expect(changes).toEqual(['w\0s']);
+    await logs.rewrite('sessions/w/s/agents/main', 'wire.jsonl', [usageRecord(2)]);
+    expect(changes).toEqual(['w\0s', 'w\0s']);
+    expect(tracker.ready).toBe(true);
+    expect(watches).toBe(1);
+    expect(changes.at(-1)).toBeUndefined();
+    const count = changes.length;
+    signal('w/s/media');
+    signal('w/s/agents/main/blobs');
+    expect(changes).toHaveLength(count);
+    signal('w/s/agents/main/wire.jsonl');
+    expect(changes.at(-1)).toBe('w\0s');
+    signal('w\\s\\agents\\child');
+    expect(changes.at(-1)).toBe('w\0s');
+    signal(null);
+    expect(changes.at(-1)).toBeUndefined();
+    failed(new Error('watch lost'));
+    expect(tracker.ready).toBe(false);
+    expect(disposed).toBe(true);
+    tracker.dispose();
+    expect(tracker.ready).toBe(false);
+    await logs.close();
+    logs.dispose();
+  });
+
+  it('leaves source validation enabled after unsupported watches and in-memory storage', async () => {
+    const writes = new Emitter<{ scope: string; key: string }>();
+    for (const root of [undefined, join(process.cwd(), '.tmp', 'unsupported-watch')]) {
+      let warnings = 0;
+      const core = { accessor: { get: (id: unknown) => {
+        if (id === IFileSystemStorageService) return { pathFor: () => root };
+        if (id === IAppendLogStore) return { onDidWrite: writes.event };
+        if (id === ILogService) return { warn: () => { warnings++; } };
+        throw new Error('unexpected service');
+      } } } as unknown as Scope;
+      const tracker = new UsageSourceTracker(core, () => { throw new Error('unsupported'); });
+      expect(tracker.ready).toBe(false);
+      expect(warnings).toBe(root === undefined ? 0 : 1);
+      expect(tracker.ready).toBe(false);
+      tracker.dispose();
+    }
+    writes.dispose();
   });
 });

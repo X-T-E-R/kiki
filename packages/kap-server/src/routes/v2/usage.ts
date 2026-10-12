@@ -1,4 +1,4 @@
-import { IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
+import { IInstantiationService, IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
 import { agentActivitySnapshotSchema, requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
@@ -11,6 +11,7 @@ import {
   UsageAggregationService,
   UsagePageTokenMismatchError,
 } from '../../usage/usageAggregationService';
+import { UsageSourceTracker } from '../../usage/usageSourceTracker';
 
 interface V2UsageRouteHost {
   post(
@@ -56,7 +57,12 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     reply.send(okEnvelope(core.accessor.get(IRequestGovernance).agentSnapshot(), req.id));
   });
   app.get(agents.path, agents.options, agents.handler as Parameters<V2UsageRouteHost['get']>[2]);
-  const service = new UsageAggregationService(core);
+  const sources = new UsageSourceTracker(core);
+  const service = new UsageAggregationService(core, Date.now, {}, sources);
+  core.accessor.get(IInstantiationService).onWillDispose(() => {
+    service.dispose();
+    sources.dispose();
+  });
   const rescanStatus = defineRoute({
     method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
     operationId: 'getUsageRescan', tags: ['usage'],

@@ -19,6 +19,9 @@ import {
 import type { UsageAggregateWire, UsageQuery, UsageResponse, UsageRescanStatus } from '@kiki/protocol';
 
 import { IModelPricingService } from '../pricing/modelPricingService';
+import type { UsageSourceChanges } from './usageSourceTracker';
+
+const SOURCE_RECHECK_MS = 10 * 60_000;
 
 const DEFAULT_PAGE_SIZE = 50;
 const INDEX_PAGE_SIZE = 100;
@@ -91,6 +94,7 @@ interface SessionCacheEntry {
   readonly complete: boolean;
   readonly bytes: number;
   readonly view?: SessionCacheView;
+  verifiedAt?: number;
 }
 
 interface SessionCacheView {
@@ -205,7 +209,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for wire files produced through the managed append/rewrite stores. Bounded query views are read-only and never replace full incremental checkpoints. External in-place rewrites that preserve the checkpoint boundary are outside this cache's consistency contract. */
+/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly sessionFlights = new Map<string, Promise<SessionLoadResult>>();
@@ -296,8 +300,33 @@ export class UsageAggregationService {
     private readonly core: Scope,
     private readonly now: () => number = Date.now,
     limits: Partial<UsageAggregationLimits> = {},
+    private readonly sourceChanges?: UsageSourceChanges,
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
+    this.sourceSubscription = sourceChanges?.onDidChange((key) => {
+      this.sourceRevision++;
+      if (key === undefined) {
+        for (const entry of this.cache.values()) entry.verifiedAt = undefined;
+      } else {
+        const entry = this.cache.get(key);
+        if (entry !== undefined) entry.verifiedAt = undefined;
+      }
+    });
+  }
+
+  private sourceRevision = 0;
+  private readonly sourceSubscription?: { dispose(): void };
+
+  dispose(): void {
+    this.sourceSubscription?.dispose();
+  }
+
+  private rememberVerified(key: string, persisted: PersistentSessionRecords, revision: number): void {
+    const entry = this.cache.get(key);
+    if (entry?.complete && entry.persisted.agents === persisted.agents && revision === this.sourceRevision &&
+      (entry.verifiedAt === undefined || this.now() - entry.verifiedAt >= SOURCE_RECHECK_MS)) {
+      entry.verifiedAt = this.now();
+    }
   }
 
   cacheStatus(): { readonly entries: number; readonly records: number } {
@@ -413,10 +442,12 @@ export class UsageAggregationService {
         const persisted = cached?.persisted ?? await this.readPersistentSession(
           this.core.accessor.get(IFileSystemStorageService), key,
         );
-        const current = await this.cacheIsCurrent(summary, persisted);
+        const revision = this.sourceRevision;
+        const current = await this.cacheIsCurrent(summary, persisted, this.rescan.state !== 'running');
         if (current && !cached?.view && this.rescan.state !== 'running') {
           this.cacheSessionRange(key, persisted, true, query.range);
         }
+        if (current) this.rememberVerified(key, persisted, revision);
         if (current && !cached?.view && (query.range.startAt !== undefined || query.range.endAt !== undefined)) {
           return {
             persisted: { ...persisted, records: persisted.records.filter((record) => record.invalid || inRange(record.time, query.range)) },
@@ -512,16 +543,17 @@ export class UsageAggregationService {
       const persisted = prepared?.persisted ?? cached?.persisted ?? await this.readPersistentSession(
         this.core.accessor.get(IFileSystemStorageService), cacheKey,
       );
-      const complete = prepared?.current ?? await this.cacheIsCurrent(summary, persisted);
+      const complete = prepared?.current ?? await this.cacheIsCurrent(summary, persisted, false);
       if (!complete) budget.sourcesComplete = false;
       return { summary, records: persisted.records, complete, deleted: false };
     }
     if (prepared?.current) {
       return { summary, records: prepared.persisted.records, complete: true, deleted: false };
     }
-    if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted)) {
+    if (prepared === undefined && cached?.complete && await this.cacheIsCurrent(summary, cached.persisted, !preserveMissingSources)) {
       return { summary, records: cached.persisted.records, complete: true, deleted: false };
     }
+    const revision = this.sessionFlights.has(cacheKey) ? undefined : this.sourceRevision;
     let flight = this.sessionFlights.get(cacheKey);
     if (flight === undefined) {
       flight = this.loadSessionIncremental(summary, budget.remainingRecords, budget.deadlineAt, undefined, preserveMissingSources, prepared?.view ? undefined : prepared?.persisted);
@@ -539,13 +571,18 @@ export class UsageAggregationService {
     budget.remainingRecords -= result.scannedRecordCount;
     if (result.incompleteReason !== null) budget.incompleteReason = result.incompleteReason;
     this.cacheSessionRange(cacheKey, result.persisted, result.session.complete, range);
+    if (revision !== undefined) this.rememberVerified(cacheKey, result.persisted, revision);
     if (range !== undefined && (range.startAt !== undefined || range.endAt !== undefined)) {
       return { ...result.session, records: result.session.records.filter((record) => record.invalid || inRange(record.time, range)) };
     }
     return result.session;
   }
 
-  private async cacheIsCurrent(summary: SessionSummary, persisted: PersistentSessionRecords): Promise<boolean> {
+  private async cacheIsCurrent(summary: SessionSummary, persisted: PersistentSessionRecords, allowTracked = true): Promise<boolean> {
+    const cached = this.cache.get(sessionKey(summary));
+    if (allowTracked && this.sourceChanges?.ready && cached?.complete &&
+      cached.persisted.agents === persisted.agents && cached.verifiedAt !== undefined &&
+      this.now() - cached.verifiedAt < SOURCE_RECHECK_MS) return true;
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     const agentIds = await storage.list(`${sessionScope}/agents`);
@@ -793,7 +830,7 @@ export class UsageAggregationService {
       if (part === undefined) return undefined;
       parts.push(part);
     }
-    const records: NormalizedUsageRecord[] = [];
+    const records: NormalizedUsageRecord[] = [...entry.persisted.records];
     for (const [index, part] of parts.entries()) {
       for (const record of part.persisted.records) records.push(record);
       const partKey = entry.view.parts[index] as string;
@@ -813,9 +850,18 @@ export class UsageAggregationService {
       return;
     }
     const existing = this.cache.get(key);
+    const verifiedAt = existing?.persisted.agents === persisted.agents ? existing.verifiedAt : undefined;
     if (existing !== undefined) this.deleteCacheEntry(key, existing);
     const records = persisted.records.filter((record) => record.invalid || inRange(record.time, range));
     if (records.length > this.limits.cacheMaxRecords || this.limits.cacheMaxEntryRecords <= 0) return;
+    if (records.length <= this.limits.cacheMaxEntryRecords) {
+      this.cacheSession(key, { ...persisted, records }, complete, {
+        startAt: range.startAt, endAt: range.endAt, parts: [],
+      });
+      const cached = this.cache.get(key);
+      if (cached !== undefined) cached.verifiedAt = verifiedAt;
+      return;
+    }
     const parts: string[] = [];
     for (let offset = 0; offset < records.length; offset += this.limits.cacheMaxEntryRecords) {
       const partKey = `${key}\0view:${range.startAt}:${range.endAt}:${offset}`;
@@ -827,6 +873,8 @@ export class UsageAggregationService {
     this.cacheSession(key, { ...persisted, records: [] }, complete, {
       startAt: range.startAt, endAt: range.endAt, parts,
     });
+    const cached = this.cache.get(key);
+    if (cached !== undefined) cached.verifiedAt = verifiedAt;
   }
 
   private cacheSession(
@@ -859,6 +907,7 @@ export class UsageAggregationService {
       complete,
       bytes,
       view,
+      verifiedAt: existing?.persisted.agents === persisted.agents ? existing.verifiedAt : undefined,
     });
     this.cachedRecordCount += records.length;
     this.cachedBytes += bytes;

@@ -2,13 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { IAppendLogStore, ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { usageResponseSchema, usageRescanStatusSchema, type UsageResponse } from '@kiki/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { type RunningServer, startServer } from '../src/start';
+import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -197,6 +199,39 @@ describe('server /api/usage', () => {
     if (home !== undefined) {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as never);
       home = undefined;
+    }
+  });
+
+  it('refreshes warmed usage after committed live appends, external wire rewrites and new agents', async () => {
+    const core = (server as RunningServer).core;
+    const sources = new UsageSourceTracker(core);
+    const service = new UsageAggregationService(core, Date.now, {}, sources);
+    const changed: Array<string | undefined> = [];
+    sources.onDidChange((key) => { changed.push(key); });
+    try {
+      expect(sources.ready).toBe(true);
+      const cold = await service.query({});
+      expect(cold.summary.tokens.output).toBe(160);
+      expect(await service.query({})).toEqual(cold);
+      const logs = core.accessor.get(IAppendLogStore);
+      const wireScope = `sessions/${WS_A}/session-high/agents/main`;
+      logs.append(wireScope, 'wire.jsonl', usageRecord(BASE_TIME + 4 * DAY, 'billing-a', 7));
+      await logs.flush(wireScope, 'wire.jsonl');
+      const live = await service.query({});
+      expect(live.summary.tokens.output).toBe(167);
+      expect(live.reliability.complete).toBe(true);
+      await writeWire(home as string, WS_A, 'session-high', 'main', [usageRecord(BASE_TIME + DAY, 'billing-a', 5)]);
+      await vi.waitFor(async () => {
+        const rewritten = await service.query({});
+        expect(rewritten.summary.tokens.output, JSON.stringify(changed)).toBe(15);
+        expect(rewritten.reliability.complete).toBe(true);
+      });
+      await writeWire(home as string, WS_A, 'session-high', 'child', [usageRecord(BASE_TIME + DAY, 'billing-a', 3)]);
+      await vi.waitFor(async () => { expect((await service.query({})).summary.tokens.output).toBe(18); });
+      expect((await service.query({})).reliability.complete).toBe(true);
+    } finally {
+      service.dispose();
+      sources.dispose();
     }
   });
 
