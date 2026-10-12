@@ -274,6 +274,7 @@ describe('plugin usage routes', () => {
     byId.set('demo', { ...record, root, manifest: { name: 'demo', version: '1.0.0', kiki: { panels: [
       { schemaVersion: 1, id: 'work', label: 'Workspace', slot: 'workspace', path: './panel.html', file, assetFiles: {} },
       { schemaVersion: 1, id: 'side', label: 'Service', slot: 'sidebar', path: './panel.html', file, assetFiles: {} },
+      { schemaVersion: 1, id: 'prefs', label: 'Settings', slot: 'settings', path: './panel.html', file, assetFiles: {} },
     ] } } as PluginInfo['manifest'] });
     const requestPanel = vi.fn(async () => 'service-result');
     servicesByToken.set(IPluginHostService, { requestPanel });
@@ -285,16 +286,20 @@ describe('plugin usage routes', () => {
     try {
       const document = '/plugins/demo/panels/work/document';
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=cold-session` })).json().code).toBe(0);
+      const offered = (await app.inject({ method: 'GET', url: '/plugins/panels?session_id=cold-session' })).json();
+      expect(offered.data.panels.map((panel: { id: string }) => panel.id).toSorted()).toEqual(['side', 'work']);
       await usage.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' });
       const panels = (await app.inject({ method: 'GET', url: '/plugins/panels?session_id=cold-session' })).json();
       expect(panels.data.panels.map((panel: { id: string }) => panel.id)).toEqual([]);
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=cold-session` })).json().code).toBe(ErrorCode.PLUGIN_NOT_FOUND);
       expect((await app.inject({ method: 'POST', url: '/plugins/demo/panels/work/bridge', payload: { method: 'plugin.call', session_id: 'cold-session', action: 'inspect', args: {} } })).json().code).toBe(ErrorCode.PLUGIN_NOT_FOUND);
       expect(requestPanel).not.toHaveBeenCalled();
+      expect((await app.inject({ method: 'GET', url: '/plugins/demo/panels/prefs/document?session_id=cold-session' })).json().code).toBe(0);
+      expect((await app.inject({ method: 'POST', url: '/plugins/demo/panels/prefs/bridge', payload: { method: 'plugin.call', action: 'catalog', args: {} } })).json().code).toBe(0);
       expect((await app.inject({ method: 'GET', url: `${document}?session_id=other-session` })).json().code).toBe(0);
       expect((await app.inject({ method: 'POST', url: '/plugins/demo/panels/work/bridge', payload: { method: 'plugin.call', session_id: 'other-session', action: 'inspect', args: {} } })).json().code).toBe(0);
       expect((await app.inject({ method: 'POST', url: '/plugins/demo/panels/side/bridge', payload: { method: 'plugin.call', action: 'inspect', args: {} } })).json().code).toBe(0);
-      expect(requestPanel).toHaveBeenCalledTimes(2);
+      expect(requestPanel).toHaveBeenCalledTimes(3);
       expect((await app.inject({ method: 'GET', url: '/plugins/commands?session_id=cold-session' })).json().data.commands).toEqual([]);
       expect((await app.inject({ method: 'GET', url: '/plugins/commands?session_id=other-session' })).json().data.commands).toHaveLength(1);
       for (const path of ['/plugins/panels', '/plugins/commands', document]) {

@@ -190,6 +190,58 @@ describe('SessionSkillCatalogService (seed view)', () => {
     await Promise.all([s1.host.dispose(), s2.host.dispose()]);
   });
 
+  it('waits for a plugin snapshot that is not loaded yet and does not strip skills when it never arrives', async () => {
+    const pluginSkill = stubSkill('demo-skill', {
+      source: 'extra',
+      plugin: { id: 'demo', instructions: 'demo instructions' },
+      sourceRoot: '/plugins/demo/skills',
+    });
+    const seed = dataSeed(catalogOf(pluginSkill));
+    let loaded = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const plugins = {
+      onDidReload: Event.None,
+      pluginSkillRoots: async () => {
+        await gate;
+        return loaded
+          ? [{ path: '/plugins/demo/skills', source: 'extra' as const, plugin: { id: 'demo' } }]
+          : [];
+      },
+      hasLoadedSnapshot: () => loaded,
+    } as unknown as IPluginService;
+    const discovery: ISkillDiscovery = {
+      _serviceBrand: undefined,
+      discover: async (roots) => roots.length === 0
+        ? { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }
+        : { skills: [pluginSkill], skipped: [], scannedRoots: ['/plugins/demo/skills'], scannedDirectories: [] },
+    };
+    const missed = makeSession(seed.data, 's1', { plugins, discovery });
+    release();
+    await missed.catalog.load();
+    expect(missed.catalog.catalog.getSkill('demo-skill')).toBeDefined();
+    await missed.host.dispose();
+
+    loaded = false;
+    let open!: () => void;
+    const wait = new Promise<void>((resolve) => { open = resolve; });
+    const late = {
+      onDidReload: Event.None,
+      pluginSkillRoots: async () => {
+        await wait;
+        return [{ path: '/plugins/demo/skills', source: 'extra' as const, plugin: { id: 'demo' } }];
+      },
+      hasLoadedSnapshot: () => loaded,
+    } as unknown as IPluginService;
+    const arrived = makeSession(seed.data, 's1', { plugins: late, discovery });
+    const pending = arrived.catalog.load();
+    loaded = true;
+    open();
+    await pending;
+    expect(arrived.catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
+    await arrived.host.dispose();
+  });
+
   it('list returns plain summaries of the merged catalog after ready', async () => {
     const seed = dataSeed(
       catalogOf(stubSkill('from-workspace', { description: 'seeded', source: 'project' })),

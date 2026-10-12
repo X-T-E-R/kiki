@@ -142,9 +142,9 @@ The **WebBridge readiness** card sits on this page too, below the routes. It sta
 
 **Settings → Plugins** (`/settings/plugins`) lists the plugins installed on the connected server. Each row carries the plugin's own name, where it came from, its version, whether it is on or reporting errors, and a switch to turn it off without leaving the list. **Find plugins in the market** at the top is where new plugins are installed.
 
-Selecting a plugin opens **its own settings page** (`/settings/plugins?plugin=<id>`): the plugin's name and state, a way back to the list, the settings its manifest declares, and a switch to turn it on or off. Save and Discard appear once a field has changed; leaving with an unsaved change asks first. **Remove plugin** is at the bottom of the page, and it asks first and names what it takes with it, as the [plugin manager](../customization/plugins.md#install-and-manage) does.
+Selecting a plugin opens **its own settings page** (`/settings/plugins?plugin=<id>`): the plugin's name and state, a way back to the list, its settings, and a switch to turn it on or off. An enabled plugin can supply its own settings interface. Otherwise Kiki shows the fields its manifest declares, with Save and Discard after a field changes. If the plugin's interface fails to load, choose **Retry** or use those fields. Leaving with unsaved changes asks first.
 
-A plugin whose manifest declares no settings still gets its page: the fields are simply absent, and the switch and Remove plugin still work.
+**Remove plugin** is at the bottom of the page; it asks first and names what it takes with it, as the [plugin manager](../customization/plugins.md#install-and-manage) does. A plugin with neither settings fields nor its own settings interface still gets a page with its switch and Remove plugin.
 
 The page has its own address, so you can copy it, refresh, or use the browser's back button and come back to the same plugin. The plugin's **Plugin settings** entry on the Capabilities page leads to it, and so does the package button on a [media source](../customization/plugins.md#configuring-a-source).
 

@@ -312,7 +312,7 @@ export function registerPluginsRoutes(
         const panels = (await Promise.all(installed.map(async (item) => {
           const info = await plugins.getPluginInfo({ id: item.id });
           const allowed = await usage.allows(workspaceId, info.id, req.query.session_id);
-          return (info.manifest?.kiki?.panels ?? []).filter(() => allowed).map((panel) => ({
+          return (info.manifest?.kiki?.panels ?? []).filter((panel) => panel.slot !== 'settings' && allowed).map((panel) => ({
             pluginId: info.id, id: panel.id, label: panel.label, slot: panel.slot,
           }));
         }))).flat();
@@ -385,7 +385,7 @@ export function registerPluginsRoutes(
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
-        if (core.accessor.get(IPluginUsageService).enabled()) {
+        if (panel.slot !== 'settings' && core.accessor.get(IPluginUsageService).enabled()) {
           const workspaceId = await pluginContextWorkspace(core, req.query);
           if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, req.query.session_id)) {
             reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));
@@ -409,11 +409,12 @@ export function registerPluginsRoutes(
     async (req, reply) => {
       try {
         const info = await core.accessor.get(IPluginService).getPluginInfo({ id: req.params.plugin_id });
-        if (!info.enabled || info.state !== 'ok' || !info.manifest?.kiki?.panels?.some((item) => item.id === req.params.panel_id)) {
+        const panel = info.manifest?.kiki?.panels?.find((item) => item.id === req.params.panel_id);
+        if (!info.enabled || info.state !== 'ok' || panel === undefined) {
           reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled', req.id));
           return;
         }
-        if (core.accessor.get(IPluginUsageService).enabled()) {
+        if (!(panel.slot === 'settings' && req.body.method === 'plugin.call') && core.accessor.get(IPluginUsageService).enabled()) {
           const workspaceId = await pluginContextWorkspace(core, { session_id: req.body.session_id });
           if (!await core.accessor.get(IPluginUsageService).allows(workspaceId, info.id, req.body.session_id)) {
             reply.send(errEnvelope(ErrorCode.PLUGIN_NOT_FOUND, 'Panel is not enabled in this workspace', req.id));

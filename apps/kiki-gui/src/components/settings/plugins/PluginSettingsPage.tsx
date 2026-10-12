@@ -25,7 +25,8 @@ import { ConfirmDialog } from '../../ConfirmDialog';
 import { CapabilityIcon } from '../../capabilities/CapabilityIcon';
 import { PluginSettingsForm } from '../../capabilities/PluginSettingsForm';
 import { Tag } from '../../capabilities/primitives';
-import { useInstalledPlugins, useInvalidatePlugins, usePluginMarketplace } from '../../capabilities/usePlugins';
+import { useInstalledPlugins, useInvalidatePlugins, usePluginInfo, usePluginMarketplace } from '../../capabilities/usePlugins';
+import { PluginSettingsPanel, settingsPanelOf } from './PluginSettingsPanel';
 import { FeedbackLine, InlineError, Toggle } from '../../controls';
 import { Icon } from '../../icons';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../../ui';
@@ -68,10 +69,37 @@ export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) 
   return (
     <div className="space-y-6" data-plugin-settings-page={plugin.id}>
       <PluginHeader plugin={plugin} origin={pluginOrigin(plugin, entries.data?.entries ?? [])} />
-      <PluginSettingsForm pluginId={plugin.id} />
+      <PluginSettingsBody plugin={plugin} />
       <PluginManagement plugin={plugin} />
     </div>
   );
+}
+
+/**
+ * The plugin's own settings panel when it ships one and the master switch
+ * still allows the document. Otherwise the generic schema form, which is also
+ * what a turned-off plugin keeps: its document route refuses a disabled plugin.
+ */
+function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
+  const { t } = useI18n();
+  const { scopeId, meta } = useConnection();
+  const info = usePluginInfo(plugin.id);
+  const panel = settingsPanelOf(info.data?.manifest);
+  const canOpen = plugin.enabled && plugin.state === 'ok' && panel !== undefined;
+  if (plugin.enabled && plugin.state === 'ok' && info.isPending) {
+    return <p className="py-2 text-[13px] text-ink-faint" role="status" data-plugin-settings-panel-loading>{t('cap.loading')}</p>;
+  }
+  if (canOpen && panel !== undefined) {
+    return (
+      <PluginSettingsPanel
+        key={`${scopeId}:${meta?.server_id ?? ''}:${plugin.id}:${panel.id}`}
+        pluginId={plugin.id}
+        panelId={panel.id}
+        label={panel.label}
+      />
+    );
+  }
+  return <PluginSettingsForm pluginId={plugin.id} />;
 }
 
 /** Back to the list, the plugin's own name, and the state it is in now. */

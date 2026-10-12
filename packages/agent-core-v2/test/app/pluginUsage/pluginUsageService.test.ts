@@ -111,6 +111,16 @@ describe('PluginUsageService', () => {
     await expect(reloaded.allows('workspace-a', 'demo')).resolves.toBe(true);
   });
 
+  it('admits a new session from a global on and still honors an explicit workspace off', async () => {
+    const { service } = create();
+    service.registerPluginStateReader(() => ({ allowed: true, globalEnabled: true }));
+    await expect(service.allows('workspace-a', 'demo', 'session-new')).resolves.toBe(true);
+    await expect(service.allows('workspace-b', 'demo', 'session-other')).resolves.toBe(true);
+    await service.set({ workspaceId: 'workspace-a', pluginId: 'demo', override: 'off' });
+    await expect(service.allows('workspace-a', 'demo', 'session-new')).resolves.toBe(false);
+    await expect(service.allows('workspace-b', 'demo', 'session-other')).resolves.toBe(true);
+  });
+
   it('keeps installation defaults, workspace choices, and explicit session choices independent across cold reads', async () => {
     const { service, documents } = create();
     service.registerPluginStateReader(id => ({ allowed: id !== 'denied', globalEnabled: false }));

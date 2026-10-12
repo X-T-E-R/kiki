@@ -146,8 +146,8 @@ export class SessionSkillCatalogService
   private refreshPluginOverlay(): Promise<void> {
     if (this.plugins === undefined || this.discovery === undefined || this.session === undefined) return Promise.resolve();
     const next = this.pluginOverlayTail.catch(() => undefined).then(async () => {
-      if (!this.plugins!.hasLoadedSnapshot()) return;
       const roots = await this.plugins!.pluginSkillRoots(this.session!.workspaceId, this.session!.sessionId);
+      if (!this.plugins!.hasLoadedSnapshot()) return;
       const contribution = await this.discovery!.discover(roots);
       this.sessionPluginIds = new Set(roots.flatMap((root) => root.plugin === undefined ? [] : [root.plugin.id]));
       this.contributions.set(SESSION_PLUGIN_CONTRIBUTION_ID, { c: contribution, priority: 5 });
