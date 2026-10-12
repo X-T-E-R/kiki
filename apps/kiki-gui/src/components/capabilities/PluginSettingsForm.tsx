@@ -3,6 +3,15 @@
  * (`kiki.settings`), stored under `[plugin_settings.<id>]`. Plain values are
  * read back; secret values are only reported as set, and are edited through
  * the shared SecretField without a reveal route.
+ *
+ * Optional property metadata (`hidden`, `group`, `groupTitle`, `enum`,
+ * `multiline`, `advanced`) is the generic layout. A plugin with its own
+ * settings panel does not land here; this form is the one every other plugin
+ * gets, including a panel the host cannot open.
+ *
+ * Field text is resolved per language by `localizeSettingText`, the same rule
+ * the media source form uses, so a translated property reads the same on every
+ * settings route.
  */
 
 import { useEffect, useState } from 'react';
@@ -12,6 +21,7 @@ import type { PluginSettingsResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { localizeSettingText, type SettingTextSource } from '../../lib/settingText';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
@@ -20,12 +30,15 @@ import { KEEP_SECRET, SecretField, type SecretDraft } from '../settings/SecretFi
 import { SettingsDraftFooter } from '../settings/SettingsPrimitives';
 import { useSavedTick } from '../settings/useSavedTick';
 
-interface Property {
+interface Property extends SettingTextSource {
   readonly type: 'string' | 'boolean' | 'number';
-  readonly title?: string;
-  readonly description?: string;
   readonly secret?: boolean;
   readonly default?: string | number | boolean;
+  readonly hidden?: boolean;
+  readonly group?: string;
+  readonly enum?: readonly string[];
+  readonly multiline?: boolean;
+  readonly advanced?: boolean;
 }
 
 interface SettingsSchema {
@@ -33,6 +46,11 @@ interface SettingsSchema {
 }
 
 type Draft = Record<string, string | boolean | SecretDraft>;
+
+/** A hidden boolean whose key is the engine's removed tombstone. The raw key stays off the page; a true value is a Restore. */
+function isRemovedTombstone(key: string, property: Property): boolean {
+  return property.hidden === true && property.type === 'boolean' && key.endsWith('__removed');
+}
 
 function schemaOf(view: PluginSettingsResponse | undefined): SettingsSchema | undefined {
   const schema = view?.schema as SettingsSchema | undefined;
@@ -42,6 +60,7 @@ function schemaOf(view: PluginSettingsResponse | undefined): SettingsSchema | un
 function draftOf(view: PluginSettingsResponse, schema: SettingsSchema): Draft {
   const draft: Draft = {};
   for (const [key, property] of Object.entries(schema.schema.properties)) {
+    if (property.hidden === true && !isRemovedTombstone(key, property)) continue;
     if (property.secret) { draft[key] = KEEP_SECRET; continue; }
     const stored = view.values[key];
     if (property.type === 'boolean') draft[key] = typeof stored === 'boolean' ? stored : property.default === true;
@@ -52,12 +71,14 @@ function draftOf(view: PluginSettingsResponse, schema: SettingsSchema): Draft {
 
 type Issue = { readonly key: string; readonly text: string };
 
-/** Only changed keys; an emptied plain value or a cleared secret is sent as null. */
+/** Only changed keys; an emptied plain value or a cleared secret is sent as null. Hidden tombstones other than Restore are never written. */
 function patchOf(draft: Draft, baseline: Draft, schema: SettingsSchema, t: ReturnType<typeof useI18n>['t']): { values?: Record<string, string | number | boolean | null>; issue?: Issue } {
   const values: Record<string, string | number | boolean | null> = {};
   const required = new Set(schema.schema.required ?? []);
   for (const [key, property] of Object.entries(schema.schema.properties)) {
+    if (property.hidden === true && !isRemovedTombstone(key, property)) continue;
     const next = draft[key];
+    if (next === undefined) continue;
     if (property.secret) {
       const secret = next as SecretDraft;
       if (secret.mode === 'set') values[key] = secret.value;
@@ -81,6 +102,20 @@ function patchOf(draft: Draft, baseline: Draft, schema: SettingsSchema, t: Retur
   return { values };
 }
 
+interface GroupChip {
+  readonly id: string;
+  readonly title: string;
+}
+
+function groupsOf(schema: SettingsSchema, locale: string): readonly GroupChip[] {
+  const groups: GroupChip[] = [];
+  for (const property of Object.values(schema.schema.properties)) {
+    if (property.group === undefined || groups.some((group) => group.id === property.group)) continue;
+    groups.push({ id: property.group, title: localizeSettingText(property, locale).groupTitle ?? property.group });
+  }
+  return groups;
+}
+
 export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -91,6 +126,7 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
   const schema = schemaOf(view);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [baseline, setBaseline] = useState<Draft | null>(null);
+  const [groupId, setGroupId] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [issue, setIssue] = useState<Issue | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -107,11 +143,30 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
   }, [view, dirty, saving]);
 
   if (query.isError) return <InlineError error={query.error} />;
-  // A plugin without a settings form shows nothing here.
   if (view === undefined || schema === undefined || draft === null || baseline === null) return null;
   const entries = Object.entries(schema.schema.properties);
   if (entries.length === 0) return null;
   const secrets = new Set(view.secretsConfigured);
+  const groups = groupsOf(schema, locale);
+  const selected = groups.some((group) => group.id === groupId) ? groupId : groups[0]?.id;
+  const removedGroups = new Set(entries.flatMap(([key, property]) => (
+    isRemovedTombstone(key, property) && draft[key] === true && property.group !== undefined ? [property.group] : []
+  )));
+
+  const visible = entries.filter(([key, property]) => {
+    if (property.hidden === true && !isRemovedTombstone(key, property)) return false;
+    if (isRemovedTombstone(key, property)) {
+      if (draft[key] !== true) return false;
+      if (property.group === undefined) return true;
+      return groups.length < 2 || property.group === selected;
+    }
+    if (property.group !== undefined && removedGroups.has(property.group)) return false;
+    if (property.group === undefined) return true;
+    return groups.length < 2 || property.group === selected;
+  });
+  if (visible.length === 0 && groups.length === 0) return null;
+  const ordinary = visible.filter(([, property]) => property.advanced !== true);
+  const advanced = visible.filter(([, property]) => property.advanced === true);
 
   const save = async () => {
     const built = patchOf(draft, baseline, schema, t);
@@ -134,69 +189,117 @@ export function PluginSettingsForm({ pluginId }: { readonly pluginId: string }) 
     }
   };
 
+  const renderField = (key: string, property: Property) => {
+    const { title, description, groupTitle } = localizeSettingText(property, locale);
+    const label = title ?? key;
+    const help = description === undefined ? null
+      : <p className="text-[12px] leading-snug text-ink-faint">{description}</p>;
+    const fieldId = `plugin-setting-${pluginId}-${key}`;
+    if (isRemovedTombstone(key, property)) {
+      return (
+        <div key={key} data-plugin-setting={key} className="flex max-w-xl flex-wrap items-center gap-2">
+          <p className="min-w-0 flex-1 text-[13px] text-ink">{groupTitle ?? label}</p>
+          <button type="button" className={`${SECONDARY_BUTTON} h-8`} data-plugin-setting-restore={key}
+            onClick={() => { setDraft({ ...draft, [key]: false }); }}>
+            {t('menu.restore')}
+          </button>
+        </div>
+      );
+    }
+    if (property.secret) {
+      const secret = draft[key] as SecretDraft;
+      const stored = secrets.has(key);
+      return (
+        <div key={key} data-plugin-setting={key} className="flex max-w-xl flex-wrap items-start gap-2">
+          <div className="min-w-0 flex-[1_1_18rem]">
+            <SecretField
+              id={fieldId}
+              label={label}
+              source={stored ? 'kiki' : 'none'}
+              draft={secret}
+              disabled={secret.mode === 'clear'}
+              onChange={(next) => { setDraft({ ...draft, [key]: next }); }}
+              placeholder={t(stored ? 'cap.settings.secretReplace' : 'st.secret.newPlaceholder')}
+              sourceText={t(secret.mode === 'clear' ? 'cap.settings.secretRemovePending' : stored ? 'cap.settings.secretSet' : 'cap.settings.secretUnset')}
+              hint={description}
+            />
+          </div>
+          {stored ? (
+            <button type="button" className={`${SECONDARY_BUTTON} mt-[1.625rem] h-8`} data-plugin-secret-remove={key}
+              onClick={() => { setDraft({ ...draft, [key]: secret.mode === 'clear' ? KEEP_SECRET : { mode: 'clear' } }); }}>
+              {t(secret.mode === 'clear' ? 'st.secret.undoClear' : 'cap.settings.secretRemove')}
+            </button>
+          ) : null}
+        </div>
+      );
+    }
+    if (property.type === 'boolean') {
+      return (
+        <div key={key} data-plugin-setting={key} className="max-w-xl space-y-1">
+          <Toggle layout="row" label={label} checked={draft[key] as boolean}
+            onChange={(checked) => { setDraft({ ...draft, [key]: checked }); }} />
+          {help}
+        </div>
+      );
+    }
+    const choices = property.type === 'string' && property.enum !== undefined && property.enum.length > 0 ? property.enum : undefined;
+    const control = choices !== undefined ? (
+      <select id={fieldId} className={`${INPUT} h-8 py-1 ${issue?.key === key ? 'border-danger' : ''}`}
+        aria-invalid={issue?.key === key}
+        value={draft[key] as string}
+        onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }}>
+        <option value="">{property.default === undefined ? '—' : String(property.default)}</option>
+        {choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
+      </select>
+    ) : property.multiline === true ? (
+      <textarea id={fieldId} rows={3} className={`${INPUT} min-h-[4.5rem] py-1 ${issue?.key === key ? 'border-danger' : ''}`}
+        aria-invalid={issue?.key === key}
+        placeholder={property.default === undefined ? undefined : String(property.default)}
+        value={draft[key] as string}
+        onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }} />
+    ) : (
+      <input id={fieldId} className={`${INPUT} h-8 py-1 ${property.type === 'number' ? 'font-mono' : ''} ${issue?.key === key ? 'border-danger' : ''}`}
+        inputMode={property.type === 'number' ? 'decimal' : undefined}
+        aria-invalid={issue?.key === key}
+        placeholder={property.default === undefined ? undefined : String(property.default)}
+        value={draft[key] as string}
+        onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }} />
+    );
+    return (
+      <div key={key} data-plugin-setting={key} className="max-w-xl space-y-1">
+        <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
+        {control}
+        {issue?.key === key ? <p role="alert" className="text-[12px] text-danger">{issue.text}</p> : null}
+        {help}
+      </div>
+    );
+  };
+
   return (
-    <section data-plugin-settings={pluginId} className="space-y-4">
-      {/* The form names itself wherever it renders: on this plugin's own page
-          it is the subject, not a block inside something else's heading. */}
+    <section data-plugin-settings={pluginId} className="space-y-3">
       <h2 className="text-[13px] font-medium text-ink">{t('cap.settings.title')}</h2>
-      <fieldset disabled={saving} className="min-w-0 space-y-5 disabled:opacity-60">
-        {entries.map(([key, property]) => {
-          const label = property.title ?? key;
-          const help = property.description === undefined ? null
-            : <p className="text-[12px] leading-snug text-ink-faint">{property.description}</p>;
-          const fieldId = `plugin-setting-${pluginId}-${key}`;
-          if (property.secret) {
-            const secret = draft[key] as SecretDraft;
-            const stored = secrets.has(key);
-            // Write-only: no reveal route, so the field only takes a new value;
-            // removing the stored one is a separate, staged action.
-            return (
-              <div key={key} data-plugin-setting={key} className="flex max-w-md flex-wrap items-start gap-2">
-                <div className="min-w-0 flex-[1_1_18rem]">
-                  <SecretField
-                    id={fieldId}
-                    label={label}
-                    source={stored ? 'kiki' : 'none'}
-                    draft={secret}
-                    disabled={secret.mode === 'clear'}
-                    onChange={(next) => { setDraft({ ...draft, [key]: next }); }}
-                    placeholder={t(stored ? 'cap.settings.secretReplace' : 'st.secret.newPlaceholder')}
-                    sourceText={t(secret.mode === 'clear' ? 'cap.settings.secretRemovePending' : stored ? 'cap.settings.secretSet' : 'cap.settings.secretUnset')}
-                    hint={property.description}
-                  />
-                </div>
-                {stored ? (
-                  <button type="button" className={`${SECONDARY_BUTTON} mt-[1.625rem] h-8`} data-plugin-secret-remove={key}
-                    onClick={() => { setDraft({ ...draft, [key]: secret.mode === 'clear' ? KEEP_SECRET : { mode: 'clear' } }); }}>
-                    {t(secret.mode === 'clear' ? 'st.secret.undoClear' : 'cap.settings.secretRemove')}
-                  </button>
-                ) : null}
-              </div>
-            );
-          }
-          if (property.type === 'boolean') {
-            return (
-              <div key={key} data-plugin-setting={key} className="max-w-md space-y-1">
-                <Toggle layout="row" label={label} checked={draft[key] as boolean}
-                  onChange={(checked) => { setDraft({ ...draft, [key]: checked }); }} />
-                {help}
-              </div>
-            );
-          }
-          return (
-            <div key={key} data-plugin-setting={key} className="max-w-md space-y-1">
-              <label htmlFor={fieldId} className="block text-[13px] font-medium text-ink">{label}</label>
-              <input id={fieldId} className={`${INPUT} ${property.type === 'number' ? 'font-mono' : ''} ${issue?.key === key ? 'border-danger' : ''}`}
-                inputMode={property.type === 'number' ? 'decimal' : undefined}
-                aria-invalid={issue?.key === key}
-                placeholder={property.default === undefined ? undefined : String(property.default)}
-                value={draft[key] as string}
-                onChange={(event) => { setDraft({ ...draft, [key]: event.target.value }); setIssue(null); }} />
-              {issue?.key === key ? <p role="alert" className="text-[12px] text-danger">{issue.text}</p> : null}
-              {help}
+      <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
+        {groups.length >= 2 ? (
+          <div className="flex flex-wrap gap-1" role="tablist" data-plugin-setting-groups>
+            {groups.map((group) => (
+              <button key={group.id} type="button" role="tab" aria-selected={group.id === selected}
+                data-plugin-setting-group={group.id}
+                className={`h-7 rounded-md border px-2 text-[12px] ${group.id === selected ? 'border-ink text-ink' : 'border-hairline text-ink-soft hover:text-ink'}`}
+                onClick={() => { setGroupId(group.id); }}>
+                {group.title}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {ordinary.map(([key, property]) => renderField(key, property))}
+        {advanced.length > 0 ? (
+          <details data-plugin-settings-advanced>
+            <summary className="cursor-pointer text-[12px] text-ink-soft">{t('st.advanced.disclosure')}</summary>
+            <div className="mt-2 space-y-3">
+              {advanced.map(([key, property]) => renderField(key, property))}
             </div>
-          );
-        })}
+          </details>
+        ) : null}
       </fieldset>
       <SettingsDraftFooter saved={justSaved} id={`plugin-settings-${pluginId}`} dirty={dirty} saving={saving}
         onSave={() => void save()}

@@ -46,6 +46,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import type { MediaSettingProperty, MediaSourceSettings } from '../../lib/mediaSources';
+import { localizeSettingText } from '../../lib/settingText';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
@@ -289,10 +290,11 @@ function SettingField({
   readonly satisfiedByConnection?: boolean;
   readonly onChange: (next: string | boolean | SecretDraft) => void;
 }) {
-  const { t } = useI18n();
-  const label = property.title ?? fieldKey;
-  const help = property.description === undefined ? null
-    : <p className="text-[12px] leading-snug text-ink-faint">{property.description}</p>;
+  const { t, locale } = useI18n();
+  const { title, description } = localizeSettingText(property, locale);
+  const label = title ?? fieldKey;
+  const help = description === undefined ? null
+    : <p className="text-[12px] leading-snug text-ink-faint">{description}</p>;
   const fieldId = `media-setting-${provider}-${fieldKey}`;
 
   // The one field a provider may declare as naming a connection the reader
@@ -331,7 +333,7 @@ function SettingField({
             onChange={(next) => { onChange(next); }}
             placeholder={t(secretStored ? 'cap.settings.secretReplace' : 'st.secret.newPlaceholder')}
             sourceText={t(secret.mode === 'clear' ? 'cap.settings.secretRemovePending' : secretStored ? 'cap.settings.secretSet' : 'cap.settings.secretUnset')}
-            hint={property.description}
+            hint={description}
           />
           {satisfiedByConnection === true ? <CoveredNote /> : null}
         </div>
@@ -437,11 +439,11 @@ function ConnectionSettingField({
   readonly onChange: (next: string) => void;
 }) {
   const { client } = useConnection();
-  const { t, tp } = useI18n();
+  const { t, tp, locale } = useI18n();
   const query = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const connections = query.data?.items ?? [];
   const fieldId = `media-setting-${provider}-${fieldKey}`;
-  const label = property.title ?? fieldKey;
+  const label = localizeSettingText(property, locale).title ?? fieldKey;
 
   return (
     <div data-media-setting={fieldKey} data-media-setting-kind="connection" className="max-w-md space-y-1">

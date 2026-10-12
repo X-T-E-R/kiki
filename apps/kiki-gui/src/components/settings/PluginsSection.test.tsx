@@ -702,8 +702,11 @@ describe('PluginsSection', () => {
       secretsConfigured: [],
     });
     const container = await renderPlugin('notes');
-    // The form is a query of its own, so it can land a tick after the page does.
-    await flush();
+    // The form lands a query behind the page: the page reads the plugin's
+    // manifest first, and the form then reads its own settings. Waiting for the
+    // form to appear keeps the assertion below about the form, not about
+    // whether two ticks had passed.
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-plugin-settings="notes"]') === null; attempt += 1) await flush();
     expect(container.querySelector('[data-plugin-settings-page="notes"]')).not.toBeNull();
     expect(container.querySelector('[data-plugin-settings-back]')).not.toBeNull();
     // The plugin's own declared form is here, once, and nowhere else.

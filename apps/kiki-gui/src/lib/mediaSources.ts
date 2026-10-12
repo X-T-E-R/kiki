@@ -49,6 +49,7 @@ import type {
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import type { KikiClient } from './client';
+import type { SettingTextSource } from './settingText';
 
 export type {
   MediaCapabilities,
@@ -131,11 +132,15 @@ export interface MediaSourceSettings {
   readonly missing?: readonly string[];
 }
 
-/** The same property subset the existing plugin settings form accepts. */
-export interface MediaSettingProperty {
+/**
+ * The same property subset the existing plugin settings form accepts.
+ *
+ * The text fields come from `SettingTextSource`, so this schema is read in the
+ * reader's language by the same rule the generic form uses — the host passes
+ * the package's declared per-language text through untouched.
+ */
+export interface MediaSettingProperty extends SettingTextSource {
   readonly type: 'string' | 'boolean' | 'number';
-  readonly title?: string;
-  readonly description?: string;
   readonly secret?: boolean;
   readonly default?: string | number | boolean;
   /** A fixed choice the reader picks from, when the package declares one. */

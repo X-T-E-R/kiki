@@ -47,7 +47,7 @@ export class PluginSettingsService extends Service implements IPluginSettingsSer
     const stored = await this.stored(id);
     const sources = scriptSources(stored);
     const properties = { ...extension.settings.schema.properties };
-    for (const source of sources) properties[scriptEnvironmentKey(source.id)] = { type: 'string', secret: true, title: 'Script environment' };
+    for (const source of sources) properties[scriptEnvironmentKey(source.id)] = { type: 'string', secret: true, title: 'Script environment', localizations: { zh: { title: '脚本环境变量' } } };
     return { ...extension, settings: { ...extension.settings, schema: { ...extension.settings.schema, properties } } };
   }
 

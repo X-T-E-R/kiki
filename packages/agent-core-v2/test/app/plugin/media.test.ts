@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -29,6 +30,7 @@ import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubProviderService } from '../provider/stubs';
 import type { MediaJob } from '@kiki/protocol';
+import { mediaManagedSourceSchema } from '@kiki/protocol';
 import { officialPluginFixture } from '../../fixtures/officialPlugins';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
@@ -47,7 +49,7 @@ const owner = { sessionId: 'session-media', agentId: 'main', mediaScope: 'sessio
 
 function host(
   providers: Record<string, ProviderConfig> = {},
-  usage: IPluginUsageService = { enabled: () => false, allows: async () => true } as unknown as IPluginUsageService,
+  usage: IPluginUsageService = { enabled: () => false, allows: async () => true, registerPluginStateReader: () => ({ dispose: () => undefined }), onDidChange: Event.None, onDidApply: Event.None } as unknown as IPluginUsageService,
   sessions: ISessionIndex = { get: async () => undefined } as unknown as ISessionIndex,
 ) {
   const storage = new FileStorageService(home); stores.push(storage);
@@ -490,5 +492,32 @@ describe('media provider persisted vertical slice', () => {
     expect(typeof output.output).toBe('string');
     expect(JSON.parse(output.output as string)).toMatchObject({ type: 'media_generation', job: { state: 'succeeded' } });
     expect(await hosts.list()).toMatchObject([{ pluginId: 'kiki-media', definition: { name: 'generate', disclosure: 'inline' } }, { pluginId: 'kiki-media', definition: { name: 'media', disclosure: 'deferred' } }]);
+  });
+});
+
+describe('managed sources carry the package\'s own field text', () => {
+  const unified = 'C:/Programs/AI/EasyAgent/systems/kiki-plugins/plugins/official/kiki-media';
+
+  it('serves the installed unified package through the GUI\'s own schema', async () => {
+    if (!existsSync(unified)) return;
+    const target = host();
+    await install(target, unified);
+    const service = target.app.accessor.get(IPluginMediaService);
+    const sources = await service.managedSources();
+    const rejected = mediaManagedSourceSchema.array().safeParse(sources);
+    expect(rejected.success ? [] : rejected.error.issues.slice(0, 4).map((issue) => `${issue.path.join('.')}: ${issue.message}`)).toEqual([]);
+    const openai = sources.find((item) => item.sourceId === 'openai');
+    expect(openai).toBeDefined();
+    const schema = (await service.sourceSettings({ provider: openai!.provider })).schema.schema;
+    expect(schema.properties['baseUrl']?.title).toBe('API base URL');
+    expect(schema.properties['baseUrl']?.default).toBe('https://api.openai.com/v1');
+    expect(schema.properties['baseUrl']?.localizations?.['zh']?.title).toBe('API 基础地址');
+    expect(schema.properties['apiKey']?.secret).toBe(true);
+    expect(schema.properties['apiKey']?.localizations?.['zh']?.title).toBe('API 密钥');
+    expect(schema.properties['baseUrl']?.groupTitle).toBe('OpenAI Media');
+    expect(schema.properties['connectionId']?.description).toContain('media-capable API connection');
+    expect(schema.properties['connectionId']?.localizations?.['zh']?.description).toContain('使用支持媒体的 API 连接');
+    expect(schema.properties['enabled']).toBeUndefined();
+    expect(schema.required).toEqual(['apiKey']);
   });
 });

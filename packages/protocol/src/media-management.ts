@@ -15,7 +15,8 @@ export const mediaScriptSourceSchema = z.object({
   removed: z.boolean().default(false),
 }).strict();
 export const mediaScriptSourcesSchema = z.array(mediaScriptSourceSchema).max(1000).refine((items) => new Set(items.map((item) => item.id)).size === items.length, 'Duplicate script source id');
-export const mediaSourceSettingPropertySchema = z.object({ type: z.enum(['string', 'boolean', 'number']), title: z.string().optional(), description: z.string().optional(), secret: z.boolean().optional(), default: z.union([z.string(), z.number(), z.boolean()]).optional() }).strict();
+export const mediaSourceSettingLocalizationSchema = z.object({ title: z.string().optional(), description: z.string().optional(), groupTitle: z.string().min(1).max(80).optional() }).strict();
+export const mediaSourceSettingPropertySchema = z.object({ type: z.enum(['string', 'boolean', 'number']), title: z.string().optional(), description: z.string().optional(), secret: z.boolean().optional(), default: z.union([z.string(), z.number(), z.boolean()]).optional(), hidden: z.boolean().optional(), group: z.string().min(1).max(80).optional(), groupTitle: z.string().min(1).max(80).optional(), localizations: z.record(z.string().min(2).max(35), mediaSourceSettingLocalizationSchema).optional(), enum: z.array(z.string().min(1)).max(2000).optional(), multiline: z.boolean().optional(), advanced: z.boolean().optional() }).strict();
 export const mediaManagedSourceSchema = z.object({
   provider: z.string(), sourceId: z.string(), pluginId: z.string(), label: z.string(), custom: z.boolean(), enabled: z.boolean(), removed: z.boolean(),
   definitions: z.array(mediaProviderDefinitionSchema),

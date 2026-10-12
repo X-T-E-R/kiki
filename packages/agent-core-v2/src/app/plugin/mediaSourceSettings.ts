@@ -26,4 +26,4 @@ export function sourceDefaults(schema: PluginSettings, values: MediaSettingValue
 export function scriptDefinition(source: MediaScriptSource, resumeVersion: number): MediaProviderDefinition {
   return { schemaVersion: 1, id: `script-${source.id}`, label: source.label, kinds: source.kinds, resumeVersion };
 }
-export const scriptSettingsSchema: PluginSettings = { schemaVersion: 1, schema: { type: 'object', properties: { environment: { type: 'string', title: 'Environment variables (JSON)', secret: true } } } };
+export const scriptSettingsSchema: PluginSettings = { schemaVersion: 1, schema: { type: 'object', properties: { environment: { type: 'string', title: 'Environment variables (JSON)', secret: true, localizations: { zh: { title: '环境变量（JSON）' } } } } } };

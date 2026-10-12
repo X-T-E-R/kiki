@@ -15,15 +15,16 @@
  * configuration while the tools stop offering it.
  */
 
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MediaManagedSource } from '@kiki/protocol';
+import { LOCALE_STORAGE_KEY } from '@kiki/session-core/i18n';
 
-import { I18nProvider } from '../../i18n';
+import { I18nProvider, useI18n } from '../../i18n';
 import { MediaSourcesView } from './MediaSourcesView';
 
 /** The one package every source below lives in. */
@@ -249,6 +250,16 @@ const fill = async (selector: string, value: string) => {
   await flush();
 };
 
+/** The language menu, as the i18n binding exposes it: one click, no reload. */
+function LocaleSwitch() {
+  const { locale, setLocale } = useI18n();
+  return (
+    <button type="button" data-locale-switch={locale} onClick={() => { setLocale(locale === 'zh' ? 'en' : 'zh'); }}>
+      {locale}
+    </button>
+  );
+}
+
 describe('media sources on a unified package', () => {
   beforeEach(() => {
     actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -260,12 +271,13 @@ describe('media sources on a unified package', () => {
   });
   afterEach(() => { act(() => { root.unmount(); }); container.remove(); actEnvironment.IS_REACT_ACT_ENVIRONMENT = false; });
 
-  const mount = async () => {
+  const mount = async (extra?: ReactNode) => {
     await act(async () => {
       root.render(
         <MemoryRouter>
           <QueryClientProvider client={query}>
             <I18nProvider>
+              {extra}
               <MediaSourcesView onBack={() => {}} />
             </I18nProvider>
           </QueryClientProvider>
@@ -633,5 +645,35 @@ describe('media sources on a unified package', () => {
       await flush();
       expect(row('kiki-media/alpha')?.getAttribute('data-media-source-status')).toBe('default');
     });
+  });
+
+  it('reads a source\'s field text in the reader\'s language and keeps its draft across a switch', async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, 'en');
+    // A package that translated one field and left another as written, which is
+    // the ordinary case: the host passes the manifest's text through untouched.
+    backend.sources = [managed('delta', 'Delta Media', {
+      schema: { schemaVersion: 1, schema: { type: 'object', properties: {
+        apiKey: { type: 'string', title: 'API key', secret: true },
+        baseUrl: { type: 'string', title: 'Endpoint', description: 'Where requests are sent.', localizations: { zh: { title: '端点地址', description: '请求发送到的地址。' } } },
+        imageModel: { type: 'string', title: 'Default image model' },
+      }, required: ['apiKey'] } },
+      values: { baseUrl: 'https://api.example.test/v1' }, secretsConfigured: ['apiKey'], missing: [],
+    })];
+    await mount(<LocaleSwitch />);
+    await openSource('kiki-media/delta');
+    expect(q('[data-media-setting="baseUrl"] label')?.textContent).toBe('Endpoint');
+    expect(q('[data-media-setting="baseUrl"]')?.textContent).toContain('Where requests are sent.');
+
+    await fill('[data-media-setting="baseUrl"] input', 'https://typed.example.test/v1');
+    await click('[data-locale-switch]');
+    expect(q('[data-locale-switch]')?.getAttribute('data-locale-switch')).toBe('zh');
+    expect(q('[data-media-setting="baseUrl"] label')?.textContent).toBe('端点地址');
+    expect(q('[data-media-setting="baseUrl"]')?.textContent).toContain('请求发送到的地址。');
+    // The untranslated field beside it keeps the string the package wrote.
+    expect(q('[data-media-setting="imageModel"] label')?.textContent).toBe('Default image model');
+    // A language switch is not a cancel: the draft is still the reader's.
+    expect((q('[data-media-setting="baseUrl"] input') as HTMLInputElement).value).toBe('https://typed.example.test/v1');
+    await click('[data-media-source-settings] [data-settings-draft] button');
+    expect(backend.updates[0]?.values).toEqual({ baseUrl: 'https://typed.example.test/v1' });
   });
 });
