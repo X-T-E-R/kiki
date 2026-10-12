@@ -182,6 +182,17 @@ describe('named agent profile REST protocol', () => {
       { session_id: 'session', agent_id: 'main' },
       { cwd: '/workspace', profile: 'lead' }, { workspace_id: 'wd_a', profile: 'lead' },
     ]) expect(agentCapabilitiesQuerySchema.safeParse(query).success).toBe(true);
+    expect(agentCapabilitiesQuerySchema.parse({ session_id: 'session', agent_id: 'main', metrics_settle: 'true' }))
+      .toEqual({ session_id: 'session', agent_id: 'main', metrics_settle: true });
+    expect(agentCapabilitiesQuerySchema.parse({
+      session_id: 'session', agent_id: 'main', metrics_settle: 'true', metrics_agent_ids: 'child,main',
+    })).toEqual({
+      session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'],
+    });
+    const listed = agentCapabilitiesQuerySchema.parse({
+      session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_agent_ids: ['child', 'main'],
+    });
+    expect('metrics_agent_ids' in listed ? listed.metrics_agent_ids : undefined).toEqual(['child', 'main']);
     for (const query of [
       {}, { session_id: 'session' }, { cwd: 'relative', profile: 'lead' },
       { session_id: 'session', agent_id: 'main', cwd: '/workspace' },

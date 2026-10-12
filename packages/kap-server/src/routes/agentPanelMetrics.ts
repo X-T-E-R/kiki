@@ -51,6 +51,7 @@ interface PersistedMetricsFlight {
   waiters: number;
   sharedWaiters: number;
   settled: boolean;
+  readonly detach: boolean;
 }
 
 interface PersistedMetricsState {
@@ -72,6 +73,8 @@ export interface PersistedAgentPanelMetricsOptions {
   readonly mutableAgentIds?: readonly string[];
   readonly mutableUsageRecords?: Readonly<Record<string, number>>;
   readonly limits?: Partial<PersistedAgentPanelMetricsLimits>;
+  readonly settle?: boolean;
+  readonly complete?: boolean;
 }
 
 const PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS = 30_000;
@@ -166,7 +169,11 @@ export async function readPersistedAgentPanelMetrics(
     else missing.push(agentId);
   }
   if (missing.length === 0) return Object.freeze(Object.fromEntries(result));
-  const limitsKey = [
+  if (options.settle === false) {
+    for (const agentId of missing) result.set(agentId, toPersistedMetrics(emptyPersistedUsage(true)));
+    return Object.freeze(Object.fromEntries(result));
+  }
+  const limitsKey = options.complete === true ? 'complete' : [
     options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
     options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
@@ -188,10 +195,12 @@ export async function readPersistedAgentPanelMetrics(
     let created!: PersistedMetricsFlight;
     const promise = Promise.resolve().then(() => scanPersistedAgentPanelMetrics(
       core, workspaceId, sessionId, pricing, missing, options.agentIds !== undefined,
-      options.limits, controller.signal, () => created.sharedWaiters,
+      options.complete === true ? undefined : options.limits, options.complete === true,
+      controller.signal, () => created.sharedWaiters,
     )).then((scanResult) => {
+      if (scanResult.budgetCapped) return scanResult;
       for (const [agentId, metrics] of Object.entries(scanResult.metrics)) {
-        const ttl = scanResult.budgetCapped || mutable.has(agentId)
+        const ttl = mutable.has(agentId)
           ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
           : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
         cachePersistedMetrics(state, keyFor(agentId), {
@@ -204,7 +213,7 @@ export async function readPersistedAgentPanelMetrics(
       created.settled = true;
       if (state.flights.get(flightKey) === created) state.flights.delete(flightKey);
     });
-    created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false };
+    created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false, detach: options.complete === true };
     flight = created;
     state.flights.set(flightKey, flight);
   }
@@ -262,7 +271,7 @@ async function waitForPersistedMetricsFlight(
   } finally {
     if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
     flight.waiters -= 1;
-    if (flight.waiters === 0 && !flight.settled) {
+    if (flight.waiters === 0 && !flight.settled && !flight.detach) {
       flight.controller.abort(new DOMException('No agent panel metrics waiters remain', 'AbortError'));
     }
   }
@@ -276,10 +285,11 @@ async function scanPersistedAgentPanelMetrics(
   agentIds: readonly string[],
   targeted: boolean,
   requestedLimits: Partial<PersistedAgentPanelMetricsLimits> | undefined,
+  complete: boolean,
   signal: AbortSignal,
   sharedWaiters: () => number,
 ): Promise<PersistedMetricsScanResult> {
-  const limits: PersistedAgentPanelMetricsLimits = {
+  const limits: PersistedAgentPanelMetricsLimits | undefined = complete ? undefined : {
     maxRecords: requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
     maxBytes: requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     wallTimeMs: requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
@@ -287,7 +297,7 @@ async function scanPersistedAgentPanelMetrics(
   const startedAt = Date.now();
   const deadline = new AbortController();
   const combinedSignal = AbortSignal.any([signal, deadline.signal]);
-  const timer = setTimeout(() => { deadline.abort(); }, limits.wallTimeMs);
+  const timer = limits === undefined ? undefined : setTimeout(() => { deadline.abort(); }, limits.wallTimeMs);
   const log = core.accessor.get(ILogService);
   let files = 0;
   let records = 0;
@@ -307,13 +317,13 @@ async function scanPersistedAgentPanelMetrics(
         for await (const raw of appendLog.read<WireRecord>(
           agentScopeOf(sessionScope, agentId), AGENT_WIRE_RECORD_KEY, { signal: combinedSignal },
         )) {
-          if (records >= limits.maxRecords) {
+          if (limits !== undefined && records >= limits.maxRecords) {
             markPersistedUsagePartial(usageState);
             partialReason = 'record_budget';
             break;
           }
           const recordBytes = Buffer.byteLength(JSON.stringify(raw), 'utf8') + 1;
-          if (bytes + recordBytes > limits.maxBytes) {
+          if (limits !== undefined && bytes + recordBytes > limits.maxBytes) {
             markPersistedUsagePartial(usageState);
             partialReason = 'byte_budget';
             break;
@@ -363,7 +373,7 @@ async function scanPersistedAgentPanelMetrics(
     });
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

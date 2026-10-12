@@ -39,6 +39,40 @@ export interface WireRecordsStreamResult {
   readonly incompleteReason?: WireRecordsIncompleteReason;
 }
 
+function compactionHeadlineRecord(line: Buffer): ContextRecord | undefined {
+  try {
+    const text = line.subarray(Math.max(0, line.length - 4096)).toString('utf8');
+    const end = /,"time":(\d+)}[ \t\r]*$/.exec(text);
+    if (end?.index === undefined || end[1] === undefined) return undefined;
+    const fields: Record<string, unknown> = { time: Number(end[1]) };
+    let slice = text.slice(0, end.index);
+    for (let guard = 0; guard < 16; guard += 1) {
+      const match = /,"([^"]+)":(\[[^\]]*\]|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)$/.exec(slice);
+      if (match?.index === undefined || match[1] === undefined || match[2] === undefined) break;
+      const key = match[1];
+      const raw = match[2];
+      if (key === 'strategy' || key === 'fallbackFrom') {
+        const value = raw === '"summarize"' || raw === '"relay"' ? raw.slice(1, -1) : undefined;
+        if (value !== undefined) fields[key] = value;
+      } else if (key === 'source' && (raw === '"auto"' || raw === '"manual"')) {
+        fields[key] = raw.slice(1, -1);
+      } else if (key === 'phase' && /^"(?:queued|running|started|blocked|completed|failed|cancelled|interrupted)"$/.test(raw)) {
+        fields[key] = raw.slice(1, -1);
+      } else if (key === 'summary' || key === 'contextSummary') {
+        break;
+      }
+      slice = slice.slice(0, match.index);
+    }
+    if (fields['strategy'] === undefined && fields['fallbackFrom'] === undefined && fields['source'] === undefined && fields['phase'] === undefined) return undefined;
+    const head = line.subarray(0, Math.min(line.length, 180)).toString('utf8');
+    const typed = /"type":"(context\.apply_compaction|full_compaction\.(?:begin|cancel|complete))"/.exec(head);
+    const type = typed?.[1] ?? (fields['strategy'] !== undefined || fields['fallbackFrom'] !== undefined ? 'context.apply_compaction' : 'full_compaction.begin');
+    return { type, ...fields };
+  } catch {
+    return undefined;
+  }
+}
+
 export const WIRE_READ_CHUNK_BYTES = 1 << 20;
 export const WIRE_COLD_READ_MAX_BYTES = 1 << 30;
 export const WIRE_COLD_READ_MAX_RECORDS = 2_000_000;
@@ -107,14 +141,17 @@ export async function streamWireRecords(
     try {
       record = JSON.parse(normalized.toString('utf8'));
     } catch (parseError) {
-      if (terminated) {
+      if (!terminated) {
+        stop('partial_tail');
+        return;
+      }
+      record = compactionHeadlineRecord(normalized);
+      if (record === undefined) {
         throw new Error(
           `wire.jsonl: corrupted line ${lineNumber} in ${wirePath}: ${String(parseError)}`,
           { cause: parseError },
         );
       }
-      stop('partial_tail');
-      return;
     }
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
     const keepReading = options.onRecord(record as ContextRecord, {

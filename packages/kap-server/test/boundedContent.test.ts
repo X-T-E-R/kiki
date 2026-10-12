@@ -58,6 +58,42 @@ describe('bounded canonical content', () => {
     expect(complete.payload.text).toBe('Ordinary saved record');
     expect(complete.contentRefs).toBeUndefined();
   });
+
+  it('keeps compaction strategy fields when a large summary is segmented', () => {
+    const summary = 'S'.repeat(20_000);
+    const original = {
+      kind: 'marker' as const,
+      markerId: 'c1',
+      marker: 'compaction',
+      payload: {
+        type: 'context.apply_compaction',
+        summary,
+        contextSummary: summary,
+        compactedCount: 3,
+        tokensBefore: 10,
+        tokensAfter: 2,
+        summaryOutputTokens: 1,
+        strategy: 'summarize',
+        shapeVersion: 1,
+        reasonCodes: ['notes_missing'],
+        fallbackFrom: 'relay',
+        phase: 'completed',
+        source: 'auto',
+        time: 42,
+      },
+    };
+    const preview = boundedEntity(original, { kind: 'marker', id: 'c1' });
+    expect(preview.payload).toMatchObject({
+      strategy: 'summarize',
+      fallbackFrom: 'relay',
+      source: 'auto',
+      phase: 'completed',
+      reasonCodes: ['notes_missing'],
+    });
+    expect(preview.payload.summary.length).toBeLessThan(summary.length);
+    expect(preview.payload.summary).not.toMatch(/summarize|relay/);
+    expect(preview.contentRefs?.some((ref) => ref.path.join('.') === 'payload.summary')).toBe(true);
+  });
   it.each([['own prototype key', '__proto__'], ['own constructor key', 'constructor'], ['own prototype field', 'prototype'], ['257-character key', 'k'.repeat(257)]])('reads every original own JSON key through bounded object segments (%s)', (_label, key) => {
     const original = { output: JSON.parse(JSON.stringify({ [key]: { text: 'body'.repeat(1000) } })) as Record<string, unknown> };
     let current = boundedEntity(original, { kind: 'task', id: 'task-keys' });

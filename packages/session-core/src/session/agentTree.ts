@@ -878,15 +878,18 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   const inactiveAt = parseStatusTimestamp(entry.endedAt ?? entry.startedAt);
   const inactiveIsOlder = inactiveAt !== undefined && draft.statusStartedAt !== undefined && inactiveAt < draft.statusStartedAt;
   const inactive = entry.statusSource !== undefined && !metadataIdentityOnly && !inactiveIsOlder && (status === 'idle' || status === 'unknown');
-  if (inactive) {
+  const taskOpen = draft.taskId !== undefined && isActiveStatus(draft.status ?? 'unknown');
+  const taskEnded = draft.status === 'completed' || draft.status === 'failed' || draft.status === 'cancelled';
+  const idleSuppressed = inactive && (taskOpen || taskEnded);
+  if (inactive && !idleSuppressed) {
     draft.status = status;
     draft.statusAuthority = authority;
     draft.busy = false;
   }
-  const accepted = inactive ||
+  const accepted = !idleSuppressed && (inactive ||
     (status === undefined
       ? draft.status === undefined && draft.disposedAt === undefined
-      : applyStatus(draft, status, authority, entry.startedAt, entry.endedAt).accepted);
+      : applyStatus(draft, status, authority, entry.startedAt, entry.endedAt).accepted));
   if (refreshing) {
     draft.refreshing = true;
     draft.refreshingUntil = entry.refreshingUntil;

@@ -520,6 +520,25 @@ describe('streamWireRecords', () => {
     });
   });
 
+  it('keeps compaction headline fields from a segmented summary line', async () => {
+    const summary = 'S'.repeat(80_000);
+    const broken = `${summary},"strategy":"summarize","shapeVersion":1,"reasonCodes":["notes_missing"],"fallbackFrom":"relay","time":42}\n`;
+    const raw = `${broken}${JSON.stringify({ type: 'metadata', index: 1 })}\n`;
+    await withWireFile(raw, async (wirePath) => {
+      const streamed: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, { onRecord: (record) => streamed.push(record) });
+      expect(result.complete).toBe(true);
+      expect(streamed[0]).toMatchObject({
+        type: 'context.apply_compaction',
+        strategy: 'summarize',
+        fallbackFrom: 'relay',
+        time: 42,
+      });
+      expect(streamed[1]).toEqual({ type: 'metadata', index: 1 });
+      expect(JSON.stringify(streamed[0])).not.toContain(summary);
+    });
+  });
+
   it('stops on the line fence without delivering the oversized line', async () => {
     const oversized = { type: 'metadata', text: 'x'.repeat(200_000) };
     const raw = `${JSON.stringify({ type: 'metadata', index: 0 })}\n${JSON.stringify(oversized)}\n${JSON.stringify({ type: 'metadata', index: 2 })}\n`;

@@ -60,7 +60,7 @@ export class CompactionProjection {
       const run: CompactionRun = {
         markerId: previous?.markerId ?? identity(record, ordinal),
         at,
-        payload: { ...record, phase: 'completed', source: previous?.payload['source'], startedAt: previous?.payload['startedAt'] },
+        payload: { ...record, phase: 'completed', source: compactionSource(previous?.payload['source']) ?? compactionSource(record['source']), startedAt: previous?.payload['startedAt'] },
       };
       if (previous !== undefined) this.#running = run;
       return [upsert(run)];
@@ -90,6 +90,10 @@ export class CompactionProjection {
     if (record.type.startsWith('compaction.')) return [];
     return undefined;
   }
+}
+
+function compactionSource(value: unknown): 'auto' | 'manual' | undefined {
+  return value === 'auto' || value === 'manual' ? value : undefined;
 }
 
 function identity(record: TranscriptWireRecord, ordinal: number): string {

@@ -2,6 +2,11 @@ import type { AgentActivityState, SessionMeta } from '@kiki/agent-core-v2';
 import type { SnapshotSubagent } from '@kiki/protocol';
 import { resolveSubagentDisplayName, subagentParentAgentId, subagentUserLabel } from '@kiki/transcript-live';
 
+function terminalStatus(status: string | undefined): SnapshotSubagent['status'] | undefined {
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return status;
+  return undefined;
+}
+
 function lastTurnOutcome(activity: AgentActivityState | undefined, trackedStart: number | undefined): SnapshotSubagent['status'] | undefined {
   const lastTurn = activity?.lastTurn;
   if (lastTurn === undefined || (trackedStart !== undefined && lastTurn.at < trackedStart)) return undefined;
@@ -42,20 +47,23 @@ export function sessionAgentRoster(
     const outcomeAt = registration?.completedAt;
     const trackedStart = Date.parse(row?.started_at ?? '');
     const newerRun = Number.isFinite(trackedStart) && outcomeAt !== undefined && trackedStart > outcomeAt;
-    const outcome = registration?.status !== undefined && !newerRun ? registration.status : undefined;
-    const trackedOutcome = row?.status === 'completed' || row?.status === 'failed' || row?.status === 'cancelled' ? row.status : undefined;
+    const outcome = !newerRun ? terminalStatus(registration?.status) : undefined;
+    const trackedOutcome = terminalStatus(row?.status);
     const activityOutcome = lastTurnOutcome(activity, Number.isFinite(trackedStart) ? trackedStart : undefined);
     const activityTerminalAt = activityOutcome === undefined ? undefined : activity?.lastTurn?.at;
     const terminalOutcome = outcome ?? trackedOutcome ?? activityOutcome;
     const current = activity?.lifecycle === 'ready';
-    const trackedActive = row?.live === true && row?.refreshing !== true &&
-      (row?.subagent_phase === 'working' || row?.subagent_phase === 'queued' || row?.subagent_phase === 'suspended');
+    const phaseOpen = row?.subagent_phase === 'working' || row?.subagent_phase === 'queued' || row?.subagent_phase === 'suspended';
+    const taskOpen = row?.status === 'running';
+    const trackedActive = row?.live === true && row?.refreshing !== true && terminalOutcome === undefined && (phaseOpen || taskOpen);
+    const loopOpen = activity?.turn !== undefined || (activity?.background.length ?? 0) > 0;
     const status = terminalOutcome ?? row?.status ?? 'running';
-    const activityStatus: SnapshotSubagent['activity_status'] = current
-      ? activity.turn === undefined
-        ? activity.background.length > 0 ? 'running' : terminalOutcome ?? (trackedActive ? 'running' : 'idle')
-        : activity.turn.pendingApprovals.length > 0 ? 'suspended' : 'running'
-      : terminalOutcome ?? (trackedActive ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running' : 'unknown');
+    const activityStatus: SnapshotSubagent['activity_status'] = current && activity?.turn !== undefined
+      ? activity.turn.pendingApprovals.length > 0 ? 'suspended' : 'running'
+      : current && loopOpen ? 'running'
+      : trackedActive ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running'
+      : current ? terminalOutcome ?? 'idle'
+      : terminalOutcome ?? (phaseOpen && row?.live === true ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running' : 'unknown');
     const terminal = activityStatus === 'completed' || activityStatus === 'failed' || activityStatus === 'cancelled';
     return {
       ...row,

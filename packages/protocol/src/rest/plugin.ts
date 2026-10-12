@@ -45,7 +45,7 @@ export const pluginPrerequisiteInstallSchema = z.object({
 });
 
 export const pluginPanelSummarySchema = z.object({
-  pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace']),
+  pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace', 'settings']),
 });
 export const pluginPanelDocumentSchema = z.object({ html: z.string(), sandbox: z.literal('allow-scripts') });
 export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [

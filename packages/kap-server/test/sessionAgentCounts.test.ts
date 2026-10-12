@@ -130,4 +130,53 @@ describe('lightweight metadata roster', () => {
       status_source: 'runtime', started_at: new Date(40).toISOString(), completed_at: undefined });
     expect(sessionAgentCounts(agents, roster).active).toBe(1);
   });
+
+  it('does not label a tool wait or an open tracked task as idle', () => {
+    const meta = {
+      id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false,
+      agents: {
+        waiting: { displayName: 'workspace_entry_performance' },
+        tasked: { displayName: 'open-task' },
+        free: { displayName: 'free' },
+        ended: { status: 'completed' as const, completedAt: 10 },
+      },
+    };
+    const toolTurn = {
+      turnId: 4, origin: { kind: 'user' as const }, phase: 'tool_call' as const, step: 2, ending: false,
+      pendingApprovals: [], activeToolCalls: [{ toolCallId: 'call-1', name: 'read', since: 50 }], since: 40,
+    };
+    const roster = sessionAgentRoster(meta.id, meta, [
+      { ...row('tasked', 'running'), subagent_phase: undefined },
+      { ...row('ended', 'running', false) },
+    ], new Map([
+      ['waiting', { lifecycle: 'ready', background: [], turn: toolTurn }],
+      ['free', { lifecycle: 'ready', background: [] }],
+      ['tasked', { lifecycle: 'ready', background: [] }],
+    ]));
+    expect(roster.find((entry) => entry.id === 'waiting')).toMatchObject({
+      activity_status: 'running', status: 'running', status_source: 'runtime',
+    });
+    expect(roster.find((entry) => entry.id === 'tasked')).toMatchObject({
+      activity_status: 'running', status: 'running', status_source: 'runtime',
+    });
+    expect(roster.find((entry) => entry.id === 'free')).toMatchObject({
+      activity_status: 'idle', status: 'running', status_source: 'runtime',
+    });
+    expect(roster.find((entry) => entry.id === 'ended')).toMatchObject({
+      activity_status: 'completed', status: 'completed',
+    });
+  });
+
+  it('does not label an agent idle while a finite background task is executing', () => {
+    const meta = {
+      id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false,
+      agents: { main: {}, 'agent-38': { displayName: 'worker' } },
+    };
+    const roster = sessionAgentRoster(meta.id, meta, [], new Map([
+      ['agent-38', { lifecycle: 'ready', background: [{ kind: 'shell', id: 'task-finite', since: 50 }] }],
+    ]));
+    expect(roster.find((entry) => entry.id === 'agent-38')).toMatchObject({
+      activity_status: 'running', status: 'running', status_source: 'runtime', live: true,
+    });
+  });
 });

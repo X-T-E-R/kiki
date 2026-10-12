@@ -222,6 +222,11 @@ export class AgentTranscript {
     return this.#state.hasMoreOlder;
   }
 
+  noteOlderHistory(): void {
+    if (this.#state.hasMoreOlder) return;
+    this.#state = { ...this.#state, hasMoreOlder: true };
+  }
+
   /** Materialize current state (optionally windowed to the newest turns). */
   snapshot(options: TranscriptSnapshotOptions = {}): AgentTranscriptSnapshot {
     let items = this.#state.items;

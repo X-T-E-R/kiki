@@ -86,7 +86,8 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
     ...snapshot,
     has_more: response.has_more || snapshot.items.length < response.items.length,
     next_cursor: (response.has_more || snapshot.items.length < response.items.length) && snapshot.items.length > 0
-      ? itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!) : undefined,
+      ? itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!)
+      : response.has_more && snapshot.items.length === 0 ? response.next_cursor : undefined,
     agents,
     pending_interactions: snapshot.interactions.filter((entry) => entry.state === 'pending').map((entry) => entry.interactionId),
     coverage: (direction === 'head' || snapshot.items.length < response.items.length) && response.coverage.kind !== 'unknown'

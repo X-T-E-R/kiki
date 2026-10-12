@@ -153,6 +153,49 @@ function projectAt(value: unknown, path: Path, source: ContentSource, entity: ob
   }
 }
 
+const COMPACTION_HEADLINE_KEYS = ['type', 'phase', 'strategy', 'fallbackFrom', 'source', 'reasonCodes', 'time', 'shapeVersion'] as const;
+const COMPACTION_SUMMARY_KEYS = ['summary', 'contextSummary'] as const;
+
+function compactionEnum(value: unknown, allowed: readonly string[]): string | undefined {
+  return typeof value === 'string' && allowed.includes(value) ? value : undefined;
+}
+
+function compactionHeadline(payload: object, path: Path, cuts: Cut[], textBytes: number): Record<string, unknown> {
+  const record = payload as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of COMPACTION_HEADLINE_KEYS) {
+    const value = record[key];
+    if (key === 'strategy' || key === 'fallbackFrom') {
+      const strategy = compactionEnum(value, ['summarize', 'relay']);
+      if (strategy !== undefined) kept[key] = strategy;
+    } else if (key === 'source') {
+      const source = compactionEnum(value, ['auto', 'manual']);
+      if (source !== undefined) kept[key] = source;
+    } else if (key === 'phase') {
+      const phase = compactionEnum(value, ['queued', 'running', 'started', 'blocked', 'completed', 'failed', 'cancelled', 'interrupted']);
+      if (phase !== undefined) kept[key] = phase;
+    } else if (key === 'reasonCodes' && Array.isArray(value) && value.every((code) => typeof code === 'string')) {
+      kept[key] = value;
+    } else if (key === 'type' && typeof value === 'string') {
+      kept[key] = value;
+    } else if ((key === 'time' || key === 'shapeVersion') && typeof value === 'number') {
+      kept[key] = value;
+    }
+  }
+  const result = record['result'];
+  if (!path.includes('result') && result !== null && typeof result === 'object' && !Array.isArray(result)) {
+    kept['result'] = compactionHeadline(result, [...path, 'result'], cuts, textBytes);
+  }
+  for (const key of COMPACTION_SUMMARY_KEYS) {
+    const summary = record[key];
+    if (typeof summary !== 'string') continue;
+    const prefix = jsonTextPrefix(summary, 0, Math.min(textBytes, CONTENT_PREVIEW_BYTES));
+    kept[key] = prefix;
+    if (prefix.length < summary.length) cuts.push({ path: [...path, key], kind: 'text', offset: prefix.length, total: summary.length });
+  }
+  return kept;
+}
+
 function isStructurePath(path: Path): boolean {
   return path.length === 1 && path[0] === 'steps' ||
     path.length === 3 && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames';
@@ -214,8 +257,12 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     return {};
   }
   const externalText = isExternalTextMarker(value, path);
+  const compactionMarker = path.length === 0 && (value as Record<string, unknown>)['kind'] === 'marker' && (value as Record<string, unknown>)['marker'] === 'compaction';
   return Object.fromEntries(entries.map(([key, child]) => {
     const childPath = [...path, key];
+    if (compactionMarker && key === 'payload' && child !== null && typeof child === 'object' && !Array.isArray(child)) {
+      return [key, compactionHeadline(child, childPath, cuts, textBytes)];
+    }
     if (OPAQUE_FIELDS.has(key) && !(externalText && key === 'payload') && textBytes <= CONTENT_PREVIEW_BYTES && child !== null && typeof child === 'object') {
       const total = Array.isArray(child) ? child.length : Object.keys(child).length;
       if (total > 8) {

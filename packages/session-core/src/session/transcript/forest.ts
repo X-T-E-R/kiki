@@ -99,14 +99,16 @@ export function rosterFromTranscriptResponse(
 
 export function taskItemsFromTranscriptTasks(
   tasks: readonly AgentTranscriptTask[] | undefined,
+  ownerAgentId?: string,
 ): readonly AgentTaskItem[] {
   if (tasks === undefined) return [];
   return tasks.flatMap((task) => {
-    if (task.agentId === undefined || task.agentId === '') return [];
+    const agentId = task.agentId !== undefined && task.agentId !== '' ? task.agentId : ownerAgentId;
+    if (agentId === undefined || agentId === '' || ((task.agentId === undefined || task.agentId === '') && task.state !== 'running')) return [];
     return [
       {
         id: task.taskId,
-        agentId: task.agentId,
+        agentId,
         kind: task.kind,
         name: task.name ?? task.subagentName,
         description: task.description,
@@ -508,7 +510,7 @@ export function sessionAgentForestFromAgentSnapshots(
       }),
     });
     const taskList = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
-    tasks.push(...taskItemsFromTranscriptTasks(taskList));
+    tasks.push(...taskItemsFromTranscriptTasks(taskList, agentId));
   }
   roster.push(...rosterFromSnapshotSubagents(snapshotSubagents));
   const forest = overlayForestDisplayFields(buildAgentForest(live, filterRosterToLiveOrPresent(roster, snapshots), tasks), live);

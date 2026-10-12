@@ -302,6 +302,70 @@ describe('persisted agent panel metrics provenance', () => {
     });
   });
 
+  it('does not scan on an ordinary header read', async () => {
+    const fixture = persistedFixture([
+      record('known-model', usage(2, 3), true),
+      record('known-model', usage(4, 5), true),
+    ]);
+    const pending = persisted(fixture.core, pricing({ 'known-model': 2 }), 'header', { settle: false });
+    await expect(pending).resolves.toMatchObject({
+      main: { totalTokens: null, usagePartial: true, usageSource: 'persisted' },
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(fixture.reads()).toBe(0);
+    const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'header', { settle: false });
+    expect(again['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageSource: 'persisted' });
+    expect(fixture.reads()).toBe(0);
+  });
+
+  it('observes a detached complete scan from the next ordinary header read', async () => {
+    const gate = deferred();
+    const fixture = persistedFixture([
+      record('known-model', usage(2, 3), true),
+      record('known-model', usage(4, 5), true),
+    ], undefined, {
+      beforeRead: async () => { await gate.promise; },
+    });
+    const abort = new AbortController();
+    const completing = persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', {
+      settle: true, complete: true, signal: abort.signal,
+    });
+    await vi.waitFor(() => { expect(fixture.reads()).toBe(1); });
+    abort.abort();
+    await expect(completing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fixture.reads()).toBe(1);
+    const during = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
+    expect(during['main']).toMatchObject({ totalTokens: null, usagePartial: true });
+    gate.resolve();
+    await vi.waitFor(async () => {
+      const observed = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
+      expect(observed['main']).toMatchObject({ totalTokens: 14, usagePartial: false, usageSource: 'persisted' });
+    });
+    expect(fixture.reads()).toBe(1);
+  });
+
+  it('does not cache a capped usage prefix for a later header read', async () => {
+    const fixture = persistedFixture([
+      record('known-model', usage(2, 3), true),
+      record('known-model', usage(4, 5), true),
+    ]);
+    const capped = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
+      settle: true,
+      limits: { maxRecords: 1 },
+    });
+    expect(capped['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageSource: 'persisted' });
+    expect(fixture.reads()).toBe(1);
+    const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
+    expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageSource: 'persisted' });
+    expect(fixture.reads()).toBe(1);
+    const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
+      settle: true,
+      limits: { maxRecords: 1 },
+    });
+    expect(again['main']).toMatchObject({ totalTokens: 5, usagePartial: true });
+    expect(fixture.reads()).toBe(2);
+  });
+
   it('projects explicitly known zero usage and zero cost as complete', async () => {
     const fixture = persistedFixture([record('free-model', ZERO_USAGE, true)]);
     const metrics = (await persisted(fixture.core, pricing({ 'free-model': 0 }), 'zero'))['main'];

@@ -3292,11 +3292,14 @@ describe('SessionEventBroadcaster', () => {
       sessions.set('s1', lc);
       const core = makeCore(sessions, eventBus);
       const service = new TranscriptService({ homeDir: dir, core });
-      const read = service.readColdSnapshot.bind(service);
+      const screen = service as unknown as {
+        readScreenSnapshot(sessionId: string, agentId: string): Promise<unknown>;
+      };
+      const read = screen.readScreenSnapshot.bind(service);
       let release!: () => void;
       const blocked = new Promise<void>((resolve) => { release = resolve; });
       let mainFinished = false;
-      const reads = vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+      const reads = vi.spyOn(screen, 'readScreenSnapshot').mockImplementation(async (...args) => {
         if (args[1] === 'main') {
           await blocked;
           const snapshot = await read(...args);
@@ -3353,11 +3356,14 @@ describe('SessionEventBroadcaster', () => {
       });
       const core = makeCore(sessions, eventBus);
       const service = new TranscriptService({ homeDir: dir, core });
-      const read = service.readColdSnapshot.bind(service);
+      const screen = service as unknown as {
+        readScreenSnapshot(sessionId: string, agentId: string): Promise<unknown>;
+      };
+      const read = screen.readScreenSnapshot.bind(service);
       let releaseHistory!: () => void;
       const history = new Promise<void>((resolve) => { releaseHistory = resolve; });
       let blockedFinished = false;
-      vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+      vi.spyOn(screen, 'readScreenSnapshot').mockImplementation(async (...args) => {
         if (args[1] !== blockedAgent) return read(...args);
         await history;
         const result = await read(...args);
