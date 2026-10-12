@@ -300,7 +300,7 @@ describe('limit rules editor', () => {
     expect(connection.client.setRequestGovernanceRules).toHaveBeenCalledWith([]);
   });
 
-  it('switches between request view and live agent view with single-dimension breakdown', async () => {
+  it('shows both request view and live agent view vertically with single-dimension breakdown', async () => {
     vi.useFakeTimers();
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
@@ -308,24 +308,15 @@ describe('limit rules editor', () => {
     const { container, render } = mount('realtime');
     await settle(render);
 
-    // Initial view is requests
-    expect(container.querySelector('[data-governance-live]')).not.toBeNull();
-    expect(container.querySelector('[data-governance-live-agents]')).toBeNull();
-
-    // Switch to live agents
-    const liveModeSwitcher = container.querySelector('[data-axis="governance-live-mode"]')!;
-    expect(liveModeSwitcher).not.toBeNull();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-axis-value="agents"]')!.click();
-    });
-
-    // Requests panel is hidden; live agents panel is displayed and open by default
-    expect(container.querySelector('[data-governance-live]')).toBeNull();
+    // Both panels are displayed simultaneously and open by default
+    const requestPanel = container.querySelector<HTMLDetailsElement>('[data-governance-live]')!;
     const agentPanel = container.querySelector<HTMLDetailsElement>('[data-governance-live-agents]')!;
+    expect(requestPanel).not.toBeNull();
+    expect(requestPanel.open).toBe(true);
     expect(agentPanel).not.toBeNull();
     expect(agentPanel.open).toBe(true);
 
-    // Headline counts: main, sub, independent, total
+    // Headline counts for agents: main, sub, independent, total
     expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
     expect(container.querySelector('[data-governance-sub-agents]')?.textContent).toBe('2');
     expect(container.querySelector('[data-governance-independent-agents]')?.textContent).toBe('1');
@@ -611,10 +602,6 @@ describe('limit rules editor', () => {
 
     const { container, render } = mount('realtime');
     await settle(render);
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-axis-value="agents"]')!.click();
-    });
 
     const dimTable = container.querySelector('[data-governance-agent-dimensions]')!;
     expect(dimTable).not.toBeNull();

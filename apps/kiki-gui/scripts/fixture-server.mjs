@@ -905,6 +905,8 @@ class FixtureServer {
     // `POST /config` rewrite `this.requestGovernance.rules`, so the Limits
     // panel's add / edit / toggle / delete all read back like the real server.
     this.requestGovernance = structuredClone(data.requestGovernance ?? null);
+    this.liveAgentGovernance = structuredClone(data.liveAgentGovernance ?? null);
+    this.providerQuotas = structuredClone(data.providerQuotas ?? null);
     // Memory (`/api/memory/*`): `memory` seeds the settings section and the
     // per-scope entry stores; `memoryJournal` seeds undoable operations. Writes
     // mutate this state and append journal records, so the page's save / delete
@@ -2058,6 +2060,8 @@ class FixtureServer {
       const advanced = path === '/usage'
         || path === '/usage/pricing'
         || path === '/usage/realtime'
+        || path === '/usage/realtime/agents'
+        || path.startsWith('/usage/provider-quotas')
         || path === '/usage/rescan'
         || path === '/sessions/query'
         || path === '/mcp/servers'
@@ -2104,6 +2108,50 @@ class FixtureServer {
         return this.envelope(res, null, 40404, 'no request governance fixture for this scenario');
       }
       return this.envelope(res, { ...structuredClone(this.requestGovernance), asOf: new Date().toISOString() });
+    }
+    if (path === '/usage/realtime/agents' && method === 'GET') {
+      if (this.liveAgentGovernance !== null) {
+        return this.envelope(res, { ...structuredClone(this.liveAgentGovernance), asOf: new Date().toISOString() });
+      }
+      return this.envelope(res, {
+        domainId: 'this-service', runtimeEpoch: 'ep_agents', seq: 1, asOf: new Date().toISOString(),
+        coverage: 'this_process', unit: 'agent_execution', active: 0, queued: 0, main: 0, subagent: 0, independent: 0,
+        queuedMain: 0, queuedSubagent: 0, queuedIndependent: 0, dimensions: [], agents: [], waiting: [], rules: [],
+      });
+    }
+    if (path === '/usage/provider-quotas' && method === 'GET') {
+      if (this.providerQuotas !== null) {
+        return this.envelope(res, { ...structuredClone(this.providerQuotas), generated_at: new Date().toISOString() });
+      }
+      return this.envelope(res, { schema_version: '1', generated_at: new Date().toISOString(), sources: [] });
+    }
+    if (path === '/usage/provider-quotas/refresh' && method === 'POST') {
+      if (this.providerQuotas !== null) {
+        const next = structuredClone(this.providerQuotas);
+        for (const s of next.sources) {
+          for (const m of s.meters) {
+            if (m.remaining !== null && m.limit !== null) {
+              m.remaining = Math.max(0, m.remaining - 5);
+              m.used = (m.used ?? 0) + 5;
+            }
+          }
+          s.data_as_of = new Date().toISOString();
+        }
+        this.providerQuotas = next;
+        return this.envelope(res, { ...structuredClone(this.providerQuotas), generated_at: new Date().toISOString() });
+      }
+      return this.envelope(res, { schema_version: '1', generated_at: new Date().toISOString(), sources: [] });
+    }
+    if (path === '/usage/provider-quotas/enabled' && method === 'PUT') {
+      const sourceId = body?.source_id;
+      const enabled = body?.enabled === true;
+      if (this.providerQuotas !== null) {
+        for (const s of this.providerQuotas.sources) {
+          if (s.id === sourceId) s.enabled = enabled;
+        }
+        return this.envelope(res, { ...structuredClone(this.providerQuotas), generated_at: new Date().toISOString() });
+      }
+      return this.envelope(res, { schema_version: '1', generated_at: new Date().toISOString(), sources: [] });
     }
     if (path === '/usage/pricing' && method === 'GET') {
       return this.envelope(res, this.usagePricingResponse(query.getAll('model')));

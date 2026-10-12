@@ -37,6 +37,7 @@ const getUsageRescan = vi.fn();
 const startUsageRescan = vi.fn();
 const getSession = vi.fn();
 const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const getRequestGovernance = vi.fn().mockResolvedValue({ domainId: 'this-service', runtimeEpoch: 'epoch-example', seq: 1, asOf: '2026-01-01T12:00:00Z', active: 3, queued: 2, coverage: { native: 'managed', external: 'unmanaged' }, dimensions: [], rules: [], waiting: [] });
 const setRequestGovernanceRules = vi.fn().mockResolvedValue({});
 const listModels = vi.fn().mockResolvedValue({ items: [] });
@@ -44,7 +45,7 @@ const listProviders = vi.fn().mockResolvedValue({ items: [] });
 
 vi.mock('../state/connection', () => ({
   useOptionalConnection: () => undefined,
-  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
+  useConnection: () => ({ scopeId: 'test-domain', wsStatus: 'open', client: { getUsage, getUsageRescan, startUsageRescan, getSession, listWorkspaces, listWorkspaceCatalog, getRequestGovernance, setRequestGovernanceRules, listModels, listProviders } }),
 }));
 
 function tokens(inputOther: number, cacheRead = 0) {
@@ -238,11 +239,13 @@ beforeEach(() => {
   getUsageRescan.mockResolvedValue({ state: 'idle', scanned_sessions: 0, total_sessions: 0, scanned_records: 0, started_at: null, finished_at: null, error: null });
   getSession.mockReset();
   listWorkspaces.mockReset();
+  listWorkspaceCatalog.mockReset();
   getUsage.mockImplementation(async (query: Record<string, unknown>) =>
     usageResponse({ defaulted: query['range'] === undefined }),
   );
   getSession.mockRejectedValue(new Error('no session'));
   listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_1', name: 'Workspace One' }] });
+  listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_1', name: 'Workspace One', root: '/path/wd_1', created_at: 0, last_opened_at: 0, pinned: false }] });
 });
 
 describe('UsagePage (V2)', () => {
@@ -346,6 +349,15 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-rescan]')).toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-panel="history"]')!.click(); });
     await openReliability(container);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders ProviderQuotaPanel when panel=quota', async () => {
+    const { container, root } = await renderPage('/usage?panel=quota');
+    expect(container.querySelector('[data-usage-panel="quota"]')?.getAttribute('aria-current')).toBe('page');
+    expect(container.querySelector('[data-provider-quota-panel]')).not.toBeNull();
+    expect(container.querySelector('[data-request-governance]')).toBeNull();
+    expect(container.querySelector('[data-usage-filters]')).toBeNull();
     await act(async () => { root.unmount(); });
   });
 

@@ -27,6 +27,7 @@ const usageExport = {
 };
 const meta = vi.fn();
 const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const openUrl = vi.fn(async () => {});
 let browserHost = false;
 vi.mock('../../../host', () => ({ useHost: () => ({ openUrl: browserHost ? undefined : openUrl }) }));
@@ -36,7 +37,7 @@ let currentMeta: Record<string, unknown> = { server_home_id: 'home-a' };
 
 vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
-    client: { meta, listWorkspaces },
+    client: { meta, listWorkspaces, listWorkspaceCatalog },
     klient: { rest: { usageExport } },
     scopeId,
     meta: currentMeta,
@@ -186,10 +187,12 @@ beforeEach(() => {
   for (const mock of Object.values(usageExport)) mock.mockReset();
   meta.mockReset();
   listWorkspaces.mockReset();
+  listWorkspaceCatalog.mockReset();
   scopeId = 'home-a';
   currentMeta = { server_home_id: 'home-a' };
   meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: { usage_export: true } });
   listWorkspaces.mockResolvedValue({ items: [] });
+  listWorkspaceCatalog.mockResolvedValue({ items: [] });
   usageExport.status.mockResolvedValue(status(destination()));
   usageExport.saveDraft.mockResolvedValue(destination({ enabled: false, state: 'draft', consent_fingerprint: null }));
   usageExport.preview.mockResolvedValue(preview());

@@ -27,7 +27,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { readLastSessionId } from '@kiki/session-core/settings';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
@@ -287,7 +287,7 @@ function FilterBar({
   onChange,
 }: {
   filters: UsageFilters;
-  workspaces: readonly Workspace[];
+  workspaces: readonly WorkspaceCatalogEntry[];
   models: readonly { id: string; display_name?: string | null }[];
   providers: readonly { id: string }[];
   comparing: boolean;
@@ -1062,8 +1062,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     : undefined;
 
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
   const workspaces = useMemo(() => workspacesQuery.data?.items ?? [], [workspacesQuery.data]);
@@ -1150,7 +1150,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
         <div className="mx-auto max-w-[1120px] space-y-4" data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
-          {panel === 'export' ? <UsageExportPanel /> : panel !== 'history' ? <RequestGovernanceView view={searchParams.get('panel') === 'limits' ? 'limits' : 'realtime'} /> : <>
+          {panel === 'export' ? (
+            <UsageExportPanel />
+          ) : panel === 'quota' ? (
+            <ProviderQuotaPanel />
+          ) : panel !== 'history' ? (
+            <RequestGovernanceView view={searchParams.get('panel') === 'limits' ? 'limits' : 'realtime'} />
+          ) : <>
           <FilterBar
             filters={filters}
             workspaces={workspaces}

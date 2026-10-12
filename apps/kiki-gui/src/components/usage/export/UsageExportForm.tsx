@@ -227,7 +227,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const [preview, setPreview] = useState<{ readonly signature: string; readonly value: UsageExportPreview } | null>(null);
   const [showSecret, setShowSecret] = useState(false);
 
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const workspaces = workspacesQuery.data?.items ?? [];
 
   const historyHalfHour = floorToHalfHour(state.historyFrom);
