@@ -21,6 +21,7 @@ export const contextReadOnlyTools: ReadonlySet<string> = new Set([
 
 export const contextCatalogSchema = z.object({
   delegation: z.boolean(),
+  nativeTools: z.boolean().optional(),
   tools: z.array(z.object({
     name: z.string(),
     toolName: z.string(),
@@ -30,7 +31,7 @@ export const contextCatalogSchema = z.object({
 });
 export type ContextCatalog = z.infer<typeof contextCatalogSchema>;
 export const contextCallSchema = z.object({
-  name: z.enum(contextProcedureTable.map((entry) => entry.name)),
+  name: z.string().min(1),
   arguments: z.record(z.string(), z.unknown()),
 }).strict();
 export const contextResultSchema = z.object({ output: z.unknown(), isError: z.boolean().optional() });

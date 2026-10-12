@@ -8,10 +8,14 @@ import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTod
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 
 import { IAgentProfileService, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 import { IAgentToolRegistryService } from '@kiki/agent-core-v2/agent/toolRegistry/toolRegistry';
 import { IAgentToolPolicyService } from '@kiki/agent-core-v2/agent/toolPolicy/toolPolicy';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
 import { IAgentStateService } from '@kiki/agent-core-v2/agent/state/agentState';
+import { IAgentScopeContext } from '@kiki/agent-core-v2/agent/scopeContext/scopeContext';
+import { nativeHarnessToolAllowed } from '@kiki/agent-core-v2/app/agentExecutor/harnessMcp';
 import { turnKey } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import { contextCallSchema, contextProcedureTable, type ContextCatalog } from '@kiki/klient/procedures';
 
@@ -76,6 +80,18 @@ export class ContextProcedureHost {
       const binding = agent.accessor.get(IAgentProfileService).data();
       const policy = agent.accessor.get(IAgentToolPolicyService);
       const registry = agent.accessor.get(IAgentToolRegistryService);
+      if (seat.nativeTools === true) return {
+        delegation: false,
+        nativeTools: true,
+        tools: registry.list().filter((tool) =>
+          nativeHarnessToolAllowed(binding, agent.accessor.get(IAgentScopeContext).parentAgentId, tool.name, tool.source) &&
+          policy.isToolActive(tool.name, tool.source)).map((tool) => ({
+          name: tool.name,
+          toolName: `kiki_${tool.name}`,
+          description: tool.description,
+          parameters: tool.parameters ?? { type: 'object', properties: {} },
+        })),
+      };
       return {
         delegation: binding.allowKikiSubagents === true,
         tools: contextProcedureTable.flatMap((procedure) => {
@@ -95,20 +111,28 @@ export class ContextProcedureHost {
   async call(seat: McpSeat, rawInput: unknown, signal: AbortSignal) {
     const input = contextCallSchema.parse(rawInput);
     return this.withAgent(seat, async (agent) => {
-      const procedure = contextProcedureTable.find((entry) => entry.name === input.name)!;
+      const procedure = contextProcedureTable.find((entry) => entry.name === input.name);
       const binding = agent.accessor.get(IAgentProfileService).data();
-      if (!binding.kikiContext?.includes(procedure.group)) throw new Error('Kiki context tool group is disabled');
-      if (!agent.accessor.get(IAgentToolPolicyService).isToolActive(procedure.nativeName)) {
-        return { output: `Tool "${procedure.nativeName}" is disabled by the active tool policy`, isError: true };
+      if (seat.nativeTools !== true && (procedure === undefined || !binding.kikiContext?.includes(procedure.group))) {
+        throw new Error('Kiki context tool group is disabled');
       }
+      const name = seat.nativeTools === true ? input.name : procedure!.nativeName;
       const registry = agent.accessor.get(IAgentToolRegistryService);
-      if (registry.resolve(procedure.nativeName) === undefined) throw new Error('Kiki context tool is disabled by the active tool policy');
+      const tool = registry.list().find((entry) => entry.name === name);
+      if (tool === undefined) throw new Error('Kiki context tool is unavailable');
+      if (seat.nativeTools === true &&
+        !nativeHarnessToolAllowed(binding, agent.accessor.get(IAgentScopeContext).parentAgentId, name, tool.source)) {
+        return { output: `Tool "${name}" is disabled by the harness capability binding`, isError: true };
+      }
+      if (!agent.accessor.get(IAgentToolPolicyService).isToolActive(name, tool.source)) {
+        return { output: `Tool "${name}" is disabled by the active tool policy`, isError: true };
+      }
       const executor = agent.accessor.get(IAgentToolExecutorService);
       const turnId = Math.max(0, agent.accessor.get(IAgentStateService).get(turnKey).nextTurnId - 1);
       for await (const executed of executor.execute([{
         id: `context:${randomUUID()}`,
         type: 'function',
-        name: procedure.nativeName,
+        name,
         arguments: JSON.stringify(input.arguments),
       }], { signal, turnId })) {
         return { output: executed.result.output, isError: executed.result.isError };
@@ -117,13 +141,16 @@ export class ContextProcedureHost {
     });
   }
 
-  async withAgent<T>(seat: McpSeat, operation: (agent: Awaited<ReturnType<typeof ensureMainAgent>>) => Promise<T>): Promise<T> {
-    if (seat.harnessAgentId !== 'main') throw new Error('Kiki context requires a harness main seat');
+  async withAgent<T>(seat: McpSeat, operation: (agent: IAgentScopeHandle) => Promise<T>): Promise<T> {
+    if (seat.harnessAgentId === undefined) throw new Error('Kiki context requires a harness agent seat');
     return withSessionOperation(this.core, seat.sessionId, async (session) => {
       if (session === undefined) throw new Error('Session does not exist');
-      const main = await ensureMainAgent(session);
-      if (main.id !== seat.harnessAgentId) throw new Error('Harness agent is not admitted');
-      return operation(main);
+      const agent = seat.harnessAgentId === 'main' && seat.nativeTools !== true ? await ensureMainAgent(session)
+        : session.accessor.get(IAgentLifecycleService).get(seat.harnessAgentId!);
+      if (agent === undefined || seat.nativeTools === true && agent !== seat.harnessAgentInstance) {
+        throw new Error('Harness agent is not available');
+      }
+      return operation(agent);
     });
   }
 }

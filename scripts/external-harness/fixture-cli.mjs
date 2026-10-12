@@ -20,10 +20,11 @@ let turns = 0;
 const conversation = 'fixture-conversation';
 const args = process.argv.slice(2);
 const model = args[args.indexOf('--model') + 1];
+const agent = args[args.indexOf('--agent') + 1];
 for await (const line of createInterface({ input: process.stdin })) {
   const input = JSON.parse(line);
   if (!turns) process.stdout.write(JSON.stringify({ event: 'init', conversation_id: conversation,
-    init: { model: args.includes('--model') ? model : undefined, cwd: process.cwd(), permission_mode: 'request-review' } }) + '\n');
+    init: { model: args.includes('--model') ? model : undefined, agent, cwd: process.cwd(), permission_mode: 'request-review' } }) + '\n');
   turns++;
   if (input.message.content === 'hang') continue;
   if (input.message.content === 'tool-hang') {

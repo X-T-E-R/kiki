@@ -67,6 +67,7 @@ import { IWireService } from '#/wire/wire';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -463,6 +464,8 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   const ix = new TestInstantiationService();
   const agentId = harness.context.agent.id;
   const capacity = new DispatchCapacity();
+  ix.stub(ISessionContext, { sessionId: 'session-fixture' });
+  ix.stub(IRequestGovernance, { acquireAgent: async () => ({ release() {} }) });
   ix.stub(ISessionDispatchService, { reserveExecution: (id) => capacity.reserve('main', {
     maxDirectChildren: 1, maxTotalSubagents: 1,
   }, id) });
@@ -493,6 +496,7 @@ function createExecutionHarness(options: HarnessOptions = {}) {
   });
   ix.set(IAgentStateService, harness.states);
   ix.set(IAgentPermissionModeService, { mode: 'manual' } as IAgentPermissionModeService);
+  ix.stub(IAgentPermissionRulesService, { rules: [] });
   ix.set(IAgentUsageService, harness.usage);
   ix.set(IEventDispatcher, harness.dispatcher);
   ix.set(IModelCatalog, harness.modelCatalog);

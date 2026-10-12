@@ -6,6 +6,8 @@ import type { FastifyInstance } from 'fastify';
 import type { McpSeat, SeatResolver } from './seatResolver';
 import { createHarnessHooks } from './harnessHooks';
 import { ContextProcedureHost } from '../procedures/contextHost';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 
 export function registerHarnessMcpBridge(core: Scope, app: FastifyInstance): SeatResolver {
   const seats = new Map<string, McpSeat>();
@@ -14,14 +16,21 @@ export function registerHarnessMcpBridge(core: Scope, app: FastifyInstance): Sea
   const configured = core.accessor.get(IHarnessMcpService).configure(async (request) => {
     const address = app.server.address();
     if (address === null || typeof address === 'string') throw new Error('Harness MCP requires a listening HTTP server');
+    const harnessAgentInstance = request.nativeTools === true ? await withSessionOperation(core, request.sessionId, async (session) => {
+      const agent = session?.accessor.get(IAgentLifecycleService).get(request.agentId);
+      if (agent === undefined) throw new Error('Harness agent is not available');
+      return agent;
+    }) : undefined;
     const token = randomBytes(32).toString('hex');
     const seat: McpSeat = {
-      seatId: `harness:${request.sessionId}`,
-      principalId: `harness:${request.sessionId}`,
+      seatId: `harness:${request.sessionId}:${request.agentId}`,
+      principalId: `harness:${request.sessionId}:${request.agentId}`,
       sessionId: request.sessionId,
       delegationToken: token,
       workspacePath: request.workspacePath,
       harnessAgentId: request.agentId,
+      nativeTools: request.nativeTools,
+      harnessAgentInstance,
     };
     const hooks = request.hooks ? await createHarnessHooks(request.executorId ?? '') : undefined;
     let cleanup: Promise<void> | undefined;

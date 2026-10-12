@@ -620,18 +620,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     const systemPrompt = this.context.binding.systemPrompt;
-    const servers = this.context.descriptor.supportsMcp === false || mcp === undefined
-      ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
-        (name) => process.env[name], this.context.descriptor.mcpTransports);
-    if (this.context.binding.allowKikiSubagents === true || this.context.binding.kikiContext?.length) {
-      this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
-      if (this.#harnessMcp !== undefined) {
-        if (servers.some((server) => server.name === this.#harnessMcp!.server.name)) {
-          throw new Error2(ErrorCodes.CONFIG_INVALID, 'The reserved Kiki harness MCP name is already configured');
-        }
-        servers.push(this.#harnessMcp.server);
-      }
-    }
+    this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
+    const servers = this.#harnessMcp !== undefined ? [this.#harnessMcp.server]
+      : this.context.descriptor.supportsMcp === false || mcp === undefined ? []
+        : acpMcpServers(mcp.connectionManager, roots.workDir,
+          (name) => process.env[name], this.context.descriptor.mcpTransports);
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,

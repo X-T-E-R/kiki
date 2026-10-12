@@ -99,6 +99,25 @@ describe('Kiki external delegation MCP projector', () => {
     expect(contextCall).toHaveBeenCalledTimes(1);
   });
 
+  it('starts a native tool connection with an empty policy and reflects later activation and revocation', async () => {
+    const tool = { name: 'example_tool', toolName: 'kiki_example_tool', description: 'Example tool',
+      parameters: { type: 'object', properties: {} } };
+    let active = false;
+    const contextCall = vi.fn(async () => ({ output: 'native result' }));
+    const { client } = await connect(fakeKlient(), {
+      contextCatalog: { delegation: false, nativeTools: true, tools: [] },
+      contextList: async () => ({ delegation: false, nativeTools: true, tools: active ? [tool] : [] }), contextCall,
+    });
+    expect((await client.listTools()).tools).toEqual([]);
+    active = true;
+    expect((await client.listTools()).tools.map((entry) => entry.name)).toEqual(['kiki_example_tool']);
+    expect((await client.callTool({ name: tool.toolName, arguments: {} })).content).toEqual([{ type: 'text', text: 'native result' }]);
+    active = false;
+    expect((await client.callTool({ name: tool.toolName, arguments: {} })).isError).toBe(true);
+    expect(contextCall).toHaveBeenCalledTimes(1);
+    expect((await client.listTools()).tools).toEqual([]);
+  });
+
   it('registers the thirteen table-owned tools and preserves text/structured parity', async () => {
     const { client } = await connect(fakeKlient());
     const tools = await client.listTools();

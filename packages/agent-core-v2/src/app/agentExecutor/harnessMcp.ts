@@ -4,6 +4,36 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
+import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
+import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
+import type { ToolSource } from '#/tool/toolContract';
+
+type HarnessCapabilityBinding = Pick<ProfileBindingSnapshot, 'execution' | 'kikiContext' | 'allowKikiSubagents'>;
+
+export function harnessCapabilities(binding: HarnessCapabilityBinding) {
+  return {
+    context: binding.execution?.sources['kiki_context'] === 'harness-default' ? undefined
+      : binding.execution?.effective.kiki_context ?? binding.kikiContext,
+    delegation: binding.execution?.sources['allow_kiki_subagents'] === 'harness-default' ? undefined
+      : binding.execution?.effective.allow_kiki_subagents ?? binding.allowKikiSubagents,
+  };
+}
+
+export function nativeHarnessToolAllowed(
+  binding: HarnessCapabilityBinding, parentAgentId: string | undefined, name: string, source: ToolSource,
+): boolean {
+  const child = parentAgentId !== undefined;
+  const { context, delegation } = harnessCapabilities(binding);
+  if (source === 'builtin') {
+    const group = toolGroupForName(name);
+    const contextGroup = group === 'thread' ? 'threads' : group;
+    if (contextGroup !== undefined && ['memory', 'board', 'cron', 'threads', 'history'].includes(contextGroup)) {
+      return context === undefined ? child : context.includes(contextGroup as NonNullable<typeof context>[number]);
+    }
+    if (name === 'AgentRun' || name === 'AgentList' || name === 'AgentSend') return delegation ?? child;
+  }
+  return child;
+}
 
 export type HarnessMcpServer = NonNullable<AcpOpenSessionOptions['mcpServers']>[number];
 
@@ -22,6 +52,7 @@ export interface HarnessMcpRequest {
   readonly workspacePath: string;
   readonly executorId?: string;
   readonly hooks?: boolean;
+  readonly nativeTools?: boolean;
 }
 
 export type HarnessMcpProvider = (request: HarnessMcpRequest) => Promise<HarnessMcpLease>;

@@ -87,6 +87,9 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -122,6 +125,7 @@ interface FakeHarnessOptions {
   readonly executorId?: string;
   readonly executorVersion?: string;
   readonly agentId?: string;
+  readonly parentAgentId?: string;
   readonly providerName?: string;
   readonly modelAlias?: string;
   readonly unpinModel?: boolean;
@@ -323,6 +327,11 @@ function createHarness(options: FakeHarnessOptions = {}) {
     },
   } as unknown as ISessionMcpHandle;
   const services = new Map<unknown, unknown>([
+    [ISessionContext, { sessionId: 'session-fixture' }],
+    [IAgentScopeContext, { parentAgentId: options.parentAgentId }],
+    [IHarnessMcpService, { acquire: vi.fn(async () => ({ server: {
+      name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [],
+    }, dispose() {} })) }],
     [IAgentStateService, state.state],
     [IModelCatalog, modelCatalog],
     [IAgentUsageService, usage],
@@ -557,6 +566,8 @@ function createExecutionHarness(options: FakeHarnessOptions = {}) {
   const ix = new TestInstantiationService();
   const agentId = harness.executorContext.agent.id;
   ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+  ix.stub(ISessionContext, { sessionId: 'session-fixture' });
+  ix.stub(IRequestGovernance, { acquireAgent: async () => ({ release() {} }) });
   ix.set(IAgentContextMemoryService, harness.contextMemory);
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(ISessionTodoService, {
@@ -742,19 +753,21 @@ describe('ACP external executor', () => {
 
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
-      executorId: 'kimi-acp', executorVersion,
+      executorId: 'kimi-acp', executorVersion, parentAgentId: 'parent-fixture',
       supportsMcp: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.supportsMcp,
       mcpServers: { relay: { transport: 'stdio', command: 'node', args: ['relay.js'] } },
       thinkingEffort: 'off', unpinModel: true,
     });
     await harness.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
-    expect(harness.opens[0]?.mcpServers).toEqual([{ name: 'relay', command: 'node', args: ['relay.js'], env: [] }]);
+    expect(harness.opens[0]?.mcpServers).toEqual([
+      { name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [] },
+    ]);
     await harness.session.shutdown();
   });
 
   it('passes session MCP servers to the engine and honors the descriptor opt-out', async () => {
     const config = { relay: { transport: 'stdio' as const, command: 'node', args: ['relay.js'] } };
-    const forwarded = createHarness({ mcpServers: config, thinkingEffort: 'off', unpinModel: true });
+    const forwarded = createHarness({ mcpServers: config, supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
     await forwarded.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
     expect(forwarded.opens[0]?.mcpServers).toEqual([
       { name: 'relay', command: 'node', args: ['relay.js'], env: [] },

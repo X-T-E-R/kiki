@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { acpFormFields, acpFormResponse } from '#/agent/execution/acpElicitation';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from '#/agent/execution/harnessMcpLease';
-import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { nativeHarnessToolAllowed, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { externalAcpForkRecords } from '#/workspace/sessionLifecycle/internal/externalFork';
 import { antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
 import { agentExecutorBindingFingerprint, type AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
@@ -124,7 +125,67 @@ describe('external native harness adapters', () => {
       binding: {}, descriptor: { id: 'fixture', mcpTransports: ['http'] } } as unknown as AgentExecutorContext;
     expect(await acquireHarnessMcp(context, '/workspace')).toBeUndefined();
     await expect(acquireHarnessMcp({ ...context, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('stdio MCP');
-    await expect(acquireHarnessMcp({ ...context, agent: { ...context.agent, id: 'child' }, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('main profile');
+    await expect(acquireHarnessMcp({ ...context, agent: { ...context.agent, id: 'child' }, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('stdio MCP');
+  });
+
+  it('automatically leases native tools for an MCP-compatible child under its exact identity', async () => {
+    const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
+    const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
+      String(id) === 'agentScopeContext' ? { parentAgentId: 'parent-fixture' }
+        : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
+      binding: {}, descriptor: { id: 'fixture', supportsMcp: true } } as unknown as AgentExecutorContext;
+    expect(await acquireHarnessMcp(context, '/workspace')).toBeDefined();
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-fixture', agentId: 'child', nativeTools: true, workspacePath: '/workspace',
+    }));
+    expect(await acquireHarnessMcp({ ...context, descriptor: { ...context.descriptor, supportsMcp: false } }, '/workspace')).toBeUndefined();
+  });
+
+  it('keeps bare main execution unchanged and acquires only requested main capabilities', async () => {
+    const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
+    const execution = resolveExecutionBinding({ executor: 'fixture' }, undefined, undefined, undefined);
+    const context = { agent: { id: 'not-a-child', accessor: { get: (id: unknown) =>
+      String(id) === 'agentScopeContext' ? { parentAgentId: undefined }
+        : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
+      binding: { execution, kikiContext: [], allowKikiSubagents: false },
+      descriptor: { id: 'fixture', supportsMcp: true } } as unknown as AgentExecutorContext;
+    expect(await acquireHarnessMcp(context, '/workspace')).toBeUndefined();
+    expect(acquire).not.toHaveBeenCalled();
+    for (const overrides of [{ allow_kiki_subagents: true }, { kiki_context: ['memory'] as const }]) {
+      const requested = resolveExecutionBinding({ executor: 'fixture', overrides }, undefined, undefined, execution);
+      expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: requested } }, '/workspace')).toBeDefined();
+    }
+    expect(nativeHarnessToolAllowed({ kikiContext: ['memory'] }, undefined, 'MemoryRead', 'builtin')).toBe(true);
+    expect(nativeHarnessToolAllowed({ kikiContext: ['memory'] }, undefined, 'Read', 'builtin')).toBe(false);
+    expect(nativeHarnessToolAllowed({ allowKikiSubagents: true }, undefined, 'AgentRun', 'builtin')).toBe(true);
+    expect(nativeHarnessToolAllowed({ allowKikiSubagents: true }, undefined, 'plugin_fixture', 'plugin')).toBe(false);
+  });
+
+  it('distinguishes normalized defaults from explicit capability off and unset inheritance', () => {
+    const defaults = resolveExecutionBinding({ executor: 'fixture' }, undefined, undefined, undefined);
+    const binding = { execution: defaults, kikiContext: [], allowKikiSubagents: false };
+    for (const name of ['HistoryList', 'MemoryRead', 'AgentRun']) {
+      expect(nativeHarnessToolAllowed(binding, 'parent', name, 'builtin')).toBe(true);
+      expect(nativeHarnessToolAllowed(binding, undefined, name, 'builtin')).toBe(false);
+    }
+    const inherited = resolveExecutionBinding({ executor: 'fixture' }, {
+      kiki_context: ['memory'], allow_kiki_subagents: true,
+    }, undefined, undefined);
+    const off = resolveExecutionBinding({ executor: 'fixture', overrides: {
+      kiki_context: [], allow_kiki_subagents: false,
+    } }, { kiki_context: ['memory'], allow_kiki_subagents: true }, undefined, inherited);
+    for (const name of ['MemoryRead', 'HistoryList', 'AgentRun', 'AgentList', 'AgentSend']) {
+      expect(nativeHarnessToolAllowed({ execution: off }, 'parent', name, 'builtin')).toBe(false);
+    }
+    for (const name of ['AgentNotify', 'Read', 'TaskList']) {
+      expect(nativeHarnessToolAllowed({ execution: off }, 'parent', name, 'builtin')).toBe(true);
+    }
+    const restored = resolveExecutionBinding({ executor: 'fixture', overrides: {
+      kiki_context: null, allow_kiki_subagents: null,
+    } }, { kiki_context: ['memory'], allow_kiki_subagents: true }, undefined, off);
+    expect(nativeHarnessToolAllowed({ execution: restored }, 'parent', 'MemoryRead', 'builtin')).toBe(true);
+    expect(nativeHarnessToolAllowed({ execution: restored }, 'parent', 'AgentRun', 'builtin')).toBe(true);
+    expect(nativeHarnessToolAllowed({ execution: restored }, 'parent', 'HistoryList', 'builtin')).toBe(false);
   });
 
   it('uses donor Antigravity release names and includes the required native sibling', () => {

@@ -38,6 +38,7 @@ export interface ExternalDelegationSeatAuthority {
   readonly sessionId: string;
   readonly workspacePath?: string;
   readonly harnessAgentId?: string;
+  readonly nativeTools?: boolean;
 }
 
 export class ExternalDelegationProcedureHost {
@@ -49,6 +50,7 @@ export class ExternalDelegationProcedureHost {
     input: DelegationProcedureInput<Name>,
     signal?: AbortSignal,
   ): Promise<DelegationProcedureOutput<Name>> {
+    if (seat.nativeTools === true) throw new Error('Native harness seats must use their allowed agent tools');
     const procedure = delegationProcedure(name);
     const canonicalInput = procedure.inputSchema.parse(input) as DelegationProcedureInput<Name>;
     return withSessionOperation(this.core, seat.sessionId, async (session) => {

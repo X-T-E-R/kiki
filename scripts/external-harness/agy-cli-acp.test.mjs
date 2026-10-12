@@ -81,11 +81,11 @@ test('text-only boundary rejects rich content instead of dropping it', () => {
   assert.throws(() => promptText([{ type: 'image', data: 'x' }]), /text prompts only/);
 });
 
-test('new contexts differ, unsupported system replacement and MCP fail explicitly', async () => {
+test('new contexts differ, unsupported system replacement and malformed MCP fail explicitly', async () => {
   const b = bridge();
   assert.notEqual(await session(b), await session(b));
   await assert.rejects(b.newSession({ cwd, mcpServers: [], _meta: { systemPromptOverride: 'replace' } }), /replacement is unsupported/);
-  await assert.rejects(b.newSession({ cwd, mcpServers: [{ name: 'x' }] }), /MCP forwarding/);
+  await assert.rejects(b.newSession({ cwd, mcpServers: [{ name: 'x' }] }), /stdio servers/);
 });
 
 test('explicit external ID reaches CLI; streamed chunks are not duplicated by result; same process keeps context', async () => {
@@ -939,4 +939,70 @@ test('real ACP session/load restores exact native argv after adapter EOF without
     assert.equal(records.filter(record => record.type === 'prompt_sent').length, 2);
     await assert.rejects(readFile(join(auditDir, `${sessionId}.resume-lock`)), { code: 'ENOENT' });
   } finally { await first?.close(); await second?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('cancel and ACP close during permission setup cannot launch a late vendor process or leave its registration', async () => {
+  for (const action of ['cancel', 'close']) {
+    const b = bridge(); const id = await session(b);
+    let ready; let release;
+    const entered = new Promise(done => { ready = done; });
+    const gate = new Promise(done => { release = done; });
+    let launched = false; let channelClosed = false; let registrationClosed = false;
+    b.spawnProcess = () => { launched = true; throw new Error('unexpected late launch'); };
+    b.syncPermissionHook = async s => {
+      ready(); await gate;
+      s.permissionChannel = { close: async () => { channelClosed = true; } };
+      s.permissionRegistration = { close: async () => { registrationClosed = true; } };
+    };
+    const pending = turn(b, id, 'must not be sent', []);
+    pending.catch(() => {});
+    await entered;
+    const stopping = action === 'cancel' ? b.cancel({ sessionId: id }) : b.close();
+    release();
+    await stopping;
+    if (action === 'cancel') assert.deepEqual(await pending, { stopReason: 'cancelled' });
+    else await assert.rejects(pending, /ACP connection closed/);
+    assert.equal(launched, false);
+    assert.equal(channelClosed, true);
+    assert.equal(registrationClosed, true);
+    await b.close();
+  }
+});
+
+test('session stdio MCP generates custom agent definition, passes env, and cleans up on close or cancel', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { join, resolve } = await import('node:path');
+  const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-mcp-agent-'));
+  const b = bridge();
+  const originalSpawn = b.spawnProcess;
+  let launch;
+  b.spawnProcess = (exe, args, options) => {
+    launch = { exe, args, env: options.env };
+    return originalSpawn(exe, args, options);
+  };
+  const mcpServers = [{
+    name: 'test-server',
+    command: process.execPath,
+    args: ['-e', 'process.exit(0)'],
+    env: [{ name: 'TEST_KEY', value: 'test-value' }],
+  }];
+  try {
+    const id = (await b.newSession({ cwd: root, mcpServers })).sessionId;
+    const agentFile = join(root, '.agents', 'agents', `kiki-acp-${id}.md`);
+    await turn(b, id, 'hello mcp', []);
+    assert.equal(launch.args.includes('--agent'), true);
+    assert.equal(launch.args[launch.args.indexOf('--agent') + 1], `kiki-acp-${id}`);
+    const key = `KIKI_AGY_MCP_${id.replaceAll('-', '_')}_0`;
+    assert.ok(launch.env[key]);
+    assert.deepEqual(JSON.parse(launch.env[key]), mcpServers[0]);
+    const fileContent = await readFile(agentFile, 'utf8');
+    assert.match(fileContent, /"name": "kiki-acp-/);
+    assert.match(fileContent, /--mcp-stdio/);
+    await b.close();
+    await assert.rejects(readFile(agentFile), { code: 'ENOENT' });
+  } finally {
+    await b.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

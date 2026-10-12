@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import type { IAgentScopeHandle } from '@kiki/agent-core-v2/_base/di/scope';
 
 export interface McpSeat {
   readonly seatId: string;
@@ -7,6 +8,8 @@ export interface McpSeat {
   readonly delegationToken: string;
   readonly workspacePath?: string;
   readonly harnessAgentId?: string;
+  readonly nativeTools?: boolean;
+  readonly harnessAgentInstance?: IAgentScopeHandle;
 }
 
 export interface SeatResolver {

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, open, unlink } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, open, unlink, writeFile } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { registerProjectHook, recoverProjectHook } from './agy-hook-registration.mjs';
@@ -21,6 +21,7 @@ export function launchArgs(session) {
   validateEffort(session.model, session.effort);
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
   if (session.conversationId) args.push('--conversation', session.conversationId);
+  if (session.mcpAgent) args.push('--agent', session.mcpAgent.name);
   if (session.model !== DEFAULT) args.push('--model', session.model);
   if (session.effort !== DEFAULT) args.push('--effort', session.effort);
   if (session.hostGate && session.permission?.override?.mode === 'yolo') args.push('--dangerously-skip-permissions');
@@ -53,7 +54,7 @@ export function toolPermissionResources(name, args) {
 
 export function promptText(blocks) {
   if (!Array.isArray(blocks) || blocks.some(b => b.type !== 'text' || typeof b.text !== 'string')) {
-    throw new Error('AGY CLI accepts text prompts only; image/audio/resource blocks are unsupported');
+    throw new Error('This AGY ACP adapter accepts text prompts only; CLI rich-input support has not been verified');
   }
   const text = blocks.map(b => b.text).join('\n');
   if (Buffer.byteLength(text) > MAX_FRAME_BYTES / 2) throw new Error('AGY prompt exceeds the adapter frame limit');
@@ -157,12 +158,19 @@ export class AgyBridge {
   }
 
   async newSession(params, id = randomUUID(), event = 'session_new') {
-    if (params.mcpServers?.length) throw new Error('AGY MCP forwarding is not supported; retain AGY own configured MCP');
+    const mcpServers = params.mcpServers ?? [];
+    if (!Array.isArray(mcpServers) || mcpServers.some(server => !server || typeof server.name !== 'string' ||
+      !server.name || typeof server.command !== 'string' || !server.command ||
+      !Array.isArray(server.args) || server.args.some(arg => typeof arg !== 'string') ||
+      !Array.isArray(server.env) || server.env.some(entry => typeof entry.name !== 'string' || typeof entry.value !== 'string'))) {
+      throw new Error('AGY session MCP requires named stdio servers with command, args and env');
+    }
     if (params._meta?.systemPromptOverride !== undefined) throw new Error('System replacement is unsupported; use explicit Kiki preamble delivery');
     if (!isAbsolute(params.cwd)) throw new Error('AGY workspace must be absolute');
     const dirs = params.additionalDirectories ?? [];
     if (!Array.isArray(dirs) || dirs.some(d => typeof d !== 'string' || !isAbsolute(d))) throw new Error('Additional directories must be absolute');
     const session = { id, cwd: params.cwd, additionalDirectories: dirs, model: this.model, effort: DEFAULT,
+      mcpServers: structuredClone(mcpServers), mcpAgent: undefined,
       permission: undefined, hostGate: false, permissionIdentity: permissionChannelIdentity(),
       permissionRequests: new Set(), permissionChannel: undefined, permissionRegistration: undefined,
       child: undefined, active: undefined, broken: false, init: undefined, exited: undefined, toolIds: new Map() };
@@ -186,6 +194,10 @@ export class AgyBridge {
     if (resolve(params.cwd) !== resolve(workspace.cwd)
       || JSON.stringify(params.additionalDirectories ?? []) !== JSON.stringify(workspace.additionalDirectories ?? [])) {
       throw new Error('AGY native load workspace differs from its original binding');
+    }
+    const mcpBinding = records.findLast(record => record.type === 'mcp_agent_registered');
+    if (mcpBinding && JSON.stringify(params.mcpServers?.map(server => server.name) ?? []) !== JSON.stringify(mcpBinding.servers)) {
+      throw new Error('AGY native load requires fresh MCP connections matching its original server names');
     }
     const argValue = name => { const index = launch.args.lastIndexOf(name); return index < 0 ? DEFAULT : launch.args[index + 1]; };
     const model = argValue('--model') === DEFAULT ? init.model : argValue('--model');
@@ -267,15 +279,41 @@ export class AgyBridge {
       handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id });
   }
 
+  async registerMcpAgent(session) {
+    if (!session.mcpServers.length || session.mcpAgent) return;
+    const name = `kiki-acp-${session.id}`;
+    const path = resolve(session.cwd, '.agents', 'agents', `${name}.md`);
+    const env = {};
+    const definition = { name, description: 'Session-local external harness tool connection.', mainAgent: true, subagent: false,
+      mcpServers: session.mcpServers.map((server, index) => {
+        const key = `KIKI_AGY_MCP_${session.id.replaceAll('-', '_')}_${index}`;
+        env[key] = JSON.stringify(server);
+        return { name: server.name, command: process.execPath,
+          args: [fileURLToPath(import.meta.url), '--mcp-stdio', key] };
+      }) };
+    const content = `---\n${JSON.stringify(definition, null, 2)}\n---\nUse the connected tools for this session's task. Preserve their current agent identity and permission decisions.\n`;
+    await mkdir(resolve(session.cwd, '.agents', 'agents'), { recursive: true });
+    await writeFile(path, content, { flag: 'wx' });
+    session.mcpAgent = { name, path, env, async close() {
+      try {
+        if (await readFile(path, 'utf8') !== content) throw new Error('Owned AGY session agent changed; preserve it for scoped recovery');
+        await unlink(path);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    } };
+    await this.audit(session, 'mcp_agent_registered', { name, path, servers: session.mcpServers.map(server => server.name) });
+  }
+
   async start(session) {
+    await this.registerMcpAgent(session);
     const args = [...this.cliPrefix, ...launchArgs(session)];
-    const env = { ...process.env, ...session.permissionIdentity };
+    const env = { ...process.env, ...session.permissionIdentity, ...session.mcpAgent?.env };
     let child;
     try {
       child = this.spawnProcess(this.cliPath, args, { cwd: session.cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env });
     } catch (error) {
       await session.permissionChannel?.close();
       await session.permissionRegistration?.close();
+      await session.mcpAgent?.close();
       throw error;
     }
     session.child = child;
@@ -319,6 +357,7 @@ export class AgyBridge {
         for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
         await session.permissionChannel?.close();
         await session.permissionRegistration?.close();
+        await session.mcpAgent?.close();
         await session.releaseResume?.();
       });
       session.cleanup.catch(error => { process.stderr.write(`AGY owned permission cleanup failed: ${error.message}\n`); });
@@ -346,6 +385,7 @@ export class AgyBridge {
           : resolve(init.cwd) === resolve(session.cwd));
       if (!sameWorkspace) throw new Error('AGY init cwd does not match the frozen workspace binding; do not run tools in another project');
       if (session.model !== DEFAULT && init?.model !== session.model) throw new Error('AGY init model does not match the explicit binding');
+      if (session.mcpAgent && init?.agent !== session.mcpAgent.name) throw new Error('AGY init agent does not match the session MCP binding');
       if (session.conversationId && event.conversation_id !== session.conversationId) throw new Error('AGY init conversation does not match the exact native resume binding');
       session.init = event;
       await this.audit(session, 'agy_init', { conversationId: event.conversation_id, model: init?.model,
@@ -358,6 +398,7 @@ export class AgyBridge {
     if (event.event === 'step_update') {
       const step = event.step_update;
       if (!step || typeof step.step_type !== 'string') throw new Error('Malformed AGY step');
+      if (step.step_type === 'user_input' && step.state === 'DONE') await this.audit(session, 'prompt_consumed', { stepIndex: step.step_index });
       if (step.step_type === 'agent_response' && typeof step.text_delta === 'string' && step.text_delta) {
         active.text += step.text_delta;
         await active.client.notify('session/update', { sessionId: session.id,
@@ -441,8 +482,12 @@ export class AgyBridge {
     promise.catch(() => {});
     try {
       if (Object.hasOwn(params._meta ?? {}, 'kiki.permission')) this.permissionSnapshot(session, params._meta['kiki.permission']);
-      await this.syncPermissionHook(session);
-      if (!session.child) await this.start(session);
+      session.preparing = (async () => {
+        await this.syncPermissionHook(session);
+        if (!session.broken && !session.child) await this.start(session);
+      })();
+      try { await session.preparing; } finally { session.preparing = undefined; }
+      if (session.broken) return await promise;
       const frame = JSON.stringify({ event: 'user', message: { content } }) + '\n';
       await this.audit(session, 'prompt_sent', { bytes: Buffer.byteLength(frame),
         promptSha256: createHash('sha256').update(content).digest('hex'),
@@ -462,10 +507,12 @@ export class AgyBridge {
     session.broken = true;
     for (const controller of session.permissionRequests) controller.abort(new Error('AGY turn cancelled'));
     if (active) await this.settlePendingTools(session, active, 'failed', 'AGY turn cancelled');
+    await session.preparing?.catch(() => {});
     await session.permissionChannel?.close();
     await this.stopProcess(session.child);
     await session.cleanup;
     await session.permissionRegistration?.close();
+    await session.mcpAgent?.close();
     await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false });
     active?.resolve({ stopReason: 'cancelled' });
   }
@@ -478,6 +525,7 @@ export class AgyBridge {
         if (active) await this.settlePendingTools(session, active, 'failed', 'ACP connection closed');
       } finally {
         active?.reject(new Error('ACP connection closed'));
+        await session.preparing?.catch(() => {});
         await session.permissionChannel?.close();
         if (session.child && session.child.exitCode === null && session.child.signalCode === null) {
           session.child.stdin.end();
@@ -486,12 +534,32 @@ export class AgyBridge {
         }
         await session.cleanup;
         await session.permissionRegistration?.close();
+        await session.mcpAgent?.close();
         await session.releaseResume?.();
         await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
       }
     }));
     return this.closePromise;
   }
+}
+
+export async function runSessionMcp(key) {
+  if (!/^KIKI_AGY_MCP_[a-f0-9_]+_[0-9]+$/.test(key)) throw new Error('Invalid session MCP environment key');
+  const server = JSON.parse(process.env[key] ?? 'null');
+  if (!server || typeof server.command !== 'string' || !Array.isArray(server.args) || !Array.isArray(server.env)) {
+    throw new Error('Session MCP launch context is missing');
+  }
+  const env = { ...process.env, ...Object.fromEntries(server.env.map(entry => [entry.name, entry.value])) };
+  for (const name of Object.keys(env)) if (name.startsWith('KIKI_AGY_MCP_')) delete env[name];
+  const child = spawn(server.command, server.args, { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const closed = new Promise(done => child.once('close', done));
+  child.once('error', error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+  process.stdin.pipe(child.stdin); child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
+  process.stdin.once('end', () => { child.stdin.end(); });
+  process.once('SIGTERM', () => { void terminate(child); });
+  process.once('SIGINT', () => { void terminate(child); });
+  const code = await closed;
+  process.exitCode = code ?? 1;
 }
 
 export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, model = DEFAULT } = {}) {
@@ -527,7 +595,9 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.includes('--version')) console.log('agy-cli-acp 0.1.0');
   else {
     const args = process.argv.slice(2);
-    if (args.length === 2 && args[0] === '--recover-project-hook') {
+    if (args.length === 2 && args[0] === '--mcp-stdio') {
+      runSessionMcp(args[1]).catch(error => { console.error(error.message); process.exitCode = 1; });
+    } else if (args.length === 2 && args[0] === '--recover-project-hook') {
       if (!isAbsolute(args[1])) throw Error('AGY hook recovery workspace must be absolute');
       recoverProjectHook({ cwd: args[1], nodePath: process.execPath,
         handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) })
