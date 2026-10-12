@@ -228,10 +228,12 @@ export const interactionConfigPatchSchema = z.object({
 
 export const agentExecutorDisplayConfigSchema = z.object({
   externalsVisible: z.boolean().optional(),
+  discoveryInitialized: z.boolean().optional(),
 }).strict();
 
 export const agentExecutorDisplayConfigPatchSchema = z.object({
   externals_visible: z.boolean().nullable().optional(),
+  discovery_initialized: z.boolean().nullable().optional(),
 }).strict();
 
 export const configResponseSchema = z.object({

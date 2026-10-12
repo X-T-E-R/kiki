@@ -48,6 +48,10 @@ export const executorCatalogItemSchema = z.object({
   label: z.string().min(1),
   protocol: z.string().min(1),
   status: z.enum(['ready', 'unavailable', 'unknown']),
+  /** Last explicit check, kept after the 60s freshness window. Absent until that engine has been checked. */
+  check_status: z.enum(['ready', 'warning', 'unavailable']).optional(),
+  checked_at: z.string().optional(),
+  check_stale: z.boolean().optional(),
   version: z.string().optional(),
   model_binding: z.enum(['mapped', 'unavailable']),
   thinking_binding: z.enum(['mapped', 'unavailable']),

@@ -181,13 +181,13 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/executors` | 已注册引擎及其最近一次有效检查结果 |
-| `GET /api/executors/{id}` | 单个引擎的能力、连接设置及最近一次检查结果 |
-| `POST /api/executors/{id}/check` | 发现该引擎的可执行程序来源，并检查它声明的认证信息 |
+| `GET /api/executors` | 已注册引擎及其最近一次检查。此请求不探测。超过 60 秒的结果带 `check_stale: true` |
+| `GET /api/executors/{id}` | 单个引擎的能力、连接设置及最近一次检查。此请求不探测 |
+| `POST /api/executors/{id}/check` | 只检查该引擎的可执行程序来源和它声明的认证信息 |
 
-目录 `status` 取 `ready`、`unavailable` 或 `unknown`。原生引擎始终为 `ready`；外部引擎没有有效检查结果时为 `unknown`，不表示程序缺失。启动配置未变时，检查结果有效期为 60 秒。显式检查成功后只更新该引擎，其他条目无需等待。检查响应还包含诊断、依赖要求及 `selected_source`，保留配置中固定的程序来源。
+目录 `status` 取 `ready`、`unavailable` 或 `unknown`。原生引擎始终为 `ready`。外部引擎还没有检查结果时为 `unknown`。`check_status` 保留最近一次显式检查的 `ready`、`warning` 或 `unavailable`，`checked_at` 是该次时间。启动配置未变时，60 秒内 `check_stale` 为 false；超过 60 秒后变为 true，列表仍返回上一次的 `check_status`，而不是回到 `unknown`。引擎修订变化后，这两项消失，该引擎重新成为尚未检查。`POST` 只更新被点名的引擎。其他引擎保持各自已有的结果，一个引擎超时或失败时，其余引擎不会被写成就绪。`GET` 不启动探测。
 
-程序就绪与认证是两件事。`connection.login_status: "unknown"` 不等于 `logged_out`，`status: "ready"` 也不证明已登录。选择器保留尚未检查的引擎，同时遵守显式隐藏或关闭选择，以及已知不可用状态；已确认登出的引擎仍会隐藏，除非已配置它声明的 API 密钥环境变量。需要查看某个引擎时，显式调用它的检查接口；发送提示词仍执行真实的程序、来源及认证校验，不以显示目录代替启动检查。
+程序就绪与认证分开存放。`connection.login_status: "unknown"` 表示登录态还没有读到。目录 `status: "ready"` 只表示程序要求通过。预检为 `warning` 且程序要求通过时，目录 `status` 为 `ready`，`check_status` 仍为 `warning`。新的 profile 选择和裸执行入口只包含 `show_in_profile_list` 为 `true` 的外部引擎。字段不存在时留在设置页。`false` 在刷新、重查和再次导入之后仍然关闭。`externals_visible = false` 挡住全部外部新选择。裸执行入口还要求程序就绪，并且已确认登录或已配置该引擎声明的 API 密钥环境变量。已经绑定隐藏或不可用引擎的 profile 与会话保留该身份。设置页仍列出全部引擎。发送提示词仍执行真实的程序、来源及认证校验；显示目录里的上一次检查不能代替启动检查。
 
 ### 本机执行器会话
 

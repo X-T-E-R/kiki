@@ -44,11 +44,16 @@ registerConfigSection(AGENT_EXECUTOR_DISPLAY_SECTION, agentExecutorDisplayConfig
   merge: (base, patch) => {
     const merged = deepMerge(base, patch) as Record<string, unknown>;
     if (isPlainObject(patch) && patch['externalsVisible'] === null) delete merged['externalsVisible'];
+    if (isPlainObject(patch) && patch['discoveryInitialized'] === null) delete merged['discoveryInitialized'];
     return merged;
   },
-  toToml: (value) => isPlainObject(value) && value['externalsVisible'] !== undefined
-    ? { externals_visible: value['externalsVisible'] }
-    : {},
+  toToml: (value) => {
+    if (!isPlainObject(value)) return {};
+    const toml: Record<string, unknown> = {};
+    if (value['externalsVisible'] !== undefined) toml['externals_visible'] = value['externalsVisible'];
+    if (value['discoveryInitialized'] !== undefined) toml['discovery_initialized'] = value['discoveryInitialized'];
+    return toml;
+  },
 });
 
 export const AgentExecutorOverridesSchema = z.record(z.string(), AgentExecutorOverrideSchema);

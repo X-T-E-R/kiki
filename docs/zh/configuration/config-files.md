@@ -129,17 +129,18 @@ allow_kiki_subagents = false
 
 通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
 
-显示偏好与执行设置分开。在 `[agent_executor_overrides.<id>]` 下设置 `show_in_profile_list = false`，可从 profile 与执行选择器中隐藏单个引擎；在 `[agent_executor_display]` 下设置 `externals_visible = false`，可隐藏全部外部引擎。省略字段表示显示，全局开关优先于逐引擎设置。隐藏不会禁用或卸载引擎、修改执行绑定，也不会取消任务。
+显示偏好与执行设置分开。外部引擎要成为新的 profile 或执行选择，需要在 `[agent_executor_overrides.<id>]` 下写成 `show_in_profile_list = true`。字段不存在时，该引擎留在设置页，不进入新选择。`show_in_profile_list = false` 会一直保持关闭：刷新、重新检查和再次导入都沿用这个关闭。`[agent_executor_display]` 的 `externals_visible = false` 同时挡住全部外部引擎的新选择；省略或写成 `true` 只打开这道总闸，已经明确关闭的引擎仍保持关闭。总闸重新打开后，只有仍为 `true` 的引擎回到新选择。`discovery_initialized = true` 记录设置页已经完成过一次导入检测，它本身不开关任何引擎。原生引擎始终留在选择里。已经绑定某个隐藏或不可用引擎的 profile 与会话继续使用该身份；这些引擎留作当前值，不会被换掉，也不会因此回到新选择列表。关闭显示不会卸载引擎、不会改已有执行绑定，也不会取消任务。
 
 ```toml
 [agent_executor_overrides."claude-acp"]
-show_in_profile_list = false
+show_in_profile_list = true
 
 [agent_executor_display]
-externals_visible = false
+externals_visible = true
+discovery_initialized = true
 ```
 
-向 `POST /api/config` 发送同名 snake_case 字段；JSON `null` 删除保存的显示偏好，保留启动设置与 defaults。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。只有可执行程序就绪，且引擎已确认登录或具有自身可用配置（如它声明的 API 密钥环境变量或匿名本地描述符）时，选择列表才显示裸引擎入口。只有 profile、启动偏好或 Kiki 原生模型，不代表引擎可运行；显式隐藏设置仍优先。设置页保留全部引擎，可继续配置或 Check。已绑定引擎变为不可用时，会话保留原身份并提供配置恢复入口，不会悄悄切换引擎。
+向 `POST /api/config` 发送同名 snake_case 字段。JSON `null` 只删除对应的显示偏好，启动设置与 defaults 仍在。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。`GET /api/executors` 只读最近一次检查，不探测程序或登录。检查某一个引擎用 `POST /api/executors/{id}/check`。目录 `status: "unknown"` 表示这个引擎还没有检查结果。超过 60 秒后，响应仍带上一次的 `check_status` 和 `checked_at`，并用 `check_stale: true` 标明它已过新鲜期。某一引擎超时或失败只出现在该引擎上。设置页列出全部引擎，可以继续配置或 Check。第一次打开设置页且 `discovery_initialized` 还不是 `true` 时，每个外部引擎各检查一次；结果为 `ready` 或 `warning`、并且该引擎还没有明确开关的，会写成 `show_in_profile_list = true`。失败、超时，以及已经是 `false` 的引擎保持原样。这次导入记下 `discovery_initialized = true` 之后，再次进入设置页不再重跑。裸执行入口要同时满足三件事：程序就绪、已确认登录或已配置该引擎声明的 API 密钥环境变量、并且 `show_in_profile_list` 为 `true`。只保存了 profile、启动偏好或 Kiki 原生模型，还不能把它放进新选择。
 
 自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
 

@@ -589,7 +589,7 @@ describe('GET /api/agents', () => {
       const catalog = await client.rest!.executors.list();
       expect(catalog.items.map((item) => item.id)).toEqual(registry.list().map((item) => item.id));
       expect(catalog.items.find((item) => item.id === 'native')?.status).toBe('ready');
-      expect(catalog.items.filter((item) => item.id !== 'native').every((item) => item.status === 'unknown' && item.connection?.login_status === 'unknown')).toBe(true);
+      expect(catalog.items.filter((item) => item.id !== 'native').every((item) => item.status === 'unknown' && item.connection?.login_status === 'unknown' && item.check_status === undefined && item.checked_at === undefined)).toBe(true);
       const detail = await (await authedFetch(server, base, '/api/executors/example', { signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
       expect(detail.data).toMatchObject({ id: 'example', status: 'unknown', connection: { login_status: 'unknown' } });
       expect(discovery).not.toHaveBeenCalled();
@@ -600,8 +600,9 @@ describe('GET /api/agents', () => {
       const checked = await (await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
       expect(checked.data).toMatchObject({ id: 'example', status: 'warning', selected_source: 'pinned', version: '2.0', login_status: 'unknown' });
       const updated = await client.rest!.executors.list();
-      expect(updated.items.find((item) => item.id === 'example')).toMatchObject({ status: 'ready', version: '2.0', connection: { command: '/fixture/pinned', source: 'pinned', login_status: 'unknown' } });
-      expect(updated.items.filter((item) => !['native', 'example'].includes(item.id)).every((item) => item.status === 'unknown')).toBe(true);
+      expect(updated.items.find((item) => item.id === 'example')).toMatchObject({ status: 'ready', check_status: 'warning', check_stale: false, version: '2.0', connection: { command: '/fixture/pinned', source: 'pinned', login_status: 'unknown' } });
+      expect(updated.items.find((item) => item.id === 'example')?.checked_at).toEqual(expect.any(String));
+      expect(updated.items.filter((item) => !['native', 'example'].includes(item.id)).every((item) => item.status === 'unknown' && item.check_status === undefined)).toBe(true);
       expect(discovery.mock.calls).toEqual([['example']]);
       discovery.mockResolvedValueOnce([]);
       await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) });

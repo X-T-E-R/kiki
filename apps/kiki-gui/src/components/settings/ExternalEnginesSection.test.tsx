@@ -4,13 +4,17 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutorCatalogItem } from '@kiki/protocol';
+import type { ExecutorCheckResult } from '../../lib/client';
 import { I18nProvider } from '../../i18n';
-import { engineHealth, ExternalEnginesList } from './ExternalEnginesSection';
+import { engineHealth, ExternalEnginesList, resetEngineDiscoveryRunsForTests } from './ExternalEnginesSection';
 
 const { client } = vi.hoisted(() => ({ client: {
-  listExecutors: vi.fn(), checkExecutor: vi.fn(), patchConfig: vi.fn(),
+  listExecutors: vi.fn(), checkExecutor: vi.fn(), patchConfig: vi.fn(), getConfig: vi.fn(),
 } }));
-vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }), useOptionalConnection: () => ({ client }) }));
+vi.mock('../../state/connection', () => ({
+  useConnection: () => ({ client, scopeId: 'local', meta: { server_id: 'server-1' } }),
+  useOptionalConnection: () => ({ client, scopeId: 'local', meta: { server_id: 'server-1' } }),
+}));
 
 const codex: ExecutorCatalogItem = {
   id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', status: 'ready', version: '0.158.0',
@@ -32,7 +36,9 @@ const settle = async () => { for (let i = 0; i < 5; i++) await act(async () => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetEngineDiscoveryRunsForTests();
   client.patchConfig.mockResolvedValue({});
+  client.getConfig.mockResolvedValue({ raw: { agent_executor_display: { discovery_initialized: true } } });
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div'); document.body.append(container);
@@ -67,6 +73,7 @@ describe('external engines connection kind', () => {
     expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-summary]')?.textContent).toContain('Sign-in unknown');
     expect(container.querySelector('[data-engine-row="gemini-acp"]')?.getAttribute('data-engine-health')).toBe('missing');
     expect(container.querySelector('[data-engine-row="gemini-acp"] [data-engine-missing]')?.textContent).toContain('npm i -g @google/gemini-cli');
+    expect(client.checkExecutor).not.toHaveBeenCalled();
   });
 
   it('keeps engine overrides collapsed, validates through preflight, and rejects relative paths', async () => {
@@ -220,4 +227,143 @@ describe('external engines connection kind', () => {
     expect(noCredential.textContent).toContain('~/.claude/settings.json');
     expect(row.getAttribute('data-engine-health')).toBe('warning');
   });
+
+  it('shows a remembered check per engine and leaves an unchecked engine unchecked', async () => {
+    const remembered: ExecutorCatalogItem = {
+      ...codex, check_status: 'warning', checked_at: '2026-10-12T00:00:00.000Z', check_stale: true,
+      connection: { ...codex.connection!, login_status: 'logged_out' },
+    };
+    const pending: ExecutorCatalogItem = {
+      ...gemini, id: 'pending-acp', label: 'Pending', status: 'unknown',
+      connection: { command: 'pending', login_status: 'unknown', default_args: [] },
+    };
+    client.listExecutors.mockResolvedValue({ items: [remembered, pending] });
+    await render();
+    const codexRow = container.querySelector('[data-engine-row="codex-app-server"]')!;
+    const pendingRow = container.querySelector('[data-engine-row="pending-acp"]')!;
+    expect(codexRow.getAttribute('data-engine-health')).toBe('warning');
+    expect(codexRow.querySelector('[data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('warning');
+    expect(codexRow.querySelector('[data-engine-last-check]')?.textContent).toContain('Check passed with warnings');
+    expect(codexRow.querySelector('[data-engine-check-stale]')?.getAttribute('data-engine-check-stale')).toBe('true');
+    expect(pendingRow.getAttribute('data-engine-health')).toBe('unknown');
+    expect(pendingRow.querySelector('[data-engine-last-check]')?.textContent).toContain('Not checked yet');
+    expect(client.checkExecutor).not.toHaveBeenCalled();
+  });
+
+  it('keeps the on switch off until the user turns it on, and an explicit off stays off after a successful save', async () => {
+    client.listExecutors.mockResolvedValue({ items: [codex] });
+    await render();
+    const toggle = container.querySelector<HTMLInputElement>('[data-engine-visible="codex-app-server"] input')!;
+    expect(toggle.checked).toBe(false);
+    await act(async () => { toggle.click(); });
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({ agent_executor_overrides: { 'codex-app-server': { show_in_profile_list: true } } });
+
+    client.patchConfig.mockClear();
+    client.getConfig.mockResolvedValue({ raw: {
+      agent_executor_display: { discovery_initialized: true },
+      agent_executor_overrides: { 'codex-app-server': { show_in_profile_list: false } },
+    } });
+    client.checkExecutor.mockResolvedValue({
+      id: 'codex-app-server', status: 'ready', command: 'codex.exe', resolved_args: [], login_status: 'logged_in', diagnostics: [],
+    });
+    const row = container.querySelector<HTMLElement>('[data-engine-row="codex-app-server"]')!;
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-save]')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledTimes(1);
+    expect(client.patchConfig).toHaveBeenCalledWith({
+      agent_executor_overrides: { 'codex-app-server': { bin_path: null, home_dir: null, args: [], env: undefined } },
+    });
+  });
+
+  it('turns an engine on after the first successful setup and not after a failed one', async () => {
+    client.listExecutors.mockResolvedValue({ items: [codex] });
+    client.getConfig.mockResolvedValue({ raw: { agent_executor_display: { discovery_initialized: true } } });
+    client.checkExecutor.mockResolvedValue({
+      id: 'codex-app-server', status: 'ready', version: '0.158.0', command: 'codex.exe', resolved_args: ['app-server'], login_status: 'logged_in', diagnostics: [],
+    });
+    await render();
+    const row = container.querySelector<HTMLElement>('[data-engine-row="codex-app-server"]')!;
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-save]')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenNthCalledWith(1, {
+      agent_executor_overrides: { 'codex-app-server': { bin_path: null, home_dir: null, args: [], env: undefined } },
+    });
+    expect(client.patchConfig).toHaveBeenNthCalledWith(2, {
+      agent_executor_overrides: { 'codex-app-server': { show_in_profile_list: true } },
+    });
+
+    client.patchConfig.mockClear();
+    client.checkExecutor.mockResolvedValue({
+      id: 'codex-app-server', status: 'unavailable', command: 'codex.exe', resolved_args: [], login_status: 'unknown', diagnostics: [],
+    });
+    await act(async () => row.querySelector<HTMLButtonElement>('[data-engine-override-save]')!.click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks each engine on first import, enables only successes, and does not repeat or restore an off', async () => {
+    const off = { ...gemini, id: 'off-acp', label: 'Off', status: 'unknown' as const };
+    const pending = { ...gemini, id: 'slow-acp', label: 'Slow', status: 'unknown' as const, connection: { command: 'slow', login_status: 'unknown' as const, default_args: [] } };
+    const catalog = new Map<string, ExecutorCatalogItem>([['codex-app-server', codex], ['off-acp', off], ['slow-acp', pending]]);
+    const config: { raw: Record<string, unknown> } = { raw: { agent_executor_overrides: { 'off-acp': { show_in_profile_list: false } } } };
+    client.listExecutors.mockImplementation(async () => ({ items: [...catalog.values()] }));
+    client.getConfig.mockImplementation(async () => config);
+    client.patchConfig.mockImplementation(async (patch: { agent_executor_display?: { discovery_initialized?: boolean } }) => {
+      if (patch.agent_executor_display?.discovery_initialized === true) {
+        config.raw['agent_executor_display'] = { discovery_initialized: true };
+      }
+      return {};
+    });
+    let releaseSlow: (value: ExecutorCheckResult) => void = () => {};
+    client.checkExecutor.mockImplementation(async (id: string) => {
+      if (id === 'slow-acp') return new Promise<ExecutorCheckResult>((resolve) => { releaseSlow = resolve; });
+      if (id === 'off-acp') return { id, status: 'ready', command: 'off', resolved_args: [], login_status: 'logged_in', diagnostics: [] };
+      return { id, status: 'unavailable', command: 'codex.exe', resolved_args: [], login_status: 'unknown', diagnostics: [{ severity: 'error', message: 'missing' }] };
+    });
+    await render();
+    await until(() => client.checkExecutor.mock.calls.length >= 2);
+    expect(container.querySelector('[data-engine-row="slow-acp"] [data-engine-last-check]')?.textContent).toContain('Not checked yet');
+    releaseSlow({ id: 'slow-acp', status: 'ready', command: 'slow', resolved_args: [], login_status: 'logged_in', diagnostics: [] });
+    await until(() => client.patchConfig.mock.calls.some((call) => {
+      const body = call[0] as { agent_executor_overrides?: Record<string, { show_in_profile_list?: boolean }> };
+      return body.agent_executor_overrides?.['slow-acp']?.show_in_profile_list === true;
+    }));
+    const enabled = client.patchConfig.mock.calls.map((call) => call[0] as { agent_executor_overrides?: Record<string, { show_in_profile_list?: boolean }> });
+    expect(enabled.some((body) => body.agent_executor_overrides?.['codex-app-server']?.show_in_profile_list === true)).toBe(false);
+    expect(enabled.some((body) => body.agent_executor_overrides?.['off-acp'] !== undefined)).toBe(false);
+    expect(client.checkExecutor).toHaveBeenCalledTimes(3);
+    await act(async () => { root.unmount(); });
+    resetEngineDiscoveryRunsForTests();
+    root = createRoot(container);
+    await render();
+    expect(client.checkExecutor).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows one engine timing out without marking the engine that already succeeded', async () => {
+    const bad = { ...gemini, id: 'bad-acp', label: 'Bad', status: 'unknown' as const, connection: { command: 'bad', login_status: 'unknown' as const, default_args: [] } };
+    client.listExecutors.mockResolvedValue({ items: [codex, bad] });
+    client.checkExecutor.mockImplementation(async (id: string) => {
+      if (id === 'bad-acp') throw new Error('timed out');
+      return { id, status: 'ready', command: 'codex.exe', resolved_args: [], login_status: 'logged_in', diagnostics: [] };
+    });
+    await render();
+    const badRow = container.querySelector<HTMLElement>('[data-engine-row="bad-acp"]')!;
+    const codexRow = container.querySelector<HTMLElement>('[data-engine-row="codex-app-server"]')!;
+    await act(async () => badRow.querySelector<HTMLButtonElement>('[data-engine-check-button]')!.click());
+    await settle();
+    expect(badRow.getAttribute('data-engine-health')).toBe('warning');
+    expect(badRow.querySelector('[data-engine-last-check]')?.getAttribute('data-engine-last-check')).toBe('failed');
+    expect(badRow.querySelector('[data-engine-last-check]')?.textContent).toContain('timed out');
+    expect(codexRow.getAttribute('data-engine-health')).not.toBe('warning');
+    expect(codexRow.querySelector('[data-engine-last-check]')?.textContent).not.toContain('timed out');
+  });
 });
+
+async function until(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    if (predicate()) return;
+  }
+  throw new Error('condition was not met');
+}

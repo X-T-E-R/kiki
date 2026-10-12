@@ -345,18 +345,22 @@ describe('profile editor sheet', () => {
     const grok: NamedAgentProfile = { ...sub, name: 'grok-helper', executor: 'grok-acp', tools: ['Read'], pinned_model_alias: 'grok-4.7',
       executor_fields: { tools: { state: 'ignored', reason: 'Grok Build decides its own tools.' }, thinking_effort: { state: 'mapped' } } };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, grok], complete: true });
+    client.getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: true } } } });
     client.listExecutors.mockResolvedValue({ items: [
       { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
       { id: 'grok-acp', label: 'Grok Build', protocol: 'acp', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
       { id: 'claude-acp', label: 'Claude Code', protocol: 'acp', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable' },
+      { id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
     ] });
     await render();
     expect(container.querySelector('[data-team-row="grok-helper"] [data-team-engine]')?.textContent).toBe('Grok Build');
     await open('grok-helper');
-    // The engine picker lists the catalog, not a hard-coded set; a missing binary says so.
+    // New choices are engines explicitly turned on. The bound engine stays. An enabled missing binary says so.
     await act(async () => sheet().querySelector<HTMLElement>('#profile-engine')!.click());
     const engineOptions = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].map((option) => option.textContent ?? '');
     expect(engineOptions.some((text) => text.includes('Claude Code') && text.includes('not found on this machine'))).toBe(true);
+    expect(engineOptions.some((text) => text.includes('Grok Build'))).toBe(true);
+    expect(engineOptions.some((text) => text.includes('Codex'))).toBe(false);
     expect(engineOptions.some((text) => text.includes('OpenCode'))).toBe(false);
     await act(async () => sheet().querySelector<HTMLElement>('#profile-engine')!.click());
     expect(sheet().querySelector('[data-profile-field="tools"]')?.getAttribute('data-field-applicability')).toBe('ignored');

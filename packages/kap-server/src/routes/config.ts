@@ -385,7 +385,12 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
   if (wire['agent_executor_overrides'] !== undefined) raw['agent_executor_overrides'] = agentExecutorOverridesToToml(wire['agent_executor_overrides']);
   if (wire['agent_executors'] !== undefined) raw['agent_executors'] = agentExecutorsToToml(wire['agent_executors']);
   const display = wire['agent_executor_display'];
-  if (isPlainObject(display)) raw['agent_executor_display'] = display['externalsVisible'] === undefined ? {} : { externals_visible: display['externalsVisible'] };
+  if (isPlainObject(display)) {
+    const echoed: Record<string, unknown> = {};
+    if (display['externalsVisible'] !== undefined) echoed['externals_visible'] = display['externalsVisible'];
+    if (display['discoveryInitialized'] !== undefined) echoed['discovery_initialized'] = display['discoveryInitialized'];
+    raw['agent_executor_display'] = echoed;
+  }
   wire['raw'] = raw;
   const sessionTitle = resolved[SESSION_TITLE_SECTION] as SessionTitleConfig | undefined;
   const prompt = sessionTitlePromptOverride(sessionTitle?.prompt);

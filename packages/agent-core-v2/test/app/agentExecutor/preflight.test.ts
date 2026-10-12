@@ -190,6 +190,8 @@ describe('AgentExecutorPreflightService', () => {
     expect(preflight.lastCheck('example')?.version).toBe('2.0');
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
     expect(preflight.lastCheck('example')).toBeUndefined();
+    expect(preflight.rememberedCheck('example')?.result.version).toBe('2.0');
+    expect(preflight.rememberedCheck('example')?.fresh).toBe(false);
     expect(processService.calls).toEqual([]);
   });
 

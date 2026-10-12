@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ExecutorCatalogItem } from '@kiki/protocol';
@@ -14,11 +14,13 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../contr
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import {
+  applyExecutorCheck,
   engineDisplayOf,
   engineOverridesOf,
   engineVisibilityOf,
   engineVisibilityPatch,
-  EXECUTORS_QUERY_KEY,
+  executorCatalogQueryKey,
+  shouldAutoEnableEngine,
   useExecutorCatalogQuery,
 } from './profileEditor/engines';
 import { EngineDefaults } from './EngineDefaults';
@@ -97,7 +99,7 @@ function EngineVisibilityToggle({ item, overrides, display }: {
   const prefs = engineVisibilityOf(overrides, display);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const visible = prefs.externalsVisible && !prefs.hidden.has(item.id);
+  const visible = prefs.externalsVisible && prefs.enabled.has(item.id);
 
   const toggle = async (next: boolean) => {
     const patch = engineVisibilityPatch(prefs, { engine: { id: item.id, visible: next } });
@@ -191,21 +193,72 @@ function ExternalEnginesVisibilityCard({ overrides, display, engineCount }: {
  * default arguments Kiki launches it with. Configuration stays in
  * config.toml; this surface reads and checks, it does not edit descriptors.
  */
+const discoveryRuns = new Set<string>();
+
+/** Drops the in-memory "this server already started discovery" guard. Tests only. */
+export function resetEngineDiscoveryRunsForTests(): void {
+  discoveryRuns.clear();
+}
+
 export function ExternalEnginesList() {
-  const { t } = useI18n();
-  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const { client, scopeId, meta } = useConnection();
+  const queryClient = useQueryClient();
+  const catalogKey = executorCatalogQueryKey(scopeId, meta?.server_id);
   const query = useExecutorCatalogQuery();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
   const overrides = engineOverridesOf(configQuery.data);
   const display = engineDisplayOf(configQuery.data);
   const engines = (query.data?.items ?? []).filter((item) => item.id !== 'native')
     .toSorted((a, b) => a.label.localeCompare(b.label));
+  const [faults, setFaults] = useState<Readonly<Record<string, string>>>({});
+  const engineIds = engines.map((item) => item.id).join('\0');
+  const discoveryKey = `${scopeId}\0${meta?.server_id ?? ''}`;
+  const ran = useRef(false);
+  useEffect(() => {
+    if (!configQuery.isSuccess || !query.isSuccess || engineIds === '') return;
+    if (display?.['discovery_initialized'] === true || ran.current || discoveryRuns.has(discoveryKey)) return;
+    ran.current = true;
+    discoveryRuns.add(discoveryKey);
+    const ids = engineIds.split('\0');
+    void (async () => {
+      try {
+        await client.patchConfig({ agent_executor_display: { discovery_initialized: true } });
+        await queryClient.invalidateQueries({ queryKey: ['config'] });
+      } catch (error) {
+        ran.current = false;
+        discoveryRuns.delete(discoveryKey);
+        setFaults({ '*': errorText(locale, error) });
+        return;
+      }
+      await Promise.all(ids.map(async (id) => {
+        try {
+          const result = await client.checkExecutor(id);
+          const checkedAt = new Date().toISOString();
+          applyExecutorCheck(queryClient, catalogKey, id, result, checkedAt);
+          setFaults((current) => {
+            if (current[id] === undefined) return current;
+            const next = { ...current };
+            delete next[id];
+            return next;
+          });
+          if (!shouldAutoEnableEngine(engineOverridesOf(await client.getConfig()), id, result.status)) return;
+          await client.patchConfig({ agent_executor_overrides: { [id]: { show_in_profile_list: true } } });
+        } catch (error) {
+          setFaults((current) => ({ ...current, [id]: errorText(locale, error) }));
+        }
+      }));
+      await queryClient.invalidateQueries({ queryKey: ['config'] });
+      await queryClient.invalidateQueries({ queryKey: catalogKey });
+    })();
+  }, [catalogKey, client, configQuery.isSuccess, discoveryKey, display, engineIds, locale, query.isSuccess, queryClient]);
   return (
     <div data-external-engines className="space-y-3">
       <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.engines.intro')}</p>
+      {faults['*'] !== undefined ? <p role="alert" data-engine-discovery-error className="text-[12px] leading-4 text-danger">{faults['*']}</p> : null}
       {engines.length > 0 ? (
         <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} />)}
+          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]} />)}
         </div>
       ) : null}
       {query.isSuccess && engines.length === 0 ? (
@@ -436,7 +489,7 @@ function overrideCheckFeedback(result: ExecutorCheckResult, t: ReturnType<typeof
 }
 
 function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined> }) {
-  const { client } = useConnection();
+  const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const override = item.connection?.override;
@@ -477,8 +530,12 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
         },
       });
       setForm((current) => ({ ...current, envText: '' }));
-      await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
+      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
       const result = await onCheck();
+      if (result !== undefined && shouldAutoEnableEngine(engineOverridesOf(await client.getConfig()), item.id, result.status)) {
+        await client.patchConfig({ agent_executor_overrides: { [item.id]: { show_in_profile_list: true } } });
+        await queryClient.invalidateQueries({ queryKey: ['config'] });
+      }
       if (result !== undefined) setFeedback(overrideCheckFeedback(result, t));
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -574,20 +631,39 @@ export function engineDefaultsOf(raw: Readonly<Record<string, unknown>> | undefi
   return typeof defaults === 'object' && !Array.isArray(defaults) ? defaults as Record<string, unknown> : undefined;
 }
 
-function EngineRow({ item, overrides, display }: {
+function catalogCheckOf(item: ExecutorCatalogItem): ExecutorCheckResult | undefined {
+  if (item.check_status === undefined || item.checked_at === undefined) return undefined;
+  return {
+    id: item.id,
+    status: item.check_status,
+    version: item.version,
+    command: item.connection?.command ?? '',
+    selected_source: item.connection?.source,
+    resolved_args: item.connection?.default_args ?? [],
+    login_status: item.connection?.login_status ?? 'unknown',
+    credential_source: item.connection?.credential_source,
+    credential_detail: item.connection?.credential_detail,
+    diagnostics: [],
+  };
+}
+
+function EngineRow({ item, overrides, display, fault }: {
   item: ExecutorCatalogItem;
   /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
   overrides: Readonly<Record<string, unknown>> | undefined;
   /** The config's `agent_executor_display` record, for the global switch. */
   display: Readonly<Record<string, unknown>> | undefined;
+  /** This engine's own check failure. It never changes another row. */
+  fault?: string;
 }) {
-  const { client } = useConnection();
+  const { client, scopeId, meta } = useConnection();
   const { t, time, locale } = useI18n();
   const queryClient = useQueryClient();
   const [check, setCheck] = useState<ExecutorCheckResult | undefined>();
   const [checkedAt, setCheckedAt] = useState<string | undefined>();
   const [checking, setChecking] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [localFault, setLocalFault] = useState<string | undefined>();
   // The saved per-engine defaults live in the config's raw record, keyed by
   // executor id. A config that does not echo the section simply has none.
   const configQuery = useQuery({
@@ -599,22 +675,24 @@ function EngineRow({ item, overrides, display }: {
   const refetchConfig = useCallback(async () => { await configQuery.refetch(); }, [configQuery]);
   const connection = item.connection;
   const config = configQuery.data;
-  const health = engineHealth(item, check);
+  const shown = check ?? catalogCheckOf(item);
+  const faultText = localFault ?? (shown === undefined ? fault : undefined);
+  const health = faultText !== undefined && shown === undefined ? 'warning' : engineHealth(item, shown);
   const healthText = t(HEALTH_KEY[health]);
-  const login: LoginStatus = check?.login_status ?? connection?.login_status ?? 'unknown';
-  const credential = check?.credential_source ?? connection?.credential_source;
-  const credentialDetail = check?.credential_detail ?? connection?.credential_detail;
+  const login: LoginStatus = shown?.login_status ?? connection?.login_status ?? 'unknown';
+  const credential = shown?.credential_source ?? connection?.credential_source;
+  const credentialDetail = shown?.credential_detail ?? connection?.credential_detail;
   const credentialKey = credentialLabel(credential);
   const apiKeyEnv = connection?.api_key_env;
   // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
-  const version = check === undefined ? item.version : check.version;
-  const programPath = check?.requirements?.find((requirement) => requirement.role === 'program')?.path;
-  const program = check === undefined ? connection?.command : programPath ?? (check.command || undefined);
-  const source = check === undefined ? connection?.source : check.selected_source;
-  const args = check?.resolved_args ?? connection?.default_args ?? [];
+  const version = shown === undefined ? item.version : shown.version;
+  const programPath = shown?.requirements?.find((requirement) => requirement.role === 'program')?.path;
+  const program = shown === undefined ? connection?.command : programPath ?? (shown.command || undefined);
+  const source = shown === undefined ? connection?.source : shown.selected_source;
+  const args = shown?.resolved_args ?? connection?.default_args ?? [];
   const loginCommand = connection?.login_command?.join(' ');
   const caps = item.capabilities;
-  const setup = check?.requirements !== undefined && check.requirements.length > 0;
+  const setup = shown?.requirements !== undefined && shown.requirements.length > 0;
   // Kiki installs and signs in Antigravity's ACP CLI itself; the generic
   // "copy this command" guide would show a sentence as a command.
   const antigravity = item.id === ANTIGRAVITY_ID;
@@ -623,16 +701,19 @@ function EngineRow({ item, overrides, display }: {
     if (checking) return undefined;
     setChecking(true);
     setFeedback(null);
+    setLocalFault(undefined);
     try {
       const result = await client.checkExecutor(item.id);
+      const at = new Date().toISOString();
       setCheck(result);
-      setCheckedAt(new Date().toISOString());
-      // GET serves the last check's sign-in result for 60s; let the profile
-      // editor's engine picker see it too.
-      await queryClient.invalidateQueries({ queryKey: EXECUTORS_QUERY_KEY });
+      setCheckedAt(at);
+      applyExecutorCheck(queryClient, executorCatalogQueryKey(scopeId, meta?.server_id), item.id, result, at);
+      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
       return result;
     } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      const text = errorText(locale, error);
+      setLocalFault(text);
+      setFeedback({ tone: 'error', text });
       return undefined;
     } finally {
       setChecking(false);
@@ -672,8 +753,8 @@ function EngineRow({ item, overrides, display }: {
       </summary>
       <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
         {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
-          ideDetected={check?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
-        {setup && !antigravity ? <EngineSetup check={check!} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
+          ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
+        {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
         {health === 'missing' && !setup && !antigravity ? (
           <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
             <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
@@ -689,16 +770,19 @@ function EngineRow({ item, overrides, display }: {
           <button type="button" data-engine-check-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
             disabled={checking} aria-busy={checking} onClick={() => void runCheck()}>
             {checking ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
-            {checking ? t('st.engines.checking') : check === undefined ? t('st.engines.check') : t('st.engines.recheck')}
+            {checking ? t('st.engines.checking') : shown === undefined ? t('st.engines.check') : t('st.engines.recheck')}
           </button>
-          <p data-engine-last-check={check?.status ?? 'none'} aria-live="polite" className="min-w-0 text-[12px] leading-4 text-ink-faint">
+          <p data-engine-last-check={faultText !== undefined && shown === undefined ? 'failed' : shown?.status ?? 'none'}
+            data-engine-check-stale={item.check_stale === true && check === undefined ? 'true' : undefined}
+            aria-live="polite" className="min-w-0 text-[12px] leading-4 text-ink-faint">
             {checking ? t('st.engines.checkingHint')
-              : check === undefined ? t('st.engines.neverChecked')
+              : faultText !== undefined && shown === undefined ? <span className="text-danger">{faultText}</span>
+                : shown === undefined ? t('st.engines.neverChecked')
                 : <>
-                  <span className={check.status === 'ready' ? 'text-success' : check.status === 'warning' ? 'text-amber-ink' : 'text-danger'}>
-                    {t(check.status === 'ready' ? 'st.engines.checkedOk' : check.status === 'warning' ? 'st.engines.checkedWarning' : 'st.engines.checkedFailed')}
+                  <span className={shown.status === 'ready' ? 'text-success' : shown.status === 'warning' ? 'text-amber-ink' : 'text-danger'}>
+                    {t(shown.status === 'ready' ? 'st.engines.checkedOk' : shown.status === 'warning' ? 'st.engines.checkedWarning' : 'st.engines.checkedFailed')}
                   </span>
-                  {checkedAt !== undefined ? <>{' · '}{time.relativeTime(checkedAt)}</> : null}
+                  {(checkedAt ?? item.checked_at) !== undefined ? <>{' · '}{time.relativeTime(checkedAt ?? item.checked_at!)}</> : null}
                 </>}
           </p>
         </div>
@@ -717,7 +801,7 @@ function EngineRow({ item, overrides, display }: {
               {t(credentialKey)}
               {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
             </span> : null}
-            {login === 'unknown' && check === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
+            {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
             {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
             {loginCommand !== undefined && login !== 'logged_in' ? (
               <span className="mt-1 flex flex-wrap items-center gap-2">
@@ -781,11 +865,11 @@ function EngineRow({ item, overrides, display }: {
             <LocalSessionsEntry executorId={item.id} variant="button" />
           </div>
         ) : null}
-        {check !== undefined && check.diagnostics.length > 0 ? (
+        {shown !== undefined && shown.diagnostics.length > 0 ? (
           <div data-engine-diagnostics className="space-y-1 border-t border-hairline pt-3">
             <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
             <ul className="space-y-1">
-              {check.diagnostics.map((diagnostic, index) => (
+              {shown.diagnostics.map((diagnostic, index) => (
                 <li key={index} data-engine-diagnostic={diagnostic.severity} className="flex min-w-0 gap-2 text-[12px] leading-4">
                   <Icon name={diagnostic.severity === 'info' ? 'dot' : 'warning'} size={12}
                     className={`mt-0.5 shrink-0 ${diagnostic.severity === 'error' ? 'text-danger' : diagnostic.severity === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`} />

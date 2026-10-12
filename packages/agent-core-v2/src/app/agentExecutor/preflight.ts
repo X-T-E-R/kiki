@@ -62,6 +62,7 @@ export interface IAgentExecutorPreflightService {
   readonly _serviceBrand: undefined;
   run(ids?: readonly string[]): Promise<readonly AgentExecutorPreflightResult[]>;
   lastCheck(id: string): AgentExecutorPreflightResult | undefined;
+  rememberedCheck(id: string): { readonly result: AgentExecutorPreflightResult; readonly checkedAt: number; readonly fresh: boolean } | undefined;
 }
 
 export const IAgentExecutorPreflightService: ServiceIdentifier<IAgentExecutorPreflightService> =
@@ -109,9 +110,14 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 
   lastCheck(id: string): AgentExecutorPreflightResult | undefined {
+    const remembered = this.rememberedCheck(id);
+    return remembered?.fresh === true ? remembered.result : undefined;
+  }
+
+  rememberedCheck(id: string): { readonly result: AgentExecutorPreflightResult; readonly checkedAt: number; readonly fresh: boolean } | undefined {
     const check = this.#lastChecks.get(id);
-    return check !== undefined && check.revision === this.registry.get(id)?.revision && Date.now() - check.checkedAt < 60_000
-      ? check.result : undefined;
+    if (check === undefined || check.revision !== this.registry.get(id)?.revision) return undefined;
+    return { result: check.result, checkedAt: check.checkedAt, fresh: Date.now() - check.checkedAt < 60_000 };
   }
 
   async #runOne(id: string): Promise<AgentExecutorPreflightResult> {

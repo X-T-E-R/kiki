@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type { ModelCatalogItem, NamedAgentExecutorField } from '@kiki/protocol';
@@ -16,7 +17,7 @@ import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../
 import { ShippedProfileControls } from '../ShippedProfileControls';
 import { DiagnosticsList } from './DiagnosticsList';
 import type { ProfileDiagnostic } from './diagnostics';
-import { engineChoices, engineLabel, useExecutorCatalog } from './engines';
+import { engineChoices, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './engines';
 import { ExecutorPromptField } from './ExecutorPromptField';
 import { KikiContextField } from './KikiContextField';
 import type { ExecutorPromptDraft } from './executorPromptDraft';
@@ -115,6 +116,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   }, [profile]);
   const set = <K extends keyof ProfileDraft>(key: K, value: ProfileDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const catalog = useExecutorCatalog();
+  const engineConfig = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
+  const engineOverrides = engineOverridesOf(engineConfig.data);
+  const engineDisplay = engineDisplayOf(engineConfig.data);
   const external = isExternalExecutor(draft.executor);
   const engine = engineLabel(draft.executor, t('st.profiles.engineNative'), catalog);
   // Reserved applicability data applies only to the saved engine; an unsaved
@@ -149,7 +153,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   };
   const disabled = !writable || saving;
   const problemText = problems.length === 0 ? null : t(`st.profiles.problem.${problems[0]}` as I18nKey);
-  const engines = useMemo(() => engineChoices(profiles, catalog), [profiles, catalog]);
+  const engines = useMemo(() => engineChoices(profiles, catalog, {
+    overrides: engineOverrides,
+    display: engineDisplay,
+    retain: [baseline.executor, draft.executor],
+  }), [profiles, catalog, engineOverrides, engineDisplay, baseline.executor, draft.executor]);
   const engineStatus = (id: string) => catalog.find((item) => item.id === id)?.status;
   const promptDeliveries = catalog.find((item) => item.id === draft.executor)?.capabilities?.prompt_deliveries;
   const promptDelivery = draft.executorPrompt?.per_engine?.[draft.executor]?.delivery ?? draft.executorPrompt?.delivery

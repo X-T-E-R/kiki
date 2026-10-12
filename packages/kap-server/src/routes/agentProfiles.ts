@@ -203,7 +203,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const preflight = core.accessor.get(IAgentExecutorPreflightService);
     const items = registry.list().map((descriptor) =>
-      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id), core.accessor.get(IBootstrapService)));
+      projectExecutor(descriptor, registry, preflight.rememberedCheck(descriptor.id), core.accessor.get(IBootstrapService)));
 
     reply.send(okEnvelope({ items }, req.id));
   });
@@ -224,7 +224,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Executor not found', req.id));
       return;
     }
-    const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
+    const check = core.accessor.get(IAgentExecutorPreflightService).rememberedCheck(descriptor.id);
     reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
   });
   app.get(executorDetailRoute.path, executorDetailRoute.options,
@@ -1328,7 +1328,8 @@ function catalogApplyState(catalog: ExecutorCapabilityCatalog) {
 }
 
 function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
-  check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
+  remembered: ReturnType<IAgentExecutorPreflightService['rememberedCheck']>, bootstrap: IBootstrapService) {
+  const check = remembered?.result;
   const selected = check?.sources?.find((probe) => probe.id === check.selectedSource && probe.available);
   const program = check?.requirements.find((requirement) => requirement.role === 'program');
   const status = descriptor.protocol === 'native' ? 'ready' as const
@@ -1376,6 +1377,9 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       default_args: [...descriptor.args],
     },
     default_profile: descriptor.defaultProfile === true,
+    check_status: check?.status,
+    checked_at: remembered === undefined ? undefined : new Date(remembered.checkedAt).toISOString(),
+    check_stale: remembered === undefined ? undefined : !remembered.fresh,
   };
 }
 

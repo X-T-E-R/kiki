@@ -181,13 +181,13 @@ The executor catalog lists registered engines without waiting for executable dis
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/executors` | Registered engines with their latest valid check results |
-| `GET /api/executors/{id}` | One engine's capabilities, connection settings and latest check result |
-| `POST /api/executors/{id}/check` | Discover executable sources and check the declared authentication hints for this engine |
+| `GET /api/executors` | Registered engines and the latest check for each. This request does not probe. A result older than 60 seconds has `check_stale: true` |
+| `GET /api/executors/{id}` | One engine's capabilities, connection settings, and latest check. This request does not probe |
+| `POST /api/executors/{id}/check` | Check only that engine's executable sources and its declared authentication hints |
 
-Catalog `status` is `ready`, `unavailable` or `unknown`. Native is always `ready`; an external engine without a valid check is `unknown`, not missing. Checks remain valid for 60 seconds while the engine's launch configuration is unchanged. A successful explicit check updates only that engine; unrelated entries do not wait for it. The check response also includes diagnostics, requirements and `selected_source`, preserving any configured source pin.
+Catalog `status` is `ready`, `unavailable`, or `unknown`. Native is always `ready`. An external engine with no check yet is `unknown`. `check_status` keeps the latest explicit check as `ready`, `warning`, or `unavailable`, and `checked_at` is that time. While the launch configuration is unchanged, `check_stale` is false for 60 seconds and true after that. The list still returns the previous `check_status` instead of falling back to `unknown`. After the engine revision changes, both fields disappear and that engine is unchecked again. `POST` updates only the named engine. The others keep the results they already have. One engine timing out or failing does not mark the rest ready. `GET` does not start a probe.
 
-Binary readiness and authentication are separate facts. `connection.login_status: "unknown"` does not mean `logged_out`, and `status: "ready"` does not prove a login. Pickers retain unchecked engines while honoring explicit hide/off choices and known unavailable states; a checked logged-out engine remains hidden unless its declared API-key environment is configured. To inspect an engine, call its check endpoint explicitly; sending a prompt still uses the real executable, source and authentication checks rather than trusting the display catalog.
+Binary readiness and authentication are stored separately. `connection.login_status: "unknown"` means the login state has not been read. Catalog `status: "ready"` means the program requirement passed. When preflight is `warning` and the program requirement passed, catalog `status` is `ready` and `check_status` stays `warning`. New profile choices and bare execution entries include an external engine only when `show_in_profile_list` is `true`. A missing field leaves it on the settings page. `false` stays off after refresh, another check, and another import. `externals_visible = false` blocks every external engine from new choices. A bare execution entry also needs a ready program and either a confirmed login or the engine's declared API-key environment. A profile or session already bound to a hidden or unavailable engine keeps that identity. Settings still lists every engine. Sending a prompt still runs the real program, source, and authentication checks. The previous check in the display catalog does not replace the launch check.
 
 ### Local executor sessions
 

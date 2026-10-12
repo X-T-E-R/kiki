@@ -1165,14 +1165,15 @@ timeout = 600
     const ids = registry.list().map((entry) => entry.id);
     await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: false }, 'not-configured': { show_in_profile_list: true } } });
     await patchConfig({ agent_executor_display: { externals_visible: false } });
+    await patchConfig({ agent_executor_display: { discovery_initialized: true } });
     const edited = await getConfig();
     expect(edited.raw?.['agent_executor_overrides']).toEqual({
       'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' }, show_in_profile_list: false },
       'not-configured': { show_in_profile_list: true },
     });
-    expect(edited.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
+    expect(edited.raw?.['agent_executor_display']).toEqual({ externals_visible: false, discovery_initialized: true });
     expect(edited.raw?.['agent_executors']).toEqual({ example_custom: { protocol: 'acp-v1', command: 'example-custom', args: [] } });
-    expect(edited.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(edited.agent_executor_display).toEqual({ externalsVisible: false, discoveryInitialized: true });
     expect(sharedConfigResponseSchema.parse(edited).raw).toEqual(edited.raw);
     expect(registry.list().map((entry) => entry.id)).toEqual(ids);
     expect(registry.get('not-configured')).toBeUndefined();
@@ -1184,6 +1185,7 @@ timeout = 600
     const saved = await readFile(path, 'utf-8');
     expect(saved).toContain('show_in_profile_list = false');
     expect(saved).toContain('externals_visible = false');
+    expect(saved).toContain('discovery_initialized = true');
     expect(saved).not.toContain('showInProfileList');
     for (const patch of [
       { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: 'no' } } },
@@ -1199,13 +1201,15 @@ timeout = 600
     await server!.close(); server = undefined; await boot();
     expect((await getConfig()).raw).toEqual(edited.raw);
     expect(server!.core.accessor.get(IAgentExecutorRegistry).get('claude-acp')).toEqual(descriptor);
-    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: null }, 'not-configured': { show_in_profile_list: null } }, agent_executor_display: { externals_visible: null } });
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: null }, 'not-configured': { show_in_profile_list: null } }, agent_executor_display: { externals_visible: null, discovery_initialized: null } });
     const cleared = await getConfig();
     expect(cleared.raw?.['agent_executor_display']).toEqual({});
+    expect(cleared.agent_executor_display).toEqual({});
     expect(cleared.raw?.['agent_executor_overrides']).toEqual({ 'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' } }, 'not-configured': {} });
     expect(await readFile(path, 'utf-8')).toContain('keep="example-value"');
     expect(await readFile(path, 'utf-8')).not.toContain('show_in_profile_list');
     expect(await readFile(path, 'utf-8')).not.toContain('externals_visible');
+    expect(await readFile(path, 'utf-8')).not.toContain('discovery_initialized');
     await server!.close(); server = undefined; await boot();
     expect((await getConfig()).raw).toEqual(cleared.raw);
   });
