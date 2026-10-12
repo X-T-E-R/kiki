@@ -20,8 +20,7 @@
  * when opened from the right, whatever the trigger's own position.
  */
 
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type UIEvent, type RefObject } from 'react';
 
 import type { DeferredAppendTiming, FsSearchHit, PermissionMode } from '@kiki/protocol';
 import type { McpServerLocator } from '@kiki/klient';
@@ -41,6 +40,7 @@ import {
   type McpSessionRow,
 } from './capabilities/sessionMcp';
 import type { McpPickAction } from './capabilities/useMcpPicker';
+import { useFsSearchFeed, type FsSearchFeedSearch } from '../lib/fsSearchFeed';
 import { PERMISSION_MODES, RECOMMENDED_PERMISSION_MODE, permissionModeDef } from '../lib/permissionModes';
 import { POPOVER_SURFACE_CLASS } from './SearchableSelect';
 import { Toggle } from './controls';
@@ -514,13 +514,18 @@ export interface AddMenuMcp {
 }
 
 export interface AddMenuFiles {
-  readonly search: (query: string) => Promise<FsSearchHit[]>;
-  /** Cache scope shared with the `@` picker's query key. */
+  /**
+   * One page of workspace file search. Called again with `page.cursor` only
+   * after an explicit continuation. Forward `page.signal`, and repeat limit /
+   * include / exclude / follow_gitignore (`fsSearchRequestBody`). An array is
+   * one finished page — the cursor was dropped before it got here.
+   */
+  readonly search: FsSearchFeedSearch;
+  /** Cache scope. The feed key is `fs-search-feed`, separate from the legacy `fs-search` list. */
   readonly scopeKey: string;
   readonly onMention: (hit: FsSearchHit) => void;
 }
 
-const FILE_ROW_LIMIT = 8;
 const SEARCH_ROW_LIMIT = 5;
 const FILE_DEBOUNCE_MS = 200;
 
@@ -785,6 +790,33 @@ function FileRow({ hit, onMention, result = false }: { hit: FsSearchHit; onMenti
   );
 }
 
+function FileContinueRow({
+  pending,
+  failed,
+  onMore,
+}: {
+  readonly pending: boolean;
+  readonly failed: boolean;
+  readonly onMore: () => void;
+}) {
+  const { t } = useI18n();
+  const label = failed ? t('common.retry') : pending ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore');
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      data-menu-row
+      data-add-file-more={failed ? 'retry' : pending ? 'pending' : 'more'}
+      aria-busy={pending || undefined}
+      aria-label={failed ? t('composer.filesFailed') : label}
+      onClick={() => { if (!pending) onMore(); }}
+      className={`${MENU_ROW_CLASS} text-ink-soft`}
+    >
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
 /**
  * The send-timing rows, shared by the send button's hover menu and the ＋
  * menu's timing view (the phone path, where there is no hover): send with the
@@ -945,14 +977,20 @@ export function AddMenu({
   const needle = trimmed.toLowerCase();
   const searching = view === 'root' && trimmed !== '';
   const fileQuery = useDebounced(trimmed, FILE_DEBOUNCE_MS);
-  const filesWanted = open && files !== undefined && (view === 'mention' || (view === 'root' && fileQuery !== ''));
-  const filesQuery = useQuery({
-    queryKey: ['fs-search', files?.scopeKey ?? 'none', fileQuery],
-    queryFn: () => files!.search(fileQuery),
-    enabled: filesWanted,
-    staleTime: 30_000,
+  const fileCurrent = fileQuery === trimmed;
+  // The first page is the only automatic read. Later pages wait for the
+  // continue row or the end of the mention list. Editing the query or closing
+  // the menu disables the feed, which aborts the page in flight.
+  const fileFeed = useFsSearchFeed({
+    enabled: open && files !== undefined && fileCurrent && (view === 'mention' || trimmed !== ''),
+    scopeKey: files?.scopeKey ?? 'none',
+    query: fileQuery,
+    search: (text, page) => files?.search(text, page) ?? Promise.resolve([]),
   });
-  const fileHits = (filesQuery.data ?? []).slice(0, view === 'mention' ? FILE_ROW_LIMIT : SEARCH_ROW_LIMIT);
+  const fileItems = fileCurrent ? fileFeed.items : [];
+  const rootFilePreview = fileItems.slice(0, SEARCH_ROW_LIMIT);
+  const fileWaiting = files !== undefined && (view === 'mention' || trimmed !== '') && fileItems.length === 0
+    && (!fileCurrent || fileFeed.pendingInitial);
   const skillMatches = skills === undefined ? [] : trimmed === '' ? skills.items : filterSlashItems(skills.items, trimmed);
   const hostMatches = (ssh?.hosts ?? []).filter(
     (host) => host.name.toLowerCase().includes(needle) || (host.detail ?? '').toLowerCase().includes(needle),
@@ -1075,6 +1113,26 @@ export function AddMenu({
   const busyMcp = mcp?.busyName;
   const togglePlugin = (pluginId: string, enabled: boolean) => { plugins?.onToggle(pluginId, enabled); };
   const mentionFile = (hit: FsSearchHit) => { close(); files?.onMention(hit); };
+  const revealFiles = () => {
+    drilledRef.current = true;
+    onViewChange('mention');
+  };
+  const continueFiles = () => {
+    if (fileFeed.pendingMore || fileFeed.pendingRestart) return;
+    if (fileFeed.failed) fileFeed.retry();
+    else fileFeed.loadMore();
+  };
+  const onFileScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (fileFeed.failed || fileFeed.pendingMore || fileFeed.pendingRestart || fileFeed.exhausted) return;
+    const node = event.currentTarget;
+    if (node.scrollHeight - node.scrollTop - node.clientHeight > 32) return;
+    fileFeed.loadMore();
+  };
+  const rootCanContinue = fileCurrent && !fileWaiting
+    && (fileItems.length > rootFilePreview.length || !fileFeed.exhausted);
+  const showFileContinue = fileCurrent && !fileWaiting && (
+    !fileFeed.exhausted || fileFeed.failed || fileFeed.pendingMore || fileFeed.pendingRestart
+  );
 
   const searchField = (placeholder: string) => (
     <div className="px-1 pt-0.5 pb-1">
@@ -1127,7 +1185,7 @@ export function AddMenu({
   );
 
   const rootBody = searching ? (
-    <div data-add-results>
+    <div data-add-results data-file-order={files !== undefined && fileCurrent ? fileFeed.order : undefined}>
       {skills !== undefined && skillMatches.length > 0 ? (
         <>
           <GroupLabel>{t('composer.addMenu.skills')}</GroupLabel>
@@ -1136,11 +1194,14 @@ export function AddMenu({
           ))}
         </>
       ) : null}
-      {files !== undefined && fileHits.length > 0 ? (
+      {files !== undefined && rootFilePreview.length > 0 ? (
         <>
           <GroupLabel>{t('composer.addMenu.files')}</GroupLabel>
-          {fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} result />)}
+          {rootFilePreview.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} result />)}
+          {rootCanContinue ? <FileContinueRow pending={false} failed={false} onMore={revealFiles} /> : null}
         </>
+      ) : files !== undefined && rootCanContinue ? (
+        <FileContinueRow pending={fileFeed.pendingMore || fileFeed.pendingRestart} failed={false} onMore={revealFiles} />
       ) : null}
       {plugins !== undefined && pluginMatches.length > 0 ? (
         <>
@@ -1192,10 +1253,16 @@ export function AddMenu({
         </>
       ) : null}
       {skillMatches.length === 0 && hostMatches.length === 0 && pluginMatches.length === 0 && mcpMatches.length === 0
-        && (files === undefined || (fileHits.length === 0 && !(filesQuery.isFetching || fileQuery !== trimmed)))
+        && (files === undefined || (fileCurrent && fileItems.length === 0 && fileFeed.exhausted && !fileFeed.failed && !fileWaiting))
         ? note(t('composer.addMenu.noMatch', { query: trimmed }))
         : null}
-      {files !== undefined && fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching')) : null}
+      {fileWaiting ? note(t('composer.filesSearching')) : null}
+      {files !== undefined && fileCurrent && fileFeed.failed && fileItems.length === 0 ? (
+        <>
+          {note(t('composer.filesFailed'), 'danger')}
+          <FileContinueRow pending={false} failed onMore={fileFeed.retry} />
+        </>
+      ) : null}
     </div>
   ) : (
     <>
@@ -1349,11 +1416,18 @@ export function AddMenu({
     <div data-add-mention-view>
       {backRow(t('composer.addMenu.mention'))}
       {searchField(t('composer.addMenu.searchFiles'))}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {filesQuery.isError ? note(t('composer.filesFailed'), 'danger')
-          : fileHits.length === 0 && (filesQuery.isFetching || fileQuery !== trimmed) ? note(t('composer.filesSearching'))
-          : fileHits.length === 0 ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
-          : fileHits.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} />)}
+      <div className="min-h-0 flex-1 overflow-y-auto" data-add-file-list data-file-order={fileFeed.order} onScroll={onFileScroll}>
+        {fileWaiting ? note(t('composer.filesSearching'))
+          : fileFeed.failed && fileItems.length === 0 ? note(t('composer.filesFailed'), 'danger')
+          : fileItems.length === 0 && fileFeed.exhausted ? note(trimmed === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query: trimmed }))
+          : fileItems.map((hit) => <FileRow key={hit.path} hit={hit} onMention={mentionFile} />)}
+        {showFileContinue ? (
+          <FileContinueRow
+            pending={fileFeed.pendingMore || fileFeed.pendingRestart}
+            failed={fileFeed.failed}
+            onMore={continueFiles}
+          />
+        ) : null}
       </div>
       <p className="px-3 pt-1 pb-1.5 text-[12px] leading-4 text-ink-faint">{t('composer.addMenu.mentionHint')}</p>
     </div>
