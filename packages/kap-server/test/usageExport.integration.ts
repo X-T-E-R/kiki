@@ -327,11 +327,18 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
 
   it('recovers a real cross-process writer crash with a new fence and the same durable in-flight payload', async () => {
     const f = await fixture(); f.add('process'); await f.write('process', 'main', [record(T + 1, 10)]); const d = await destination(f.service); await enable(f.service, d.id); const batch = f.store.take(d.id, 200, 1048576)!; await f.service.close();
-    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', "const {UsageExportStore}=await import(process.argv[1]); const s=new UsageExportStore(process.argv[2]); console.log(JSON.stringify({writer:s.writer,fence:s.meta('fence')})); setInterval(()=>{},1000);", new URL('../src/usage/export/store.ts', import.meta.url).href, join(f.home, 'export.sqlite')], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise<void>((resolve) => child.once('exit', () => resolve())); } });
-    const ready = await new Promise<{ writer: boolean; fence: string }>((resolve, reject) => { let text = ''; child.stdout.on('data', (data: Buffer) => { text += data.toString(); if (text.includes('\n')) { try { resolve(JSON.parse(text.trim())); } catch (error) { reject(error); } } }); child.once('error', reject); child.once('exit', (code) => { if (code !== null) reject(new Error(`writer-child-exited:${code}`)); }); });
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', "const {UsageExportStore}=await import(process.argv[1]); const s=new UsageExportStore(process.argv[2]); console.log(JSON.stringify({writer:s.writer,fence:s.meta('fence')})); setInterval(()=>s.meta('fence'),1000);", new URL('../src/usage/export/store.ts', import.meta.url).href, join(f.home, 'export.sqlite')], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
+    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await closed; });
+    const ready = await new Promise<{ writer: boolean; fence: string }>((resolve, reject) => {
+      let text = '';
+      child.stdout.on('data', (data: Buffer) => { text += data.toString(); if (text.includes('\n')) { try { resolve(JSON.parse(text.trim())); } catch (error) { reject(error); } } });
+      child.once('error', reject);
+      void closed.then(({ code, signal }) => reject(new Error(`writer-child-exited:${code}:${signal}:${stderr}`)));
+    });
     expect(ready.writer).toBe(true); const standby = new UsageExportStore(join(f.home, 'export.sqlite')); cleanup.push(async () => standby.close()); expect(standby.writer).toBe(false); expect(standby.tryPromote()).toBe(false);
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve())); child.kill('SIGKILL'); await exited;
+    expect(child.kill('SIGKILL')).toBe(true); await closed;
     expect(standby.tryPromote()).toBe(true); expect(standby.meta('fence')).not.toBe(ready.fence); expect(standby.take(d.id, 200, 1048576)).toEqual(batch);
   }, 20000);
 
