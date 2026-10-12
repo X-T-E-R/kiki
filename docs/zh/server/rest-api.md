@@ -427,15 +427,24 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 ### 工作区
 
+选择工作区和修改名称、置顶状态时使用 catalog 视图；需要会话数或 Git 状态时，再读取目标工作区的详情。
+
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/workspaces` | 列出已注册工作区 |
-| `POST /api/workspaces` | 注册工作区（按根路径幂等） |
-| `PATCH /api/workspaces/{workspace_id}` | 重命名 |
+| `GET /api/workspaces?view=catalog` | 列出已持久化的注册信息，不等待会话计数、Git 检查或旧目录发现 |
+| `GET /api/workspaces` | 列出完整工作区记录，等待目录发现及每个工作区的会话计数、Git 检查 |
+| `GET /api/workspaces/{workspace_id}` | 读取一个已注册工作区及其会话数、Git 状态，不做全局目录发现 |
+| `POST /api/workspaces` | 注册工作区（按根路径幂等），返回完整记录 |
+| `PATCH /api/workspaces/{workspace_id}?view=catalog` | 重命名和／或置顶，只返回保存后的注册信息 |
+| `PATCH /api/workspaces/{workspace_id}` | 重命名和／或置顶，返回含会话数、Git 状态的完整记录 |
 | `DELETE /api/workspaces/{workspace_id}` | 注销（保留磁盘内容） |
-| `GET /api/workspaces/{workspace_id}/trust` | 读取信任状态 |
+| `GET /api/workspaces/{workspace_id}/trust` | 读取信任状态，不启动工作区运行时 |
 | `POST /api/workspaces/{workspace_id}/trust` | 授予信任 |
 | `POST /api/workspaces/{workspace_id}/untrust` | 撤销信任 |
+
+两种列表都返回 `{ items }`。Catalog 条目只有 `id`、`root`、`name`、`created_at`、`last_opened_at` 和 `pinned`；缺少 `session_count`、`isGit` 表示尚未测量，不代表零和 false。Catalog 只读取已持久化的注册项；明确需要发现旧工作区目录时，使用默认完整列表。客户端应将这两种响应分别缓存。
+
+两种 `PATCH` 都接受 `{ name?, pinned? }`，至少提供一个字段。Catalog 形式保存并返回注册信息，不等待目录发现、计数或 Git。单个工作区详情按同根目录的注册 ID 和旧目录别名统计会话（含归档），只检查该根目录的 Git。这些测量仍可能耗时或失败，应与工作区选择、名称和置顶编辑分开加载。详情或 catalog `PATCH` 的注册 ID 不存在时，返回信封码 `40410`。
 
 ### 记忆
 

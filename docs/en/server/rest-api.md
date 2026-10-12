@@ -427,15 +427,24 @@ PTY terminal endpoints; mounted only on loopback binds.
 
 ### Workspaces
 
+Use the catalog view for workspace selection and metadata changes; request one workspace's details when you need its session count or Git state.
+
 | Method and path | Description |
 | --- | --- |
-| `GET /api/workspaces` | List registered workspaces |
-| `POST /api/workspaces` | Register a workspace (idempotent on the root path) |
-| `PATCH /api/workspaces/{workspace_id}` | Rename |
+| `GET /api/workspaces?view=catalog` | List persisted registration metadata without session counting, Git checks or legacy discovery |
+| `GET /api/workspaces` | List full workspace records, waiting for discovery and every workspace's session count and Git check |
+| `GET /api/workspaces/{workspace_id}` | Read one registered workspace with its session count and Git state, without global discovery |
+| `POST /api/workspaces` | Register a workspace (idempotent on the root path); return the full record |
+| `PATCH /api/workspaces/{workspace_id}?view=catalog` | Rename and/or pin; return only the saved metadata |
+| `PATCH /api/workspaces/{workspace_id}` | Rename and/or pin; return the full record, including session count and Git state |
 | `DELETE /api/workspaces/{workspace_id}` | Unregister (keeps on-disk content) |
-| `GET /api/workspaces/{workspace_id}/trust` | Read the trust state |
+| `GET /api/workspaces/{workspace_id}/trust` | Read the trust state without starting a workspace runtime |
 | `POST /api/workspaces/{workspace_id}/trust` | Grant trust |
 | `POST /api/workspaces/{workspace_id}/untrust` | Revoke trust |
+
+Both list variants return `{ items }`. Catalog entries contain only `id`, `root`, `name`, `created_at`, `last_opened_at` and `pinned`; absent `session_count` and `isGit` mean unmeasured, not zero and false. The catalog reads already persisted registrations; use the default full list when you explicitly need legacy workspace discovery. Keep these response shapes in separate client caches.
+
+Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field required. The catalog variant does not wait for discovery, counts or Git before returning the saved entry. Single-workspace details count sessions, including archived sessions, under that root's registered IDs and legacy directory aliases, and check Git only for that root. These measured details can still take time or fail; load them independently of workspace selection and metadata editing. Unknown registered IDs on the detail or catalog `PATCH` routes return envelope code `40410`.
 
 ### Memory
 
