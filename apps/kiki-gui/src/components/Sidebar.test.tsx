@@ -1120,14 +1120,14 @@ describe('Sidebar entry distribution', () => {
     const nav = container.querySelector('[data-primary-nav]');
     expect(nav?.getAttribute('aria-label')).toBe('Workspace tools');
     const labels = [...(nav?.querySelectorAll('button') ?? [])].map((button) => button.children[1]?.textContent);
-    expect(labels).toEqual(['Memory', 'Personas', 'Usage', 'Discover Kiki', 'More tools']);
-    expect(nav?.querySelector('[data-nav-discover]')).not.toBeNull();
+    expect(labels).toEqual(['Memory', 'Personas', 'Usage', 'More tools']);
     expect(nav?.querySelector('[data-nav-personas]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-usage]')).not.toBeNull();
     // Memory is permanent, on or off: switched off the page is the turn-on guide.
     expect(nav?.querySelector('[data-nav-memory]')).not.toBeNull();
-    // The other destinations start tucked under the folded More tools section.
+    // Scheduled tasks, capabilities and discovery start tucked under More tools.
     expect(nav?.querySelector('[data-nav-board]')).toBeNull();
+    expect(nav?.querySelector('[data-nav-discover]')).toBeNull();
     expect(nav?.querySelector('[data-nav-cron]')).toBeNull();
     expect(nav?.querySelector('[data-nav-capabilities]')).toBeNull();
 
@@ -1136,8 +1136,8 @@ describe('Sidebar entry distribution', () => {
     await act(async () => { expandButton?.click(); });
 
     const secondaryLabels = [...(nav?.querySelectorAll('[data-sidebar-secondary-nav] ul button') ?? [])].map((button) => button.children[1]?.textContent);
-    expect(secondaryLabels).toEqual(['Task board', 'Scheduled tasks', 'Capabilities']);
-    expect(nav?.querySelector('[data-nav-board]')).not.toBeNull();
+    expect(secondaryLabels).toEqual(['Scheduled tasks', 'Capabilities', 'Discover Kiki']);
+    expect(nav?.querySelector('[data-nav-board]')).toBeNull();
     expect(nav?.querySelector('[data-nav-cron]')).not.toBeNull();
     expect(nav?.querySelector('[data-nav-capabilities]')).not.toBeNull();
 
@@ -2547,7 +2547,7 @@ describe('collapsed icon rail', () => {
     expect(container.querySelector('[data-session-list]')).toBeNull();
     expect(container.querySelector('[data-search-toggle]')).toBeNull();
     expect(container.querySelector('[data-new-session]')).not.toBeNull();
-    for (const hook of ['board', 'cron', 'memory', 'personas', 'usage', 'capabilities']) {
+    for (const hook of ['cron', 'memory', 'personas', 'usage', 'capabilities']) {
       const button = container.querySelector(`[data-nav-${hook}]`);
       expect(button).not.toBeNull();
       expect(button?.getAttribute('title')).not.toBe('');
@@ -2616,11 +2616,11 @@ describe('sidebar secondary navigation', () => {
     });
     const { container } = await mount();
 
-    for (const hook of ['memory', 'personas', 'usage', 'discover']) {
+    for (const hook of ['memory', 'personas', 'usage']) {
       expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
     }
 
-    for (const hook of ['board', 'cron', 'capabilities']) {
+    for (const hook of ['cron', 'capabilities', 'discover']) {
       expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).toBeNull();
     }
 
@@ -2644,7 +2644,7 @@ describe('sidebar secondary navigation', () => {
 
     expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(false);
 
-    for (const hook of ['board', 'cron', 'capabilities']) {
+    for (const hook of ['cron', 'capabilities']) {
       expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).not.toBeNull();
     }
 
@@ -2657,7 +2657,7 @@ describe('sidebar secondary navigation', () => {
     });
 
     expect(readLayoutPreferences().sidebarNavSectionCollapsed).toBe(true);
-    for (const hook of ['board', 'cron', 'capabilities']) {
+    for (const hook of ['cron', 'capabilities']) {
       expect(container.querySelector(`[data-primary-nav] [data-nav-${hook}]`)).toBeNull();
     }
   });
@@ -2666,14 +2666,15 @@ describe('sidebar secondary navigation', () => {
     await act(async () => {
       writeLayoutPreferences({ sidebarCollapsed: false, sidebarNavSectionCollapsed: true });
     });
-    const { container } = await mount({ initialEntries: ['/board'] });
+    const { container } = await mount({ initialEntries: ['/cron'] });
 
-    const boardBtn = container.querySelector<HTMLButtonElement>('[data-primary-nav] [data-nav-board]');
-    expect(boardBtn).not.toBeNull();
-    expect(boardBtn?.getAttribute('aria-current')).toBe('page');
+    expect(container.querySelector('[data-nav-board]')).toBeNull();
+    const cronBtn = container.querySelector<HTMLButtonElement>('[data-primary-nav] [data-nav-cron]');
+    expect(cronBtn).not.toBeNull();
+    expect(cronBtn?.getAttribute('aria-current')).toBe('page');
 
-    expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).toBeNull();
     expect(container.querySelector('[data-primary-nav] [data-nav-capabilities]')).toBeNull();
+    expect(container.querySelector('[data-primary-nav] [data-nav-discover]')).toBeNull();
 
     expect(container.querySelector('[data-sidebar-secondary-toggle="expand"]')).not.toBeNull();
   });
@@ -2703,8 +2704,8 @@ describe('sidebar secondary navigation', () => {
     });
     const { container } = await mount();
 
-    // Initially board is not pinned and the fold is collapsed, so it is not in the primary nav
-    expect(container.querySelector('[data-primary-nav] [data-nav-board]')).toBeNull();
+    expect(container.querySelector('[data-nav-board]')).toBeNull();
+    expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).toBeNull();
     expect(container.querySelector('[data-primary-nav] [data-nav-memory]')).not.toBeNull();
 
     const viewMenuBtn = container.querySelector<HTMLButtonElement>('[data-view-menu-toggle]');
@@ -2713,18 +2714,19 @@ describe('sidebar secondary navigation', () => {
       viewMenuBtn?.click();
     });
 
-    // Positive: pin 'board'
-    const boardToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="board"]');
-    expect(boardToggle).not.toBeNull();
-    expect(boardToggle?.getAttribute('aria-checked')).toBe('false');
+    expect(container.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
+    const cronToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="cron"]');
+    expect(cronToggle).not.toBeNull();
+    expect(cronToggle?.getAttribute('aria-checked')).toBe('false');
 
     await act(async () => {
-      boardToggle?.click();
+      cronToggle?.click();
     });
 
-    expect(readLayoutPreferences().pinnedNavItems).toContain('board');
-    expect(boardToggle?.getAttribute('aria-checked')).toBe('true');
-    expect(container.querySelector('[data-primary-nav] [data-nav-board]')).not.toBeNull();
+    expect(readLayoutPreferences().pinnedNavItems).toContain('cron');
+    expect(readLayoutPreferences().pinnedNavItems).not.toContain('board');
+    expect(cronToggle?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).not.toBeNull();
 
     // Negative: unpin 'memory'
     const memoryToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
@@ -2753,7 +2755,7 @@ describe('sidebar secondary navigation', () => {
       initialEntries: ['/cron'],
       navBadges: {
         cron: { count: 3, label: '3 tasks' },
-        board: { count: 2, label: '2 tasks' },
+        capabilities: { count: 2, label: '2 grants' },
       },
     });
 

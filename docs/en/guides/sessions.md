@@ -34,15 +34,13 @@ An existing conversation reopens on its committed model and effort. Old composer
 
 ## Task board
 
-The task board lives behind the fixed button at the bottom of the main agent's right panel. Cards hold requirements and the sessions linked to them; an agent's own todo list stays separate and local to that agent.
+The task board is the optional official plugin `kiki-task-board`, requiring a host that supports plugin protocol `0.4.1` or later. [Install and enable the plugin](../customization/plugins.md), then open its workspace panel from **Capabilities → Plugins** and select a workspace. Its panel and the agent tools `plugin__kiki_task_board__BoardRead` and `plugin__kiki_task_board__BoardWrite` read and write the same cards.
 
-Cards load a page at a time, so counts and search results cover what has loaded so far while syncing continues. Changing the workspace scope or closing the board stops further loading. In a card form, card detail, or confirmation, `Tab` stays in the topmost dialog and `Esc` closes only that dialog and returns focus to whatever opened it. A dialog cannot be dismissed while its save or delete is still in flight.
+If the plugin is missing, disabled, or uninstalled, conversations that used it still open and send ordinary messages. Historical `BoardRead` and `BoardWrite` calls and their recorded results remain unchanged. A new attempt to call an unavailable tool reports that it is missing; it does not invent a successful result or replay an old write.
 
-Trust the workspace before you create or edit cards there. Where they are stored is set by `taskBoard.storage`: `auto` reuses a compatible workspace store if it finds one and otherwise uses `sessions/<workspaceId>/.board`; `global` uses the `boards` directory under the Kiki home; `fixed` uses an absolute path, or one relative to the workspace, that you provide. Previewing a path does not create it or give Kiki write access — save the setting first. A directory that exists but cannot hold a board is rejected.
+Cards keep their original storage locations. `taskBoard.storage` `auto` reuses a compatible workspace store when it finds one and otherwise uses `sessions/<workspaceId>/.board`; `global` uses `boards` under the Kiki home; `fixed` uses an absolute path or one relative to the workspace. Changing that setting does not move old cards, and reading a card does not rewrite its file. Cards are requirements, separate from background tasks and per-agent todo lists.
 
-Changing the setting does not move existing cards; they keep pointing at the store they were created in. If someone else saved a change first, reload the card and try again — a failed edit keeps your draft. The main agent reads and writes the board with `BoardRead` and `BoardWrite` under the normal tool policy and approval rules; subagents need [explicit permission](../configuration/config-files.md#subagent) for those, keep their own `TodoList`, and Plan mode cannot use `BoardWrite` at all.
-
-After a compaction, the handoff can list up to five cards linked to the session, with ids, titles and statuses. That list needs the board feature and `BoardRead` enabled, and is simply absent if the read fails or takes more than 500 ms. Card status is never updated from todo lists or finished agent runs.
+Compaction does not automatically append linked cards; ask the agent to read them through the plugin when needed. Card status is never updated from todo lists or finished agent runs.
 
 ## Searching conversations
 

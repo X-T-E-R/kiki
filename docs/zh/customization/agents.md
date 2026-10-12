@@ -187,7 +187,7 @@ main agent 的 profile 省略该字段时继承 [harness 默认设置](../config
 | 工具组 | 原生桥 MCP 工具 |
 | --- | --- |
 | `memory` | `kiki_MemoryRead`、`kiki_MemorySearch`、`kiki_MemoryWrite` |
-| `board` | `kiki_BoardRead`、`kiki_BoardWrite` |
+| `board` | 不再有内置工具；旧配置档案里的组名仍然有效 |
 | `cron` | `kiki_Cron`（`action: create`、`list` 或 `delete`） |
 | `threads` | 获准的 `kiki_Thread*` 工具，各自保留原生角色限制 |
 | `history` | `kiki_HistoryList`、`kiki_HistorySearch`、`kiki_HistoryRead` |
@@ -304,7 +304,7 @@ disallowedTools:
 | `max_completion_tokens` | 否 | 单次 LLM step 的输出 token 上限。仅作为上限声明，生效值取所有声明层的最小值；与输入上限、总上下文窗口互相独立，详见[配置文件](../configuration/config-files.md#models) |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省、单独的 `*`、以及 `*` 与具体名字并列表，都不增加 profile 白名单限制；空列表（`tools: []`）表示禁用全部工具。[subagent 默认限制](../configuration/config-files.md#subagent)及其他策略仍然生效：点名某个工具，就是为该档案作为子智能体时显式开放它，因此 `tools: ["*", ThreadRead]` 保留普通工具并额外加入 `ThreadRead`，而只写 `*` 不会开放任何 opt-in；有限名单仍然有限。服务端 `subagent.allowed_tools` 点名的工具，只有在本名单也选中它时才对该档案开放，因此写了有限 `tools` 名单的档案会挡住自己没列出的工具；没写名单（或写了 `*`）的档案，则对该项开放到的工具都是开放的。`disallowedTools` 仍能禁用这两处开放中的任意一个 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
-| `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（`BoardRead`、`BoardWrite`）、`cron`（`Cron`；旧名 `CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`Goal`；旧名 `CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`、`CallTool`）、`web`（`WebSearch`、`FetchURL`） |
+| `disabled-tool-groups` | 否 | 内置工具组的禁止列表，YAML 列表或逗号分隔字符串，如 `disabled-tool-groups: [shell, web]`。组内每个内置工具都会被收回，除非该工具在 `tools` 中被显式点名；未知的组名会在加载时报错。同一 profile 内的优先级，从最具体开始：`disallowedTools`（被点名的工具保持禁用）> `tools`（显式列出的工具不受组禁用影响）> `disabled-tool-groups`。只有内置工具属于工具组，MCP 工具与用户工具永远不匹配。各组归属：`agent`（`AgentRun`、`AgentList`、`AgentSend`、`AgentNotify`）、`board`（当前没有内置工具；旧档案仍可写出这个组名）、`cron`（`Cron`；旧名 `CronCreate`、`CronList`、`CronDelete`）、`fsRead`（`Read`、`ReadMediaFile`、`Glob`、`Grep`）、`fsWrite`（`Write`、`Edit`）、`goal`（`Goal`；旧名 `CreateGoal`、`GetGoal`、`UpdateGoal`、`SetGoalBudget`）、`plan`（`EnterPlanMode`、`ExitPlanMode`、`TodoList`）、`question`（`AskUserQuestion`）、`shell`（`Bash`）、`skill`（`Skill`）、`task`（`TaskList`、`TaskOutput`、`TaskStop`、`TaskWait`）、`thread`（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend`、`ThreadWait`）、`toolSelect`（`SelectTools`、`CallTool`）、`web`（`WebSearch`、`FetchURL`） |
 | `can_spawn_subagents` | 否 | `false` 禁止新建所有子 Agent，包括 `profile_file`；不禁止恢复已有子 Agent。省略或 `null` 表示本层不额外关闭；`true` 不能重新打开基础 profile 或 lease 中的 `false` |
 | `allowed_subagents` | 否 | **硬**预设 profile 名单，包含 route 的基础 profile 与作用域别名。支持 YAML 列表、逗号字符串或 name / lease / source mapping。`[]` 不允许预设角色，但仍可显式提供 Markdown 定义。省略、`null` 或包含 `"*"` 表示本层不增加预设限制 |
 | `preferred_subagents` | 否 | **软**预设推荐。其他可见且满足硬规则的预设仍可派发，并记录 advisory（提示性诊断）。不授予权限、不选择默认、不触发回退；`[]` 清空推荐 |

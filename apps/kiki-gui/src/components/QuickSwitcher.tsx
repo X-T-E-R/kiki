@@ -91,7 +91,6 @@ export function QuickSwitcher({
         localMatches,
         actions: [
           { actionId: 'usage', title: usageActionTitle, route: '/usage' },
-          { actionId: 'board', title: t('nav.board'), route: '/board' },
           { actionId: 'cron', title: t('nav.cron'), route: '/cron' },
           { actionId: 'memory', title: t('nav.memory'), route: '/memory' },
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },

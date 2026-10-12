@@ -772,7 +772,6 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
   const value = result?.['value'];
   const error = rec(result?.['error']);
   const action = str(args['action']);
-  const link: SemanticLink = { kind: 'route', path: '/board', label: t('tc.sem.openBoard') };
   const errorState = error === undefined ? undefined : { text: str(error['code']) ?? t('transcript.failedAria'), tone: 'danger' as const };
   if (block.name === 'BoardWrite') {
     const card = rec(value);
@@ -784,7 +783,6 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       object: title,
       note: wireWord(str(card?.['status']) ?? str(patch?.['status']), ctx),
       state: errorState,
-      link,
       fields: [
         ...(str(card?.['id']) === undefined ? [] : [{ label: t('tc.sem.field.card'), value: str(card?.['id'])!, mono: true }]),
         ...(str(card?.['priority'] ?? args['priority']) === undefined ? [] : [{ label: t('tc.sem.field.priority'), value: str(card?.['priority'] ?? args['priority'])! }]),
@@ -803,7 +801,6 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       object: str(page?.['title']) ?? str(args['id']),
       note: wireWord(str(page?.['status']), ctx),
       state: errorState,
-      link,
       preview: previewOf(str(page?.['description'])),
     };
   }
@@ -814,7 +811,6 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
       object: str(page?.['tasksDirectory']) ?? str(page?.['root']),
       note: wireWord(str(page?.['mode']), ctx),
       state: errorState,
-      link,
     };
   }
   const overview = Array.isArray(value) ? value.map(rec).filter((item): item is Rec => item !== undefined) : [];
@@ -826,7 +822,6 @@ function describeBoard(block: ToolBlock, ctx: SemanticContext): ToolSemantics {
     object: wireWord(str(args['status']), ctx),
     count: result === undefined || error !== undefined ? undefined : tp('tc.sem.cards', all.length),
     state: errorState,
-    link,
     items: all.map((card, index) => boardCardItem(card, index, ctx)),
     itemsMore: str(page?.['nextCursor']) !== undefined,
   };

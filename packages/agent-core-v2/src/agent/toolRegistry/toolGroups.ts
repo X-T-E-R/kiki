@@ -7,8 +7,6 @@ const TOOL_GROUP_BY_NAME: Readonly<Record<string, ToolGroupId>> = {
   AgentSend: 'agent',
   AskUserQuestion: 'question',
   Bash: 'shell',
-  BoardRead: 'board',
-  BoardWrite: 'board',
   CallTool: 'toolSelect',
   CreateGoal: 'goal',
   Cron: 'cron',

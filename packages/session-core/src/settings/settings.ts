@@ -2258,7 +2258,6 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'session_idle_eviction', section: 'sessions', labelKey: 'st.exp.sessionEviction.name', descriptionKey: 'st.exp.sessionEviction.desc', effect: 'restart' },
   { id: 'transcript_resident_window', section: 'sessions', labelKey: 'st.exp.residentWindow.name', descriptionKey: 'st.exp.residentWindow.desc', effect: 'newSessions' },
   { id: 'task_wait', section: 'tasks', labelKey: 'st.exp.taskWait.name', descriptionKey: 'st.exp.taskWait.desc', effect: 'now' },
-  { id: 'task_board', section: 'tasks', labelKey: 'st.exp.taskBoard.name', descriptionKey: 'st.exp.taskBoard.desc', effect: 'now' },
   { id: 'tool-select', section: 'mcp', labelKey: 'st.exp.toolSelect.name', descriptionKey: 'st.exp.toolSelect.desc', effect: 'now' },
   { id: 'external_delegation_mcp', section: 'mcp', labelKey: 'st.exp.delegation.name', descriptionKey: 'st.exp.delegation.desc', effect: 'restart' },
   { id: 'search_worker', section: 'search', labelKey: 'st.exp.searchWorker.name', descriptionKey: 'st.exp.searchWorker.desc', effect: 'restart' },
@@ -2325,7 +2324,6 @@ const EXPERIMENTAL_SEARCH_ENTRIES: readonly SettingsSearchSpecEntry[] = [
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'sessions', cardId: 'st-card-defaults', titleKey: 'st.plan.title', keywordKeys: ['st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
-  { section: 'tasks', cardId: 'st-card-agent-board', titleKey: 'st.agentBoard.title', keywordKeys: ['st.boardStorage.policy', 'st.boardStorage.noMove'], synonyms: ['board', '看板', 'storage'] },
   { section: 'subagents', cardId: 'st-card-subagent-default-target', titleKey: 'st.subagentDefault.title', keywordKeys: ['st.subagentDefault.label', 'st.subagentDefault.hint'], synonyms: ['default profile', '默认 profile', '默认子代理', 'general'] },
   { section: 'subagents', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
   { section: 'subagents', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
@@ -2420,6 +2418,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'computer-control', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
   { section: 'computer-control', cardId: 'st-card-computer-setup', titleKey: 'st.computer.setupTitle', keywordKeys: ['st.computer.statusLabel', 'st.computer.installButton', 'st.computer.recheckButton'], synonyms: ['executor', '执行器', '安装', 'install', '版本'] },
   { section: 'computer-control', cardId: 'st-card-computer-mcp', titleKey: 'st.computer.connectionsTitle', keywordKeys: ['st.computer.connectionsHint', 'st.computer.fieldCommand', 'st.computer.stopButton'], synonyms: ['mcp', 'kiki-computer', 'stdio', '配置', 'connect', '连接', '停止'] },
+  { section: 'computer-control', cardId: 'st-card-computer-preference', titleKey: 'st.computer.preferenceTitle', keywordKeys: ['st.computer.preferenceLabel', 'st.computer.preferenceHint', 'st.computer.preference.avoid', 'st.computer.preference.prefer'], synonyms: ['model usage', '模型使用倾向', 'avoid', 'prefer', 'computer preference'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   // One workspace's own page. Its cards live under this section so a search
   // hit lands on the list, which is where the workspace is chosen from; the
@@ -2538,7 +2537,8 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   'st-card-sidecar': { section: 'subagents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-timeout': { section: 'subagents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-profiles': { section: 'agents', cardId: 'st-card-main-agents' },
-  'st-card-agent-todo': { section: 'tasks', cardId: 'st-card-agent-board' },
+  'st-card-agent-todo': { section: 'tasks', cardId: 'st-card-task-policy' },
+  'st-card-agent-board': { section: 'tasks', cardId: 'st-card-task-policy' },
   // Experimental flags live with their feature; a multi-flag card from before
   // lands on the Labs index, a single-flag card on its row's new page.
   'st-card-experimental': { section: 'labs', cardId: 'st-card-labs' },

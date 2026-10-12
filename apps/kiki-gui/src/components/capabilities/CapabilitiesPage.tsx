@@ -39,7 +39,7 @@ import { IconButton } from './primitives';
 import { SkillsView } from './SkillsView';
 import { ToolsView } from './ToolsView';
 import { usePluginPanels } from './usePlugins';
-import { panelScopeFrom } from './pluginUsage';
+import { panelScopeFrom, panelSheetNotice } from './pluginUsage';
 
 export type CapabilityTab = 'plugins' | 'skills' | 'mcp' | 'tools';
 const TABS: readonly CapabilityTab[] = ['plugins', 'skills', 'mcp', 'tools'];
@@ -417,7 +417,14 @@ function PanelSheet({ pluginId, panelId, sessionId, target, onClose }: {
 }) {
   const { t } = useI18n();
   const panels = usePluginPanels(target);
-  const label = panels.data?.panels.find((entry) => entry.pluginId === pluginId && entry.id === panelId)?.label ?? panelId;
+  const entry = panels.data?.panels.find((item) => item.pluginId === pluginId && item.id === panelId);
+  const label = entry?.label ?? panelId;
+  const notice = panelSheetNotice({ slot: entry?.slot, target, sessionId });
+  const noticeKey = notice === 'session' ? 'cap.panel.session'
+    : notice === 'workspace' ? 'cap.panel.workspace'
+    : notice === 'settings' ? 'cap.panel.settings'
+    : notice === 'session-required' ? 'cap.panel.noSession'
+    : undefined;
   return (
     <Dialog
       onClose={onClose}
@@ -429,7 +436,7 @@ function PanelSheet({ pluginId, panelId, sessionId, target, onClose }: {
     >
       <div className="flex min-h-12 items-center gap-2 border-b border-hairline px-4">
         <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{label}</p>
-        <span className="text-[12px] text-ink-faint">{sessionId === undefined ? t('cap.panel.noSession') : t('cap.panel.session')}</span>
+        {noticeKey !== undefined ? <span className="text-[12px] text-ink-faint" data-plugin-panel-context={notice}>{t(noticeKey)}</span> : null}
         <IconButton icon="close" label={t('common.close')} onClick={onClose} />
       </div>
       <div className="min-h-0 flex-1">

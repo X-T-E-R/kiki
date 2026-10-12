@@ -167,6 +167,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             workspaceRoot: view.workDir,
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
+            workspaceId: this.session?.workspaceId,
             media: this.media?.api(context.toolCallId, admittedRequest),
             attachmentStore: this.attachmentStore,
           }, definition);

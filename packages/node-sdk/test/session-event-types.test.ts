@@ -42,6 +42,13 @@ describe('Event public types', () => {
     >();
   });
 
+  it('narrows a committed prompt outcome by type', () => {
+    expectTypeOf<EventByType<'prompt.outcome_committed'>['terminal']['promptId']>().toEqualTypeOf<string>();
+    expectTypeOf<EventByType<'prompt.outcome_committed'>['terminal']['state']>().toEqualTypeOf<
+      'completed' | 'failed' | 'cancelled' | 'blocked'
+    >();
+  });
+
   it('narrows subagent lifecycle events by type', () => {
     expectTypeOf<EventByType<'subagent.spawned'>['subagentId']>().toEqualTypeOf<string>();
     expectTypeOf<EventByType<'subagent.spawned'>['runInBackground']>().toEqualTypeOf<boolean>();
@@ -130,6 +137,12 @@ describe('Event public types', () => {
         case 'prompt.launch_committed':
         case 'prompt.moved':
         case 'prompt.queue_hold_changed':
+          return;
+        case 'prompt.outcome_committed': {
+          const promptId: string = event.terminal.promptId;
+          void promptId;
+          return;
+        }
         case 'agent.disposed':
         case 'event.session.history_rewritten':
           return;

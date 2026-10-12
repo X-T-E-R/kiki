@@ -755,7 +755,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       models: this.models,
     });
 
-    this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames);
+    await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
     const assembled = await this.assembleBoundSystemPrompt(renderProfile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt, recipe ?? null);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
@@ -1350,7 +1350,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the model.');
     }
     if (constraints !== undefined && input.toolOverride !== undefined) {
-      this.assertProfileToolPatterns({ ...constraints, ...effectiveToolBinding(previous.toolPolicyBase ?? constraints, toolOverride, previous.boundProfile) });
+      await this.assertProfileToolPatterns({ ...constraints, ...effectiveToolBinding(previous.toolPolicyBase ?? constraints, toolOverride, previous.boundProfile) });
     }
     assertSubagentModelNotDenied(this.config, model, this.isExternalExecutor ? undefined : this.models);
     if (!this.isExternalExecutor) {
@@ -1695,7 +1695,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
-    this.assertProfileToolPatterns(profile);
+    await this.assertProfileToolPatterns(profile);
     const context = await this.buildSystemPromptContext(profile, options);
     this.activeProfile = profile;
     this.activeProfileDefinitionId = profile.definitionId;
@@ -3209,24 +3209,75 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return checks;
   }
 
-  private assertProfileToolPatterns(
+  async warnRestoredUnavailableTools(): Promise<void> {
+    const data = this.data();
+    const known = await this.knownToolNamesWithPlugins();
+    const patterns = [
+      ...(data.activeToolNames ?? []),
+      ...(data.toolPolicyBase?.tools ?? []),
+      ...(data.boundProfile?.tools ?? []),
+    ];
+    this.warnUnknownRestoredTools(patterns, known);
+  }
+
+  private async assertProfileToolPatterns(
     profile: Pick<ResolvedAgentProfile, 'name' | 'routeId' | 'tools' | 'toolAllowPolicies' | 'disallowedTools'>,
     inheritedUserToolNames?: readonly string[],
-  ): void {
-    const known = this.knownToolNames(inheritedUserToolNames);
-    const issues: string[] = [];
+    unavailableTools?: 'restore',
+  ): Promise<void> {
+    const known = await this.knownToolNamesWithPlugins(inheritedUserToolNames);
+    const fatal: string[] = [];
+    const restored: InactiveToolPattern[] = [];
     for (const { context, field, patterns } of this.profileToolPatternChecks(profile)) {
       if (patterns === undefined) continue;
       for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {
-        issues.push(describeInactiveToolPattern(context, field, issue));
+        if (unavailableTools === 'restore' && issue.kind === 'unknown-tool') restored.push(issue);
+        else fatal.push(describeInactiveToolPattern(context, field, issue));
       }
     }
-    if (issues.length === 0) return;
+    if (unavailableTools === 'restore') {
+      this.warnUnknownRestoredTools(restored.map((issue) => issue.pattern), known);
+    }
+    if (fatal.length === 0) return;
     throw new ProfileError(
       ProfileErrors.codes.TOOL_PATTERN_INACTIVE,
-      issues.join(' '),
-      { profile: profile.name, issues },
+      fatal.join(' '),
+      { profile: profile.name, issues: fatal },
     );
+  }
+
+  private warnUnknownRestoredTools(patterns: readonly string[], known: ReadonlySet<string>): void {
+    const seen = new Set<string>();
+    for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {
+      if (issue.kind !== 'unknown-tool' || seen.has(issue.pattern)) continue;
+      seen.add(issue.pattern);
+      const key = `restore|${issue.pattern}`;
+      if (this.emittedToolPatternWarnings.has(key)) continue;
+      this.emittedToolPatternWarnings.add(key);
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'restore-tool-unavailable',
+        message: describeInactiveToolPattern('the restored profile', 'tools', issue),
+      }));
+    }
+  }
+
+  private async knownToolNamesWithPlugins(additionalNames?: readonly string[]): Promise<Set<string>> {
+    const known = this.knownToolNames(additionalNames);
+    for (const name of await this.enabledPluginToolNames()) known.add(name);
+    return known;
+  }
+
+  private async enabledPluginToolNames(): Promise<readonly string[]> {
+    const installed = await this.plugins.listPlugins();
+    const names: string[] = [];
+    for (const plugin of installed) {
+      if (!plugin.enabled || plugin.state !== 'ok') continue;
+      const info = await this.plugins.getPluginInfo({ id: plugin.id });
+      for (const tool of info.manifest?.kiki?.tools ?? []) {
+        names.push(`plugin__${plugin.id.replaceAll('-', '_')}__${tool.name}`);
+      }
+    }
+    return names;
   }
 
   private publishToolPatternWarnings(): void {

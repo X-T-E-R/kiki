@@ -38,7 +38,6 @@
  *   wl-workbench-tasks       workbench.md — background tasks, running/finished/failed
  *   wl-longwork-goal-queue   long-work.md — goal + the two send timings
  *   wl-longwork-scheduled    long-work.md — the global scheduled-task list
- *   wl-longwork-board        long-work.md — the task board
  *   wl-longwork-context      long-work.md — the context card with Fresh selected
  *
  * `wl-longwork-context` reproduces the 2026-10-04 `long-work-context-fresh`
@@ -288,30 +287,6 @@ export const WORKBENCH_LONGWORK_SHOTS = [
       // list arrives in two grades and a frame taken between them would show
       // fewer states than the caption claims.
       await page.locator('[data-cron-task]').nth(3).waitFor({ timeout: 45_000 });
-      await settle(page);
-      await shot();
-    },
-  },
-  {
-    // The long-work page's second claim, second half: the task board. Cards
-    // are persistent requirements, not agent runs, so the frame shows several
-    // columns at once and one card opened with its own goal text — the
-    // distinction the section exists to make.
-    name: 'wl-longwork-board',
-    scenario: 'wl-20261005-w5',
-    viewport: { width: 1440, height: 900 },
-    run: async ({ page, link, shot }) => {
-      // The board's first grade paints the lanes; the cards themselves arrive
-      // with the read, so wait for a card rather than for the column header.
-      await open(page, link, '/board', '[data-board-lanes]', 60_000);
-      await page.locator('[data-board-task-card]').first().waitFor({ timeout: 45_000 });
-      // Open the requirement that carries the most detail, so the frame shows
-      // a card with its own goal text and not just a column of titles.
-      const card = page.locator('[data-board-task-card="board_wl_changelog"]').first();
-      if ((await card.count()) > 0) {
-        await card.click();
-        await page.waitForTimeout(900);
-      }
       await settle(page);
       await shot();
     },

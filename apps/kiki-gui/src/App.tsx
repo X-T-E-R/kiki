@@ -7,7 +7,7 @@
  *   /s/:id           → live session view
  *   /s/:id/tasks     → session background-task browser
  *   /settings/:section? → settings panel
- *   /board, /cron    → task board / scheduled tasks (`?workspace=` scopes them)
+ *   /cron            → scheduled tasks (`?workspace=` scopes them)
  *   /memory          → memory console, or its turn-on guide while memory is off
  *   /usage           → usage dashboard
  *   /archived        → archived conversations: read one, or clear the archive
@@ -38,7 +38,6 @@ import {
 
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { CronPage } from './components/GlobalCronPanel';
-import { TaskBoardPage } from './components/GlobalTaskBoard';
 import { DirtyGuardContext, useDirtyGuardState } from './components/dirtyGuard';
 import { DiscoveryPage, DiscoveryProvider, DiscoveryTourTag } from './components/discovery';
 import { NewSessionPage } from './components/NewSessionPage';
@@ -211,9 +210,7 @@ export function App() {
         ? 'Discover'
         : location.pathname === '/usage'
         ? 'Usage'
-        : location.pathname === '/board'
-          ? 'Task board'
-          : location.pathname === '/cron'
+        : location.pathname === '/cron'
             ? 'Scheduled tasks'
             : location.pathname === '/memory'
               ? 'Memory'
@@ -486,7 +483,6 @@ export function App() {
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
-  const isBoardRoute = useMatch('/board') !== null;
   const isCronRoute = useMatch('/cron') !== null;
   const isMemoryRoute = useMatch('/memory') !== null;
   const isActivityRoute = useMatch('/activity') !== null;
@@ -737,7 +733,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isBoardRoute, isCronRoute, isMemoryRoute, isActivityRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCronRoute, isMemoryRoute, isActivityRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -872,19 +868,6 @@ export function App() {
                 sessions={sessions}
                 rooms={conversations.rooms}
                 workspaceOptions={workspaceOptions}
-                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
-              />
-            }
-          />
-          <Route
-            path="/board"
-            element={
-              <TaskBoardPage
-                originSessionId={readLastSessionId()}
-                sessions={sessions}
-                workspaceOptions={workspaceOptions}
-                workspacesLoading={workspacesQuery.isPending}
-                onNavigate={navigate}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
               />
             }

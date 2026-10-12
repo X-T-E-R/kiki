@@ -9,8 +9,6 @@ tools:
   - Grep
   - Glob
   - Bash
-  - BoardRead
-  - BoardWrite
   - TaskList
   - TaskOutput
   - TaskStop

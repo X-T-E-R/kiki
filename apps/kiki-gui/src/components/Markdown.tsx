@@ -67,7 +67,7 @@ export function isInAppHref(href: string | undefined): href is string {
 const APP_ROUTES: { readonly pattern: RegExp; readonly name: IconName }[] = [
   { pattern: /^\/s\/[^/]+(?:\/.*)?$/, name: 'thread' },
   { pattern: /^\/(?:r|rooms)\/[^/]+(?:\/.*)?$/, name: 'room' },
-  { pattern: /^\/board(?:\/|$)/, name: 'board' },
+
   { pattern: /^\/cron(?:\/|$)/, name: 'clock' },
   { pattern: /^\/memory(?:\/|$)/, name: 'memory' },
   { pattern: /^\/usage(?:\/|$)/, name: 'usage' },

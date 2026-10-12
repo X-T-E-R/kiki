@@ -64,6 +64,7 @@ export interface PluginExecutionScope {
   readonly workspaceRoot?: string;
   readonly approvedPaths?: readonly string[];
   readonly imageIn?: boolean;
+  readonly workspaceId?: string;
   readonly media?: PluginMediaApi;
   readonly attachmentStore?: ISessionMediaStore;
 }
@@ -417,7 +418,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         focusSession: (sessionId) => {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
-        } });
+        } }, this.bootstrap.homeDir);
       this.hosts.set(info.id, host);
     }
     return host;

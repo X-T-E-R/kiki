@@ -413,6 +413,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await handle.accessor.get(IAgentToolActivationService).activate();
         await handle.accessor.get(IAgentPluginToolService).ready();
       }
+      if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
+        await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
+      }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
       const requestedLabels = withSubagentProfile(
@@ -530,6 +533,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           model: opts.restoreBinding.modelAlias,
           thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+          unavailableTools: 'restore',
         });
       } catch (error) {
         if (

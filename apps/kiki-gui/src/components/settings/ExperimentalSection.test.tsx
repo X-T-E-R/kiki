@@ -48,7 +48,6 @@ beforeEach(() => {
   client.meta.mockReset().mockResolvedValue({
     experimental_flags: {
       task_wait: true,
-      task_board: false,
       search_worker: true,
       auto_session_title: false,
       vendor_extension: true,
@@ -75,7 +74,7 @@ describe('ExperimentalRows', () => {
     const block = container.querySelector('#st-card-exp-tasks')!;
     expect(block.querySelector('h2')?.textContent).toBe('Experimental');
     const rows = [...block.querySelectorAll('[data-experimental-row]')];
-    expect(rows.map((row) => row.getAttribute('data-experimental-row'))).toEqual(['task_wait', 'task_board']);
+    expect(rows.map((row) => row.getAttribute('data-experimental-row'))).toEqual(['task_wait']);
     const wait = rows[0]!;
     expect(wait.querySelector('[data-experimental-tag]')?.textContent).toBe('Experimental');
     expect(wait.textContent).toContain('Wait for background tasks');

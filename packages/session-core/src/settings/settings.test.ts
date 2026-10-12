@@ -1267,7 +1267,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'ai')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-labs')).toBe(true);
-    expect(searchSettings(index, 'Task board').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-agent-board')).toBe(true);
+    expect(searchSettings(index, 'Task board').some((hit) => hit.cardId === 'st-card-agent-board')).toBe(false);
     expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-defaults')).toBe(true);
     expect(searchSettings(index, 'session titles').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-session-title')).toBe(true);
     expect(searchSettings(index, 'permission mode').some((hit) => hit.section === 'permissions' && hit.cardId === 'st-card-permission-defaults')).toBe(true);

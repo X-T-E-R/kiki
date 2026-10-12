@@ -54,6 +54,25 @@ export function panelScopeFrom(params: URLSearchParams): { readonly target?: Plu
   return { target: sessionId === undefined ? undefined : { session_id: sessionId }, sessionId };
 }
 
+/**
+ * Header context for an open panel. A workspace or settings panel is usable
+ * without a session, so the sheet must not tell the reader to open one.
+ * The session-required line stays for a sidebar panel that has no session.
+ * Until the slot is known and no scope was requested, say nothing.
+ */
+export function panelSheetNotice(input: {
+  readonly slot?: 'sidebar' | 'workspace' | 'settings';
+  readonly target?: PluginUsageTarget;
+  readonly sessionId?: string;
+}): 'session' | 'workspace' | 'settings' | 'session-required' | 'pending' {
+  if (input.slot === 'workspace' || (input.target !== undefined && 'workspace_id' in input.target)) return 'workspace';
+  if (input.slot === 'settings') return 'settings';
+  const hasSession = input.sessionId !== undefined || (input.target !== undefined && 'session_id' in input.target);
+  if (input.slot === 'sidebar') return hasSession ? 'session' : 'session-required';
+  if (hasSession) return 'session';
+  return 'pending';
+}
+
 export function scopeKey(target: PluginUsageTarget | undefined): string {
   if (target === undefined) return '';
   return 'workspace_id' in target ? target.workspace_id : `session:${target.session_id}`;

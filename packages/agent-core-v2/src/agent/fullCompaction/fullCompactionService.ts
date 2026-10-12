@@ -2,10 +2,7 @@ import type { IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
-import { timeoutOutcome } from '#/_base/utils/promise';
-import { IFlagService } from '#/app/flag/flag';
-import { TASK_BOARD_FLAG_ID } from '#/app/taskBoard/flag';
-import { ITaskBoardService } from '#/app/taskBoard/taskBoard';
+
 import { Service } from "#/_base/di/service";
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -1150,25 +1147,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   }
 
   private async readLinkedBoardCards(): Promise<NonNullable<RelayInput['linkedBoardCards']>> {
-    if (!this.toolPolicy.isToolActive('BoardRead')) return [];
-    const timeout = timeoutOutcome(500, undefined);
-    try {
-      const board = this.instantiation.invokeFunction((accessor) => accessor.get(IFlagService).enabled(TASK_BOARD_FLAG_ID)
-        ? accessor.get(ITaskBoardService) : undefined);
-      if (board === undefined) return [];
-      const result = await Promise.race([board.read({ action: 'list', workspaceId: this.session.workspaceId,
-        sessionId: this.session.sessionId, limit: 5 }), timeout]);
-      if (result === undefined) {
-        this.log.debug('Linked board cards skipped', { reason: 'deadline' });
-        return [];
-      }
-      if (!result.ok || !('cards' in result.value)) return [];
-      return result.value.cards.filter((card) => card.workspaceId === this.session.workspaceId && card.sessionIds.includes(this.session.sessionId))
-        .slice(0, 5).map(({ id, title, status }) => ({ id, title, status }));
-    } catch {
-      this.log.debug('Linked board cards skipped', { reason: 'read_failed' });
-      return [];
-    } finally { timeout.clear(); }
+    return [];
   }
 
   private postProcessSummary(summary: string, input: RelayInput): string {

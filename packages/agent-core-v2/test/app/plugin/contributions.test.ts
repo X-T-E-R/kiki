@@ -36,6 +36,16 @@ async function makeSource(dir: string, data = manifest()): Promise<void> {
 }
 
 describe('plugin extension compatibility and consent', () => {
+  it('accepts a plugin that requires the 0.4.1 home bridge', async () => {
+    const root = await temp();
+    const data = manifest();
+    data['x-kiki'].engines.kiki = '>=0.4.1';
+    await makeSource(root, data);
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.engines).toEqual({ kiki: '>=0.4.1' });
+  });
+
   it('refuses unsupported engine or extension versions, and an unknown wire protocol', async () => {
     const root = await temp();
     await makeSource(root);

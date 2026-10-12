@@ -280,7 +280,6 @@ describe('Markdown internal links', () => {
   it.each([
     ['/rooms/release-contract', 'room'],
     ['/s/session_example', 'thread'],
-    ['/board', 'board'],
     ['/memory', 'memory'],
     ['/usage', 'usage'],
   ])('marks a link to a real page %s and keeps the author text', async (to, name) => {

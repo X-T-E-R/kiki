@@ -728,7 +728,6 @@ async function scenarioRegression(page) {
     ['activity-inbox', '/activity', '[data-activity-page]'],
     ['memory', '/memory', '[data-memory-page]'],
     ['usage-dashboard', '/usage', '.app-sheet > .bg-paper'],
-    ['marketing-r01-en', '/board', '[data-task-board-page]'],
     ['marketing-r01-en', '/cron', '[data-cron-page]'],
     ['personas', '/personas', '[data-personas-page]'],
     ['capabilities', '/capabilities', '[data-capabilities-page]'],

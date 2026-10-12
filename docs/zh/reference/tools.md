@@ -178,7 +178,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 | `EnterPlanMode` | 自动放行 | 进入 Plan 模式 |
 | `ExitPlanMode` | 自动放行（需用户确认计划） | 退出 Plan 模式并提交计划 |
 
-Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite`、`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截（`BoardWrite` 的细节见[状态管理](#状态管理)）。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
+Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
 
 新的 `AgentRun` 调用可以使用原生执行器创建研究子 Agent。这些子 Agent 只能使用其 profile 和既有策略允许的内置 `Read`、`ReadMediaFile`、`Glob`、`Grep`、`WebSearch`、`FetchURL`，不能运行 `Bash`、调用 MCP 或用户自定义工具，也不能继续派遣任务。此类调用不支持外部执行器。退出 Plan 模式或恢复会话后，研究子 Agent 仍保留只读限制；需要写入权限来实施时，应在退出 Plan 模式后创建新的子 Agent。
 
@@ -193,8 +193,6 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `TodoList` | 自动放行 | 管理任务待办列表 |
-| `BoardRead` | 自动放行 | 读取工作区任务看板上持久化的需求卡 |
-| `BoardWrite` | 需审批 | 在工作区任务看板上创建或更新持久化的需求卡 |
 
 **`TodoList`** 分别管理调用方 Agent 的执行清单和工作笔记，两者独立更新。省略 `todos` 就不改清单，省略 `notes` 就不改任何笔记；传入 `{}` 才读取两者。`todos` 数组会完整替换清单，每项含 `title` 和 `status`（`pending` / `in_progress` / `done`）；`todos: []` 只清空清单。
 
@@ -202,11 +200,9 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 主 Agent 与各子 Agent 的清单和笔记相互独立，工具不能读取或修改其他 Agent 的状态。两者随所属 Agent 恢复，并遵循会话撤销。换窗保留已有笔记，摘要中的候选要求留待核对，不会自动写入。只有将接力摘要和人类输入与当前笔记、原始来源核对后，才用 `review_handoff: true` 确认已核对到本次工具调用；普通单节更新不会代替这项确认。超限候选完整保留在接力摘要中，并显示提示；未核对输入会继续传递。GUI 保留未知文本节的原字段名；更新无法读取时会显示提示并保留上次可读笔记，而非显示为空。历史共享清单仍归主 Agent，不从旧工具消息推测并重建各子 Agent 的历史清单。
 
-任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，将 `status` 改回 `active`、`in_progress` 或 `paused` 即可重开，重开会清空 `completedAt`。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
+任务看板由可选官方插件 `kiki-task-board` 提供，其工具不是内置工具。没安装插件时，用过它的对话仍能打开并发送普通消息。历史里的 `BoardRead`、`BoardWrite` 调用及已记录的结果保持不变。再次调用不可用的工具时才报告缺少工具，不会伪造成功结果或重放旧的写入。
 
-卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。原生 subagent 默认不能使用这两个工具；可通过其 profile 的 `tools` 列表或 [`subagent.allowed_tools`](../configuration/config-files.md#subagent) 显式允许其中任一工具，但不会绕过其他工具限制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前直接拒绝（见[Plan 模式](#plan-模式)）。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
-
-在「设置 → 任务」中选择 `auto`、`global` 或 `fixed` 存储方式。固定位置可以是绝对路径，也可以是相对工作区的路径；不会执行脚本。任务看板为内置功能，无需单独安装。选择 `auto` 时，优先复用项目已有的兼容存储，否则使用会话数据区。
+安装并启用插件后，智能体看到的工具名是 `plugin__kiki_task_board__BoardRead` 和 `plugin__kiki_task_board__BoardWrite`。读取支持 `preview`、`list`、`show`、`overview`。创建从 `active` 开始，不要传 `status`。只有在改状态时，更新才带 `status`：`active`、`in_progress`、`paused`、`done`、`cancelled`、`superseded`。后三个是终态；把 `status` 改回 `active`、`in_progress` 或 `paused` 会重开卡片并清空 `completedAt`。更新必须带上卡片当前的 `revision` 和原来的存储地址。冲突后先重新读取再重试。读卡片不会改写卡片文件。卡片是需求记录，不是 Agent 运行，也不是 `TodoList`。存储仍写在 `config.toml` 的 `taskBoard.storage`（`auto`、`global` 或 `fixed`）。改这项设置不会搬迁旧卡片。见[任务看板](../guides/sessions.md#任务看板)。
 
 ## 记忆类
 

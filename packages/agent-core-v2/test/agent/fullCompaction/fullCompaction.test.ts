@@ -3819,12 +3819,10 @@ describe('FullCompaction', () => {
     ], issues: [] } });
     const notes = fixture.ctx.get(ISessionTodoService).getNotes('main');
     const text = await fixture.compact();
-    expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ action: 'list', workspaceId: session.workspaceId, sessionId: session.sessionId, limit: 5 });
-    expect(text).toContain('## Linked board cards\n- card-0: Requirement 0 continued (paused)');
-    expect(text).toContain('- card-4: Requirement 4 continued (active)');
-    expect(text).not.toContain('card-5');
-    expect(text).not.toContain('unrelated-');
-    expect(text).toContain('Card status is independent of TodoList and agent runs.');
+    expect(fixture.read).not.toHaveBeenCalled();
+    expect(text).not.toContain('## Linked board cards');
+    expect(text).not.toContain('card-0');
+    expect(text).not.toContain('Card status is independent of TodoList and agent runs.');
     expect(fixture.write).not.toHaveBeenCalled();
     expect(fixture.ctx.get(ISessionTodoService).getNotes('main')).toEqual(notes);
     await fixture.ctx.expectResumeMatches();

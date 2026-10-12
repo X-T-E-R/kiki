@@ -887,11 +887,7 @@ async function scenarioSubagents() {
   // session's workspace; the inspector does not repeat it.
   const launcher = page.locator('aside [data-nav-board]');
   const openBoardFromNav = async () => {
-    await launcher.click();
-    await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
-    if (!/\/board\?workspace=/.test(page.url())) throw new Error(`board link lost the workspace scope: ${page.url()}`);
-    await page.goBack();
-    await page.waitForSelector('[data-rail-toggle]', { timeout: 10_000 });
+    if (await launcher.count() !== 0) throw new Error('sidebar still exposes a board route');
   };
   await ensureRailOpen();
   if (await rail.locator('[data-session-task-board]').count() !== 0) throw new Error('inspector still repeats the board link');
@@ -927,14 +923,8 @@ async function scenarioSubagents() {
   await page.locator('[data-agent-panel-scroll]').evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);
   await shot('subagents-relief-narrow');
-  await page.goto(page.url().replace(/\/s\/[^?]+/, '/board'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
-  console.log('[check] narrow viewport opened the /board page');
-  await page.waitForTimeout(400);
-  await shot('board-page-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
-  await shot('board-page');
   // The Scheduled tasks nav row opens /cron with the same workspace scope.
   await page.locator('aside [data-nav-cron]').click();
   await page.waitForSelector('[data-cron-page]', { timeout: 10_000 });
@@ -5278,9 +5268,8 @@ async function setProofTheme(theme) {
 }
 
 /**
- * /board and /cron across both scopes: all workspaces (every row tagged)
- * and one workspace (filtered, scope control shows it), at 1440 and 820 in
- * both themes. Switching the scope must land in the URL.
+ * Cron across both scopes: all workspaces and one workspace, at 1440 and 820
+ * in both themes. Switching the scope must land in the URL.
  */
 async function scenarioWorkspaceTools() {
   const pageUrl = (path) => `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
@@ -5306,70 +5295,6 @@ async function scenarioWorkspaceTools() {
   await page.waitForTimeout(300);
   await shot('cron-all-dark');
   await setProofTheme('light');
-
-  await page.goto(pageUrl('/board'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await page.waitForTimeout(500);
-  const allCards = await page.locator('[data-board-task-card]').count();
-  if (allCards !== 8) throw new Error(`board all-scope expected 8 cards, got ${allCards}`);
-  await shot('board-all');
-  await page.locator('[data-scope-option="wd_fixture_000000000000"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 5, null, { timeout: 10_000 });
-  if (!page.url().includes('workspace=wd_fixture_000000000000')) throw new Error(`board scope not in URL: ${page.url()}`);
-  await page.waitForTimeout(300);
-  await shot('board-workspace');
-  await resizeViewport(820);
-  await shot('board-workspace-820');
-  await setProofTheme('dark');
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await page.waitForTimeout(400);
-  await shot('board-workspace-820-dark');
-  await resizeViewport(1440);
-  await shot('board-workspace-dark');
-  // Workspace tags are an all-workspaces affordance only.
-  if (await page.locator('[data-board-card-workspace]').count() !== 0) throw new Error('board workspace scope still tags cards with their workspace');
-  await page.locator('[data-scope-option="all"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 8, null, { timeout: 10_000 });
-  if (await page.locator('[data-board-card-workspace]').count() !== 8) throw new Error('board all-scope cards are missing their workspace tag');
-  await page.waitForTimeout(300);
-  await shot('board-all-dark');
-
-  // Card detail: markdown description, linked session, status transitions.
-  const openDetail = async () => {
-    await page.locator('[data-board-task-card*="board_tools_flaky"]').click();
-    await page.waitForSelector('[data-task-detail-description] ul', { timeout: 10_000 });
-    await page.waitForTimeout(300);
-  };
-  await openDetail();
-  await shot('board-detail-dark');
-  await page.keyboard.press('Escape');
-  await setProofTheme('light');
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await openDetail();
-  if (await page.locator('[data-task-detail-move="in_progress"][aria-pressed="true"]').count() !== 1) throw new Error('board detail does not mark the current status');
-  if (await page.locator('[data-task-detail-open-session]').count() !== 1) throw new Error('board detail lost its linked session');
-  await shot('board-detail');
-  await resizeViewport(390);
-  await page.waitForTimeout(300);
-  await shot('board-detail-390');
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  await shot('board-all-390');
-  await resizeViewport(820);
-  await shot('board-all-820');
-  await resizeViewport(1440);
-
-  // Status transition from the detail footer lands the card in the next lane.
-  await openDetail();
-  await page.locator('[data-task-detail-next="done"]').click();
-  await page.waitForSelector('[data-board-column="done"] [data-board-task-card*="board_tools_flaky"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-task-detail-move="done"][aria-pressed="true"]', { timeout: 5000 });
-  await page.waitForTimeout(300);
-  await shot('board-detail-moved');
-  // A linked session opens straight from the detail.
-  await page.locator('[data-task-detail-open-session]').first().click();
-  await page.waitForFunction(() => !location.pathname.startsWith('/board'), null, { timeout: 10_000 });
-  console.log('[check] board detail session link left the board');
 }
 
 /**

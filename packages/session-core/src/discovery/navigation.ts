@@ -13,7 +13,7 @@ export interface DiscoveryContext {
   readonly sessionBusy?: boolean;
   readonly draftEmpty?: boolean;
   readonly anchors: readonly DiscoveryAnchor[];
-  readonly data?: { readonly memory?: boolean; readonly capabilities?: boolean; readonly cron?: boolean; readonly board?: boolean };
+  readonly data?: { readonly memory?: boolean; readonly capabilities?: boolean; readonly cron?: boolean };
 }
 
 export interface DiscoveryDestination {
@@ -37,7 +37,7 @@ export function discoveryDestination(id: DiscoveryStationId, context: DiscoveryC
     }
     return { href: '/new', example: station.example };
   }
-  return { href: scopedPath(`/${station.page}`, context, ['memory', 'board', 'cron', 'capabilities'].includes(station.page)), anchor: station.anchor };
+  return { href: scopedPath(`/${station.page}`, context, ['memory', 'cron', 'capabilities'].includes(station.page)), anchor: station.anchor };
 }
 
 export type DiscoveryTryAction =
@@ -54,7 +54,6 @@ const ANCHOR_LABELS: Record<DiscoveryAnchor, I18nKey> = {
   'send-controls': 'discovery.action.direction',
   'memory-scope': 'discovery.action.memory',
   'capability-detail': 'discovery.action.capabilities',
-  'board-detail': 'discovery.action.board',
   'cron-detail': 'discovery.action.cron',
   'result-detail': 'discovery.action.result',
   'usage-filter': 'discovery.action.usage',
@@ -66,8 +65,7 @@ export function discoveryTryActions(id: DiscoveryStationId, context: DiscoveryCo
   if (destination.example !== undefined) return [{ kind: 'example', id: destination.example, labelKey: 'discovery.action.example' }];
   const actions: DiscoveryTryAction[] = [];
   const hasData = id === 'capabilities' ? context.data?.capabilities === true
-    : id === 'cron' ? context.data?.cron === true
-    : id === 'board' ? context.data?.board === true : true;
+    : id === 'cron' ? context.data?.cron === true : true;
   if (station.anchor !== undefined && context.anchors.includes(station.anchor)
       && (id !== 'direction' || context.sessionBusy === true) && hasData) {
     actions.push({ kind: 'anchor', id: station.anchor, labelKey: ANCHOR_LABELS[station.anchor] });

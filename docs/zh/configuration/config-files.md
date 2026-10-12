@@ -651,16 +651,16 @@ retry = false
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
 | `default_model` | `string` | — | 仅在派发参数与生效 profile、route、caller lease pin 都未选模型时使用的显式兜底；从不继承调用方 |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
-| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的全部工具（`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
+| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的内置工具（`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批工具默认关闭，需要显式开放：`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
+原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批内置工具默认关闭，需要显式开放：`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
 
 ```toml
 [subagent]
-allowed_tools = ["BoardRead", "ThreadRead"]
+allowed_tools = ["AskUserQuestion", "ThreadRead"]
 ```
 
 省略 `tools` 或只写 `*` 不算显式开放：只有具体工具名才算，通配符本身不会顺带开启任何 opt-in。这两处开放彼此是「或」的关系，但 profile 自己的名单仍会过滤结果：子智能体能用这类工具，只要服务端名单点名了它，**或者**该 subagent profile 的 `tools` 名单点名了它，同时该 profile 还得选中这个工具。因此写了有限 `tools` 名单的 profile 会挡住它没列出的工具，即使服务端开放了这一项；而没写名单（或写了 `*`）的 profile，则对两处开放覆盖到的工具都是开放的。`allowed_tools = []` 会清除服务端额外允许，但不会移除 profile 的显式条目。profile 白名单、`disallowedTools`、禁用工具组、调用方限制、全局与会话策略、功能开关、Plan 模式和调用审批仍然生效；profile 自己的 `disallowedTools` 也能禁用这两处开放过的工具。`MemoryWrite`、`ThreadSend`、`SendMessage` 和 Goal 工具仍仅供 main agent 使用，不能通过这两个入口开放。`Cron` 安排的是当前会话的调度并唤醒 main agent，并不是子 Agent 私有的定时器。MCP 工具、继承的用户工具及其他扩展保持原有默认行为；外部执行器自行管理工具。

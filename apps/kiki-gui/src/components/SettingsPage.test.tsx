@@ -66,7 +66,7 @@ const client = {
       subagent_release_idle: true,
       'agent-profile-routes': true,
       external_delegation_mcp: true,
-      task_board: true,
+
       image_format_conversion: false,
       native_ssh: false,
       session_idle_eviction: false,
@@ -74,7 +74,7 @@ const client = {
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
   listWorkspaceCatalog: vi.fn(async () => WORKSPACES),
-  klient: { rest: undefined },
+  klient: { rest: undefined as { connections: { list: () => Promise<unknown>; handshake: () => Promise<unknown> } } | undefined },
   getWorkspaceDetails: vi.fn(() => new Promise(() => {})),
   getWorkspaceTrust: vi.fn(async () => ({ trusted: false })),
   getPluginUsage: vi.fn(async ({ workspace_id }: { workspace_id: string }) => ({
@@ -681,7 +681,7 @@ describe('SettingsPage batch-3 leaves', () => {
 
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
     const tasks = await renderSettings('/settings/tasks');
-    expect(tasks.querySelector('#st-card-agent-board')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-agent-board')).toBeNull();
     expect(tasks.querySelector('#st-card-defaults')).toBeNull();
     const sessions = await renderSettings('/settings/sessions');
     expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
@@ -693,7 +693,7 @@ describe('SettingsPage batch-3 leaves', () => {
       ['/settings/agents', ['agent-profile-routes']],
       ['/settings/subagents', ['subagent_release_idle']],
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
-      ['/settings/tasks', ['task_wait', 'task_board']],
+      ['/settings/tasks', ['task_wait']],
       ['/settings/search?tab=advanced', ['search_worker']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
@@ -723,7 +723,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(link('search_worker')).toBe('/settings/search#st-card-exp-search');
     expect(link('auto_session_title')).toBe('/settings/sessions#st-card-session-title');
     // Every flag the server reports is listed, including ones switched by a feature card.
-    expect(card.querySelectorAll('[data-labs-entry]').length).toBe(12);
+    expect(card.querySelectorAll('[data-labs-entry]').length).toBe(11);
   });
 
   it('saves an experimental row on change with a narrow experimental patch', async () => {
@@ -906,6 +906,19 @@ describe('SettingsPage batch-3 leaves', () => {
 
 describe('SettingsPage search ownership', () => {
   it('indexes every card the settings page renders', async () => {
+    const reported = await client.meta();
+    const originalMeta = client.meta.getMockImplementation();
+    client.meta.mockResolvedValue({
+      experimental_flags: {
+        ...reported.experimental_flags,
+        plugin_workspace_usage: true,
+        plugin_app_lifecycle: true,
+        work_presets: true,
+        external_clients: true,
+      },
+    });
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
+    try {
     const general = await renderSettings('/settings/general');
     const agents = await renderSettings('/settings/agents');
     const subagents = await renderSettings('/settings/subagents');
@@ -918,6 +931,9 @@ describe('SettingsPage search ownership', () => {
     const defaults = await renderSettings('/settings/ai?tab=defaults');
     const searchAdvanced = await renderSettings('/settings/search?tab=advanced');
     const ssh = await renderSettings('/settings/ssh');
+    const plugins = await renderSettings('/settings/plugins');
+    const spaces = await renderSettings('/settings/spaces');
+    const connectionServices = await renderSettings('/settings/connection-services');
     expect(general.querySelector('#st-card-session-title')).toBeNull();
     expect(defaults.querySelector('#st-card-permission-defaults')).toBeNull();
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
@@ -934,15 +950,21 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);
     const indexed = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId));
     // The bucket card stays available for legacy editor tests, not Settings navigation.
     rendered.delete('st-card-subagent-profiles');
+    // The board card stays on disk for the direct AgentTaskSettings test. Settings does not mount it.
+    rendered.delete('st-card-agent-board');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
+    } finally {
+      client.klient.rest = undefined;
+      if (originalMeta !== undefined) client.meta.mockImplementation(originalMeta);
+    }
   });
 });
 

@@ -280,13 +280,15 @@ describe('PlanSettings plan gate defaults', () => {
     const navCard = app.querySelector('#st-card-sidebar-nav');
     expect(navCard).not.toBeNull();
 
-    const boardWrapper = navCard?.querySelector('[data-nav-item-toggle="board"]');
-    expect(boardWrapper).not.toBeNull();
-    const boardSwitch = boardWrapper?.querySelector<HTMLElement>('[role="switch"]');
-    expect(boardSwitch?.getAttribute('aria-checked')).toBe('false');
+    expect(navCard?.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
+    const cronWrapper = navCard?.querySelector('[data-nav-item-toggle="cron"]');
+    expect(cronWrapper).not.toBeNull();
+    const cronSwitch = cronWrapper?.querySelector<HTMLElement>('[role="switch"]');
+    expect(cronSwitch?.getAttribute('aria-checked')).toBe('false');
 
-    await click(boardWrapper?.querySelector('label') ?? boardSwitch!);
-    expect(readLayoutPreferences().pinnedNavItems).toContain('board');
+    await click(cronWrapper?.querySelector('label') ?? cronSwitch!);
+    expect(readLayoutPreferences().pinnedNavItems).toContain('cron');
+    expect(readLayoutPreferences().pinnedNavItems).not.toContain('board');
   });
 
   it('offers four permission defaults, saving review immediately', async () => {

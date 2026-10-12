@@ -1,7 +1,7 @@
 import { isToolActive, isToolExplicitlyNamed, isMcpToolName, type ToolSource } from './toolPolicy';
 
 export const SUBAGENT_OPT_IN_TOOL_NAMES = [
-  'BoardRead', 'BoardWrite', 'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
+  'AskUserQuestion', 'Cron', 'CronCreate', 'CronDelete', 'CronList',
   'EnterPlanMode', 'ExitPlanMode', 'ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadWait',
 ] as const;
 

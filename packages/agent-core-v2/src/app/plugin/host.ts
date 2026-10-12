@@ -57,6 +57,7 @@ export class PluginHost {
     private readonly sources: readonly SessionSourceDefinition[] = [],
     private readonly providers: readonly MediaProviderDefinition[] = [],
     private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void },
+    private readonly kikiHome?: string,
   ) {}
 
   async activate(settings: Record<string, unknown>, userHome: string, dataDir: string): Promise<void> {
@@ -137,7 +138,7 @@ export class PluginHost {
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly media?: PluginMediaApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     signal.throwIfAborted();
     await this.start();
@@ -170,7 +171,7 @@ export class PluginHost {
         media: scope.media,
         output,
       });
-      this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn } });
+      this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn, workspaceId: scope.workspaceId, kikiHome: this.kikiHome } });
     });
   }
 
@@ -206,7 +207,7 @@ export class PluginHost {
         },
         reject: (error) => { this.scheduleIdle(); reject(error); },
       });
-      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings } });
+      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome } });
     });
   }
 

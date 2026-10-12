@@ -42,6 +42,9 @@ export interface PluginExecutionContext {
   readonly signal: AbortSignal;
   readonly settings: Readonly<Record<string, unknown>>;
   readonly workspaceRoot?: string;
+  readonly workspaceId?: string;
+  /** Kiki data home supplied by hosts supporting plugin protocol 0.4.1 or later. */
+  readonly kikiHome?: string;
   readonly approvedPaths: readonly string[];
   readonly imageIn: boolean;
   readonly media: PluginMediaApi;

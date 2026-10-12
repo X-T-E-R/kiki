@@ -3747,6 +3747,43 @@ describe('AgentProfileService tool-pattern warnings', () => {
     expect(toolPatternWarnings()).toEqual([]);
   });
 
+  it('restores a profile whose plugin tools are no longer registered and still rejects patterns that can never match', async () => {
+    registerAgentProfile({
+      name: 'restore-plugin-tools',
+      tools: ['Read', 'plugin__alpha_kit__AlphaPing', 'plugin__beta_kit__BetaPing'],
+      systemPrompt: () => 'restore two plugin tools',
+    });
+    registerAgentProfile({
+      name: 'restore-still-strict',
+      tools: ['Bash*'],
+      disallowedTools: ['mcp__github'],
+      systemPrompt: () => 'restore stays strict',
+    });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: 'restore-plugin-tools',
+      model: MOCK_MODEL,
+      unavailableTools: 'restore',
+    });
+    const restored = (ctx.newEvents() as readonly { event: string; args?: { code?: string; message?: string } }[])
+      .filter((entry) => entry.event === 'warning' && entry.args?.code === 'restore-tool-unavailable')
+      .map((entry) => entry.args?.message ?? '');
+    expect(restored).toEqual([
+      expect.stringMatching(/plugin__alpha_kit__AlphaPing/),
+      expect.stringMatching(/plugin__beta_kit__BetaPing/),
+    ]);
+    expect(profile.data().activeToolNames).toEqual(['Read', 'plugin__alpha_kit__AlphaPing', 'plugin__beta_kit__BetaPing']);
+    await expect(profile.bind({
+      profile: 'restore-still-strict',
+      model: MOCK_MODEL,
+      unavailableTools: 'restore',
+    })).rejects.toThrow(/Bash\*[\s\S]*mcp__github/);
+    await expect(profile.bind({ profile: 'restore-plugin-tools', model: MOCK_MODEL })).rejects.toThrow(
+      /plugin__alpha_kit__AlphaPing[\s\S]*plugin__beta_kit__BetaPing/,
+    );
+  });
+
   it('bind also rejects inert profile tool patterns', async () => {
     registerAgentProfile({
       name: 'bind-bad-patterns',

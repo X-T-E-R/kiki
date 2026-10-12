@@ -277,6 +277,7 @@ export interface BindAgentInput {
   readonly bindingSelection?: BindingSelectionInput;
   readonly strictThinking?: boolean;
   readonly inheritedUserToolNames?: readonly string[];
+  readonly unavailableTools?: 'restore';
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
   readonly lease?: SubagentLease;
   readonly spawnPolicy?: SpawnConstraints;
@@ -291,6 +292,7 @@ export interface IAgentProfileService {
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void;
   /** Runs the optional guard synchronously before committing a prepared binding; throwing prevents the commit. */
   bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void>;
+  warnRestoredUnavailableTools(): Promise<void>;
   resolveFile(path: string): Promise<ResolvedAgentProfile>;
   applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   /** Runs the optional guard synchronously before committing a prepared model; throwing prevents the commit. */

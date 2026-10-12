@@ -469,34 +469,7 @@ async function shotD08() {
   await settle();
 }
 
-/** Task-board close-up — one in_progress card opened in TaskDetailModal. */
-async function shotBoardDetail() {
-  await page.goto(deepLink(`/s/${SESSION_ID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  // The sidebar's Task board row opens /board scoped to this workspace.
-  const launcher = page.locator('aside [data-nav-board]');
-  await launcher.waitFor({ timeout: 20_000 });
-  await launcher.click();
-  await page.locator('[data-board-column="in_progress"]').waitFor({ timeout: 20_000 });
-  const title = locale === 'zh' ? '起草 0.4 更新日志' : 'Draft the 0.4 changelog';
-  const card = page.locator('[data-board-task-card]', { hasText: title }).first();
-  await card.waitFor({ timeout: 20_000 });
-  await card.click();
-  const detail = page.locator('[data-task-detail-modal]');
-  await detail.waitFor({ timeout: 20_000 });
-  // The body is fetched per card; wait for it instead of the loading skeleton.
-  await page.waitForFunction(
-    (expected) => {
-      const modal = document.querySelector('[data-task-detail-modal]');
-      if (modal === null) return false;
-      const text = modal.textContent ?? '';
-      return text.includes(expected) && text.includes('0.3');
-    },
-    title,
-    { timeout: 20_000 },
-  );
-  await page.waitForTimeout(500);
-  await settle();
-}
+
 
 // ------------------------------- shot table --------------------------------
 
@@ -509,14 +482,6 @@ const SHOTS = [
   { name: 'd06-search-lanes', scenario: { en: 'marketing-d06-en', zh: 'marketing-d06-zh' }, viewport: { width: 1200, height: 900 }, run: shotD06 },
   { name: 'd07-fetch-chain', scenario: { en: 'marketing-d07-en', zh: 'marketing-d07-zh' }, viewport: { width: 1200, height: 900 }, run: shotD07 },
   { name: 'd08-video-attachment', scenario: { en: 'marketing-d08-en', zh: 'marketing-d08-zh' }, viewport: { width: 1440, height: 900 }, run: shotD08 },
-  {
-    name: 'board-task-detail',
-    // The close-up reuses the P1 board scenarios: same cards, same columns and
-    // the same linked sessions the task-board page shows.
-    scenario: { en: 'marketing-r04-en', zh: 'marketing-r04-zh' },
-    viewport: { width: 1200, height: 900 },
-    run: shotBoardDetail,
-  },
 ];
 
 function initScript() {

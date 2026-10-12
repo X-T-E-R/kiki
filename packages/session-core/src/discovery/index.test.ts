@@ -22,7 +22,7 @@ afterEach(() => { configureSpaceStorage(null); vi.unstubAllGlobals(); });
 describe('discovery catalog and progress', () => {
   it('provides five stops and four short routes, all with bilingual copy and labelled non-running examples', () => {
     expect(DISCOVERY_ENTRY_PATH).toBe('/discover');
-    expect(DISCOVERY_ROUTES.map((route) => route.stations.length)).toEqual([5, 3, 3, 3, 2]);
+    expect(DISCOVERY_ROUTES.map((route) => route.stations.length)).toEqual([5, 3, 3, 2, 2]);
     for (const route of DISCOVERY_ROUTES) {
       for (const locale of ['en', 'zh'] as const) {
         expect(translate(locale, route.titleKey)).not.toBe(route.titleKey);
@@ -60,7 +60,7 @@ describe('discovery catalog and progress', () => {
     state = reduceDiscoveryState(state, { type: 'next' });
     state = reduceDiscoveryState(state, { type: 'collapse', collapsed: true });
     state = reduceDiscoveryState(state, { type: 'leave' });
-    expect(state.station).toBe('board');
+    expect(state.station).toBe('cron');
     expect(state.lifecycle).toBe('left');
     state = reduceDiscoveryState(state, { type: 'resume' });
     expect(state.collapsed).toBe(false);
@@ -119,7 +119,6 @@ describe('real page navigation and actions', () => {
     expect(discoveryDestination('agents', real)).toMatchObject({ href: '/s/real%2Fa', anchor: 'agent-panel' });
     expect(discoveryDestination('agents', { ...real, sessionReachable: false })).toEqual({ href: '/new', example: 'agents' });
     expect(discoveryDestination('memory', real).href).toBe('/memory?workspace=project+one&persona=role');
-    expect(discoveryDestination('board', real).href).toBe('/board?workspace=project+one');
     expect(discoveryDestination('cron', real).href).toBe('/cron?workspace=project+one');
     expect(discoveryTryActions('extensions', real).find((action) => action.id === 'engines')).toMatchObject({ href: '/settings/ai?tab=providers#st-card-engines' });
     expect(discoveryTryActions('extensions', real).find((action) => action.id === 'mcp')).toMatchObject({ href: '/capabilities?workspace=project+one&tab=mcp' });

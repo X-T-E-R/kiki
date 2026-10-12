@@ -6833,8 +6833,8 @@ describe('semantic tool cards', () => {
     unregister();
   });
 
-  it('names the board card a write touched and links to the board', async () => {
-    const { container, path } = await renderCard(semanticTool(
+  it('names the board card a write touched without opening a core board route', async () => {
+    const { container } = await renderCard(semanticTool(
       'BoardWrite',
       { action: 'create', requestKey: 'rk-1', title: 'Ship thread cards', priority: 'P1' },
       JSON.stringify({ ok: true, value: {
@@ -6847,8 +6847,7 @@ describe('semantic tool cards', () => {
     expect(container.textContent).toContain('Ship thread cards');
     await expand(container);
     expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Workspace');
-    await act(async () => { click(container.querySelector('[data-tool-jump="route"]')!); });
-    expect(path()).toBe('/board');
+    expect(container.querySelector('[data-tool-jump="route"]')).toBeNull();
   });
 
   it('folds SelectTools into one line naming the tools it loaded', async () => {

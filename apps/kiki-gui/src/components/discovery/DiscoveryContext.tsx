@@ -53,7 +53,6 @@ export interface DiscoveryDataState {
   readonly memory?: boolean;
   readonly capabilities?: boolean;
   readonly cron?: boolean;
-  readonly board?: boolean;
 }
 
 export const ALL_DISCOVERY_ANCHORS: readonly DiscoveryAnchor[] = [
@@ -64,7 +63,6 @@ export const ALL_DISCOVERY_ANCHORS: readonly DiscoveryAnchor[] = [
   'send-controls',
   'memory-scope',
   'capability-detail',
-  'board-detail',
   'cron-detail',
   'result-detail',
   'usage-filter',
@@ -88,7 +86,6 @@ export function detectActiveData(): DiscoveryDataState | undefined {
   if (typeof document === 'undefined') return undefined;
   return {
     cron: document.querySelector('[data-cron-card], [data-cron-item], [data-anchor="cron-detail"]') !== null,
-    board: document.querySelector('[data-board-card], [data-task-card], [data-anchor="board-detail"]') !== null,
     capabilities: document.querySelector('[data-capability-card], [data-anchor="capability-detail"]') !== null,
     memory: document.querySelector('[data-memory-card], [data-memory-entry], [data-anchor="memory-scope"]') !== null,
   };
@@ -232,7 +229,6 @@ export function DiscoveryProvider({
       setProducedData((prev) => {
         if (
           prev?.cron === nextData?.cron &&
-          prev?.board === nextData?.board &&
           prev?.capabilities === nextData?.capabilities &&
           prev?.memory === nextData?.memory
         ) {

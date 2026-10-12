@@ -1,10 +1,7 @@
 import type { Scope, ScopeSeed } from '@kiki/agent-core-v2';
-import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { IAgentPanelService, RPCError } from '@kiki/klient/host';
 import { agentCapabilities } from '../../routes/agentProfileCapabilities';
 import { ErrorCode } from '../../protocol/error-codes';
-import { createTaskBoardHost } from '../../services/taskBoardHost';
-import '../../services/taskBoardTools';
 
 export function panelBoardSeeds(getCore: () => Scope): ScopeSeed {
   const panel: IAgentPanelService = {
@@ -16,5 +13,5 @@ export function panelBoardSeeds(getCore: () => Scope): ScopeSeed {
       return result;
     },
   };
-  return [[IAgentPanelService, panel], [ITaskBoardService, createTaskBoardHost(getCore)]];
+  return [[IAgentPanelService, panel]];
 }

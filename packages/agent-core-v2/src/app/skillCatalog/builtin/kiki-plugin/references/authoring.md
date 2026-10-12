@@ -36,7 +36,7 @@
 }
 ```
 
-`name` 同时是 plugin id，必须匹配 `[a-z0-9][a-z0-9_-]{0,63}`。声明任何 Kiki 贡献都要写 `engines.kiki`；当前引擎版本是 `0.4.0`，超出 semver range 会被拒。
+`name` 同时是 plugin id，必须匹配 `[a-z0-9][a-z0-9_-]{0,63}`。声明任何 Kiki 贡献都要写 `engines.kiki`；当前插件协议版本是 `0.4.1`，超出 semver range 会被拒。
 
 有 `tools`、`sessionSources`、`panels`、`commands`、`settings`、`themes` 任何一项时，`engines.kiki` 必填；其中 `tools` 和 `sessionSources` 还要求 `entry` 存在。所有 `./` 路径解析符号链接后必须仍留在 plugin 根目录内。
 

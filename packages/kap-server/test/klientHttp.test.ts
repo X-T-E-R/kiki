@@ -131,8 +131,8 @@ describe('klient HTTP host', () => {
       expect(live.profile?.name).toBeTypeOf('string');
       expect(live.tools?.length).toBeGreaterThan(0);
       expect(live.metrics?.['main']).toHaveProperty('totalCostUsd');
-      await expect(klient.global.board.read({ action: 'preview', workspaceId: 'wd_missing' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
-      await expect(klient.global.board.write({ action: 'create', workspaceId: 'wd_missing', requestKey: 'create-one', title: 'Example task' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
+      await expect(klient.global.board.read({ action: 'preview', workspaceId: 'wd_missing' })).rejects.toThrow(/unknown service: taskBoardService/);
+      await expect(klient.global.board.write({ action: 'create', workspaceId: 'wd_missing', requestKey: 'create-one', title: 'Example task' })).rejects.toThrow(/unknown service: taskBoardService/);
       await expect(klient.global.agentPanel.read({ profile: 'missing', workspace_id: 'wd_missing' })).rejects.toMatchObject({ code: 40410 });
     } finally {
       await klient.close();

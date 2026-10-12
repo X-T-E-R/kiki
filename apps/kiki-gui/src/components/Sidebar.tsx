@@ -125,7 +125,6 @@ const HEADER_ICON =
 const RAIL_ICON =
   'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 
-const BoardIcon = () => <Icon name="board" size={16} />;
 const ClockIcon = () => <Icon name="clock" size={16} />;
 const UsageIcon = () => <Icon name="usage" size={16} />;
 /** Memory is a kept leaf of notes (a place), not the timeline's spark. */
@@ -268,7 +267,6 @@ function StatusMark({ session, state }: { session: Session; state: SessionRowSta
 type NavKey = SidebarNavKey;
 
 const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, string>; icon: () => React.ReactNode }[] = [
-  { key: 'board', route: '/board', hook: { 'data-nav-board': '' }, icon: BoardIcon },
   { key: 'cron', route: '/cron', hook: { 'data-nav-cron': '' }, icon: ClockIcon },
   // Always present, on or off: switched off it opens the turn-on guide, so
   // "what does Kiki remember" has one stable address either way.
@@ -281,7 +279,7 @@ const NAV_ITEMS: readonly { key: NavKey; route: string; hook: Record<string, str
   { key: 'discover', route: '/discover', hook: { 'data-nav-discover': '' }, icon: CompassIcon },
 ];
 
-const WORKSPACE_SCOPED_ROUTES: readonly string[] = ['/board', '/cron', '/memory'];
+const WORKSPACE_SCOPED_ROUTES: readonly string[] = ['/cron', '/memory'];
 
 /** Workspace-scoped pages open pre-filtered to the active session's
  * workspace; the page's own switcher widens to all workspaces. */

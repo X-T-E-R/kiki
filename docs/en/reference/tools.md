@@ -190,7 +190,7 @@ Cancelling a tool call stops the browser work when the cancellation lands before
 | `EnterPlanMode` | Auto-allow | Enter Plan mode |
 | `ExitPlanMode` | Auto-allow (requires user to confirm the plan) | Exit Plan mode and submit the plan |
 
-Plan mode restricts `Write` and `Edit` to the current plan file. It also blocks `BoardWrite`, `TaskStop`, `Cron` actions `create` and `delete`, `AgentSend`, and resuming existing children with `AgentRun` (see [State Management](#state-management) for `BoardWrite`). `EnterPlanMode` and `ExitPlanMode` are resident built-in tools and remain available while their normal policy checks allow them.
+Plan mode restricts `Write` and `Edit` to the current plan file. It also blocks `TaskStop`, `Cron` actions `create` and `delete`, `AgentSend`, and resuming existing children with `AgentRun`. `EnterPlanMode` and `ExitPlanMode` are resident built-in tools and remain available while their normal policy checks allow them.
 
 New `AgentRun` calls can start research subagents using the native executor. These children can use only the built-in `Read`, `ReadMediaFile`, `Glob`, `Grep`, `WebSearch`, and `FetchURL` tools permitted by their profile and existing policies. They cannot run `Bash`, invoke MCP or user-defined tools, or delegate further work. External executors are not available for these calls. The research restriction survives Plan mode exit and session restoration; create a new child after leaving Plan mode when implementation needs write access.
 
@@ -205,8 +205,6 @@ The parent Agent's `Bash` calls still follow the current permission rules. Enter
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `TodoList` | Auto-allow | Manage a task to-do list |
-| `BoardRead` | Auto-allow | Read persistent requirement cards on the workspace task board |
-| `BoardWrite` | Requires approval | Create or update a persistent requirement card on the workspace task board |
 
 **`TodoList`** manages the calling agent's execution list and working notes as two independent update domains. Omit `todos` to leave the list unchanged; omit `notes` to leave all notes unchanged. Call with `{}` to read both. The `todos` array is a complete replacement: each item has a `title` and `status` (`pending` / `in_progress` / `done`), and `todos: []` clears only the list.
 
@@ -214,11 +212,9 @@ The parent Agent's `Bash` calls still follow the current permission rules. Enter
 
 Main and child agents have separate lists and notes; the tool cannot read or update another agent's state. Both are restored with their owning agent and follow conversation undo, and context renewal preserves existing notes. `review_handoff: true` explicitly acknowledges that the handoff and human input have been checked against current notes and original sources; an ordinary section update does not acknowledge that review. Oversized candidates stay complete in the handoff with a visible notice, and unreviewed input is carried forward. Historical shared lists remain with the main agent.
 
-The task board is the persistent record of requirements that survives sessions. `BoardRead` supports `preview`, `list`, `show`, and `overview` for cards in the current workspace or other authorized workspaces. `BoardWrite` `create` always starts at `active`, so do not pass `status`; for `update`, include `status` only when changing the state. Valid states are `active`, `in_progress`, `paused`, `done`, `cancelled`, and `superseded`. `done`, `cancelled`, and `superseded` are terminal; reopen a terminal card by setting `status` back to `active`, `in_progress`, or `paused`, which clears its `completedAt`. Updates must use the card's current `revision`; after a conflict, reread the card before retrying.
+The optional official plugin `kiki-task-board` provides the task board; its tools are not built in. Without the plugin, conversations that used it still open and send ordinary messages. Historical `BoardRead` and `BoardWrite` calls and their recorded results remain unchanged. A new call to an unavailable tool reports that it is missing; it does not invent a successful result or replay an old write.
 
-Cards are persistent requirements, not agent runs or the per-agent `TodoList`. Reading a card does not change it, each agent keeps an independent `TodoList`, and marking every todo `done` does not update the card. Both tools are provided to the main agent by default and gated by the `task_board` experimental flag. Native subagents are denied both tools by default; explicitly allow either tool through its profile's `tools` list or [`subagent.allowed_tools`](../configuration/config-files.md#subagent), without bypassing other tool restrictions. `BoardRead` remains available in Plan mode; `BoardWrite` is rejected before approval (see [Plan Mode](#plan-mode)). Card writes follow the ordinary permission policy and do not require additional workspace trust.
-
-In Settings → Tasks, choose `auto`, `global`, or `fixed` storage. A fixed location can be an absolute path or a path relative to the workspace; scripts are not executed. The task board is built in — no separate installation is needed. In `auto`, Kiki reuses existing compatible project storage when available and otherwise uses the session data area.
+With the plugin installed and enabled, the agent tools are `plugin__kiki_task_board__BoardRead` and `plugin__kiki_task_board__BoardWrite`. Read supports `preview`, `list`, `show`, and `overview`. Create starts at `active` and does not take `status`. An update names `status` only when changing it: `active`, `in_progress`, `paused`, `done`, `cancelled`, or `superseded`. The last three are terminal; setting `status` back to `active`, `in_progress`, or `paused` reopens the card and clears `completedAt`. Updates use the card's current `revision` and its original storage address. After a conflict, reread the card before retrying. Reading a card does not rewrite it. Cards are requirements, not agent runs or `TodoList`. Storage stays in `config.toml` under `taskBoard.storage` (`auto`, `global`, or `fixed`). Changing that setting does not move old cards. See [Task board](../guides/sessions.md#task-board).
 
 ## Memory Tools
 

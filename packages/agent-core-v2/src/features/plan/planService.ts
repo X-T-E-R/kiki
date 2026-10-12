@@ -142,17 +142,6 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
-    if (toolName === 'BoardWrite') {
-      event.veto(
-        denyToolExecution(
-          this.toolApproval.formatDenyMessage(
-            'BoardWrite is not available in plan mode. Call ExitPlanMode to exit plan mode before changing requirements.',
-          ),
-        ),
-      );
-      return;
-    }
-
     if (toolName === 'Write' || toolName === 'Edit') {
       if (writesOnlyPlanFile(event, plan.path)) return;
       event.veto(

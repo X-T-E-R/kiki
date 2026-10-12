@@ -134,8 +134,8 @@ it('keeps save disabled until the draft is dirty and confirms with the saved tic
 it('mounts board controls without the duplicate Todo explanation', async () => {
   await render(<TasksSection />);
   expect(element.querySelector('#st-card-agent-todo')).toBeNull();
-  expect(element.querySelector('#st-card-agent-board')).not.toBeNull();
-  expect(element.querySelector('[data-board-storage-settings]')).not.toBeNull();
+  expect(element.querySelector('#st-card-agent-board')).toBeNull();
+  expect(element.querySelector('[data-board-storage-settings]')).toBeNull();
   // The task-board feature flag lives on Labs with every other flag.
   expect(element.querySelector('#st-card-task-board')).toBeNull();
   expect(element.querySelector('#st-card-defaults')).toBeNull();

@@ -9,7 +9,7 @@ import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import type { PluginDiagnostic } from './types';
 
-export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.0';
+export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.1';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
 const schemaVersion = z.literal(PLUGIN_EXTENSION_VERSION);

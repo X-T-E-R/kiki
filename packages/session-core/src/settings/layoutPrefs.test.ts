@@ -97,7 +97,7 @@ describe('readLayoutPreferences', () => {
       sidebarNavSectionCollapsed: false,
     }));
     const prefs = readLayoutPreferences();
-    expect(prefs.pinnedNavItems).toEqual(['board', 'cron']);
+    expect(prefs.pinnedNavItems).toEqual(['cron']);
     expect(prefs.sidebarNavSectionCollapsed).toBe(false);
 
     ls().setItem('kiki.layout', JSON.stringify({ pinnedNavItems: 'not-an-array' }));

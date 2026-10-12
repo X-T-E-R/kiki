@@ -16,6 +16,7 @@ import {
   overrideSource,
   ownOverride,
   panelScopeFrom,
+  panelSheetNotice,
   rowBlockedByHome,
   rowCanRestore,
   rowState,
@@ -69,6 +70,27 @@ describe('panel route identity', () => {
   it('leaves untargeted and empty routes unscoped without consulting last session', () => {
     expect(panelScopeFrom(new URLSearchParams())).toEqual({ target: undefined, sessionId: undefined });
     expect(panelScopeFrom(new URLSearchParams('workspace=&session='))).toEqual({ target: undefined, sessionId: undefined });
+  });
+});
+
+describe('panel sheet context', () => {
+  it('names a workspace or settings panel without asking for a session', () => {
+    expect(panelSheetNotice({ slot: 'workspace' })).toBe('workspace');
+    expect(panelSheetNotice({ slot: 'workspace', sessionId: 'sess-a' })).toBe('workspace');
+    expect(panelSheetNotice({ target: { workspace_id: 'ws-b' } })).toBe('workspace');
+    expect(panelSheetNotice({ slot: 'sidebar', target: { workspace_id: 'ws-b' } })).toBe('workspace');
+    expect(panelSheetNotice({ slot: 'settings' })).toBe('settings');
+  });
+
+  it('keeps the session-required line for a sidebar panel with no session', () => {
+    expect(panelSheetNotice({ slot: 'sidebar' })).toBe('session-required');
+    expect(panelSheetNotice({ slot: 'sidebar', sessionId: 'sess-a' })).toBe('session');
+    expect(panelSheetNotice({ target: { session_id: 'sess-a' }, sessionId: 'sess-a' })).toBe('session');
+  });
+
+  it('stays quiet until an unscoped panel reports its slot', () => {
+    expect(panelSheetNotice({})).toBe('pending');
+    expect(panelSheetNotice({ sessionId: undefined })).toBe('pending');
   });
 });
 

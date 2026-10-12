@@ -262,7 +262,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (message.method === 'panel-request') {
     Promise.resolve().then(() => {
       if (typeof handlePanelRequest !== 'function') throw new Error('Plugin has no panel backend');
-      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {} });
+      return handlePanelRequest(message.params.action, message.params.args, { settings: message.params.settings ?? {}, kikiHome: message.params.kikiHome, workspaceId: message.params.workspaceId });
     }).then(
       (result) => send({ id: message.id, result }),
       (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }),
@@ -296,6 +296,8 @@ for await (const line of createInterface({ input: process.stdin })) {
         workspaceRoot: message.params.workspaceRoot,
         approvedPaths: message.params.approvedPaths ?? [],
         imageIn: message.params.imageIn === true,
+        workspaceId: message.params.workspaceId,
+        kikiHome: message.params.kikiHome,
         media: {
           generate(input) { return callMedia(message.id, 'generate', input); },
           media(input) { return callMedia(message.id, 'media', input); },

@@ -4,7 +4,7 @@ title: Work that runs long
 
 # Work that runs long
 
-Some work does not fit in one turn. It spans a morning, or a week, or it depends on a schedule. This page covers the parts of Kiki built for that: goals that carry across turns, the queue for what you type while the agent is busy, scheduled tasks and the task board for work that outlives a session, the context window that decides what happens when a conversation fills up, and memory for the facts that should survive all of it.
+Some work does not fit in one turn. It spans a morning, or a week, or it depends on a schedule. This page covers the parts of Kiki built for that: goals that carry across turns, the queue for what you type while the agent is busy, scheduled tasks for work that outlives a session, the optional task board plugin, the context window that decides what happens when a conversation fills up, and memory for the facts that should survive all of it.
 
 ## Goals keep the target in view
 
@@ -28,7 +28,7 @@ A scheduled task set to **Queue** joins this queue alongside your own messages, 
 
 ## Work that outlives the session
 
-Two features carry work beyond a single conversation. Both are listed globally rather than per-session, but what they hold is scoped differently.
+Scheduled tasks carry work beyond a single conversation. They are listed globally rather than per session. The task board is not that list: it is an optional plugin, and its cards are workspace requirements.
 
 **Scheduled tasks.** The agent can schedule a prompt to fire at a future time, either once or on a cron expression in your local timezone, and a global panel lists every schedule. A schedule is ticked by a Kiki that has its session open — the interactive daemon or server, or a print run for the sessions that run already has open. It does not scan the rest of the home or wake a closed session, so a schedule only fires while some Kiki is holding that session. Recurring tasks are shifted forward by deterministic jitter so everyone does not fire on the hour, and one that missed fire times fires once with the missed count. Schedules are bound to their session and do not carry into a brand-new session, and a session holds at most 50 active ones. See [Scheduled tasks](/en/reference/tools#scheduled-tasks).
 
@@ -46,9 +46,7 @@ A schedule more specific than those controls — several times a day, a day of t
 
 **Run now** sits on its own line at the bottom left of an entry, away from pause and delete: it runs the prompt once without touching the schedule. Rebinding an existing task to another conversation stays inside the task's own workspace.
 
-**The task board.** Each workspace has a board where requirements are cards, and each card links to the sessions working on it. Cards are persistent requirements, not agent runs — reading a card does not change it, and the board does not update from todo lists. The main agent reads and writes the board itself with `BoardRead` and `BoardWrite`, under the normal approval rules. Open it from the fixed button at the bottom of the main agent's right panel. See [Task board](/en/guides/sessions#task-board).
-
-![The task board, with requirement cards in To do, In progress, Paused, and Done columns, each linked to the sessions working on it.](/shots/long-work/wl-20261005-longwork-board.en.png)
+**The task board.** Install the optional official plugin `kiki-task-board` to keep workspace requirements as cards. Existing cards stay in their original storage location; reading a card does not change it. Without the plugin there is no board entry, but conversations that used it still open and accept ordinary messages. See [Task board](/en/guides/sessions#task-board).
 
 ## The context window: when it fills up
 
