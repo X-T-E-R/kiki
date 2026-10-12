@@ -366,7 +366,7 @@ function detectStep(set: ReadonlySet<number>, min: number, max: number): number 
     if (v !== expected) return null;
     expected += step;
   }
-  if (expected - step > max) return null;
+  if (expected <= max) return null;
   return step;
 }
 

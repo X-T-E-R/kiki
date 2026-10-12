@@ -293,4 +293,24 @@ describe('cronToHuman', () => {
   it('falls back to the raw expression for unrecognized shapes', () => {
     expect(cronToHuman(parseCronExpression('1,7,23 5,17 * * *'))).toBe('1,7,23 5,17 * * *');
   });
+
+  it.each([
+    ['*/15 * * * *', 'every 15 minutes'],
+    ['0,15,30,45 * * * *', 'every 15 minutes'],
+    ['*/7 * * * *', 'every 7 minutes'],
+    ['0 */6 * * *', 'every 6 hours at minute 00'],
+    ['0 0,6,12,18 * * *', 'every 6 hours at minute 00'],
+    ['15 */5 * * *', 'every 5 hours at minute 15'],
+  ])('renders complete step range %s as %s', (cron, description) => {
+    expect(cronToHuman(parseCronExpression(cron))).toBe(description);
+  });
+
+  it.each([
+    '0,15 * * * *',
+    '0-30/15 * * * *',
+    '0 0,6 * * *',
+    '0 0-12/6 * * *',
+  ])('keeps truncated step range %s explicit', (cron) => {
+    expect(cronToHuman(parseCronExpression(cron))).toBe(cron);
+  });
 });
