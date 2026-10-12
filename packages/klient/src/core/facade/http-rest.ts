@@ -492,9 +492,21 @@ export interface HttpRestFacade {
 
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
+    listCatalog(): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse>;
+    detail(workspaceId: string): Promise<import('@kiki/protocol').Workspace>;
     inspect(root: string): Promise<import('@kiki/protocol').InspectWorkspaceResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;
     setPinned(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').Workspace>;
+    /**
+     * Metadata-only rename/pin: `PATCH /workspaces/{id}?view=catalog` answers the
+     * catalog entry, so the server skips the session-count and git probes that
+     * the default full-workspace PATCH pays for. The body is the same
+     * `{ name?, pinned? }` patch as `rename`/`setPinned`.
+     */
+    updateCatalog(
+      workspaceId: string,
+      input: import('@kiki/protocol').WorkspaceUpdate,
+    ): Promise<import('@kiki/protocol').WorkspaceCatalogEntry>;
     trust(workspaceId: string): Promise<{ readonly trusted: boolean }>;
     setTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }>;
     remove(workspaceId: string): Promise<{ readonly deleted: true }>;

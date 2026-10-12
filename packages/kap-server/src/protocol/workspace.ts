@@ -23,6 +23,10 @@ export const workspaceSchema = z.object({
 
 export type Workspace = z.infer<typeof workspaceSchema>;
 
+/** Persisted registration metadata; count and Git are unmeasured, not zero or false. */
+export const workspaceCatalogEntrySchema = workspaceSchema.omit({ session_count: true, isGit: true });
+export type WorkspaceCatalogEntry = z.infer<typeof workspaceCatalogEntrySchema>;
+
 export const workspaceCreateSchema = z.object({
   root: z.string().min(1),
   name: z.string().min(1).max(100).optional(),

@@ -161,9 +161,14 @@ describe('WorkspaceService (file-backed)', () => {
     try {
       const created = await registry.createOrTouch(homeDir, 'new project');
       expect(await registry.get(created.id)).toEqual(created);
+      let saved = false;
+      const updating = registry.update(created.id, { name: 'renamed project', pinned: true }).then(() => { saved = true; });
+      await vi.waitFor(() => { expect(saved).toBe(true); }, { timeout: 500 });
+      await updating;
+      expect(await registry.get(created.id)).toMatchObject({ name: 'renamed project', pinned: true });
       release();
       expect((await listing).map((item) => item.id)).toContain(created.id);
-      expect((await readWorkspacesJson()).workspaces[created.id]?.name).toBe('new project');
+      expect((await readWorkspacesJson()).workspaces[created.id]).toMatchObject({ name: 'renamed project', pinned: true });
     } finally { release(); read.mockRestore(); await listing; }
   });
 

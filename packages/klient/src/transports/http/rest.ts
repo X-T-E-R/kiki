@@ -420,6 +420,8 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
 
     workspaces: {
       list: () => transport.json('/workspaces'),
+      listCatalog: () => transport.json('/workspaces', { query: { view: 'catalog' } }),
+      detail: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}`),
       trust: (workspaceId: string) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/trust`),
       setTrust: (workspaceId: string, trusted: boolean) => transport.json(`/workspaces/${encodeURIComponent(workspaceId)}/${trusted ? 'trust' : 'untrust'}`, { method: 'POST' }),
       inspect: (root: string) => transport.json('/workspaces:inspect', {
@@ -432,6 +434,10 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       setPinned: (workspaceId: string, pinned: boolean) => transport.json(
         `/workspaces/${encodeURIComponent(workspaceId)}`,
         { method: 'PATCH', body: { pinned } },
+      ),
+      updateCatalog: (workspaceId: string, input: import('@kiki/protocol').WorkspaceUpdate) => transport.json<import('@kiki/protocol').WorkspaceCatalogEntry>(
+        `/workspaces/${encodeURIComponent(workspaceId)}`,
+        { method: 'PATCH', query: { view: 'catalog' }, body: input },
       ),
       remove: (workspaceId: string) => transport.json(
         `/workspaces/${encodeURIComponent(workspaceId)}`,

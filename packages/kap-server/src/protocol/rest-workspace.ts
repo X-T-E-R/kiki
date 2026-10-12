@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   workspaceCreateSchema,
+  workspaceCatalogEntrySchema,
   workspaceIdSchema,
   workspaceSchema,
   workspaceUpdateSchema,
@@ -11,6 +12,10 @@ export const listWorkspacesResponseSchema = z.object({
   items: z.array(workspaceSchema),
 });
 export type ListWorkspacesResponse = z.infer<typeof listWorkspacesResponseSchema>;
+
+export const workspaceViewQuerySchema = z.object({ view: z.enum(['catalog']).optional() });
+export const listWorkspaceCatalogResponseSchema = z.object({ items: z.array(workspaceCatalogEntrySchema) });
+export type ListWorkspaceCatalogResponse = z.infer<typeof listWorkspaceCatalogResponseSchema>;
 
 export const inspectWorkspaceRequestSchema = z.object({
   root: z.string().min(1),

@@ -117,7 +117,9 @@ export class WorkspaceService implements IWorkspaceService {
   }
 
   async update(id: string, patch: WorkspaceUpdate): Promise<Workspace | undefined> {
-    await this.ensureMerged();
+    if (!(await this.loadCatalog()).workspaces.some((workspace) => workspace.id === id)) {
+      await this.ensureMerged();
+    }
     return this.runExclusive(async () => {
       const catalog = await this.loadCatalog();
       const existing = catalog.workspaces.find((ws) => ws.id === id);

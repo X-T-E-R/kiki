@@ -220,6 +220,61 @@ describe('HTTP REST domains', () => {
       expect(calls).toEqual([{ path: '/api/workspaces:inspect', method: 'POST', body: { root: 'C:/example/project' } }]);
     } finally { await channel.close(); }
   });
+  it('reads the metadata catalog separately from the full list and one workspace detail', async () => {
+    const catalog = { items: [{ id: 'workspace-a', name: 'Example', root: 'C:/example/project', created_at: '2026-01-01', last_opened_at: '2026-01-01' }] };
+    const detail = { ...catalog.items[0], session_count: 3, isGit: true };
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      expect(init?.method ?? 'GET').toBe('GET');
+      return envelope(url.pathname.endsWith('/workspace%2Fa') ? detail : catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.workspaces.listCatalog()).resolves.toEqual(catalog);
+      await expect(channel.rest.workspaces.detail('workspace/a')).resolves.toEqual(detail);
+      await expect(channel.rest.workspaces.list()).resolves.toEqual(catalog);
+      expect(calls).toEqual(['/api/workspaces?view=catalog', '/api/workspaces/workspace%2Fa', '/api/workspaces']);
+    } finally { await channel.close(); }
+  });
+  it('PATCHes rename and pin through the metadata catalog view while the full-workspace PATCH stays the default', async () => {
+    const entry = {
+      id: 'wd_example_0123456789ab',
+      root: 'C:/example/project',
+      name: 'Renamed',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      pinned: true,
+    };
+    const full = { ...entry, session_count: 7, isGit: true };
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope(url.searchParams.get('view') === 'catalog' ? entry : full);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      const renamed = await channel.rest.workspaces.updateCatalog(entry.id, { name: 'Renamed' });
+      const pinned = await channel.rest.workspaces.updateCatalog(entry.id, { pinned: true });
+      expect(renamed).toEqual(entry);
+      expect(pinned).toEqual(entry);
+      expect(Object.keys(renamed).sort()).toEqual(['created_at', 'id', 'last_opened_at', 'name', 'pinned', 'root']);
+      expect(renamed).not.toHaveProperty('session_count');
+      expect(renamed).not.toHaveProperty('isGit');
+      expect(await channel.rest.workspaces.rename(entry.id, 'Renamed')).toEqual(full);
+      expect(await channel.rest.workspaces.setPinned(entry.id, true)).toEqual(full);
+      expect(calls).toEqual([
+        { path: `/api/workspaces/${entry.id}`, query: '?view=catalog', method: 'PATCH', body: { name: 'Renamed' } },
+        { path: `/api/workspaces/${entry.id}`, query: '?view=catalog', method: 'PATCH', body: { pinned: true } },
+        { path: `/api/workspaces/${entry.id}`, query: '', method: 'PATCH', body: { name: 'Renamed' } },
+        { path: `/api/workspaces/${entry.id}`, query: '', method: 'PATCH', body: { pinned: true } },
+      ]);
+    } finally { await channel.close(); }
+  });
   it('reads and explicitly changes trust for the addressed workspace only', async () => {
     const calls: { path: string; method: string }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
