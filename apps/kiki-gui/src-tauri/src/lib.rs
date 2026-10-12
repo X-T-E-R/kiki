@@ -60,8 +60,8 @@ use tauri_plugin_shell::{
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(windows)]
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED},
-    System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_OBJECT_0},
+    System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -3099,14 +3099,13 @@ fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
         return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
     }
-    unsafe {
-        CloseHandle(handle);
-    }
-    true
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    wait != WAIT_OBJECT_0
 }
 
 #[cfg(unix)]
@@ -4241,6 +4240,57 @@ mod tests {
         assert!(!remote.exists());
         assert!(!invalid.exists());
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exited_windows_process_handles_do_not_block_registry_or_startup_lease() {
+        use std::os::windows::process::CommandExt;
+
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
+        for exit_code in [0, 1, 259] {
+            let mut child = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", &format!("exit {exit_code}")])
+                .creation_flags(0x08000000)
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            assert_eq!(child.wait().unwrap().code(), Some(exit_code));
+            let retained = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            assert!(!retained.is_null());
+            assert!(!pid_alive(pid));
+
+            let home = env::temp_dir().join(format!(
+                "kiki-exited-process-{}-{exit_code}-{}",
+                std::process::id(),
+                unix_epoch_millis().unwrap()
+            ));
+            let instances = home.join("server").join("instances");
+            fs::create_dir_all(&instances).unwrap();
+            let record = instances.join("exited.json");
+            fs::write(
+                &record,
+                serde_json::json!({
+                    "pid": pid,
+                    "host": "127.0.0.1",
+                    "port": 43123,
+                    "started_at": 100,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let lock = home.join("server").join("ensure.lock");
+            fs::write(&lock, pid.to_string()).unwrap();
+
+            assert!(read_discoverable_instance_records(&home, pid_alive).unwrap().is_empty());
+            assert!(!record.exists());
+            assert!(SharedUpdateLock::try_acquire(&home).unwrap().is_none());
+            assert!(!lock.exists());
+            drop(SharedUpdateLock::try_acquire(&home).unwrap().expect("dead lease must be reclaimable"));
+            unsafe { CloseHandle(retained) };
+            fs::remove_dir_all(home).unwrap();
+        }
     }
 
     #[test]
