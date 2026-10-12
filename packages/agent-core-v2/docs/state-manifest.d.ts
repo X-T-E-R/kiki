@@ -4002,6 +4002,7 @@ export interface AgentStateSnapshot {
             readonly windowsHide?: boolean;
             readonly mergeStderr?: boolean;
             readonly timeout?: number;
+            readonly ownedProcessTree?: boolean;
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;
