@@ -1272,7 +1272,7 @@ function PreviewTabView({
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} root={root} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView path={path} root={root} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );
@@ -1696,6 +1696,7 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
 function TextTabView({
   path,
   root,
+  visible,
   markdown,
   navigation,
   reportDirty,
@@ -1704,6 +1705,7 @@ function TextTabView({
   readonly path: string;
   /** Session workspace cwd — the resource root an HTML preview is opened against. */
   readonly root?: string;
+  readonly visible: boolean;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
@@ -1733,6 +1735,7 @@ function TextTabView({
   const [loadingFull, setLoadingFull] = useState(false);
   const [fullError, setFullError] = useState(false);
   const fullLoadId = useRef(0);
+  const fullLoadAbort = useRef<AbortController | null>(null);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
   }, [navigation]);
@@ -1833,8 +1836,12 @@ function TextTabView({
   useEffect(() => {
     setLoadingFull(false);
     setFullError(false);
-    return () => { fullLoadId.current += 1; };
-  }, [client, path, snap.generation]);
+    return () => {
+      fullLoadId.current += 1;
+      fullLoadAbort.current?.abort();
+      fullLoadAbort.current = null;
+    };
+  }, [client, controller, path, snap.generation, visible]);
 
   const dirty = snap.dirty;
   useEffect(() => {
@@ -1859,20 +1866,30 @@ function TextTabView({
   }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady, html, htmlPreviewState.status]);
   const normalizedPath = path.replaceAll('\\', '/');
   const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
-  const loadFullMarkdown = async () => {
-    if (client === undefined || controller === null || loadingFull) return;
+  const loadFullMarkdown = useCallback(async () => {
+    if (client === undefined || controller === null || !visible || fullLoadAbort.current !== null) return;
     const loadId = ++fullLoadId.current;
+    const abort = new AbortController();
+    fullLoadAbort.current = abort;
     setLoadingFull(true);
     setFullError(false);
     try {
-      const text = await client.readHostFile(path);
-      if (loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
+      const text = await client.readHostFile(path, { signal: abort.signal });
+      if (!abort.signal.aborted && loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
     } catch {
-      if (loadId === fullLoadId.current) setFullError(true);
+      if (!abort.signal.aborted && loadId === fullLoadId.current) setFullError(true);
     } finally {
-      if (loadId === fullLoadId.current) setLoadingFull(false);
+      if (!abort.signal.aborted && loadId === fullLoadId.current) {
+        fullLoadAbort.current = null;
+        setLoadingFull(false);
+      }
     }
-  };
+  }, [client, controller, path, snap.generation, visible]);
+  useEffect(() => {
+    if (visible && markdown && snap.status === 'ready' && snap.oversized && fullText === undefined && !fullError) {
+      void loadFullMarkdown();
+    }
+  }, [visible, markdown, snap.status, snap.oversized, fullText, fullError, loadFullMarkdown]);
 
   const htmlLoadingNotice = (
     <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">

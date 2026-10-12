@@ -613,7 +613,49 @@ describe('PreviewWorkspace', () => {
     await renderSettled(probe.root, view());
     expect(workspace().textContent).not.toContain('Private ending');
     expect(workspace().querySelector('h1')?.textContent).toBe('Second host');
-    expect(workspace().querySelector('[data-load-full-markdown]')).not.toBeNull();
+    expect(workspace().querySelector('[data-load-full-markdown]')).toBeNull();
+  });
+
+  it.each(['hide', 'close', 'connection'] as const)('aborts the selected Markdown full read on %s and ignores its late result', async (change) => {
+    const path = '/work/docs/long.md';
+    let resolveFull!: (text: string) => void;
+    const pending = new Promise<string>((resolve) => { resolveFull = resolve; });
+    const readFull = vi.fn((_path: string, _options?: { signal?: AbortSignal }) => pending);
+    connectionMock.activeClient = {
+      previewHostFile: async () => ({ text: '# Beginning\n', truncated: true }),
+      readHostFile: readFull,
+    };
+    const probe = makeRoot();
+    const props = { tabs: [path, '/work/huge.log'], active: path, dirtyPaths: new Set<string>(), width: 400,
+      onActivate: vi.fn(), onClose: vi.fn(), onCloseOthers: vi.fn(), onCloseAll: vi.fn(), onMove: vi.fn(),
+      onCollapse: vi.fn(), onWidthChange: vi.fn(), onOpenImage: vi.fn(), reportDirty: vi.fn() };
+    await renderSettled(probe.root, <PreviewWorkspace {...props} hidden />);
+    expect(readFull).not.toHaveBeenCalled();
+    await renderSettled(probe.root, <PreviewWorkspace {...props} />);
+    expect(readFull).toHaveBeenCalledTimes(1);
+    expect(readFull.mock.calls[0]?.[0]).toBe(path);
+    const signal = readFull.mock.calls[0]?.[1]?.signal;
+    expect(signal?.aborted).toBe(false);
+    if (change === 'connection') {
+      connectionMock.activeClient = {
+        previewHostFile: async () => ({ text: '# Second host\n', truncated: true }),
+        readHostFile: async () => '# Second host\n\n# Fresh ending\n',
+      };
+      await renderSettled(probe.root, <PreviewWorkspace {...props} />);
+    } else {
+      await renderSettled(probe.root, <PreviewWorkspace {...props} hidden={change === 'hide'} tabs={change === 'close' ? [] : props.tabs} />);
+    }
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { resolveFull('# Stale private ending\n'); });
+    expect(probe.container.textContent).not.toContain('Stale private ending');
+    if (change === 'connection') expect(probe.container.textContent).toContain('Fresh ending');
+    if (change === 'hide') {
+      readFull.mockResolvedValueOnce('# Beginning\n\n# Fresh ending\n');
+      await renderSettled(probe.root, <PreviewWorkspace {...props} />);
+      expect(probe.container.textContent).toContain('Fresh ending');
+      expect(probe.container.textContent).not.toContain('Stale private ending');
+    }
+    expect(writeMock).not.toHaveBeenCalled();
   });
 
   it('markdown source toggle shows the editor', async () => {

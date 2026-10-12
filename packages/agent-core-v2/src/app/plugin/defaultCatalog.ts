@@ -113,7 +113,7 @@ async function readPublishedCatalog(
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS) });
     if (!response.ok) return undefined;
     const raw = await response.text();
-    const parsed = parsePluginMarketplace(raw, { raw, kind: 'remote', resolved: url });
+    const parsed = parsePluginMarketplace(raw, { raw, kind: 'remote', resolved: url }, true);
     return [...parsed.plugins];
   } catch {
     return undefined;

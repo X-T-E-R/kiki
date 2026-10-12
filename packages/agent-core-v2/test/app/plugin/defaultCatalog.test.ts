@@ -8,6 +8,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { entryAcceptsEngine, readDefaultPluginCatalog } from '#/app/plugin/defaultCatalog';
 import { parsePluginMarketplace, resolveMarketplaceLocation } from '#/app/plugin/marketplace';
+import bundledMetadata from '../../../src/app/plugin/officialPlugins.metadata.json' with { type: 'json' };
+
+const bundledEntries = [...bundledMetadata.official, ...bundledMetadata.curated];
+
+function expectCompleteBundled(result: Awaited<ReturnType<typeof readDefaultPluginCatalog>>): void {
+  expect(result.marketplace.plugins).toEqual(bundledEntries);
+  expect(result.installable).toBe(bundledMetadata.official.filter((entry) => entry.source !== '').length);
+}
 
 const repoRoot = resolve(import.meta.dirname, '../../../../..');
 const generator = join(repoRoot, 'packages/agent-core-v2/scripts/gen-official-plugin-metadata.mjs');
@@ -43,12 +51,8 @@ describe('default plugin catalog', () => {
     const official = marketplace.plugins.filter((entry) => entry.tier === 'official');
     const curated = marketplace.plugins.filter((entry) => entry.tier === 'curated');
 
-    expect(official.map((entry) => entry.id)).toEqual(expect.arrayContaining([
-      'kiki-office', 'kiki-writing', 'kiki-extract', 'kiki-notion', 'kiki-media',
-      'kimi-datasource', 'kimi-webbridge',
-    ]));
-    expect(official.length).toBeGreaterThanOrEqual(17);
-    expect(curated.map((entry) => entry.id)).toEqual(['superpowers', 'vercel-plugin', 'modern-web-guidance']);
+    expect(official).toEqual(bundledMetadata.official);
+    expect(curated).toEqual(bundledMetadata.curated);
     expect(installable).toBe(official.length);
     for (const entry of official) {
       expect(entry.displayName, entry.id).not.toBe('');
@@ -83,6 +87,20 @@ describe('default plugin catalog', () => {
     expect(installable).toBe(1);
   });
 
+  it('prefers the published archive in a remote dual-source catalog without changing development catalogs', async () => {
+    const publishedSource = 'https://cdn.example.test/example-1.0.0.zip';
+    const digest = 'a'.repeat(64);
+    const raw = JSON.stringify({ plugins: [{ id: 'example', source: './official/example', publishedSource, sha256: digest, engines: { kiki: '^0.4.0' } }] });
+    const { marketplace, installable } = await readDefaultPluginCatalog({
+      url: 'https://cdn.example.test/kiki/marketplace.json',
+      fetchImpl: async () => new Response(raw, { status: 200 }),
+    });
+    expect(marketplace.plugins[0]).toMatchObject({ source: publishedSource, sha256: digest, engines: { kiki: '^0.4.0' } });
+    expect(installable).toBe(1);
+    const development = resolveMarketplaceLocation(join(repoRoot, 'plugins/marketplace.json'), repoRoot);
+    expect(parsePluginMarketplace(raw, development).plugins[0]?.source).toBe(join(repoRoot, 'plugins/official/example'));
+  });
+
   it('falls back to the bundled snapshot after an unavailable catalog request', async () => {
     let called = 0;
     const { marketplace, installable } = await readDefaultPluginCatalog({
@@ -107,11 +125,11 @@ describe('default plugin catalog', () => {
 
   it('falls back to the bundled snapshot when the published catalog is unreachable or unparseable', async () => {
     const offlineResult = await readDefaultPluginCatalog({ fetchImpl: offline });
-    expect(offlineResult.marketplace.plugins.length).toBeGreaterThanOrEqual(20);
+    expectCompleteBundled(offlineResult);
     const broken = await readDefaultPluginCatalog({
       fetchImpl: async () => jsonResponse({ version: '1', plugins: [{ id: 'x', source: 'https://a.test/x.zip', sha256: 'nope' }] }),
     });
-    expect(broken.marketplace.plugins.length).toBeGreaterThanOrEqual(20);
+    expectCompleteBundled(broken);
     expect(broken.marketplace.plugins.every((entry) => entry.id !== 'x')).toBe(true);
   });
 
@@ -133,16 +151,23 @@ describe('default plugin catalog', () => {
     expect(byId.get('superpowers')?.author).toBe('Jesse Vincent');
     expect(byId.get('superpowers')?.author).not.toBe('Kiki');
     expect(byId.get('kimi-datasource')?.license).toBe('License not declared by upstream');
-    expect(byId.get('kiki-media-stepfun')?.license).toBe('MIT AND Apache-2.0');
-    expect(byId.get('kiki-media')?.engines).toEqual({ kiki: '>=0.4.0' });
+    expect(byId.get('kiki-media')).toMatchObject({ author: 'Kiki', license: 'MIT AND Apache-2.0', engines: { kiki: '>=0.4.0' } });
     expect(byId.get('kiki-notion')?.engines).toBeUndefined();
   });
 
   it('groups a package family by what the catalog declares', async () => {
     const { marketplace } = await readDefaultPluginCatalog({ fetchImpl: offline });
     const media = marketplace.plugins.filter((entry) => entry.group === 'media');
+    expect(media).toEqual(bundledEntries.filter((entry) => 'group' in entry && entry.group === 'media'));
     expect(media.map((entry) => entry.id)).toContain('kiki-media');
-    expect(media.length).toBeGreaterThanOrEqual(10);
+    const plugins = [
+      { id: 'image-source', group: 'media', source: 'https://cdn.example.test/image.zip' },
+      { id: 'speech-source', group: 'media', source: 'https://cdn.example.test/speech.zip' },
+      { id: 'office-suite', group: 'office', source: 'https://cdn.example.test/office.zip' },
+    ];
+    const remote = await readDefaultPluginCatalog({ fetchImpl: async () => jsonResponse({ plugins }) });
+    expect(remote.marketplace.plugins.map(({ id, group }) => ({ id, group }))).toEqual(plugins.map(({ id, group }) => ({ id, group })));
+    expect(remote.marketplace.plugins.filter((entry) => entry.group === 'media').map((entry) => entry.id)).toEqual(['image-source', 'speech-source']);
   });
 
   it('accepts the engine ranges the packages actually declare', () => {
@@ -196,27 +221,21 @@ describe('default plugin catalog', () => {
     await expect(stat(join(dir, 'official'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('regenerates all 20 checked-in entries without any official directory and matches the shipped snapshot', async () => {
+  it('regenerates every checked-in entry without any official directory and matches the shipped snapshot', async () => {
     const dir = await scratch();
     await cp(join(repoRoot, 'plugins/marketplace.json'), join(dir, 'marketplace.json'));
-    const generated = await generate(dir, join(dir, 'metadata.json')) as {
-      official: Record<string, unknown>[]; curated: Record<string, unknown>[];
-    };
-    expect(generated.official).toHaveLength(17);
-    expect(generated.curated).toHaveLength(3);
+    const generated = await generate(dir, join(dir, 'metadata.json'));
     const catalog = JSON.parse(await readFile(join(dir, 'marketplace.json'), 'utf8')) as {
       plugins: Record<string, unknown>[];
     };
-    const expected = parsePluginMarketplace(JSON.stringify(catalog), resolveMarketplaceLocation(join(dir, 'marketplace.json'), dir), true);
-    expect([...generated.official, ...generated.curated].map((entry) => entry['id']).toSorted())
-      .toEqual(expected.plugins.map((entry) => entry.id).toSorted());
-    for (const entry of [...generated.official, ...generated.curated]) {
-      const published = expected.plugins.find((item) => item.id === entry['id'])!;
-      for (const field of ['source', 'sha256', 'version', 'icon', 'engines', 'license', 'author', 'localizations']) {
-        expect(entry[field], `${String(entry['id'])}.${field}`).toEqual(published[field as keyof typeof published]);
-      }
-    }
-    expect(generated).toEqual(JSON.parse(await readFile(join(repoRoot, 'packages/agent-core-v2/src/app/plugin/officialPlugins.metadata.json'), 'utf8')));
+    const published = parsePluginMarketplace(JSON.stringify(catalog), resolveMarketplaceLocation(join(dir, 'marketplace.json'), dir), true).plugins;
+    expect(generated).toEqual({
+      version: 1,
+      engineVersion: '0.4.0',
+      official: published.filter((entry) => entry.tier === 'official').toSorted((a, b) => a.id.localeCompare(b.id)),
+      curated: published.filter((entry) => entry.tier === 'curated'),
+    });
+    expect(generated).toEqual(bundledMetadata);
     await expect(stat(join(dir, 'official'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -245,10 +264,9 @@ describe('default plugin catalog', () => {
       await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
       const address = server.address();
       if (address === null || typeof address === 'string') throw new Error('Missing loopback server address');
-      const { marketplace, installable } = await readDefaultPluginCatalog({ url: `http://127.0.0.1:${address.port}/marketplace.json` });
+      const result = await readDefaultPluginCatalog({ url: `http://127.0.0.1:${address.port}/marketplace.json` });
       expect(timeout).toHaveBeenCalledWith(5_000);
-      expect(marketplace.plugins).toHaveLength(20);
-      expect(installable).toBe(17);
+      expectCompleteBundled(result);
     } finally {
       timeout.mockRestore();
       server.closeAllConnections();
