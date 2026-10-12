@@ -44,7 +44,9 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。
 
-供应商报告完成，不等于任务已交付回执。原生子 Agent 以无内容、无工具调用的响应结束时，以 `loop.empty_completion` 失败；Agent 任务返回的最终文本为空或只有空白时，以 `task.empty_agent_receipt` 失败。没有正文的工具步骤、已完成的纯思考响应仍是合法模型步骤，但 Agent 任务仍须提交书面结果。
+供应商报告完成，不等于任务已交付回执。已完成的响应如果含有真实思考、却没有正文或工具调用，Kiki 会在同一轮次内继续，直到出现正文或工具调用，无论思考是否带签名。已有签名和用量会保留，不另加用户提示词；步骤预算耗尽、取消或供应商永久错误仍会结束轮次。没有正文的工具步骤仍然有效，但 Agent 任务仍须提交书面结果。
+
+原生子 Agent 以无内容、无工具调用的响应结束时，以 `loop.empty_completion` 失败；Agent 任务返回的最终文本为空或只有空白时，以 `task.empty_agent_receipt` 失败。
 
 恢复前先检查原轮次与已保存改动，再用新提示词唤回同一个子 Agent，要求它完成工作并报告结果。SDK 调用方须使用新的 prompt ID；重复已结束的 ID 只会重放保存的结果。Kiki 不为这两类失败自动重试，也不改写旧任务记录。
 

@@ -71,6 +71,7 @@ import {
   type TurnResult,
 } from './loop';
 import {
+  ContinuationStepRequest,
   type StepRequest,
   type TurnSeed,
 } from './stepRequest';
@@ -1087,6 +1088,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         finishReason,
         stepIdentity,
       );
+      if (!hookStopTurn && isRealThinkOnlyCompletion(response)) {
+        this.enqueue(new ContinuationStepRequest());
+      }
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
@@ -1522,6 +1526,25 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
   }
+}
+
+function isRealThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {
+  if (response.providerFinishReason !== 'completed') return false;
+  if (response.message.toolCalls.length > 0) return false;
+  let realThink = false;
+  for (const part of response.message.content) {
+    if (part.type === 'text') {
+      if (part.text.trim().length > 0) return false;
+      continue;
+    }
+    if (part.type === 'think') {
+      const signed = typeof part.encrypted === 'string' && part.encrypted.length > 0;
+      if (signed || part.think.trim().length > 0) realThink = true;
+      continue;
+    }
+    return false;
+  }
+  return realThink;
 }
 
 function normalizeFinishReason(reason: FinishReason): string {

@@ -1972,15 +1972,24 @@ describe('native empty provider completion', () => {
     }
   });
 
-  it('preserves a completed thinking-only subagent step', async () => {
+  it('continues a completed thinking-only subagent step to visible text', async () => {
     const local = createTestAgent(permissionModeServices('manual'));
     Reflect.set(local.get(IAgentScopeContext), 'parentAgentId', 'example-parent');
     try {
       local.mockNextResponse({ type: 'think', think: 'deliberate silent completion' });
+      local.mockNextResponse({ type: 'text', text: 'Child result' });
       const handle = await local.get(IAgentPromptService).enqueue({ message: {
         role: 'user', content: [{ type: 'text', text: 'Do not add a public reply.' }], toolCalls: [],
       } });
-      expect(await handle.completion).toMatchObject({ state: 'completed' });
+      expect(await handle.completion).toMatchObject({ state: 'completed', result: { type: 'completed' } });
+      expect(local.llmCalls).toHaveLength(2);
+      const second = local.llmCalls[1];
+      expect(second?.history.filter((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === 'Do not add a public reply.'))).toHaveLength(1);
+      expect(second?.history.at(-1)).toMatchObject({
+        role: 'assistant',
+        content: [{ type: 'think', think: 'deliberate silent completion' }],
+        toolCalls: [],
+      });
     } finally {
       await local.dispose();
     }

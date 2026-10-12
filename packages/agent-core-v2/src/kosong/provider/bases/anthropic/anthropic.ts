@@ -4,6 +4,7 @@ import Anthropic, {
   AnthropicError,
   APIConnectionTimeoutError as AnthropicTimeoutError,
 } from '@anthropic-ai/sdk';
+import type { ErrorType } from '@anthropic-ai/sdk/resources/shared.js';
 import type {
   Tool as AnthropicTool,
   ContentBlockParam,
@@ -541,6 +542,19 @@ export function convertAnthropicError(
       error.error,
     );
   }
+  if (error instanceof AnthropicAPIError) {
+    const permanentStatus = permanentAnthropicStreamStatus(anthropicStreamErrorType(error));
+    if (permanentStatus !== undefined) {
+      return normalizeAPIStatusError(
+        permanentStatus,
+        error.message,
+        error.requestID,
+        parseRetryAfterMs(error.headers),
+        parseTraceId(error.headers),
+        error.error,
+      );
+    }
+  }
   if (error instanceof AnthropicAPIError && error.error !== undefined) {
     return new ChatProviderError(`Anthropic error: ${error.message}`, undefined, {
       details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
@@ -712,6 +726,21 @@ class AnthropicStreamedMessage implements StreamedMessage {
     response: AsyncIterable<MessageStreamEvent>,
   ): AsyncGenerator<StreamedMessagePart> {
     const toolUseBlockIndexes = new Set<number>();
+    const streamed: { signed: boolean; text: boolean; tool: boolean } = {
+      signed: false,
+      text: false,
+      tool: false,
+    };
+    const preserveSignedThink = (error: unknown): boolean => {
+      if (!streamed.signed || streamed.text || streamed.tool) return false;
+      if (anthropicStreamErrorType(error) !== 'api_error') return false;
+      if (this._finishReason !== null && this._finishReason !== 'completed') return false;
+      if (this._finishReason === null) {
+        this._finishReason = 'completed';
+        this._rawFinishReason = 'api_error';
+      }
+      return true;
+    };
 
     try {
       for await (const event of response) {
@@ -734,20 +763,25 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const block = blockEvt.content_block;
           const blockIndex = blockEvt.index;
           switch (block.type) {
-            case 'text':
-              yield { type: 'text', text: block.text };
+            case 'text': {
+              const text = typeof block.text === 'string' ? block.text : '';
+              if (text.trim().length > 0) streamed.text = true;
+              yield { type: 'text', text };
               break;
+            }
             case 'thinking':
               yield { type: 'think', think: block.thinking ?? '' };
               break;
-            case 'redacted_thinking':
-              yield {
-                type: 'think',
-                think: '',
-                encrypted: (block as unknown as { data: string }).data,
-              };
+            case 'redacted_thinking': {
+              const data = (block as unknown as { data?: string }).data;
+              if (typeof data === 'string' && data.length > 0) streamed.signed = true;
+              yield typeof data === 'string'
+                ? { type: 'think' as const, think: '', encrypted: data }
+                : { type: 'think' as const, think: '' };
               break;
+            }
             case 'tool_use':
+              streamed.tool = true;
               toolUseBlockIndexes.add(blockIndex);
               yield {
                 type: 'function',
@@ -763,9 +797,12 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const delta = deltaEvt.delta;
           const blockIndex = deltaEvt.index;
           switch (delta.type) {
-            case 'text_delta':
-              yield { type: 'text', text: delta.text };
+            case 'text_delta': {
+              const text = typeof delta.text === 'string' ? delta.text : '';
+              if (text.trim().length > 0) streamed.text = true;
+              yield { type: 'text', text };
               break;
+            }
             case 'thinking_delta':
               yield { type: 'think', think: delta.thinking ?? '' };
               break;
@@ -777,6 +814,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
               };
               break;
             case 'signature_delta':
+              if (delta.signature.length > 0) streamed.signed = true;
               yield {
                 type: 'think',
                 think: '',
@@ -784,6 +822,10 @@ class AnthropicStreamedMessage implements StreamedMessage {
               };
               break;
           }
+        } else if (eventType === 'error') {
+          const streamedError = anthropicApiErrorFromStreamEvent(evt);
+          if (preserveSignedThink(streamedError)) return;
+          throw convertAnthropicError(streamedError, this._convertErrorHook);
         } else if (eventType === 'content_block_stop') {
         } else if (eventType === 'message_delta') {
           const deltaUsage = (evt as { usage?: Record<string, unknown> }).usage;
@@ -816,9 +858,44 @@ class AnthropicStreamedMessage implements StreamedMessage {
         }
       }
     } catch (error: unknown) {
+      if (preserveSignedThink(error)) return;
       throw convertAnthropicError(error, this._convertErrorHook);
     }
   }
+}
+
+const PERMANENT_ANTHROPIC_STREAM_STATUS: Readonly<Record<string, number>> = {
+  invalid_request_error: 400,
+  authentication_error: 401,
+  permission_error: 403,
+  not_found_error: 404,
+  billing_error: 402,
+};
+
+function permanentAnthropicStreamStatus(type: string | undefined): number | undefined {
+  if (type === undefined) return undefined;
+  return PERMANENT_ANTHROPIC_STREAM_STATUS[type];
+}
+
+function anthropicStreamErrorType(error: unknown): string | undefined {
+  if (error instanceof AnthropicAPIError && typeof error.type === 'string' && error.type.length > 0) {
+    return error.type;
+  }
+  const body = error instanceof AnthropicAPIError ? error.error : error;
+  if (typeof body !== 'object' || body === null) return undefined;
+  const nested = (body as { error?: { type?: unknown } }).error?.type;
+  return typeof nested === 'string' && nested.length > 0 ? nested : undefined;
+}
+
+function anthropicApiErrorFromStreamEvent(event: unknown): AnthropicAPIError {
+  const type = anthropicStreamErrorType(event);
+  return new AnthropicAPIError(
+    undefined,
+    event as object,
+    undefined,
+    undefined,
+    (type ?? null) as ErrorType | null,
+  );
 }
 
 export class AnthropicChatProvider implements ChatProvider {

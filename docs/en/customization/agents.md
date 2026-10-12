@@ -44,7 +44,9 @@ Workspace inheritance provides context, not a new directory sandbox. Kiki does n
 
 To continue a direct child, set `resume` to its name or agent id; it rejects `name`, `profile`, `profile_file` and `route`. `allow_model_change` only matters on `resume` with an explicit `model_alias` that resolves to a different canonical model.
 
-A completed provider response is not itself a task receipt. A native child that ends with no content or tool calls fails with `loop.empty_completion`; an agent task that returns only blank final text fails with `task.empty_agent_receipt`. Text-free tool steps and completed thinking-only responses remain valid model steps, but an agent task still needs a final written result.
+A completed provider response is not itself a task receipt. If a completed response contains real thinking but no text or tool calls, Kiki continues within the same turn until text or a tool call arrives, whether or not the thinking has a signature. Existing signatures and usage are preserved without adding another user prompt; step budgets, cancellation and permanent provider errors still stop the turn. Text-free tool steps remain valid, but an agent task still needs a final written result.
+
+A native child that ends with no content or tool calls fails with `loop.empty_completion`; an agent task that returns only blank final text fails with `task.empty_agent_receipt`.
 
 Inspect the original turn and any saved work before resuming the same child with a new prompt asking it to finish and report the result. SDK callers must use a new prompt ID; repeating an already-settled ID replays its recorded outcome. Kiki does not automatically retry these failures or rewrite earlier task records.
 
