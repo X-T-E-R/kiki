@@ -1583,8 +1583,9 @@ export class TranscriptWireAdapter {
       : turnIdOf(canonical['turnId'], undefined) ?? inferredTurn;
     const priorStep = turnId === undefined ? undefined : this.#steps.get(turnId);
     const inferredStep = canonical === undefined || canonical['turnId'] === undefined;
-    const acceptedStepId = inferredStep ? priorStep?.stepId : stringOf(canonical?.['stepId']);
-    const acceptedStep = inferredStep ? priorStep?.ordinal : numberOf(canonical?.['step']);
+    const openedStep = inferredStep && turnId !== undefined ? this.runningStepAhead(turnId, priorStep) : undefined;
+    const acceptedStepId = inferredStep ? openedStep?.stepId ?? priorStep?.stepId : stringOf(canonical?.['stepId']);
+    const acceptedStep = inferredStep ? openedStep?.ordinal ?? priorStep?.ordinal : numberOf(canonical?.['step']);
     const stepId = turnId === undefined ? undefined : acceptedStepId ?? priorStep?.stepId ?? `${turnId}.delivery`;
     const stepOrdinal = acceptedStep ?? priorStep?.ordinal ?? 0;
     const delivery: MessageDelivery = {
@@ -1598,21 +1599,22 @@ export class TranscriptWireAdapter {
     };
     this.#deliveries.set(messageId, delivery);
     const turn = turnId === undefined ? undefined : this.#turnHeaders.get(turnId);
+    const openedTurn = turn !== undefined && (turn.message?.messageId === messageId || turn.promptId === messageId) ? turn : undefined;
     this.#deliveryUndoRecords.set(messageId, {
       ordinal,
-      anchor: isUndoAnchorOrigin(message['origin']) && turn?.message?.messageId !== messageId,
+      anchor: isUndoAnchorOrigin(message['origin']) && openedTurn === undefined,
     });
-    if (turn?.message?.messageId === messageId) {
-      if (isUndoAnchorOrigin(message['origin'])) this.#undoAnchors.add(turn.turnId);
-      if (turn.prompt !== undefined) return [];
+    if (openedTurn !== undefined) {
+      if (isUndoAnchorOrigin(message['origin'])) this.#undoAnchors.add(openedTurn.turnId);
+      if (openedTurn.prompt !== undefined) return [];
     }
     const input = arrayOf(message['content']);
     const activations = bundledSkillActivations(message['origin']);
     const content = input.slice(activations.length);
     const text = content.map(textOfPart).join('');
     const operations: TranscriptOperation[] = [];
-    if (turn?.message?.messageId === messageId && activations.length > 0) {
-      this.#turnOwnedItemIds.set(turn.turnId, activations.map((activation) => `wire:v2:skill:${activation.activationId}`));
+    if (openedTurn !== undefined && activations.length > 0) {
+      this.#turnOwnedItemIds.set(openedTurn.turnId, activations.map((activation) => `wire:v2:skill:${activation.activationId}`));
       operations.push(...activations.map((activation, index): TranscriptOperation => ({
         op: 'marker.upsert',
         item: {
@@ -1620,7 +1622,7 @@ export class TranscriptWireAdapter {
           payload: { text: textOfPart(input[index]), origin: { kind: 'skill_activation', trigger: 'user-slash', ...activation } },
           at: delivery.deliveredAt,
         },
-        beforeTurn: turn.ordinal,
+        beforeTurn: openedTurn.ordinal,
       })));
     }
     const attachmentIds: string[] = [];
@@ -1631,18 +1633,18 @@ export class TranscriptWireAdapter {
         op: 'attachment.upsert',
         attachment: {
           attachmentId, mediaType: media.mediaType ?? `${media.kind}/*`, name: media.name, size: media.size, source: media.source,
-          owner: turn?.message?.messageId === messageId ? { kind: 'turn', turnId: turn.turnId }
+          owner: openedTurn !== undefined ? { kind: 'turn', turnId: openedTurn.turnId }
             : turnId === undefined || stepId === undefined ? undefined : { kind: 'frame', turnId, stepId, frameId: messageId },
         },
       });
     }
-    if (turn?.message?.messageId === messageId) {
+    if (openedTurn !== undefined) {
       const deliveredTurn: TurnHeader = {
-        ...turn, prompt: text.length === 0 ? undefined : text,
+        ...openedTurn, prompt: text.length === 0 ? undefined : text,
         presentation: contentTextPresentation(content),
         attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds, delivery,
       };
-      this.#turnHeaders.set(turn.turnId, deliveredTurn);
+      this.#turnHeaders.set(openedTurn.turnId, deliveredTurn);
       operations.push({ op: 'turn.upsert', turn: deliveredTurn });
       return operations;
     }
@@ -2265,6 +2267,21 @@ export class TranscriptWireAdapter {
 
   private turnForStep(stepId: string | undefined): string | undefined {
     return stepId === undefined ? undefined : this.#turnIdByStepId.get(stepId);
+  }
+
+  private runningStepAhead(
+    turnId: string,
+    cursor: { readonly stepId: string; readonly ordinal: number } | undefined,
+  ): StepHeader | undefined {
+    const cursorOpen = cursor !== undefined && this.#stepHeaders.get(cursor.stepId)?.state === 'running';
+    let selected: StepHeader | undefined;
+    for (const stepId of this.#stepIdsByTurn.get(turnId) ?? []) {
+      const step = this.#stepHeaders.get(stepId);
+      if (step === undefined || step.state !== 'running' || step.stepId === cursor?.stepId) continue;
+      if (cursorOpen && step.ordinal <= cursor.ordinal) continue;
+      if (selected === undefined || step.ordinal > selected.ordinal) selected = step;
+    }
+    return selected;
   }
 
   private stepForOrdinal(turnId: string, ordinal: number): StepHeader | undefined {

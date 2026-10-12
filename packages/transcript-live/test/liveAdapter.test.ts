@@ -279,6 +279,7 @@ describe('AgentTranscriptLiveAdapter', () => {
       { type: 'image_url', imageUrl: { url: 'https://example.test/answer.png', id: 'provider-reference', name: 'answer.png', mimeType: 'image/png' } },
       { type: 'image_url', imageUrl: { url: 'kimi-file://stored-image', id: 'provider-reference', name: 'saved.png', mimeType: 'image/png' } },
       { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' }, name: 'inline.png' },
+      { type: 'image_url', imageUrl: { id: 'provider-only' } },
     ];
     const cold = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(cold);
@@ -291,19 +292,20 @@ describe('AgentTranscriptLiveAdapter', () => {
       live.apply(adapter.map(event));
       live.apply(adapter.map(event));
       reducer.apply(wire.add({ type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', step: 1, stepUuid: 'image-step', uuid: partId, part } }));
-      expect(live.getAttachment(`${partId}.att1`)).toMatchObject({
-        name: ['answer.png', 'saved.png', 'inline.png'][index],
-        source: [
-          { kind: 'url', url: 'https://example.test/answer.png' },
-          { kind: 'session_media', fileId: 'stored-image' },
-          { kind: 'url', url: 'data:image/png;base64,iVBORw0KGgo=' },
-        ][index],
-      });
+      const expectedSource = [
+        { kind: 'url', url: 'https://example.test/answer.png' },
+        { kind: 'session_media', fileId: 'stored-image' },
+        { kind: 'url', url: 'data:image/png;base64,iVBORw0KGgo=' },
+        undefined,
+      ][index];
+      const expectedName = ['answer.png', 'saved.png', 'inline.png', undefined][index];
+      expect(live.getAttachment(`${partId}.att1`)?.source).toEqual(expectedSource);
+      expect(live.getAttachment(`${partId}.att1`)?.name).toBe(expectedName);
       expect(cold.getAttachment(`${partId}.att1`)?.source).toEqual(live.getAttachment(`${partId}.att1`)?.source);
       expect(cold.getAttachment(`${partId}.att1`)?.name).toEqual(live.getAttachment(`${partId}.att1`)?.name);
     });
-    expect(turnOps('t0', live.getItems()).steps[0]?.frames).toHaveLength(3);
-    expect(turnOps('t0', cold.getItems()).steps[0]?.frames).toHaveLength(3);
+    expect(turnOps('t0', live.getItems()).steps[0]?.frames).toHaveLength(4);
+    expect(turnOps('t0', cold.getItems()).steps[0]?.frames).toHaveLength(4);
   });
 
   it('joins recorder media through the real session store into matching live and cold attachments', async () => {

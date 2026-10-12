@@ -180,4 +180,51 @@ describe('prompt-owned context reading order', () => {
     expect(blocks.map((block) => block.id)).toEqual(['user-agent-turn-t0-prompt', 'agent-frame-f0.0',
       'reminder-idle-0', 'system-agent-turn-t1-prompt', 'agent-frame-f1.0']);
   });
+
+  it('keeps model_steering after the steered user messages on live, cold replay, and a spliced page', () => {
+    const message = (id: string, text: string, origin: Record<string, unknown>) => ({
+      id, role: 'user', origin, content: [{ type: 'text', text }],
+    });
+    const records: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'previous', origin: { kind: 'user' }, input: [{ type: 'text', text: 'previous request' }], time: 1_000 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, time: 2_000 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-1', toolCallId: 'edit-1', name: 'Edit', args: {} }, time: 3_000 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-2', toolCallId: 'edit-2', name: 'Edit', args: {} }, time: 3_100 },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-3', toolCallId: 'edit-3', name: 'Edit', args: {} }, time: 3_200 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' }, time: 4_000 },
+      { type: 'context.append_message', message: message('idle', '<system-reminder>between steps</system-reminder>', { kind: 'injection', variant: 'goal_cancelled' }), delivery: { messageId: 'idle', origin: 'injection' }, time: 5_000 },
+      { type: 'context.append_message', message: message('steer-a', 'this request', { kind: 'user' }), delivery: { messageId: 'steer-a', turnId: 0, stepId: 'step-2', step: 2, origin: 'user' }, time: 6_000 },
+      { type: 'context.append_message', message: message('steer-b', 'quoted: see the edits', { kind: 'user' }), delivery: { messageId: 'steer-b', turnId: 0, stepId: 'step-2', step: 2, origin: 'user' }, time: 6_100 },
+      { type: 'context.append_message', message: message('steer-cue', 'CLASSIFY THEN ACT', { kind: 'injection', variant: 'model_steering' }), delivery: { messageId: 'steer-cue', origin: 'injection' }, time: 6_200 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' }, time: 6_300 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 0, stepUuid: 'step-2', uuid: 'thought', part: { type: 'think', think: 'planning' } }, time: 6_400 },
+    ];
+    const expected = ['user-previous', 'tool-edit-1', 'tool-edit-2', 'tool-edit-3', 'reminder-idle-0', 'user-steer-a', 'user-steer-b', 'system-steer-cue', 'agent-frame-thought'];
+    const projectLive = (input: readonly TranscriptWireRecord[]) => {
+      const transcript = new AgentTranscript('main');
+      const adapter = new TranscriptWireAdapter('main', { turn: (id) => transcript.getTurn(id) });
+      const reducer = new TranscriptFactReducer(transcript);
+      let live = createViewState('session_test');
+      for (const record of input) {
+        reducer.apply(adapter.add(record));
+        live = projectAgentTranscriptView(live, 'main', transcript.snapshot());
+      }
+      return { transcript, live };
+    };
+    const { transcript, live } = projectLive(records);
+    expect(live.blocks.map((block) => block.id)).toEqual(expected);
+    expect(live.blocks.find((block) => block.id === 'system-steer-cue')).toMatchObject({
+      kind: 'system', variant: 'injection', source: 'model_steering', text: 'CLASSIFY THEN ACT',
+    });
+    const cold = projectLive(records).live;
+    expect(cold.blocks).toEqual(live.blocks);
+    const snapshot = transcript.snapshot();
+    const older = { ...snapshot, items: snapshot.items.filter((item) => item.kind === 'turn' && item.turnId === 't0').map((item) => item.kind === 'turn' ? { ...item, steps: item.steps.filter((step) => step.stepId === 'step-1') } : item) };
+    const newer = { ...snapshot, items: snapshot.items.filter((item) => item.kind === 'turn' && item.turnId === 't0').map((item) => item.kind === 'turn' ? { ...item, steps: item.steps.filter((step) => step.stepId === 'step-2'), prompt: undefined } : item) };
+    const olderBlocks = agentTranscriptToBlocks({ agent_id: 'main', ...older });
+    const newerBlocks = agentTranscriptToBlocks({ agent_id: 'main', ...newer });
+    expect(olderBlocks.map((block) => block.id)).toEqual(['user-previous', 'tool-edit-1', 'tool-edit-2', 'tool-edit-3', 'reminder-idle-0']);
+    expect(newerBlocks.map((block) => block.id)).toEqual(['user-steer-a', 'user-steer-b', 'system-steer-cue', 'agent-frame-thought']);
+    expect(agentTranscriptToBlocks({ agent_id: 'main', ...snapshot }, newerBlocks).map((block) => block.id)).toEqual(expected);
+  });
 });

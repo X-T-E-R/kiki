@@ -3031,7 +3031,7 @@ describe('TranscriptService live integration', () => {
         }));
         expect(recovered).toEqual(expected);
         expect(starts).toEqual([undefined, undefined]);
-        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(12);
+        expect((await query.get<{ format: number }>('__transcript_projection_checkpoint__', key))?.format).toBe(13);
         expect(await read()).toEqual(expected);
         expect(starts).toEqual([undefined, undefined, originalWire.byteLength]);
         expect(await fsPromises.readFile(wirePath)).toEqual(originalWire);
@@ -3041,7 +3041,7 @@ describe('TranscriptService live integration', () => {
       }
     });
 
-    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])('rebuilds projection checkpoint format %s to recover current wire facts', async (format) => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       await appendFile(wirePath, `${[
@@ -3074,6 +3074,15 @@ describe('TranscriptService live integration', () => {
           message: { id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'accepted edited text' }] } } },
         { type: 'turn.prompt', turnId: 4, promptId: 'edited-request', managed: true, origin: { kind: 'user' }, input: [{ type: 'text', text: 'accepted edited text' }], time: 25_100 },
         { type: 'turn.ended', turnId: 4, reason: 'completed', time: 25_200 },
+        { type: 'turn.prompt', turnId: 5, promptId: 'boundary-prompt', input: [{ type: 'text', text: 'boundary' }], origin: { kind: 'user' }, time: 26_000 },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 1, uuid: 'step-5a' }, time: 26_100 },
+        { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5a', uuid: 'before-boundary', part: { type: 'text', text: 'before' } }, time: 26_200 },
+        { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 5, step: 1, uuid: 'step-5a', finishReason: 'stop' }, time: 26_300 },
+        { type: 'context.append_message', time: 26_400, delivery: { deliveryId: 'd-steer-boundary', messageId: 'steer-boundary', turnId: 5, stepId: 'step-5b', step: 2, origin: 'user', deliveredAt: new Date(26_400).toISOString() }, message: { id: 'steer-boundary', role: 'user', content: [{ type: 'text', text: 'anchored user' }], origin: { kind: 'user' } } },
+        { type: 'context.append_message', time: 26_500, delivery: { deliveryId: 'd-steer-cue', messageId: 'steer-cue', origin: 'injection', deliveredAt: new Date(26_500).toISOString() }, message: { id: 'steer-cue', role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }], origin: { kind: 'injection', variant: 'model_steering' } } },
+        { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 5, step: 2, uuid: 'step-5b' }, time: 26_600 },
+        { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 5, stepUuid: 'step-5b', uuid: 'boundary-thought', part: { type: 'think', think: 'next' } }, time: 26_700 },
+        { type: 'turn.ended', turnId: 5, reason: 'completed', time: 26_800 },
       ].map((record) => JSON.stringify(record)).join('\n')}\n`);
       await appendFile(wirePath, `${Array.from({ length: 300 }, (_, index) => JSON.stringify({ type: 'executor.runtime.update', kind: 'stable', index })).join('\n')}\n`);
       const core = fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents());
@@ -3109,7 +3118,16 @@ describe('TranscriptService live integration', () => {
         ]);
         expect(expected?.prompts).toContainEqual(expect.objectContaining({ promptId: 'scheduled-example', originKind: 'cron_job',
           content: [{ type: 'text', text: 'Scheduled message body' }] }));
-        expect(checkpoint?.format).toBe(12);
+        expect(checkpoint?.format).toBe(13);
+        const boundary = expected?.items.find((item) => item.kind === 'turn' && item.turnId === 't5');
+        expect(boundary?.kind === 'turn' ? boundary.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)]) : []).toEqual([
+          ['step-5a', ['before-boundary']],
+          ['step-5b', ['steer-boundary', 'steer-cue', 'boundary-thought']],
+        ]);
+        expect(boundary?.kind === 'turn' ? boundary.steps[1]?.frames[1] : undefined).toMatchObject({
+          origin: { kind: 'injection', variant: 'model_steering' },
+          delivery: { messageId: 'steer-cue', turnId: 't5', stepId: 'step-5b' },
+        });
         expect(expected?.items.find(item => item.kind === 'turn' && item.turnId === 't4')).toMatchObject({ prompt: 'accepted edited text', promptId: 'edited-request', message: { messageId: 'logical-message' } });
         expect(expected?.meta.goal).toMatchObject({ budgetUsed: 200, turnsUsed: 1, wallClockMs: 50 });
         expect(expected?.items.flatMap((item) => item.kind === 'marker' && item.marker === 'goal'

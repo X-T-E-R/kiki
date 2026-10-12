@@ -1031,7 +1031,7 @@ describe('TranscriptWireAdapter', () => {
           { type: 'text', text: '<skill>review</skill>' },
           { type: 'text', text: '<skill>security</skill>' },
           { type: 'text', text: 'inspect this' },
-          { type: 'image_url', imageUrl: { id: 'file-1' } },
+          { type: 'image', source: { kind: 'session_media', file_id: 'file-1' } },
         ],
         origin: {
           kind: 'user',
@@ -1084,7 +1084,7 @@ describe('TranscriptWireAdapter', () => {
           role: 'user',
           content: [
             { type: 'text', text: 'third' },
-            { type: 'image_url', imageUrl: { id: 'file-1' } },
+            { type: 'image', source: { kind: 'session_media', file_id: 'file-1' } },
           ],
           origin: { kind: 'user' },
         },
@@ -1108,9 +1108,9 @@ describe('TranscriptWireAdapter', () => {
         promptId: 'prompt-1',
         input: [
           { type: 'text', text: 'look' },
-          { type: 'image_url', imageUrl: { id: 'file-1', name: 'photo.png' } },
-          { type: 'video_url', videoUrl: { id: 'file-2', name: 'clip.mp4' } },
-          { type: 'image_url', imageUrl: { id: 'file-3' } },
+          { type: 'image', name: 'photo.png', source: { kind: 'session_media', file_id: 'file-1' } },
+          { type: 'video', name: 'clip.mp4', source: { kind: 'session_media', file_id: 'file-2' } },
+          { type: 'image', source: { kind: 'session_media', file_id: 'file-3' } },
         ],
         origin: { kind: 'user' },
         time: 1_000,
@@ -1119,9 +1119,21 @@ describe('TranscriptWireAdapter', () => {
     ]);
 
     expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['t0.att1', 't0.att2', 't0.att3']);
-    expect(transcript.getAttachment('t0.att1')?.name).toBe('photo.png');
-    expect(transcript.getAttachment('t0.att2')?.name).toBe('clip.mp4');
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({ name: 'photo.png', source: { kind: 'session_media', fileId: 'file-1' } });
+    expect(transcript.getAttachment('t0.att2')).toMatchObject({ name: 'clip.mp4', source: { kind: 'session_media', fileId: 'file-2' } });
     expect(transcript.getAttachment('t0.att3')?.name).toBeUndefined();
+    expect(transcript.getAttachment('t0.att3')?.source).toEqual({ kind: 'session_media', fileId: 'file-3' });
+  });
+
+  it('leaves an id-only provider image off the session media route', () => {
+    const transcript = replay([{
+      type: 'turn.prompt', turnId: 0, promptId: 'provider-only',
+      input: [{ type: 'text', text: 'look' }, { type: 'image_url', imageUrl: { id: 'provider-only' } }],
+      origin: { kind: 'user' }, time: 1_000,
+    }]);
+    expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['t0.att1']);
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({ attachmentId: 't0.att1', owner: { kind: 'turn', turnId: 't0' } });
+    expect(transcript.getAttachment('t0.att1')?.source).toBeUndefined();
   });
 
   it('derives inline media size while preserving explicit media metadata', () => {
@@ -1250,6 +1262,94 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('places an unanchored boundary injection on the step already opened by its user frames', () => {
+    const user = (id: string, text: string, time: number, stepId: string, step: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      delivery: { deliveryId: `d-${id}`, messageId: id, turnId: 0, stepId, step, origin: 'user', deliveredAt: new Date(time).toISOString() },
+      message: { id, role: 'user', content: [{ type: 'text', text }], origin: { kind: 'user' } },
+    });
+    const injection = (id: string, text: string, variant: string, time: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      delivery: { deliveryId: `d-${id}`, messageId: id, origin: 'injection', deliveredAt: new Date(time).toISOString() },
+      message: { id, role: 'user', content: [{ type: 'text', text }], origin: { kind: 'injection', variant } },
+    });
+    const loop = (event: Record<string, unknown>, time: number): TranscriptWireRecord => ({
+      type: 'context.append_loop_event', event, time,
+    });
+    const steering = injection('steer-cue', 'CLASSIFY THEN ACT', 'model_steering', 6_200);
+    const records: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'previous', input: [{ type: 'text', text: 'previous request' }], origin: { kind: 'user' }, time: 1_000 },
+      loop({ type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, 2_000),
+      loop({ type: 'content.part', turnId: 0, stepUuid: 'step-1', uuid: 'before', part: { type: 'text', text: 'before' } }, 2_500),
+      injection('mid', '<system-reminder>still running</system-reminder>', 'goal_cancelled', 3_000),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-1', toolCallId: 'edit-1', name: 'Edit', args: { file: 'a.ts' } }, 3_200),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-2', toolCallId: 'edit-2', name: 'Edit', args: { file: 'b.ts' } }, 3_300),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-3', toolCallId: 'edit-3', name: 'Edit', args: { file: 'c.ts' } }, 3_400),
+      loop({ type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason: 'tool_calls' }, 4_000),
+      injection('idle', '<system-reminder>between steps</system-reminder>', 'goal_cancelled', 5_000),
+      user('steer-a', 'this request', 6_000, 'step-2', 2),
+      user('steer-b', 'quoted: see the edits', 6_100, 'step-2', 2),
+      steering,
+      loop({ type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' }, 6_300),
+      loop({ type: 'content.part', turnId: 0, stepUuid: 'step-2', uuid: 'thought', part: { type: 'think', think: 'planning' } }, 6_400),
+    ];
+    const opened = records.slice(0, records.indexOf(steering) + 1);
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
+    for (const record of opened) reducer.apply(adapter.add(record));
+    expect(transcript.getTurn('t0')?.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)])).toEqual([
+      ['step-1', ['before', 'mid', 'step-1.edit-1', 'step-1.edit-2', 'step-1.edit-3', 'idle']],
+      ['step-2', ['steer-a', 'steer-b', 'steer-cue']],
+    ]);
+    const resumed = new AgentTranscript('main');
+    resumed.apply([{ op: 'reset', agentId: 'main', snapshot: transcript.snapshot() }]);
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.restore(reducer.checkpoint());
+    const resumedAdapter = new TranscriptWireAdapter('main', { turn: (turnId) => resumed.getTurn(turnId) });
+    resumedAdapter.restore(adapter.checkpoint());
+    for (const record of records.slice(opened.length)) resumedReducer.apply(resumedAdapter.add(record));
+    expect(resumed.getTurn('t0')?.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)])).toEqual([
+      ['step-1', ['before', 'mid', 'step-1.edit-1', 'step-1.edit-2', 'step-1.edit-3', 'idle']],
+      ['step-2', ['steer-a', 'steer-b', 'steer-cue', 'thought']],
+    ]);
+    expect(resumed.getTurn('t0')?.steps[1]?.frames[2]).toMatchObject({
+      origin: { kind: 'injection', variant: 'model_steering' },
+      delivery: { messageId: 'steer-cue', turnId: 't0', stepId: 'step-2', origin: 'injection' },
+    });
+    const page = paginateTurns(resumed.getItems(), { pageSize: 1 });
+    expect(page.items.map(idLabel)).toEqual(['t0']);
+    const pagedTurn = page.items.find((item) => item.kind === 'turn');
+    expect(pagedTurn?.kind === 'turn' ? pagedTurn.steps[1]?.frames.map((frame) => frame.frameId) : []).toEqual([
+      'steer-a', 'steer-b', 'steer-cue', 'thought',
+    ]);
+
+    const freshUser: TranscriptWireRecord = {
+      type: 'context.append_message', time: 8_200,
+      delivery: { deliveryId: 'd-body', messageId: 'body', turnId: 1, stepId: 'step-3', step: 1, origin: 'user', deliveredAt: new Date(8_200).toISOString() },
+      message: { id: 'body', role: 'user', content: [{ type: 'text', text: 'send now' }], origin: { kind: 'user' } },
+    };
+    const freshSteering = injection('fresh-cue', 'CLASSIFY THEN ACT', 'model_steering', 8_300);
+    const fresh = replay([
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
+      { type: 'context.append_message', time: 7_500, message: { id: 'orphan', role: 'user', content: [{ type: 'text', text: '<system-reminder>after the turn</system-reminder>' }], origin: { kind: 'injection', variant: 'goal_cancelled' } } },
+      { type: 'turn.prompt', turnId: 1, promptId: 'header', input: [{ type: 'text', text: 'header' }], origin: { kind: 'user' }, managed: true, time: 8_000 },
+      freshUser,
+      freshSteering,
+      loop({ type: 'step.begin', turnId: 1, step: 1, uuid: 'step-3' }, 8_400),
+      loop({ type: 'content.part', turnId: 1, stepUuid: 'step-3', uuid: 'next-thought', part: { type: 'think', think: 'next' } }, 8_500),
+    ]);
+    expect(fresh.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId)).toContain('message-delivery:orphan');
+    expect(fresh.getTurn('t1')?.steps.map((step) => step.frames.map((frame) => frame.frameId))).toEqual([
+      ['body', 'fresh-cue', 'next-thought'],
+    ]);
+    const older = paginateTurns(fresh.getItems(), { beforeTurn: 't1', pageSize: 1 });
+    expect(older.items.map(idLabel)).toEqual(['message-delivery:orphan']);
+    const newest = paginateTurns(fresh.getItems(), { pageSize: 1 });
+    expect(newest.items.find((item) => item.kind === 'turn' && item.turnId === 't1')?.kind).toBe('turn');
+    expect(newest.items.filter((item) => item.kind === 'marker').map((item) => item.markerId)).toEqual(['message-delivery:orphan']);
+  });
+
   it('projects canonical delivery once at its accepted step and round trips the delivery contract', () => {
     const delivery = {
       deliveryId: 'delivery-1', messageId: 'mail', turnId: 0, stepId: 'step-2', step: 2,
@@ -1315,7 +1415,7 @@ describe('TranscriptWireAdapter', () => {
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter('main');
     const origin = { kind: 'user', skillActivations: [{ activationId: 'activation-1', skillName: 'review' }] };
-    const input = [{ type: 'text', text: '<skill>review</skill>' }, { type: 'image_url', imageUrl: { id: 'image-1' } }];
+    const input = [{ type: 'text', text: '<skill>review</skill>' }, { type: 'image', source: { kind: 'session_media', file_id: 'image-1' } }];
     reducer.apply(adapter.add({ type: 'turn.prompt', turnId: 0, promptId: 'managed-media', input, origin, managed: true }));
     expect(transcript.getTurn('t0')?.attachmentIds).toBeUndefined();
     expect(transcript.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
@@ -1325,6 +1425,10 @@ describe('TranscriptWireAdapter', () => {
       message: { id: 'managed-media', role: 'user', content: input, origin },
     }));
     expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['managed-media.att1']);
+    expect(transcript.getAttachment('managed-media.att1')).toMatchObject({
+      source: { kind: 'session_media', fileId: 'image-1' },
+      owner: { kind: 'turn', turnId: 't0' },
+    });
     expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
     expect(transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId)).toEqual(['wire:v2:skill:activation-1']);
   });
@@ -1549,7 +1653,13 @@ describe('TranscriptWireAdapter', () => {
       expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ marker: 'model.switch', payload: { from: 'old', to: 'new' } }) }),
     ]);
     const canonical = restored.add({ type: 'agent.model_switch', operationId: 'standalone', fromModel: 'new', toModel: 'newer', mode: 'direct', time: 3 });
-    expect(canonical[0]?.operations).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ markerId: 'model-switch:standalone', payload: expect.objectContaining({ state: 'completed' }) }) })]);
+    expect(canonical[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'newer' } } },
+      expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({
+        markerId: 'model-switch:standalone', marker: 'model.switch',
+        payload: expect.objectContaining({ state: 'completed', change: 'model', from: 'new', to: 'newer', mode: 'direct' }),
+      }) }),
+    ]);
   });
 
   it('upserts one compaction through queued, running and committed lifecycle, including checkpoint tails', () => {
@@ -1640,12 +1750,12 @@ describe('TranscriptWireAdapter', () => {
     restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
     const change = (operationId: string, thinking: string, mode = 'direct', toModel = 'example/model') => {
       const facts = restored.add({ type: 'agent.model_switch', operationId, fromModel: 'example/model', toModel, thinking, mode, oldEpoch: 0, newEpoch: mode === 'direct' ? 0 : 1 });
-      return facts[0]?.operations[0];
+      return facts[0]?.operations.find((op) => op.op === 'marker.upsert');
     };
     expect(change('resume:parent:1', 'high')).toMatchObject({ item: { payload: { change: 'resume', state: 'completed' } } });
     restored.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'pending' } } });
     expect(change('resume:parent:2', 'low')).toMatchObject({ item: { payload: { change: 'effort' } } });
-    expect(restored.add({ type: 'prompt.model_switch_status', receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'completed', binding: { thinking: 'low' } } })[0]?.operations[0]).toMatchObject({ item: { payload: { change: 'effort', state: 'completed' } } });
+    expect(restored.add({ type: 'prompt.model_switch_status', receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'completed', binding: { thinking: 'low' } } })[0]?.operations.find((op) => op.op === 'marker.upsert')).toMatchObject({ item: { payload: { change: 'effort', state: 'completed' } } });
     expect(change('resume:parent:3', 'low', 'fresh')).toMatchObject({ item: { payload: { change: 'context' } } });
     expect(change('resume:parent:4', 'low', 'direct', 'example/other')).toMatchObject({ item: { payload: { change: 'model' } } });
   });
@@ -2330,7 +2440,7 @@ describe('TranscriptWireAdapter', () => {
         type: 'turn.steer',
         turnId: 0,
         promptId: 'steer-1',
-        input: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+        input: [{ type: 'image', source: { kind: 'session_media', file_id: 'file-steer' } }],
         origin: { kind: 'user' },
         time: 4_000,
       },
@@ -2339,7 +2449,7 @@ describe('TranscriptWireAdapter', () => {
         message: {
           id: 'steer-1',
           role: 'user',
-          content: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+          content: [{ type: 'image', source: { kind: 'session_media', file_id: 'file-steer' } }],
           origin: { kind: 'user' },
         },
         time: 4_100,
