@@ -13,7 +13,7 @@ import {
   IWorkspaceSessions,
   IWorkspaceInstanceManager,
 } from '@kiki/agent-core-v2';
-import { encodeWorkDirKey, workDirKeyAliases } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey, workDirKeyAliases } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { IGitService } from '@kiki/agent-core-v2/app/git/git';
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 
@@ -442,8 +442,9 @@ describe('server-v2 /api/workspaces', () => {
     server = undefined;
     const typedRoot = 'C:\\Users\\Foo\\Proj';
     const lowerRoot = 'c:\\users\\foo\\proj';
-    const typedId = encodeWorkDirKey(typedRoot);
+    const typedId = encodeLegacyWorkDirKey(typedRoot);
     const lowerId = encodeWorkDirKey(lowerRoot);
+    expect(typedId).not.toBe(lowerId);
     await writeFile(
       join(home as string, 'workspaces.json'),
       JSON.stringify({
