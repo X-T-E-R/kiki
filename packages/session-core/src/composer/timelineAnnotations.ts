@@ -12,7 +12,7 @@
 import { readSettings } from '../settings/settings';
 import { spaceStorage } from '../storage/spaceStorage';
 import { projectPresentedText } from '@kiki/transcript';
-import { sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
+import { parseSourceAnchor, sourceTextVersion, type SelectionSourceAnchor } from './selectionQuote';
 
 /** One derived timeline marker; `comment: null` is a plain quote (no comment). */
 export interface TimelineAnnotation {
@@ -61,10 +61,80 @@ export function annotationOverrideId(
 /** Reconstructed selection carry-overs from one user message's text. */
 export interface SelectionCarryovers {
   readonly annotations: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
+  readonly quotes: readonly { quote: string; source?: SelectionSourceAnchor | null }[];
   readonly quote: string | null;
   readonly quoteSource?: SelectionSourceAnchor | null;
   /** The typed remainder after the carry-over prefix. */
   readonly body: string;
+}
+
+function parseLegacyCarryoverPrefix(text: string): {
+  annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
+  quotes: { quote: string; source?: SelectionSourceAnchor | null }[];
+  body: string;
+} | null {
+  let index = 0;
+  const annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[] = [];
+  const quotes: { quote: string; source?: SelectionSourceAnchor | null }[] = [];
+
+  while (index < text.length) {
+    if (!text.slice(index).startsWith('>')) break;
+    let pos = index;
+    const quoteLines: string[] = [];
+    while (pos < text.length) {
+      const nextNl = text.indexOf('\n', pos);
+      const lineEnd = nextNl === -1 ? text.length : nextNl;
+      const line = text.slice(pos, lineEnd).replace(/\r$/, '');
+      if (line === '>') {
+        quoteLines.push('');
+        pos = nextNl === -1 ? text.length : nextNl + 1;
+      } else if (line.startsWith('> ')) {
+        quoteLines.push(line.slice(2));
+        pos = nextNl === -1 ? text.length : nextNl + 1;
+      } else {
+        break;
+      }
+    }
+    if (quoteLines.length === 0) break;
+
+    if (text.startsWith('\r\n', pos)) pos += 2;
+    else if (text.startsWith('\n', pos)) pos += 1;
+    else break;
+
+    const anchorNl = text.indexOf('\n', pos);
+    const anchorLineEnd = anchorNl === -1 ? text.length : anchorNl;
+    const anchorLine = text.slice(pos, anchorLineEnd).replace(/\r$/, '');
+    const source = parseSourceAnchor(anchorLine);
+    if (source === null) break;
+
+    pos = anchorNl === -1 ? text.length : anchorNl + 1;
+
+    if (text.startsWith('\r\n', pos)) pos += 2;
+    else if (text.startsWith('\n', pos)) pos += 1;
+    else break;
+
+    const quoteText = quoteLines.join('\n');
+    if (text.slice(pos).startsWith('Comment: ')) {
+      pos += 'Comment: '.length;
+      const doubleNlMatch = /\r?\n\r?\n/.exec(text.slice(pos));
+      let commentText: string;
+      if (doubleNlMatch !== null) {
+        commentText = text.slice(pos, pos + doubleNlMatch.index).trim();
+        pos = pos + doubleNlMatch.index + doubleNlMatch[0].length;
+      } else {
+        commentText = text.slice(pos).trim();
+        pos = text.length;
+      }
+      annotations.push({ quote: quoteText, comment: commentText, source });
+      index = pos;
+    } else {
+      quotes.push({ quote: quoteText, source });
+      index = pos;
+    }
+  }
+
+  if (annotations.length === 0 && quotes.length === 0) return null;
+  return { annotations, quotes, body: text.slice(index) };
 }
 
 /**
@@ -73,9 +143,39 @@ export interface SelectionCarryovers {
  */
 export function parseSelectionCarryovers(text: string, presentation?: import('@kiki/transcript').TextPresentation): SelectionCarryovers {
   const selections = presentation?.spans.filter((span) => span.kind === 'selection' && span.quote !== undefined) ?? [];
-  const annotations = selections.flatMap((span) => span.comment === undefined ? [] : [{ quote: span.quote!, comment: span.comment, source: span.source }]);
-  const quoted = selections.find((span) => span.comment === undefined);
-  return { annotations, quote: quoted?.quote ?? null, quoteSource: quoted?.source, body: projectPresentedText(text, presentation) };
+  if (selections.length > 0) {
+    const annotations = selections.flatMap((span) => span.comment === undefined ? [] : [{ quote: span.quote!, comment: span.comment, source: span.source }]);
+    const quoteSpans = selections.filter((span) => span.comment === undefined);
+    const quotes = quoteSpans.map((span) => ({ quote: span.quote!, source: span.source }));
+    const quoted = quoteSpans[0];
+    return {
+      annotations,
+      quotes,
+      quote: quoted?.quote ?? null,
+      quoteSource: quoted?.source,
+      body: projectPresentedText(text, presentation),
+    };
+  }
+
+  const legacy = parseLegacyCarryoverPrefix(text);
+  if (legacy !== null) {
+    const quoted = legacy.quotes[0];
+    return {
+      annotations: legacy.annotations,
+      quotes: legacy.quotes,
+      quote: quoted?.quote ?? null,
+      quoteSource: quoted?.source,
+      body: projectPresentedText(legacy.body, presentation),
+    };
+  }
+
+  return {
+    annotations: [],
+    quotes: [],
+    quote: null,
+    quoteSource: null,
+    body: projectPresentedText(text, presentation),
+  };
 }
 
 /**
@@ -161,7 +261,7 @@ export function collectTimelineAnnotations(
     const carry = parseSelectionCarryovers(block.text, block.presentation);
     const segments: readonly { quote: string; comment: string | null; source?: SelectionSourceAnchor | null }[] = [
       ...carry.annotations,
-      ...(carry.quote !== null ? [{ quote: carry.quote, comment: null, source: carry.quoteSource }] : []),
+      ...carry.quotes.map((q) => ({ quote: q.quote, comment: null, source: q.source })),
     ];
     for (const [ordinal, segment] of segments.entries()) {
       const candidate = annotationSource(blocks.slice(0, index), segment.quote, segment.source);

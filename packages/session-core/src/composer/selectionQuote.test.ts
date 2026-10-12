@@ -4,10 +4,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   addAnnotation,
+  addQuote,
   buildAnnotationBlock,
   buildAnnotationsPrefix,
   buildQuotePrefix,
   removeAnnotation,
+  removeQuote,
   selectionAnchorRect,
   selectionCarryoverPresentation,
   selectionTextWithin,
@@ -110,6 +112,25 @@ describe('addAnnotation / removeAnnotation', () => {
     const next = removeAnnotation(list, list[1]!.id);
     expect(next.map((annotation) => annotation.comment)).toEqual(['c1', 'c3']);
     expect(list).toHaveLength(3); // the input list is untouched
+  });
+});
+
+describe('addQuote / removeQuote', () => {
+  it('accumulates quotes with unique ids in selection order and never overwrites', () => {
+    const one = addQuote([], 'first quote', { blockId: 'b1', version: 'v1', start: 0, end: 5, text: 'first' });
+    const two = addQuote(one, 'second quote', { blockId: 'b2', version: 'v2', start: 10, end: 16, text: 'second' });
+    expect(one).toHaveLength(1);
+    expect(two).toHaveLength(2);
+    expect(two[0]).toMatchObject({ quote: 'first quote', source: { blockId: 'b1' } });
+    expect(two[1]).toMatchObject({ quote: 'second quote', source: { blockId: 'b2' } });
+    expect(two[0]!.id).not.toBe(two[1]!.id);
+  });
+
+  it('removes only the targeted quote, preserving order and others', () => {
+    const list = addQuote(addQuote(addQuote([], 'q1'), 'q2'), 'q3');
+    const next = removeQuote(list, list[1]!.id);
+    expect(next.map((item) => item.quote)).toEqual(['q1', 'q3']);
+    expect(list).toHaveLength(3);
   });
 });
 
@@ -218,6 +239,25 @@ describe('source selection anchors', () => {
       expect(collectTimelineAnnotations([blocks[1]!, carrier]).size).toBe(0);
       expect(anchoredSelectionRange('same different', source)).toBeNull();
     } finally { container.remove(); }
+  });
+
+  it('accumulates multiple distinct quotes alongside annotations in carryover presentation and reconstructs them', () => {
+    const s1 = { blockId: 'a1', version: 'v1', start: 0, end: 5, text: 'hello' };
+    const s2 = { blockId: 'a2', version: 'v2', start: 6, end: 11, text: 'world' };
+    const quotes = [
+      { quote: 'hello', source: s1 },
+      { quote: 'world', source: s2 },
+    ];
+    const annotations = [
+      { quote: 'note this', comment: 'first comment', source: s1 },
+    ];
+    const carried = selectionCarryoverPresentation(annotations, quotes);
+    const coldText = `${carried.prefix}my follow-up question`;
+    const parsed = parseSelectionCarryovers(coldText, carried.presentation);
+    expect(parsed.quotes).toEqual(quotes);
+    expect(parsed.quote).toBe('hello');
+    expect(parsed.annotations).toEqual(annotations);
+    expect(parsed.body).toBe('my follow-up question');
   });
 
   it('rejects cross-message selection and malformed explicit anchors without quote fallback', () => {

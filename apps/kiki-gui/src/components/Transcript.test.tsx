@@ -78,6 +78,7 @@ import {
   userTurnSnapshot,
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
+import { translate } from '@kiki/session-core/i18n';
 import { ConnectionProvider } from '../state/connection';
 import { writeStoredConfig } from '../state/connectionConfig';
 import { browserHost, HostProvider } from '../host';
@@ -104,6 +105,22 @@ import { displayUserMessageText, editableUserMessageText } from './message/messa
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
   return { ...original, useStreamdownPlugins: () => ({}) };
+});
+
+// The gallery order seam wraps every original block in a context provider and
+// renders no DOM of its own, so its props are what the seam is observed by;
+// the real context still reaches every consumer of the module.
+const galleryOrderProbe = vi.hoisted(() => ({ calls: [] as { agentId: string; order: number; blockId: string }[] }));
+
+vi.mock('./mediaPreviewContext', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./mediaPreviewContext')>();
+  return {
+    ...original,
+    MediaGalleryOrder: ({ agentId, order, blockId, children }: { agentId: string; order: number; blockId: string; children: ReactNode }) => {
+      galleryOrderProbe.calls.push({ agentId, order, blockId });
+      return children;
+    },
+  };
 });
 
 const roots: Root[] = [];
@@ -721,10 +738,78 @@ describe('media preview wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Gallery order seam: the image gallery orders by a block's place in the
+// session's own blocks. A block keeps that place whether it stands alone or
+// rides a merged row, so a projection never renumbers an image.
+
+/** blockId → the place the seam handed that block (the last render wins; the
+ * seam runs on every render, so one block reports more than once). */
+function probeOrders(): Record<string, number> {
+  return Object.fromEntries(galleryOrderProbe.calls.map((entry) => [entry.blockId, entry.order]));
+}
+
+function readToolBlock(id: string): Block {
+  return {
+    kind: 'tool',
+    id,
+    toolCallId: id,
+    name: 'Read',
+    argsText: '',
+    args: { file_path: `C:/w/${id}.ts` },
+    display: undefined,
+    description: undefined,
+    status: 'done',
+    output: 'ok',
+    isError: undefined,
+    startedAt: undefined,
+    durationMs: undefined,
+    progressText: undefined,
+  };
+}
+
+describe('gallery order seam', () => {
+  it('hands every block its index in the session blocks, a merged run included', async () => {
+    galleryOrderProbe.calls.length = 0;
+    writeSettings({ foldSteps: true });
+    try {
+      const container = await renderTranscript([
+        userBlock({ id: 'u-gallery', text: 'first' }),
+        // Three pure reads merge into one display row; each member must still
+        // hand over its own index instead of the row's.
+        readToolBlock('tool-gallery-1'),
+        readToolBlock('tool-gallery-2'),
+        readToolBlock('tool-gallery-3'),
+        assistantBlock('a-gallery', 'done'),
+      ]);
+      // Collapsed, the run is one display row: the members have not rendered,
+      // and the two rows around it keep their own places (0 and 4).
+      expect(container.querySelectorAll('[data-tool-id]')).toHaveLength(0);
+      expect(probeOrders()).toEqual({ 'u-gallery': 0, 'a-gallery': 4 });
+      expect(galleryOrderProbe.calls.every((entry) => entry.agentId === 'main')).toBe(true);
+      const run = container.querySelector('[data-read-run]')!;
+      expect(run).not.toBeNull();
+      await act(async () => { click(run.querySelector('button')!); });
+      // Expanded: each member carries its own index in the session's blocks —
+      // 1, 2, 3 — which no display row has (the run itself is display row 1).
+      expect(probeOrders()).toEqual({
+        'u-gallery': 0,
+        'a-gallery': 4,
+        'tool-gallery-1': 1,
+        'tool-gallery-2': 2,
+        'tool-gallery-3': 3,
+      });
+    } finally {
+      writeSettings({ foldSteps: false });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Message-closure row actions + collapsible user messages. These render the
 // full Transcript; the ResizeObserver stub from beforeAll covers both the
 // virtualizer and the collapse hook's observer path (the hook's synchronous
 // first measure is what the collapse tests drive).
+
 
 function transcriptState(
   blocks: Block[],
@@ -981,9 +1066,9 @@ describe('timeline annotations', () => {
     const editedComment = 'Keep the floor boundary explicit';
     await act(async () => { click(panel.querySelector('[data-annotation-bubble-edit]')!); });
     panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
-    const input = panel.querySelector<HTMLInputElement>('[data-annotation-bubble-input]')!;
+    const input = panel.querySelector<HTMLTextAreaElement>('[data-annotation-bubble-input]')!;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, editedComment);
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, editedComment);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => { click(panel.querySelector('[data-annotation-bubble-save]')!); });
@@ -1002,7 +1087,7 @@ describe('timeline annotations', () => {
     resetAnnotationOverridesForTests();
   });
 
-  it('hides a generated source prefix only when its presentation metadata is present', async () => {
+  it('hides a generated source prefix even when presentation metadata is missing, while preserving code literals', async () => {
     const source = { blockId: 'assistant-source-prefix', version: sourceTextVersion('quoted'), start: 0, end: 6, text: 'quoted' };
     const carry = selectionCarryoverPresentation([], 'quoted', source);
     const presented = await renderTranscript([
@@ -1014,7 +1099,15 @@ describe('timeline annotations', () => {
       userBlock({ id: 'user-raw-source', text: `${carry.prefix}follow up` }),
     ]);
     expect(presented.querySelector('[data-block-id="user-presented-source"]')?.textContent).not.toContain('kiki-source:');
-    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).toContain('kiki-source:');
+    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).not.toContain('kiki-source:');
+    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).toContain('follow up');
+
+    // Code block literal negative test: keeps literal text unchanged
+    const codeBlockText = 'Here is how anchor is formatted:\n```html\n<!-- kiki-source:{"blockId":"b1"} -->\n```';
+    const codeContainer = await renderTranscript([
+      userBlock({ id: 'user-code-literal', text: codeBlockText }),
+    ]);
+    expect(codeContainer.querySelector('[data-block-id="user-code-literal"]')?.textContent).toContain('<!-- kiki-source:{"blockId":"b1"} -->');
   });
 
   it('renders two multiline annotations without leaking source anchor comments', async () => {
@@ -1060,6 +1153,32 @@ describe('timeline annotations', () => {
     expect(mark.previousSibling?.textContent).toBe('same ');
     await act(async () => { click(mark); });
     expect(document.body.querySelector<HTMLInputElement>('[data-annotation-panel-input]')?.value).toBe('second occurrence');
+  });
+
+  it('renders multiple quote chips in selection order alongside annotation bubbles without anchor leaks', async () => {
+    const s1 = { blockId: 'assistant-multi-quote-1', version: sourceTextVersion('first text'), start: 0, end: 5, text: 'first' };
+    const s2 = { blockId: 'assistant-multi-quote-2', version: sourceTextVersion('second text'), start: 0, end: 6, text: 'second' };
+    const quotes = [
+      { quote: 'first quote block', source: s1 },
+      { quote: 'second quote block', source: s2 },
+    ];
+    const annotations = [
+      { quote: 'annotated passage', comment: 'first note', source: s1 },
+    ];
+    const carry = selectionCarryoverPresentation(annotations, quotes);
+    const container = await renderTranscript([
+      assistantBlock('assistant-multi-quote-1', 'first text'),
+      assistantBlock('assistant-multi-quote-2', 'second text'),
+      userBlock({ id: 'user-multi-quotes', text: `${carry.prefix}combined user query`, presentation: carry.presentation }),
+    ]);
+    const row = container.querySelector('[data-block-id="user-multi-quotes"]')!;
+    const chips = row.querySelectorAll('[data-quote-chip]');
+    expect(chips).toHaveLength(2);
+    expect(chips[0]?.textContent).toContain('first quote block');
+    expect(chips[1]?.textContent).toContain('second quote block');
+    expect(row.querySelectorAll('[data-annotation-bubble="user-multi-quotes"]')).toHaveLength(1);
+    expect(row.textContent).toContain('combined user query');
+    expect(row.textContent).not.toContain('kiki-source:');
   });
 });
 
@@ -1593,6 +1712,158 @@ describe('live and event chrome', () => {
     );
   });
 
+  it('opens the injected sender from its name, the same entry the subagent rows use', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-open-1',
+          text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+        },
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    const sender = container.querySelector<HTMLButtonElement>('button[data-agent-message-sender="agent-244"]');
+    // A native button: Tab reaches it, Enter and Space activate it, and a tap
+    // lands on it. Its label and its real-unknown tooltip are exactly the ones
+    // the line already carried.
+    expect(sender?.type).toBe('button');
+    expect(sender?.textContent).toBe('readme_kiki_worker injected');
+    expect(sender?.getAttribute('title')).toBe(
+      'Sender Agent: agent-244\nProfile: unknown\nModel: unknown\nTask: readme_kiki_worker',
+    );
+    // Hover feedback is the wash and ink lift the timeline's agent rows use.
+    expect(sender?.className).toContain('hover:bg-ink/[0.05]');
+    expect(sender?.className).toContain('hover:text-ink');
+    expect(sender?.className).toContain('focus-visible:outline-2');
+    expect(sender?.className).toContain('cursor-pointer');
+    await act(async () => { click(sender!); });
+    // The sender's real agent id opens the agent; the task name is only a label.
+    expect(opened).toEqual(['agent-244']);
+  });
+
+  it('opens a main-sender label as main, never as the task name it displays', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-open-main',
+          text: 'Message from agent "root" (main):\n\ncheck the tests',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+        },
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    await act(async () => {
+      click(container.querySelector('button[data-agent-message-sender="main"]')!);
+    });
+    // Main stays main: the one open entry routes it to this session's own
+    // timeline, never to a subagent page named after its task.
+    expect(opened).toEqual(['main']);
+  });
+
+  it('keeps the sender name a plain label where no surface can open an agent', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'user',
+        id: 'user-agent-open-null',
+        text: 'Message from agent "explorer" (agent-901):\n\nping',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        agentMessage: { senderAgentId: 'agent-901', senderTaskName: 'explorer' },
+      },
+    ]);
+    const sender = container.querySelector('[data-agent-message-sender="agent-901"]');
+    expect(sender?.tagName).toBe('SPAN');
+    expect(sender?.textContent).toBe('explorer injected');
+    expect(sender?.getAttribute('title')).toBe(
+      'Sender Agent: agent-901\nProfile: unknown\nModel: unknown\nTask: explorer',
+    );
+    expect(container.querySelector('button[data-agent-message-sender]')).toBeNull();
+  });
+
+  it('never opens an agent from a plain message or a peer thread', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-plain-open', text: 'I wrote this myself', userMessageId: 'm-plain-open' }),
+        userBlock({
+          id: 'user-peer-open',
+          text: 'Message from thread "Design review" (sess-source):\n\nping',
+          userMessageId: 'm-peer-open',
+          peerThread: { sessionId: 'sess-source' },
+        }),
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    // An ordinary message has no sender to open; a peer thread is a session,
+    // not an agent of this timeline — neither becomes a control.
+    expect(container.querySelector('button[data-agent-message-sender]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-source-block-id="user-plain-open"]')!); });
+    await act(async () => { click(container.querySelector('[data-peer-thread="sess-source"]')!); });
+    expect(opened).toEqual([]);
+  });
+
+  it('takes a coarse-pointer tap on the sender name as the open, not as the action-strip summon', async () => {
+    // A coarse pointer has no hover, so taming a tap matters: the row's own
+    // tap handler ignores controls inside it, so tapping the name opens the
+    // sender while the bubble keeps summoning the strip (`hover: none` stub,
+    // restored by hand to keep the file-wide ResizeObserver stand-in).
+    const media = window as unknown as { matchMedia?: unknown };
+    const hadMatchMedia = 'matchMedia' in window;
+    const originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(hover: none)',
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    });
+    try {
+      const opened: string[] = [];
+      const container = await renderTranscript(
+        [
+          {
+            kind: 'user',
+            id: 'user-agent-open-tap',
+            text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            userMessageId: 'm-tap-open',
+            agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+          },
+        ],
+        undefined,
+        undefined,
+        { onOpenAgent: (agentId) => { opened.push(agentId); } },
+      );
+      const row = container.querySelector('[data-block-id="user-agent-open-tap"]')!;
+      await act(async () => {
+        click(row.querySelector('button[data-agent-message-sender="agent-244"]')!);
+      });
+      expect(opened).toEqual(['agent-244']);
+      expect(row.querySelector('[data-actions-open]')).toBeNull();
+      await act(async () => { click(row.querySelector('[data-source-block-id="user-agent-open-tap"]')!); });
+      expect(row.querySelector('[data-actions-open]')).not.toBeNull();
+      expect(opened).toEqual(['agent-244']);
+    } finally {
+      if (hadMatchMedia) media.matchMedia = originalMatchMedia;
+      else delete media.matchMedia;
+    }
+  });
+
   it('shows only the body of an agent-injected bubble, with the source stated once in the meta line', async () => {
     const container = await renderTranscript([
       userBlock({
@@ -1922,8 +2193,8 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([...state.blocks]);
     const labels = [...container.querySelectorAll('[data-timeline-divider]')].map(node => node.textContent);
     expect(labels).toEqual([
-      'Fresh-context compaction complete · handoff retained', 'Context compacted · summary generated',
-      'Context compacted', 'Compaction failed · context unchanged',
+      translate('en', 'transcript.marker.compactionFresh'), translate('en', 'transcript.marker.compactionSummarize'),
+      translate('en', 'transcript.marker.compaction'), translate('en', 'transcript.marker.compactionFailed'),
     ]);
   });
 
@@ -1940,7 +2211,7 @@ describe('live and event chrome', () => {
       },
     ]);
     const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe('Fresh start conditions were not met · summarized instead');
+    expect(toggle.textContent).toBe(translate('en', 'transcript.marker.compactionFallback'));
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
     await act(async () => { click(toggle); });
@@ -1949,10 +2220,11 @@ describe('live and event chrome', () => {
     expect(items[2]).toBe('future_code');
   });
 
-  it('shows an over-limit notes notice without requiring the reasons panel to be opened', async () => {
+  it.each(['transcript.marker.compactionSummarize', 'transcript.marker.compactionFresh'] as const)('keeps %s visible beside an over-limit notes warning without opening details', async (key) => {
     const container = await renderTranscript([{ kind: 'notice', id: 'notes-budget', text: 'compaction', tone: 'neutral',
-      i18n: { key: 'transcript.marker.compactionSummarize' }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
-    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe('The summary’s task instructions exceed the notes limit. Existing notes are unchanged; the full text remains in the handoff for review.');
+      i18n: { key }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
+    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe(translate('en', key));
+    expect(container.querySelector('[data-compaction-notes-budget]')?.textContent).toBe(translate('en', 'transcript.marker.reason.notes_directives_budget'));
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
   });
 
@@ -2677,6 +2949,42 @@ describe('message row actions', () => {
     expect(text).toBe('edited text');
     // The editor closed on submit.
     expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('opens the editor with no second card and its cancel beside send, not below', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    const shell = container.querySelector<HTMLElement>('[data-edit-editor]')!;
+    // The composer card is the editor's only surface: no outer border, card
+    // background or padding shell dresses the composer up as a second card…
+    expect(shell.className).not.toContain('border');
+    expect(shell.className).not.toContain('bg-panel');
+    expect(shell.className).not.toContain('p-2');
+    expect(shell.querySelector('[data-composer-card]')).not.toBeNull();
+    // …and nothing is left below it: the edit ends on the round X that stands
+    // in the send button's own row, its words on the tooltip and the
+    // accessible name rather than on a line of their own.
+    expect(shell.children).toHaveLength(1);
+    expect(shell.textContent).not.toContain('Cancel');
+    const cancel = shell.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    const send = shell.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(cancel.textContent).toBe('');
+    expect(cancel.getAttribute('aria-label')).toBe('Cancel');
+    expect(cancel.getAttribute('title')).toBe('Cancel');
+    expect(cancel.parentElement).toBe(send.parentElement?.parentElement);
+    expect(cancel.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('copies the typed body and preserves selected carry annotations in the edit metadata', async () => {

@@ -13,6 +13,7 @@
  */
 
 import {
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -170,6 +171,7 @@ import {
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaParts';
+import { MediaGalleryOrder } from './mediaPreviewContext';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
@@ -329,6 +331,7 @@ const UserMessage = memo(function UserMessage({
   rowActions,
   annotations,
   senderIdentities,
+  onOpenAgent,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
@@ -337,6 +340,12 @@ const UserMessage = memo(function UserMessage({
   annotations?: readonly TimelineAnnotation[];
   /** senderAgentId → role profile / model, for the injected-message label. */
   senderIdentities?: ReadonlyMap<string, SenderIdentity>;
+  /**
+   * Opens an agent's own timeline — the same entry the timeline's subagent
+   * cards use. The injected sender's name calls it with the sender's real
+   * agent id; with no opener (a read-only surface) that name stays a label.
+   */
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const { t, time } = useI18n();
   const outcomeActions = usePromptOutcomeActions();
@@ -391,15 +400,36 @@ const UserMessage = memo(function UserMessage({
           model: senderIdentity?.model ?? unknownDetail,
           task: block.agentMessage?.senderTaskName ?? unknownDetail,
         });
+  // The sender's name is the line's one control: it opens the sender's own
+  // timeline through the same entry the subagent rows use, so a message
+  // another agent injected leads straight to that agent. It carries the
+  // sender's real agent id — never the task name, which is only a label. A
+  // peer thread is a session rather than an agent of this timeline and a
+  // plain user message has no sender at all, so neither routes through this
+  // door; with no opener the name stays the plain label it always was.
+  const senderOpen = senderAgentId === undefined || onOpenAgent === undefined
+    ? undefined
+    : () => { onOpenAgent(senderAgentId); };
+  // Both forms of the name carry the same hooks, so a reader (or a proof)
+  // finds the line by them whether or not this surface can open the sender.
+  const senderAttrs = {
+    'data-agent-message-sender': block.agentMessage?.senderAgentId,
+    'data-peer-thread': block.peerThread?.sessionId,
+  };
   // The bubble reads the body only: a message from another agent or thread
   // states its source in the meta line above, while the durable text keeps
   // the producer's envelope for the model to read.
   const display = useMemo(() => displayUserMessageText(block), [block]);
   const carry = useMemo(() => parseSelectionCarryovers(display.text, display.presentation), [display.text, display.presentation]);
   const bodyText = carry.body;
+  const quoteItems = carry.quotes.length > 0
+    ? carry.quotes
+    : carry.quote !== null
+      ? [{ quote: carry.quote, source: carry.quoteSource }]
+      : [];
   const typedText = [
     ...carry.annotations.map((annotation) => `${buildQuotePrefix(annotation.quote)}${annotation.comment}\n\n`),
-    carry.quote === null ? '' : buildQuotePrefix(carry.quote),
+    ...quoteItems.map((item) => buildQuotePrefix(item.quote)),
     bodyText,
   ].join('');
   // Editing rewrites the durable message, so it opens the text the message
@@ -413,7 +443,7 @@ const UserMessage = memo(function UserMessage({
   const threadRefDirectory = useThreadRefDirectory(
     useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
   );
-  const carried = carry.annotations.length > 0 || carry.quote !== null;
+  const carried = carry.annotations.length > 0 || quoteItems.length > 0;
   const media = block.media ?? [];
   const projectBody = useCallback(
     (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
@@ -431,16 +461,30 @@ const UserMessage = memo(function UserMessage({
           peer-thread messages); the time stays quiet until hover/focus so the
           bubble reads as the user's own voice. */}
       <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
-        {senderLabel !== undefined ? (
+        {senderLabel === undefined ? null : senderOpen === undefined ? (
           <span
-            data-agent-message-sender={block.agentMessage?.senderAgentId}
-            data-peer-thread={block.peerThread?.sessionId}
+            {...senderAttrs}
             className="text-[12px] font-medium text-ink-soft"
             title={senderDetails}
           >
             {senderLabel}
           </span>
-        ) : null}
+        ) : (
+          // The wash and the focus ring are the ones the timeline's agent rows
+          // already use for their click, so hovering this name reads as the
+          // same offer: the sink stays inside the meta line (the -mx-1/p-1
+          // pair cancels out), the ink lifts from soft to full, and Enter,
+          // Space or a tap all land on the one open entry above.
+          <button
+            type="button"
+            {...senderAttrs}
+            onClick={senderOpen}
+            title={senderDetails}
+            className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          >
+            {senderLabel}
+          </button>
+        )}
         {senderMeta === '' ? null : (
           <span
             data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
@@ -463,7 +507,9 @@ const UserMessage = memo(function UserMessage({
       </span>
       {carried && !editing ? (
         <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap items-center justify-end gap-1.5">
-          {carry.quote !== null ? <QuoteChip quote={carry.quote} /> : null}
+          {quoteItems.map((item, index) => (
+            <QuoteChip key={index} quote={item.quote} />
+          ))}
           {/* Sent notes fold into one bubble beside the message; the timeline
               itself only marks notes still riding the composer's draft. */}
           {carry.annotations.length > 0 ? (
@@ -485,7 +531,10 @@ const UserMessage = memo(function UserMessage({
             const prepared = editedPresentation === undefined
               ? prepareThreadRefContext(text, threadRefDirectory.info)
               : { text, presentation: editedPresentation };
-            const selections = selectionCarryoverPresentation(carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })), carry.quote, carry.quoteSource);
+            const selections = selectionCarryoverPresentation(
+              carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })),
+              quoteItems,
+            );
             const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
             await rowActions.onEditMessage(block, selections.prefix + prepared.text, attachments, presentation);
             setEditing(false);
@@ -1684,7 +1733,8 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const baseText = block.goalChange !== undefined
     ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
     : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
-  const text = block.reasonCodes?.includes('notes_directives_budget') ? t('transcript.marker.reason.notes_directives_budget') : baseText;
+  const text = baseText;
+  const notesBudgetExceeded = block.reasonCodes?.includes('notes_directives_budget') === true;
   // Why a compaction took the path it did (e.g. summary instead of a fresh
   // window): one sentence per engine reason code; an unknown code reads as-is.
   const reasonText = (code: string) => {
@@ -1720,6 +1770,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
           </button>
         ) : label}
       </TimelineDivider>
+      {notesBudgetExceeded ? <p data-compaction-notes-budget className="mt-1 text-[12px] leading-snug text-ink-soft">{t('transcript.marker.reason.notes_directives_budget')}</p> : null}
       {/* The reasons are body text under the rule, not a centred aside: the
           list starts on the column's left edge with the same hanging indent
           as a list in an answer (.kiki-md ul), faint bullets like there too. */}
@@ -1768,17 +1819,51 @@ function ReadRunSummary({ group }: { group: ToolGroup }) {
   );
 }
 
+/**
+ * Every original block hands the image gallery its own place in the session's
+ * blocks: `order` is that block's index in `state.blocks`, never the position
+ * of the row a projection put it in, so an image keeps its true sequence
+ * whether its block stands alone, sits inside a fold, or rides a merged run.
+ * The agent is the timeline's own — the scope the gallery filters by. A block
+ * with no original index (a card synthesized from the forest) keeps the
+ * enclosing block's order instead of inventing one.
+ */
+function withGalleryOrder(
+  blockId: string | undefined,
+  agentId: string,
+  blockOrder: ReadonlyMap<string, number>,
+  content: ReactNode,
+): ReactNode {
+  if (blockId === undefined) return content;
+  const order = blockOrder.get(blockId);
+  if (order === undefined) return content;
+  return <MediaGalleryOrder agentId={agentId} order={order} blockId={blockId}>{content}</MediaGalleryOrder>;
+}
+
+/**
+ * The block whose place in the gallery a row's content takes. A delivered
+ * message is projected from its SendMessage call, and the call is the block
+ * that actually lives in the session's blocks — so the call owns the place,
+ * not the row id the projection minted for it.
+ */
+function galleryBlockId(block: Block): string {
+  return block.kind === 'message' ? block.sourceTool?.id ?? block.id : block.id;
+}
+
 const ToolGroupRow = memo(
   function ToolGroupRow({
     group,
     agentId,
     agentNames,
     onOpenAgent,
+    blockOrder,
   }: {
     group: ToolGroup;
     agentId: string;
     agentNames?: ReadonlyMap<string, string>;
     onOpenAgent?: (agentId: string) => void;
+    /** blockId → index in `state.blocks`: a member's real place in the gallery. */
+    blockOrder: ReadonlyMap<string, number>;
   }) {
   const { t, time } = useI18n();
   const running = groupHasRunning(group);
@@ -1820,7 +1905,11 @@ const ToolGroupRow = memo(
         // their hover wash stops at the spine (`nested`).
         <div className="-ml-[9px] border-l border-hairline pl-[17px]">
           {group.tools.map((member) => (
-            <ToolCard key={member.id} nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+            <Fragment key={member.id}>
+              {withGalleryOrder(member.id, agentId, blockOrder, (
+                <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+              ))}
+            </Fragment>
           ))}
         </div>
       ) : undefined}
@@ -1839,6 +1928,7 @@ const ToolGroupRow = memo(
     prev.group.startedAt === next.group.startedAt &&
     prev.agentNames === next.agentNames &&
     prev.onOpenAgent === next.onOpenAgent &&
+    prev.blockOrder === next.blockOrder &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
 
@@ -2020,6 +2110,7 @@ const BlockView = memo(function BlockView({
           rowActions={liveRowActions}
           annotations={annotations}
           senderIdentities={senderIdentities}
+          onOpenAgent={onOpenAgent}
         />
       );
     case 'system-reminder':
@@ -2179,6 +2270,7 @@ const MessageViewRow = memo(function MessageViewRow({
   agentNames,
   onOpenAgent,
   onOpenProcess,
+  blockOrder,
 }: {
   node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
   previous: MessageViewNode | undefined;
@@ -2187,6 +2279,8 @@ const MessageViewRow = memo(function MessageViewRow({
   agentNames: ReadonlyMap<string, string>;
   onOpenAgent?: (agentId: string) => void;
   onOpenProcess: (turnId: string | undefined, blockId?: string) => void;
+  /** blockId → index in `state.blocks`: a row's real place in the gallery. */
+  blockOrder: ReadonlyMap<string, number>;
 }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
@@ -2251,7 +2345,7 @@ const MessageViewRow = memo(function MessageViewRow({
         summary={node}
         onOpenProcess={() => { onOpenProcess(turnId, node.members[0]?.id); }}
         renderMember={(member) =>
-          member.kind === 'tool' ? (
+          withGalleryOrder(member.id, agentId, blockOrder, member.kind === 'tool' ? (
             <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
           ) : member.kind === 'shell' ? (
             <ShellMessage block={member} />
@@ -2264,14 +2358,21 @@ const MessageViewRow = memo(function MessageViewRow({
             </p>
           ) : member.kind === 'subagent' ? (
             <SubagentEventLine name={member.name} status={member.status} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
-          ) : null
+          ) : null)
         }
       />
     );
   }
+  // A delivered message, a handoff it received and a stored record are each
+  // exactly one original block, so the row body wears that block's place in
+  // the gallery — a delivered message wears its source call's, the block that
+  // really lives in `state.blocks`; an activity summary is a projection of
+  // many, so its members carry their own above and the summary itself has no
+  // index to hand over.
+  const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.id : node.id;
   return (
     <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}>
-      {body}
+      {withGalleryOrder(galleryId, agentId, blockOrder, body)}
     </div>
   );
 });
@@ -2698,6 +2799,8 @@ type TranscriptRowProps = {
   onOpenAgent?: (agentId: string) => void;
   /** Scroll back to a subagent's dispatch card (the end row's "Dispatch ↑"). */
   onLocateDispatch?: (agentId: string) => void;
+  /** blockId → index in `state.blocks`, the gallery's one ordering source. */
+  blockOrder: ReadonlyMap<string, number>;
 };
 
 function nodeUsesAgentNames(node: DisplayNode): boolean {
@@ -2758,6 +2861,7 @@ const TranscriptRow = memo(
     onCancelQueued,
     onOpenAgent,
     onLocateDispatch,
+    blockOrder,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
@@ -2774,40 +2878,46 @@ const TranscriptRow = memo(
           renderMember={renderNode}
         />
       ) : member.kind === 'subagent-ended' ? (
-        <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
+        withGalleryOrder(member.note.id, agentId, blockOrder, (
+          <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
+        ))
       ) : member.kind === 'media-run' ? (
-        <MediaRunRow run={member} agentId={agentId} />
+        <MediaRunRow run={member} agentId={agentId} blockOrder={blockOrder} />
       ) : member.kind === 'subagent-group' ? (
         <SubagentGroupRow group={member} forest={forest} renderMember={(agent) => renderNode(agent, 'compact')} />
       ) : member.kind === 'tool-group' ? (
-        <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} blockOrder={blockOrder} />
       ) : member.kind === 'tool' ? (
-        <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        withGalleryOrder(member.id, agentId, blockOrder, (
+          <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        ))
       ) : member.kind === 'shell' ? (
-        <ShellMessage block={member} />
+        withGalleryOrder(member.id, agentId, blockOrder, <ShellMessage block={member} />)
       ) : (
-        <BlockView
-          block={member}
-          onResolveApproval={onResolveApproval}
-          onAnswerQuestion={onAnswerQuestion}
-          onDismissQuestion={onDismissQuestion}
-          onCancelQueued={onCancelQueued}
-          agentNames={agentNames}
-          senderIdentities={senderIdentities}
-          approvalShortcutHints={approvalShortcutHints}
-          readOnly={readOnly}
-          forest={forest}
-          childBlocks={childBlocks}
-          subagentFormOverride={
-            member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) ?? cardForm : undefined
-          }
-          onToggleSubagentForm={onToggleSubagentForm}
-          onOpenAgent={onOpenAgent}
-          rowActions={rowActions}
-          latestFinalAssistantId={latestFinalAssistantId}
-          annotations={member.id === node.id ? annotations : undefined}
-          stoppedTailTurnId={stoppedTailTurnId}
-        />
+        withGalleryOrder(galleryBlockId(member), agentId, blockOrder, (
+          <BlockView
+            block={member}
+            onResolveApproval={onResolveApproval}
+            onAnswerQuestion={onAnswerQuestion}
+            onDismissQuestion={onDismissQuestion}
+            onCancelQueued={onCancelQueued}
+            agentNames={agentNames}
+            senderIdentities={senderIdentities}
+            approvalShortcutHints={approvalShortcutHints}
+            readOnly={readOnly}
+            forest={forest}
+            childBlocks={childBlocks}
+            subagentFormOverride={
+              member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) ?? cardForm : undefined
+            }
+            onToggleSubagentForm={onToggleSubagentForm}
+            onOpenAgent={onOpenAgent}
+            rowActions={rowActions}
+            latestFinalAssistantId={latestFinalAssistantId}
+            annotations={member.id === node.id ? annotations : undefined}
+            stoppedTailTurnId={stoppedTailTurnId}
+          />
+        ))
       );
     // Conversation keeps the full content column; everything the agent DID is
     // inset into the shared activity lane, so a scan follows one glyph axis.
@@ -2838,6 +2948,7 @@ const TranscriptRow = memo(
     prev.executionBadge === next.executionBadge &&
     prev.stoppedTailTurnId === next.stoppedTailTurnId &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
+    prev.blockOrder === next.blockOrder &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     (prev.node.kind !== 'history-fold' || prev.openFolds.has(prev.node.id) === next.openFolds.has(next.node.id)) &&
     prev.onToggleFold === next.onToggleFold &&
@@ -3516,6 +3627,15 @@ export function Transcript({
     }
     return map;
   }, [state.snapshotSubagents]);
+  // The gallery's one ordering source: a block's place in the session's own
+  // blocks. Built here (not from the display nodes) so a block keeps that
+  // place inside a fold or a merged run, and stable across deltas that do not
+  // change the block list, which the rows' memo boundaries rely on.
+  const blockOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    state.blocks.forEach((block, index) => { if (!map.has(block.id)) map.set(block.id, index); });
+    return map;
+  }, [state.blocks]);
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -4639,6 +4759,7 @@ export function Transcript({
                         agentNames={agentNames}
                         onOpenAgent={onOpenAgent}
                         onOpenProcess={openProcessAt}
+                        blockOrder={blockOrder}
                       />
                     </div>
                   ) : (
@@ -4673,6 +4794,7 @@ export function Transcript({
                         onCancelQueued={onCancelQueued}
                         onOpenAgent={onOpenAgent}
                         onLocateDispatch={handleLocateDispatch}
+                        blockOrder={blockOrder}
                       />
                     </div>
                   )}

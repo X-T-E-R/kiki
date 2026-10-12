@@ -79,6 +79,20 @@ describe('parseSelectionCarryovers', () => {
     expect(parsed.quote).toBeNull();
     expect(parsed.body).toBe(text);
   });
+
+  it('keeps code block literals and invalid anchors unchanged while parsing valid legacy anchors', () => {
+    const invalidText = '> some quote\n\n<!-- kiki-source:invalid -->\n\nuser text';
+    const parsedInvalid = parseSelectionCarryovers(invalidText);
+    expect(parsedInvalid.annotations).toEqual([]);
+    expect(parsedInvalid.quotes).toEqual([]);
+    expect(parsedInvalid.body).toBe(invalidText);
+
+    const validSource = { blockId: 'b1', version: 'v1', start: 0, end: 5, text: 'hello' };
+    const carry = selectionCarryoverPresentation([], 'hello', validSource);
+    const parsedValid = parseSelectionCarryovers(`${carry.prefix}rest of message`);
+    expect(parsedValid.quotes).toEqual([{ quote: 'hello', source: validSource }]);
+    expect(parsedValid.body).toBe('rest of message');
+  });
 });
 
 describe('findQuoteRange', () => {

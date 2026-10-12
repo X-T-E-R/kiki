@@ -22,6 +22,13 @@ export interface SelectionAnnotation {
   readonly source?: SelectionSourceAnchor | null;
 }
 
+/** Quoted source selection without comment; accumulates alongside annotations. */
+export interface SelectionQuote {
+  readonly id: string;
+  readonly quote: string;
+  readonly source?: SelectionSourceAnchor | null;
+}
+
 /** Whitespace differs between streaming paragraphs and a whole-document parse. */
 export function canonicalSelectionText(text: string): string {
   return text.replaceAll(/\s/gu, '');
@@ -101,6 +108,32 @@ export function anchoredSelectionRange(text: string, source: SelectionSourceAnch
   const start = offsets[source.start];
   const last = offsets[source.end - 1];
   return start === undefined || last === undefined ? null : { start, end: last + 1 };
+}
+
+let quoteSeq = 0;
+
+/** Creates a quote item with a session-unique id. */
+export function createQuote(quote: string, source?: SelectionSourceAnchor | null): SelectionQuote {
+  quoteSeq += 1;
+  return source === undefined ? { id: `quote-${quoteSeq}`, quote }
+    : { id: `quote-${quoteSeq}`, quote, source };
+}
+
+/** Appends a new quote — quotes accumulate in selection order. */
+export function addQuote(
+  list: readonly SelectionQuote[],
+  quote: string,
+  source?: SelectionSourceAnchor | null,
+): SelectionQuote[] {
+  return [...list, createQuote(quote, source)];
+}
+
+/** Removes one quote by id, leaving the rest in order. */
+export function removeQuote(
+  list: readonly SelectionQuote[],
+  id: string,
+): SelectionQuote[] {
+  return list.filter((item) => item.id !== id);
 }
 
 let annotationSeq = 0;
@@ -205,7 +238,7 @@ export function isCoarsePointer(): boolean {
 
 export function selectionCarryoverPresentation(
   annotations: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[],
-  quote: string | null,
+  quoteOrQuotes: string | null | readonly { quote: string; source?: SelectionSourceAnchor | null }[],
   quoteSource?: SelectionSourceAnchor | null,
 ): { prefix: string; presentation: import('@kiki/transcript').TextPresentation } {
   let prefix = '';
@@ -215,10 +248,14 @@ export function selectionCarryoverPresentation(
     prefix += buildAnnotationBlock(annotation);
     spans.push({ start, end: prefix.length, kind: 'selection', quote: annotation.quote, comment: annotation.comment, source: annotation.source });
   }
-  if (quote !== null) {
+  const quotesList = Array.isArray(quoteOrQuotes)
+    ? quoteOrQuotes
+    : (quoteOrQuotes !== null ? [{ quote: quoteOrQuotes, source: quoteSource }] : []);
+
+  for (const item of quotesList) {
     const start = prefix.length;
-    prefix += buildQuotePrefix(quote, quoteSource);
-    spans.push({ start, end: prefix.length, kind: 'selection', quote, source: quoteSource });
+    prefix += buildQuotePrefix(item.quote, item.source);
+    spans.push({ start, end: prefix.length, kind: 'selection', quote: item.quote, source: item.source });
   }
   return { prefix, presentation: { spans } };
 }
