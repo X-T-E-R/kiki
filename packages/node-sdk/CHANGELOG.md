@@ -1,5 +1,12 @@
 # @moonshot-ai/kimi-code-sdk
 
+## 0.19.2
+
+### Patch Changes
+
+- Updated dependencies [[`861af22`](https://github.com/X-T-E-R/kiki/commit/861af220902e1116f7b8fb7f362f9cbf50ad0de2)]:
+  - @kiki/plugin-sdk@0.1.1
+
 ## 0.19.1
 
 ### Patch Changes
