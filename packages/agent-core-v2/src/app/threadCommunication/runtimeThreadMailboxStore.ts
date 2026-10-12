@@ -310,6 +310,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private readonly partitionQueues = new Map<string, PartitionQueue>();
   private readonly partitionAbortListeners = new WeakMap<PartitionQueueOperation, () => void>();
   private readonly ownerOperations = new Map<Promise<unknown>, number>();
+  private readonly ownerProgress = new WeakMap<AbortSignal, { phase: string; since: number; partition?: string }>();
   private readonly quarantine: MiniDb<Record<string, unknown>>[] = [];
   private readonly closeController = new AbortController();
   private readonly callTimeoutMs: number;
@@ -585,6 +586,13 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     if (status.role !== 'owner' || status.epoch !== ctx.epoch) {
       return Promise.reject(new HomeRuntimeError('runtime.owner_gone', 'runtime owner epoch is no longer active'));
     }
+    this.setOwnerPhase(ctx, 'handler');
+    const initialLockWaits = this.db?.stats().lockWaits ?? 0;
+    ctx.setTimeoutDiagnostic?.(() => {
+      const progress = this.ownerProgress.get(ctx.signal)!;
+      const queue = progress.partition === undefined ? undefined : this.partitionQueues.get(progress.partition);
+      return `ownerPhase=${progress.phase}, phaseMs=${Date.now() - progress.since}, queueDepth=${queue?.operations.length ?? 0}, lockWaits=${Math.max(0, (this.db?.stats().lockWaits ?? 0) - initialLockWaits)}`;
+    });
     const operation = Promise.resolve().then(run);
     this.ownerOperations.set(operation, ctx.epoch);
     void operation.finally(() => this.ownerOperations.delete(operation)).catch(() => {});
@@ -606,12 +614,15 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const totalTimeoutMs = timeoutMs * CALL_TOTAL_TIMEOUT_MULTIPLIER;
     const deadlineAt = Date.now() + totalTimeoutMs;
     let phase = 'ready';
+    let attempts = 0;
+    const retries = new Map<string, number>();
     let lastRetryError: unknown;
+    let firstTimeoutError: HomeRuntimeError | undefined;
     const deadlineError = (): HomeRuntimeError => {
       const status = this.runtime.status();
       const lastCode = lastRetryError instanceof HomeRuntimeError ? lastRetryError.code : 'none';
       return new HomeRuntimeError('runtime.timeout',
-        `thread mailbox call timed out after ${totalTimeoutMs}ms (method=${method}, phase=${phase}, role=${status.role}, ready=${status.ready}, epoch=${status.epoch}, lastRetry=${lastCode})`,
+        `thread mailbox call timed out after ${totalTimeoutMs}ms (method=${method}, phase=${phase}, role=${status.role}, ready=${status.ready}, epoch=${status.epoch}, lastRetry=${lastCode}, requestId=${requestId}, attemptTimeoutMs=${timeoutMs}, attempts=${attempts}, retries=${JSON.stringify(Object.fromEntries(retries))}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}, firstTimeout=${firstTimeoutError?.message ?? 'none'}, lastError=${lastRetryError instanceof Error ? lastRetryError.message : 'none'})`,
         { cause: lastRetryError });
     };
     const deadlineController = new AbortController();
@@ -631,6 +642,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           if (remainingMs <= 0) throw deadlineError();
           const epoch = this.runtime.status().epoch;
           phase = 'call';
+          attempts++;
           const result = await this.runtime.call(method, payload, {
             requestId,
             timeoutMs: Math.min(timeoutMs, remainingMs),
@@ -643,6 +655,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           throwIfAborted(signal);
           if (!isRetryableMailboxRuntimeResponse(error)) throw error;
           lastRetryError = error;
+          const code = (error as HomeRuntimeError).code;
+          if (code === 'runtime.timeout') firstTimeoutError ??= error as HomeRuntimeError;
+          retries.set(code, (retries.get(code) ?? 0) + 1);
           phase = 'backoff';
           const backoffMs = Math.min(CALL_RETRY_BACKOFF_MS, deadlineAt - Date.now());
           if (backoffMs <= 0) throw deadlineError();
@@ -654,10 +669,17 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     }
   }
 
+  private setOwnerPhase(ctx: RuntimeMethodContext, phase: string, partition?: string): void {
+    const prior = this.ownerProgress.get(ctx.signal);
+    this.ownerProgress.set(ctx.signal, { phase, since: Date.now(), partition: partition ?? prior?.partition });
+  }
+
   private async readyOwner(ctx: RuntimeMethodContext): Promise<ClusterDb<StoredDoc>> {
     throwIfAborted(ctx.signal);
     for (;;) {
+      this.setOwnerPhase(ctx, 'owner_release');
       await abortable(this.ownerReleaseFlight, ctx.signal);
+      this.setOwnerPhase(ctx, 'initialization');
       if (this.closing) throw new Error('Thread mailbox store is closed.');
       this.assertOwnerContext(ctx);
       if (this.db !== undefined && this.ownerEpoch === ctx.epoch) return this.db;
@@ -941,10 +963,17 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const partition = targetPartition(input.target);
     return this.withPartition(partition, ctx, async () => {
       const db = await this.readyOwner(ctx);
+      this.setOwnerPhase(ctx, 'claim_read', partition);
       const method = THREAD_MAILBOX_RUNTIME_METHODS.claim;
       const receiptKey = requestReceiptKey(partition, method, ctx);
       const receipt = readReceipt(await db.partitionGet(partition, receiptKey), receiptKey, method, ctx, input);
-      if (receipt !== undefined) return receipt.result as ThreadDeliveryClaim | null;
+      if (receipt !== undefined) {
+        const priorClaim = receipt.result as ThreadDeliveryClaim | null;
+        if (priorClaim === null) return null;
+        const priorMessage = asMessage(await db.partitionGet(partition, targetMessageKey(partition, priorClaim.message.targetSeq)));
+        if (priorMessage?.claim === undefined || !sameClaim(priorMessage.claim, priorClaim)) return null;
+        if (priorClaim.hostEpoch === ctx.epoch && priorClaim.leaseUntil > Date.now()) return priorClaim;
+      }
       const metaKey = targetMetaKey(partition);
       const storedMeta = asTargetMeta(await db.partitionGet(partition, metaKey));
       const meta = storedMeta ?? newTargetMeta(input.target);
@@ -970,6 +999,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       ) {
         const ops: BatchInputOp<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, null)];
         if (metaChanged) ops.unshift({ op: 'set', key: metaKey, value: { ...meta, nextDeliverableSeq: head.seq } });
+        throwIfAborted(ctx.signal);
+        this.assertOwnerContext(ctx);
+        this.setOwnerPhase(ctx, 'claim_commit', partition);
         await db.partitionBatch(partition, ops);
         return null;
       }
@@ -989,6 +1021,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         this.receiptOp(receiptKey, method, ctx, input, claim),
       ];
       if (metaChanged) ops.unshift({ op: 'set', key: metaKey, value: { ...meta, nextDeliverableSeq: head.seq } });
+      throwIfAborted(ctx.signal);
+      this.assertOwnerContext(ctx);
+      this.setOwnerPhase(ctx, 'claim_commit', partition);
       await db.partitionBatch(partition, ops);
       return claim;
     });
@@ -1018,7 +1053,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       if (delivery !== undefined && sameMessage(delivery.message, claim.message)) {
         if (delivery.state === state && delivery.terminalClaim !== undefined && sameClaim(delivery.terminalClaim, claim)) {
           changed = true;
-        } else if (delivery.state === 'delivering' && delivery.claim !== undefined && sameClaim(delivery.claim, claim)) {
+        } else if (delivery.state === 'delivering' && delivery.claim !== undefined &&
+            claim.hostEpoch === ctx.epoch && sameClaim(delivery.claim, claim)) {
           next = {
             ...delivery,
             state,
@@ -1338,6 +1374,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       queue = { operations: [], running: false };
       this.partitionQueues.set(partition, queue);
     }
+    this.setOwnerPhase(operation.ctx, 'partition_queue', partition);
     queue.operations.push(operation);
     const onAbort = (): void => {
       const index = queue.operations.indexOf(operation);
@@ -1356,6 +1393,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   private takePartitionOperation(queue: PartitionQueue): PartitionQueueOperation {
     const operation = queue.operations.shift()!;
     this.detachPartitionAbortListener(operation);
+    this.setOwnerPhase(operation.ctx, 'partition_operation');
     return operation;
   }
 

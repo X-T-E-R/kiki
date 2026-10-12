@@ -317,7 +317,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界被 steer 进其活跃 turn；跑在外部执行器上的子 Agent 无法被 steer，消息会等到它下一次运行开始时才被取走；空闲且可恢复的子 Agent 则以该消息启动一次新的运行，该次运行完成时父 Agent 照常收到完成通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理；投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理；投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。邮箱领取或确认消息遇到暂态故障时，会在同一安全执行边界内最多进行三次有界、可取消的恢复尝试，保留请求身份与投递回执，不重放外部动作。恢复仍失败时，诊断会说明消息已保留及如何恢复同一 Agent；永久错误和取消不重试。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
@@ -340,9 +340,9 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 **`TaskList`** 返回后台任务列表。可选参数包括 `active_only`（默认 true，仅列出运行中的任务）、`limit`（默认 20，范围 1–100）和 `offset`（默认 0）。只要 `has_more` 为 true，就把返回的 `next_offset` 传给下一页；任务列表在翻页期间发生变化可能导致位置移动。已完成的 subagent 条目包含回执元数据和 `receipt_verification`：只有 `verified` 回执可以作为完整结果；`contentState: unavailable` 不表示拿到了最终报告。`legacy_unverified` 和 `invalid` 不提供可信的回执路径。
 
-**`TaskOutput`** 根据 `task_id` 返回任务状态与输出。省略分页参数时返回最近 32 KB 的预览；当 `full_output_available` 为 true 时，可传入 `offset: 0` 和可选的 `max_bytes`（范围 4–32768，默认 16384），并在 `has_more` 为 true 时继续使用 `next_offset`。偏移量按 UTF-8 字节计算，不是字符数；如果从字符中间开始，会跳到下一个完整字符，返回的 `offset` 表示实际起点。工具还会在完整日志可用时返回 `output_path`，也可使用 `Read` 查看。无效或未验证的终止任务回执不能作为完整输出分页读取。该调用始终非阻塞；任务完成会通过自动通知送达。
+**`TaskOutput`** 根据 `task_id` 返回任务状态与输出。省略分页参数时返回最近 32 KB 的预览；当 `full_output_available` 为 true 时，可传入 `offset: 0` 和可选的 `max_bytes`（范围 4–32768，默认 16384），并在 `has_more` 为 true 时继续使用 `next_offset`。偏移量按 UTF-8 字节计算，不是字符数；如果从字符中间开始，会跳到下一个完整字符，返回的 `offset` 表示实际起点。工具还会在完整日志可用时返回 `output_path`，也可使用 `Read` 查看。无效或未验证的终止任务回执不能作为完整输出分页读取。该调用始终非阻塞；任务完成会通过自动通知送达。若 `lost` 任务的诊断说明恢复 scope 时未重新挂载执行跟踪，其执行结果仍未确认，并不证明执行器已停止。先检查保留的成果与输出，再用新 prompt ID 恢复同一 Agent；不要重复结果未确认的外部动作。
 
-**`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。停止 Agent 任务会级联终止其各级子孙 subagent：每一层先停止自己子 Agent 的任务与执行（先深后浅），再中止该 Agent 本身，同时保留它们的可恢复 scope 与邮箱消息，供之后 resume。结果会报告停止后仍在运行的直属子 Agent（一个都不剩时不提示，最多 5 个名称）。
+**`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。停止 Agent 任务会级联终止其各级子孙 subagent：每一层先停止自己子 Agent 的任务与执行（先深后浅），再中止该 Agent 本身，同时保留它们的可恢复 scope 与邮箱消息，供之后 resume。结果会报告停止后仍在运行的直属子 Agent（一个都不剩时不提示，最多 5 个名称）。进程或子孙任务清理失败时，任务保留可恢复的 `running` 状态，不写结束时间或终态回执；诊断会保留清理错误及可用详情。对同一任务重试 `TaskStop`，确认清理完成后再启动替代工作。
 
 **`TaskWait`** 用于显式同步等待，把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，有限正整数，单位秒，范围 1–86400），以及可选的 `task_id`、`sync_wait` 和 `sync_reason`。这个上限只约束本次等待，不延长任务运行时限或调用者的生命周期；任务结束、新输入或取消都可能提前结束等待。超时不是错误：结果会列出仍在运行的任务，不会停止它们。此时应重新判断同轮同步需求，不要自动重复等待。已通过 `TaskWait` 汇报结果的任务不会再推送自动完成通知。
 

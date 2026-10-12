@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { LockError, MiniDb } from '@kiki/minidb';
-import { ClusterDb } from '@kiki/minidb/cluster';
+import { ClusterDb, shardDirName, shardFor } from '@kiki/minidb/cluster';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InstantiationService } from '#/_base/di/instantiationService';
@@ -1075,13 +1075,69 @@ describe('runtime thread mailbox', () => {
         75,
       );
       await gate.entered;
-      await expect(claimPromise).rejects.toMatchObject({ code: 'runtime.timeout' });
+      await expect(claimPromise).rejects.toMatchObject({
+        code: 'runtime.timeout',
+        message: expect.stringMatching(/firstTimeout=.*ownerPhase=claim_commit.*lockWaits=0/),
+      });
       expect(requestIds.length).toBeGreaterThanOrEqual(2);
       expect(new Set(requestIds)).toEqual(new Set(['stuck-claim']));
       expect(gate.count()).toBe(1);
     } finally {
       gate.restore();
     }
+  });
+
+  it('distinguishes queued claim timeout from the active storage operation', async () => {
+    const item = harness(homeDir); open.push(item);
+    await item.store.acceptMessage(acceptInput('queued-timeout'));
+    const gate = blockFirstTargetBatch();
+    try {
+      const first = item.store.claimNext({ target, consumerId: 'first', leaseMs: 10_000 });
+      await gate.entered;
+      const caller = item.store as unknown as RuntimeMailboxCaller;
+      await expect(caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'queued', leaseMs: 10_000 }, { requestId: 'queued-timeout' }, 75)).rejects.toMatchObject({
+        code: 'runtime.timeout', message: expect.stringMatching(/firstTimeout=.*ownerPhase=partition_queue.*lockWaits=0/),
+      });
+      gate.release();
+      expect((await first)?.consumerId).toBe('first');
+      expect(gate.count()).toBe(1);
+    } finally { gate.restore(); }
+  });
+
+  it('reports actual shard lock contention separately and recovers the same claim receipt', async () => {
+    const item = harness(homeDir); open.push(item);
+    await item.store.getWorkspaceOverride('example-workspace');
+    const db = (item.store as unknown as { db: ClusterDb<unknown> }).db;
+    await db.close();
+    (item.store as unknown as { db: undefined }).db = undefined;
+    const partition = mailboxPartition(target);
+    const lock = await MiniDb.open({ dir: join(homeDir, 'store', 'thread-mailbox-v3', shardDirName(shardFor(partition, 16), 16)),
+      valueCodec: 'json', fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    const caller = item.store as unknown as RuntimeMailboxCaller;
+    try {
+      await expect(caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
+        { target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' }, 100)).rejects.toMatchObject({
+        code: 'runtime.timeout', message: expect.stringMatching(/ownerPhase=claim_commit.*lockWaits=[1-9]/),
+      });
+    } finally { await lock.close(); }
+    await expect(item.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' })).resolves.toBeUndefined();
+  });
+
+  it('enforces an elapsed direct-call deadline after synchronous handler blocking', async () => {
+    const item = harness(homeDir); open.push(item);
+    await item.runtime.ready();
+    const registration = item.runtime.registerMethod('example.blocking', (_payload, ctx) => {
+      ctx.setTimeoutDiagnostic?.(() => 'ownerPhase=example_sync');
+      const until = Date.now() + 60;
+      while (Date.now() < until) {}
+      return 'late result';
+    });
+    try {
+      await expect(item.runtime.call('example.blocking', null, { timeoutMs: 20 })).rejects.toMatchObject({
+        code: 'runtime.timeout', message: expect.stringMatching(/timerLagMs=[1-9]\d*.*ownerPhase=example_sync/),
+      });
+    } finally { registration.dispose(); }
   });
 
   it('removes aborted operations before they start in a partition queue', async () => {
@@ -1133,6 +1189,27 @@ describe('runtime thread mailbox', () => {
     expect(newEpoch!.hostEpoch).toBeGreaterThan(renewed!.hostEpoch);
     expect(await client.store.acknowledgeDelivery(renewed!)).toBe(false);
     expect(await client.store.acknowledgeDelivery(newEpoch!)).toBe(true);
+  });
+
+  it('renews the same request after owner replacement without replaying a terminal message', async () => {
+    const first = harness(homeDir); const second = harness(homeDir); open.push(first, second);
+    await Promise.all([first.runtime.ready(), second.runtime.ready()]);
+    const owner = first.runtime.status().role === 'owner' ? first : second;
+    const client = owner === first ? second : first;
+    await client.store.acceptMessage(acceptInput('owner-recovery'));
+    const input = { target, consumerId: 'consumer', leaseMs: 60_000 };
+    const options = { requestId: 'same-claim-after-owner-recovery' };
+    const prior = await client.store.claimNext(input, options);
+    await owner.runtime.close();
+    await waitUntil(() => client.runtime.status().role === 'owner');
+    expect(await client.store.acknowledgeDelivery(prior!)).toBe(false);
+    const recovered = await client.store.claimNext(input, options);
+    expect(recovered).toMatchObject({ fence: prior!.fence + 1, message: { messageId: prior!.message.messageId } });
+    expect(recovered!.hostEpoch).toBeGreaterThan(prior!.hostEpoch);
+    expect(await client.store.acknowledgeDelivery(recovered!)).toBe(true);
+    await client.store.acceptMessage(acceptInput('next-message'));
+    expect(await client.store.claimNext(input, options)).toBeUndefined();
+    expect((await client.store.claimNext(input))?.message.idempotencyKey).toBe('next-message');
   });
 
   it('records pending targets, activity, overrides, ack, and undeliverable terminal states', async () => {

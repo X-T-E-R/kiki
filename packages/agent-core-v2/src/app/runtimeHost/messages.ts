@@ -86,6 +86,7 @@ export interface RuntimeMethodContext {
   readonly epoch: number;
   readonly callerHostId: string;
   readonly signal: AbortSignal;
+  readonly setTimeoutDiagnostic?: (read: () => string) => void;
 }
 
 export type RuntimeInboundFrame =

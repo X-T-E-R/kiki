@@ -171,6 +171,7 @@ interface ManagedTask extends BufferedTaskOutput {
   lifecyclePromise: Promise<void>;
   stopping?: Promise<AgentTaskInfo | undefined>;
   stopCleanup?: Promise<void>;
+  cleanupFailure?: unknown;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
@@ -483,6 +484,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         }),
       )
       .catch(async (error: unknown) => {
+        if ((error as { code?: unknown } | null)?.code === 'os.process.kill_failed') {
+          await this.retainCleanupFailure(entry, error);
+          return;
+        }
         const aborted = entry.abortController.signal.aborted;
         let status: AgentTaskStatus;
         if (entry.timedOut) {
@@ -951,6 +956,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       void this.terminateWithGrace(entry, {
         abortReason: 'Timed out',
         finalStatus: 'timed_out',
+      }).catch((error) => {
+        this.log.error('task timeout could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
       });
     }, timeoutMs);
     entry.timeoutHandle.unref?.();
@@ -1023,14 +1030,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const child = info.kind === 'agent' && info.agentId !== undefined
       ? this.lifecycle.get(info.agentId)
       : undefined;
+    let descendantFailure: unknown;
     if (child !== undefined) {
       entry.stopCleanup = Promise.resolve().then(async () => {
         try {
           await child.accessor.get(IAgentTaskService).stopAll(
             options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
           );
+          entry.cleanupFailure = undefined;
         } catch (error) {
-          this.log.error('failed to stop descendant tasks', { agentId: child.id, error });
+          descendantFailure = error;
+          await this.retainCleanupFailure(entry, error);
         }
       });
     }
@@ -1040,6 +1050,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.abortController.abort(options.abortReason);
     }
     await entry.stopCleanup;
+    if (descendantFailure !== undefined) throw descendantFailure;
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1062,13 +1073,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       return this.toInfo(entry);
     }
 
-    if (!graceful) {
+    if (!graceful || entry.cleanupFailure !== undefined) {
       try {
         const forceStop =
           entry.forceStopFn ??
           (entry.task === undefined ? undefined : entry.task.forceStop?.bind(entry.task));
+        if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
         await forceStop?.();
-      } catch {
+        entry.cleanupFailure = undefined;
+      } catch (error) {
+        await this.retainCleanupFailure(entry, error);
+        throw error;
       }
     }
 
@@ -1083,6 +1098,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     });
     await entry.persistWriteQueue;
     return this.toInfo(entry);
+  }
+
+  private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
+    entry.cleanupFailure = error;
+    const diagnostic = error as { code?: unknown; details?: unknown } | null;
+    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${String(diagnostic?.code ?? 'cleanup_failed')}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
+    this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
+    await this.persistLive(entry);
   }
 
   async stopAll(reason?: string): Promise<readonly AgentTaskInfo[]> {
@@ -1129,9 +1152,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.forceStopFn ??
       (entry.task === undefined ? undefined : entry.task.forceStop?.bind(entry.task));
     if (forceStop === undefined) return;
-    try {
-      void forceStop().catch(() => {});
-    } catch {}
+    void Promise.resolve().then(forceStop).catch((error) => this.retainCleanupFailure(entry, error));
   }
 
   private keepAliveOnExit(): boolean {
@@ -1251,6 +1272,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         ...info,
         status: 'lost',
         endedAt: info.endedAt ?? Date.now(),
+        stopReason: [
+          'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
+          info.kind === 'agent' && info.agentId !== undefined
+            ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat unconfirmed external actions.`
+            : 'Inspect the original execution and preserved output before starting replacement work.',
+          info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
+        ].filter((part) => part !== undefined).join(' '),
       };
       try {
         const receipt = await persistence.commitTerminalTask(updated);
@@ -1474,7 +1502,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     settlement: AgentTaskSettlement,
   ): Promise<boolean> {
     if (entry.stopCleanup !== undefined) await entry.stopCleanup;
-    if (TERMINAL_STATUSES.has(entry.status)) return false;
+    if (entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
     entry.status = settlement.status;
     entry.endedAt = Date.now();
     entry.stopReason =
@@ -1815,6 +1843,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         stopReason: userReason.message,
         abortReason: signal.reason,
         finalStatus: 'killed',
+      }).catch((error) => {
+        this.log.error('task cancellation could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
       });
     };
     if (signal.aborted) {

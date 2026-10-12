@@ -1481,6 +1481,80 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
+  it('recovers a timed-out claim at the same safe boundary without waiting for another model step', async () => {
+    const { adapter, thread } = rawMailbox(tempDir());
+    const accepted = await adapter.accept(messageInput('recover timeout', 'recover-timeout'));
+    const target = agentHandle('agent-target');
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatchHarness(), undefined, log);
+    const internal = thread as unknown as RuntimeMailboxCaller;
+    const original = thread.claimNext.bind(thread);
+    const ids: string[] = [];
+    thread.claimNext = async (input, options) => {
+      ids.push(options?.requestId ?? '');
+      const value = await internal.call(THREAD_MAILBOX_RUNTIME_METHODS.claim, input, options, 50);
+      return value === null ? undefined : value as ThreadDeliveryClaim;
+    };
+    const gate = blockFirstTargetBatch();
+    const next = vi.fn(async () => {});
+    try {
+      const run = target.execution.hooks.onWillRun.run({ signal }, next);
+      await gate.entered;
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      expect(next).not.toHaveBeenCalled();
+      gate.release();
+      await run;
+      expect(next).toHaveBeenCalledOnce();
+      expect(target.messages.filter((message) => message.id === accepted.message.messageId)).toHaveLength(1);
+      expect(ids[1]).toBe(ids[0]);
+      expect((await adapter.accept(messageInput('recover timeout', 'recover-timeout'))).delivery).toBe('delivered');
+    } finally { gate.restore(); thread.claimNext = original; await service.dispose(); }
+  });
+
+  it('bounds unavailable mailbox recovery and preserves a manual-resume diagnostic', async () => {
+    const adapter = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const timeout = new HomeRuntimeError('runtime.timeout', 'ownerPhase=claim_read');
+    const claim = vi.spyOn(adapter, 'nextQueued').mockRejectedValue(timeout);
+    vi.spyOn(adapter, 'listPendingAgents').mockResolvedValue([]);
+    const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const next = vi.fn(async () => {});
+    try {
+      await expect(target.execution.hooks.onWillRun.run({ signal }, next)).rejects.toMatchObject({
+        code: 'runtime.timeout', cause: timeout, message: expect.stringContaining('resume the same agent'),
+      });
+      expect(claim).toHaveBeenCalledTimes(3);
+      expect(next).not.toHaveBeenCalled();
+    } finally { await service.dispose(); }
+  });
+
+  it('cancels recovery backoff and does not retry permanent mailbox failures', async () => {
+    const adapter = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const log = stubLog();
+    const warn = vi.spyOn(log, 'warn');
+    const claim = vi.spyOn(adapter, 'nextQueued').mockRejectedValue(new HomeRuntimeError('runtime.timeout', 'temporary'));
+    vi.spyOn(adapter, 'listPendingAgents').mockResolvedValue([]);
+    const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(),
+      metadataHarness({ 'agent-target': {} }), dispatchHarness(), undefined, log);
+    const controller = new AbortController();
+    const cancellation = new Error('cancel recovery');
+    try {
+      const run = target.execution.hooks.onWillRun.run({ signal: controller.signal });
+      const rejected = expect(run).rejects.toBe(cancellation);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      controller.abort(cancellation);
+      await rejected;
+      expect(claim).toHaveBeenCalledOnce();
+      const invalid = new HomeRuntimeError('runtime.invalid_request', 'invalid payload');
+      claim.mockRejectedValue(invalid);
+      await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toBe(invalid);
+      expect(claim).toHaveBeenCalledTimes(2);
+    } finally { await service.dispose(); }
+  });
+
   it('resumes an interrupted claim while the original handler remains in flight', async () => {
     const homeDir = tempDir();
     const seed = bootstrap(homeDir);
@@ -1561,7 +1635,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 
-  it('confirms a pending adapter ack before claiming again on the next run', async () => {
+  it('confirms a pending adapter ack before claiming again within the same run', async () => {
     const targetRef = {
       hostId: 'agent-collaboration-v2',
       workspaceId: 'session-1',
@@ -1597,6 +1671,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     let ackCommitted = false;
     const threadStore = {
       _serviceBrand: undefined,
+      listPendingTargets: async () => [],
       claimNext: vi.fn<IThreadMailboxStore['claimNext']>(async () => {
         order.push('claim');
         if (claimed) return undefined;
@@ -1618,12 +1693,6 @@ describe('agent collaboration safe-boundary delivery', () => {
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
     const service = messagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ 'agent-target': {} }));
-
-    await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toMatchObject({
-      code: 'runtime.connection_failed',
-    });
-    expect(target.messages).toHaveLength(1);
-    expect(target.operations).toEqual(['appendObservable', 'flush']);
 
     await target.execution.hooks.onWillRun.run({ signal });
     expect(target.messages).toHaveLength(1);

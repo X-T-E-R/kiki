@@ -90,6 +90,7 @@ interface RuntimeOutstanding {
   readonly fenceToken: FenceToken;
   readonly abortController: AbortController;
   timer?: ReturnType<typeof setTimeout>;
+  readDiagnostic?: () => string;
   completed: boolean;
 }
 
@@ -217,6 +218,7 @@ export function createRuntimeServer(
       epoch: callbacks.getCurrentEpoch(),
       callerHostId: connection.hostId,
       signal: outstanding.abortController.signal,
+      setTimeoutDiagnostic: (read) => { outstanding.readDiagnostic = read; },
     };
     try {
       const value = await handler(outstanding.payload, ctx);
@@ -280,10 +282,12 @@ export function createRuntimeServer(
       abortController: new AbortController(),
       completed: false,
     };
+    const deadlineAt = Date.now() + call.timeoutMs;
     outstanding.timer = setTimeout(() => {
       outstanding.timer = undefined;
-      outstanding.abortController.abort(new HomeRuntimeError('runtime.timeout', `runtime call timed out after ${call.timeoutMs}ms`));
-      callError(connection.socket, call.requestId, callbacks.getCurrentEpoch(), runtimeErrorPayload('runtime.timeout', `runtime call timed out after ${call.timeoutMs}ms`));
+      const message = `runtime call timed out after ${call.timeoutMs}ms (method=${call.method}, epoch=${epoch}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}${outstanding.readDiagnostic === undefined ? '' : `, ${outstanding.readDiagnostic()}`})`;
+      outstanding.abortController.abort(new HomeRuntimeError('runtime.timeout', message));
+      callError(connection.socket, call.requestId, callbacks.getCurrentEpoch(), runtimeErrorPayload('runtime.timeout', message));
     }, call.timeoutMs);
     outstanding.timer.unref?.();
     connection.outstanding.set(call.requestId, outstanding);

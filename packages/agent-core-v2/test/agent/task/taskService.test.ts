@@ -26,7 +26,7 @@ import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import type { IHostProcess } from '#/os/interface/hostProcess';
+import { HostProcessError, type IHostProcess } from '#/os/interface/hostProcess';
 import { IConfigRegistry, IConfigService } from '#/app/config/config';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, TaskOrigin } from '#/agent/contextMemory/types';
@@ -428,7 +428,7 @@ describe('AgentTaskService', () => {
     expect(cancel).toHaveBeenCalledTimes(2);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('waits for all descendant stop attempts after a sibling cancel fails before settling the parent', async () => {
+  it('waits for all descendant stop attempts and retains the parent when a sibling cancel fails', async () => {
     ix.set(IFileSystemStorageService, new InMemoryStorageService());
     const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
     agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
@@ -464,7 +464,11 @@ describe('AgentTaskService', () => {
     const logError = vi.spyOn(ix.get(ILogService), 'error');
     await Promise.resolve();
     let receiptSettled = false;
-    const stopped = rootTasks.stopByUser(taskId).then((info) => { receiptSettled = true; return info; });
+    const stopped = rootTasks.stopByUser(taskId).then(
+      (info) => { receiptSettled = true; return info; },
+      (error) => { receiptSettled = true; throw error; },
+    );
+    const rejected = expect(stopped).rejects.toBe(cancelError);
     try {
       await forceStopEntered;
       await ix.get(IEventDispatcher).flush();
@@ -479,22 +483,21 @@ describe('AgentTaskService', () => {
       expect(logError).not.toHaveBeenCalled();
     } finally {
       releaseCleanup();
-      await stopped;
+      await rejected;
     }
-    expect(await stopped).toMatchObject({ status: 'killed' });
+    expect(rootTasks.getTask(taskId)?.status).toBe('running');
+    expect(rootTasks.getTask(taskId)?.stopReason).toContain('cancel failed');
     expect(cleanupFinished).toBe(true);
     expect(childTasks.getTask(slowId)).toMatchObject({ status: 'killed' });
     expect(childTasks.getTask(failed.taskId)).toMatchObject({ status: 'running' });
     await expect(stopAll.mock.results[0]!.value).rejects.toBe(cancelError);
-    expect(logError.mock.calls).toEqual([
-      ['failed to stop descendant tasks', { agentId: 'agent-child', error: cancelError }],
-    ]);
+    expect(logError).toHaveBeenCalledWith('task cleanup failed; execution retained without terminal receipt', { taskId, error: cancelError });
     await ix.get(IEventDispatcher).flush();
-    expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(1);
-    expect(await childTasks.stopByUser(failed.taskId)).toMatchObject({ status: 'killed' });
-    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls.filter(([event]) => event.type === 'task.terminated')).toHaveLength(0);
     expect(await rootTasks.stopByUser(taskId)).toMatchObject({ status: 'killed' });
-    expect(stopAll).toHaveBeenCalledOnce();
+    expect(childTasks.getTask(failed.taskId)?.status).toBe('killed');
+    expect(cancel).toHaveBeenCalledTimes(2);
+    expect(stopAll).toHaveBeenCalledTimes(2);
     expect(agentHandles.has('agent-child')).toBe(true);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -1457,6 +1460,59 @@ describe('AgentTaskService', () => {
     expect(info?.status).toBe('killed');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it.each(['force', 'lifecycle', 'timeout'] as const)('retains typed %s cleanup failure and confirms cleanup on a later stop', async (path) => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    const service = ix.get(IAgentTaskService);
+    const error = new HostProcessError('os.process.kill_failed', 'owned tree still has processes', {
+      details: { cleanupComplete: false, phase: 'verify', pid: 42, remainingProcessCount: 1, win32Error: 5 },
+    });
+    let rejectLifecycle!: (error: unknown) => void;
+    const lifecycle = new Promise<void>((_resolve, reject) => { rejectLifecycle = reject; });
+    const forceStop = vi.fn(async () => {});
+    if (path !== 'lifecycle') forceStop.mockRejectedValueOnce(error);
+    const taskId = service.registerTask({ ...fakeProcessTask(), start: () => lifecycle, forceStop }, { timeoutMs: path === 'timeout' ? 1 : undefined });
+    await Promise.resolve();
+    if (path === 'lifecycle') {
+      rejectLifecycle(error);
+      await vi.waitFor(() => expect(service.getTask(taskId)?.stopReason).toContain('os.process.kill_failed'));
+    } else {
+      if (path === 'force') await expect(service.stop(taskId)).rejects.toBe(error);
+      else await vi.waitFor(() => expect(service.getTask(taskId)?.stopReason).toContain('os.process.kill_failed'));
+      rejectLifecycle(error);
+      await vi.waitFor(() => expect(service.getTask(taskId)?.stopReason).toContain('os.process.kill_failed'));
+    }
+    expect(service.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null, receipt: undefined });
+    expect(service.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
+    expect(service.getTask(taskId)?.stopReason).toContain('"remainingProcessCount":1');
+    expect((await service.stop(taskId))?.status).toBe('killed');
+    expect(forceStop).toHaveBeenCalledTimes(path === 'lifecycle' ? 1 : 2);
+  });
+
+  it('does not publish a parent terminal when a descendant cleanup fails', async () => {
+    stubTaskConfig({ killGracePeriodMs: 0 });
+    const childIx = buildAgentIx('agent-child', mapBackedDocs(), new InMemoryStorageService());
+    childIx.stub(IConfigService, { get: (() => ({ killGracePeriodMs: 0 })) as IConfigService['get'] });
+    agentHandles.set('agent-child', { id: 'agent-child', accessor: childIx } as unknown as IAgentScopeHandle);
+    const childTasks = childIx.get(IAgentTaskService);
+    const error = new HostProcessError('os.process.kill_failed', 'cleanup deadline', {
+      details: { cleanupComplete: false, phase: 'deadline', pid: 42 },
+    });
+    const forceStop = vi.fn(async () => {}).mockRejectedValueOnce(error);
+    const descendantId = childTasks.registerTask({ ...fakeProcessTask(), start: () => new Promise<void>(() => {}), forceStop });
+    const controller = new AbortController();
+    const completion = new Promise<{ result: string }>((_resolve, reject) => {
+      controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+    });
+    const rootTasks = ix.get(IAgentTaskService);
+    const taskId = rootTasks.registerTask(new SubagentTask({ agentId: 'agent-child', profileName: 'coder', completion }, 'child run', controller));
+    await expect(rootTasks.stop(taskId)).rejects.toBe(error);
+    expect(rootTasks.getTask(taskId)).toMatchObject({ status: 'running', endedAt: null });
+    expect(childTasks.getTask(descendantId)?.status).toBe('running');
+    expect(rootTasks.getTask(taskId)?.stopReason).toContain('os.process.kill_failed');
+    expect((await rootTasks.stop(taskId))?.status).toBe('killed');
+    expect(childTasks.getTask(descendantId)?.status).toBe('killed');
+  });
+
   function mapBackedDocs(): IAtomicDocumentStore {
     const map = new Map<string, unknown>();
     return {
@@ -1660,6 +1716,31 @@ describe('AgentTaskService', () => {
     expect(subLost.map((info) => info.taskId)).toEqual(['bash-abcdef01']);
     expect(subLost[0]?.status).toBe('lost');
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('restores unconfirmed agent tracking with a diagnostic and never replays terminal execution', async () => {
+    const docs = mapBackedDocs();
+    const bytes = new InMemoryStorageService();
+    const scope = 'sessions/test-ws/test-session/agents/main/tasks';
+    const pending = {
+      taskId: 'agent-pending1', kind: 'agent', agentId: 'agent-child', description: 'pending child',
+      executorId: 'native', status: 'running', detached: true, startedAt: 1, endedAt: null,
+      stopReason: 'runtime.timeout ownerPhase=claim_read',
+    };
+    const terminal = { ...pending, taskId: 'agent-done0001', status: 'completed', endedAt: 2, stopReason: undefined };
+    await docs.set(scope, `${pending.taskId}.json`, pending);
+    await docs.set(scope, `${terminal.taskId}.json`, terminal);
+    const service = buildAgentIx('main', docs, bytes).get(IAgentTaskService) as TaskServiceTestManager;
+    await service.loadFromDisk();
+    const restored = await service.reconcile();
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ status: 'lost', receipt: { contentState: 'unavailable' } });
+    expect(restored[0]?.stopReason).toContain('outcome is unconfirmed');
+    expect(restored[0]?.stopReason).toContain('resume the same agent (agent-child)');
+    expect(restored[0]?.stopReason).toContain(pending.stopReason);
+    expect(service.getTask(terminal.taskId)?.status).toBe('completed');
+    expect(await service.reconcile()).toEqual([]);
+    expect((await docs.get<{ stopReason: string }>(scope, `${pending.taskId}.json`))?.stopReason).toBe(restored[0]?.stopReason);
+  });
 
   it('main restore claims a previous v2 session task with its legacy output path', async () => {
     const docs = mapBackedDocs();

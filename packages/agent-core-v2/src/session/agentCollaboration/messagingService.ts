@@ -5,6 +5,7 @@ import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
@@ -213,13 +214,13 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           if (request !== undefined && replaceRequest !== undefined && afterStart !== undefined) {
             const prepared = await this.serializeDelivery(
               handle.id,
-              () => this.prepareExternalDelivery(handle, request),
+              () => this.recoverMailboxDelivery(handle.id, () => this.prepareExternalDelivery(handle, request), context.signal),
             );
             if (prepared !== undefined) {
               replaceRequest(prepared.request);
               afterStart(() => this.serializeDelivery(
                 handle.id,
-                () => this.completeExternalDelivery(handle, prepared.messageId),
+                () => this.recoverMailboxDelivery(handle.id, () => this.completeExternalDelivery(handle, prepared.messageId), context.signal),
               ));
             }
           }
@@ -486,10 +487,40 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private deliverBeforeRun(handle: IAgentScopeHandle, signal?: AbortSignal): Promise<void> {
     const memory = handle.accessor.get(IAgentContextMemoryService);
-    return this.deliver(handle, async (message) => {
+    return this.recoverMailboxDelivery(handle.id, () => this.deliver(handle, async (message) => {
       memory.appendObservable(message);
       return true;
-    }, signal);
+    }, signal), signal);
+  }
+
+  private async recoverMailboxDelivery<T>(agentId: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
+      try {
+        return await run();
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof HomeRuntimeError) || ![
+          'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
+          'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
+        ].includes(error.code)) throw error;
+        this.log.warn('Agent mailbox delivery interrupted; durable message retained for recovery', {
+          agentId, attempt: attempt + 1, error,
+        });
+        if (attempt >= 2) {
+          throw new HomeRuntimeError(error.code,
+            `Agent mailbox delivery is temporarily unavailable after 3 recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
+            { cause: error });
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, attempt === 0 ? 250 : 1_000); });
+          await (signal === undefined ? wait : abortable(wait, signal));
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      }
+    }
   }
 
   private async deliver(

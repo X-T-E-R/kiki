@@ -469,15 +469,20 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
       const onAbort = (): void => settleCaller(abortReason(controller.signal));
       options.signal?.addEventListener('abort', abortFromCaller, { once: true });
       controller.signal.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(() => {
-        controller.abort(new HomeRuntimeError('runtime.timeout', `runtime call timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      let readDiagnostic: (() => string) | undefined;
+      const deadlineAt = Date.now() + timeoutMs;
+      const expire = (): void => {
+        controller.abort(new HomeRuntimeError('runtime.timeout',
+          `runtime call timed out after ${timeoutMs}ms (method=${name}, epoch=${invocation.epoch}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}${readDiagnostic === undefined ? '' : `, ${readDiagnostic()}`})`));
+      };
+      timer = setTimeout(expire, timeoutMs);
       timer.unref?.();
       const ctx: RuntimeMethodContext = {
         requestId,
         epoch: this.epoch,
         callerHostId: this.hostId,
         signal: controller.signal,
+        setTimeoutDiagnostic: (read) => { readDiagnostic = read; },
       };
       let result: unknown;
       try {
@@ -489,6 +494,7 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
       }
       void Promise.resolve(result).then(
         (value) => {
+          if (!controller.signal.aborted && Date.now() >= deadlineAt) expire();
           if (!controller.signal.aborted) settleCaller(undefined, value);
           settleHandler();
         },
