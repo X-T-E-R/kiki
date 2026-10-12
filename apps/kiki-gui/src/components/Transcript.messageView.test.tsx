@@ -27,6 +27,21 @@ vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   return { ...original, useStreamdownPlugins: () => ({}) };
 });
 
+// The gallery order seam wraps each row's original block in a context provider
+// and renders no DOM of its own, so its props are what the seam is observed by.
+const galleryOrderProbe = vi.hoisted(() => ({ calls: [] as { agentId: string; order: number; blockId: string }[] }));
+
+vi.mock('./mediaPreviewContext', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./mediaPreviewContext')>();
+  return {
+    ...original,
+    MediaGalleryOrder: ({ agentId, order, blockId, children }: { agentId: string; order: number; blockId: string; children: ReactNode }) => {
+      galleryOrderProbe.calls.push({ agentId, order, blockId });
+      return children;
+    },
+  };
+});
+
 const roots: Root[] = [];
 const originals = new Map<PropertyKey, PropertyDescriptor | undefined>();
 
@@ -264,5 +279,25 @@ describe('message view (Bot mode)', () => {
     const blocks: Block[] = [user('u1', '查一下', 't1'), tool('r1', 'Read', 't1', { status: 'running', output: undefined })];
     const { container } = await render(timeline(blocks, 'message', { busy: true, turnStartedAt: Date.now() }));
     expect(container.querySelector('[data-message-presence]')?.textContent).toContain('林岚 正在处理');
+  });
+
+  it('hands each bot-mode row its original block’s place in the session blocks', async () => {
+    galleryOrderProbe.calls.length = 0;
+    const blocks: Block[] = [
+      // A received handoff: a real user block, so it owns its own place.
+      user('u9', '来自 林岚：changelog 还差三条，你来起草', 't1', {
+        peerThread: { sessionId: 'session_bot', personaId: LIN.id, senderName: LIN.name, messageId: 'h1' },
+      }),
+      user('u1', '发个消息', 't1'),
+      // A delivered message is projected from its SendMessage call: the call is
+      // the block that lives in the session's blocks, so it owns the place.
+      sendMessage('s1', 't1', '能。'),
+    ];
+    await render(timeline(blocks, 'message'));
+    expect(galleryOrderProbe.calls).toEqual([
+      { agentId: 'main', order: 0, blockId: 'u9' },
+      { agentId: 'main', order: 1, blockId: 'u1' },
+      { agentId: 'main', order: 2, blockId: 's1' },
+    ]);
   });
 });

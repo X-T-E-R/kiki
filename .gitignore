@@ -44,6 +44,8 @@ reports/
 /plan/
 
 # Agent scratch / throwaway files - do not commit
+.controller-ledger/
+/apps/kiki-gui/.tmp-settings-tests.txt
 .tmp/
 /.tmp-search-s3-*/
 /packages/kap-server/.tmp-search-s3-*/

@@ -8,7 +8,7 @@
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { MAIN_AGENT_ID, type AgentForest, type Block, type SessionViewState } from '@kiki/session-core/session';
+import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
@@ -322,7 +322,7 @@ type FeedEntry =
   | { kind: 'command'; key: string; at: number; command: string; error: boolean }
   | { kind: 'dispatch'; key: string; at: number; agentId: string; label: string }
   | { kind: 'report'; key: string; at: number; agentId: string; label: string; failed: boolean; summary: string | undefined }
-  | { kind: 'compaction'; key: string; at: number };
+  | { kind: 'compaction'; key: string; at: number; i18n: NonNullable<NoticeBlock['i18n']> };
 
 function feedOf(blocks: readonly Block[], forest: AgentForest): FeedEntry[] {
   const out: FeedEntry[] = [];
@@ -335,8 +335,8 @@ function feedOf(blocks: readonly Block[], forest: AgentForest): FeedEntry[] {
       } else if (d.kind === 'command') {
         out.push({ kind: 'command', key: block.id, at: block.startedAt, command: d.command, error });
       }
-    } else if (block.kind === 'notice' && block.i18n?.key.startsWith('transcript.marker.compaction') === true && block.createdAt !== undefined) {
-      out.push({ kind: 'compaction', key: block.id, at: Date.parse(block.createdAt) });
+    } else if (block.kind === 'notice' && block.i18n !== undefined && block.i18n.key.startsWith('transcript.marker.compaction') && block.createdAt !== undefined) {
+      out.push({ kind: 'compaction', key: block.id, at: Date.parse(block.createdAt), i18n: block.i18n });
     }
   }
   for (const node of Object.values(forest.byId)) {
@@ -393,8 +393,10 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
           title: `${entry.label}\n${entry.summary ?? ''}`,
           onClick: () => { onOpenAgent(entry.agentId); },
         };
-      case 'compaction':
-        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">{t('rail.feed.compacted')}</span>, title: t('rail.feed.compacted') };
+      case 'compaction': {
+        const label = t(entry.i18n.key, entry.i18n.params);
+        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">{label}</span>, title: label };
+      }
     }
   };
   const head = feed[0]!;

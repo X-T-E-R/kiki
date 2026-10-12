@@ -459,7 +459,10 @@ export function UserMessageEditor({
   }, [attempt]);
   const cancel = () => { if (!submitting) onCancel(); };
   return (
-    <div data-edit-editor className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel p-2">
+    // No card shell around the editor: the composer brings its own surface and
+    // the X beside its send button is where this edit ends, so an outer border,
+    // background and padding only drew a second frame around both.
+    <div data-edit-editor className="w-full max-w-[85%]">
       <Composer
         busy={false} disabled={loading} sendDisabled={loadError}
         variant="subagent" messageEditing autoFocus
@@ -477,10 +480,14 @@ export function UserMessageEditor({
           try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
         }}
       />
-      <div className="mt-2 flex items-center justify-between gap-3 px-1">
-        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> : null}
-        <button type="button" data-edit-cancel disabled={submitting} onClick={cancel} className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft hover:border-hairline-strong disabled:opacity-40">{t('common.cancel')}</button>
-      </div>
+      {/* Only a failed attachment load leaves a line under the editor: the
+          retry that brings the original files back. The edit itself is
+          abandoned from the X in the composer's own row. */}
+      {loadError ? (
+        <div className="mt-2 flex items-center px-1">
+          <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button>
+        </div>
+      ) : null}
     </div>
   );
 }

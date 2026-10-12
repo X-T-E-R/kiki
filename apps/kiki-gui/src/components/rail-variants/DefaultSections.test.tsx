@@ -16,7 +16,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { CapabilitiesBlock } from './DefaultSections';
+import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
+import { translate } from '@kiki/session-core/i18n';
+import { ActivityFeed, CapabilitiesBlock } from './DefaultSections';
 
 const { readCapabilities } = vi.hoisted(() => ({ readCapabilities: vi.fn() }));
 vi.mock('../../state/connection', () => ({
@@ -189,5 +191,31 @@ describe('CapabilitiesBlock', () => {
     await render();
     await settle();
     expect(container.querySelector('[data-rail-capabilities]')).toBeNull();
+  });
+});
+
+const compactionKeys = [
+  'transcript.marker.compactionFresh', 'transcript.marker.compactionSummarize',
+  'transcript.marker.compactionFallback', 'transcript.marker.compactionRescue',
+  'transcript.marker.compactionFailed', 'transcript.marker.compaction',
+] as const;
+
+describe.each(['zh', 'en'] as const)('ActivityFeed compaction labels (%s)', (locale) => {
+  it.each(compactionKeys)('preserves %s in the collapsed and expanded feed', async (key) => {
+    localStorage.setItem('kiki.locale', locale);
+    const notice: NoticeBlock = {
+      kind: 'notice', id: 'compact-example', text: 'compaction', tone: 'neutral',
+      i18n: { key }, createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    await act(async () => {
+      root.render(<I18nProvider><ActivityFeed blocks={[notice]} forest={buildAgentForest([], [])} onOpenAgent={() => {}} /></I18nProvider>);
+    });
+    const head = container.querySelector<HTMLButtonElement>('[data-inspector-recent] > button')!;
+    const expected = translate(locale, key);
+    expect(head.textContent).toContain(expected);
+    await act(async () => { head.click(); });
+    const row = container.querySelector('[data-inspector-recent] ol li')!;
+    expect(row.textContent).toContain(expected);
+    expect(row.querySelector('[title]')?.getAttribute('title')).toBe(expected);
   });
 });

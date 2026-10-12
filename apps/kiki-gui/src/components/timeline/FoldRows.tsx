@@ -12,6 +12,7 @@ import { firstSentence } from '@kiki/session-core/util';
 import { useI18n } from '../../i18n';
 import { Icon, OutcomeMark } from '../icons';
 import { MediaPart } from '../mediaParts';
+import { MediaGalleryOrder } from '../mediaPreviewContext';
 import { ActivityRow } from './ActivityRow';
 import { useFindReveal } from './findReveal';
 
@@ -20,6 +21,10 @@ export const MEDIA_STRIP_MAX = 6;
 
 interface MediaItem {
   readonly key: string;
+  /** The run member (its tool block) this image came from. */
+  readonly blockId: string;
+  /** The image's own index inside that member, so its block keeps its order. */
+  readonly index: number;
   readonly item: MediaRef;
   readonly name: string;
 }
@@ -34,6 +39,8 @@ function mediaItems(run: MediaRun): MediaItem[] {
         const path = item.path ?? (typeof argPath === 'string' ? argPath : undefined);
         return {
           key: `${tool.id}:${index}`,
+          blockId: tool.id,
+          index,
           item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path) },
           name: item.name ?? (path === undefined ? tool.name : basenameOf(path)),
         };
@@ -46,8 +53,14 @@ function mediaItems(run: MediaRun): MediaItem[] {
  * thumbnails while it is history, a preview while it is the latest thing the
  * agent did. Each image opens the shared lightbox; a read that failed keeps
  * its slot as a neutral broken mark.
+ *
+ * Every thumbnail hands the image gallery the place of the member that
+ * produced it — the member's own index in the session's blocks, never the
+ * thumbnail's position in this strip and never the run's place in the folded
+ * timeline. A caller that hands over no order leaves the thumbnails to the
+ * enclosing context rather than inventing one.
  */
-export const MediaRunRow = memo(function MediaRunRow({ run, agentId }: { run: MediaRun; agentId: string }) {
+export const MediaRunRow = memo(function MediaRunRow({ run, agentId, blockOrder }: { run: MediaRun; agentId: string; blockOrder?: ReadonlyMap<string, number> }) {
   const { t, tp } = useI18n();
   const items = mediaItems(run);
   const latest = run.latest;
@@ -66,11 +79,24 @@ export const MediaRunRow = memo(function MediaRunRow({ run, agentId }: { run: Me
         aria-label={t('transcript.media.aria', { names })}
         className={`flex items-center overflow-x-auto pb-1 pl-6 [scrollbar-width:thin] ${latest ? 'gap-2 pt-1' : 'gap-1.5'}`}
       >
-        {shown.map((entry) => (
-          <li key={entry.key} data-media-thumb className="shrink-0" title={entry.name}>
-            <MediaPart item={entry.item} agentId={agentId} size={latest ? 'preview' : 'strip'} />
-          </li>
-        ))}
+        {shown.map((entry) => {
+          const order = blockOrder?.get(entry.blockId);
+          const thumb = (
+            <MediaPart
+              item={entry.item}
+              agentId={agentId}
+              size={latest ? 'preview' : 'strip'}
+              galleryIndex={entry.index}
+            />
+          );
+          return (
+            <li key={entry.key} data-media-thumb className="shrink-0" title={entry.name}>
+              {order === undefined
+                ? thumb
+                : <MediaGalleryOrder agentId={agentId} order={order} blockId={entry.blockId}>{thumb}</MediaGalleryOrder>}
+            </li>
+          );
+        })}
         {more > 0 ? (
           <li className="shrink-0 pl-1 text-[12px] text-ink-faint tabular-nums">{t('transcript.media.more', { count: more })}</li>
         ) : null}
