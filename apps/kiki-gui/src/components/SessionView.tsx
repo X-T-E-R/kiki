@@ -106,6 +106,7 @@ import {
   namesLegacyControl,
   executionSelectionOf,
   sameExecutionChoice,
+  profileExecutor,
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import {
@@ -2652,7 +2653,9 @@ export function SessionView({
   // effort pins, but a user who re-picked them after confirming keeps theirs.
   const applyPendingExecution = useCallback((next: ExecutionChoice, options?: { readonly modelTouched?: boolean }) => {
     const profile = next.profile;
-    const defaults = profile === undefined
+    const selected = agentProfilesQuery.data?.items.find((item) => item.name === profile);
+    const isTargetExecutor = selected !== undefined && profileExecutor(selected) === next.executor;
+    const defaults = profile === undefined || !isTargetExecutor
       ? {}
       : composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], profile);
     setPendingExecution(next);

@@ -600,15 +600,18 @@ export function useNewSessionDraft({
   const applyAgentProfile = useCallback((
     items: readonly NamedAgentProfile[],
     name: string,
+    targetExecutor?: string,
   ) => {
-    const defaults = composerDefaultsForProfile(items, name);
     const selected = items.find((item) => item.name === name);
-    setExecutionState({ executor: selected?.executor || NATIVE_EXECUTOR, profile: name, profile_file: undefined, overrides: undefined });
+    const executor = targetExecutor ?? (selected?.executor || NATIVE_EXECUTOR);
+    const isTargetExecutor = (selected?.executor || NATIVE_EXECUTOR) === executor;
+    const defaults = isTargetExecutor ? composerDefaultsForProfile(items, name) : {};
+    setExecutionState({ executor, profile: name, profile_file: undefined, overrides: undefined });
     setAgentProfileState(name);
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
-    modelOverrideFromProfile.current = true;
-    effortOverrideFromProfile.current = true;
+    modelOverrideFromProfile.current = isTargetExecutor && defaults.model !== undefined;
+    effortOverrideFromProfile.current = isTargetExecutor && defaults.thinking !== undefined;
     setModelOverrideState(defaults.model);
     setEffortOverrideState(defaults.thinking);
     setSelectionRevision((value) => value + 1);
@@ -629,15 +632,16 @@ export function useNewSessionDraft({
     // A file preview validates the declaration itself, not its main-menu membership.
     // Failed previews keep the draft's source and overrides intact for retry.
     if (query.isSuccess && selected !== undefined) {
-      const defaults = composerDefaultsForProfile([selected], selected.name);
+      const isTargetExecutor = profileExecutor(selected) === execution.executor;
+      const defaults = isTargetExecutor ? composerDefaultsForProfile([selected], selected.name) : {};
       if (modelOverrideFromProfile.current) setModelOverrideState(defaults.model);
       if (effortOverrideFromProfile.current) setEffortOverrideState(defaults.thinking);
       if (fromFile && selected.source_file !== undefined) {
-        setExecutionState((current) => current.profile_file === selected.source_file && current.executor === profileExecutor(selected)
+        setExecutionState((current) => current.profile_file === selected.source_file
           ? current : { ...current, executor: profileExecutor(selected), profile: undefined, profile_file: selected.source_file });
       }
     }
-  }, [agentProfile, execution.profile_file, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
+  }, [agentProfile, execution.profile_file, execution.executor, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
 
   useEffect(() => {
     if (dailySettingsKey !== undefined) {
@@ -999,6 +1003,7 @@ export function useNewSessionDraft({
    */
   const setExecution = useCallback((next: ExecutionChoice) => {
     setExecutionState(next);
+    const profileChanged = next.profile !== agentProfile;
     if (next.profile === undefined) {
       personaSelectionRef.current += 1;
       setSelectedPersonaId(undefined);
@@ -1010,12 +1015,26 @@ export function useNewSessionDraft({
       effortOverrideFromPersona.current = false;
       modelOverrideFromProfile.current = next.profile_file !== undefined;
       effortOverrideFromProfile.current = next.profile_file !== undefined;
+    } else if (profileChanged) {
+      applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile, next.executor);
     } else {
-      applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile);
+      const items = agentProfilesQuery.data?.items ?? [];
+      const selected = items.find((item) => item.name === next.profile);
+      const isTargetExecutor = (selected?.executor || NATIVE_EXECUTOR) === next.executor;
+      if (!isTargetExecutor) {
+        if (modelOverrideFromProfile.current) {
+          modelOverrideFromProfile.current = false;
+          setModelOverrideState(undefined);
+        }
+        if (effortOverrideFromProfile.current) {
+          effortOverrideFromProfile.current = false;
+          setEffortOverrideState(undefined);
+        }
+      }
     }
     setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
     setSelectionRevision((value) => value + 1);
-  }, [agentProfilesQuery.data, applyAgentProfile]);
+  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile]);
 
   /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the

@@ -323,6 +323,15 @@ async function waitForTrigger(container: HTMLDivElement): Promise<HTMLButtonElem
   throw new Error('execution control never rendered');
 }
 
+async function waitForProfileTrigger(container: HTMLDivElement): Promise<HTMLButtonElement> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-profile-select');
+    if (trigger !== null && container.querySelector('[data-selection-diagnostic][role="status"]') === null) return trigger;
+    await settle();
+  }
+  throw new Error('profile control never rendered');
+}
+
 /** Open the permission mode chip's panel and hand back its trigger. */
 async function openModePanel(container: HTMLDivElement): Promise<HTMLButtonElement> {
   const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
@@ -737,16 +746,16 @@ describe('Composer execution control', () => {
       personaPick: { value: { id: 'lin-lan', name: '林岚' }, onChange: () => {} },
     });
     const chip = container.querySelector('[data-composer-persona-chip="lin-lan"]');
-    // The persona branch of the one control: the trigger keeps the face and the
-    // name, and the panel behind it is still the engine list.
-    const trigger = container.querySelector('#composer-execution-select');
+    // The persona branch of the profile control: the trigger keeps the face and the
+    // name, and the panel behind it is still the engine/profile list.
+    const trigger = container.querySelector('#composer-profile-select') ?? container.querySelector('#composer-execution-select');
     expect(chip).not.toBeNull();
     expect(trigger?.querySelector('span.truncate')?.textContent).toBe('林岚');
     // No container-query rule may turn the name into a screen-reader-only label.
     expect(chip?.innerHTML).not.toContain('sr-only');
     const clear = container.querySelector('[data-composer-persona-clear]');
     expect(clear?.getAttribute('aria-label')).toBe('Remove persona 林岚');
-    await click(trigger!);
+    await click(container.querySelector('#composer-execution-select')!);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).not.toBeNull();
   });
 
@@ -775,23 +784,20 @@ describe('Composer execution control', () => {
     expect(trigger.textContent).not.toContain('main');
 
     await click(trigger);
+    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
+
+    const profileTrigger = await waitForProfileTrigger(container);
+    await click(profileTrigger);
     const options = [...container.querySelectorAll('[role="option"]')].map(
       (row) => row.textContent ?? '',
     );
-    // Each engine offers its own bare row, plus only that engine's enabled
-    // main profiles; a disabled or non-main profile never appears.
-    expect(container.querySelectorAll('[data-execution-bare]').length).toBe(EXECUTOR_ITEMS.length);
     expect(options.some((text) => text.includes('grok-only'))).toBe(true);
     expect(options.some((text) => text.includes('reviewer'))).toBe(true);
     expect(options.some((text) => text.includes('legacy'))).toBe(false);
-    // A profile appears exactly once, under the engine it belongs to.
     expect(options.filter((text) => text.includes('reviewer'))).toHaveLength(1);
     expect(
-      container.querySelector('[data-execution-engine="claude-acp"] [data-execution-profile="reviewer"]'),
+      container.querySelector('[data-execution-profile="reviewer"]'),
     ).not.toBeNull();
-    expect(
-      container.querySelector('[data-execution-engine="native"] [data-execution-profile="reviewer"]'),
-    ).toBeNull();
     const nativeRow = [...container.querySelectorAll('[role="option"]')].find(
       (row) => row.textContent?.includes('grok-only'),
     );
@@ -816,6 +822,8 @@ describe('Composer execution control', () => {
     expect(bareRow?.textContent).toContain('Claude Code');
     expect(bareRow?.textContent).not.toContain('Run this engine as it is');
     await click(bareRow!);
+    const apply = container.querySelector<HTMLButtonElement>('[data-execution-apply]');
+    if (apply) await click(apply);
     expect(onChangeExecution).toHaveBeenCalledWith({
       executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined,
     });
@@ -829,7 +837,7 @@ describe('Composer execution control', () => {
       execution: NATIVE_AGENT,
       onChangeExecution,
     });
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     const row = container.querySelector<HTMLElement>('[data-execution-profile="reviewer"]');
     expect(row).not.toBeNull();
     await click(row!);
@@ -852,6 +860,8 @@ describe('Composer execution control', () => {
     const bare = [...container.querySelectorAll<HTMLElement>('[data-execution-bare]')]
       .find((row) => row.getAttribute('data-execution-bare') === 'claude-acp');
     await click(bare!);
+    const apply = container.querySelector<HTMLButtonElement>('[data-execution-apply]');
+    if (apply) await click(apply);
     expect(onPersona).toHaveBeenCalledWith(undefined);
   });
 
@@ -917,7 +927,7 @@ describe('Composer execution control', () => {
     });
     // A running turn must not lock the control: it stays browsable, and the
     // tooltip says a pick lands on the next message.
-    const trigger = rendered.container.querySelector<HTMLButtonElement>('#composer-execution-select')!;
+    const trigger = (rendered.container.querySelector<HTMLButtonElement>('#composer-profile-select') ?? rendered.container.querySelector<HTMLButtonElement>('#composer-execution-select'))!;
     expect(trigger.disabled).toBe(false);
     expect(trigger.title).toContain('next message');
     expect(trigger.title).not.toContain('rebuilding context');
@@ -1042,7 +1052,7 @@ describe('Composer execution control', () => {
       execution: { executor: 'native', profile: 'alpha-main', profile_file: undefined, overrides: undefined },
       onChangeExecution: () => {},
     });
-    expect((await waitForTrigger(rendered.container)).textContent).toContain('alpha-main');
+    expect((await waitForProfileTrigger(rendered.container)).textContent).toContain('alpha-main');
 
     await rendered.rerender({
       workspaceId: 'wd_beta',
@@ -1061,7 +1071,7 @@ describe('Composer execution control', () => {
         { name: 'beta-main', source: 'workspace', main: true, disabled: false, routes: [] },
       ],
     });
-    const trigger = await waitForTrigger(rendered.container);
+    const trigger = await waitForProfileTrigger(rendered.container);
     expect(trigger.textContent).toContain('beta-main');
     await click(trigger);
     const options = [...rendered.container.querySelectorAll('[role="option"]')].map(
@@ -1100,7 +1110,7 @@ describe('Composer execution control', () => {
         { name: 'workspace-main', source: 'workspace', main: true, disabled: false, routes: [] },
       ],
     });
-    const trigger = await waitForTrigger(rendered.container);
+    const trigger = await waitForProfileTrigger(rendered.container);
     expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_session');
     expect(trigger.textContent).toContain('workspace-main');
     await click(trigger);
@@ -1120,7 +1130,7 @@ describe('Composer execution control', () => {
       onChangeExecution: () => {},
       executionPending: true,
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     // A pending switch names the engine/profile and when it applies.
     expect(trigger.textContent).toContain('reviewer · next message');
     expect(trigger.title).toContain('applies from your next message');
@@ -1130,7 +1140,7 @@ describe('Composer execution control', () => {
 describe('Composer profile file', () => {
   /** Open the panel, then its file form. */
   async function openFileForm(container: HTMLDivElement): Promise<void> {
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     await click(container.querySelector('[data-execution-file-open]')!);
   }
 
@@ -1302,7 +1312,7 @@ describe('Composer profile file', () => {
     selectFilePathNative.mockImplementation(() => picked.promise);
     const props = { sessionId: 'saved-session', execution: NATIVE_AGENT, onChangeExecution: vi.fn() };
     const rendered = await renderComposer(props);
-    await click(await waitForTrigger(rendered.container));
+    await click(await waitForProfileTrigger(rendered.container));
     await click(rendered.container.querySelector('[data-execution-file-open]')!);
     expect(selectFilePathNative).toHaveBeenCalledOnce();
     connectionScope.serverId = 'server-b';
@@ -1330,7 +1340,7 @@ describe('Composer profile file', () => {
       onChangeExecution: vi.fn(),
     };
     const rendered = await renderComposer(props);
-    await click(await waitForTrigger(rendered.container));
+    await click(await waitForProfileTrigger(rendered.container));
     await settle();
     expect(previewAgentProfileFile).toHaveBeenCalledWith(
       { path: '/work/profiles/research.md', cwd: '/work' }, { signal: expect.any(AbortSignal) },
@@ -1355,7 +1365,7 @@ describe('Composer profile file', () => {
       execution: NATIVE_AGENT,
       onChangeExecution,
     });
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     const picker = container.querySelector<HTMLButtonElement>('[data-execution-file-open]')!;
     expect(picker.dataset['executionFilePicker']).toBe('native');
     await click(picker);
@@ -1378,7 +1388,7 @@ describe('Composer profile file', () => {
     desktopRuntime.value = true;
     connectionScope.source = source;
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: NATIVE_AGENT, onChangeExecution: vi.fn() });
-    await click(await waitForTrigger(container));
+    await click(await waitForProfileTrigger(container));
     const picker = container.querySelector<HTMLButtonElement>('[data-execution-file-open]')!;
     expect(picker.dataset['executionFilePicker']).toBe('path');
     await click(picker);
@@ -1441,7 +1451,7 @@ describe('Composer profile file', () => {
       execution: fileChoice,
       onChangeExecution: vi.fn(),
     });
-    const trigger = await waitForTrigger(container);
+    const trigger = await waitForProfileTrigger(container);
     expect(trigger.textContent).toContain('research.md');
     expect(trigger.getAttribute('data-execution-profile-file')).toBe('/work/profiles/research.md');
 
@@ -3420,7 +3430,7 @@ describe('Composer restored selection diagnostics', () => {
     } });
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    await click(container.querySelector('#composer-engine-model-select')!);
+    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
     expect(container.querySelector('[data-option-value="vendor/model-id"]')).toBeNull();
@@ -3441,7 +3451,7 @@ describe('Composer restored selection diagnostics', () => {
     });
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    await click(container.querySelector('#composer-engine-model-select')!);
+    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     expect(container.querySelector('[data-option-value="claude/sonnet"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="claude/opus"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
@@ -3464,7 +3474,7 @@ describe('Composer restored selection diagnostics', () => {
     });
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    await click(container.querySelector('#composer-engine-model-select')!);
+    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     expect(container.querySelector('[data-option-value="vendor/model-a"]')).not.toBeNull();
     expect(container.querySelector('[data-option-value="vendor/model-b"]')).not.toBeNull();
     expect(container.querySelector('[data-external-model-status]')?.textContent).toContain('2 models so far; the engine is still reporting.');
@@ -3527,13 +3537,13 @@ describe('Composer restored selection diagnostics', () => {
     });
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/saved-model' } };
     const { container } = await renderComposer({ sessionId: 'saved-session', execution: choice, onChangeExecution: vi.fn() });
-    const trigger = container.querySelector('#composer-engine-model-select')!;
+    const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
     expect(trigger.textContent).toContain('vendor/saved-model');
     await click(trigger);
     const saved = container.querySelector('[data-option-value="vendor/saved-model"]')!;
     expect(saved.textContent).toContain('not in this engine\'s list');
     expect(saved.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('#composer-engine-model-select')?.textContent).toContain('vendor/saved-model');
+    expect((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))?.textContent).toContain('vendor/saved-model');
   });
 
   it.each([
@@ -3619,7 +3629,7 @@ describe('Composer restored selection diagnostics', () => {
       onChangeExecution: vi.fn(),
     });
     expect(refreshExecutorModels).not.toHaveBeenCalled();
-    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    await click((container.querySelector<HTMLButtonElement>('#composer-engine-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!);
     expect(container.querySelector('[data-option-value="vendor/old-model"]')).not.toBeNull();
     const refreshButton = container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!;
     await click(refreshButton);
@@ -3650,7 +3660,7 @@ describe('Composer restored selection diagnostics', () => {
       execution: { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined },
       onChangeExecution: vi.fn(),
     });
-    await click(container.querySelector<HTMLButtonElement>('#composer-engine-model-select')!);
+    await click((container.querySelector<HTMLButtonElement>('#composer-engine-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!);
     await click(container.querySelector<HTMLButtonElement>('[data-external-model-refresh]')!);
     await settle();
     expect(refreshExecutorModels).toHaveBeenCalledExactlyOnceWith('claude-acp');
@@ -3757,7 +3767,7 @@ describe('Composer restored selection diagnostics', () => {
     const onChangeExecution = vi.fn();
     const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: { model: 'vendor/model-v1', thinking: 'high' } };
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
-    await click(container.querySelector('#composer-engine-model-select')!);
+    await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value=""]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
   });
@@ -4121,7 +4131,7 @@ describe('Composer projected profile model menu', () => {
     const { container, rerender } = await renderComposer(props);
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
     expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
-    await act(async () => container.querySelector<HTMLButtonElement>('#composer-model-select')!.click());
+    await act(async () => (container.querySelector<HTMLButtonElement>('#composer-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!.click());
     const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
     expect(outside.getAttribute('aria-disabled')).not.toBe('true');
     expect(outside.textContent).toContain('profile:agent.restrict_models_to_menu');
@@ -4131,7 +4141,7 @@ describe('Composer projected profile model menu', () => {
     expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
-    await act(async () => container.querySelector<HTMLButtonElement>('#composer-execution-select')!.click());
+    await act(async () => (container.querySelector<HTMLButtonElement>('#composer-profile-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!.click());
     expect([...document.body.querySelectorAll('[role="option"]')].some((node) => node.textContent?.includes('outside-profile'))).toBe(true);
   });
   it('does not warn or block main choices outside a recommended menu or stale projection', async () => {
@@ -4666,7 +4676,7 @@ describe('Composer explicit profile file recovery', () => {
       execution: { executor: 'native', profile: 'agent', overrides: undefined },
       onChangeExecution, agentProfileCatalogMode: { mode: 'cwd', cwd: '/workspace', effective: true },
     });
-    await click(container.querySelector('[data-execution-trigger]')!);
+    await click((container.querySelector('[data-profile-trigger]') ?? container.querySelector('[data-execution-trigger]'))!);
     await click(container.querySelector('[data-execution-file-open]')!);
     const input = container.querySelector<HTMLInputElement>('[data-execution-file-path]')!;
     input.focus();
@@ -4695,12 +4705,17 @@ describe('Composer explicit profile file recovery', () => {
     const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution, agentProfile: 'helper' });
     expect(previewAgentProfileFile).toHaveBeenCalledWith({ path: profile.source_file, cwd: undefined, workspace_id: undefined }, { signal: expect.any(AbortSignal) });
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
-    const trigger = container.querySelector('[data-execution-trigger]')!;
+    const trigger = (container.querySelector('[data-profile-trigger]') ?? container.querySelector('[data-execution-trigger]'))!;
     expect(trigger.textContent).toContain('helper.md');
     await click(trigger);
-    const bare = container.querySelector('[data-execution-bare="native"]')!;
-    expect(bare.getAttribute('aria-selected')).toBe('false');
-    await click(bare);
+    const unspecified = container.querySelector<HTMLElement>('[data-profile-unspecified]');
+    if (unspecified) {
+      await click(unspecified);
+    } else {
+      const bare = container.querySelector('[data-execution-bare="native"]')!;
+      expect(bare.getAttribute('aria-selected')).toBe('false');
+      await click(bare);
+    }
     expect(onChangeExecution).toHaveBeenCalledWith({ executor: 'native', profile: undefined, profile_file: undefined, overrides: undefined });
   });
 

@@ -207,7 +207,7 @@ async function mount() {
     );
   });
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (container.querySelector('#composer-execution-select') !== null) break;
+    if (container.querySelector('#composer-profile-select') !== null) break;
     await settle();
   }
   return { container };
@@ -226,7 +226,7 @@ async function click(element: Element | null | undefined): Promise<void> {
 }
 
 const profileTrigger = (container: HTMLElement) =>
-  ui(container).querySelector<HTMLButtonElement>('#composer-execution-select');
+  ui(container).querySelector<HTMLButtonElement>('#composer-profile-select');
 
 const profileRow = (container: HTMLElement, name: string) =>
   [...ui(container).querySelectorAll<HTMLElement>('[data-execution-profile]')]

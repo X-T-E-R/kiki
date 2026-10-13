@@ -112,6 +112,7 @@ import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
+import { ProfileSelect } from './harness/ProfileSelect';
 import { configuredEngineDescriptors, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
@@ -2354,45 +2355,84 @@ export function Composer({
     if (runMode !== 'normal') statusSegments.push({ key: 'run-mode', node: chip });
   }
   if (onChangeExecution !== undefined && execution !== undefined) {
-    // The engine and its profile are ONE control: which program runs, and
-    // whether Kiki's profile layer shapes it. A persona still rides the same
-    // control on /new — the face names who answers, the panel behind it chooses
-    // what runs, and its ✕ removes the identity without touching the engine.
     statusSegments.push({
-      key: 'agent',
+      key: 'profile',
       node: (
         <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
-        <ExecutionSelect
-          choice={execution}
-          pending={executionPending}
-          busy={busy}
-          onChange={(next) => {
-            // An engine without a profile is the bare harness: no persona can
-            // ride it, so a carried persona steps aside rather than silently
-            // binding Kiki's layer to a harness that was picked as-is.
-            if (next.profile === undefined) personaPick?.onChange(undefined);
-            onChangeExecution(next);
-          }}
-          catalog={executorCatalog}
-          profiles={agentProfilesQuery.data?.items ?? []}
-          catalogMode={agentProfileCatalogMode}
-          pickableProfile={isConversationProfile}
-          nativeLabel={t('composer.agentDefaultName')}
-          contextGroups={executionGrants?.kikiContext}
-          allowKikiSubagents={executionGrants?.allowKikiSubagents}
-          persona={pickedPersona === undefined ? undefined : {
-            id: pickedPersona.id,
-            name: pickedPersona.name,
-            avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
-          }}
-          onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
-          onCancelPending={executionPending ? onCancelExecution : undefined}
-        />
+          <ProfileSelect
+            choice={execution}
+            pending={executionPending}
+            busy={busy}
+            disabled={variant === 'subagent' && disabled}
+            onChange={(next) => {
+              if (next.profile === undefined && next.profile_file === undefined) {
+                personaPick?.onChange(undefined);
+              }
+              onChangeExecution(next);
+            }}
+            catalog={executorCatalog}
+            profiles={agentProfilesQuery.data?.items ?? []}
+            catalogMode={agentProfileCatalogMode}
+            pickableProfile={isConversationProfile}
+            nativeLabel={t('composer.agentDefaultName')}
+            persona={pickedPersona === undefined ? undefined : {
+              id: pickedPersona.id,
+              name: pickedPersona.name,
+              avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
+            }}
+            onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
+            onCancelPending={executionPending ? onCancelExecution : undefined}
+          />
+        </ComposerPanelOrigin>
+      ),
+    });
+    statusSegments.push({
+      key: 'execution',
+      node: (
+        <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
+          <ExecutionSelect
+            choice={execution}
+            pending={executionPending}
+            busy={busy}
+            disabled={variant === 'subagent' && disabled}
+            onChange={(next) => {
+              if (next.profile === undefined && next.profile_file === undefined) {
+                personaPick?.onChange(undefined);
+              }
+              onChangeExecution(next);
+            }}
+            catalog={executorCatalog}
+            profiles={agentProfilesQuery.data?.items ?? []}
+            nativeLabel={t('composer.agentDefaultName')}
+            models={models}
+            modelOptions={modelOptions}
+            currentModel={externalExecution ? validatingModel : model}
+            effectiveModel={effectiveModel}
+            modelShortLabel={modelShortLabel}
+            modelSource={modelSource}
+            currentEffort={effort}
+            efforts={externalExecution ? executorEfforts : efforts}
+            onChangeModel={(next) => {
+              if (externalExecution) {
+                if (!executorModelWritable) return;
+                return onChangeModel(next);
+              }
+              const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
+              if (state === 'blocked' || state === 'unknown') return;
+              return onChangeModel(next);
+            }}
+            onChangeEffort={onChangeEffort}
+            onCancelPending={executionPending ? onCancelExecution : undefined}
+            executorResponse={executorModelResponse}
+            executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
+            executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
+            onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+          />
         </ComposerPanelOrigin>
       ),
     });
   }
-  if (!isExternalClient) {
+  if (execution === undefined && !isExternalClient) {
     statusSegments.push({
       key: 'model',
       node: externalExecution && variant !== 'subagent' ? (
