@@ -383,7 +383,7 @@ export function ProfileSelect({
           data-execution-panel
           role="radiogroup"
           aria-label="Profile"
-          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-88 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} !bg-paper`}
+          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-88 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-[10px] border border-hairline bg-paper shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
         >
           {fileForm.open ? (
             <div data-execution-file-form className="flex flex-col">

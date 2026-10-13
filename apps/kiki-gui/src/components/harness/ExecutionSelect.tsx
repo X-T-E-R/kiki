@@ -286,6 +286,11 @@ export function ExecutionSelect({
     }
   }, [activeProfile, activeProfileDefaultExecutor, isNarrow]);
 
+  const profileResetLabel = (activeProfile && activeProfile.name !== 'agent') ? activeProfile.name : undefined;
+  const resetDefaultsLabel = profileResetLabel
+    ? (locale === 'zh' ? `恢复${profileResetLabel}默认` : `Reset to ${profileResetLabel} default`)
+    : (locale === 'zh' ? '恢复默认' : 'Reset to default');
+
   // Handle apply selection
   const isSwitchingExecutor = editingExecutor !== choice.executor;
   const applyButtonLabel = (isSwitchingExecutor || onRequireSwitchConfirmation)
@@ -404,10 +409,11 @@ export function ExecutionSelect({
     return activeProfileDefaults;
   }, [activeProfile, activeProfileDefaults, editingExecutor]);
 
+  const profileDefaultName = (activeProfile && activeProfile.name !== 'agent') ? activeProfile.name : nativeLabel;
   const defaultOptionTitle = editingProfileDefault
     ? (locale === 'zh'
-        ? `使用 ${activeProfile?.name} 默认`
-        : `Use ${activeProfile?.name} default`)
+        ? `使用 ${profileDefaultName} 默认`
+        : `Use ${profileDefaultName} default`)
     : (locale === 'zh'
         ? `使用 ${editingEngineLabel} 默认`
         : `Use ${editingEngineLabel} default`);
@@ -723,9 +729,7 @@ export function ExecutionSelect({
                     onClick={handleResetDefaults}
                     className="text-[12px] text-ink-soft hover:text-ink underline decoration-dotted"
                   >
-                    {activeProfile
-                      ? (locale === 'zh' ? `恢复${activeProfile.name}默认` : `Reset to ${activeProfile.name} default`)
-                      : (locale === 'zh' ? '恢复默认' : 'Reset to default')}
+                    {resetDefaultsLabel}
                   </button>
                   <button
                     type="button"
@@ -791,7 +795,7 @@ export function ExecutionSelect({
             data-execution-panel
             role="dialog"
             aria-label={t('composer.execution.panelLabel')}
-            className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),32rem)] w-[620px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} !bg-paper`}
+            className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),32rem)] w-[620px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-[10px] border border-hairline bg-paper shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]`}
           >
             {/* Header */}
             <div className="flex items-center justify-between border-b border-hairline px-3 py-2 shrink-0">
@@ -808,7 +812,7 @@ export function ExecutionSelect({
             </div>
 
             {/* Body: Two columns */}
-            <div className="flex flex-row flex-1 min-h-[340px] divide-x divide-hairline overflow-hidden">
+            <div className="flex flex-row flex-1 min-h-0 min-h-[220px] divide-x divide-hairline overflow-hidden">
               {/* Left Column: Engines (w-48) */}
               <div className="w-48 shrink-0 flex flex-col overflow-y-auto p-1.5 bg-panel/30 space-y-0.5">
                 <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
@@ -1122,9 +1126,7 @@ export function ExecutionSelect({
                 onClick={handleResetDefaults}
                 className="text-[12px] text-ink-soft hover:text-ink underline decoration-dotted"
               >
-                {activeProfile
-                  ? (locale === 'zh' ? `恢复${activeProfile.name}默认` : `Reset to ${activeProfile.name} default`)
-                  : (locale === 'zh' ? '恢复默认' : 'Reset to default')}
+                {resetDefaultsLabel}
               </button>
               <button
                 type="button"
