@@ -647,12 +647,17 @@ export class TranscriptWireAdapter {
     if (record.type === 'goal.create') {
       const status = stringOf(record['status']);
       this.#goal = {
+        goalId: stringOf(record['goalId']),
         objective: stringOf(record['objective']) ?? '',
         status: isGoalStatus(status) ? status : 'active',
         completionCriterion: stringOf(record['completionCriterion']),
         followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
         controlRevision: numberOf(record['controlRevision']) ?? 1,
+        turnsUsed: 0,
+        tokensUsed: 0,
+        wallClockMs: 0,
         budgetUsed: 0,
+        budget: computeGoalBudget(undefined, 0, 0, 0),
       };
       return [
         { op: 'meta.merge', meta: { goal: this.#goal } },
@@ -662,10 +667,19 @@ export class TranscriptWireAdapter {
     if (record.type === 'goal.update') {
       if (this.#goal !== undefined) {
         const status = stringOf(record['status']);
-        const tokenBudget = numberOf(objectOf(record['budgetLimits'])?.['tokenBudget']);
+        const budgetRecord = objectOf(record['budgetLimits']);
         const completionCriterion = record['completionCriterion'];
+        const nextBudget = budgetRecord === undefined ? this.#goal.budget : {
+          tokenBudget: numberOf(budgetRecord['tokenBudget']) ?? null,
+          turnBudget: numberOf(budgetRecord['turnBudget']) ?? null,
+          wallClockBudgetMs: numberOf(budgetRecord['wallClockBudgetMs']) ?? null,
+        };
+        const nextTurnsUsed = numberOf(record['turnsUsed']) ?? this.#goal.turnsUsed ?? 0;
+        const nextTokensUsed = numberOf(record['tokensUsed']) ?? this.#goal.tokensUsed ?? this.#goal.budgetUsed ?? 0;
+        const nextWallClockMs = numberOf(record['wallClockMs']) ?? this.#goal.wallClockMs ?? 0;
         this.#goal = {
           ...this.#goal,
+          goalId: stringOf(record['goalId']) ?? this.#goal.goalId,
           objective: stringOf(record['objective']) ?? this.#goal.objective,
           completionCriterion: completionCriterion === null
             ? undefined
@@ -673,8 +687,15 @@ export class TranscriptWireAdapter {
           followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? this.#goal.followUpTiming,
           controlRevision: numberOf(record['controlRevision']) ?? this.#goal.controlRevision,
           status: isGoalStatus(status) ? status : this.#goal.status,
-          budgetUsed: numberOf(record['tokensUsed']) ?? this.#goal.budgetUsed,
-          budgetLimit: tokenBudget ?? this.#goal.budgetLimit,
+          turnsUsed: nextTurnsUsed,
+          tokensUsed: nextTokensUsed,
+          wallClockMs: nextWallClockMs,
+          budgetUsed: nextTokensUsed,
+          budgetLimit: nextBudget?.tokenBudget ?? undefined,
+          budget: computeGoalBudget(nextBudget, nextTurnsUsed, nextTokensUsed, nextWallClockMs),
+          terminalReason: isGoalStatus(status) && status !== this.#goal.status
+            ? (status === 'active' ? undefined : stringOf(record['reason']))
+            : this.#goal.terminalReason,
         };
       }
       return [
@@ -2829,6 +2850,31 @@ function stringOf(value: unknown): string | undefined {
 
 function numberOf(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function computeGoalBudget(
+  budget: Pick<NonNullable<GoalMeta['budget']>, 'tokenBudget' | 'turnBudget' | 'wallClockBudgetMs'> | undefined,
+  turnsUsed: number,
+  tokensUsed: number,
+  wallClockMs: number,
+): NonNullable<GoalMeta['budget']> {
+  const tokenBudget = budget?.tokenBudget ?? null;
+  const turnBudget = budget?.turnBudget ?? null;
+  const wallClockBudgetMs = budget?.wallClockBudgetMs ?? null;
+  return {
+    tokenBudget,
+    turnBudget,
+    wallClockBudgetMs,
+    remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
+    remainingTurns: turnBudget === null ? null : Math.max(0, turnBudget - turnsUsed),
+    remainingWallClockMs: wallClockBudgetMs === null ? null : Math.max(0, wallClockBudgetMs - wallClockMs),
+    tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
+    turnBudgetReached: turnBudget !== null && turnsUsed >= turnBudget,
+    wallClockBudgetReached: wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs,
+    overBudget: (tokenBudget !== null && tokensUsed >= tokenBudget) ||
+      (turnBudget !== null && turnsUsed >= turnBudget) ||
+      (wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs),
+  };
 }
 
 function stringArrayOf(value: unknown): string[] {

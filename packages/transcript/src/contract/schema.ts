@@ -343,6 +343,23 @@ export const goalMetaSchema = z.object({
   controlRevision: z.number().int().nonnegative().optional(),
   budgetUsed: z.number().optional(),
   budgetLimit: z.number().optional(),
+  goalId: z.string().optional(),
+  turnsUsed: z.number().optional(),
+  tokensUsed: z.number().optional(),
+  wallClockMs: z.number().optional(),
+  terminalReason: z.string().optional(),
+  budget: z.object({
+    tokenBudget: z.number().nullable(),
+    turnBudget: z.number().nullable(),
+    wallClockBudgetMs: z.number().nullable(),
+    remainingTokens: z.number().nullable(),
+    remainingTurns: z.number().nullable(),
+    remainingWallClockMs: z.number().nullable(),
+    tokenBudgetReached: z.boolean(),
+    turnBudgetReached: z.boolean(),
+    wallClockBudgetReached: z.boolean(),
+    overBudget: z.boolean(),
+  }).optional(),
 });
 
 export const modesMetaSchema = z.object({

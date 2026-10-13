@@ -440,15 +440,7 @@ export interface AgentTranscriptPrompt {
 }
 
 export interface AgentTranscriptMeta {
-  readonly goal?: {
-    readonly objective: string;
-    readonly status: 'active' | 'paused' | 'blocked' | 'complete';
-    readonly completionCriterion?: string;
-    readonly budgetUsed?: number;
-    readonly budgetLimit?: number;
-    readonly followUpTiming?: 'subagents_done' | 'tasks_done';
-    readonly controlRevision?: number;
-  };
+  readonly goal?: import('@kiki/transcript').GoalMeta;
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   };

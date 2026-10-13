@@ -1654,6 +1654,23 @@ describe('TranscriptWireAdapter', () => {
     ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'interruption']);
   });
 
+  it('restores all goal budget counters and clears limits through full replacement records', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-budget', objective: 'bounded work' },
+      { type: 'goal.update', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
+        budgetLimits: { turnBudget: 2, tokenBudget: 100, wallClockBudgetMs: 5_000 } },
+    ];
+    const before = replay(records).getMeta().goal;
+    expect(before).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
+      budget: { turnBudgetReached: true, tokenBudgetReached: true, wallClockBudgetReached: true, overBudget: true } });
+    const after = replay([...records, { type: 'goal.update', budgetLimits: { turnBudget: 3 } }]).getMeta().goal;
+    expect(after).toMatchObject({ turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
+      budget: { turnBudget: 3, tokenBudget: null, wallClockBudgetMs: null, remainingTurns: 1, overBudget: false } });
+    expect(after?.budgetLimit).toBeUndefined();
+    expect(replay([...records, { type: 'goal.update', budgetLimits: {} }]).getMeta().goal?.budget)
+      .toMatchObject({ turnBudget: null, tokenBudget: null, wallClockBudgetMs: null, overBudget: false });
+  });
+
   it('projects reviewer provenance from an approval resolution', () => {
     const transcript = replay([
       { type: 'interaction.request', id: 'review-1', kind: 'approval', toolCallId: 'call-1', request: { toolName: 'Bash' } },

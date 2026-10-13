@@ -28,7 +28,11 @@ export class GoalTool implements IGoalTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Goal';
   readonly description = GOAL_DESCRIPTION;
-  readonly parameters = toInputJsonSchema(GoalInputSchema);
+  readonly parameters = toInputJsonSchema(z.discriminatedUnion('action', [
+    CreateGoalToolInputSchema.extend({ action: z.literal('create') }),
+    GetGoalToolInputSchema.extend({ action: z.literal('get') }),
+    UpdateGoalToolInputSchema.extend({ action: z.literal('update') }),
+  ]));
 
   constructor(
     @ICreateGoalTool private readonly create: ICreateGoalTool,

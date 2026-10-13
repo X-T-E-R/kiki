@@ -24,7 +24,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import type { GoalFollowUpTiming, GoalSnapshot } from '@kiki/protocol';
+import type { GoalBudgetPatch, GoalFollowUpTiming, GoalSnapshot } from '@kiki/protocol';
 
 import { API_CODES, ApiError } from '../lib/client';
 import type { UpdateAgentGoalInput } from '../lib/client';
@@ -75,6 +75,10 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function budgetField(value: number | null, divisor = 1): string {
+  return value === null ? '' : String(value / divisor);
+}
+
 export function GoalCard({
   goal,
   onRefresh,
@@ -97,6 +101,9 @@ export function GoalCard({
   const [objective, setObjective] = useState('');
   const [criterion, setCriterion] = useState('');
   const [followUpTiming, setFollowUpTiming] = useState<GoalFollowUpTiming>('subagents_done');
+  const [tokenBudget, setTokenBudget] = useState('');
+  const [turnBudget, setTurnBudget] = useState('');
+  const [wallClockBudget, setWallClockBudget] = useState('');
   const [baseline, setBaseline] = useState<{ goalId: string; controlRevision?: number } | null>(null);
   const [conflict, setConflict] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -118,6 +125,9 @@ export function GoalCard({
     setObjective(snapshot.objective);
     setCriterion(snapshot.completionCriterion ?? '');
     setFollowUpTiming(snapshot.followUpTiming ?? 'subagents_done');
+    setTokenBudget(budgetField(snapshot.budget.tokenBudget));
+    setTurnBudget(budgetField(snapshot.budget.turnBudget));
+    setWallClockBudget(budgetField(snapshot.budget.wallClockBudgetMs, 1_000));
   };
 
   const openEditor = () => {
@@ -149,32 +159,47 @@ export function GoalCard({
     if (baseline === null || pending !== null) return;
     const trimmed = objective.trim();
     if (trimmed === '') return;
-    setPending('save');
     setActionError(null);
+    const seconds = Number(wallClockBudget);
+    const wallClockBudgetMs = wallClockBudget.trim() === '' ? null : Math.round(seconds * 1_000);
+    const budgetLimits: GoalBudgetPatch = {
+      tokenBudget: tokenBudget.trim() === '' ? null : Number(tokenBudget),
+      turnBudget: turnBudget.trim() === '' ? null : Number(turnBudget),
+      wallClockBudgetMs,
+    };
+    if (Object.values(budgetLimits).some((value) => value !== null && (!Number.isSafeInteger(value) || value <= 0)) ||
+      (wallClockBudgetMs !== null && (wallClockBudgetMs < 1_000 || wallClockBudgetMs / 1_000 !== seconds))) {
+      setActionError(t('goal.invalidBudget'));
+      return;
+    }
+    setPending('save');
     void onUpdate({
       goalId: baseline.goalId,
       expectedRevision: baseline.controlRevision,
       objective: trimmed,
       completionCriterion: criterion.trim() === '' ? null : criterion.trim(),
       followUpTiming,
+      budgetLimits,
     })
       .then(() => {
         setEditing(false);
         setConflict(false);
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
-          // Version conflict: reload the form from the authoritative snapshot
-          // and let the user review before saving again.
-          setConflict(true);
-          void onRefresh()
-            .then((snapshot) => {
-              if (snapshot !== null) {
-                setBaseline({ goalId: snapshot.goalId, controlRevision: snapshot.controlRevision });
-                seedForm(snapshot);
-              }
-            })
-            .catch(() => undefined);
+          setBaseline(null);
+          try {
+            const snapshot = await onRefresh();
+            if (snapshot === null) {
+              setEditing(false);
+              return;
+            }
+            setBaseline({ goalId: snapshot.goalId, controlRevision: snapshot.controlRevision });
+            seedForm(snapshot);
+            setConflict(true);
+          } catch (refreshError) {
+            setActionError(errorDetail(refreshError));
+          }
           return;
         }
         setActionError(errorDetail(error));
@@ -259,6 +284,21 @@ export function GoalCard({
               </span>
             ) : null}
           </p>
+          <div data-goal-budgets className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums text-ink-soft">
+            {([
+              ['turns', goal.turnsUsed, goal.budget.turnBudget, goal.budget.turnBudgetReached],
+              ['tokens', goal.tokensUsed, goal.budget.tokenBudget, goal.budget.tokenBudgetReached],
+              ['seconds', Math.floor(goal.wallClockMs / 1_000), goal.budget.wallClockBudgetMs === null ? null : goal.budget.wallClockBudgetMs / 1_000, goal.budget.wallClockBudgetReached],
+            ] as const).map(([unit, used, limit, reached]) => (
+              <span key={unit} data-goal-budget={unit} className={reached ? 'text-amber-ink' : undefined}>
+                {t(`goal.budget.${unit}`)} · {used.toLocaleString()}{limit === null ? ` · ${t('goal.noLimit')}` : `/${limit.toLocaleString()}`}
+                {reached ? ` · ${t('goal.limitReached')}` : ''}
+              </span>
+            ))}
+          </div>
+          {goal.status === 'blocked' && goal.budget.overBudget ? (
+            <p className="mt-1 text-[12px] text-amber-ink">{t('goal.budgetBlocked')}</p>
+          ) : null}
         </div>
         {editing ? null : (
           <span data-goal-actions className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -354,6 +394,27 @@ export function GoalCard({
                 className="w-full rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60"
               />
             </label>
+            <fieldset disabled={busy} className="min-w-0 space-y-2">
+              <legend className="text-[12px] font-medium text-ink-soft">{t('goal.hardBudgets')}</legend>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {([
+                  ['turns', turnBudget, setTurnBudget, 1],
+                  ['tokens', tokenBudget, setTokenBudget, 1],
+                  ['seconds', wallClockBudget, setWallClockBudget, 0.001],
+                ] as const).map(([unit, value, setter, step]) => (
+                  <label key={unit} className="block min-w-0 text-[12px] text-ink-soft">
+                    {t(`goal.budget.${unit}`)}
+                    <input type="number" min="1" step={step} value={value} data-goal-budget-input={unit}
+                      placeholder={t('goal.noLimit')} onChange={(event) => { setter(event.target.value); }}
+                      className="mt-1 w-full min-w-0 rounded-lg border border-hairline bg-panel px-2 py-1 text-[13px] text-ink focus:border-accent focus:outline-none disabled:opacity-60" />
+                  </label>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[12px] text-ink-faint">{t('goal.budgetHint')}</span>
+                <button type="button" className={actionClass} onClick={() => { setTurnBudget(''); setTokenBudget(''); setWallClockBudget(''); }}>{t('goal.clearBudgets')}</button>
+              </div>
+            </fieldset>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[12px] font-medium text-ink-soft">
                 {t('goal.editTiming')}
@@ -395,7 +456,7 @@ export function GoalCard({
                 <button
                   type="button"
                   onClick={save}
-                  disabled={pending !== null || objective.trim() === ''}
+                  disabled={pending !== null || baseline === null || objective.trim() === ''}
                   data-goal-save
                   className="h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-on-accent transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
                 >

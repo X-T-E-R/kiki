@@ -1,1 +1,1 @@
-Set a hard turns, tokens, or wall-clock budget on the current goal only when the user gives a clear limit. Do not invent a budget from a vague time preference. Use one supported unit (`turns`, `tokens`, `milliseconds`, `seconds`, `minutes`, `hours`); compound times need conversion. Time limits must be finite and at least one second; turns/tokens are rounded to positive whole numbers.
+Unavailable to models. Only the user can set or clear hard goal budgets in the GUI goal editor.

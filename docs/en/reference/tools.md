@@ -378,7 +378,9 @@ A `create` or `delete` that reports success has already been written to disk. Wh
 
 ## Goal
 
-The main agent's `Goal` tool uses `action: "create"`, `"get"`, `"set_budget"`, or `"update"`; older `CreateGoal`, `GetGoal`, `SetGoalBudget`, and `UpdateGoal` names still work for existing profiles and approval rules but are no longer advertised separately. `create` needs a verifiable `objective` and an optional `completionCriterion`; `replace: true` abandons an existing goal only when requested. `get` reads its state. `set_budget` accepts a positive `value` and a unit (`turns`, `tokens`, `milliseconds`, `seconds`, `minutes`, or `hours`) when the user specifies a limit. `update` sets `active`, `complete`, or `blocked`; completion requires verifying the objective, and a nonterminal blocker must persist for three consecutive goal turns. For user controls and examples, see [Goals](../guides/goals.md).
+The main agent's `Goal` tool uses `action: "create"`, `"get"`, or `"update"`; older `CreateGoal`, `GetGoal`, and `UpdateGoal` names still work for existing profiles and approval rules but are no longer advertised separately. `create` needs a verifiable `objective` and an optional `completionCriterion`; `replace: true` abandons an existing goal only when requested. `get` reads its state. `update` sets `active`, `complete`, or `blocked`; completion requires verifying the objective, and a nonterminal blocker must persist for three consecutive goal turns.
+
+Goals have no hard budget by default. Only the user can set or clear budgets in the GUI goal editor; chat instructions do not configure them. Legacy `SetGoalBudget` and `action: "set_budget"` calls return an unavailable error without changing the budget. For user controls and examples, see [Goals](../guides/goals.md#manage-goals-in-the-web-ui).
 
 ## Next steps
 

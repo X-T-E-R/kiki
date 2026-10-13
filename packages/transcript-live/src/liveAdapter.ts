@@ -1502,13 +1502,28 @@ export class AgentTranscriptLiveAdapter {
   private onGoalUpdated(event: {
     readonly type: string;
     snapshot: {
+      goalId: string;
       objective: string;
       status: 'active' | 'paused' | 'blocked' | 'complete';
       completionCriterion?: string;
       followUpTiming?: 'subagents_done' | 'tasks_done';
       controlRevision?: number;
+      turnsUsed: number;
       tokensUsed: number;
-      budget: { tokenBudget: number | null };
+      wallClockMs: number;
+      terminalReason?: string;
+      budget: {
+        tokenBudget: number | null;
+        turnBudget: number | null;
+        wallClockBudgetMs: number | null;
+        remainingTokens: number | null;
+        remainingTurns: number | null;
+        remainingWallClockMs: number | null;
+        tokenBudgetReached: boolean;
+        turnBudgetReached: boolean;
+        wallClockBudgetReached: boolean;
+        overBudget: boolean;
+      };
     } | null;
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
@@ -1520,13 +1535,19 @@ export class AgentTranscriptLiveAdapter {
         op: 'meta.merge',
         meta: {
           goal: {
+            goalId: snapshot.goalId,
             objective: snapshot.objective,
             status: snapshot.status,
             completionCriterion: snapshot.completionCriterion,
             followUpTiming: snapshot.followUpTiming,
             controlRevision: snapshot.controlRevision,
+            turnsUsed: snapshot.turnsUsed,
+            tokensUsed: snapshot.tokensUsed,
+            wallClockMs: snapshot.wallClockMs,
+            terminalReason: snapshot.terminalReason,
             budgetUsed: snapshot.tokensUsed,
             budgetLimit: snapshot.budget.tokenBudget ?? undefined,
+            budget: snapshot.budget,
           },
         },
       });

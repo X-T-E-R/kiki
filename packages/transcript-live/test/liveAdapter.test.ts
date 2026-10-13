@@ -1764,20 +1764,26 @@ describe('AgentTranscriptLiveAdapter', () => {
       turnsUsed: 3,
       tokensUsed: 1234,
       wallClockMs: 5000,
-      budget: { tokenBudget: 50000 },
+      budget: {
+        tokenBudget: 50000, turnBudget: 3, wallClockBudgetMs: 5000,
+        remainingTokens: 48766, remainingTurns: 0, remainingWallClockMs: 0,
+        tokenBudgetReached: false, turnBudgetReached: true, wallClockBudgetReached: true, overBudget: true,
+      },
     };
     const ops = liveAdapter.map(ev({ type: 'goal.updated', snapshot, change: { kind: 'lifecycle' } }));
     tx.apply(ops);
 
     expect(tx.getMeta().goal).toEqual({
-      objective: 'ship it',
-      status: 'active',
-      completionCriterion: 'tests green',
-      followUpTiming: 'tasks_done',
-      controlRevision: 4,
+      ...snapshot,
+      terminalReason: undefined,
       budgetUsed: 1234,
       budgetLimit: 50000,
     });
+    tx.apply(liveAdapter.map(ev({ type: 'goal.updated', snapshot: {
+      ...snapshot, budget: { ...snapshot.budget, tokenBudget: null, remainingTokens: null },
+    } })));
+    expect(tx.getMeta().goal?.budget?.tokenBudget).toBeNull();
+    expect(tx.getMeta().goal?.budgetLimit).toBeUndefined();
     const marker = tx.getItems().find((item) => item.kind === 'marker');
     expect(marker).toMatchObject({ marker: 'goal', payload: { snapshot } });
 

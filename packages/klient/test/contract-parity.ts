@@ -28,6 +28,7 @@ import type { AgentContextData } from '@kiki/agent-core-v2/agent/contextMemory/t
 import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
 import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
+import type { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
@@ -265,6 +266,7 @@ import {
 } from '../src/contract/session/approval.js';
 import {
   agentSkillContract,
+  agentGoalContract,
   fullCompactionInputSchema,
   mcpServerEntrySchema,
 } from '../src/contract/agent/services.js';
@@ -437,6 +439,11 @@ type RefreshOAuthProviderModelsResponse = Awaited<
 >;
 /** String-enum value union (`'user' | 'memory'`). */
 type ConfigTargetValues = `${ConfigTarget}`;
+
+const _updateGoalInput: AssertWire<
+  z.ZodType<z.infer<typeof agentGoalContract.updateGoal.input>[0]>,
+  Parameters<IAgentGoalService['updateGoal']>[0]
+> = true;
 
 // sessions.ts
 const _managedQuota: AssertWire<typeof managedUsageResultSchema, EngineManagedUsageResult> = true;

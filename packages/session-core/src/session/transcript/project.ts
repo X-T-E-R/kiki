@@ -30,6 +30,7 @@ import type {
   AgentTranscriptResponse,
   AgentTranscriptTask,
 } from '../../transport';
+import type { GoalMeta } from '@kiki/transcript';
 import { mediaFromContentParts, mediaRefFromUrl, type MediaRef } from '../../composer/media';
 import type { I18nKey } from '../../i18n/locale';
 import { MAIN_AGENT_ID, type AgentTurnOutcome } from '../agentTree';
@@ -2982,39 +2983,35 @@ export function appendLocalUserMessage(
   });
 }
 
-function projectGoalSnapshot(goal: {
-  readonly objective: string;
-  readonly status: GoalSnapshot['status'];
-  readonly completionCriterion?: string;
-  readonly budgetUsed?: number;
-  readonly budgetLimit?: number;
-  readonly followUpTiming?: 'subagents_done' | 'tasks_done';
-  readonly controlRevision?: number;
-}): GoalSnapshot {
-  const tokenBudget = goal.budgetLimit ?? null;
-  const tokensUsed = goal.budgetUsed ?? 0;
+function projectGoalSnapshot(goal: GoalMeta): GoalSnapshot {
+  const goalId = goal.goalId ?? 'transcript';
+  const turnsUsed = goal.turnsUsed ?? 0;
+  const tokensUsed = goal.tokensUsed ?? goal.budgetUsed ?? 0;
+  const wallClockMs = goal.wallClockMs ?? 0;
+  const budget = goal.budget ?? {
+    tokenBudget: goal.budgetLimit ?? null,
+    turnBudget: null,
+    wallClockBudgetMs: null,
+    remainingTokens: goal.budgetLimit === undefined ? null : Math.max(0, goal.budgetLimit - tokensUsed),
+    remainingTurns: null,
+    remainingWallClockMs: null,
+    tokenBudgetReached: goal.budgetLimit !== undefined && tokensUsed >= goal.budgetLimit,
+    turnBudgetReached: false,
+    wallClockBudgetReached: false,
+    overBudget: goal.budgetLimit !== undefined && tokensUsed >= goal.budgetLimit,
+  };
   return {
-    goalId: 'transcript',
+    goalId,
     objective: goal.objective,
     completionCriterion: goal.completionCriterion,
     status: goal.status,
     followUpTiming: goal.followUpTiming,
     controlRevision: goal.controlRevision,
-    turnsUsed: 0,
+    turnsUsed,
     tokensUsed,
-    wallClockMs: 0,
-    budget: {
-      tokenBudget,
-      turnBudget: null,
-      wallClockBudgetMs: null,
-      remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
-      remainingTurns: null,
-      remainingWallClockMs: null,
-      tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
-      turnBudgetReached: false,
-      wallClockBudgetReached: false,
-      overBudget: tokenBudget !== null && tokensUsed > tokenBudget,
-    },
+    wallClockMs,
+    budget,
+    terminalReason: goal.terminalReason,
   };
 }
 

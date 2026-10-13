@@ -11,6 +11,23 @@ export interface GoalMeta {
   readonly controlRevision?: number;
   readonly budgetUsed?: number;
   readonly budgetLimit?: number;
+  readonly goalId?: string;
+  readonly turnsUsed?: number;
+  readonly tokensUsed?: number;
+  readonly wallClockMs?: number;
+  readonly terminalReason?: string;
+  readonly budget?: {
+    readonly tokenBudget: number | null;
+    readonly turnBudget: number | null;
+    readonly wallClockBudgetMs: number | null;
+    readonly remainingTokens: number | null;
+    readonly remainingTurns: number | null;
+    readonly remainingWallClockMs: number | null;
+    readonly tokenBudgetReached: boolean;
+    readonly turnBudgetReached: boolean;
+    readonly wallClockBudgetReached: boolean;
+    readonly overBudget: boolean;
+  };
 }
 
 /** Mode badges (plan mode) mirrored at session level. */

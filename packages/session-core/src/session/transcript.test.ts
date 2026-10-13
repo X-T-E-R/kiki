@@ -1791,6 +1791,22 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
   });
 
+  it('projects complete goal budget snapshots from replay and preserves explicit clears', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-budget', objective: 'Ship' },
+      { type: 'goal.update', status: 'blocked', reason: 'budget reached', turnsUsed: 2, tokensUsed: 50, wallClockMs: 10_000,
+        budgetLimits: { tokenBudget: 50, turnBudget: 2, wallClockBudgetMs: 10_000 } },
+    ];
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', records));
+    expect(state.goal).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, tokensUsed: 50, wallClockMs: 10_000,
+      terminalReason: 'budget reached', budget: { tokenBudgetReached: true, turnBudgetReached: true, wallClockBudgetReached: true } });
+    const cleared = projectAgentTranscriptView(state, 'main', replayAgentWire('main', [...records,
+      { type: 'goal.update', budgetLimits: {} },
+    ]));
+    expect(cleared.goal).toMatchObject({ status: 'blocked', tokensUsed: 50,
+      budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null, overBudget: false } });
+  });
+
   it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
     const records = [
       { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },

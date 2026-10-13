@@ -191,6 +191,12 @@ export interface GoalBudgetLimits {
   readonly wallClockBudgetMs?: number;
 }
 
+export interface GoalBudgetPatch {
+  readonly tokenBudget?: number | null;
+  readonly turnBudget?: number | null;
+  readonly wallClockBudgetMs?: number | null;
+}
+
 export interface GoalBudgetReport {
   readonly tokenBudget: number | null;
   readonly turnBudget: number | null;
@@ -1394,6 +1400,12 @@ export const goalBudgetLimitsSchema = z.object({
   turnBudget: z.number().optional(),
   wallClockBudgetMs: z.number().optional(),
 }) satisfies z.ZodType<GoalBudgetLimits>;
+
+export const goalBudgetPatchSchema = z.object({
+  tokenBudget: z.number().int().positive().safe().nullable().optional(),
+  turnBudget: z.number().int().positive().safe().nullable().optional(),
+  wallClockBudgetMs: z.number().int().min(1_000).safe().nullable().optional(),
+}).strict() satisfies z.ZodType<GoalBudgetPatch>;
 
 export const goalBudgetReportSchema = z.object({
   tokenBudget: z.number().nullable(),

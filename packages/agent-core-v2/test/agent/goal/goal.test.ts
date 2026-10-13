@@ -593,7 +593,7 @@ describe('AgentGoalService', () => {
         {
           budgetLimits: { tokenBudget: 100, turnBudget: 2, wallClockBudgetMs: 1000 },
         },
-        'model',
+        'user',
       );
 
       expect(snapshot.budget.tokenBudget).toBe(100);
@@ -601,9 +601,48 @@ describe('AgentGoalService', () => {
       expect(snapshot.budget.wallClockBudgetMs).toBe(1000);
     });
 
+    it('edits budgets atomically, preserves omitted fields, and clears explicit nulls', async () => {
+      const created = await goals.createGoal({ objective: 'work', initialStatus: 'paused' });
+      const set = await goals.updateGoal({
+        goalId: created.goalId, expectedRevision: 1, objective: 'bounded work',
+        budgetLimits: { tokenBudget: 100, turnBudget: 2, wallClockBudgetMs: 5_000 },
+      });
+      expect(set).toMatchObject({ objective: 'bounded work', controlRevision: 2, status: 'paused' });
+      const cleared = await goals.updateGoal({
+        goalId: created.goalId, expectedRevision: 2,
+        budgetLimits: { tokenBudget: null, turnBudget: undefined },
+      });
+      expect(cleared.budget).toMatchObject({ tokenBudget: null, turnBudget: 2, wallClockBudgetMs: 5_000 });
+      await expect(goals.updateGoal({ goalId: created.goalId, expectedRevision: 2, budgetLimits: { turnBudget: 3 } }))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(goals.updateGoal({ goalId: 'replaced', budgetLimits: { turnBudget: 3 } }))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(goals.updateGoal({ goalId: created.goalId, objective: 'invalid', budgetLimits: { turnBudget: -1 } }))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(goals.getGoal().goal?.objective).toBe('bounded work');
+    });
+
+    it('rejects model budget mutations without changing the control revision', async () => {
+      const created = await goals.createGoal({ objective: 'work' });
+      await expect(goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'model'))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(goals.updateGoal({ goalId: created.goalId, budgetLimits: { tokenBudget: 100 } }, 'model'))
+        .rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(goals.getGoal().goal).toMatchObject({ controlRevision: 1, budget: { turnBudget: null, tokenBudget: null } });
+    });
+
+    it('keeps exhausted goals blocked after clearing their budget without resetting usage', async () => {
+      const created = await goals.createGoal({ objective: 'work' });
+      await goals.recordTokenUsage(10);
+      const blocked = await goals.updateGoal({ goalId: created.goalId, budgetLimits: { tokenBudget: 10 } });
+      expect(blocked.status).toBe('blocked');
+      const cleared = await goals.updateGoal({ goalId: created.goalId, expectedRevision: blocked.controlRevision, budgetLimits: { tokenBudget: null } });
+      expect(cleared).toMatchObject({ status: 'blocked', tokensUsed: 10, budget: { tokenBudget: null, overBudget: false } });
+    });
+
     it('blocks when a token budget is reached', async () => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 10 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 10 } }, 'user');
 
       const snapshot = await goals.recordTokenUsage(10);
 
@@ -625,7 +664,7 @@ describe('AgentGoalService', () => {
       await goals.createGoal({ objective: 'work' });
       await goals.incrementTurn();
 
-      const snapshot = await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+      const snapshot = await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
 
       expect(snapshot).toMatchObject({
         status: 'blocked',
@@ -635,7 +674,7 @@ describe('AgentGoalService', () => {
 
     it('tracks telemetry without goal text', async () => {
       await goals.createGoal({ objective: 'private objective', replace: true });
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100 } }, 'user');
       await goals.incrementTurn();
       await goals.pauseGoal({ reason: 'private pause reason' });
       await goals.resumeGoal();
@@ -651,7 +690,7 @@ describe('AgentGoalService', () => {
         'goal_cleared',
       ]);
       expect(telemetry[0]?.properties).toEqual({ agent_id: 'main', actor: 'user', replace: true });
-      expect(telemetry[1]?.properties).toMatchObject({ actor: 'model', has_token_budget: true });
+      expect(telemetry[1]?.properties).toMatchObject({ actor: 'user', has_token_budget: true });
       expect(telemetry[3]?.properties).toMatchObject({ status: 'paused', actor: 'user' });
       expect(JSON.stringify(telemetry)).not.toContain('private objective');
       expect(JSON.stringify(telemetry)).not.toContain('private pause reason');
@@ -664,7 +703,7 @@ describe('AgentGoalService', () => {
       await goals.createGoal({ objective: 'work', completionCriterion: 'tests pass' });
       await goals.recordTokenUsage(5);
       await goals.incrementTurn();
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'user');
       await goals.markBlocked({ reason: 'stuck' });
       await goals.resumeGoal();
       await goals.cancelGoal();
@@ -893,6 +932,35 @@ describe('AgentGoalService core workflow hooks', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
+  });
+
+  it('does not launch a continuation when only budgets change, and resumes explicitly after clearing', async () => {
+    const created = await goals.createGoal({ objective: 'work' });
+    await goals.updateGoal({ goalId: created.goalId, objective: created.objective,
+      followUpTiming: created.followUpTiming, completionCriterion: null,
+      budgetLimits: { tokenBudget: 10, wallClockBudgetMs: 1_000 } });
+    expect(loopService.launches).toEqual([]);
+    clock.advanceBy(1_000);
+    expect(goals.getGoal().goal?.status).toBe('blocked');
+    await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: null } });
+    clock.advanceBy(2_000);
+    expect(goals.getGoal().goal?.status).toBe('blocked');
+    expect(loopService.launches).toEqual([]);
+    await goals.resumeGoal({ continueIfBlocked: true });
+    expect(loopService.launches).toHaveLength(1);
+  });
+
+  it('cancels and reschedules live wall-clock deadlines when the user edits limits', async () => {
+    const created = await goals.createGoal({ objective: 'work' });
+    await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: 1_000 } });
+    clock.advanceBy(500);
+    await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: 2_000 } });
+    clock.advanceBy(500);
+    expect(goals.getGoal().goal?.status).toBe('active');
+    await goals.updateGoal({ goalId: created.goalId, budgetLimits: { wallClockBudgetMs: null } });
+    clock.advanceBy(5_000);
+    expect(goals.getGoal().goal).toMatchObject({ status: 'active', budget: { wallClockBudgetMs: null } });
+    expect(loopService.launches).toEqual([]);
   });
 
   async function startLiveContinuation(
@@ -1124,7 +1192,6 @@ describe('AgentGoalService core workflow hooks', () => {
   it.each([
     { name: 'CreateGoal', args: { objective: 'late task', replace: true } },
     { name: 'UpdateGoal', args: { status: 'complete' } },
-    { name: 'SetGoalBudget', args: { value: 5, unit: 'turns' } },
   ])('rejects a stale $name call from a replaced goal turn', async ({ name, args }) => {
     await goals.createGoal({ objective: 'old task' });
     const oldTurn = makeTurn(46);
@@ -1255,11 +1322,11 @@ describe('AgentGoalService core workflow hooks', () => {
     async (budget) => {
       await goals.createGoal({ objective: 'finish the task' });
       if (budget === 'turn') {
-        await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+        await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
       } else if (budget === 'token') {
-        await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'model');
+        await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'user');
       } else {
-        await goals.setBudgetLimits({ budgetLimits: { wallClockBudgetMs: 1 } }, 'model');
+        await goals.setBudgetLimits({ budgetLimits: { wallClockBudgetMs: 1 } }, 'user');
         clock.advanceBy(1);
       }
 
@@ -1417,7 +1484,7 @@ describe('AgentGoalService core workflow hooks', () => {
 
   it('blocks the next continuation only after the final allowed turn ends', async () => {
     await goals.createGoal({ objective: 'finish the task' });
-    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
 
     const turn = makeTurn(11);
     eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
@@ -1459,7 +1526,7 @@ describe('AgentGoalService core workflow hooks', () => {
 
   it('completes on the final allowed continuation without applying the turn budget block', async () => {
     await goals.createGoal({ objective: 'finish the task' });
-    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'model');
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 2 } }, 'user');
 
     const firstTurn = makeTurn(14);
     eventBus.publish(new TurnStarted({ turnId: firstTurn.id, origin: USER_PROMPT_ORIGIN }));
@@ -1491,7 +1558,7 @@ describe('AgentGoalService core workflow hooks', () => {
 
   it('requests a blocked outcome step when the final allowed turn blocks the goal', async () => {
     await goals.createGoal({ objective: 'finish the task' });
-    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
 
     const turn = makeTurn(15);
     eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
@@ -1521,7 +1588,7 @@ describe('AgentGoalService core workflow hooks', () => {
 
   it('accounts recorded turn usage for active goal turns', async () => {
     await goals.createGoal({ objective: 'finish the task' });
-    await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 7 } }, 'model');
+    await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 7 } }, 'user');
 
     const turn = loopService.startTurn();
     eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
@@ -1590,7 +1657,7 @@ describe('AgentGoalService core workflow hooks', () => {
     await runGoalStep(loopService, turn);
 
     await goals.createGoal({ objective: 'finish the task' }, 'model');
-    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+    await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
     endTurn(eventBus, turn);
 
     await vi.waitFor(() => expect(goals.getGoal().goal?.status).toBe('blocked'));
@@ -2144,7 +2211,7 @@ describe('AgentGoalService mid-turn budget stop', () => {
       ctx.configure({ tools: ['GetGoal'] });
       await ctx.rpc.createGoal({ objective: 'work' });
       const goals = ctx.get(IAgentGoalService);
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'user');
 
       ctx.mockNextResponse({
         type: 'function',
@@ -2199,7 +2266,7 @@ describe('AgentGoalService mid-turn budget stop', () => {
       const goals = ctx.get(IAgentGoalService);
       await goals.createGoal({ objective: 'work' });
       await goals.markBlocked({ reason: 'ready for a fresh continuation' });
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'user');
 
       ctx.mockNextResponse({
         type: 'function',
@@ -2243,10 +2310,10 @@ describe('AgentGoalService mid-turn budget stop', () => {
   it('rejects tool calls made during the budget grace step without executing them', async () => {
     const ctx = createTestAgent();
     try {
-      ctx.configure({ tools: ['GetGoal', 'SetGoalBudget'] });
+      ctx.configure({ tools: ['GetGoal', 'UpdateGoal'] });
       await ctx.rpc.createGoal({ objective: 'work' });
       const goals = ctx.get(IAgentGoalService);
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 1 } }, 'user');
 
       ctx.mockNextResponse({
         type: 'function',
@@ -2257,8 +2324,8 @@ describe('AgentGoalService mid-turn budget stop', () => {
       ctx.mockNextResponse({
         type: 'function',
         id: 'g2',
-        name: 'SetGoalBudget',
-        arguments: JSON.stringify({ value: 5, unit: 'turns' }),
+        name: 'UpdateGoal',
+        arguments: JSON.stringify({ status: 'complete' }),
       });
       ctx.mockNextResponse({ type: 'text', text: 'This step should never run.' });
 
@@ -2292,12 +2359,12 @@ describe('AgentGoalService mid-turn budget stop', () => {
   it('rejects goal tool calls when an exhausted turn budget is resumed during a prompt', async () => {
     const ctx = createTestAgent();
     try {
-      ctx.configure({ tools: ['UpdateGoal', 'SetGoalBudget'] });
+      ctx.configure({ tools: ['UpdateGoal', 'CreateGoal'] });
       const goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
       await goals.incrementTurn();
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
 
       ctx.mockNextResponse({
         type: 'function',
@@ -2307,9 +2374,9 @@ describe('AgentGoalService mid-turn budget stop', () => {
       });
       ctx.mockNextResponse({
         type: 'function',
-        id: 'raise-budget',
-        name: 'SetGoalBudget',
-        arguments: JSON.stringify({ value: 5, unit: 'turns' }),
+        id: 'replace-goal',
+        name: 'CreateGoal',
+        arguments: JSON.stringify({ objective: 'replacement', replace: true }),
       });
       ctx.mockNextResponse({ type: 'text', text: 'This step should never run.' });
 
@@ -2336,7 +2403,7 @@ describe('AgentGoalService mid-turn budget stop', () => {
       ctx.configure();
       const goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'model');
+      await goals.setBudgetLimits({ budgetLimits: { turnBudget: 1 } }, 'user');
       await goals.incrementTurn();
       expect(goals.getGoal().goal?.status).toBe('active');
       const telemetryAfterResume = telemetry.length;

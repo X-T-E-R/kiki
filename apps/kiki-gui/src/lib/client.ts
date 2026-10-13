@@ -505,6 +505,7 @@ export interface UpdateAgentGoalInput {
   readonly objective?: string;
   readonly completionCriterion?: string | null;
   readonly followUpTiming?: GoalFollowUpTiming;
+  readonly budgetLimits?: import('@kiki/protocol').GoalBudgetPatch;
 }
 
 export interface ResumeAgentGoalInput {
