@@ -159,13 +159,6 @@ export function GoalCard({
     setTokenBudget(budgetField(snapshot.budget.tokenBudget));
     setTurnBudget(budgetField(snapshot.budget.turnBudget));
     setWallClockBudget(budgetField(snapshot.budget.wallClockBudgetMs, 1_000));
-    // If any budget limit is configured or timing is customized, open advanced by default
-    const hasCustomBudget = snapshot.budget.turnBudget !== null ||
-      snapshot.budget.tokenBudget !== null ||
-      snapshot.budget.wallClockBudgetMs !== null;
-    if (hasCustomBudget || snapshot.followUpTiming === 'tasks_done') {
-      setAdvancedOpen(true);
-    }
   };
 
   const openEditor = () => {
@@ -567,7 +560,7 @@ export function GoalCard({
                                 }}
                                 className="flex h-5 w-5 items-center justify-center rounded border border-hairline bg-paper text-ink-soft hover:bg-ink/[0.05] hover:text-ink disabled:opacity-30 focus-visible:outline-none"
                               >
-                                <Icon name="dash" size={10} />
+                                <Icon name="dash" size={12} />
                               </button>
                               <input
                                 type="number"
@@ -593,7 +586,7 @@ export function GoalCard({
                                 }}
                                 className="flex h-5 w-5 items-center justify-center rounded border border-hairline bg-paper text-ink-soft hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-none"
                               >
-                                <Icon name="plus" size={10} />
+                                <Icon name="plus" size={12} />
                               </button>
                             </div>
                           </div>
