@@ -134,7 +134,7 @@ describe('ACP tool timeline display mapping', () => {
     }))).toEqual({
       kind: 'generic',
       summary: '/workspace/example/a.ts, /workspace/example/b.ts',
-      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'], operation: 'read' },
     });
   });
 
@@ -155,7 +155,7 @@ describe('Codex app-server display compatibility', () => {
     expect(externalToolDisplay({ ...base, kind: 'webSearch' })).toEqual({ kind: 'search', query: 'Tool' });
     expect(externalToolDisplay({ ...base, kind: 'file', rawInput: [{ path: '/workspace/example/a.ts' }, { path: '/workspace/example/b.ts' }] })).toEqual({
       kind: 'generic', summary: '/workspace/example/a.ts, /workspace/example/b.ts',
-      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+      detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'], operation: 'edit' },
     });
     expect(externalToolDisplay({ ...base, title: 'grep', name: 'grep', kind: 'execute', rawInput: { pattern: 'x', command: 'rg x' } })).toEqual({
       kind: 'generic', summary: 'grep', detail: { kind: 'execute' },

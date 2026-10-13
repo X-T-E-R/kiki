@@ -46,6 +46,22 @@ describe('projectExternalToolDisplay', () => {
     )).toEqual({ kind: 'generic', summary: 'widget' });
   });
 
+  it('marks a multi-file change as an edit and a multi-file read as a read', () => {
+    const paths = ['/workspace/example/a.ts', '/workspace/example/b.ts'];
+    expect(projectExternalToolDisplay({
+      title: 'File change', kind: 'file', summary: 'File change',
+      rawInput: paths.map((path) => ({ path })),
+    })).toEqual({ kind: 'generic', summary: paths.join(', '), detail: { paths, operation: 'edit' } });
+    expect(projectExternalToolDisplay({
+      name: 'view_file', title: 'view_file', kind: 'read', summary: 'view_file',
+      locations: paths.map((path) => ({ path })),
+    })).toEqual({ kind: 'generic', summary: paths.join(', '), detail: { paths, operation: 'read' } });
+    expect(normalizeStoredExternalToolDisplay(
+      { kind: 'generic', summary: paths.join(', '), detail: { paths } },
+      { title: 'File change', kind: 'file', rawInput: paths.map((path) => ({ path })) },
+    )).toEqual({ kind: 'generic', summary: paths.join(', '), detail: { paths, operation: 'edit' } });
+  });
+
   it('does not replace a display that is already native', () => {
     const stored = { kind: 'command', command: 'pwd' };
     expect(normalizeStoredExternalToolDisplay(stored, {

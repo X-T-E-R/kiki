@@ -71,6 +71,20 @@ export default {
           },
           {
             toolUse: {
+              id: 'external:codex:files', name: 'File change',
+              input: { changes: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+              display: {
+                kind: 'generic',
+                summary: '/workspace/example/a.ts, /workspace/example/b.ts',
+                detail: {
+                  paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'],
+                  operation: 'edit',
+                },
+              },
+            },
+          },
+          {
+            toolUse: {
               id: 'external:agy:widget', name: 'widget',
               input: { widget: { id: 7 } },
               display: { kind: 'generic', summary: 'widget' },

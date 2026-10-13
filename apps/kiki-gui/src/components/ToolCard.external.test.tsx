@@ -5,6 +5,7 @@ const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENV
 reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
+import { projectExternalToolDisplay } from '@kiki/protocol';
 import type { ToolBlock } from '@kiki/session-core/session/transcript';
 import { groupBlocks } from '@kiki/session-core/session/grouping';
 
@@ -146,5 +147,54 @@ describe('external tool rows use the native display', () => {
     expect(shown.container.querySelector('[data-tool-name="run_command"]')).not.toBeNull();
     await act(async () => shown.root.unmount());
     shown.container.remove();
+  });
+
+  it('renders a Codex multi-file change as an edit and an ACP multi-file read as a read', async () => {
+    const codex = projectExternalToolDisplay({
+      title: 'File change', kind: 'file', summary: 'File change',
+      rawInput: [{ path: '/workspace/example/a.ts' }, { path: '/workspace/example/b.ts' }],
+    });
+    expect(codex).toMatchObject({ kind: 'generic', detail: { operation: 'edit' } });
+    const edited = tool({ toolCallId: 'external:codex:files', name: 'File change', display: codex });
+    expect(toolIcon(edited)).toBe('edit');
+    const editCard = await renderCard(edited);
+    const editRow = editCard.container.querySelector('[data-tool-name="File change"]');
+    expect(editRow?.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('edit');
+    expect(editRow?.textContent).toContain('Edit');
+    expect(editRow?.textContent).toContain('/workspace/example/a.ts');
+    expect(editRow?.textContent).toContain('/workspace/example/b.ts');
+    expect(editRow?.textContent).not.toContain('Read');
+    await act(async () => editCard.root.unmount());
+    editCard.container.remove();
+
+    const reads = projectExternalToolDisplay({
+      name: 'view_file', title: 'view_file', kind: 'read', summary: 'view_file',
+      locations: [{ path: '/workspace/example/a.ts' }, { path: '/workspace/example/b.ts' }],
+    });
+    expect(reads).toMatchObject({ kind: 'generic', detail: { operation: 'read' } });
+    const readBlock = tool({ toolCallId: 'external:agy:views', name: 'view_file', display: reads });
+    expect(toolIcon(readBlock)).toBe('read');
+    const readCard = await renderCard(readBlock);
+    const readRow = readCard.container.querySelector('[data-tool-name="view_file"]');
+    expect(readRow?.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('read');
+    expect(readRow?.textContent).toContain('Read');
+    expect(readRow?.textContent).not.toContain('Edit');
+    await act(async () => readCard.root.unmount());
+    readCard.container.remove();
+
+    const unlabeled = tool({
+      toolCallId: 'external:codex:bare', name: 'File change',
+      display: {
+        kind: 'generic',
+        summary: '/workspace/example/a.ts, /workspace/example/b.ts',
+        detail: { paths: ['/workspace/example/a.ts', '/workspace/example/b.ts'] },
+      },
+    });
+    expect(toolIcon(unlabeled)).toBe('tool');
+    const bare = await renderCard(unlabeled);
+    expect(bare.container.querySelector('[data-tool-name="File change"]')?.textContent).toContain('File change');
+    expect(bare.container.textContent).not.toContain('Read');
+    await act(async () => bare.root.unmount());
+    bare.container.remove();
   });
 });

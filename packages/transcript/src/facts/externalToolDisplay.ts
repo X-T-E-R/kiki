@@ -75,7 +75,7 @@ export function projectExternalToolDisplay(facts: ExternalToolDisplayFacts): Pro
   const fromName = token === undefined ? undefined : projectName(token, input, singlePath);
   if (fromName !== undefined) return fromName;
   if (located.many !== undefined && located.many.length > 1 && (facts.kind === 'read' || token === 'read' || token === 'view_file' || token === 'read_file')) {
-    return { kind: 'generic', summary: located.many.join(', '), detail: { paths: located.many } };
+    return { kind: 'generic', summary: located.many.join(', '), detail: { paths: located.many, operation: 'read' } };
   }
   if (facts.titleFallback === true) {
     if ((facts.kind === 'execute' || facts.kind === 'command') && firstString(input, COMMAND_KEYS) === undefined) {
@@ -101,7 +101,7 @@ export function normalizeStoredExternalToolDisplay(stored: unknown, facts: Exter
     summary: facts.summary ?? (typeof record?.['summary'] === 'string' ? record['summary'] : undefined),
   });
   if (projected.kind !== 'generic') return projected;
-  if (recoveredDetail(projected.detail) && !recoveredDetail(record?.['detail'])) return projected;
+  if (recoveredDetail(projected.detail) && (!recoveredDetail(record?.['detail']) || operationOf(projected.detail) !== undefined && operationOf(record?.['detail']) === undefined)) return projected;
   if (record?.['kind'] === 'generic' && typeof record['summary'] === 'string') return stored;
   return projected;
 }
@@ -147,7 +147,7 @@ function projectKind(kind: string | undefined, raw: unknown, input: Readonly<Rec
   }
   if (kind === 'file' || kind === 'delete' || kind === 'move') {
     const paths = changePaths(raw);
-    if (paths.length > 1) return { kind: 'generic', summary: paths.join(', '), detail: { paths } };
+    if (paths.length > 1) return { kind: 'generic', summary: paths.join(', '), detail: { paths, operation: 'edit' } };
     const changePath = paths[0];
     if (changePath !== undefined) return { kind: 'file_io', operation: 'edit', path: changePath };
   }
@@ -214,6 +214,12 @@ function recoveredDetail(detail: unknown): boolean {
   if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return false;
   const record = detail as Readonly<Record<string, unknown>>;
   return Array.isArray(record['diffs']) || Array.isArray(record['paths']);
+}
+
+function operationOf(detail: unknown): 'read' | 'edit' | undefined {
+  if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return undefined;
+  const operation = (detail as Readonly<Record<string, unknown>>)['operation'];
+  return operation === 'read' || operation === 'edit' ? operation : undefined;
 }
 
 function conflictingKind(token: string | undefined, kind: string | undefined): boolean {

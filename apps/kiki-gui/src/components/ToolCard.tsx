@@ -75,7 +75,7 @@ function bridgedArgs(block: ToolBlock): unknown {
   return (block.args as Record<string, unknown>)['arguments'] ?? block.args;
 }
 
-function projectionDetail(detail: unknown): { diffs?: { path: string; before: string; after: string }[]; paths?: string[] } | undefined {
+function projectionDetail(detail: unknown): { diffs?: { path: string; before: string; after: string }[]; paths?: string[]; operation?: 'read' | 'edit' } | undefined {
   if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return undefined;
   const record = detail as Record<string, unknown>;
   if (Array.isArray(record['diffs'])) {
@@ -88,8 +88,16 @@ function projectionDetail(detail: unknown): { diffs?: { path: string; before: st
     if (diffs.length > 0) return { diffs };
   }
   if (Array.isArray(record['paths']) && record['paths'].length > 0 && record['paths'].every((item) => typeof item === 'string')) {
-    return { paths: record['paths'] };
+    const operation = record['operation'] === 'read' || record['operation'] === 'edit' ? record['operation'] : undefined;
+    return { paths: record['paths'], operation };
   }
+  return undefined;
+}
+
+function projectionVerb(detail: unknown): 'read' | 'edit' | undefined {
+  const recovered = projectionDetail(detail);
+  if (recovered?.diffs !== undefined) return 'edit';
+  if (recovered?.operation === 'read' || recovered?.operation === 'edit') return recovered.operation;
   return undefined;
 }
 
@@ -121,9 +129,9 @@ function externalActionLabel(block: ToolBlock, t: Translate): string {
     case 'external_permission':
       return t('tc.ext.permission');
     case 'generic': {
-      const recovered = projectionDetail(display.detail);
-      if (recovered?.diffs !== undefined) return t('tc.ext.edit');
-      if (recovered?.paths !== undefined) return t('tc.ext.read');
+      const verb = projectionVerb(display.detail);
+      if (verb === 'edit') return t('tc.ext.edit');
+      if (verb === 'read') return t('tc.ext.read');
       return block.name;
     }
     default:
@@ -171,9 +179,9 @@ export function toolIcon(block: ToolBlock): IconName {
       case 'external_permission':
         return 'gate';
       case 'generic': {
-        const recovered = projectionDetail(display.detail);
-        if (recovered?.diffs !== undefined) return 'edit';
-        if (recovered?.paths !== undefined) return 'read';
+        const verb = projectionVerb(display.detail);
+        if (verb === 'edit') return 'edit';
+        if (verb === 'read') return 'read';
         break;
       }
     }
