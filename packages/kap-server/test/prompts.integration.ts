@@ -1000,12 +1000,11 @@ describe('server-v2 /api prompts', () => {
     const id = await createSession(home as string);
     await createHeldMainAgent(id);
     await writeConfigToml(home as string, PROMPT_TOML + [
-      '', '[providers."managed:kimi-code"]', 'type = "kimi"',
-      '[providers."managed:kimi-code".oauth]', 'storage = "file"', 'key = "oauth/kimi-code"',
-      '[models.kimi-unavailable]', 'provider = "managed:kimi-code"', 'model = "kimi-unavailable"', 'max_context_size = 1000', '',
+      '', '[providers.credentialless]', 'type = "openai"', 'base_url = "http://127.0.0.1:9"',
+      '[models.credentialless]', 'provider = "credentialless"', 'model = "credentialless"', 'max_context_size = 1000', '',
     ].join('\n'));
     const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'This model needs its own credential.' }], model: 'kimi-unavailable',
+      content: [{ type: 'text', text: 'This model needs its own credential.' }], model: 'credentialless',
     });
     expect(submitted.body.code, submitted.body.msg).toBe(40111);
     const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
