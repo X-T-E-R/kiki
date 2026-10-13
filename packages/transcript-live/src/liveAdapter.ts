@@ -219,6 +219,10 @@ export type LiveAdapterToolFrameLookup = (toolCallId: string) => ToolFrameRecord
  */
 export type LiveAdapterStepOrdinalLookup = (turnId: string) => number | undefined;
 
+const INSTRUCTION_VOLUME_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  'agents-md-oversized',
+]);
+
 export type LiveAdapterTurnLookup = (turnId: string) => TurnHeader | undefined;
 export type LiveAdapterTurnDetailsLookup = (turnId: string) => TranscriptTurn | undefined;
 
@@ -450,6 +454,7 @@ export class AgentTranscriptLiveAdapter {
       case 'error':
         return [this.noticeOp('error', event.message, restOf(event))];
       case 'warning':
+        if (event.code !== undefined && INSTRUCTION_VOLUME_DIAGNOSTIC_CODES.has(event.code)) return [];
         return [this.noticeOp('warning', event.message, restOf(event))];
       default:
         return [];

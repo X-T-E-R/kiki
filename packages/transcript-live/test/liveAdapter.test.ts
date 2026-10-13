@@ -2166,6 +2166,36 @@ describe('AgentTranscriptLiveAdapter', () => {
     });
   });
 
+  it('leaves instruction-volume diagnostics off the timeline across repeated warnings', () => {
+    const liveAdapter = new AgentTranscriptLiveAdapter('main');
+    const tx = new AgentTranscript('main');
+    const advisory = {
+      type: 'warning',
+      code: 'agents-md-oversized',
+      message: 'AGENTS.md is 34.8 KB and exceeds the recommended 32 KB',
+    };
+    tx.apply(liveAdapter.map(ev(advisory)));
+    tx.apply(liveAdapter.map(ev(advisory)));
+    tx.apply(liveAdapter.map(ev({
+      type: 'warning',
+      code: 'system-prompt-refresh-failed',
+      message: 'System prompt refresh skipped: disk full',
+    })));
+
+    const markers = tx
+      .getItems()
+      .filter((item): item is Extract<typeof item, { kind: 'marker' }> => item.kind === 'marker');
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({
+      marker: 'notice',
+      payload: {
+        level: 'warning',
+        message: 'System prompt refresh skipped: disk full',
+        event: { code: 'system-prompt-refresh-failed' },
+      },
+    });
+  });
+
   it('emits interactions as global entities only (no inline frame), back-links on resolve', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

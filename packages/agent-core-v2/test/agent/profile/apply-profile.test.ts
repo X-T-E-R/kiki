@@ -5,8 +5,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
+import { IEventBus } from '#/app/event/eventBus';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeCapability, RuntimeStatus } from '#/runtime/runtime';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -646,6 +648,23 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(profile);
 
     expect(svc.getAgentsMdWarning()).toBeUndefined();
+  });
+
+  it('keeps the loaded AGENTS.md text and oversized diagnostic across refresh', async () => {
+    const largeContent = 'x'.repeat(40 * 1024);
+    await writeFile(join(workDir, 'AGENTS.md'), largeContent, 'utf-8');
+    const { ctx: context, profile: svc } = buildContext();
+    const diagnostics: string[] = [];
+    context.get(IEventBus).subscribe(WarningIssued, (event) => {
+      if (event.code === 'agents-md-oversized') diagnostics.push(event.code);
+    });
+
+    await svc.applyProfile(profile);
+    await svc.refreshSystemPrompt();
+
+    expect(svc.data().systemPrompt).toContain(largeContent);
+    expect(svc.getAgentsMdWarning()).toContain('exceeds the recommended');
+    expect(diagnostics).toEqual(['agents-md-oversized', 'agents-md-oversized']);
   });
 
   it.each([true, false])('reprojects plugin usage at a safe boundary without adopting profile inputs (dynamic=%s)', async (dynamic) => {
