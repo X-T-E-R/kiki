@@ -3788,21 +3788,24 @@ export function Transcript({
       frame = requestAnimationFrame(captureFrame);
     };
     frame = requestAnimationFrame(captureFrame);
-    let loaded: boolean;
+    let loaded = false;
     try {
       loaded = await loadOlderRef.current(signal);
+    } catch {
+      loaded = false;
     } finally {
       scroll?.removeEventListener('scroll', capture);
       cancelAnimationFrame(frame);
     }
     if (olderRequestRef.current?.signal === signal) olderInflightRef.current = false;
-    if (loaded && instance !== null && anchor?.key !== undefined && !anchor.atEnd) {
+    if (!signal.aborted && (olderRequestRef.current === null || olderRequestRef.current.signal === signal) &&
+        readingIntentRef.current === intent && loaded && instance !== null && anchor?.key !== undefined && !anchor.atEnd) {
       const key = anchor.key;
       try {
         await settleRestoredAnchor(scrollRef.current, () => {
           const index = nodeIndexesRef.current.get(key);
           return index === undefined ? undefined : { index, blockId: key };
-        }, anchor.offset, () => signal.aborted || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
+        }, anchor.offset, () => signal.aborted || (olderRequestRef.current !== null && olderRequestRef.current.signal !== signal) || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
       } catch {
         return loaded;
       }
@@ -3829,11 +3832,20 @@ export function Transcript({
     let touchY: number | undefined;
     let pointerY: number | undefined;
     const recordIntent = (upward: boolean) => {
-      readingIntentRef.current += 1;
       seekRequestRef.current?.abort();
-      if (!upward) olderRequestRef.current?.abort();
-      olderIntentRef.current = upward;
-      if (upward) olderIntentAtRef.current = Date.now();
+      if (!upward) {
+        readingIntentRef.current += 1;
+        olderRequestRef.current?.abort();
+        olderIntentRef.current = false;
+        return;
+      }
+      if (olderInflightRef.current || state.loadingOlder) {
+        olderIntentRef.current = false;
+        return;
+      }
+      readingIntentRef.current += 1;
+      olderIntentRef.current = true;
+      olderIntentAtRef.current = Date.now();
     };
     const loadAtTop = () => {
       if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
@@ -3841,8 +3853,9 @@ export function Transcript({
         olderIntentRef.current = false;
         return;
       }
-      if (olderInflightRef.current || state.loadingOlder || state.olderError !== undefined ||
-          !state.hasMoreHistory || element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
+      if (olderInflightRef.current || state.loadingOlder ||
+          (!state.hasMoreHistory && state.olderError === undefined) ||
+          element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
       olderIntentRef.current = false;
       olderInflightRef.current = true;
       const request = new AbortController();

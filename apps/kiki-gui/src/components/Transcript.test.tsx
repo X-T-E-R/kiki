@@ -4003,6 +4003,135 @@ describe('virtualized transcript scrolling', () => {
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
   });
 
+  it('retries older-page load after initial failure on a new upward gesture and can request subsequent pages', async () => {
+    const onLoadOlder = vi.fn();
+    onLoadOlder.mockImplementationOnce(async () => false);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    const current = virtualBlocks(100, 'history');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderSettled(root, virtualTranscript({ ...state, olderError: 'Failed to fetch segment' }, onLoadOlder));
+    await settleVirtualizer();
+    expect(container.textContent).toContain('Failed to fetch segment');
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+    const page1 = [...virtualBlocks(20, 'older-page-1'), ...current];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1, olderError: undefined }, onLoadOlder));
+    await settleReadingFrames();
+    expect(container.textContent).not.toContain('Failed to fetch segment');
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => { scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
+    const page2 = [...virtualBlocks(20, 'older-page-2'), ...page1];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page2 }, onLoadOlder));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => {
+      scroll.dispatchEvent(new TouchEvent('touchstart', { touches: [{ clientY: 100 } as Touch], bubbles: true }));
+      scroll.dispatchEvent(new TouchEvent('touchmove', { touches: [{ clientY: 160 } as Touch], bubbles: true }));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+    const page3 = [...virtualBlocks(20, 'older-page-3'), ...page2];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page3 }, onLoadOlder));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+  });
+
+  it('merges upward gestures during an in-flight request without cancelling anchor restoration or auto-paging', async () => {
+    let resolveFlight!: (loaded: boolean) => void;
+    const onLoadOlder = vi.fn(async () => new Promise<boolean>((resolve) => { resolveFlight = resolve; }));
+    const current = virtualBlocks(100, 'anchor-keep');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 32);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    const page1 = [...virtualBlocks(20, 'prepended'), ...current];
+    const beforeBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-keep-0"]')!;
+    const beforeTop = beforeBlock.getBoundingClientRect().top;
+    await act(async () => {
+      resolveFlight(true);
+    });
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1 }, onLoadOlder));
+    await settleReadingFrames();
+    const afterBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-keep-0"]')!;
+    expect(afterBlock.getBoundingClientRect().top).toBeCloseTo(beforeTop, 0);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not write back or jump reading anchor when a cancelled older load resolves late', async () => {
+    let resolveLate!: (loaded: boolean) => void;
+    let flightSignal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((signal?: AbortSignal) => {
+      flightSignal = signal;
+      return new Promise<boolean>((resolve) => { resolveLate = resolve; });
+    });
+    const current = virtualBlocks(100, 'reading-late');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, bubbles: true }));
+    });
+    expect(flightSignal?.aborted).toBe(true);
+    await setTranscriptScroll(scroll, 1000);
+    await settleVirtualizer();
+    const userScrollTop = scroll.scrollTop;
+
+    await act(async () => {
+      resolveLate(true);
+    });
+    await settleReadingFrames();
+    expect(scroll.scrollTop).toBe(userScrollTop);
+  });
+
   it('loads an older page from the top button without a wheel gesture', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const { root, container } = makeRoot();
