@@ -24,8 +24,8 @@ it('does not register a core task board service', async () => {
 });
 
 it('does not mount board tools when the old experimental flag and env are set', async () => {
-  const previous = process.env.KIKI_EXPERIMENTAL_TASK_BOARD;
-  process.env.KIKI_EXPERIMENTAL_TASK_BOARD = 'true';
+  const previous = process.env['KIKI_EXPERIMENTAL_TASK_BOARD'];
+  process.env['KIKI_EXPERIMENTAL_TASK_BOARD'] = 'true';
   const home = await mkdtemp(join(tmpdir(), 'kiki-no-board-flag-'));
   await writeFile(join(home, 'config.toml'), '[experimental]\ntask_board = true\n');
   const server = await startServer({ homeDir: home, host: '127.0.0.1', port: 0, hostIdentity: TEST_HOST_IDENTITY, logLevel: 'silent' });
@@ -43,8 +43,8 @@ it('does not mount board tools when the old experimental flag and env are set', 
     const tools = agentCapabilitiesResponseSchema.parse(capabilities.data).tools ?? [];
     expect(tools.find((tool) => tool.name === 'BoardRead' || tool.name === 'BoardWrite')).toBeUndefined();
   } finally {
-    if (previous === undefined) delete process.env.KIKI_EXPERIMENTAL_TASK_BOARD;
-    else process.env.KIKI_EXPERIMENTAL_TASK_BOARD = previous;
+    if (previous === undefined) delete process.env['KIKI_EXPERIMENTAL_TASK_BOARD'];
+    else process.env['KIKI_EXPERIMENTAL_TASK_BOARD'] = previous;
     await server.close();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
