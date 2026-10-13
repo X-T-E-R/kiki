@@ -44,6 +44,7 @@ export class UsageExportStore {
         const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
         if (!columns.some((column) => column['name'] === 'origins')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'`);
         if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'item')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN item TEXT');
+        if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'mapping_version')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN mapping_version TEXT');
       }
       this.fence = randomUUID();
       this.db.prepare("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
@@ -230,7 +231,7 @@ export class UsageExportStore {
       return payload;
     });
   }
-  acknowledge(id: string, receipt: UsageExportReceipt, now: number): { acknowledged: number; rejected: number; remaining: number } {
+  acknowledge(id: string, receipt: UsageExportReceipt, now: number, mappingVersion: string | null = null): { acknowledged: number; rejected: number; remaining: number } {
     return this.transaction(() => {
       const clean = usageExportReceiptSchema.parse(receipt); let acknowledged = 0; let rejected = 0;
       const seen = new Set<string>();
@@ -244,7 +245,7 @@ export class UsageExportStore {
         if ((ack.status === 'applied' || ack.status === 'duplicate') && ack.revision === item.revision && ack.payload_hash === item.payload_hash) {
           const sourceRow = this.db.prepare('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?').get(id, item.bucket_id, item.revision) as Row | undefined;
           const origins = String(sourceRow?.['origins'] ?? (this.db.prepare('SELECT origins FROM acknowledgements WHERE dest=? AND bucket=?').get(id, item.bucket_id) as Row | undefined)?.['origins'] ?? '[]');
-          this.db.prepare('INSERT INTO acknowledgements(dest,bucket,revision,hash,confirmed,item,origins) VALUES(?,?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,confirmed=excluded.confirmed,item=excluded.item,origins=excluded.origins WHERE excluded.revision>=acknowledgements.revision').run(id, ack.bucket_id, ack.revision, ack.payload_hash, now, JSON.stringify(item), origins);
+          this.db.prepare('INSERT INTO acknowledgements(dest,bucket,revision,hash,confirmed,item,origins,mapping_version) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,confirmed=excluded.confirmed,item=excluded.item,origins=excluded.origins,mapping_version=excluded.mapping_version WHERE excluded.revision>=acknowledgements.revision').run(id, ack.bucket_id, ack.revision, ack.payload_hash, now, JSON.stringify(item), origins, mappingVersion);
           this.db.prepare('DELETE FROM outbox WHERE dest=? AND bucket=? AND revision=?').run(id, ack.bucket_id, item.revision); acknowledged++;
         } else if (['conflict', 'rejected', 'remote_diverged', 'stale'].includes(ack.status)) {
           this.db.prepare("UPDATE outbox SET state='quarantined' WHERE dest=? AND bucket=? AND revision=?").run(id, ack.bucket_id, item.revision); rejected++;
@@ -274,21 +275,22 @@ export class UsageExportStore {
   remove(id: string): void { this.transaction(() => { this.db.prepare('DELETE FROM outbox WHERE dest=?').run(id); this.db.prepare('DELETE FROM batches WHERE dest=?').run(id); this.db.prepare('DELETE FROM destinations WHERE id=?').run(id); }); }
   exportQueue(id: string): UsageExportItem[] { return (this.db.prepare('SELECT item FROM outbox WHERE dest=? ORDER BY created,bucket,revision').all(id) as Row[]).map((row) => usageExportItemSchema.parse(JSON.parse(String(row['item'])))); }
   ack(id: string, bucket: string): { revision: number; hash: string } | undefined { const row = this.db.prepare('SELECT revision,hash FROM acknowledgements WHERE dest=? AND bucket=?').get(id, bucket) as Row | undefined; return row === undefined ? undefined : { revision: Number(row['revision']), hash: String(row['hash']) }; }
-  acknowledgedRelated(id: string, batch: UsageExportBatch): { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean }[] {
-    const result: { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean }[] = [];
-    const ackRows = this.db.prepare('SELECT bucket,item,origins FROM acknowledgements WHERE dest=? AND item IS NOT NULL').all(id) as Row[];
+  acknowledgedRelated(id: string, batch: UsageExportBatch): { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] {
+    const result: { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] = [];
+    const ackRows = this.db.prepare('SELECT bucket,item,origins,mapping_version FROM acknowledgements WHERE dest=? AND item IS NOT NULL').all(id) as Row[];
     for (const row of ackRows) {
       const acknowledged = usageExportItemSchema.parse(JSON.parse(String(row['item'])));
       const currentRow = this.db.prepare('SELECT item FROM versions WHERE dest=? AND bucket=?').get(id, String(row['bucket'])) as Row | undefined;
       const current = currentRow === undefined ? null : usageExportItemSchema.parse(JSON.parse(String(currentRow['item'])));
+      const mappingVersion = row['mapping_version'] == null ? null : String(row['mapping_version']);
       const oldOrigins = JSON.parse(String(row['origins'])) as string[];
       for (const item of batch.items) {
         const sameBucket = item.bucket_id === acknowledged.bucket_id && item.stream_id === acknowledged.stream_id;
-        if (sameBucket) { result.push({ acknowledged, current, sameBucket }); break; }
+        if (sameBucket) { result.push({ acknowledged, current, sameBucket, mappingVersion }); break; }
         if (acknowledged.operation !== 'replace' || item.operation !== 'replace' || acknowledged.bucket?.start_at !== item.bucket?.start_at || current?.payload_hash === acknowledged.payload_hash) continue;
         const originRow = this.db.prepare('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?').get(id, item.bucket_id, item.revision) as Row | undefined;
         const newOrigins = JSON.parse(String(originRow?.['origins'] ?? '[]')) as string[];
-        if (oldOrigins.some((source) => newOrigins.includes(source))) { result.push({ acknowledged, current, sameBucket: false }); break; }
+        if (oldOrigins.some((source) => newOrigins.includes(source))) { result.push({ acknowledged, current, sameBucket: false, mappingVersion }); break; }
       }
     }
     return result;

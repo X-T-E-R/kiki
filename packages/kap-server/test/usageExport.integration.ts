@@ -15,7 +15,7 @@ import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { VIBE_CAFE_INGEST_ENDPOINT, usageExportBatchSchema, usageExportItemSchema, type UsageExportBatch } from '@kiki/protocol';
 import type { VibeAuthRequest } from '../src/usage/export/vibeAuth';
-import { createVibeUsageAdapter } from '../src/usage/export/vibe';
+import { VIBE_MAPPING_VERSION, createVibeUsageAdapter } from '../src/usage/export/vibe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
@@ -481,11 +481,42 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     expect(requests.filter((request) => request.path.endsWith('/ingest'))).toHaveLength(0);
     await api.enable(d.id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); await api.syncNow(d.id);
     const ingest = requests.filter((request) => request.path.endsWith('/ingest')); expect(ingest).toHaveLength(1);
-    expect(ingest[0]!.body).toMatchObject({ buckets: [{ source: 'kimi-code', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 }] });
+    expect(ingest[0]!.body).toMatchObject({ buckets: [{ source: 'kiki', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 }] });
     expect(JSON.stringify(ingest[0]!.body)).not.toContain(SENTINEL);
     expect(f.store.queue(d.id).pending).toBe(0);
     const custom = await api.saveDraft({ draft: { label: 'Custom', target: { kind: 'vibe', endpoint: 'https://custom.example.test/api/usage/ingest' }, scope: d.scope, schedule_minutes: 0 } });
     await expect(api.beginVibeAuth(custom.id, { storage: 'keyring' })).rejects.toThrow('vibe-auth-official-only');
+  });
+
+  it('stores the Kiki mapping on a new ACK and does not repost a pre-migration kimi-code ACK or a later window as kimi-code', async () => {
+    const posts: unknown[] = [];
+    const f = await fixture();
+    f.add('synthetic-kiki-identity');
+    await f.write('synthetic-kiki-identity', 'main', [record(T + 1, 10)]);
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://example.test/api/usage/ingest' }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    const adapter = createVibeUsageAdapter();
+    const post: Parameters<typeof adapter.send>[1]['post'] = async (request) => {
+      posts.push(JSON.parse(gunzipSync(request.body).toString('utf8')));
+      return { status: 200, body: JSON.stringify({ ingested: 1, sessions: 0 }) };
+    };
+    f.service.registerAdapter({ ...adapter, send: (batch, context) => adapter.send(batch, { ...context, post }) });
+    await enable(f.service, d.id);
+    await f.service.syncNow(d.id);
+    expect(posts).toEqual([{ buckets: [expect.objectContaining({ source: 'kiki', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 })] }]);
+    const db = new DatabaseSync(join(f.home, 'export.sqlite'));
+    try {
+      expect(db.prepare('SELECT mapping_version FROM acknowledgements').get()).toEqual({ mapping_version: VIBE_MAPPING_VERSION });
+      db.prepare('UPDATE acknowledgements SET mapping_version=NULL').run();
+    } finally { db.close(); }
+    await f.write('synthetic-kiki-identity', 'main', [record(T + 1, 10), record(T + 2, 10), record(T + 1_800_000 + 1, 8)]);
+    await f.service.syncNow(d.id);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]).toEqual({ buckets: [expect.objectContaining({ source: 'kiki', inputTokens: 13, cachedInputTokens: 4, outputTokens: 3 })] });
+    expect(JSON.stringify(posts)).not.toContain('kimi-code');
+    expect(JSON.stringify(posts)).not.toContain(SENTINEL);
+    expect(f.store.get(d.id).state).toBe('remote-diverged');
+    expect(f.store.queue(d.id).quarantined).toBe(1);
+    expect(f.store.queue(d.id).pending).toBe(0);
   });
 
   it.each(['keyring', 'private-file'] as const)('automatically persists to %s, cold-restores and sends the recovered bearer only after consent', async (expectedStorage) => {

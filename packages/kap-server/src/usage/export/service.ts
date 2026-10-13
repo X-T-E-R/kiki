@@ -8,7 +8,7 @@ import { digest, opaqueId, projectSource } from './projection';
 import { UsageExportStore } from './store';
 import { UsageExportSecretStore } from './secrets';
 import { postUsageExport, validateExportTarget } from './transport';
-import { requiresVibeRemoteRebuild } from './vibe';
+import { requiresVibeRemoteRebuild, vibeAcknowledgedMappingVersion } from './vibe';
 import { usageExportHandoffArmSchema, usageExportHandoffSchema, type UsageExportHandoff, type UsageExportHandoffArm, type UsageExportReceipt } from '@kiki/protocol';
 import { armUsageExportHandoff, confirmNativeHandoff, planUsageExportHandoff, planUsageExportRollback, recordLegacyHandoffReceipt, nativeHandoffScope } from './migration';
 import { activateCollectorHandoff, canonicalExportHome, readCollectorHandoff, resumeCollectorHandoff } from './handoffFile';
@@ -173,8 +173,8 @@ export class UsageExportService {
   clearQueue(id: string, acknowledge: boolean): UsageExportStatus { if (!acknowledge) throw new Error('clear-queue-requires-consent'); this.controllers.get(id)?.abort(); this.store.clearQueue(id); return this.status(); }
   retry(id: string): UsageExportStatus { this.store.retryQuarantined(id); this.store.setMeta(`attempt:${id}`, '0'); this.store.update(id, { state: this.store.get(id).enabled ? 'ready' : 'disabled', error_category: null, next_at: this.now() }); this.scheduleTimer(); return this.status(); }
   withdraw(id: string, acknowledge: boolean): UsageExportStatus { if (!acknowledge) throw new Error('withdraw-requires-consent'); const destination = this.store.get(id); const adapter = this.adapters.get(destination.target.kind); if (!adapter?.capabilities.delete) throw new Error('destination-cannot-delete'); this.store.withdraw(id); return this.status(); }
-  private context(destination: UsageExportDestination, signal: AbortSignal, batchId: string, permit: () => boolean, previousAcknowledged?: readonly UsageExportItem[]): UsageExportAdapterContext {
-    return { target: structuredClone(destination.target), signal, previousAcknowledged, post: (request) => postUsageExport(destination, request, this.secrets, batchId, signal, permit) };
+  private context(destination: UsageExportDestination, signal: AbortSignal, batchId: string, permit: () => boolean, previousAcknowledged?: readonly UsageExportItem[], acknowledgedMappingVersion?: (item: UsageExportItem) => string): UsageExportAdapterContext {
+    return { target: structuredClone(destination.target), signal, previousAcknowledged, acknowledgedMappingVersion, post: (request) => postUsageExport(destination, request, this.secrets, batchId, signal, permit) };
   }
   async remove(id: string, discardPending: boolean): Promise<{ removed: true }> {
     const destination = this.store.get(id); const queue = this.store.queue(id);
@@ -270,8 +270,9 @@ export class UsageExportService {
       let result: UsageExportAdapterResult;
       try {
         const related = adapter.kind === 'vibe' ? this.store.acknowledgedRelated(id, batch) : [];
-        const identityDiverged = adapter.kind === 'vibe' && related.some((entry) => !entry.sameBucket && entry.current !== null && (entry.current.operation === 'delete' || requiresVibeRemoteRebuild(entry.acknowledged, entry.current)));
-        result = identityDiverged ? { outcome: 'remote-diverged', errorCategory: 'remote_diverged' } : await adapter.send(structuredClone(batch), this.context(destination, controller.signal, batch.batch_id, () => !this.closing && this.store.get(id).enabled && this.store.get(id).consent_fingerprint === this.fingerprint(this.store.get(id)), related.filter((entry) => entry.sameBucket).map((entry) => entry.acknowledged)));
+        const mappingVersion = (item: UsageExportItem): string => vibeAcknowledgedMappingVersion(related.find((entry) => entry.acknowledged.stream_id === item.stream_id && entry.acknowledged.bucket_id === item.bucket_id)?.mappingVersion);
+        const identityDiverged = adapter.kind === 'vibe' && related.some((entry) => !entry.sameBucket && entry.current !== null && (entry.current.operation === 'delete' || requiresVibeRemoteRebuild(entry.acknowledged, entry.current, vibeAcknowledgedMappingVersion(entry.mappingVersion))));
+        result = identityDiverged ? { outcome: 'remote-diverged', errorCategory: 'remote_diverged' } : await adapter.send(structuredClone(batch), this.context(destination, controller.signal, batch.batch_id, () => !this.closing && this.store.get(id).enabled && this.store.get(id).consent_fingerprint === this.fingerprint(this.store.get(id)), related.filter((entry) => entry.sameBucket).map((entry) => entry.acknowledged), adapter.kind === 'vibe' ? mappingVersion : undefined));
       }
       catch { result = { outcome: 'retry', errorCategory: 'network' }; }
       finally { clearTimeout(timeout); this.controllers.delete(id); }
@@ -279,7 +280,7 @@ export class UsageExportService {
       const category = safeCategory(result);
       if (result.outcome === 'delivered' && result.receipt !== undefined) {
         try {
-          const ack = this.store.acknowledge(id, result.receipt, this.now());
+          const ack = this.store.acknowledge(id, result.receipt, this.now(), adapter.kind === 'vibe' ? adapter.mappingVersion : null);
           if (ack.remaining > 0) { this.retryLater(id, result.retryAfterMs, 'partial_receipt'); return; }
           this.store.setMeta(`attempt:${id}`, '0');
           if (ack.rejected === 0) {
