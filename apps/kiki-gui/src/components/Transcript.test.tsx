@@ -1409,6 +1409,11 @@ describe('timeline annotations', () => {
 });
 
 describe('live and event chrome', () => {
+  // Cold start of the queue fixture is several seconds and used to run inside
+  // the first row-actions test. That test's 5s budget then expired while the
+  // shared boot promise was still pending, and the next case inherited it.
+  beforeAll(startEditFixture);
+
   it('shows elapsed time after three seconds and cleans up the timer', async () => {
     vi.useFakeTimers();
     const { root, container } = makeRoot();
