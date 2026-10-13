@@ -6,6 +6,7 @@ import type { MCPClient, MCPToolDefinition, MCPToolResult } from '#/mcpCore/type
 import type { Runtime } from '#/runtime/runtime';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import type { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { CODEX_BRIDGE_FILE_SHA256 } from '#/app/capability/entries/browserResourceStore';
 import type { BrowserBackend } from './browserBackend';
 import type { BrowserCaller, BrowserTab } from './browser';
 import { BrowserError } from './errors';
@@ -102,7 +103,7 @@ export const CODEX_BRIDGE_ADOPTION = {
   binary: 'codex-browser-bridge.exe',
   pinConsumer: 'packages/agent-core-v2/src/app/capability/entries/browserResourceStore.ts',
 } as const;
-export const CODEX_BRIDGE_PIN: Readonly<Record<string, string>> | undefined = undefined;
+export const CODEX_BRIDGE_PIN: Readonly<Record<string, string>> = CODEX_BRIDGE_FILE_SHA256;
 const CODEX_BRIDGE_BINARY = /^(?:codex-browser-bridge)(?:\.exe)?$/i;
 const CODEX_BRIDGE_PIPE = /^codex-browser-use(?:-|\\)[A-Za-z0-9][A-Za-z0-9-]{7,80}$/;
 const CODEX_BRIDGE_RECOVERY = 'Start Codex or ChatGPT desktop and connect its Chrome or Edge extension. Browser setup lists each codex-browser-use pipe it can see. Choose one of those names there. Kiki does not approve the extension, register a native host, restart the browser, or dial an unselected pipe.';

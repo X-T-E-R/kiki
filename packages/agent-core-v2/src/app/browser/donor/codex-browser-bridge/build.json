@@ -9,17 +9,19 @@
   "marker": "kiki-no-resend-r1",
   "buildHost": "x86_64-pc-windows-msvc",
   "artifactName": "codex-browser-bridge.exe",
-  "artifactStatus": "no pinned Windows binary; a local source build is not this component",
+  "artifactSha256": "677e62598e86e973419119811ca323ef85b6df46d593e8609d807d9b1695c87c",
+  "artifactPath": "apps/kimi-code/vendor/codex-browser-bridge/win32-x64/codex-browser-bridge.exe",
+  "artifactStatus": "pinned Windows x64 derivative. SHA-256 checks these bytes. Whether the installed program starts is a separate check. The raw GitHub URL names the commit that adds this directory and is not served until that commit is pushed.",
   "pinConsumer": "packages/agent-core-v2/src/app/capability/entries/browserResourceStore.ts",
   "installDirectory": "browser/resources/codex-browser-bridge-1.11.1-kiki-no-resend-r1",
   "reproduction": [
     "Clone https://github.com/DeliciousBuding/codex-browser-bridge at c692fb017d79d458927c6a8e350dc2d06224d46e into an isolated directory.",
     "Apply kiki-no-resend-r1.patch from the repository root with git apply. It changes src/client.rs and src/error.rs so a request is resent only when the writer was already gone.",
     "Keep LICENSE, build.json and the patch beside every distributed derivative.",
-    "cargo test --locked --lib retries_only_when_the_request_was_not_written -- --exact",
+    "cargo test --locked --lib client::unwritten_retry::retries_only_when_the_request_was_not_written -- --exact",
     "The duplex test response_channel_close_after_write_is_not_resent is cfg(not(windows)) because the donor's duplex factory is not compiled on Windows.",
     "cargo build --locked --release",
-    "Record the produced binary SHA-256 in browserResourceStore.ts. Do not point runtimeRoot at a .tmp build and do not publish this tree's temporary binary."
+    "Distribute apps/kimi-code/vendor/codex-browser-bridge/win32-x64/codex-browser-bridge.exe. Its SHA-256 is artifactSha256. Do not point runtimeRoot at a .tmp build."
   ],
   "guarantee": "send_request_with_timeout retries only BridgeError::Connection whose message starts with \"writer is none\". A response-channel close, PipeIo error, or timeout is not sent again. The next call may still reconnect through ensure_alive. This is not exactly-once across a crash after a successful write."
 }

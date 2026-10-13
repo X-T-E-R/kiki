@@ -1,14 +1,17 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { TestInstantiationService } from '#/_base/di/test';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IBrowserSetupService } from '#/app/browser/browserSetup';
 import { BrowserSetupService } from '#/app/browser/browserSetupService';
-import { codexBridgeSelection, verifiedCodexBridge } from '#/app/browser/codexBrowser';
+import { CODEX_BRIDGE_PIN, codexBridgeResource, codexBridgeSelection, verifiedCodexBridge } from '#/app/browser/codexBrowser';
+import { CODEX_BRIDGE_FILE_SHA256, codexBridgeResourcePaths } from '#/app/capability/entries/browserResourceStore';
+import { browserSetupStatusSchema } from '@kiki/protocol';
 import { IBrowserControlService } from '#/app/browser/browser';
 import { BrowserControlService } from '#/app/browser/browserControlService';
 import { IBrowserBackendFactory, type BrowserBackend } from '#/app/browser/browserBackend';
@@ -63,7 +66,12 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
       { id: 'daemon', state: daemon ? 'ok' : 'missing' }, { id: 'skill', state: installed && enabled ? 'ok' : 'missing' }, { id: 'extension', state: extension ? 'ok' : 'missing', reason: 'extension_not_connected' },
     ], install: { running: false }, plan: { artifact: { sha256, version: 'fixture', url: 'https://example.test/fixture', metadataUrl: 'https://example.test/metadata', maxBytes: 1024 }, destination: 'fixture', note: 'fixture' },
   }));
-  const upsert = vi.fn<IBrowserControlService['upsert']>(async (id, input) => { const row = { id, ...input }; rows.push(row); return row; });
+  const upsert = vi.fn<IBrowserControlService['upsert']>(async (id, input) => {
+    const row = { id, ...input };
+    const index = rows.findIndex((item) => item.id === id);
+    if (index >= 0) rows[index] = row; else rows.push(row);
+    return row;
+  });
   const connect = vi.fn<IBrowserControlService['connect']>(async (id) => ({ browser: id, state: 'ready', executionHost: 'fixture', generation: 1 }));
   const status = vi.fn<IBrowserControlService['status']>(async (id) => ({ browser: id, state: 'idle', executionHost: 'fixture', generation: 0 }));
   const invoke = vi.fn<IBrowserControlService['invoke']>(async () => ({
@@ -92,30 +100,32 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
     extension: () => { extension = true; }, existing: () => { installed = true; enabled = true; daemon = true; }, disableNative: () => { native = false; }, forceOff: (source: 'env' | 'memory') => { native = false; forced = source; } };
 }
 
-it('reads presets without installing or connecting and reports the unpinned Codex component', async () => {
+it('reads presets without installing or connecting and reports a missing Codex release', async () => {
   const f = fixture();
   const result = await f.setup.list();
   expect(result.presets.map((preset) => preset.preset)).toEqual(['kimi-webbridge', 'independent-browser', 'codex-browser']);
-  expect(result.presets[2]).toMatchObject({ state: 'not_prepared', controlSurface: 'browser-connection', reason: 'artifact_unpinned', supported: true });
+  expect(result.presets[2]).toMatchObject({ state: 'not_prepared', controlSurface: 'browser-connection', reason: 'artifact_missing', supported: true, candidates: [] });
   expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).toContain('browserResourceStore.ts');
   expect(result.presets[2]?.steps.find((step) => step.id === 'driver')?.detail).not.toContain('.tmp');
   expect(f.installPlugin).not.toHaveBeenCalled(); expect(f.enablePlugin).not.toHaveBeenCalled(); expect(f.installCapability).not.toHaveBeenCalled(); expect(f.connect).not.toHaveBeenCalled(); expect(f.upsert).not.toHaveBeenCalled();
 });
 
-it('shows a discovered Codex pipe without selecting it or opening it', async () => {
+it('lists discovered Codex pipes without selecting or opening one', async () => {
   const pipe = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
   const spawn = vi.fn(async () => ({ stdout: Readable.from([`${pipe}\r\nfirst-pipe\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined }));
   const f = fixture({ hostProcess: { spawn } as never });
   const status = await f.setup.status('codex-browser');
-  expect(status.steps.some((step) => step.detail === pipe)).toBe(true);
-  expect(status.steps.some((step) => step.detail === 'first-pipe')).toBe(false);
+  expect(status.candidates).toEqual([{ browserId: pipe }]);
+  expect(status.browserId).toBeUndefined();
+  expect(status.steps.some((step) => step.detail === pipe || step.detail === 'first-pipe')).toBe(false);
   expect(status.actions.map((action) => action.id)).toEqual(expect.arrayContaining(['prepare', 'choose_connection', 'open_instructions']));
   const connected = await f.setup.connect('codex-browser', { connectionId: pipe });
   expect(connected.state).toBe('not_prepared');
-  expect(connected.reason).toBe('artifact_unpinned');
+  expect(connected.reason).toBe('artifact_missing');
   expect(f.upsert).not.toHaveBeenCalled();
   expect(f.connect).not.toHaveBeenCalled();
   expect(verifiedCodexBridge(undefined, { 'codex-browser-bridge.exe': 'abc' })).toBe(false);
+  expect(verifiedCodexBridge(CODEX_BRIDGE_PIN, {})).toBe(false);
   expect(verifiedCodexBridge({ 'codex-browser-bridge.exe': 'abc' }, { 'codex-browser-bridge.exe': 'abc' })).toBe(true);
   expect(codexBridgeSelection(pipe, [pipe])).toBe(pipe);
   expect(codexBridgeSelection(undefined, [pipe])).toBeUndefined();
@@ -521,6 +531,74 @@ async function writeShortcut(host: HostProcessService, shortcutPath: string, tar
     '$created.Save()',
   ].join('\r\n'), [shortcutPath, target, args]);
 }
+
+const codexVendor = join(fileURLToPath(new URL('../../../../../', import.meta.url)), 'apps/kimi-code/vendor/codex-browser-bridge/win32-x64');
+
+async function seedCodexBridge(home: string): Promise<void> {
+  const paths = codexBridgeResourcePaths(home);
+  await mkdir(paths.directory, { recursive: true });
+  for (const name of Object.keys(CODEX_BRIDGE_FILE_SHA256)) await cp(join(codexVendor, name), join(paths.directory, name));
+}
+
+it('saves an explicit Codex pipe and does not treat that as a connection or an approval', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-codex-setup-'));
+  try {
+    await seedCodexBridge(home);
+    const hyphen = 'codex-browser-use-11111111-2222-4333-8444-555555555555';
+    const slash = 'codex-browser-use\\11111111-2222-4333-8444-555555555555';
+    const spawn = vi.fn(async () => ({ stdout: Readable.from([`${hyphen}\r\n${slash}\r\nfirst-pipe\r\n`]), stderr: Readable.from(['']), wait: () => Promise.resolve(0), dispose: () => undefined }));
+    const f = fixture({ home, hostProcess: { spawn } as never });
+    const status = browserSetupStatusSchema.parse(await f.setup.status('codex-browser'));
+    expect(status.steps.find((step) => step.id === 'driver')?.state).toBe('ready');
+    expect(status.candidates).toEqual([{ browserId: hyphen }, { browserId: slash }]);
+    expect(status.browserId).toBeUndefined();
+    expect(status.state).toBe('needs_user_action');
+    expect(status.reason).toBe('choose_connection');
+    expect(codexBridgeResource(home, join).binary).toBe(codexBridgeResourcePaths(home).binary);
+    expect(await f.setup.connect('codex-browser', {})).toMatchObject({ reason: 'choose_connection' });
+    expect(await f.setup.connect('codex-browser', { connectionId: 'codex-browser', browserId: 'codex-browser-use-99999999-2222-4333-8444-555555555555' })).toMatchObject({ reason: 'choose_connection' });
+    expect(f.upsert).not.toHaveBeenCalled();
+    const saved = browserSetupStatusSchema.parse(await f.setup.connect('codex-browser', { connectionId: 'codex-browser', browserId: slash, name: 'Desk' }));
+    expect(saved).toMatchObject({ state: 'ready', reason: 'approval_unproven', connectionId: 'codex-browser', browserId: slash });
+    expect(saved.state).not.toBe('connected');
+    expect(f.connect).not.toHaveBeenCalled();
+    expect(f.upsert).toHaveBeenCalledWith('codex-browser', expect.objectContaining({ type: 'codex-extension', browserId: slash, name: 'Desk', runtimeRoot: codexBridgeResourcePaths(home).binary }));
+    expect(await f.setup.connect('codex-browser', { connectionId: 'codex-browser' })).toMatchObject({ state: 'ready', reason: 'approval_unproven', browserId: slash });
+    expect(f.connect).not.toHaveBeenCalled();
+    await writeFile(codexBridgeResourcePaths(home).binary, 'damaged');
+    expect(await f.setup.status('codex-browser')).toMatchObject({ state: 'not_prepared', reason: 'artifact_mismatch' });
+    expect(f.connect).not.toHaveBeenCalled();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+it('prepares the pinned Codex files without marking the extension connected', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-codex-prepare-'));
+  try {
+    await seedCodexBridge(home);
+    const f = fixture({ home });
+    f.disableNative();
+    await f.setup.prepare('codex-browser', { consent: true });
+    await vi.waitFor(async () => expect((await f.setup.status('codex-browser')).state).not.toBe('preparing'));
+    const status = await f.setup.status('codex-browser');
+    expect(status.steps.find((step) => step.id === 'driver')?.state).toBe('ready');
+    expect(status).toMatchObject({ state: 'needs_user_action', reason: 'choose_connection' });
+    expect(f.configSet).toHaveBeenCalled();
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+it('keeps a failed Codex prepare from saving a connection', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-codex-prepare-fail-'));
+  try {
+    const f = fixture({ home });
+    await f.setup.prepare('codex-browser', { consent: true });
+    await vi.waitFor(async () => expect((await f.setup.status('codex-browser')).state).toBe('failed'));
+    expect((await f.setup.status('codex-browser')).error).toEqual(expect.any(String));
+    expect(f.upsert).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
 
 async function readShortcut(host: HostProcessService, shortcutPath: string): Promise<{ target: string; arguments: string }> {
   const output = await runPowerShell(host, [

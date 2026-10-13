@@ -25,7 +25,10 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { browserSetupStatusSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-browser-guided-rest-'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
-    expect(browserSetupStatusSchema.parse((await request('GET', '/browser/setup/codex-browser')).data)).toMatchObject({ state: 'external_only', supported: false, controlSurface: 'external-app' });
+    const codex = browserSetupStatusSchema.parse((await request('GET', '/browser/setup/codex-browser')).data);
+    expect(codex).toMatchObject({ state: 'not_prepared', supported: true, controlSurface: 'browser-connection', reason: 'artifact_missing' });
+    expect(Array.isArray(codex.candidates)).toBe(true);
+    expect(codex.connectionId).toBeUndefined();
     for (const path of ['/browser/setup/kimi-webbridge:prepare', '/browser/setup/unknown:prepare', '/browser/setup/kimi-webbridge:unknown']) {
       expect(await request('POST', path, {})).toMatchObject({ code: ErrorCode.VALIDATION_FAILED, data: null, details: { code: 'browser.invalid' } });
     }
@@ -33,6 +36,53 @@ describe('browser REST persisted configuration and explicit secret access', () =
     expect(await server.core.accessor.get(IPluginService).listPlugins()).toEqual([]);
     expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([]);
   }, 30_000);
+  it('serves Codex status, an explicit pipe choice, and prepare without connecting', async () => {
+    const { cp, mkdir } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { vi } = await import('vitest');
+    const { CODEX_BRIDGE_FILE_NAMES, codexBridgeResourcePaths } = await import('@kiki/agent-core-v2/app/capability/entries/browserResourceStore');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-codex-rest-'));
+    const vendor = join(fileURLToPath(new URL('../../../', import.meta.url)), 'apps/kimi-code/vendor/codex-browser-bridge/win32-x64');
+    const paths = codexBridgeResourcePaths(home);
+    await mkdir(paths.directory, { recursive: true });
+    for (const name of CODEX_BRIDGE_FILE_NAMES) await cp(join(vendor, name), join(paths.directory, name));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const read = async (method: string, path: string, body?: unknown) => {
+      const envelope = await request(method, path, body);
+      expect(envelope.code, envelope.msg).toBe(0);
+      return browserSetupStatusSchema.parse(envelope.data);
+    };
+    const status = await read('GET', '/browser/setup/codex-browser');
+    expect(status.steps.find((step) => step.id === 'driver')?.state).toBe('ready');
+    expect(Array.isArray(status.candidates)).toBe(true);
+    expect(status.state).not.toBe('connected');
+    expect(await read('POST', '/browser/setup/codex-browser:connect', {})).toMatchObject({ reason: 'choose_connection' });
+    expect((await request('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex\\pipe' })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const absent = 'codex-browser-use\\11111111-2222-4333-8444-555555555555';
+    expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: absent })).toMatchObject({ reason: 'choose_connection' });
+    expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([]);
+    const listed = status.candidates ?? [];
+    if (listed.length > 0) {
+      const chosen = listed[0]!.browserId;
+      expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: chosen })).toMatchObject({
+        state: 'ready', reason: 'approval_unproven', connectionId: 'codex-browser', browserId: chosen,
+      });
+      expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([
+        expect.objectContaining({ id: 'codex-browser', type: 'codex-extension', browserId: chosen, status: expect.objectContaining({ state: 'idle' }) }),
+      ]);
+      expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser' })).toMatchObject({
+        state: 'ready', reason: 'approval_unproven', browserId: chosen,
+      });
+    }
+    const prepared = await read('POST', '/browser/setup/codex-browser:prepare', { consent: true });
+    if (prepared.state === 'preparing') {
+      await vi.waitFor(async () => { expect((await read('GET', '/browser/setup/codex-browser')).state).not.toBe('preparing'); });
+    }
+    const after = await read('GET', '/browser/setup/codex-browser');
+    expect(after.state === 'ready' || after.state === 'needs_user_action').toBe(true);
+    expect(after.connection?.state).toBeUndefined();
+  }, 90_000);
   it.each([undefined, 'false'])('prepares independent control through persisted config while respecting forced env=%s', async (forced) => {
     const { vi } = await import('vitest');
     const { ICapabilityService, IConfigService, IFlagService } = await import('@kiki/agent-core-v2');

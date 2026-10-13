@@ -2,6 +2,9 @@ import { createDecorator } from '#/_base/di/instantiation';
 import type { BrowserStatus } from './browser';
 
 export type BrowserPresetId = 'kimi-webbridge' | 'independent-browser' | 'codex-browser';
+export interface BrowserSetupCandidate {
+  readonly browserId: string;
+}
 export interface BrowserSetupStep {
   readonly id: string;
   readonly state: 'ready' | 'missing' | 'running' | 'user_action' | 'failed' | 'warning';
@@ -27,6 +30,8 @@ export interface BrowserSetupStatus {
   readonly skill?: string;
   readonly capabilityId?: string;
   readonly connectionId?: string;
+  readonly browserId?: string;
+  readonly candidates?: readonly BrowserSetupCandidate[];
   readonly connection?: BrowserStatus;
   readonly checkedAt?: string;
   readonly error?: string;
@@ -35,6 +40,7 @@ export interface BrowserSetupStatus {
 }
 export interface BrowserSetupConnectInput {
   readonly connectionId?: string;
+  readonly browserId?: string;
   readonly name?: string;
   readonly setDefault?: boolean;
 }

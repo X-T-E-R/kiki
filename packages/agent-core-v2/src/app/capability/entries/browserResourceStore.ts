@@ -153,3 +153,64 @@ export async function installBrowserChrome(home: string, report: BrowserResource
 export async function updateBrowserChrome(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal): Promise<void> {
   await downloadAndInstallChrome(home, report, fetchImpl, signal);
 }
+
+export const CODEX_BRIDGE_DIRECTORY = 'codex-browser-bridge-1.11.1-kiki-no-resend-r1';
+export const CODEX_BRIDGE_VENDOR_DIR = 'apps/kimi-code/vendor/codex-browser-bridge/win32-x64';
+export const CODEX_BRIDGE_RELEASE_COMMIT: string | undefined = undefined;
+export const CODEX_BRIDGE_FILE_NAMES = ['codex-browser-bridge.exe', 'LICENSE', 'build.json', 'kiki-no-resend-r1.patch'] as const;
+export const CODEX_BRIDGE_FILE_SHA256: Readonly<Record<(typeof CODEX_BRIDGE_FILE_NAMES)[number], string>> = {
+  'codex-browser-bridge.exe': '677e62598e86e973419119811ca323ef85b6df46d593e8609d807d9b1695c87c',
+  LICENSE: 'a7e4df5a67f584d81676d54851b6b2165f3861655ab494f89d933799846b2e6e',
+  'build.json': '97255556a6e369c1ed5278f51b4ee807c1d5968e34d2a6f6f6421b5ad0fbbe61',
+  'kiki-no-resend-r1.patch': 'f406329d24d9b670fc1e7c2c3fdc0d897cf4bb440f08f9df7dbeb70c15440d27',
+};
+
+export function codexBridgeResourcePaths(home: string) {
+  const root = join(home, 'browser', 'resources');
+  const directory = join(root, CODEX_BRIDGE_DIRECTORY);
+  return { root, directory, binary: join(directory, 'codex-browser-bridge.exe') };
+}
+
+export function codexBridgeReleaseUrl(commit: string, name: string): string {
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('codex-browser-bridge release commit is not public');
+  return `https://raw.githubusercontent.com/X-T-E-R/kiki/${commit}/${CODEX_BRIDGE_VENDOR_DIR}/${name}`;
+}
+
+export async function codexBridgeInstallState(home: string): Promise<'installed' | 'missing' | 'mismatch'> {
+  const paths = codexBridgeResourcePaths(home);
+  let directory;
+  try { directory = await lstat(paths.directory); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'mismatch'; }
+  if (!directory.isDirectory() || directory.isSymbolicLink()) return 'mismatch';
+  try {
+    for (const name of CODEX_BRIDGE_FILE_NAMES) {
+      if (await digest(join(paths.directory, name)) !== CODEX_BRIDGE_FILE_SHA256[name]) return 'mismatch';
+    }
+    return 'installed';
+  } catch { return 'mismatch'; }
+}
+
+export async function installedCodexBridge(home: string): Promise<string | undefined> {
+  const paths = codexBridgeResourcePaths(home);
+  return await codexBridgeInstallState(home) === 'installed' ? paths.binary : undefined;
+}
+
+export async function installCodexBridge(home: string, report: BrowserResourceReporter, fetchImpl: typeof fetch = fetch, signal?: AbortSignal, releaseCommit: string | undefined = CODEX_BRIDGE_RELEASE_COMMIT): Promise<void> {
+  if (await installedCodexBridge(home) !== undefined) return;
+  if (releaseCommit === undefined || !/^[0-9a-f]{40}$/.test(releaseCommit)) {
+    throw new Error('The pinned codex-browser-bridge release is not public. Prepare does not download it.');
+  }
+  const paths = codexBridgeResourcePaths(home);
+  await mkdir(paths.root, { recursive: true });
+  const staging = await mkdtemp(join(paths.root, '.codex-bridge-install-'));
+  try {
+    for (const name of CODEX_BRIDGE_FILE_NAMES) {
+      signal?.throwIfAborted();
+      report('codex-bridge-download', 0);
+      await downloadToFile(codexBridgeReleaseUrl(releaseCommit, name), join(staging, name), (percent) => report('codex-bridge-download', percent), cancellableFetch(fetchImpl, signal), { sha256: CODEX_BRIDGE_FILE_SHA256[name], maxBytes: 32 * 1024 * 1024 });
+    }
+    signal?.throwIfAborted();
+    report('verify');
+    await promoteResourcePath(staging, paths.directory);
+  } finally { await rm(staging, { recursive: true, force: true }); }
+}

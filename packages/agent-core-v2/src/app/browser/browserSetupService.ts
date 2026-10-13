@@ -9,7 +9,7 @@ import { ICapabilityService } from '#/app/capability/capability';
 import type { CapabilityStatus } from '#/app/capability/types';
 import { runCommand } from '#/app/capability/host';
 import { windowsPowerShellPath } from '#/app/capability/entries/kimiCu';
-import { installedBrowserChrome } from '#/app/capability/entries/browserResourceStore';
+import { codexBridgeInstallState, codexBridgeResourcePaths, installCodexBridge, installedBrowserChrome } from '#/app/capability/entries/browserResourceStore';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
 import { EXPERIMENTAL_SECTION, IFlagService } from '#/app/flag/flag';
 import { IPluginService } from '#/app/plugin/plugin';
@@ -25,7 +25,7 @@ import { BrowserIdSchema } from './browserConfig';
 import { BrowserError } from './errors';
 import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInput, type BrowserSetupOpenInput, type BrowserSetupUpdateInput, type BrowserSetupShortcutInput, type BrowserSetupStatus, type BrowserSetupStep } from './browserSetup';
 import { readWebbridgeStatus, probeWebbridgeConnection } from './browserWebbridge';
-import { CODEX_BRIDGE_ADOPTION, CODEX_BRIDGE_PIN, codexBridgePipeName, codexBridgeResource, codexBridgeSelection, verifiedCodexBridge } from './codexBrowser';
+import { CODEX_BRIDGE_ADOPTION, codexBridgePipeName, codexBridgeSelection } from './codexBrowser';
 
 const KIMI_HELP = 'https://www.kimi.com/en/help/kimi-webbridge/kimi-webbridge-introduction';
 const CODEX_HELP = 'https://developers.openai.com/codex/app/chrome-extension';
@@ -178,9 +178,17 @@ export class BrowserSetupService implements IBrowserSetupService {
   async prepare(preset: BrowserPresetId, input: { readonly consent: true }): Promise<BrowserSetupStatus> {
     if (input.consent !== true) throw new BrowserError('browser.invalid', 'Confirm installation and plugin enablement before preparing browser access');
     if (preset === 'codex-browser') {
+      if (this.preparing.has(preset)) return this.status(preset);
       if (!this.flags.enabled('native_browser') && this.featureBlock().reason !== 'feature_forced_off') {
         await this.config.set(EXPERIMENTAL_SECTION, { native_browser: true }, ConfigTarget.User);
       }
+      if (!this.flags.enabled('native_browser')) return this.status(preset);
+      this.errors.delete(preset);
+      const work = installCodexBridge(this.bootstrap.homeDir, () => {}).catch((error: unknown) => {
+        this.errors.set(preset, error instanceof Error ? error.message : 'Codex bridge preparation failed; retry');
+        this.log.warn('browser setup preparation failed', { preset, error });
+      }).finally(() => { this.preparing.delete(preset); });
+      this.preparing.set(preset, work);
       return this.status(preset);
     }
     if (preset !== 'kimi-webbridge' && preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
@@ -362,38 +370,49 @@ export class BrowserSetupService implements IBrowserSetupService {
     return this.status(preset);
   }
 
+  private async savedCodex(binary: string | undefined, names: readonly string[]): Promise<{ id?: string; browserId?: string }> {
+    if (binary === undefined) return {};
+    const saved = (await this.connections.list()).connections.filter((item) => item.type === 'codex-extension' && item.runtimeRoot === binary && item.browserId !== undefined && names.includes(item.browserId));
+    const chosen = saved.length === 1 ? saved[0] : undefined;
+    return chosen?.browserId === undefined ? {} : { id: chosen.id, browserId: chosen.browserId };
+  }
+
   private async codexStatus(): Promise<BrowserSetupStatus> {
-    const resource = codexBridgeResource(this.bootstrap.homeDir, join);
-    const onDisk = await this.regularFile(resource.binary);
-    const installed = verifiedCodexBridge(CODEX_BRIDGE_PIN, {});
+    const paths = codexBridgeResourcePaths(this.bootstrap.homeDir);
+    const install = await codexBridgeInstallState(this.bootstrap.homeDir);
+    const installed = install === 'installed';
     const pipes = await this.discoverCodexPipes();
-    const saved = (await this.connections.list()).connections.find((item) => item.type === 'codex-extension');
-    const savedPipe = saved?.browserId;
-    const selected = savedPipe !== undefined && pipes.names.includes(savedPipe) && saved?.runtimeRoot === resource.binary && installed;
+    const saved = await this.savedCodex(installed ? paths.binary : undefined, pipes.names);
     const feature = this.flags.enabled('native_browser');
     const blocked = feature ? undefined : this.featureBlock();
+    const installing = this.preparing.has('codex-browser');
+    const error = this.errors.get('codex-browser');
     const steps: BrowserSetupStep[] = [{
-      id: 'driver', state: installed ? 'ready' : 'missing', reason: installed ? undefined : 'artifact_unpinned',
-      detail: onDisk
-        ? `${resource.binary} is on disk and was not accepted. ${CODEX_BRIDGE_ADOPTION.pinConsumer} has no sha256 pin for ${CODEX_BRIDGE_ADOPTION.marker} revision ${CODEX_BRIDGE_ADOPTION.revision}. A source or .tmp build is not the installed component.`
-        : `Missing codex-browser-bridge ${CODEX_BRIDGE_ADOPTION.version} ${CODEX_BRIDGE_ADOPTION.license} ${CODEX_BRIDGE_ADOPTION.repository} revision ${CODEX_BRIDGE_ADOPTION.revision} marker ${CODEX_BRIDGE_ADOPTION.marker}. Expected ${resource.binary}. Pin the verified bytes in ${CODEX_BRIDGE_ADOPTION.pinConsumer}.`,
+      id: 'driver', state: installed ? 'ready' : 'missing', reason: installed ? undefined : install === 'mismatch' ? 'artifact_mismatch' : 'artifact_missing',
+      detail: installed
+        ? `${CODEX_BRIDGE_ADOPTION.version} ${CODEX_BRIDGE_ADOPTION.marker} matches the pinned release. Starting the program is a separate check.`
+        : install === 'mismatch'
+          ? `Files at ${paths.directory} do not match the pinned ${CODEX_BRIDGE_ADOPTION.marker} release. Prepare replaces them only after the downloaded bytes match. A failed download leaves the previous files in place.`
+          : `codex-browser-bridge ${CODEX_BRIDGE_ADOPTION.version} ${CODEX_BRIDGE_ADOPTION.license} is not installed at ${paths.binary}. Prepare downloads the pinned ${CODEX_BRIDGE_ADOPTION.marker} release and checks SHA-256. The pin is ${CODEX_BRIDGE_ADOPTION.pinConsumer}. A local source build is not this component.`,
     }, {
       id: 'desktop-app', state: 'user_action', reason: 'external_app_required',
       detail: 'Codex or ChatGPT desktop and its Chrome or Edge extension remain the approval surface. Kiki does not approve the extension, register a native host, or restart the browser.',
     }];
     if (blocked !== undefined) steps.push({ id: 'feature', state: 'user_action', ...blocked });
-    if (pipes.error !== undefined) steps.push({ id: 'detect', state: 'warning', reason: 'pipe_discovery_failed', detail: pipes.error });
+    if (pipes.error !== undefined) steps.push({ id: 'detect', state: 'warning', reason: 'pipe_discovery_failed', detail: 'Pipe name discovery failed. No pipe was opened.' });
     else if (pipes.names.length === 0) steps.push({ id: 'detect', state: 'user_action', reason: 'choose_connection', detail: 'No codex-browser-use pipe is listed. Start the desktop app and connect its extension. Discovery reads pipe names only and does not open a pipe.' });
-    else pipes.names.forEach((name, index) => steps.push({ id: `connection-${index + 1}`, state: selected && savedPipe === name ? 'ready' : 'user_action', reason: 'choose_connection', detail: name }));
-    const state = !installed ? 'not_prepared' : blocked?.reason === 'feature_forced_off' || !feature ? 'needs_user_action' : selected ? 'ready' : 'needs_user_action';
+    else steps.push({ id: 'detect', state: saved.id !== undefined ? 'ready' : 'user_action', reason: 'choose_connection', detail: `${pipes.names.length} Codex extension pipes are listed in candidates. Choose one browserId. Discovery does not open a pipe.` });
+    const state = installing ? 'preparing' : error !== undefined ? 'failed' : !installed ? 'not_prepared' : !feature ? 'needs_user_action' : saved.id !== undefined ? 'ready' : 'needs_user_action';
     return {
       preset: 'codex-browser', displayName: 'Codex / ChatGPT browser extension', controlSurface: 'browser-connection', supported: true,
       state, executionHost: hostname(), sourceUrl: CODEX_BRIDGE_ADOPTION.repository,
-      reason: !installed ? 'artifact_unpinned' : selected ? undefined : blocked?.reason ?? 'choose_connection',
-      steps, connectionId: selected ? saved?.id : undefined,
+      reason: !installed ? install === 'mismatch' ? 'artifact_mismatch' : 'artifact_missing' : !feature ? blocked?.reason : saved.id === undefined ? 'choose_connection' : 'approval_unproven',
+      steps, candidates: pipes.names.map((browserId) => ({ browserId })),
+      ...(saved.id !== undefined && saved.browserId !== undefined ? { connectionId: saved.id, browserId: saved.browserId } : {}),
+      ...(error !== undefined ? { error } : {}),
       actions: [
         { id: 'prepare' }, { id: 'choose_connection' },
-        ...(installed && selected ? [{ id: 'connect' as const }] : []),
+        ...(installed && feature ? [{ id: 'connect' as const }] : []),
         { id: 'open_instructions', url: CODEX_HELP, target: 'documentation' as const },
       ],
     };
@@ -401,21 +420,20 @@ export class BrowserSetupService implements IBrowserSetupService {
 
   private async connectCodex(input: BrowserSetupConnectInput): Promise<BrowserSetupStatus> {
     const current = await this.codexStatus();
-    const resource = codexBridgeResource(this.bootstrap.homeDir, join);
-    if (!verifiedCodexBridge(CODEX_BRIDGE_PIN, {})) return current;
-    const pipes = await this.discoverCodexPipes();
-    const direct = codexBridgeSelection(input.connectionId, pipes.names);
-    const existing = input.connectionId === undefined ? undefined : (await this.connections.list()).connections.find((item) => item.id === input.connectionId);
-    const pipe = direct ?? (existing?.type === 'codex-extension' ? codexBridgeSelection(existing.browserId, pipes.names) : undefined);
-    if (pipe === undefined) return { ...current, state: 'needs_user_action', reason: 'choose_connection' };
-    const id = existing?.type === 'codex-extension' ? existing.id : 'codex-browser';
+    if (current.state === 'preparing' || current.steps.find((step) => step.id === 'driver')?.state !== 'ready') return current;
+    if (!this.flags.enabled('native_browser')) return current;
+    const names = (current.candidates ?? []).map((item) => item.browserId);
+    const id = input.connectionId ?? 'codex-browser';
     if (!BrowserIdSchema.safeParse(id).success) throw new BrowserError('browser.invalid', 'Invalid browser connection id');
     const occupant = (await this.connections.list()).connections.find((item) => item.id === id);
     if (occupant !== undefined && occupant.type !== 'codex-extension') return { ...current, state: 'needs_user_action', reason: 'connection_conflict', actions: [{ id: 'choose_connection' }] };
-    if (!this.flags.enabled('native_browser')) return current;
-    await this.control.upsert(id, { type: 'codex-extension', name: input.name ?? occupant?.name ?? 'Codex browser extension', enabled: true, runtimeRoot: resource.binary, browserId: pipe });
+    const pipe = input.browserId !== undefined ? codexBridgeSelection(input.browserId, names) : occupant?.type === 'codex-extension' ? codexBridgeSelection(occupant.browserId, names) : undefined;
+    if (pipe === undefined) return { ...current, state: 'needs_user_action', reason: 'choose_connection' };
+    await this.control.upsert(id, { type: 'codex-extension', name: input.name ?? occupant?.name ?? 'Codex browser extension', enabled: true, runtimeRoot: codexBridgeResourcePaths(this.bootstrap.homeDir).binary, browserId: pipe });
     if (input.setDefault === true) await this.connections.setDefault(id);
-    return { ...await this.codexStatus(), connectionId: id, state: 'ready', reason: 'approval_unproven' };
+    this.errors.delete('codex-browser');
+    const next = await this.codexStatus();
+    return { ...next, connectionId: id, browserId: pipe, state: 'ready', reason: 'approval_unproven' };
   }
 
   private async discoverCodexPipes(): Promise<{ names: string[]; error?: string }> {
