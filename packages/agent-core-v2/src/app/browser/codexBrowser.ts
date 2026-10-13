@@ -64,7 +64,15 @@ export async function openCodexBrowser(input: { runtimeRoot: string; browserId: 
   if (runtime.environment.osKind !== 'Windows' || manifest['platform'] !== 'windows' || pkg['name'] !== '@oai/cua-repl' || pkg['version'] !== '0.1.0' || typeof manifest['runtime_archive_version'] !== 'string') {
     throw new BrowserError('browser.unsupported', 'This installed runtime does not match the supported Windows @oai/cua-repl 0.1.0 launch contract');
   }
-  const env = { CUA_REPL_NODE_REPL_PATH: runtime.path.join(root, 'bin', 'node_repl.exe'), CUA_REPL_ENABLED_SURFACES: 'browser', CUA_REPL_BROWSER_ENV: 'codex-app' };
+  const bin = runtime.path.join(root, 'bin');
+  const env = {
+    CUA_REPL_NODE_REPL_PATH: runtime.path.join(bin, 'node_repl.exe'),
+    CUA_REPL_ENABLED_SURFACES: 'browser',
+    CUA_REPL_BROWSER_ENV: 'codex-app',
+    NODE_REPL_NODE_MODULE_DIRS: bin,
+    NODE_REPL_TRUSTED_CODE_PATHS: bin,
+    NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ browser: runtime.path.join(bin, 'node_modules', '@oai', 'browser-desktop', 'scripts', 'browser-service.mjs') }),
+  };
   const client = new StdioMcpClient({ transport: 'stdio', command: runtime.path.join(root, 'bin', 'node.exe'),
     args: [runtime.path.join(packageRoot, 'bin', 'cua-repl.mjs')], env, executor: 'local' }, {
     runtimeResolver: codexBrowserRuntimeResolver(input.resolver, env), workspaceId: runtime.identity.workspaceId,

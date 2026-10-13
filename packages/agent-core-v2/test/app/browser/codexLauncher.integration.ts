@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
@@ -6,8 +7,15 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { openCodexBrowser, type BrowserRequestContext } from '#/app/browser/codexBrowser';
+import type { MCPToolResult } from '#/mcpCore/types';
 
 const runtimeRoot = process.env['KIKI_CODEX_BROWSER_TEST_RUNTIME'];
+const receiptPath = process.env['KIKI_CODEX_BROWSER_TEST_RECEIPT'];
+const phase = process.env['KIKI_CODEX_BROWSER_TEST_PHASE'];
+function record(entry: Record<string, unknown>): void {
+  if (receiptPath === undefined) return;
+  appendFileSync(receiptPath, `${JSON.stringify(entry)}\n`);
+}
 
 describe.skipIf(runtimeRoot === undefined)('installed official cua-repl launcher, no browser access', () => {
   it('initializes, discovers the official js schema and executes harmless JS with Kiki caller metadata', async () => {
@@ -23,16 +31,26 @@ describe.skipIf(runtimeRoot === undefined)('installed official cua-repl launcher
       backend = await openCodexBrowser({ runtimeRoot: runtimeRoot!, browserId: 'unused-no-browser-access', cwd: root, runtime,
         resolver: { _serviceBrand: undefined, inspect: () => runtime, acquire: () => ({ runtime, track: (resource) => resource, dispose: () => undefined }) } });
       const tools = await backend.client.listTools();
+      record({ step: 'tools', version: backend.version, names: tools.map((tool) => tool.name) });
       expect(tools.map((tool) => tool.name)).toEqual(['codex_browser_js', 'codex_browser_js_reset']);
       expect(tools[0]?.inputSchema).toMatchObject({ type: 'object', properties: { code: expect.any(Object) } });
-      const result = await backend.official!.invoke('codex_browser_js', { code: 'nodeRepl.write("KIKI_OFFICIAL_LAUNCHER_JS:" + String(2 + 3));' }, undefined, context);
-      expect(result.isError).toBe(false);
-      expect(result.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n')).toContain('KIKI_OFFICIAL_LAUNCHER_JS:5');
+      let result: MCPToolResult | undefined;
+      if (phase !== 'cleanup') {
+        result = await backend.official!.invoke('codex_browser_js', { code: 'nodeRepl.write("KIKI_OFFICIAL_LAUNCHER_JS:" + String(2 + 3));' }, undefined, context);
+        record({ step: 'js', isError: result.isError, marker: result.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n').includes('KIKI_OFFICIAL_LAUNCHER_JS:5') });
+        expect(result.isError).toBe(false);
+        expect(result.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n')).toContain('KIKI_OFFICIAL_LAUNCHER_JS:5');
+      }
       const reset = await backend.official!.invoke('codex_browser_js_reset', {}, undefined, context);
+      record({ step: 'reset', isError: reset.isError });
       expect(reset.isError).toBe(false);
       await backend.official!.endTurn(context.caller, context.turnId);
       await backend.official!.endTurn(context.caller, context.turnId);
+      record({ step: 'turn' });
       console.log(JSON.stringify({ scope: 'official launcher, reset and turn cleanup only; no browser inventory or actions', version: backend.version, tools, result, reset }));
+    } catch (error) {
+      record({ step: 'error', message: error instanceof Error ? error.message : String(error) });
+      throw error;
     } finally { await backend?.close(); await rm(root, { recursive: true, force: true }); }
   }, 70_000);
 });
