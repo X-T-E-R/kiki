@@ -57,6 +57,7 @@ import {
 import { MODELS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  type AgentProfile,
   type AgentProfileContext,
   type EnvironmentDisclosureSnapshot,
   type ResolvedAgentProfileRoute,
@@ -847,61 +848,78 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (requested.profile_file !== undefined) requested = { ...requested, profile_file: selected!.sourcePath };
     const profile = selected === undefined ? undefined : captureProfileModelMenu(selected,
       requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
-    if (profile !== undefined && (profile.executor ?? 'native') !== requested.executor) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, `Profile "${profile.name}" does not use executor "${requested.executor}"`);
-    }
+    const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
     const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
     const execution = resolveExecutionBinding({ ...requested, overrides: {
       ...requested.overrides, model: input.model ?? requested.overrides?.model,
       thinking: input.thinking ?? requested.overrides?.thinking,
-    } }, defaults, profile, this.profileState.execution);
+    } }, defaults, profile, this.profileState.execution, profile !== undefined && !sameGroup && requested.executor === 'native' ? {
+      model: this.nativeEngineDefaultModel(),
+      thinkingFor: (model) => this.nativeEngineDefaultThinking(model),
+    } : undefined);
     if (execution.effective.model === INHERIT_MODEL_ALIAS) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'A main agent execution selection cannot inherit a caller model');
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
+    const role = profile === undefined ? undefined : executionSelectionProfile(profile, requested.executor, execution.effective);
     if (requested.executor === 'native') {
       await this.bind({ ...input, execution: undefined, profile: requested.profile,
-        resolvedProfile: requested.profile_file === undefined ? input.resolvedProfile : profile,
-        model: execution.effective.model, thinking: execution.effective.thinking }, assertCurrent);
+        resolvedProfile: sameGroup || profile === undefined
+          ? requested.profile_file === undefined ? input.resolvedProfile : profile
+          : role,
+        model: execution.effective.model, thinking: execution.effective.thinking,
+        bindingSelection: sameGroup || profile === undefined ? input.bindingSelection : {
+          model: {
+            source: execution.sources['model'] === 'session' ? 'dispatch-explicit'
+              : execution.sources['model'] === 'profile' ? 'profile-default' : 'config-default',
+            requestedValue: execution.effective.model,
+          },
+          thinking: {
+            source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit'
+              : execution.sources['thinking'] === 'harness-default' ? 'model-default'
+                : execution.sources['thinking'] === 'profile' ? 'profile-default' : 'config-default',
+            requestedValue: execution.effective.thinking,
+          },
+        } }, assertCurrent);
       this.applyBindingSnapshot({ ...this.data(), execution });
       await this.syncBindingMetadata();
       return;
     }
     assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, requested.executor);
-    if (profile !== undefined && [profile, ...(profile.modelProfiles ?? [])].some((entry) =>
+    if (profile !== undefined && (profile.executor ?? 'native') !== 'native' && [profile, ...(profile.modelProfiles ?? [])].some((entry) =>
       entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
-    const executor = await this.executors.resolveExecutable(requested.executor, profile?.executorOptions);
+    const executor = await this.executors.resolveExecutable(requested.executor, role?.executorOptions);
     const validated = this.requireValidBinding(this.executors.validateBinding(requested.executor, executor.options, {
       modelAlias: execution.effective.model, thinkingEffort: execution.effective.thinking,
     }));
-    const bindingAdvisories = profile === undefined ? [] : this.collectBindingAdvisories({
-      profile, profileName: profile.name, model: execution.effective.model ?? '',
+    const bindingAdvisories = role === undefined ? [] : this.collectBindingAdvisories({
+      profile: role, profileName: role.name, model: execution.effective.model ?? '',
       thinking: execution.effective.thinking ?? 'off',
       modelSelection: { source: execution.sources['model'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.model },
       thinkingSelection: { source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.thinking },
     });
-    const executorPrompt = mergeExecutorPrompt(defaults?.executor_prompt, profile?.executorPrompt, requested.executor);
-    execution.sources['executor_prompt'] = profile?.executorPrompt !== undefined ? 'profile' : defaults?.executor_prompt !== undefined ? 'harness-settings' : 'harness-default';
+    const executorPrompt = mergeExecutorPrompt(defaults?.executor_prompt, role?.executorPrompt, requested.executor);
+    execution.sources['executor_prompt'] = role?.executorPrompt !== undefined ? 'profile' : defaults?.executor_prompt !== undefined ? 'harness-settings' : 'harness-default';
     for (const field of ['delivery', 'include', 'body', 'append'] as const) {
-      execution.sources[`executor_prompt.${field}`] = (profile?.executorPrompt?.per_engine?.[requested.executor]?.[field] ?? profile?.executorPrompt?.[field]) !== undefined ? 'profile'
+      execution.sources[`executor_prompt.${field}`] = (role?.executorPrompt?.per_engine?.[requested.executor]?.[field] ?? role?.executorPrompt?.[field]) !== undefined ? 'profile'
         : (defaults?.executor_prompt?.per_engine?.[requested.executor]?.[field] ?? defaults?.executor_prompt?.[field]) !== undefined ? 'harness-settings' : 'harness-default';
     }
-    const hasPrompt = profile !== undefined || executorPrompt !== undefined;
-    const context = hasPrompt ? await this.buildSystemPromptContext(profile, undefined, null) : {};
+    const hasPrompt = role !== undefined || executorPrompt !== undefined;
+    const context = hasPrompt ? await this.buildSystemPromptContext(role, undefined, null) : {};
     const includesFields = resolveExecutorPrompt(executorPrompt, requested.executor).include.some((id) => id.startsWith('system.') || id.startsWith('delegation.'));
-    const fields = !includesFields ? { values: {}, fields: [] } : profile !== undefined
-      ? await this.resolvePromptFieldSnapshot(profile, execution.effective.model ?? '')
+    const fields = !includesFields ? { values: {}, fields: [] } : role !== undefined
+      ? await this.resolvePromptFieldSnapshot(role, execution.effective.model ?? '')
       : await this.promptFields.resolve({ global: { surface: 'global', overrides: this.config.get<PromptConfig>(PROMPT_SECTION)?.overrides },
         context: { executor: requested.executor, modelAlias: execution.effective.model, delegationPosition: 'main' } });
     const renderContext = { ...context, persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
-    const body = profile === undefined ? '' : modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
-      layer.entries, execution.effective.model ?? '', (id) => id, 'main'), profile.renderSystemPrompt(renderContext).text);
+    const body = role === undefined ? '' : modelPromptLayers(role).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
+      layer.entries, execution.effective.model ?? '', (id) => id, 'main'), role.renderSystemPrompt(renderContext).text);
     const systemPrompt = hasPrompt ? renderExternalPrompt({ executor: requested.executor, executorPrompt }, renderContext,
       fields, body) : '';
     const previous = this.profileState.execution;
     if (previous?.generation === execution.generation) {
       const sameContext = this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
-        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === profile?.definitionId;
+        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === role?.definitionId;
       if (sameContext && JSON.stringify(previous) === JSON.stringify(execution)) return;
       if (!sameContext) execution.generation++;
     }
@@ -918,8 +936,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         }));
       }
     }
-    this.activeProfile = profile;
-    this.activeProfileDefinitionId = profile?.definitionId;
+    this.activeProfile = role;
+    this.activeProfileDefinitionId = role?.definitionId;
     this.activeToolNamesOverlay = undefined;
     this.personaSnapshot = undefined;
     this.cognitionBinding = undefined;
@@ -930,20 +948,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileBind({
       execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
-      profileName: profile?.name, profileDefinitionId: profile?.definitionId,
+      profileName: role?.name, profileDefinitionId: role?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
       executorPrompt, kikiContext: execution.effective.kiki_context,
       allowKikiSubagents: execution.effective.allow_kiki_subagents,
-      systemPrompt, agentsMdPaths: [], disallowedTools: profile?.disallowedTools ?? [],
+      systemPrompt, agentsMdPaths: [], disallowedTools: role?.disallowedTools ?? [],
       executionRestriction: this.profileState.executionRestriction ?? input.executionRestriction,
-      canSpawnSubagents: profile?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
-      allowedSubagents: profile?.allowedSubagents, preferredSubagents: profile?.preferredSubagents,
-      denySubagents: profile?.denySubagents, subagentLeases: profile?.subagentLeases,
-      boundProfile: profile === undefined ? undefined : freezeBoundProfile(profile),
+      canSpawnSubagents: role?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
+      allowedSubagents: role?.allowedSubagents, preferredSubagents: role?.preferredSubagents,
+      denySubagents: role?.denySubagents, subagentLeases: role?.subagentLeases,
+      boundProfile: role === undefined ? undefined : freezeBoundProfile(role),
     }));
     this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
-    this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: profile?.name,
+    this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: role?.name,
       thinkingLevel: validated.thinkingEffort ?? 'off', systemPrompt });
     await this.syncBindingMetadata();
   }
@@ -1782,6 +1800,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.memorySnapshot.invalidate();
     const current = this.profileState;
     if (current.execution !== undefined && this.isExternalExecutor) {
+      await this.bind({ execution: current.execution.selection });
+      return;
+    }
+    if (current.execution !== undefined && current.profileName !== undefined && current.execution.selection.profile_file === undefined
+      && (this.catalog.get(current.profileName)?.executor ?? 'native') !== current.execution.selection.executor) {
       await this.bind({ execution: current.execution.selection });
       return;
     }
@@ -3072,6 +3095,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.models.resolveId(alias) ?? alias;
   }
 
+  private nativeEngineDefaultModel(): string | undefined {
+    const configured = this.config.get<string>('defaultModel')?.trim();
+    if (configured === undefined || configured.length === 0) return undefined;
+    return this.resolveModelId(configured);
+  }
+
+  private nativeEngineDefaultThinking(model: string): string {
+    return this.resolveThinkingEffort(undefined, this.resolveUsageModel(model), true);
+  }
+
   private tryResolveRawModel(): Model | undefined {
     if (this.isExternalExecutor) return undefined;
     const alias = this.modelAlias;
@@ -3493,6 +3526,29 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.plugins.hasLoadedSnapshot()) this.frozenPluginSections = resolved;
     return resolved;
   }
+}
+
+function executionSelectionProfile<T extends AgentProfile>(
+  profile: T,
+  executor: string,
+  effective: { readonly model?: string; readonly thinking?: string },
+): T {
+  if ((profile.executor ?? 'native') === executor) return profile;
+  const native = executor === 'native';
+  return {
+    ...profile,
+    executor,
+    executorOptions: undefined,
+    modelAlias: effective.model,
+    thinkingEffort: effective.thinking,
+    modelProfiles: undefined,
+    modelPromptLayers: undefined,
+    serviceTier: native ? profile.serviceTier : undefined,
+    requestParams: native ? profile.requestParams : undefined,
+    contextBudget: native ? profile.contextBudget : undefined,
+    maxCompletionTokens: native ? profile.maxCompletionTokens : undefined,
+    autoCompact: native ? profile.autoCompact : undefined,
+  };
 }
 
 function restoredPluginBlocks(sections: string): Map<string, string> {

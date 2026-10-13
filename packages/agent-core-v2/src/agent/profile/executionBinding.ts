@@ -9,6 +9,10 @@ export function resolveExecutionBinding(
   defaults: AgentExecutorDefaults | undefined,
   profile: AgentProfile | undefined,
   previous: ExecutionBinding | undefined,
+  engineDefault?: {
+    readonly model?: string;
+    readonly thinkingFor?: (model: string) => string | undefined;
+  },
 ): ExecutionBinding {
   const sameSelection = previous?.selection.executor === requested.executor && previous.selection.profile === requested.profile
     && previous.selection.profile_file === requested.profile_file;
@@ -28,10 +32,23 @@ export function resolveExecutionBinding(
     sources[key] = 'harness-default';
     return undefined;
   };
-  const model = pick('model', profile?.modelAlias, defaults?.model_alias);
+  const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
+  let model = pick('model', sameGroup ? profile?.modelAlias : undefined, defaults?.model_alias);
+  if (model === undefined && profile !== undefined && !sameGroup && engineDefault?.model !== undefined) {
+    model = engineDefault.model;
+    sources['model'] = 'harness-default';
+  }
+  let thinking = pick('thinking', sameGroup ? resolveProfileThinkingDefault(profile, model ?? '', (id) => id) : undefined, defaults?.thinking_effort);
+  if (thinking === undefined && profile !== undefined && !sameGroup && model !== undefined && engineDefault?.thinkingFor !== undefined) {
+    const resolvedThinking = engineDefault.thinkingFor(model);
+    if (resolvedThinking !== undefined) {
+      thinking = resolvedThinking;
+      sources['thinking'] = 'harness-default';
+    }
+  }
   const effective: ExecutionBinding['effective'] = {
     model,
-    thinking: pick('thinking', profile === undefined ? undefined : resolveProfileThinkingDefault(profile, model ?? '', (id) => id), defaults?.thinking_effort),
+    thinking,
     permission_mode: pick('permission_mode', profile?.permissionMode, defaults?.permission_mode),
     kiki_context: [...pick('kiki_context', profile?.kikiContext, defaults?.kiki_context) ?? []],
     allow_kiki_subagents: pick('allow_kiki_subagents', profile?.allowKikiSubagents, defaults?.allow_kiki_subagents) ?? false,
