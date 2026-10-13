@@ -1697,6 +1697,54 @@ describe('useNewSessionDraft agent profile scope', () => {
       agent_config: { profile: 'workspace-choice', model: 'provider/beta', thinking: 'high' },
     });
   });
+
+  it('clears selectedPersonaId when switching to a bare execution and does not block send', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    client.getPersona.mockResolvedValue({
+      definition: { id: 'persona-1', name: 'Persona One', profile: 'agent' },
+      systemPrompt: 'prompt',
+    });
+    await renderDraft({ initialPersona: 'persona-1' });
+    let state = await settleDraft((value) => value.persona?.definition.id === 'persona-1' && value.selectionReady);
+    expect(state.selectedPersonaId).toBe('persona-1');
+
+    await act(async () => {
+      state.setExecution({ executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined });
+    });
+    state = latestDraftState!;
+    expect(state.selectedPersonaId).toBeUndefined();
+    expect(state.persona).toBeUndefined();
+    expect(state.selectionReady).toBe(true);
+    await act(async () => {
+      await state.send('Bare executor sends without blocked persona', []);
+    });
+    expect(client.createSession).toHaveBeenCalled();
+  });
+
+  it('keeps error and blocks send when getPersona fails after changing persona, never reusing old persona', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
+    client.getPersona.mockImplementation(async (id: string) => {
+      if (id === 'persona-good') {
+        return { definition: { id: 'persona-good', name: 'Good', profile: 'agent' }, systemPrompt: 'good' };
+      }
+      throw new Error('persona-bad offline');
+    });
+    await renderDraft({ initialPersona: 'persona-good' });
+    let state = await settleDraft((value) => value.persona?.definition.id === 'persona-good' && value.selectionReady);
+    expect(state.persona?.definition.id).toBe('persona-good');
+
+    await act(async () => {
+      state.selectPersona('persona-bad');
+    });
+    state = await settleDraft((value) => value.error === 'persona-bad offline' && !value.personaPending);
+    expect(state.selectedPersonaId).toBe('persona-bad');
+    expect(state.persona).toBeUndefined();
+    expect(state.selectionReady).toBe(false);
+    await act(async () => {
+      void state.send('Must not send with failed persona or impersonate old persona', []);
+    });
+    expect(client.createSession).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveSelectedEffort', () => {

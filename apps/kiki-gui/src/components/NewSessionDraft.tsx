@@ -712,7 +712,7 @@ export function useNewSessionDraft({
       || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
     ));
 
-  const unresolvedPersona = selectedPersonaId !== undefined && persona === undefined;
+  const unresolvedPersona = selectedPersonaId !== undefined && persona?.definition.id !== selectedPersonaId;
 
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
@@ -1001,6 +1001,7 @@ export function useNewSessionDraft({
     setExecutionState(next);
     if (next.profile === undefined) {
       personaSelectionRef.current += 1;
+      setSelectedPersonaId(undefined);
       setPersonaState(undefined);
       setPersonaPending(false);
       setModelOverrideState(undefined);
@@ -1063,6 +1064,7 @@ export function useNewSessionDraft({
       .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
       .catch((cause: unknown) => {
         if (personaSelectionRef.current !== token) return;
+        setPersonaState(undefined);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
@@ -1079,6 +1081,7 @@ export function useNewSessionDraft({
 
   return {
     persona,
+    selectedPersonaId,
     personaPending,
     selectPersona,
     /** Set when this draft is one persona's daily conversation. */
