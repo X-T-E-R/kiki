@@ -544,9 +544,9 @@ function NewSessionPageContent({
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}
           {state.workspacesError !== null && cwd === '' ? (
-            <div role="alert" className="mt-2 text-[12px] text-danger">
+            <div role="alert" data-hero-workspace-failure className="mt-2 text-[12px] text-danger">
               <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
-              <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+              <button type="button" data-hero-workspace-retry onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
             </div>
           ) : null}
           {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (

@@ -2168,11 +2168,6 @@ export function SessionView({
     resyncing: state.resyncing,
     resyncFailed: state.resyncFailed,
   });
-  const [railReady, setRailReady] = useState(false);
-  useEffect(() => {
-    if (sessionSendReady) setRailReady(true);
-  }, [sessionSendReady]);
-  const railMountReady = railReady || sessionSendReady;
 
   // Which projection of the timeline this session shows (remembered per
   // session; a `message` delivery opens in the message view) and the delivery
@@ -4047,7 +4042,7 @@ boundExecution,
     reportAttention([{ sessionId, agentId: MAIN_AGENT_ID, turnId: turnTail.turnId, kind: turnTail.state, title: sessionTitle }]);
   }, [sessionId, sessionTitle, state.transcriptReady, turnTail]);
 
-  const composerDisabled = controller === null || !sessionSendReady;
+  const composerDisabled = controller === null;
   const modelSource: ModelSource = resolveModelSource(
     composerSelection.modelOverride,
     sessionModel,
@@ -4410,6 +4405,8 @@ boundExecution,
           <Composer
             busy={composerBusy}
             disabled={composerDisabled}
+            sendDisabled={!sessionSendReady}
+            sendDisabledTitle={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
             value={draft}
             onChange={updateDraft}
@@ -4734,7 +4731,7 @@ boundExecution,
           // The inspector's session-operation reads wait until the first
           // snapshot lease settles; after that, resyncs keep the mounted rail
           // and its drafts instead of tearing the surface down.
-          rail: railMountReady ? <RightRail
+          rail: controller !== null ? <RightRail
             className={`app-rail ${railOpen ? 'open' : ''}`}
             state={focusState} forest={forest} selectedAgentId={panelFocusAgent}
             subagent={focusSubagent} taskOwnerAgentId={focusTaskOwner}

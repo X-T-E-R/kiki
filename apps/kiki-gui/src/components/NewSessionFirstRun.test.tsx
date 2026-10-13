@@ -32,10 +32,11 @@ const firstRun = vi.hoisted(() => ({
   creationPending: false,
   seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   workspacesFailed: false,
-  workspacesError: undefined as string | undefined,
+  workspacesError: null as string | null,
   retryWorkspaces: (() => {}) as () => void,
   workspaceId: '',
   effectiveWorkspace: undefined as any,
+  execution: { executor: 'native', profile: 'agent', overrides: undefined } as any,
   client: {
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
@@ -70,8 +71,10 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./NewSessionDraft')>();
   return {
     ...actual,
-    useNewSessionDraft: () => ({
-      draft: '',
+    useNewSessionDraft: () => {
+      const [execution, setExecution] = useState(firstRun.execution);
+      return {
+        draft: '',
       attachments: [],
       busy: false,
       creationPending: firstRun.creationPending,
@@ -115,10 +118,15 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       setGoalObjective: () => {},
       setModelOverride: () => {},
       setAgentProfile: () => {},
-      setEffortOverride: () => {},
+      execution,
+      setExecution: (next: any) => {
+        firstRun.execution = next;
+        setExecution(next);
+      },
       send: () => {},
       activateSkill: () => {},
-    }),
+    };
+  },
   };
 });
 
@@ -138,6 +146,11 @@ beforeEach(() => {
   firstRun.selectionReady = true;
   firstRun.creationPending = false;
   firstRun.seat = undefined;
+  firstRun.execution = { executor: 'native', profile: 'agent', overrides: undefined };
+  firstRun.workspacesFailed = false;
+  firstRun.workspacesError = null;
+  firstRun.workspaceId = '';
+  firstRun.effectiveWorkspace = undefined;
   localStorage.setItem('kiki.locale', 'en');
   vi.clearAllMocks();
 });
@@ -403,7 +416,7 @@ describe('the /new page', () => {
       expect(retryWorkspaces).toHaveBeenCalledTimes(1);
     } finally {
       firstRun.workspacesFailed = false;
-      firstRun.workspacesError = undefined;
+      firstRun.workspacesError = null;
       firstRun.retryWorkspaces = () => {};
     }
   });
@@ -421,7 +434,7 @@ describe('the /new page', () => {
     } finally {
       firstRun.workspaceId = '';
       firstRun.workspacesFailed = false;
-      firstRun.workspacesError = undefined;
+      firstRun.workspacesError = null;
     }
   });
 

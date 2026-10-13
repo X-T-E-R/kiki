@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Navigate, useLocation, useMatch, useNavigate } from 'react-router-dom';
 import { readLastSessionId, writeLastSessionId } from '@kiki/session-core/settings';
@@ -8,7 +8,7 @@ import { useI18n } from '../i18n';
 import { createBotRoomApi } from '../lib/botRooms';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { markSpaceViewRoute, writeSpaceViewRoute } from '../lib/spaceViewState';
-import { useConnection } from '../state/connection';
+import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 
 export function SpaceViewMemory() {
   const { scopeId } = useConnection();
@@ -61,11 +61,23 @@ export function SpaceViewState({ children }: { readonly children: ReactNode }) {
       return (await createBotRoomApi(client).getRoom(roomId ?? '')) !== undefined;
     },
   });
-  // Only this visit's creation result or an already admitted target can keep
+  const registry = useOptionalControllerRegistry();
+  const hasRetainedController = useMemo(() => {
+    if (sessionId === undefined || !registry) return false;
+    try {
+      for (const ctrl of registry) {
+        if (ctrl.sessionId === sessionId) return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }, [registry, sessionId]);
+  // Only this visit's creation result, a retained controller, or an already admitted target can keep
   // its controller mounted during revalidation; an old cache entry cannot.
-  const confirmed = target.data === true && (createdHere ||
-    (admittedTarget.current?.queryClient === queryClient && admittedTarget.current.key === targetKey));
-  const checking = targetId !== undefined && (target.isPending || (target.isFetching && !confirmed));
+  const confirmed = (target.data === true && (createdHere ||
+    (admittedTarget.current?.queryClient === queryClient && admittedTarget.current.key === targetKey))) || hasRetainedController;
+  const checking = targetId !== undefined && !hasRetainedController && (target.isPending || (target.isFetching && !confirmed));
   const missing = !checking && targetId !== undefined && target.data === false;
   const navigate = useNavigate();
   useLayoutEffect(() => {

@@ -456,6 +456,7 @@ export function useNewSessionDraft({
   );
   // The persona bound at creation. Kept for this window only (like the
   // temporary choice); `?persona=` prefills it from the Personas page.
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(initialPersona);
   const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
   const [personaPending, setPersonaPending] = useState(initialPersona !== undefined);
   const [selectionRevision, setSelectionRevision] = useState(0);
@@ -496,6 +497,7 @@ export function useNewSessionDraft({
         : workspaces.find((w) => w.id === workspaceId),
     [dailyPersonaId, workspaces, workspaceId, workspacesReady],
   );
+  const hasExplicitWorkspace = workspaceId !== '' && workspaceId !== AUTO_WORKSPACE_ID;
   // Only a list that answered can be read as "nothing here": a read still in
   // flight, or one that failed, decides nothing, and automatic allocation then
   // needs the user's own choice of it.
@@ -694,27 +696,32 @@ export function useNewSessionDraft({
   }, [draftKey]);
 
   const fromFile = execution.profile_file !== undefined;
+  const nativeExecution = isNativeExecutor(execution.executor);
+  const bareExternal = !nativeExecution && execution.profile === undefined;
+  const validateProfile = !fromFile && !bareExternal && agentProfileCatalogMode.mode !== 'disabled';
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
     || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending : agentProfilesQuery.isPending));
-  const nativeExecution = isNativeExecutor(execution.executor);
+  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
+    && !agentProfilesQuery.data.items.some((item) => item.name === (execution.profile ?? agentProfile) && item.main === true && !item.disabled);
   const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
-    || (fromFile
-      ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined
-      : (agentProfilesQuery.isSuccess && !agentProfilesQuery.data.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled)))
+    || (fromFile ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined : invalidProfile)
     || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
       modelProjectionState === 'blocked'
       || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)
       || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
     ));
 
+  const unresolvedPersona = selectedPersonaId !== undefined && persona === undefined;
+
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
   // changes identity on every keystroke would defeat the memo.
   const sendContextRef = useRef({
-    busy: busy || selectionBlocked || personaPending,
+    busy: busy || selectionBlocked || personaPending || unresolvedPersona,
     agentProfileCatalogPending,
     cwd,
+    workspaceId,
     effectiveWorkspace,
     modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
     effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
@@ -728,9 +735,10 @@ export function useNewSessionDraft({
     persona,
   });
   sendContextRef.current = {
-    busy: busy || selectionBlocked || personaPending,
+    busy: busy || selectionBlocked || personaPending || unresolvedPersona,
     agentProfileCatalogPending,
     cwd,
+    workspaceId,
     effectiveWorkspace,
     modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
     effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
@@ -744,7 +752,7 @@ export function useNewSessionDraft({
     persona,
   };
 
-  const selectionReady = !selectionBlocked && !personaPending;
+  const selectionReady = !selectionBlocked && !personaPending && !unresolvedPersona;
   const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
   const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(undefined);
   const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
@@ -795,7 +803,7 @@ export function useNewSessionDraft({
     if (context.busy || profileCatalogTransitionRef.current) return;
     const body = buildNewSessionCreate({
       cwd: trimmedCwd,
-      workspaceId: context.effectiveWorkspace?.id,
+      workspaceId: (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : context.effectiveWorkspace?.id,
       profile: context.agentProfile,
       execution: context.execution,
       model: context.modelOverride,
@@ -823,7 +831,10 @@ export function useNewSessionDraft({
     const intent = { cancelled: false };
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
-    if (trimmedCwd === '') setWorkspaceId(context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
+    if (trimmedCwd === '') {
+      const explicitId = (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : undefined;
+      setWorkspaceId(explicitId ?? context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
+    }
     setBusy(true);
     setCreationPending(true);
     setCreationNotice(null);
@@ -1038,10 +1049,16 @@ export function useNewSessionDraft({
   // for the newer pick: two slower/faster round trips are not a user's order.
   const personaSelectionRef = useRef(0);
   const selectPersona = useCallback((id: string | undefined) => {
+    setSelectedPersonaId(id);
     const token = personaSelectionRef.current + 1;
     personaSelectionRef.current = token;
-    if (id === undefined) { applyPersona(undefined); return; }
+    if (id === undefined) {
+      applyPersona(undefined);
+      setError(null);
+      return;
+    }
     setPersonaPending(true);
+    setError(null);
     void client.getPersona(id)
       .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
       .catch((cause: unknown) => {
@@ -1051,15 +1068,14 @@ export function useNewSessionDraft({
       .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
   }, [applyPersona, client]);
 
-  // `?persona=` from the Personas page's "Start a chat" — applied once the
-  // profile catalog is there, so the persona's profile validates.
+  // `?persona=` from the Personas page's "Start a chat" — applied immediately by ID
   const initialPersonaRef = useRef(initialPersona);
   useEffect(() => {
     const id = initialPersonaRef.current;
-    if (id === undefined || agentProfilesQuery.data === undefined) return;
+    if (id === undefined) return;
     initialPersonaRef.current = undefined;
     selectPersona(id);
-  }, [agentProfilesQuery.data, selectPersona]);
+  }, [selectPersona]);
 
   return {
     persona,

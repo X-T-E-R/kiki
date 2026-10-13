@@ -16,10 +16,12 @@ const getRoom = vi.fn();
 const host = { kind: 'tauri' };
 const scope = { id: 'local' };
 let navigateRoute: NavigateFunction;
+const retainedControllers = vi.fn<() => Array<{ sessionId: string }>>(() => []);
 vi.mock('../host', () => ({ useHost: () => host }));
 vi.mock('../i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ scopeId: scope.id, client: { getSession, klient: { rest: { rooms: { get: getRoom } } } } }),
+  useOptionalControllerRegistry: () => retainedControllers(),
 }));
 
 let root: Root;
@@ -61,6 +63,8 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   getSession.mockReset();
   getRoom.mockReset();
+  retainedControllers.mockReset();
+  retainedControllers.mockReturnValue([]);
   mounted.mockClear();
   configureSpaceStorage(null);
   localStorage.clear();
@@ -208,5 +212,31 @@ describe('space view route validation', () => {
     await render('/s/foreign');
     expect(container.querySelector('output')?.textContent).toBe('/new');
     expect(readSpaceViewRoute()).toBeUndefined();
+  });
+
+  it('does not block mounting an existing retained controller while getSession revalidates', async () => {
+    retainedControllers.mockReturnValue([{ sessionId: 'existing-retained' }]);
+    let settle!: (session: unknown) => void;
+    getSession.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
+    await render('/s/existing-retained');
+    expect(mounted).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-target]')).not.toBeNull();
+    await act(async () => { settle({ id: 'existing-retained' }); });
+    await flush();
+    expect(mounted).toHaveBeenCalledOnce();
+  });
+
+  it('cleans up and navigates away if retained controller session is definitely not found on server', async () => {
+    retainedControllers.mockReturnValue([{ sessionId: 'gone-retained' }]);
+    let fail!: (error: Error) => void;
+    getSession.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    await render('/s/gone-retained');
+    expect(mounted).toHaveBeenCalledOnce();
+    await act(async () => {
+      fail(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null }));
+    });
+    await flush();
+    expect(container.querySelector('output')?.textContent).toBe('/new');
+    expect(container.querySelector('[data-target]')).toBeNull();
   });
 });

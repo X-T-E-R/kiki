@@ -987,7 +987,9 @@ export function Composer({
   const selectedExecution = execution ?? boundExecution;
   const externalExecution = selectedExecution !== undefined && !isNativeExecutor(selectedExecution.executor);
   const executorId = externalExecution ? selectedExecution.executor : undefined;
-  const validateProfile = !fromFile && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
+  const bareExternal = externalExecution && selectedExecution.profile === undefined;
+  const explicitProfileChoice = sessionId === undefined || agentProfilePending === true;
+  const validateProfile = !fromFile && !bareExternal && explicitProfileChoice && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = externalExecution
     ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : executionPending ? undefined : model || defaultModel)
     : model || selectionDefaultModel || serverDefaultModel;
