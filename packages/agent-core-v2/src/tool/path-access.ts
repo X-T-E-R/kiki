@@ -267,7 +267,7 @@ function isMissingPath(error: unknown): boolean {
   return cause.code === 'ENOENT' || cause.code === 'ENOTDIR';
 }
 
-async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promise<string> {
+export async function realPathOrMissingChild(fs: IHostFileSystem, path: string): Promise<string> {
   try {
     return await fs.realpath(path);
   } catch (error) {

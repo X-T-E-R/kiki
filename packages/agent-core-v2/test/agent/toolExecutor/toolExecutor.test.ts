@@ -511,7 +511,22 @@ describe('AgentToolExecutorService', () => {
     expect(inner.calls[0]?.args).toEqual({ value: 1, model: 'fast' });
   });
 
-  it('routes malformed JSON args through schema validation', async () => {
+  it.each(['{not valid json', '{}{', '{"text":"hi",}'])('rejects malformed JSON before resolving an optional-args tool: %s', async (argumentsText) => {
+    const tool = new TestTool('optional');
+    registry.register(tool);
+    const resolution = vi.spyOn(tool, 'resolveExecution');
+    const results = await execute([{
+      type: 'function', id: 'call_malformed_optional', name: 'optional', arguments: argumentsText,
+    }]);
+    expect(results[0]).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('Invalid args for tool "optional": malformed JSON'),
+    });
+    expect(resolution).not.toHaveBeenCalled();
+    expect(tool.calls).toEqual([]);
+  });
+
+  it('rejects malformed JSON args before schema validation', async () => {
     const tool = new TestTool('strict', {
       parameters: {
         type: 'object',
@@ -939,23 +954,36 @@ describe('AgentToolExecutorService', () => {
     ]);
   });
 
-  it('onDidExecuteTool failures replace the raw output with a hook error', async () => {
-    const tool = new TestTool('echo');
+  it.each([false, true])('preserves a completed result and side effect when a post hook fails (isError=%s)', async (isError) => {
+    let writes = 0;
+    const memoryReceipt = { action: 'create' as const, id: 'memory-1', revision: 'r1', status: 'active', operationId: 'op1' };
+    const result = { output: 'write completed', isError, memoryReceipt, stopTurn: true };
+    const tool = new TestTool('write-once', { execute: async () => { writes++; return result; } });
     registry.register(tool);
-    executor.hooks.onDidExecuteTool.register('fail-finalize', async () => {
+    executor.hooks.onDidExecuteTool.register('fail-finalize', async (ctx) => {
+      ctx.result = { output: 'unfinished hook rewrite', isError: true };
       throw new Error('finalize crashed');
     });
+    const [actual] = await execute([toolCall('call_write', 'write-once', {})]);
+    expect(writes).toBe(1);
+    expect(actual).toMatchObject({ output: result.output, memoryReceipt, stopTurn: true });
+    expect(actual?.isError === true).toBe(isError);
+    expect(events).toContainEqual({ type: 'tool.result', toolCallId: 'call_write',
+      result: expect.objectContaining({ output: result.output, memoryReceipt, stopTurn: true }) });
+  });
 
-    const results = await execute([toolCall('call_echo', 'echo', { text: 'raw output' })]);
-
-    expect(results).toEqual([
-      expect.objectContaining({
-        output: 'onDidExecuteTool hook failed for "echo": finalize crashed',
-        isError: true,
-      }),
-    ]);
-    const toolResultEvents = events.filter((event) => event.type === 'tool.result');
-    expect(JSON.stringify(toolResultEvents)).not.toContain('raw output');
+  it('preserves a completed side effect when its post hook aborts', async () => {
+    const controller = new AbortController();
+    const tool = new TestTool('write-once', { result: { output: 'write completed' } });
+    registry.register(tool);
+    executor.hooks.onDidExecuteTool.register('abort-finalize', async () => {
+      controller.abort();
+      controller.signal.throwIfAborted();
+    });
+    const [actual] = await execute([toolCall('call_write', 'write-once', {})], controller.signal);
+    expect(tool.calls).toHaveLength(1);
+    expect(actual?.output).toBe('write completed');
+    expect(actual?.isError).not.toBe(true);
   });
 
   it('onDidExecuteTool can stop the turn without marking the tool failed', async () => {

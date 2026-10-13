@@ -4,8 +4,16 @@ import { basename, dirname, join } from 'node:path';
 
 import type { ToolCall } from '#/kosong/contract/message';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ILogService } from '#/_base/log/log';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { AgentToolApprovalService } from '#/agent/toolApproval/toolApprovalService';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import {
@@ -288,7 +296,8 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(meta).toMatchObject({ override: undefined, hostGate: true });
     expect(meta.policyIdentity).not.toBe(externalPermissionMeta(unrestricted, '/workspace').policyIdentity);
     expect(await authorizeExternalTool(isolated, writeSource, 1, 'protected-write', signal, display)).toBe('deny');
-    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source status' } }, 1, 'protected-command', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source status' } }, 1, 'source-inspection', signal, display)).toBe('inherit');
+    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source commit -m bad' } }, 1, 'protected-command', signal, display)).toBe('deny');
     expect(await authorizeExternalTool(isolated, { name: 'Write', input: { path: '/workspace/file.ts' } }, 1, 'own-write', signal, display)).toBe('inherit');
     expect(await authorizeExternalTool(isolated, { name: 'Read', input: { path: '/source/file.ts' } }, 1, 'source-read', signal, display)).toBe('inherit');
   });
@@ -380,6 +389,18 @@ describe('AgentPermissionPolicyService chain', () => {
     })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
   });
 
+  it.each(['git -C /source log -5', 'git -C /source status --short', 'cd /source && git status', 'git status'])('allows isolated checkout inspection: %s', async (command) => {
+    mode = 'yolo';
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'kiki/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    await expect(evaluate({ toolName: 'Bash', args: { command, cwd: '/source' } })).resolves.toMatchObject({ result: { kind: 'approve' } });
+  });
+
+  it.each(['printf x > /source/out', 'git -C /source log >> /source/out', 'cd /source && printf x > out', 'printf x > /source/out; cd /workspace'])('denies identifiable isolated checkout redirection: %s', async (command) => {
+    mode = 'yolo';
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'kiki/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    await expect(evaluate({ toolName: 'Bash', args: { command } })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
+  });
+
   it('gives a Bash deny rule priority over a matching allow rule', async () => {
     rules.push(
       { decision: 'allow', scope: 'user', pattern: 'Bash(arena *)' },
@@ -462,9 +483,22 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  it('matches session approvals by host, cwd and complete command', async () => {
+    sessionApprovalRulePatterns.push(JSON.stringify(['Bash', 'ssh:example', '/srv/project', 'printf first; printf second']));
+    const args = { host: 'example', cwd: '/srv/project', command: 'printf first; printf second' };
+    await expect(evaluate({ toolName: 'Bash', args })).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    for (const changed of [{ ...args, host: 'other' }, { ...args, cwd: '/srv/other' }, { ...args, command: 'printf first' }]) {
+      await expect(evaluate({ toolName: 'Bash', args: changed })).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+    }
+  });
+
+  it.each(['HEAD', 'refs/heads/main', 'objects/pack/example.idx'])('allows ordinary git metadata reads: %s', async (target) => {
+    await expect(evaluate({ toolName: 'Read', args: { path: `/workspace/.git/${target}` } })).resolves.toMatchObject({ result: { kind: 'approve' } });
+  });
+
   it('applies exact session approval before configured ask, but never before explicit deny', async () => {
     rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
-    sessionApprovalRulePatterns.push('Bash(printf first)');
+    sessionApprovalRulePatterns.push(JSON.stringify(['Bash', 'local', '/workspace', 'printf first']));
     const input = { toolName: 'Bash', args: { command: 'printf first', timeout: 60 } };
     await expect(evaluate(input)).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
@@ -610,13 +644,51 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('keeps auto policy asks and ordinary approvals in review mode', async () => {
+  it.each(['routine', 'dangerous', 'sensitive', 'explicit-ask', 'external'] as const)(
+    'routes review-mode %s actions through the real policy and approval chain', async (kind) => {
+      mode = 'review';
+      ix.stub(IConfigService, { get: (() => ({ reviewer: {
+        backend: 'model', model: 'review-model', allowThreshold: 0.9, denyThreshold: 0.9,
+      } })) as IConfigService['get'] });
+      ix.stub(ISessionContext, { sessionId: 'review-session' });
+      ix.stub(IEventDispatcher, { dispatch: async () => {} });
+      ix.stub(ILogService, { debug: () => {} });
+      ix.stub(IAgentContextMemoryService, { get: () => [] });
+      const review = vi.fn(async function* () {
+        yield { type: 'finish', message: { content: [{ type: 'text', text: '{"outcome":"deny","confidence":0.99}' }] } };
+      });
+      ix.stub(IModelCatalog, { getRequester: () => ({ request: review }) as never });
+      const userApproval = vi.fn(async () => ({ decision: 'rejected' as const }));
+      ix.stub(ISessionApprovalService, { request: userApproval, enqueue: (request) => ({ ...request, id: request.id! }), decide: () => {} });
+      ix.set(IAgentToolApprovalService, new SyncDescriptor(AgentToolApprovalService));
+      if (kind === 'explicit-ask' || kind === 'external') rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
+      const baseContext = policyContext(kind === 'sensitive'
+        ? { toolName: 'Read', args: { path: '/workspace/.env' }, accesses: ToolAccesses.readFile('/workspace/.env') }
+        : { toolName: 'Bash', args: { command: kind === 'dangerous' ? 'shutdown -h now' : 'printf hi' } });
+      const context: ResolvedToolExecutionHookContext = {
+        ...baseContext,
+        execution: { ...baseContext.execution, display: kind === 'external' ? {
+          kind: 'external_permission', summary: 'Provider permission', options: [{ id: 'reject', label: 'Reject', kind: 'reject_once' }],
+        } : undefined },
+      };
+      const decision = await ix.get(IAgentPermissionGate).authorize(context);
+      if (kind === 'routine') expect(decision).toBeUndefined();
+      else expect(decision?.veto?.isError).toBe(true);
+      expect(review).toHaveBeenCalledTimes(kind === 'dangerous' || kind === 'sensitive' ? 1 : 0);
+      expect(userApproval).toHaveBeenCalledTimes(kind === 'explicit-ask' || kind === 'external' ? 1 : 0);
+    },
+  );
+
+  it('keeps protected actions on review while approving routine actions', async () => {
     mode = 'review';
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/.env' }, accesses: ToolAccesses.readFile('/workspace/.env') })).resolves.toMatchObject({
       policyName: 'sensitive-file-access-ask', result: { kind: 'ask' },
     });
     await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
       policyName: 'auto-mode-approve', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'shutdown -h now' } })).resolves.toMatchObject({
+      policyName: 'dangerous-bash', result: { kind: 'ask' },
     });
     rules.push({ decision: 'deny', scope: 'user', pattern: 'Bash' });
     await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
@@ -746,7 +818,7 @@ describe('AgentPermissionPolicyService chain', () => {
   });
 
   it('exempts dangerous Bash only for the exact previously approved command', async () => {
-    sessionApprovalRulePatterns.push('Bash', 'Bash(rm -rf /tmp/*)', 'Bash(rm -rf /tmp/build)');
+    sessionApprovalRulePatterns.push('Bash', 'Bash(rm -rf /tmp/*)', JSON.stringify(['Bash', 'local', '/workspace', 'rm -rf /tmp/build']));
     await expect(evaluate({ toolName: 'Bash', args: { command: 'rm -rf /tmp/build', timeout: 60 } })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
     });
@@ -779,10 +851,12 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
   let workspace: ReturnType<typeof workspaceStub>;
   let workspaceDir: string;
   let cleanupDirs: string[];
+  let pathClass: HostEnvironmentService['pathClass'];
 
   beforeEach(async () => {
     disposables = new DisposableStore();
     mode = 'manual';
+    pathClass = 'posix';
     workspaceDir = await mkdtemp(join(tmpdir(), 'kimi-permission-git-'));
     cleanupDirs = [workspaceDir];
     await mkdir(join(workspaceDir, '.git'), { recursive: true });
@@ -814,7 +888,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
               status: 'ready',
               onDidChangeStatus: () => ({ dispose: () => {} }),
               dispose: () => {},
-              environment: { pathClass: 'posix', homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
+              environment: { pathClass, homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
               fs: { realpath: async (path: string) => path } as never,
               path: {
                 separator: '/',
@@ -874,6 +948,20 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
       policyName: 'git-cwd-write-approve',
       result: { kind: 'approve' },
     });
+  });
+
+  it('approves Windows git cwd writes using the runtime path class', async () => {
+    pathClass = 'win32';
+    await expect(evaluate({
+      toolName: 'Write',
+      args: { path: 'src/a.ts', content: 'x' },
+      accesses: ToolAccesses.writeFile(join(workspaceDir, 'src/a.ts')),
+    })).resolves.toMatchObject({
+      policyName: 'git-cwd-write-approve', result: { kind: 'approve' },
+    });
+    for (const target of [join(`${workspaceDir}-other`, 'a.ts'), 'Z:\\other\\a.ts']) {
+      await expect(evaluate({ toolName: 'Write', args: { path: target, content: 'x' }, accesses: ToolAccesses.writeFile(target) })).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+    }
   });
 
   it('approves Edit on an additionalDir path in manual mode', async () => {
@@ -1036,6 +1124,8 @@ function policyContext(input: PolicyContextInput): ResolvedToolExecutionHookCont
       description: description(input.toolName),
       display: display(input.toolName, input.args),
       accesses: input.accesses ?? accesses(input.toolName, input.args),
+      shellContext: input.toolName === 'Bash' ? { runtimeId: typeof input.args['host'] === 'string' ? `ssh:${input.args['host']}` : 'local', cwd: stringArg(input.args, 'cwd', '/workspace'), pathClass: 'posix' } : undefined,
+      sessionApprovalRule: input.toolName === 'Bash' ? JSON.stringify(['Bash', typeof input.args['host'] === 'string' ? `ssh:${input.args['host']}` : 'local', stringArg(input.args, 'cwd', '/workspace'), subject]) : undefined,
       approvalRule:
         subject === undefined ? input.toolName : literalRulePattern(input.toolName, subject),
       matchesRule:

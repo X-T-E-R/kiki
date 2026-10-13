@@ -28,7 +28,6 @@ export class GitCwdWriteApprovePermissionPolicyService implements PermissionPoli
     const lease = this.runtime.acquire();
     const pathClass = lease.runtime.environment.pathClass;
     lease.dispose();
-    if (pathClass !== 'posix') return undefined;
 
     const roots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
     const cwd = roots.workDir;
@@ -41,7 +40,7 @@ export class GitCwdWriteApprovePermissionPolicyService implements PermissionPoli
         isWithinWorkspace(
           access.path,
           { workspaceDir: cwd, additionalDirs: roots.additionalDirs ?? [] },
-          'posix',
+          pathClass,
         ),
       )
     ) {

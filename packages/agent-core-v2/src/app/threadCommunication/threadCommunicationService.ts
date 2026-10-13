@@ -1056,7 +1056,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private ensureRecovery(): Promise<void> {
     if (this.recovery !== undefined) return this.recovery;
-    const flight = this.recoverPendingDeliveries().catch((error) => {
+    const flight = this.recoverPendingDeliveries().then((completed) => {
+      if (!completed && this.recovery === flight) this.recovery = undefined;
+    }).catch((error) => {
       if (this.recovery === flight) this.recovery = undefined;
       throw error;
     });
@@ -1064,18 +1066,19 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return flight;
   }
 
-  private async recoverPendingDeliveries(): Promise<void> {
-    if (this.bootstrap.interactive === false) return;
+  private async recoverPendingDeliveries(): Promise<boolean> {
+    if (this.bootstrap.interactive === false) return false;
     await this.config.ready;
-    if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return;
+    if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return false;
     const targets = await this.mailbox.listPendingTargets({
       signal: this.mailboxController.signal,
     });
     for (const target of targets) {
-      if (this.closing) return;
+      if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return false;
       if (target.hostId !== this.hostId) continue;
       await this.requestTargetDrain(target);
     }
+    return true;
   }
 
   private async flushLiveMain(sessionId: string): Promise<void> {

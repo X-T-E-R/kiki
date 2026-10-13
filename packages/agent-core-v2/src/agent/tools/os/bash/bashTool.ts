@@ -9,7 +9,7 @@ import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProce
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
@@ -127,9 +127,18 @@ export class BashTool implements IBashTool {
       : `${description}\nNo blocking task-wait tool is available to this agent. Keep finite delivery dependencies in bounded foreground calls when possible. TaskOutput does not wait; do not poll it to keep a turn open or claim a detached dependency completed. Use automatic completion notifications when available, and report a remaining dependency honestly if no supported completion path exists.`;
   }
 
-  resolveExecution(args: BashInput): ToolExecution {
+  async resolveExecution(args: BashInput): Promise<ToolExecution> {
     const target = resolveSshToolTarget(args.host, args.cwd);
     const input = { ...args, host: target.host, cwd: target.path };
+    const runtime = await prepareToolRuntime(this.runtime, target.host);
+    let cwd: string;
+    try {
+      const view = new RuntimeWorkspaceView(runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
+      cwd = runtime.path.resolve(view.workDir, runtimeShellPathBridge(runtime).fromShellPath(target.path ?? view.workDir));
+    } catch (error) {
+      return { isError: true, output: error instanceof Error ? error.message : String(error) };
+    }
+    const shellContext = { runtimeId: runtime.identity.runtimeId, cwd, pathClass: runtime.environment.pathClass };
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
       description: args.run_in_background
@@ -138,11 +147,13 @@ export class BashTool implements IBashTool {
       display: {
         kind: 'command',
         command: args.command,
-        cwd: args.cwd ?? (target.host === undefined ? this.ctx.cwd : `ssh://${target.host}/`),
+        cwd: runtime.identity.runtimeId.startsWith('ssh:') ? `ssh://${runtime.identity.runtimeId.slice(4)}${cwd}` : cwd,
         description: args.description,
         language: 'bash',
       },
-      approvalRule: toolApprovalRule(this.name, args.command, inspectAgentRuntime(this.runtime), target.host),
+      approvalRule: toolApprovalRule(this.name, args.command, runtime, target.host),
+      sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
+      shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
       execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
         const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);

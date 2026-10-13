@@ -653,6 +653,24 @@ describe('ThreadCommunicationService', () => {
     await service.shutdown();
   });
 
+  it('retries disabled recovery once after enabling and shares concurrent recovery', async () => {
+    globalEnabled = false;
+    const service = ix.get(IThreadCommunicationService);
+    await service.listThreads();
+    expect(listPendingTargets).not.toHaveBeenCalled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    listPendingTargets.mockImplementation(async () => { await gate; return []; });
+    globalEnabled = true;
+    const requests = [service.listThreads(), service.listThreads(), service.listThreads()];
+    await vi.waitFor(() => expect(listPendingTargets).toHaveBeenCalledOnce());
+    release();
+    await Promise.all(requests);
+    await service.listThreads();
+    expect(listPendingTargets).toHaveBeenCalledOnce();
+    await service.shutdown();
+  });
+
   it('retries transient startup recovery without poisoning public readiness', async () => {
     listPendingTargets
       .mockRejectedValueOnce(new HomeRuntimeError('runtime.timeout', 'startup timeout'))
@@ -921,6 +939,19 @@ describe('ThreadCommunicationService', () => {
     ix.get(ICapabilitySnapshotService).refresh(caller.workspaceId, caller.sessionId);
     expect(await service.isWorkspaceEnabled('workspace-b', caller)).toBe(false);
     expect(await service.listThreads()).toEqual({ threads: [] });
+  });
+
+  it('keeps ThreadCreate available independently of communication tools', async () => {
+    const snapshots = ix.get(ICapabilitySnapshotService);
+    await snapshots.ready;
+    const names = ['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait'];
+    const sessionId = 'tools-snapshot';
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(true);
+    globalEnabled = false;
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(true);
+    snapshots.refresh('workspace-a', sessionId);
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(false);
+    expect(snapshots.toolAvailable('ThreadCreate', 'workspace-a', sessionId)).toBe(true);
   });
 
   it('uses the caller session snapshot for App-scoped Thread APIs', async () => {

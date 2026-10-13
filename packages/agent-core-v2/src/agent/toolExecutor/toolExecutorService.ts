@@ -668,17 +668,12 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     try {
       await this.hooks.onDidExecuteTool.run(didCtx);
     } catch (error) {
-      const aborted = isAbortError(error) || options.signal.aborted;
-      const output = aborted
-        ? `Tool "${call.toolName}" aborted during onDidExecuteTool hook.`
-        : `onDidExecuteTool hook failed for "${call.toolName}": ${errorMessage(error)}`;
-      return {
-        output,
-        isError: true,
-        description: result.description,
-        display: result.display,
-        approvalRule: result.approvalRule,
-      };
+      this.log?.error('onDidExecuteTool hook failed after tool execution', {
+        toolName: call.toolName,
+        toolCallId: call.toolCall.id,
+        error: errorMessage(error),
+      });
+      didCtx.result = result;
     }
 
     const coercedResult = coerceToolResult(didCtx.result, call.toolName);
@@ -812,18 +807,20 @@ function preflightToolCall(
       output: unavailable,
     };
   }
-  if (parsedArgs.truncation !== undefined && parsedArgs.parseFailed) {
+  if (parsedArgs.parseFailed) {
     return {
       kind: 'rejected',
       toolCall,
       toolName,
       args: parsedArgs.data,
-      output: formatToolArgsTruncationRejection(
-        toolName,
-        toolCall.arguments,
-        parsedArgs.truncation,
-        false,
-      ),
+      output: parsedArgs.truncation === undefined
+        ? `Invalid args for tool "${toolName}": malformed JSON. This tool call was not executed. ${parsedArgs.error ?? ''}`
+        : formatToolArgsTruncationRejection(
+          toolName,
+          toolCall.arguments,
+          parsedArgs.truncation,
+          false,
+        ),
     };
   }
   const validation = validateExecutableToolArgs(tool, parsedArgs.data);

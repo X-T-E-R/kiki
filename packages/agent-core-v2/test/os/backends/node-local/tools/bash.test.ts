@@ -780,6 +780,19 @@ function bashTool(
 }
 
 describe('BashTool', () => {
+  it('resolves effective cwd and caches the complete shell action independently of persistent rules', async () => {
+    const { runner } = createTestRunner(processWithOutput());
+    const tool = bashTool(runner, posixEnv, createTestCtx('/workspace'));
+    const first = await tool.resolveExecution({ command: 'printf first; printf second', cwd: './src/../src' });
+    const equivalent = await tool.resolveExecution({ command: 'printf first; printf second', cwd: '/workspace/src' });
+    const other = await tool.resolveExecution({ command: 'printf first; printf second', cwd: '/workspace/other' });
+    if (first.isError || equivalent.isError || other.isError) throw new Error('Expected runnable Bash');
+    expect(first.shellContext).toEqual({ runtimeId: 'local', cwd: '/workspace/src', pathClass: 'posix' });
+    expect(first.sessionApprovalRule).toBe(equivalent.sessionApprovalRule);
+    expect(first.sessionApprovalRule).not.toBe(other.sessionApprovalRule);
+    expect(first.approvalRule).toBe(other.approvalRule);
+    expect(first.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'local', '/workspace/src', 'printf first; printf second']));
+  });
   it.each([
     [posixEnv, '/workspace', '/other/repository', '/other/repository'],
     [windowsBashEnv, 'C:\\workspace', 'D:\\other\\repository', '/d/other/repository'],
@@ -882,16 +895,22 @@ describe('BashTool', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it.each(['mapping', 'spawn'] as const)('releases the runtime lease after %s failure', async (failure) => {
+  it('reports workspace mapping failure before a runtime lease is acquired', async () => {
     const { runner } = createTestRunner(vi.fn(async () => { throw new Error('spawn failed'); }));
     const disposeLease = vi.fn();
-    const runtime = failure === 'mapping'
-      ? new FakeRuntime({ workspaceId: 'test', runtimeId: 'remote', generation: 'test' }, {
-          mapWorkspaceRoots: () => { throw new Error('mapping failed'); },
-        })
-      : undefined;
+    const runtime = new FakeRuntime({ workspaceId: 'test', runtimeId: 'remote', generation: 'test' }, {
+      mapWorkspaceRoots: () => { throw new Error('mapping failed'); },
+    });
     const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, { runtime, disposeLease });
-    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: `${failure} failed` });
+    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: 'mapping failed' });
+    expect(disposeLease).not.toHaveBeenCalled();
+  });
+
+  it('releases the runtime lease after spawn failure', async () => {
+    const { runner } = createTestRunner(vi.fn(async () => { throw new Error('spawn failed'); }));
+    const disposeLease = vi.fn();
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, { disposeLease });
+    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: 'spawn failed' });
     expect(disposeLease).toHaveBeenCalledOnce();
   });
 

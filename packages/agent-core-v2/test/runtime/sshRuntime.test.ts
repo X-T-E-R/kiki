@@ -258,8 +258,10 @@ async function approvedPreparationFixture() {
       const error = await gate!({ tool: { name: 'Bash' }, toolCall: { id: 'bash', name: 'Bash' },
         args, signal, turnId: 1, toolCalls: [] } as unknown as BeforeResolveToolContext);
       if (error !== undefined) throw new Error(error);
-      const execution = ix.get(IBashTool).resolveExecution(args);
+      const execution = await ix.get(IBashTool).resolveExecution(args);
       if (!('execute' in execution)) throw new Error('Bash did not resolve an executable operation');
+      expect(execution.shellContext).toEqual({ runtimeId: 'ssh:dev', cwd: '/home/tester', pathClass: 'posix' });
+      expect(execution.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'ssh:dev', '/home/tester', 'hostname']));
       return execution.execute({ signal, turnId: 1, toolCallId: 'bash' });
     },
     approve: async () => gate!({ tool: { name: 'Bash' }, toolCall: { id: 'approve', name: 'Bash' },

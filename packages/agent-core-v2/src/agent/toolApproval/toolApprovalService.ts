@@ -121,9 +121,6 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined> {
     const yolo = this.modeService.mode === 'yolo';
-    if (!yolo && this.modeService.interactive === false) {
-      return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
-    }
     const name = context.toolCall.name;
     const action = context.execution.description ?? `Approve ${name}`;
     const display =
@@ -164,21 +161,21 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     context.signal.throwIfAborted();
     let userApprovalRequest = approvalRequest;
     let automatedResponse: ApprovalResponse | undefined = yolo ? { decision: 'approved' } : undefined;
-    if (reviewer !== undefined && reviewer.outcome !== 'ask' && approvalService !== undefined) {
+    if (reviewer !== undefined && reviewer.outcome !== 'ask') {
       const proposed: ApprovalResponse = {
         decision: reviewer.outcome === 'allow' ? 'approved' : 'rejected',
         feedback: `${reviewer.outcome === 'allow' ? 'Approved' : 'Denied'} by reviewer: ${reviewer.reason}`,
         reviewer: { backend: reviewer.backend, reason: reviewer.reason, confidence: reviewer.confidence },
       };
       try {
-        approvalService.enqueue(approvalRequest);
-        approvalService.decide(approvalRequest.id, proposed);
+        approvalService?.enqueue(approvalRequest);
+        approvalService?.decide(approvalRequest.id, proposed);
         automatedResponse = proposed;
         void this.dispatcher.dispatch(new PermissionApprovalRequested(approvalContext));
       } catch {
         userApprovalRequest = { ...approvalRequest, id: `approval_${randomUUID()}` };
         try {
-          approvalService.decide(approvalRequest.id, { decision: 'cancelled' });
+          approvalService?.decide(approvalRequest.id, { decision: 'cancelled' });
         } catch {
           this.log.debug('permission reviewer cleanup could not resolve the failed approval');
         }
@@ -186,6 +183,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     }
     if (automatedResponse !== undefined) {
       response = automatedResponse;
+    } else if (this.modeService.interactive === false) {
+      return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
     } else if (approvalService === undefined) {
       response = { decision: 'cancelled', cancellationReason: 'no_consumer' };
     } else {
@@ -227,15 +226,15 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       }
     }
 
-    if (display.kind === 'external_permission' && response.selectedOptionId !== undefined) {
+    if (display.kind === 'external_permission' && response.decision === 'approved' && response.selectedOptionId !== undefined) {
       const option = display.options?.find((candidate) => candidate.id === response.selectedOptionId);
-      if (option === undefined || (response.decision === 'approved' && !option.kind.startsWith('allow_'))) {
+      if (option === undefined || !option.kind.startsWith('allow_')) {
         response = { decision: 'cancelled' };
       }
     }
     const sessionApprovalRule =
       response.decision === 'approved' && response.scope === 'session'
-        ? context.execution.approvalRule
+        ? name === 'Bash' ? context.execution.sessionApprovalRule : context.execution.approvalRule
         : undefined;
     if (approvalService !== undefined) {
       void this.dispatcher.dispatch(
