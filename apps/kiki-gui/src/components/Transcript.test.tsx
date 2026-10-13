@@ -870,6 +870,106 @@ describe('media part deduplication', () => {
     expect(container.querySelector('img[src="https://example.test/chart.png"]')).not.toBeNull();
     expect(container.querySelector('img[src="https://example.test/extra.png"]')).not.toBeNull();
   });
+
+  it('preserves media parts referenced only within fenced, indented, inline code or escaped syntax', () => {
+    const partFenced = { kind: 'image' as const, url: 'https://example.test/fenced.png' };
+    const partTilde = { kind: 'image' as const, url: 'https://example.test/tilde.png' };
+    const partInline = { kind: 'image' as const, url: 'https://example.test/inline.png' };
+    const partIndented = { kind: 'image' as const, url: 'https://example.test/indented.png' };
+    const partEscaped = { kind: 'image' as const, url: 'https://example.test/escaped.png' };
+
+    const text = [
+      'Here is fenced code:',
+      '```markdown',
+      '![fenced](https://example.test/fenced.png)',
+      '```',
+      'And tilde fence:',
+      '~~~markdown',
+      '![tilde](https://example.test/tilde.png)',
+      '~~~',
+      'Here is `![inline](https://example.test/inline.png)` in code span.',
+      'And indented code:',
+      '    ![indented](https://example.test/indented.png)',
+      'And escaped: \\![escaped](https://example.test/escaped.png)',
+    ].join('\n');
+
+    const filtered = filterMediaNotRenderedInText(
+      [partFenced, partTilde, partInline, partIndented, partEscaped],
+      text,
+    );
+    expect(filtered).toHaveLength(5);
+    expect(filtered?.map((m) => m.url)).toEqual([
+      'https://example.test/fenced.png',
+      'https://example.test/tilde.png',
+      'https://example.test/inline.png',
+      'https://example.test/indented.png',
+      'https://example.test/escaped.png',
+    ]);
+  });
+
+  it('preserves media parts with same basename but different directory path', () => {
+    const partA = { kind: 'image' as const, path: '/workspace/dirA/img.png', name: 'img.png' };
+    const text = 'Look at: ![diagram](/workspace/dirB/img.png)';
+    const filtered = filterMediaNotRenderedInText([partA], text);
+    expect(filtered).toEqual([partA]);
+  });
+
+  it('preserves media parts with different query strings', () => {
+    const partV1 = { kind: 'image' as const, url: 'https://example.test/pic.png?v=1' };
+    const text = 'Look at: ![photo](https://example.test/pic.png?v=2)';
+    const filtered = filterMediaNotRenderedInText([partV1], text);
+    expect(filtered).toEqual([partV1]);
+  });
+
+  it('never removes video parts even when image markdown syntax uses the same url or path', () => {
+    const videoUrl = { kind: 'video' as const, url: 'https://example.test/clip.mp4' };
+    const videoPath = { kind: 'video' as const, path: '/workspace/clip.mp4' };
+    const text = 'Preview: ![video](https://example.test/clip.mp4) and ![local](/workspace/clip.mp4)';
+    const filtered = filterMediaNotRenderedInText([videoUrl, videoPath], text);
+    expect(filtered).toEqual([videoUrl, videoPath]);
+  });
+
+  it('renders thumbnail when media syntax is inside a code block in assistant message', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-code', '```markdown\n![fenced](https://example.test/fenced.png)\n```', {
+        media: [{ kind: 'image', url: 'https://example.test/fenced.png' }],
+      }),
+    ]);
+    // The code block should contain the literal text
+    expect(container.textContent).toContain('![fenced](https://example.test/fenced.png)');
+    // And the MediaPartList thumbnail must still be rendered below the prose!
+    const imgInMediaPart = container.querySelector('[data-assistant-prose] img[src="https://example.test/fenced.png"]');
+    expect(imgInMediaPart).not.toBeNull();
+  });
+
+  it('renders thumbnail for video even if markdown references the video url as an image', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-video', 'Preview: ![video](https://example.test/clip.mp4)', {
+        media: [{ kind: 'video', url: 'https://example.test/clip.mp4' }],
+      }),
+    ]);
+    const videoElem = container.querySelector('video');
+    expect(videoElem).not.toBeNull();
+  });
+
+  it('preserves media parts across multiple assistant messages independently in rendered Transcript', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-msg1', 'Rendered: ![shared](https://example.test/shared.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
+      }),
+      assistantBlock('asst-msg2', 'No image inline here', {
+        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
+      }),
+    ]);
+    // Msg1 has no separate thumbnail container because it's inline in markdown
+    const msg1Prose = container.querySelector('[data-block-id="asst-msg1"] [data-assistant-prose]');
+    expect(msg1Prose?.querySelectorAll('div.flex.flex-wrap')).toHaveLength(0);
+
+    // Msg2 has the MediaPartList thumbnail rendered because it was not in msg2's text
+    const msg2Prose = container.querySelector('[data-block-id="asst-msg2"] [data-assistant-prose]');
+    const msg2Thumb = msg2Prose?.querySelector('img[src="https://example.test/shared.png"]');
+    expect(msg2Thumb).not.toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

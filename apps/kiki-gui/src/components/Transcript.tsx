@@ -30,7 +30,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange } from '@kiki/transcript';
+import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -617,44 +617,131 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
-function extractInlineImageTargets(text: string): string[] {
+function codeSpanRanges(text: string): readonly (readonly [number, number])[] {
+  const ranges: Array<readonly [number, number]> = [];
+  const delimiters = /`+/gu;
+  let opening: { readonly start: number; readonly length: number } | undefined;
+  for (const match of text.matchAll(delimiters)) {
+    const start = match.index ?? 0;
+    const length = match[0].length;
+    if (opening === undefined) {
+      opening = { start, length };
+    } else if (length === opening.length) {
+      ranges.push([opening.start, start + length]);
+      opening = undefined;
+    }
+  }
+  if (opening !== undefined) ranges.push([opening.start, text.length]);
+  return ranges;
+}
+
+function maskRanges(text: string, ranges: readonly (readonly [number, number])[]): string {
+  if (ranges.length === 0) return text;
+  let result = '';
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    result += text.slice(cursor, start);
+    result += ' '.repeat(end - start);
+    cursor = end;
+  }
+  result += text.slice(cursor);
+  return result;
+}
+
+export function extractInlineImageTargets(text: string): string[] {
+  if (text === '') return [];
+  // 1. Mask fenced code blocks (``` or ~~~)
+  let clean = text.replace(
+    /(?:^|\n)[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]{0,3}\1[ \t]*(?:\n|$)|$)/g,
+    (match) => '\n'.repeat((match.match(/\n/g) || []).length),
+  );
+  // 2. Mask indented code blocks (4 spaces or tab at start of line)
+  clean = clean.replace(
+    /(?:^|\n)(?: {4}|\t)[^\n]*(?:\n(?: {4}|\t)[^\n]*)*/g,
+    (match) => '\n'.repeat((match.match(/\n/g) || []).length),
+  );
+  // 3. Mask HTML comments
+  clean = clean.replace(/<!--[\s\S]*?-->/g, (match) => ' '.repeat(match.length));
+  // 4. Mask HTML pre/code elements
+  clean = clean.replace(/<(pre|code)\b[^>]*>[\s\S]*?<\/\1>/gi, (match) => ' '.repeat(match.length));
+  // 5. Mask inline code spans using accurate CommonMark backtick matching
+  const spans = codeSpanRanges(clean);
+  clean = maskRanges(clean, spans);
+
   const targets: string[] = [];
-  for (const match of text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
-    if (match[1]) targets.push(match[1]);
+  // 6. Match Markdown images: ![...](...) where ! is not backslash-escaped
+  const mdImgRe = /(?:^|[^\\])(?:\\\\)*!\[(?:[^\]\\]|\\.)*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
+  for (const match of clean.matchAll(mdImgRe)) {
+    const target = match[1] ?? match[2];
+    if (target !== undefined && target !== '') targets.push(target);
   }
-  for (const match of text.matchAll(/<img\b[^>]*?\bsrc=["']([^"']+)["']/gi)) {
-    if (match[1]) targets.push(match[1]);
-  }
-  for (const match of text.matchAll(/<image\b[^>]*?\bpath=["']([^"']+)["']/gi)) {
-    if (match[1]) targets.push(match[1]);
+  // 7. Match HTML img tags: <img ... src=...> where < is not escaped
+  const htmlImgRe = /(?:^|[^\\])(?:\\\\)*<img\b[^>]*?\bsrc=(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>/gi;
+  for (const match of clean.matchAll(htmlImgRe)) {
+    const target = match[1] ?? match[2] ?? match[3];
+    if (target !== undefined && target !== '') targets.push(target);
   }
   return targets;
 }
 
-function matchesMediaRef(item: MediaRef, rawTarget: string): boolean {
+function parseFileUriPath(target: string): string | undefined {
+  if (!/^file:\/\//i.test(target)) return undefined;
+  try {
+    const url = new URL(target);
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+    if (url.hostname !== '' && url.hostname !== 'localhost') path = `//${url.hostname}${path}`;
+    return path === '' ? undefined : path;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePath(p: string): string {
+  return p.replaceAll('\\', '/');
+}
+
+export function matchesMediaRef(item: MediaRef, rawTarget: string): boolean {
+  if (item.kind !== 'image') return false;
+
   const unwrapped = unwrapFileLinkTarget(rawTarget) ?? rawTarget;
-  const target = unwrapped.split(/[?#]/, 1)[0]!.trim();
+  const target = unwrapped.trim();
   if (target === '') return false;
-  if (item.fileId !== undefined && (target === item.fileId || target === `kimi-file://${item.fileId}` || target.endsWith(item.fileId))) {
-    return true;
+
+  // Canonical fileId match (exact equality, not suffix/substring)
+  if (item.fileId !== undefined) {
+    const daemonFileId = parseDaemonFileRefFileId(target);
+    if (daemonFileId !== undefined && daemonFileId === item.fileId) return true;
+    if (target === item.fileId || target === `kimi-file://${item.fileId}`) return true;
   }
-  if (item.url !== undefined) {
-    const normUrl = item.url.split(/[?#]/, 1)[0]!;
-    if (target === normUrl || target === item.url) return true;
+
+  // Canonical blobHash match (exact equality, not substring)
+  if (item.blobHash !== undefined) {
+    const blobref = parseMediaBlobRef(target);
+    if (blobref !== undefined && blobref.hash === item.blobHash) return true;
+    if (target === item.blobHash) return true;
   }
-  if (item.path !== undefined) {
-    const normPath = item.path.replaceAll('\\', '/');
-    const normTarget = target.replaceAll('\\', '/');
-    if (normTarget === normPath || normTarget.endsWith(normPath) || (item.name !== undefined && (normTarget.endsWith(`/${item.name}`) || normTarget === item.name))) {
+
+  // Canonical detail.attachmentId match (exact equality, not substring)
+  if (item.detail?.attachmentId !== undefined) {
+    if (target === item.detail.attachmentId || target === `attachment://${item.detail.attachmentId}`) {
       return true;
     }
   }
-  if (item.blobHash !== undefined && target.includes(item.blobHash)) {
-    return true;
+
+  // Canonical URL match (exact string equality, preserving query and hash)
+  if (item.url !== undefined) {
+    if (target === item.url) return true;
   }
-  if (item.detail?.attachmentId !== undefined && (target.includes(item.detail.attachmentId) || target === `attachment://${item.detail.attachmentId}`)) {
-    return true;
+
+  // Canonical file path match (exact normalized path equality, not suffix or filename-only match)
+  if (item.path !== undefined) {
+    const normItemPath = normalizePath(item.path);
+    const fileUriPath = parseFileUriPath(target);
+    const candidatePath = fileUriPath !== undefined ? normalizePath(fileUriPath) : normalizePath(target);
+    if (candidatePath === normItemPath) return true;
   }
+
   return false;
 }
 
@@ -668,7 +755,7 @@ export function filterMediaNotRenderedInText(
   const remainingTargets = [...targets];
   const filtered: MediaRef[] = [];
   for (const item of media) {
-    if (item.kind !== 'image' && item.kind !== 'video') {
+    if (item.kind !== 'image') {
       filtered.push(item);
       continue;
     }

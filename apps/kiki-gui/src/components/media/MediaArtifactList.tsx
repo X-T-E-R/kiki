@@ -79,11 +79,52 @@ export function artifactFacts(artifact: MediaArtifact): string {
     .join(' · ');
 }
 
+function stemOf(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 ? filename.slice(0, dot) : filename;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function isProvenPreviewOf(preview: MediaArtifact, original: MediaArtifact): boolean {
+  if (original.role !== 'original' || original.complete !== true) return false;
+  const meta = preview.metadata;
+  if (meta !== undefined) {
+    if (meta['original_id'] === original.id || meta['originalId'] === original.id) return true;
+    if (meta['original_file_id'] === original.file_id || meta['originalFileId'] === original.file_id) return true;
+    if (meta['parent_id'] === original.id || meta['parentId'] === original.id) return true;
+  }
+  const origMeta = original.metadata;
+  if (origMeta !== undefined) {
+    if (origMeta['preview_id'] === preview.id || origMeta['previewId'] === preview.id) return true;
+    if (origMeta['preview_file_id'] === preview.file_id || origMeta['previewFileId'] === preview.file_id) return true;
+  }
+  if (preview.kind !== original.kind && !(preview.kind === 'image' && original.kind === 'video')) {
+    return false;
+  }
+  const origStem = stemOf(original.name).toLowerCase();
+  const prevStem = stemOf(preview.name).toLowerCase();
+  if (origStem === '' || prevStem === '') return false;
+  if (origStem === prevStem) return true;
+  const pattern = new RegExp(`^${escapeRegExp(origStem)}[-_.](?:preview|thumb|thumbnail|small)$`, 'i');
+  if (pattern.test(prevStem)) return true;
+  const prefixPattern = new RegExp(`^(?:preview|thumb|thumbnail|small)[-_.]${escapeRegExp(origStem)}$`, 'i');
+  if (prefixPattern.test(prevStem)) return true;
+  return false;
+}
+
 export function visibleArtifacts(artifacts: readonly MediaArtifact[]): readonly MediaArtifact[] {
-  const hasOriginal = artifacts.some((artifact) => artifact.role === 'original');
-  return hasOriginal
-    ? artifacts.filter((artifact) => artifact.role !== 'preview')
-    : artifacts;
+  const completeOriginals = artifacts.filter(
+    (artifact) => artifact.role === 'original' && artifact.complete === true,
+  );
+  if (completeOriginals.length === 0) return artifacts;
+  return artifacts.filter((artifact) => {
+    if (artifact.role !== 'preview') return true;
+    const hasProvenOriginal = completeOriginals.some((orig) => isProvenPreviewOf(artifact, orig));
+    return !hasProvenOriginal;
+  });
 }
 
 export function MediaArtifactList({

@@ -502,11 +502,29 @@ describe('visibleArtifacts deduplication', () => {
     expect(result).toEqual([preview]);
   });
 
-  it('preserves multiple distinct originals', () => {
+  it('preserves independent preview when not proven to belong to an original', () => {
     const original1 = { id: 'art-1', file_id: 'f-1', name: 'img1.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
     const original2 = { id: 'art-2', file_id: 'f-2', name: 'img2.png', mime: 'image/png', bytes: 2048, kind: 'image' as const, role: 'original' as const, complete: true };
     const preview = { id: 'art-3', file_id: 'f-3', name: 'thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
     const result = visibleArtifacts([original1, original2, preview]);
-    expect(result).toEqual([original1, original2]);
+    expect(result).toEqual([original1, original2, preview]);
+  });
+
+  it('keeps preview artifact when corresponding original is incomplete', () => {
+    const original = { id: 'art-1', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: false };
+    const preview = { id: 'art-2', file_id: 'f-2', name: 'image_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const result = visibleArtifacts([original, preview]);
+    expect(result).toEqual([original, preview]);
+  });
+
+  it('preserves mixed independent previews and incomplete originals alongside deduplicated complete originals', () => {
+    const origComplete = { id: 'orig-1', file_id: 'f-1', name: 'img1.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
+    const prevComplete = { id: 'prev-1', file_id: 'f-p1', name: 'img1_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const origIncomplete = { id: 'orig-2', file_id: 'f-2', name: 'img2.png', mime: 'image/png', bytes: 2048, kind: 'image' as const, role: 'original' as const, complete: false };
+    const prevIncomplete = { id: 'prev-2', file_id: 'f-p2', name: 'img2-preview.png', mime: 'image/png', bytes: 512, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const prevIndependent = { id: 'prev-3', file_id: 'f-p3', name: 'thumb.png', mime: 'image/png', bytes: 128, kind: 'image' as const, role: 'preview' as const, complete: true };
+
+    const result = visibleArtifacts([origComplete, prevComplete, origIncomplete, prevIncomplete, prevIndependent]);
+    expect(result).toEqual([origComplete, origIncomplete, prevIncomplete, prevIndependent]);
   });
 });
