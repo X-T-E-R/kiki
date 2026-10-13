@@ -54,7 +54,8 @@ import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from
 import { FOCUS_RING, ModeSwitch, useRailMode, type RailMode } from './shell';
 import type { RailProps } from './types';
 import { readExternalClientMark } from '../../lib/externalClients';
-import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead, RailTodos } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
+import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { useEntityPage } from '../transcriptDetail';
@@ -649,7 +650,7 @@ export function Rail({
       {/* Either child may render nothing (no todos, an empty work part);
           the section and its rule go with them. */}
       <div id="rail-todos" className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden ${SECTION} [&_[data-agent-todo-section]]:hidden`}>
-        <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} />
+        <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
         <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
       </div>
 

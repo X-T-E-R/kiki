@@ -154,9 +154,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     return () => { lease.release(); todoRead.current = undefined; };
   }, [controller, agentId, readsTodos]);
   const todoCoverage = agentState?.globalCoverage?.todos;
+  const entitiesTodoError = agentState?.detailLoads['entities:todo']?.status === 'error';
   useEffect(() => {
-    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore) void controller?.loadTranscriptEntities(agentId, 'todo');
-  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned]);
+    if (readsTodos && agentState?.loaded && todoCoverage?.hasMore && !entitiesTodoError) void controller?.loadTranscriptEntities(agentId, 'todo');
+  }, [controller, agentId, readsTodos, agentState?.loaded, todoCoverage?.hasMore, todoCoverage?.returned, entitiesTodoError]);
   const todoRefs = agentState?.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
   const todoReadFailed = todoRefs.some((ref) => agentState?.detailLoads[`content:${JSON.stringify(ref)}`]?.status === 'error') ||
     todoCoverage?.hasMore === true && agentState?.detailLoads['entities:todo']?.status === 'error';
@@ -242,9 +243,27 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // none are known. Callers label an incomplete sum as such rather than
   // passing it off as the whole tree.
   const tree = sumAgentTreeMetrics(ids, metrics);
-  const todos = (agentState?.todos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
+  const isMain = agentId === MAIN_AGENT_ID;
+  const canFallbackToState = controller === undefined && isMain && state.sessionId === state.sessionId;
+  const fallbackTodos = canFallbackToState ? state.todos : undefined;
+  const rawTodos = (agentState?.todos ?? fallbackTodos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
-  const loaded = agentState?.loaded === true;
+  const loaded = (agentState?.loaded ?? (canFallbackToState ? state.loaded : false)) === true;
+  const retainedTodosRef = useRef<Map<string, typeof rawTodos>>(new Map());
+  const isConfirmedEmpty = (agentState !== undefined && agentState.loaded && !agentState.resyncing && !todoCoverage?.hasMore && todoRefs.length === 0 && rawTodos.length === 0 && !todoReadFailed) ||
+    (canFallbackToState && state.loaded && state.transcriptReady && !state.resyncing && rawTodos.length === 0);
+
+  if (isConfirmedEmpty) {
+    retainedTodosRef.current.delete(identityKey);
+  } else if (rawTodos.length > 0) {
+    if (retainedTodosRef.current.size > 50) {
+      const oldestKey = retainedTodosRef.current.keys().next().value;
+      if (oldestKey !== undefined) retainedTodosRef.current.delete(oldestKey);
+    }
+    retainedTodosRef.current.set(identityKey, rawTodos);
+  }
+  const retainedTodos = retainedTodosRef.current.get(identityKey);
+  const todos = isConfirmedEmpty ? [] : rawTodos.length > 0 ? rawTodos : (retainedTodos ?? []);
   const planMode = agentState?.planMode;
   const profileName = profile?.name === 'unknown' ? '' : (profile?.name ?? agentState?.profile ?? '');
   const unavailableReason = data === undefined
@@ -268,7 +287,9 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
 
   const todoStatus = agentState === undefined
-    ? 'unknown'
+    ? canFallbackToState
+      ? !state.loaded || !state.transcriptReady ? 'loading' : undefined
+      : 'unknown'
     : todoReadFailed || !loaded && agentState.loadError !== undefined
       ? 'error'
       : !loaded || todoRefs.length > 0 || todoCoverage?.hasMore === true
