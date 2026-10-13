@@ -75,13 +75,30 @@ const scenarios = [
       await shot('wizard');
 
       // The managed route is the one a reader can finish without a person in
-      // the loop, so it gets the primary action; the flag trip sits at its own
-      // step because that is where the decision is.
-      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-enable-feature]').click();
-      await requireFlagRowInViewport(page, view.width, "the wizard's flag trip");
-      await shot('wizard-flag-home');
-      await page.goBack({ waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      // the loop, so it gets the primary action; once prepared, it offers the
+      // primary Open action and advanced update / shortcut options.
+      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-prepare]').click();
+      await page.waitForSelector('[data-confirm-action="confirm"]', { timeout: 10_000 });
+      await shot('wizard-confirm');
+      await page.locator('[data-confirm-action="confirm"]').click();
+      await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-open]', { timeout: 30_000 });
+      await shot('wizard-ready');
+      if (phoneWidth) await shot('wizard-ready-390', { width: 390, height: 844 });
+
+      // Advanced update / shortcut within the route
+      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary').click();
+      await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-update]', { timeout: 10_000 });
+      await shot('wizard-advanced-options');
+      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
+      await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
+      await shot('wizard-updated-disk');
+      if (phoneWidth) await shot('wizard-updated-disk-390', { width: 390, height: 844 });
+
+      // Primary open action
+      await page.locator('[data-browser-route="independent-browser"] [data-browser-route-open]').click();
+      await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-connected]', { timeout: 30_000 });
+      await shot('wizard-opened-connected');
+      if (phoneWidth) await shot('wizard-opened-connected-390', { width: 390, height: 844 });
 
       // Codex is another app's control surface: named, linked, and given no
       // Kiki connect button. The shot proves the absence rather than a claim.
@@ -272,6 +289,29 @@ const scenarios = [
       await page.locator('[data-browser-open-flag]').click();
       await requireFlagRowInViewport(page, view.width, "the connection card's flag trip");
       await shot('flag-home');
+
+      // Affected UI in Chinese (zh) - wide and narrow views
+      await page.evaluate(() => {
+        try { localStorage.setItem('kiki.locale', 'zh'); } catch { /* ignore */ }
+      });
+      await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
+      await resetScroll(page);
+      await shot('wizard-zh');
+      if (phoneWidth) await shot('wizard-zh-390', { width: 390, height: 844 });
+
+      // Chinese independent browser route: ready and advanced
+      const advZh = page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary');
+      if (await advZh.isVisible().catch(() => false)) {
+        await advZh.click();
+        await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-update]', { timeout: 10_000 });
+        await shot('wizard-advanced-options-zh');
+        await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
+        await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
+        await shot('wizard-updated-disk-zh');
+        if (phoneWidth) await shot('wizard-updated-disk-zh-390', { width: 390, height: 844 });
+      }
     },
   },
   {

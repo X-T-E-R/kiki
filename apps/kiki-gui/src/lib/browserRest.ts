@@ -34,6 +34,7 @@ export type BrowserSetupState = BrowserSetupStatus['state'];
  * the daemon can be asked for its target list.
  */
 export const LIVE_STATES: ReadonlySet<string> = new Set(['connecting', 'ready', 'running', 'stopping', 'unconfirmed']);
+export const LIVE_BLOCKING_CONNECT: ReadonlySet<string> = new Set(['connecting', 'ready', 'running', 'stopping']);
 
 type BrowserRest = NonNullable<KikiClient['klient']['rest']>['browser'];
 
@@ -91,7 +92,7 @@ export const AGENT_BROWSER_MARKERS = 'kiki-no-replay-r1 kiki-stdio-r1';
  * arrived yet, and is a browser already running through it. Everything else the
  * status carries (steps, reasons, the action list) is the server's own.
  */
-export type PresetReadiness = 'preparing' | 'needs-action' | 'ready' | 'connected' | 'blocked' | 'external';
+export type PresetReadiness = 'preparing' | 'needs-action' | 'ready' | 'connected' | 'unsupported' | 'failed' | 'forced-off' | 'blocked' | 'external';
 
 export function presetReadiness(preset: BrowserSetupStatus): PresetReadiness {
   if (preset.state === 'preparing') return 'preparing';
@@ -100,6 +101,10 @@ export function presetReadiness(preset: BrowserSetupStatus): PresetReadiness {
   // `external_only` is its own answer, not a failure: nothing is missing here
   // that Kiki could install, because the control surface is another app.
   if (preset.state === 'external_only') return 'external';
+  if (preset.state === 'unsupported' || (preset.supported === false && preset.controlSurface !== 'external-app')) return 'unsupported';
+  const blocking = blockingStep(preset);
+  if (preset.reason === 'feature_forced_off' || blocking?.reason === 'feature_forced_off') return 'forced-off';
+  if (preset.state === 'failed') return 'failed';
   if (preset.state === 'needs_user_action' || preset.state === 'not_prepared') return 'needs-action';
   return 'blocked';
 }

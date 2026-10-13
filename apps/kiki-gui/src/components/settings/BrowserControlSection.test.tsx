@@ -41,14 +41,24 @@ const setupPresets = vi.fn<() => Promise<BrowserSetupList>>();
 const setupStatus = vi.fn<(preset: BrowserPresetId) => Promise<BrowserSetupStatus>>();
 const prepare = vi.fn<(preset: BrowserPresetId, input: { consent: true }) => Promise<BrowserSetupStatus>>();
 const connectPreset = vi.fn<(preset: BrowserPresetId, input: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
+const openPreset = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
+const updatePreset = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
+const createShortcut = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
 const cancelSetup = vi.fn<(preset: BrowserPresetId) => Promise<BrowserSetupStatus>>();
+const getCapability = vi.fn(async () => ({
+  id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'ready',
+  steps: [{ id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' }],
+  install: { running: false },
+}));
 const revealSecret = vi.fn(async () => ({ value: 'http://127.0.0.1:9222' }));
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
+      getCapability,
+      installCapability: vi.fn(async () => {}),
       revealSecret,
-      klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, cancelSetup } } },
+      klient: { rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
     },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -101,7 +111,7 @@ const MANAGED_READY = preset({
   preset: 'independent-browser', displayName: 'Independent browser', capabilityId: 'kiki-browser',
   state: 'ready', sourceUrl: 'https://github.com/vercel-labs/agent-browser',
   steps: [{ id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' }],
-  actions: [{ id: 'prepare' }, { id: 'connect' }],
+  actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }],
 });
 
 function browserStatus(patch: Partial<BrowserStatus> & { browser: string }): BrowserStatus {
@@ -335,6 +345,125 @@ describe('BrowserControlSection', () => {
       expect(document.body.textContent).toContain('Turns browser control on for this server');
     });
 
+    it('offers primary open action and advanced update and shortcut actions for independent browser', async () => {
+      openPreset.mockResolvedValue(preset({ ...MANAGED_READY, state: 'connected' }));
+      updatePreset.mockResolvedValue(preset({ ...MANAGED_READY, state: 'ready' }));
+      createShortcut.mockResolvedValue(preset({ ...MANAGED_READY, state: 'ready' }));
+
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }, { id: 'update' }, { id: 'shortcut' }],
+      }), CODEX_EXTERNAL] });
+
+      await render();
+      await settleUntil('[data-browser-route-open]');
+
+      const row = query('[data-browser-route="independent-browser"]');
+      expect(row?.querySelector('[data-browser-route-open]')).not.toBeNull();
+      expect(row?.querySelector('[data-browser-route-connect]')).not.toBeNull();
+
+      const advanced = row?.querySelector('[data-browser-route-advanced]');
+      expect(advanced).not.toBeNull();
+      expect(advanced?.querySelector('[data-browser-route-update]')).not.toBeNull();
+      expect(advanced?.querySelector('[data-browser-route-shortcut]')).not.toBeNull();
+
+      await click('[data-browser-route-open]');
+      expect(openPreset).toHaveBeenCalledWith('independent-browser', {});
+
+      await click('[data-browser-route-update]');
+      expect(updatePreset).toHaveBeenCalledWith('independent-browser', {});
+
+      await click('[data-browser-route-shortcut]');
+      expect(createShortcut).toHaveBeenCalledWith('independent-browser', {});
+    });
+
+    it('reports failure feedback when open fails and does not claim completion', async () => {
+      openPreset.mockResolvedValue(preset({ ...MANAGED_READY, state: 'failed', error: 'Browser process exited with code 1' }));
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }],
+      }), CODEX_EXTERNAL] });
+
+      await render();
+      await settleUntil('[data-browser-route-open]');
+
+      await click('[data-browser-route-open]');
+      expect(openPreset).toHaveBeenCalledWith('independent-browser', {});
+      const feedback = query('[data-feedback-tone="error"]')?.textContent ?? '';
+      expect(feedback).toContain('Browser process exited with code 1');
+      expect(container.textContent).not.toContain('Browser opened.');
+    });
+
+    it('reports connection disabled error when open targets a disabled connection', async () => {
+      openPreset.mockResolvedValue(preset({
+        ...MANAGED_READY,
+        state: 'needs_user_action',
+        reason: 'connection_disabled',
+        error: 'This browser connection is disabled',
+      }));
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }],
+      }), CODEX_EXTERNAL] });
+
+      await render();
+      await settleUntil('[data-browser-route-open]');
+
+      await click('[data-browser-route-open]');
+      expect(openPreset).toHaveBeenCalledWith('independent-browser', {});
+      const feedback = query('[data-feedback-tone="error"]')?.textContent ?? '';
+      expect(feedback).toContain('This browser connection is disabled');
+      expect(container.textContent).not.toContain('Browser opened.');
+    });
+
+    it('reports files updated on disk when update completes without running daemon change', async () => {
+      updatePreset.mockResolvedValue(preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        reason: 'disk_updated',
+      }));
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }, { id: 'update' }],
+      }), CODEX_EXTERNAL] });
+
+      await render();
+      await settleUntil('[data-browser-route-update]');
+
+      await click('[data-browser-route-update]');
+      expect(updatePreset).toHaveBeenCalledWith('independent-browser', {});
+      const feedback = query('[data-feedback-tone="info"]')?.textContent ?? '';
+      expect(feedback).toBe('Files updated on disk.');
+      expect(feedback).not.toContain('restart');
+    });
+
+    it('reports files updated on disk and daemon unchanged without restart prompt', async () => {
+      updatePreset.mockResolvedValue(preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        reason: 'disk_updated_running_unchanged',
+      }));
+      setupPresets.mockResolvedValue({ presets: [preset({
+        ...MANAGED_READY,
+        state: 'ready',
+        actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }, { id: 'update' }],
+      }), CODEX_EXTERNAL] });
+
+      await render();
+      await settleUntil('[data-browser-route-update]');
+
+      await click('[data-browser-route-update]');
+      expect(updatePreset).toHaveBeenCalledWith('independent-browser', {});
+      const feedback = query('[data-feedback-tone="info"]')?.textContent ?? '';
+      expect(feedback).toBe('Files updated on disk. The running browser or daemon remains on its current version.');
+      expect(feedback).not.toContain('restart');
+      expect(feedback).not.toContain('Updated successfully.');
+    });
+
     it('offers Set up for components and never a trip to another page for the flag', async () => {
       setupPresets.mockResolvedValue({ presets: [preset({
         ...MANAGED_READY, state: 'not_prepared',
@@ -495,7 +624,67 @@ describe('BrowserControlSection', () => {
 
       expect(query('[data-browser-route-error]')?.textContent).toContain('HTTP 503');
       expect(query('[data-browser-route-prepare]')).not.toBeNull();
-      expect(query('[data-browser-route="independent-browser"]')?.getAttribute('data-browser-route-state')).toBe('blocked');
+      expect(query('[data-browser-route-open]')).not.toBeNull();
+      expect(query('[data-browser-route-connect]')).not.toBeNull();
+      expect(query('[data-browser-route="independent-browser"]')?.getAttribute('data-browser-route-state')).toBe('failed');
+    });
+
+    it('separates unsupported, failed, and feature_forced_off states and retains active connect on needs_user_action', async () => {
+      const unsupportedPreset = preset({
+        preset: 'independent-browser', displayName: 'Independent browser', state: 'unsupported', supported: false,
+      });
+      const forcedOffPreset = preset({
+        preset: 'independent-browser', displayName: 'Independent browser', state: 'needs_user_action', reason: 'feature_forced_off',
+      });
+      const failedPreset = preset({
+        ...MANAGED_READY, state: 'failed', error: 'Init error',
+      });
+
+      setupPresets.mockResolvedValue({ presets: [unsupportedPreset, forcedOffPreset, failedPreset] });
+      await render();
+      await settleUntil('[data-browser-routes]');
+
+      const routes = queryAll('[data-browser-route="independent-browser"]');
+      expect(routes[0]?.getAttribute('data-browser-route-state')).toBe('unsupported');
+      expect(routes[1]?.getAttribute('data-browser-route-state')).toBe('forced-off');
+      expect(routes[2]?.getAttribute('data-browser-route-state')).toBe('failed');
+    });
+
+    it('retains active connect probe on needs_user_action and displays unknown reason diagnostically', async () => {
+      const needsActionWithProbe = preset({
+        ...KIMI_NEEDS_EXTENSION,
+        state: 'needs_user_action',
+        steps: [
+          { id: 'extension', state: 'user_action', reason: 'bridge_probe_waiting' },
+        ],
+        actions: [{ id: 'connect' }, { id: 'prepare' }],
+      });
+      setupPresets.mockResolvedValue({ presets: [needsActionWithProbe, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+
+      expect(query('[data-browser-route-connect]')).not.toBeNull();
+      expect(query('[data-browser-route-blocker]')?.textContent).toContain('bridge_probe_waiting');
+    });
+
+    it('shows update directly on version mismatch and presents webbridge open action when provided', async () => {
+      const webbridgeWithOpenAndMismatch = preset({
+        ...KIMI_NEEDS_EXTENSION,
+        state: 'ready',
+        steps: [
+          { id: 'daemon', state: 'ready' },
+          { id: 'compatibility', state: 'warning', reason: 'version_mismatch' },
+        ],
+        actions: [{ id: 'open' }, { id: 'connect' }, { id: 'update' }],
+      });
+      setupPresets.mockResolvedValue({ presets: [webbridgeWithOpenAndMismatch, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+
+      expect(query('[data-browser-route-open]')).not.toBeNull();
+      const updateButton = query('[data-browser-route="kimi-webbridge"] [data-browser-route-update]');
+      expect(updateButton).not.toBeNull();
+      expect(updateButton?.closest('details')).toBeNull();
     });
 
     it('reads the routes once and never re-reads a settled route on a timer', async () => {
@@ -955,6 +1144,7 @@ describe('BrowserControlSection', () => {
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 700); }); });
     expect(query('[data-browser-outcome="disconnect:unconfirmed"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Control disconnected.');
+    expect(query<HTMLButtonElement>('[data-browser-connect]')?.disabled).toBe(false);
   });
 
   it('masks the CDP endpoint in the page and sends it only on an explicit reveal', async () => {
@@ -1128,5 +1318,45 @@ describe('BrowserControlSection', () => {
     await settleUntil('[data-browser-execution-host]');
     expect(query('[data-browser-execution-host]')?.textContent).toBe('office-mac-host');
   });
+  });
+
+  describe('WebBridgeReadiness', () => {
+    it('respects valid server browserExtensionUrl instead of only fixed chrome url', async () => {
+      getCapability.mockResolvedValueOnce({
+        id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'ready',
+        steps: [{ id: 'daemon', state: 'ok' }],
+        install: { running: false },
+        plan: {
+          destination: '/opt/kiki/bin',
+          artifact: { version: '2.0.22', url: 'https://example.test/bin', sha256: 'abc' },
+          browserExtensionUrl: 'https://addons.mozilla.org/firefox/downloads/file/123/kimi.xpi',
+        },
+      } as any);
+
+      await render();
+      await settleUntil('[data-webbridge-extension]');
+
+      const link = query<HTMLAnchorElement>('[data-webbridge-extension]');
+      expect(link?.href).toBe('https://addons.mozilla.org/firefox/downloads/file/123/kimi.xpi');
+    });
+
+    it('still offers retry button when install or daemon fails', async () => {
+      getCapability.mockResolvedValueOnce({
+        id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'failed',
+        steps: [{ id: 'daemon', state: 'failed' }],
+        install: { running: false, error: 'Daemon crashed on startup' },
+        plan: {
+          destination: '/opt/kiki/bin',
+          artifact: { version: '2.0.22', url: 'https://example.test/bin', sha256: 'abc' },
+        },
+      } as any);
+
+      await render();
+      await settleUntil('[data-webbridge-prepare]');
+
+      const retryBtn = query('[data-webbridge-prepare]');
+      expect(retryBtn).not.toBeNull();
+      expect(retryBtn?.textContent).toContain('Try setup again…');
+    });
   });
 });

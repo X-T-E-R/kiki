@@ -53,6 +53,9 @@ const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: str
   'needs-action': { text: 'st.browser.route.needsAction', dot: 'bg-hairline-strong' },
   ready: { text: 'st.browser.route.ready', dot: 'bg-selected-ink' },
   connected: { text: 'st.browser.route.connected', dot: 'bg-success' },
+  unsupported: { text: 'st.browser.route.unsupported', dot: 'bg-ink-soft' },
+  failed: { text: 'st.browser.route.failed', dot: 'bg-danger' },
+  'forced-off': { text: 'st.browser.route.forcedOff', dot: 'bg-danger' },
   blocked: { text: 'st.browser.route.blocked', dot: 'bg-danger' },
   external: { text: 'st.browser.route.external', dot: 'bg-ink-soft' },
 };
@@ -94,6 +97,9 @@ const REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   version_mismatch: 'st.browser.reason.versionMismatch',
   external_app_required: 'st.browser.reason.externalApp',
   connection_conflict: 'st.browser.reason.connectionConflict',
+  connection_disabled: 'st.browser.reason.connectionDisabled',
+  disk_updated: 'st.browser.route.done.updateDisk',
+  disk_updated_running_unchanged: 'st.browser.route.done.updateRunningUnchanged',
 };
 
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
@@ -106,7 +112,7 @@ function BrowserRoute({ preset, active, onSelect }: {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | null>(null);
+  const [busy, setBusy] = useState<'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut' | null>(null);
   const [confirming, setConfirming] = useState(false);
   /** Set by the forced-off line so its fold opens; the fold owns its state. */
   const [openDiagnostics, setDiagnosticsOpen] = useState(false);
@@ -116,14 +122,21 @@ function BrowserRoute({ preset, active, onSelect }: {
   const prepare = presetAction(preset, 'prepare');
   const connect = presetAction(preset, 'connect');
   const cancel = presetAction(preset, 'cancel');
+  const openAction = presetAction(preset, 'open');
+  const updateAction = presetAction(preset, 'update');
+  const shortcutAction = presetAction(preset, 'shortcut');
   const extension = presetAction(preset, 'install_extension');
   const instructions = presetAction(preset, 'open_instructions');
   const running = runningStep(preset);
   const blocking = blockingStep(preset);
   const external = preset.controlSurface === 'external-app';
   const step = (id: string): string => t(STEP_KEYS[id] ?? 'st.browser.step.install');
-  const reason = (source: BrowserSetupStatus['steps'][number]): string | undefined =>
-    source.reason === undefined ? undefined : REASON_KEYS[source.reason] === undefined ? undefined : t(REASON_KEYS[source.reason]!);
+  const reason = (source: BrowserSetupStatus['steps'][number]): string | undefined => {
+    if (source.reason === undefined) return undefined;
+    const key = REASON_KEYS[source.reason];
+    if (key !== undefined) return t(key);
+    return source.reason;
+  };
 
   // Three different waits, and each one gets its own line: something Kiki is
   // doing now, something it can install, and something only a person can do
@@ -132,7 +145,7 @@ function BrowserRoute({ preset, active, onSelect }: {
   const installable = blocking !== undefined && blocking.state === 'missing';
   // A failed step is the other case where Set up is the next move: something
   // went wrong installing, and offering it again is the repair.
-  const repairable = preset.steps.some((item) => item.state === 'failed');
+  const repairable = preset.steps.some((item) => item.state === 'failed') || preset.state === 'failed' || preset.error !== undefined;
   // The native flag is enabled by the same consented prepare, so a route whose
   // only gap is the flag still has an in-place action here — and it is the one
   // the reader wants, rather than a trip to another page to find a switch.
@@ -158,32 +171,64 @@ function BrowserRoute({ preset, active, onSelect }: {
   // restate what its own action row already offers — and its reasons are the
   // other app's business, not something this page can move.
   // Forced off already says what is wrong and why, in its own line below.
-  const needsLine = !external && !forcedOff && (installable || personOwned);
+  const needsLine = !external && !forcedOff && (installable || personOwned || (blocking !== undefined && blocking.state === 'failed'));
   // A step the server marked `warning` is not blocking — nothing is missing —
   // but it is the one thing a person should know before trusting the route, so
   // it gets its own line rather than hiding in the diagnostics fold. It is
   // gathered independently of the blocker so a warning ahead of a real
   // blocker does not displace it.
   const warned = warningStep(preset);
+  const hasVersionMismatch = preset.steps.some((item) => item.reason === 'version_mismatch') || warned?.reason === 'version_mismatch';
   const offeredExtension = extension;
   const offeredInstructions = instructions?.url;
 
   const reload = () => queryClient.invalidateQueries({ queryKey: browserKeys.presets(scopeId) });
 
-  const act = async (action: 'prepare' | 'connect' | 'cancel') => {
+  const act = async (action: 'prepare' | 'connect' | 'cancel' | 'open' | 'update' | 'shortcut') => {
     setBusy(action);
     setFeedback(null);
     try {
       const api = browserApi(client);
-      if (action === 'prepare') await api.prepare(preset.preset, { consent: true });
-      else if (action === 'connect') await api.connectPreset(preset.preset, {});
-      else await api.cancelSetup(preset.preset);
+      let res: BrowserSetupStatus | undefined;
+      if (action === 'prepare') res = await api.prepare(preset.preset, { consent: true });
+      else if (action === 'connect') res = await api.connectPreset(preset.preset, {});
+      else if (action === 'open') res = await api.openPreset(preset.preset, {});
+      else if (action === 'update') res = await api.updatePreset(preset.preset, {});
+      else if (action === 'shortcut') res = await api.createShortcut(preset.preset, {});
+      else res = await api.cancelSetup(preset.preset);
       setConfirming(false);
       await reload();
-      // The managed route's connect writes a real connection, so the list and
+      // The managed route's connect or open writes a real connection, so the list and
       // the default selector below have to be re-read from the server.
-      if (preset.preset === 'independent-browser') {
+      if (preset.preset === 'independent-browser' && (action === 'connect' || action === 'open')) {
         await queryClient.invalidateQueries({ queryKey: browserKeys.connections(scopeId) });
+      }
+
+      if (res?.state === 'failed' || res?.error !== undefined) {
+        setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.route.failed') });
+        return;
+      }
+      if (res?.reason === 'connection_disabled') {
+        setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.reason.connectionDisabled') });
+        return;
+      }
+      if (action === 'open' && res?.state !== 'connected' && res?.state !== 'ready') {
+        setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.route.openFailed') });
+        return;
+      }
+      if (action === 'connect' && res?.state !== 'connected' && res?.state !== 'ready') {
+        setFeedback({ tone: 'error', text: res?.error ?? t('st.browser.outcome.connectIncomplete') });
+        return;
+      }
+      if (action === 'update') {
+        if (res?.reason === 'disk_updated_running_unchanged') {
+          setFeedback({ tone: 'info', text: t('st.browser.route.done.updateRunningUnchanged') });
+        } else if (res?.reason === 'disk_updated') {
+          setFeedback({ tone: 'info', text: t('st.browser.route.done.updateDisk') });
+        } else {
+          setFeedback({ tone: 'info', text: t('st.browser.route.done.update') });
+        }
+        return;
       }
       setFeedback({ tone: 'info', text: t(`st.browser.route.done.${action}`) });
     } catch (error) {
@@ -289,7 +334,9 @@ function BrowserRoute({ preset, active, onSelect }: {
             thing this page is here to stop doing. It stays available, quiet, for
             the case where a later check does find something to repair. */}
         {external || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
-          <button type="button" className={PRIMARY_BUTTON} data-browser-route-prepare
+          <button type="button"
+            className={openAction !== undefined && readiness === 'ready' ? SECONDARY_BUTTON : PRIMARY_BUTTON}
+            data-browser-route-prepare
             disabled={busy !== null}
             onClick={() => { setConfirming(true); }}>
             {busy === 'prepare' ? t('st.browser.route.preparing')
@@ -298,13 +345,27 @@ function BrowserRoute({ preset, active, onSelect }: {
               : featureOnly ? t('st.browser.route.turnOn') : t('st.browser.route.prepare')}
           </button>
         )}
-        {external || connect === undefined || readiness !== 'ready' || busy !== null ? null : (
-          <button type="button" className={PRIMARY_BUTTON} data-browser-route-connect
+        {external || openAction === undefined || (readiness !== 'ready' && readiness !== 'connected' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+          <button type="button" className={PRIMARY_BUTTON} data-browser-route-open
+            disabled={busy !== null}
+            onClick={() => { void act('open'); }}>
+            {busy === 'open' ? t('st.browser.route.opening') : t('st.browser.route.open')}
+          </button>
+        )}
+        {external || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+          <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
             disabled={busy !== null}
             onClick={() => { void act('connect'); }}>
             {busy === 'connect' ? t('st.browser.route.connecting') : t('st.browser.route.connect')}
           </button>
         )}
+        {hasVersionMismatch && updateAction !== undefined ? (
+          <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
+            disabled={busy !== null}
+            onClick={() => { void act('update'); }}>
+            {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
+          </button>
+        ) : null}
         {readiness === 'connected' ? (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-success" data-browser-route-connected>
             <Icon name="check" size={12} />
@@ -342,6 +403,37 @@ function BrowserRoute({ preset, active, onSelect }: {
       )}
 
       <FeedbackLine feedback={feedback} />
+
+      {/* Advanced actions: low-frequency operations (update, desktop shortcut) */}
+      {(updateAction !== undefined || shortcutAction !== undefined) ? (
+        <AdvancedDetails summary={t('st.browser.route.advanced')} data-browser-route-advanced>
+          <div className="flex flex-col gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2">
+              {updateAction === undefined || hasVersionMismatch ? null : (
+                <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
+                  disabled={busy !== null}
+                  onClick={() => { void act('update'); }}>
+                  {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
+                </button>
+              )}
+              {shortcutAction === undefined ? null : (
+                <button type="button" className={SECONDARY_BUTTON} data-browser-route-shortcut
+                  disabled={busy !== null}
+                  onClick={() => { void act('shortcut'); }}>
+                  {busy === 'shortcut' ? t('st.browser.route.creatingShortcut') : t('st.browser.route.shortcut')}
+                </button>
+              )}
+            </div>
+            {shortcutAction === undefined ? null : (
+              <p className="text-[11px] text-ink-faint">
+                {preset.executionHost === 'local' || preset.executionHost === '127.0.0.1' || preset.executionHost === 'localhost'
+                  ? t('st.browser.route.shortcutHostLocal')
+                  : t('st.browser.route.shortcutHostRemote', { host: preset.executionHost })}
+              </p>
+            )}
+          </div>
+        </AdvancedDetails>
+      ) : null}
 
       {/* The detector's own sentences, folded. They explain the machine rather
           than the next action, so they are here and not in the row above. */}

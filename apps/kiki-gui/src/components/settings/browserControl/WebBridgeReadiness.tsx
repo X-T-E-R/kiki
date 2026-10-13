@@ -51,6 +51,16 @@ const WEBBRIDGE_BLOCKER_LABEL_KEYS: Readonly<Record<string, I18nKey>> = {
   detect: 'st.plugins.runtimeStep.detect',
 };
 
+function isValidHttpUrl(url: string | undefined): boolean {
+  if (url === undefined || url === '') return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function WebBridgeReadiness() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -84,8 +94,9 @@ export function WebBridgeReadiness() {
   // merely describe it. A required step that is not ready is the one thing the
   // reader has to act on, so it names itself in the first screen.
   const blocking = steps.filter((step) => step.optional !== true && step.state !== 'ok');
-  const needsSetup = capability !== undefined && capability.state !== 'unsupported' &&
-    steps.some((step) => step.id === 'daemon' && step.state === 'missing');
+  const daemonFailed = steps.some((step) => step.id === 'daemon' && (step.state === 'missing' || step.state === 'failed'));
+  const installFailed = capability?.install.error !== undefined || steps.some((step) => step.state === 'failed');
+  const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (daemonFailed || installFailed);
   return (
     <SectionCard id="st-card-webbridge" title={t('st.plugins.runtimeTitle')}>
       <div className="space-y-2" data-webbridge-readiness>
@@ -105,9 +116,9 @@ export function WebBridgeReadiness() {
             ) : null}
             {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
             {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
-            {capability.plan?.browserExtensionUrl === 'https://chromewebstore.google.com/detail/kimi-webbridge/fldmhceldgbpfpkbgopacenieobmligc' ? (
+            {isValidHttpUrl(capability.plan?.browserExtensionUrl) ? (
               <ExternalLink className="inline-block text-[12px] font-medium text-selected-ink hover:underline"
-                href={capability.plan.browserExtensionUrl}
+                href={capability.plan!.browserExtensionUrl!}
                 data-webbridge-extension>
                 {t('st.plugins.browserExtension')}
               </ExternalLink>
@@ -120,7 +131,7 @@ export function WebBridgeReadiness() {
                 <button type="button" className={PRIMARY_BUTTON} data-webbridge-prepare
                   disabled={requesting || capability.install.running}
                   onClick={() => { setConfirming(capability); }}>
-                  {capability.install.error ? t('st.plugins.retryRuntime') : t('st.plugins.prepareRuntime')}
+                  {capability.install.error || steps.some((step) => step.state === 'failed') ? t('st.plugins.retryRuntime') : t('st.plugins.prepareRuntime')}
                 </button>
               ) : null}
             </div>

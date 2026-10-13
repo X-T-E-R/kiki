@@ -29,7 +29,7 @@ import type { BrowserStatus } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import {
-  AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_STATES, browserApi, browserFailureOf, browserKeys, endpointHost,
+  AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_BLOCKING_CONNECT, LIVE_STATES, browserApi, browserFailureOf, browserKeys, endpointHost,
   isFlagDisabled, whenText,
 } from '../../../lib/browserRest';
 import type { BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
@@ -366,7 +366,7 @@ export function BrowserConnectionCard() {
                   : t(draft.type === 'agent-browser-cdp' ? 'st.browser.checkCdp' : 'st.browser.checkProfile')}
               </button>
               <button type="button" className={SECONDARY_BUTTON} data-browser-connect
-                disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_STATES.has(selectedStatus.state)}
+                disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
                 onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
                 {busy === 'connect' ? t('st.browser.connecting')
                   : t(draft.type === 'agent-browser-cdp' ? 'st.browser.connectCdp' : 'st.browser.connectProfile')}

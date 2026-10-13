@@ -120,7 +120,7 @@ const PRESETS = {
       { id: 'extension', state: 'user_action', reason: 'extension_not_connected',
         detail: 'Browser extension is not connected (installation cannot be inferred)' },
     ],
-    actions: [{ id: 'prepare' }, { id: 'connect' }, KIMI_STORE, EDGE_STORE, { id: 'open_instructions', url: KIMI_HELP, target: 'documentation' }],
+    actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }, { id: 'update' }, KIMI_STORE, EDGE_STORE, { id: 'open_instructions', url: KIMI_HELP, target: 'documentation' }],
   },
   'independent-browser': {
     preset: 'independent-browser',
@@ -129,7 +129,7 @@ const PRESETS = {
     capabilityId: 'kiki-browser',
     sourceUrl: 'https://github.com/vercel-labs/agent-browser',
     steps: [{ id: 'driver', state: 'ready' }, { id: 'chrome', state: 'ready' }],
-    actions: [{ id: 'prepare' }, { id: 'connect' }],
+    actions: [{ id: 'prepare' }, { id: 'connect' }, { id: 'open' }, { id: 'update' }, { id: 'shortcut' }],
   },
   'codex-browser': {
     preset: 'codex-browser',
@@ -156,7 +156,11 @@ function presetStatus(browser, seed) {
   const steps = override.steps ?? base.steps;
   const state = override.state ?? (override.error !== undefined ? 'failed' : 'not_prepared');
   const flagOff = steps.some((step) => step.reason === 'feature_disabled');
-  const served = base.actions.filter((action) => override.omitAction !== action.id);
+  const served = base.actions.filter((action) => {
+    if (override.omitAction === action.id) return false;
+    if (action.id === 'open' && base.preset === 'kimi-webbridge' && state !== 'ready' && state !== 'connected') return false;
+    return true;
+  });
   const actions = state === 'preparing'
     ? served.filter((action) => action.id === 'cancel')
     : flagOff && served.some((action) => action.id === 'connect')
@@ -189,7 +193,7 @@ function presetStatus(browser, seed) {
 function handleSetup(server, browser, res, path, method, body) {
   const isList = path === '/browser/setup';
   const one = isList ? null : /^\/browser\/setup\/([^/:]+)$/.exec(path);
-  const action = /^\/browser\/setup\/([^/:]+):(prepare|connect|cancel)$/.exec(path);
+  const action = /^\/browser\/setup\/([^/:]+):(prepare|connect|cancel|open|update|shortcut)$/.exec(path);
   if (!isList && one === null && action === null) return false;
 
   if (isList) {
@@ -230,6 +234,54 @@ function handleSetup(server, browser, res, path, method, body) {
       return true;
     }
     browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'connected', checkedAt: new Date().toISOString() } };
+    server.envelope(res, presetStatus(browser, id));
+    return true;
+  }
+  if (name === 'open') {
+    if (override.openError !== undefined) {
+      browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'failed', error: override.openError } };
+      server.envelope(res, { ...presetStatus(browser, id), state: 'failed', error: override.openError });
+      return true;
+    }
+    if (override.connectionDisabled === true) {
+      browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'needs_user_action', reason: 'connection_disabled', error: 'This browser connection is disabled' } };
+      server.envelope(res, { ...presetStatus(browser, id), state: 'needs_user_action', reason: 'connection_disabled', error: 'This browser connection is disabled', actions: [{ id: 'choose_connection' }] });
+      return true;
+    }
+    if (id === 'independent-browser') {
+      if (find(browser, 'independent-browser') === undefined) {
+        browser.connections = [...browser.connections, {
+          id: 'independent-browser', name: 'Independent browser', enabled: true, type: 'agent-browser-profile',
+          headed: true, status: { state: 'ready', generation: 1 },
+        }];
+      }
+      browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'connected' } };
+      server.envelope(res, { ...presetStatus(browser, id), connectionId: 'independent-browser' });
+      return true;
+    }
+    if (id === 'kimi-webbridge') {
+      browser.overrides = { ...browser.overrides, [id]: { ...override, state: 'connected', checkedAt: new Date().toISOString() } };
+      server.envelope(res, presetStatus(browser, id));
+      return true;
+    }
+    server.envelope(res, presetStatus(browser, id));
+    return true;
+  }
+  if (name === 'update') {
+    const reason = override.updateReason ?? 'disk_updated';
+    const detail = reason === 'disk_updated_running_unchanged'
+      ? 'Files on disk were replaced. The running WebBridge daemon was not stopped or switched.'
+      : 'Files on disk were replaced. A browser or daemon that is already running was not switched.';
+    browser.overrides = { ...browser.overrides, [id]: { ...override, state: override.state ?? 'ready', reason } };
+    const status = presetStatus(browser, id);
+    server.envelope(res, {
+      ...status,
+      reason,
+      steps: [...status.steps, { id: 'update', state: 'ready', reason, detail }],
+    });
+    return true;
+  }
+  if (name === 'shortcut') {
     server.envelope(res, presetStatus(browser, id));
     return true;
   }
