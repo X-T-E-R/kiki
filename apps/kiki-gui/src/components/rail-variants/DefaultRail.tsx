@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useParams } from 'react-router-dom';
 import type { SessionController, SessionViewState, TodoItem } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
-import { useOptionalControllerRegistry } from '../../state/connection';
+import { useOptionalConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
@@ -19,10 +20,10 @@ export interface RailTodosProps {
 
 export type TodoBaselineStatus = 'ready' | 'loading' | 'partial' | 'error' | 'unknown' | 'confirmed_empty';
 
-const retainedTodosMap = new Map<string, readonly TodoItem[]>();
+const controllerTodosCache = new WeakMap<SessionController, Map<string, readonly TodoItem[]>>();
 
 export function clearRetainedTodosCache(): void {
-  retainedTodosMap.clear();
+  // Retained for test tear-downs
 }
 
 function useAgentState(sessionId: string, agentId: string): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
@@ -52,24 +53,25 @@ function useAgentState(sessionId: string, agentId: string): { controller: Sessio
 }
 
 /**
- * 待办: the agent's checklist in the right rail.
- * - Prioritizes the agent's live view state from the controller registry.
- * - Falls back to the routed session state ONLY for the main agent in the same session. Subagents never borrow main's todos.
- * - Differentiates unknown, loading, partial, error, and confirmed empty baselines.
- * - Preserves existing todos across transient loading/resync states ("同身份旧列表不瞬消").
- * - Does not resurrect stale todos once an empty baseline is confirmed ("reset确认空不回填陈旧todos").
- * - Renders a lightweight loading placeholder while the shell has loaded but the todo baseline is not confirmed.
+ * The focused agent's checklist in the right rail.
+ * Renders live todos from the session controller, with routed session fallback
+ * for the main agent when the controller registry is initializing.
  */
 export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
   const { t } = useI18n();
   const { controller, agentState } = useAgentState(sessionId, agentId);
+  const connection = useOptionalConnection();
+  const { id: routeSessionId } = useParams<{ id?: string }>();
 
   const isMain = agentId === MAIN_AGENT_ID;
-  const canFallback = controller === undefined && isMain && state !== undefined && state.sessionId === sessionId;
+  const routeMatches = routeSessionId === undefined || routeSessionId === sessionId;
+  const sessionMatches = state?.session === undefined || state.session.id === sessionId;
+  const canFallback = controller === undefined && isMain && state !== undefined && state.sessionId === sessionId && routeMatches && sessionMatches;
   const effectiveState = agentState ?? (canFallback ? state : undefined);
 
   let status: TodoBaselineStatus = 'unknown';
   let isConfirmedEmpty = false;
+  let baselineConfirmed = false;
 
   if (agentState !== undefined) {
     const todoCoverage = agentState.globalCoverage?.todos;
@@ -78,16 +80,16 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
       (todoCoverage?.hasMore === true && agentState.detailLoads['entities:todo']?.status === 'error');
     const hasLoadError = !agentState.loaded && agentState.loadError !== undefined;
     const isError = todoReadFailed || hasLoadError;
-    const shellLoaded = state?.loaded === true || agentState.loaded;
-    const isLoading = shellLoaded && (!agentState.loaded || todoRefs.length > 0 || (todoCoverage?.hasMore === true && !isError));
+
+    baselineConfirmed = agentState.loaded === true && agentState.transcriptReady === true;
     const rawTodos = agentState.todos ?? [];
 
     if (isError) {
       status = 'error';
-    } else if (isLoading) {
-      status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (!agentState.loaded) {
       status = 'unknown';
+    } else if (!baselineConfirmed || todoRefs.length > 0 || (todoCoverage?.hasMore === true)) {
+      status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';
       isConfirmedEmpty = true;
@@ -97,13 +99,14 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
   } else if (canFallback && state !== undefined) {
     const hasLoadError = !state.loaded && state.loadError !== undefined;
     const rawTodos = state.todos ?? [];
+    baselineConfirmed = state.loaded === true && state.transcriptReady === true;
 
     if (hasLoadError) {
       status = 'error';
-    } else if (state.loaded && !state.transcriptReady) {
-      status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (!state.loaded) {
       status = 'unknown';
+    } else if (!baselineConfirmed) {
+      status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';
       isConfirmedEmpty = true;
@@ -120,41 +123,87 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
     [rawItems],
   );
 
-  const identityKey = `${sessionId}:${agentId}`;
+  const scopeId = connection?.scopeId ?? 'local';
+  const spaceKey = connection?.spaceKey ?? 'local';
+  const identityKey = `${spaceKey}:${scopeId}:${sessionId}:${agentId}`;
+  const fallbackCacheRef = useRef<{ identityKey: string; todos: readonly TodoItem[] } | null>(null);
 
   useEffect(() => {
     if (isConfirmedEmpty) {
-      retainedTodosMap.delete(identityKey);
-    } else if (activeTodos.length > 0) {
-      if (retainedTodosMap.size > 50) {
-        const oldest = retainedTodosMap.keys().next().value;
-        if (oldest !== undefined) retainedTodosMap.delete(oldest);
+      if (controller !== undefined) {
+        controllerTodosCache.get(controller)?.delete(agentId);
       }
-      retainedTodosMap.set(identityKey, activeTodos);
+      if (fallbackCacheRef.current?.identityKey === identityKey) {
+        fallbackCacheRef.current = null;
+      }
+    } else if (activeTodos.length > 0) {
+      if (controller !== undefined) {
+        let map = controllerTodosCache.get(controller);
+        if (map === undefined) {
+          map = new Map();
+          controllerTodosCache.set(controller, map);
+        }
+        map.set(agentId, activeTodos);
+      }
+      fallbackCacheRef.current = { identityKey, todos: activeTodos };
     }
-  }, [identityKey, isConfirmedEmpty, activeTodos]);
+  }, [controller, agentId, identityKey, isConfirmedEmpty, activeTodos]);
 
   let displayedTodos: readonly TodoItem[] = [];
-  if (isConfirmedEmpty) {
+  if (status === 'confirmed_empty') {
     displayedTodos = [];
-  } else if (activeTodos.length > 0) {
+  } else if (status === 'ready') {
+    displayedTodos = activeTodos;
+  } else if (status === 'partial') {
+    displayedTodos = activeTodos.length > 0 ? activeTodos : (
+      (controller !== undefined ? controllerTodosCache.get(controller)?.get(agentId) : undefined) ??
+      (fallbackCacheRef.current?.identityKey === identityKey ? fallbackCacheRef.current.todos : undefined) ??
+      []
+    );
+  } else if (status === 'loading') {
+    displayedTodos = activeTodos.length > 0 ? activeTodos : (
+      (controller !== undefined ? controllerTodosCache.get(controller)?.get(agentId) : undefined) ??
+      (fallbackCacheRef.current?.identityKey === identityKey ? fallbackCacheRef.current.todos : undefined) ??
+      []
+    );
+  } else if (status === 'error') {
     displayedTodos = activeTodos;
   } else {
-    const retained = retainedTodosMap.get(identityKey);
-    if (retained !== undefined && retained.length > 0) {
-      displayedTodos = retained;
-    }
+    displayedTodos = [];
   }
 
   const [open, setOpen] = useState(true);
   const [showDone, setShowDone] = useState(false);
 
   if (displayedTodos.length === 0) {
+    if (status === 'error') {
+      return (
+        <section data-rail-todos="" data-rail-todos-error="" className="pt-0.5">
+          <div className="flex h-7 items-center gap-1.5 px-0.5 text-ink-faint">
+            <span className={INSPECTOR_HEAD}>{t('inspector.todos')}</span>
+            <span className="flex-1" />
+            <span role="status" className="text-[12px] text-ink-faint">
+              {t('agentPanel.todos.loadFailed')}
+              {controller !== undefined ? (
+                <button
+                  type="button"
+                  data-rail-todos-retry=""
+                  onClick={() => { void controller.refreshSession?.(); }}
+                  className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
+                >
+                  {t('common.retry')}
+                </button>
+              ) : null}
+            </span>
+          </div>
+        </section>
+      );
+    }
     if (status === 'loading') {
       return (
         <section data-rail-todos="" data-rail-todos-loading="" className="pt-0.5">
           <div className="flex h-7 items-center gap-1.5 px-0.5 text-ink-faint">
-            <span className={`${INSPECTOR_HEAD}`}>{t('inspector.todos')}</span>
+            <span className={INSPECTOR_HEAD}>{t('inspector.todos')}</span>
             <span className="flex-1" />
             <span role="status" className="text-[12px] text-ink-faint">{t('agentPanel.todos.loading')}</span>
           </div>
@@ -174,6 +223,11 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
         <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('inspector.todos')}</span>
         <span className="text-[12px] text-ink-faint tabular-nums">{doneCount}/{displayedTodos.length}</span>
         <span className="flex-1" />
+        {status === 'loading' || status === 'partial' ? (
+          <span role="status" className="pr-1 text-[11px] text-ink-faint">{t('agentPanel.todos.loading')}</span>
+        ) : status === 'error' ? (
+          <span role="status" className="pr-1 text-[11px] text-ink-faint">{t('agentPanel.todos.loadFailed')}</span>
+        ) : null}
         <InspectorChevron open={open} />
       </button>
       {open ? (
