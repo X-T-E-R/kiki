@@ -102,9 +102,6 @@ function EngineRow({
               <span className="shrink-0 text-[11px] text-amber-ink">{t('composer.execution.notInstalled')}</span>
             ) : null}
           </span>
-          <span className="mt-0.5 block text-[12px] leading-snug text-ink-faint">
-            {native ? t('composer.execution.nativeBareHint') : t('composer.execution.bareHint')}
-          </span>
           {hint !== undefined && hint !== '' ? <span className="mt-0.5 block truncate font-mono text-[11px] text-ink-faint">{hint}</span> : null}
           {badges !== undefined && badges.length > 0 ? (
             <span className="mt-1 flex flex-wrap items-center gap-1">
@@ -438,6 +435,13 @@ export function ExecutionSelect({
     .filter((item) => item.id !== NATIVE_EXECUTOR);
   const nativeProfiles = profilesByEngine.get(NATIVE_EXECUTOR) ?? [];
   const visibleExternal = externalEngines.filter((item) => matches(item, profilesByEngine.get(item.id) ?? []));
+  const externalLabelCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of visibleExternal) {
+      counts.set(item.label, (counts.get(item.label) ?? 0) + 1);
+    }
+    return counts;
+  }, [visibleExternal]);
   const retainedExternal = !isNativeExecutor(choice.executor) && choice.external_connection_id === undefined
     && !externalEngines.some((item) => item.id === choice.executor)
     && matches({ id: choice.executor, label: engineLabel }, profilesByEngine.get(choice.executor) ?? []);
@@ -732,21 +736,27 @@ export function ExecutionSelect({
                 onProfile={(name) => { setChoice({ ...choice, executor: NATIVE_EXECUTOR, profile: name, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
               />
             ) : null}
-            {visibleExternal.map((item) => (
-              <EngineRow
-                key={item.id}
-                id={item.id}
-                label={item.label}
-                hint={[item.id, item.version].filter((part) => part !== undefined && part !== '').join(' · ')}
-                current={choice.executor === item.id && !isExternalClient}
-                bare={choice.profile === undefined && choice.profile_file === undefined}
-                profiles={profilesByEngine.get(item.id) ?? []}
-                profile={choice.profile}
-                unavailable={item.status === 'unavailable'}
-                onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
-                onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
-              />
-            ))}
+            {visibleExternal.map((item) => {
+              const duplicateLabel = (externalLabelCounts.get(item.label) ?? 0) > 1;
+              const hint = duplicateLabel
+                ? [item.id, item.version].filter((part) => part !== undefined && part !== '').join(' · ')
+                : undefined;
+              return (
+                <EngineRow
+                  key={item.id}
+                  id={item.id}
+                  label={item.label}
+                  hint={hint}
+                  current={choice.executor === item.id && !isExternalClient}
+                  bare={choice.profile === undefined && choice.profile_file === undefined}
+                  profiles={profilesByEngine.get(item.id) ?? []}
+                  profile={choice.profile}
+                  unavailable={item.status === 'unavailable'}
+                  onBare={() => { setChoice({ ...choice, executor: item.id, profile: undefined, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
+                  onProfile={(name) => { setChoice({ ...choice, executor: item.id, profile: name, profile_file: undefined, external_connection_id: undefined, external_connection_name: undefined }); }}
+                />
+              );
+            })}
             {retainedExternal ? (
               <div data-execution-restore={choice.executor} className="mx-1 my-2 space-y-1 px-2 py-1.5">
                 <p className="text-[12px] leading-snug text-ink-faint">{t(engineItem?.status === 'unavailable' ? 'composer.execution.needsSetup' : 'composer.execution.keptEngine', { engine: engineLabel })}</p>
@@ -801,12 +811,11 @@ export function ExecutionSelect({
               </div>
             ) : null}
           </div>
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline px-3 py-2">
-            <p className="min-w-0 text-[11.5px] leading-snug text-ink-faint">{t('composer.execution.bareNote')}</p>
-            {facts.length > 0 ? (
+          {facts.length > 0 ? (
+            <div className="flex flex-wrap items-baseline justify-end gap-x-3 gap-y-1 border-t border-hairline px-3 py-2">
               <p data-execution-facts className="flex shrink-0 items-center gap-1 text-[11.5px] text-ink-faint">{facts.join(' · ')}</p>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
             </>
           )}
         </div>

@@ -813,7 +813,8 @@ describe('Composer execution control', () => {
     const bareRows = [...container.querySelectorAll<HTMLElement>('[data-execution-bare]')];
     expect(bareRows.length).toBeGreaterThan(0);
     const bareRow = bareRows.find((row) => row.getAttribute('data-execution-bare') === 'claude-acp');
-    expect(bareRow?.textContent).toContain('Run this engine as it is');
+    expect(bareRow?.textContent).toContain('Claude Code');
+    expect(bareRow?.textContent).not.toContain('Run this engine as it is');
     await click(bareRow!);
     expect(onChangeExecution).toHaveBeenCalledWith({
       executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined,
@@ -3407,7 +3408,7 @@ describe('Composer restored selection diagnostics', () => {
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!);
     expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(container.querySelector('#composer-engine-model-select')).toBeNull();
-    expect(container.querySelector('[data-composer-engine-model]')?.textContent).toContain('vendor-only');
+    expect(container.querySelector('[data-composer-engine-model]')?.textContent).toContain('Follow engine configuration');
   });
 
   it('accepts an external model ID verbatim without looking it up in the native catalog', async () => {

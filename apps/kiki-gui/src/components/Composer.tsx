@@ -991,7 +991,7 @@ export function Composer({
   const explicitProfileChoice = sessionId === undefined || agentProfilePending === true;
   const validateProfile = !fromFile && !bareExternal && explicitProfileChoice && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
   const validatingModel = externalExecution
-    ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : executionPending ? undefined : model || defaultModel)
+    ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : undefined)
     : model || selectionDefaultModel || serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
