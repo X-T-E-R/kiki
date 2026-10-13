@@ -17,6 +17,7 @@ import type { ExternalActivityRecord, ExternalTextRecord } from '../model/extern
 import type { TranscriptMarker } from '../model/item';
 import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
+import { safetyBoundaryIndex } from '../ops/framePlace';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
 
 export interface TranscriptWireRecord {
@@ -161,6 +162,7 @@ export class TranscriptWireAdapter {
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
   readonly #frameRecords = new Map<string, FrameRecord>();
+  readonly #frameOrder = new Map<string, string[]>();
   readonly #releasedTurnIds = new Set<string>();
   readonly #turnRecordOrdinals = new Map<string, number>();
   readonly #stepRecordOrdinals = new Map<string, number>();
@@ -318,6 +320,7 @@ export class TranscriptWireAdapter {
     replaceMap(this.#frameRecords, checkpoint.messageProjection?.frames ?? []);
     replaceMap(this.#turnRecordOrdinals, checkpoint.messageProjection?.turns ?? []);
     replaceMap(this.#stepRecordOrdinals, checkpoint.messageProjection?.steps ?? []);
+    this.rebuildFrameOrder();
   }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
@@ -351,6 +354,7 @@ export class TranscriptWireAdapter {
         const previous = this.#frameRecords.get(key);
         const retained = this.#releasedTurnIds.has(operation.turnId) ? { ...operation, frame: releaseFramePayload(operation.frame) } : operation;
         this.#frameRecords.set(key, { ordinal: previous?.ordinal ?? ordinal, operation: retained });
+        this.rememberFrameOrder(retained);
       }
     }
   }
@@ -1670,8 +1674,10 @@ export class TranscriptWireAdapter {
       this.storeStep(stepId, step);
       operations.push({ op: 'step.upsert', turnId, step });
     }
+    const place = canonical?.['placement'] === 'safety_boundary' ? 'safety_boundary' as const : undefined;
     operations.push({
       op: 'frame.upsert', turnId, stepId,
+      ...(place === undefined ? {} : { place, frameIndex: this.boundaryFrameIndex(turnId, stepId) }),
       frame: {
         kind: 'text', frameId: messageId,
         part: {
@@ -2282,6 +2288,30 @@ export class TranscriptWireAdapter {
     return stepId === undefined ? undefined : this.#turnIdByStepId.get(stepId);
   }
 
+  private boundaryFrameIndex(turnId: string, stepId: string): number {
+    const ids = this.#frameOrder.get(`${turnId}\0${stepId}`) ?? [];
+    return safetyBoundaryIndex(ids.flatMap((frameId) => {
+      const frame = this.#frameRecords.get(`${turnId}\0${stepId}\0${frameId}`)?.operation.frame;
+      return frame === undefined ? [] : [frame];
+    }));
+  }
+
+  private rememberFrameOrder(operation: Extract<TranscriptOperation, { op: 'frame.upsert' }>): void {
+    const key = `${operation.turnId}\0${operation.stepId}`;
+    const order = [...(this.#frameOrder.get(key) ?? [])];
+    if (order.includes(operation.frame.frameId)) return;
+    const index = operation.place === 'safety_boundary' ? this.boundaryFrameIndex(operation.turnId, operation.stepId) : order.length;
+    order.splice(index, 0, operation.frame.frameId);
+    this.#frameOrder.set(key, order);
+  }
+
+  private rebuildFrameOrder(): void {
+    this.#frameOrder.clear();
+    for (const record of [...this.#frameRecords.values()].toSorted((left, right) => left.ordinal - right.ordinal)) {
+      this.rememberFrameOrder(record.operation);
+    }
+  }
+
   private runningStepAhead(
     turnId: string,
     cursor: { readonly stepId: string; readonly ordinal: number } | undefined,
@@ -2477,6 +2507,9 @@ export class TranscriptWireAdapter {
       }
       this.#toolIdsByTurn.delete(turnId);
       this.#runningToolIdsByTurn.delete(turnId);
+      for (const key of this.#frameOrder.keys()) {
+        if (key.startsWith(`${turnId}\0`)) this.#frameOrder.delete(key);
+      }
     }
     for (const [interactionId, interaction] of this.#interactions) {
       if (interaction.toolCallId !== undefined && removedToolIds.has(interaction.toolCallId)) this.#interactions.delete(interactionId);

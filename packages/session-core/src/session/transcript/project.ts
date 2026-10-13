@@ -2978,6 +2978,36 @@ export function keepLatestExecutorReadings(blocks: readonly Block[]): Block[] {
   });
 }
 
+const BOUNDARY_HOOK_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PreInvocation']);
+
+function boundaryHookEvent(event: string | undefined): boolean {
+  if (event === undefined) return false;
+  return BOUNDARY_HOOK_EVENTS.has(event.slice(event.lastIndexOf(':') + 1));
+}
+
+function isBoundaryHookBlock(block: Block): boolean {
+  return block.kind === 'system' && block.variant === 'hook_result' && boundaryHookEvent(block.hookEvent);
+}
+
+function unanchoredBoundaryHost(blocks: readonly Block[], index: number): number | undefined {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const prior = blocks[cursor]!;
+    if (prior.kind === 'system' || prior.kind === 'system-reminder' || prior.kind === 'notice') continue;
+    return undefined;
+  }
+  for (let cursor = index + 1; cursor < blocks.length; cursor += 1) {
+    const candidate = blocks[cursor]!;
+    if (candidate.kind === 'user') {
+      const origin = originFromRecord({ origin: candidate.sourceOrigin });
+      if (origin !== undefined && origin.kind !== 'user') continue;
+      return cursor;
+    }
+    if (candidate.kind === 'system' || candidate.kind === 'system-reminder' || candidate.kind === 'notice') continue;
+    return undefined;
+  }
+  return undefined;
+}
+
 function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTranscriptProjectionSource['items']): Block[] {
   const usersByPrompt = new Map<string, number[]>();
   const usersByMessage = new Map<string, number[]>();
@@ -2988,9 +3018,8 @@ function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTrans
   for (const [index, block] of blocks.entries()) {
     const turnId = blockTurnId(block);
     if (block.kind !== 'user') {
-      if (turnId !== undefined && block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) {
-        obstructedTurns.add(turnId);
-      }
+      const context = block.kind === 'system-reminder' || (block.kind === 'system' && block.variant === 'injection') || isBoundaryHookBlock(block);
+      if (turnId !== undefined && !context) obstructedTurns.add(turnId);
       continue;
     }
     const origin = originFromRecord({ origin: block.sourceOrigin });
@@ -3008,7 +3037,8 @@ function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTrans
   const afterUser = new Map<number, Block[]>();
   const moved = new Set<number>();
   for (const [index, block] of blocks.entries()) {
-    if (block.kind !== 'system-reminder' && !(block.kind === 'system' && block.variant === 'injection')) continue;
+    if (block.kind !== 'system-reminder' && block.kind !== 'system') continue;
+    if (block.kind === 'system' && block.variant !== 'injection' && !(block.variant === 'hook_result' && boundaryHookEvent(block.hookEvent))) continue;
     let host: number | undefined;
     if (block.ownerPromptId !== undefined) {
       const candidates = usersByPrompt.get(block.ownerPromptId) ?? usersByMessage.get(block.ownerPromptId) ?? [];
@@ -3016,6 +3046,8 @@ function placePromptContextAfterUser(blocks: readonly Block[], items: AgentTrans
       host = candidates.length === 1 ? candidates[0] : sameTurn.length === 1 ? sameTurn[0] : undefined;
     } else if (block.turnId !== undefined) {
       host = openingUsers.get(block.turnId);
+    } else if (block.kind === 'system' && block.variant === 'hook_result') {
+      host = unanchoredBoundaryHost(blocks, index);
     }
     if (host === undefined || host <= index) continue;
     const context = afterUser.get(host) ?? [];

@@ -265,6 +265,7 @@ interface ContextAppendMessagePayload {
     step?: number;
     deliveredAt: string;
     origin: 'user' | 'queue' | 'mailbox' | 'recovery' | 'injection';
+    placement?: 'safety_boundary';
   };
 }
 

@@ -1322,8 +1322,65 @@ describe('ACP external executor', () => {
       role: 'user',
       id: 'external-user-1',
       content: [{ type: 'text', text: 'remote follow-up' }],
-      origin: { kind: 'system_trigger', name: 'external-executor:example-acp' },
+      origin: { kind: 'unknown' },
     })]);
+    expect(JSON.stringify(harness.appendedMessages)).not.toContain('external-executor:');
+  });
+
+  it('delivers external preamble at observation and keeps a late recognized echo on the safety boundary', async () => {
+    const timeline: string[] = [];
+    const managed: { message: ContextMessage; delivery: { origin?: string; placement?: string; turnId?: number; stepId?: string; step?: number } }[] = [];
+    const dispatcher = { dispatch: async () => {}, flush: async () => {} };
+    const wire = { _serviceBrand: undefined, flush: async () => {} };
+    const contextMemory = {
+      _serviceBrand: undefined,
+      appendManaged: (message: ContextMessage, delivery: { origin?: string; placement?: string; turnId?: number; stepId?: string; step?: number }) => {
+        timeline.push(`user:${message.id}`);
+        managed.push({ message, delivery });
+      },
+      appendLoopEvent: (event: { type?: string }) => timeline.push(event.type ?? 'loop'),
+    };
+    const usage = { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) };
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher], [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+    ]);
+    const outbound = '[Kiki memory]\nremember this\n\n[Kiki goal_state]\nGoal (active): land\n\nwork';
+    const recorder = new ExternalTurnRecorder(
+      { id: 'boundary-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      7,
+      'boundary-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: outbound },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: '[Kiki memory]\nremember this' } });
+    await recorder.record({ type: 'message.delta', role: 'assistant', messageId: 'assistant-1', content: { type: 'text', text: 'doing it' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'echo', content: { type: 'text', text: outbound } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'prompt-echo', content: { type: 'text', text: 'work' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'follow-up', content: { type: 'text', text: 'remote follow-up' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'late', content: { type: 'text', text: '[Kiki goal_state]\nGoal (active): land' } });
+    await recorder.complete('end_turn');
+
+    expect(timeline).toEqual([
+      'step.begin', 'user:preamble', 'content.part', 'tool.call', 'user:follow-up', 'user:late', 'tool.result', 'step.end',
+    ]);
+    expect(timeline.indexOf('user:preamble')).toBeLessThan(timeline.indexOf('content.part'));
+    expect(timeline.indexOf('user:late')).toBeLessThan(timeline.indexOf('step.end'));
+    expect(managed.map((entry) => entry.message.origin)).toEqual([
+      { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' },
+      { kind: 'unknown' },
+      { kind: 'injection', variant: 'goal_state', ownerPromptId: 'prompt-1' },
+    ]);
+    expect(managed.map((entry) => entry.delivery)).toEqual([
+      expect.objectContaining({ origin: 'injection', placement: 'safety_boundary', turnId: 7, step: 1 }),
+      expect.objectContaining({ origin: 'queue', turnId: 7, step: 1 }),
+      expect.objectContaining({ origin: 'injection', placement: 'safety_boundary', turnId: 7, step: 1 }),
+    ]);
+    expect(managed[1]?.delivery.placement).toBeUndefined();
+    expect(managed.every((entry) => entry.delivery.stepId === recorder.stepId)).toBe(true);
+    expect(JSON.stringify(managed)).not.toContain('external-executor:');
+    expect(JSON.stringify(managed)).not.toContain('system_trigger');
   });
 
   it('preserves unkeyed external user frames with an attribution loss', async () => {

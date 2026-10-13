@@ -59,6 +59,7 @@ export interface FrameUpsertOp {
   /** Canonical positions for bounded clients to distinguish omitted older content from a newly appended frame. */
   readonly stepIndex?: number;
   readonly frameIndex?: number;
+  readonly place?: 'safety_boundary';
   readonly frame: TranscriptFrame;
 }
 

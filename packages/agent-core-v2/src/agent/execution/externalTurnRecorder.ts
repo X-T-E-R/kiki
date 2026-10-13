@@ -13,7 +13,7 @@ import {
 } from '@kiki/protocol';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { newDeliveryId } from '#/agent/contextMemory/messageDelivery';
+import { deliveryOriginOf, newDeliveryId, type MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import {
@@ -144,7 +144,13 @@ export class ExternalTurnRecorder {
   readonly #usage: IAgentUsageService;
   readonly #mediaStore: ISessionMediaStore | undefined;
   #segment: Segment | undefined;
+  #prompt = '';
+  #promptId: string | undefined;
+  #modelContentRecorded = false;
+  #outboundEchoSuppressed = false;
+  #promptEchoSuppressed = false;
   readonly #userSegments: UserSegment[] = [];
+  readonly #committedUserMessageIds = new Set<string>();
   readonly #tools = new Map<string, RecordedTool>();
   readonly #toolInputs = new Map<number, { toolCallId: string; name?: string; inputText: string }>();
   #partOrdinal = 0;
@@ -171,6 +177,8 @@ export class ExternalTurnRecorder {
   }
 
   async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = [], promptId?: string): Promise<void> {
+    this.#prompt = prompt;
+    this.#promptId = promptId;
     await this.#dispatcher.dispatch(
       new TurnPrompt({
         turnId: this.turnId,
@@ -194,6 +202,10 @@ export class ExternalTurnRecorder {
   }
 
   async record(event: ExternalExecutorEvent): Promise<void> {
+    if (!(event.type === 'message.delta' && event.role === 'user')) {
+      this.#commitUserSegments();
+      if (isExternalModelActivity(event)) this.#modelContentRecorded = true;
+    }
     switch (event.type) {
       case 'message.delta':
         await this.#messageDelta(event);
@@ -790,6 +802,7 @@ export class ExternalTurnRecorder {
     if (this.#ended) return;
     this.#ended = true;
     this.#flushSegment();
+    this.#commitUserSegments();
     for (const tool of this.#tools.values()) {
       if (tool.terminal) continue;
       if (tool.acp !== undefined) {
@@ -860,7 +873,6 @@ export class ExternalTurnRecorder {
       usage,
       rawFinishReason: finishReason,
     });
-    this.#appendExternalUserMessages();
     if (reason === 'completed') {
       await this.#dispatcher.dispatch(
         new TurnStepCompleted({
@@ -896,37 +908,68 @@ export class ExternalTurnRecorder {
     await this.#wire.flush();
   }
 
-  #appendExternalUserMessages(): void {
-    let promptEchoSuppressed = false;
-    for (const segment of this.#userSegments) {
-      if (
-        !promptEchoSuppressed &&
-        this.metadata.outboundPrompt !== undefined &&
-        segment.text === this.metadata.outboundPrompt
-      ) {
-        promptEchoSuppressed = true;
-        continue;
-      }
+  #commitUserSegments(): void {
+    const segments = this.#userSegments.splice(0);
+    for (const segment of segments) {
+      if (segment.text.length === 0 || this.#suppressEcho(segment.text)) continue;
+      if (segment.messageId !== undefined && this.#committedUserMessageIds.has(segment.messageId)) continue;
+      const variant = preambleVariant(segment.text, this.metadata.outboundPrompt, this.#prompt);
+      const origin: PromptOrigin = variant === undefined
+        ? { kind: 'unknown' }
+        : { kind: 'injection', variant, ...(this.#promptId === undefined ? {} : { ownerPromptId: this.#promptId }) };
       const messageId = segment.messageId ?? newMessageId();
+      if (segment.messageId !== undefined) this.#committedUserMessageIds.add(segment.messageId);
+      const delivery: MessageDelivery = {
+        deliveryId: newDeliveryId(),
+        messageId,
+        turnId: this.turnId,
+        stepId: this.stepId,
+        step: 1,
+        deliveredAt: new Date().toISOString(),
+        origin: deliveryOriginOf(origin),
+        ...(variant === undefined ? {} : { placement: 'safety_boundary' as const }),
+      };
       this.#context.appendManaged({
         role: 'user',
         content: [{ type: 'text', text: segment.text }],
         toolCalls: [],
         id: messageId,
         providerMessageId: segment.messageId,
-        origin: {
-          kind: 'system_trigger',
-          name: `external-executor:${this.metadata.executorId}`,
-        },
-      }, {
-        deliveryId: newDeliveryId(),
-        messageId,
-        turnId: this.turnId,
-        deliveredAt: new Date().toISOString(),
-        origin: 'user',
-      });
+        origin,
+      }, delivery);
     }
   }
+
+  #suppressEcho(text: string): boolean {
+    if (!this.#outboundEchoSuppressed && this.metadata.outboundPrompt !== undefined && text === this.metadata.outboundPrompt) {
+      this.#outboundEchoSuppressed = true;
+      return true;
+    }
+    if (!this.#promptEchoSuppressed && this.#prompt.length > 0 && text === this.#prompt) {
+      this.#promptEchoSuppressed = true;
+      return true;
+    }
+    return false;
+  }
+}
+
+function isExternalModelActivity(event: ExternalExecutorEvent): boolean {
+  return event.type === 'message.delta' || event.type === 'thought.delta' || event.type === 'tool.call'
+    || event.type === 'tool.update' || event.type === 'tool.input.delta' || event.type === 'tool.interaction';
+}
+
+function preambleVariant(text: string, outbound: string | undefined, prompt: string): string | undefined {
+  if (outbound === undefined || text.length === 0 || text === outbound || text === prompt) return undefined;
+  const separated = `\n\n${prompt}`;
+  const head = prompt.length === 0 ? ''
+    : outbound.endsWith(separated) ? outbound.slice(0, -separated.length)
+      : outbound.endsWith(prompt) ? outbound.slice(0, -prompt.length)
+        : '';
+  if (head.length === 0 || !head.includes(text)) return undefined;
+  const labeled = /^\[Kiki ([^\]]+)\]\n/.exec(text);
+  if (labeled?.[1] !== undefined) return labeled[1];
+  if (text.includes('<system-reminder>')) return 'system_reminder';
+  return undefined;
 }
 
 export function externalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {

@@ -12,6 +12,7 @@ export interface MessageDelivery {
   readonly step?: number;
   readonly deliveredAt: string;
   readonly origin: MessageDeliveryOrigin;
+  readonly placement?: 'safety_boundary';
 }
 
 export function newDeliveryId(): string {

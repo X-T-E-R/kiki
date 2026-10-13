@@ -228,3 +228,119 @@ describe('prompt-owned context reading order', () => {
     expect(agentTranscriptToBlocks({ agent_id: 'main', ...snapshot }, newerBlocks).map((block) => block.id)).toEqual(expected);
   });
 });
+
+describe('external injection boundary', () => {
+  const message = (id: string, text: string, origin: Record<string, unknown>) => ({
+    id, role: 'user', origin, content: [{ type: 'text', text }],
+  });
+  const delivery = (messageId: string, extra: Record<string, unknown> = {}) => ({
+    messageId, turnId: 7, stepId: 'external-step', step: 1, origin: 'injection', ...extra,
+  });
+  const records: TranscriptWireRecord[] = [
+    { type: 'turn.prompt', turnId: 0, promptId: 'previous', origin: { kind: 'user' }, input: [{ type: 'text', text: 'previous request' }], time: 1_000 },
+    { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_100 },
+    { type: 'executor.prompt.delivery', method: 'next_turn_preamble', status: 'queued', origin: 'memory', turnId: 7, time: 1_200 },
+    { type: 'turn.prompt', turnId: 7, promptId: 'request', origin: { kind: 'user' }, input: [{ type: 'text', text: 'do the work' }], time: 2_000 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 7, step: 1, uuid: 'external-step' }, time: 2_100 },
+    { type: 'context.append_message', message: message('preamble', '[Kiki memory]\nremember this', { kind: 'injection', variant: 'memory', ownerPromptId: 'request' }), delivery: delivery('preamble', { placement: 'safety_boundary' }), time: 2_200 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 7, stepUuid: 'external-step', uuid: 'reply', part: { type: 'text', text: 'doing it' } }, time: 2_300 },
+    { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 7, stepUuid: 'external-step', uuid: 'read-1', toolCallId: 'read-1', name: 'Read', args: {} }, time: 2_400 },
+    { type: 'context.append_message', message: message('follow-up', 'remote follow-up', { kind: 'unknown' }), delivery: { messageId: 'follow-up', turnId: 7, stepId: 'external-step', step: 1, origin: 'queue' }, time: 2_500 },
+    { type: 'context.append_message', message: message('late', '[Kiki goal_state]\nGoal (active): land', { kind: 'injection', variant: 'goal_state', ownerPromptId: 'request' }), delivery: delivery('late', { placement: 'safety_boundary' }), time: 2_600 },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: 7, step: 1, uuid: 'external-step' }, time: 2_700 },
+    { type: 'turn.ended', turnId: 7, reason: 'completed', time: 2_800 },
+    { type: 'context.append_message', message: message('orphan', 'unanchored old record', { kind: 'unknown' }), time: 2_900 },
+    { type: 'executor.prompt.delivery', method: 'native_steer', status: 'delivered', origin: 'steer', turnId: 7, time: 3_000 },
+  ];
+  const conversational = ['user-previous', 'user-request', 'system-preamble', 'system-late', 'agent-frame-reply', 'tool-read-1', 'user-follow-up', 'user-orphan'];
+
+  const replay = (input: readonly TranscriptWireRecord[]) => {
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main', { turn: (id) => transcript.getTurn(id) });
+    const reducer = new TranscriptFactReducer(transcript);
+    let live = createViewState('session_test');
+    for (const record of input) {
+      reducer.apply(adapter.add(record));
+      live = projectAgentTranscriptView(live, 'main', transcript.snapshot());
+    }
+    return { transcript, adapter, live };
+  };
+
+  it('keeps an external boundary injection after its user and before model content, live and cold', () => {
+    const { transcript, live } = replay(records);
+    const body = live.blocks.filter((block) => !(block.kind === 'notice' && block.executor?.kind === 'hint'));
+    expect(body.map((block) => block.id)).toEqual(conversational);
+    expect(live.blocks.flatMap((block) => block.kind === 'notice' && block.executor?.kind === 'hint' ? [block.executor] : [])).toEqual([
+      { kind: 'hint', method: 'next_turn_preamble', status: 'queued', origin: 'memory' },
+      { kind: 'hint', method: 'native_steer', status: 'delivered', origin: 'steer' },
+    ]);
+    const cold = replay(records).live;
+    expect(cold.blocks).toEqual(live.blocks);
+    expect(live.blocks.find((block) => block.id === 'user-follow-up')).toMatchObject({ kind: 'user', sourceOrigin: { kind: 'unknown' }, turnId: 't7' });
+    expect(live.blocks.find((block) => block.id === 'user-orphan')).toMatchObject({ kind: 'user', sourceOrigin: { kind: 'unknown' } });
+    expect(live.blocks.find((block) => block.id === 'user-orphan')).not.toMatchObject({ turnId: 't7' });
+    expect(JSON.stringify(live.blocks)).not.toContain('external-executor:');
+    const turn = transcript.snapshot().items.find((item) => item.kind === 'turn' && item.turnId === 't7');
+    expect(turn?.kind === 'turn' ? turn.steps[0]?.frames.map((frame) => frame.frameId) : []).toEqual([
+      'preamble', 'late', 'reply', 'external-step.read-1', 'follow-up',
+    ]);
+
+    const snapshot = transcript.snapshot();
+    const older = { ...snapshot, items: snapshot.items.filter((item) => item.kind === 'turn' && item.turnId === 't0') };
+    const newer = { ...snapshot, items: snapshot.items.filter((item) => item.kind === 'turn' && item.turnId === 't7') };
+    expect(agentTranscriptToBlocks({ agent_id: 'main', ...older }).map((block) => block.id)).toEqual(['user-previous']);
+    const newerBlocks = agentTranscriptToBlocks({ agent_id: 'main', ...newer });
+    const newerIds = newerBlocks.map((block) => block.id);
+    expect(newerIds.indexOf('user-request')).toBeLessThan(newerIds.indexOf('system-preamble'));
+    expect(newerIds.indexOf('system-preamble')).toBeLessThan(newerIds.indexOf('system-late'));
+    expect(newerIds.indexOf('system-late')).toBeLessThan(newerIds.indexOf('agent-frame-reply'));
+    expect(newerIds.indexOf('tool-read-1')).toBeLessThan(newerIds.indexOf('user-follow-up'));
+    expect(agentTranscriptToBlocks({ agent_id: 'main', ...snapshot }, newerBlocks).map((block) => block.id)).toEqual(live.blocks.map((block) => block.id));
+  });
+
+  it('restores the boundary index after an adapter checkpoint', () => {
+    const lateAt = records.findIndex((record) => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === 'late');
+    const { adapter } = replay(records.slice(0, lateAt));
+    const resumed = new TranscriptWireAdapter('main');
+    resumed.restore(adapter.checkpoint());
+    const op = resumed.add(records[lateAt]!).flatMap((fact) => fact.operations).find((operation) => operation.op === 'frame.upsert');
+    expect(op).toMatchObject({ place: 'safety_boundary', frameIndex: 1 });
+    const direct = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    for (const record of records.slice(0, lateAt)) reducer.apply(direct.add(record));
+    const fresh = direct.add(records[lateAt]!).flatMap((fact) => fact.operations).find((operation) => operation.op === 'frame.upsert');
+    expect(fresh).toMatchObject({ place: 'safety_boundary', frameIndex: 1 });
+  });
+
+  it('parks an unanchored boundary hook after the first user and leaves a mid-turn hook and a stop hook in place', () => {
+    const parked = project([
+      { kind: 'marker', markerId: 'message-delivery:start', marker: 'message.delivery',
+        payload: { messageId: 'start', text: 'session context', origin: { kind: 'hook_result', event: 'kiki:codex:SessionStart', blocked: false } } },
+      turn(0, 1, [[2, 'answer']]),
+    ]);
+    expect(parked.map((block) => block.id)).toEqual(['user-agent-turn-t0-prompt', 'system-start', 'agent-frame-f0.0']);
+
+    const mid = project([
+      { ...turn(0, 0, [[1, 'before']]), steps: [{ ...turn(0, 0, [[1, 'before']]).steps[0]!, frames: [
+        { kind: 'tool' as const, frameId: 'read', toolCallId: 'read', name: 'Read', state: 'done' as const, startedAt: at(1) },
+      ] }] },
+      { kind: 'marker', markerId: 'message-delivery:mid-hook', marker: 'message.delivery',
+        payload: { messageId: 'mid-hook', text: 'submitted late', origin: { kind: 'hook_result', event: 'kiki:claude:UserPromptSubmit', blocked: false } } },
+      turn(1, 4, [[5, 'next']]),
+    ]);
+    const midIds = mid.map((block) => block.id);
+    expect(midIds.indexOf('system-mid-hook')).toBeGreaterThan(midIds.indexOf('tool-read'));
+    expect(midIds.indexOf('system-mid-hook')).toBeLessThan(midIds.indexOf('user-agent-turn-t1-prompt'));
+
+    const stopped = project([{
+      kind: 'turn' as const, turnId: 't0', ordinal: 0, state: 'completed' as const, startedAt: at(0),
+      origin: { kind: 'user' as const }, prompt: 'do the work',
+      steps: [{ kind: 'step' as const, stepId: 's', turnId: 't0', ordinal: 1, state: 'completed' as const, startedAt: at(1), frames: [
+        { kind: 'text' as const, frameId: 'reply', role: 'assistant' as const, text: 'done' },
+        { kind: 'text' as const, frameId: 'stop-hook', role: 'user' as const, text: 'stop context', origin: { kind: 'hook_result', event: 'kiki:grok:Stop', blocked: false } },
+      ] }],
+    }]);
+    expect(stopped.map((block) => block.id)).toEqual(['user-agent-turn-t0-prompt', 'agent-frame-reply', 'system-agent-frame-stop-hook']);
+  });
+});

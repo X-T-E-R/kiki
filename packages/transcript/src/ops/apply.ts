@@ -17,6 +17,7 @@ import type {
   StepHeader,
 } from './operation';
 import { transcriptValueEquals } from './equality';
+import { safetyBoundaryIndex } from './framePlace';
 import { carryContentHydration, mergeContentPreview } from '../contract/content';
 
 const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
@@ -482,7 +483,15 @@ function applyFrameUpsert(
       toolCallCountDelta = 1;
       toolCallCount = adjustToolCallCount(toolCallCount, 1);
     }
-    frames = [...step.frames, op.frame];
+    const omittedOffset = omittedFrames?.offset;
+    let index = step.frames.length;
+    if (op.place === 'safety_boundary') {
+      if (omittedOffset === undefined || omittedOffset === 0) index = safetyBoundaryIndex(step.frames);
+      else if (op.frameIndex !== undefined) index = Math.min(step.frames.length, Math.max(0, op.frameIndex - omittedOffset));
+    }
+    frames = index >= step.frames.length
+      ? [...step.frames, op.frame]
+      : [...step.frames.slice(0, index), op.frame, ...step.frames.slice(index)];
   }
   const nextStep: TranscriptStep = { ...step, frames: [...frames] };
   const steps =

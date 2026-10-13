@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { IAgentMemorySnapshot } from '@kiki/agent-core-v2/app/memory/memorySnapshot';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
-import { externalPromptHints, externalStateHints } from '@kiki/agent-core-v2/agent/execution/externalPromptHints';
+import { externalBoundaryHookEvent, externalHintAlreadyRecorded, externalPromptHints, externalStateHints } from '@kiki/agent-core-v2/agent/execution/externalPromptHints';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
+import { newDeliveryId } from '@kiki/agent-core-v2/agent/contextMemory/messageDelivery';
+import { newMessageId } from '@kiki/agent-core-v2/agent/contextMemory/messageId';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 
@@ -55,22 +58,43 @@ export class ContextProcedureHost {
         for (const id of delivered) if (/^(memory|goal_state|todo_state):/.test(id)) delivered.delete(id);
       }
       if (preparing) delivered.add('compaction_pending');
-      const promptText = memory.get().findLast((message) => message.origin?.kind === 'user')?.content
-        .flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') ?? '';
+      const execution = agent.accessor.get(IAgentExecutionService).status();
+      const runningTurnId = execution.state === 'running' || execution.state === 'cancelling' ? execution.turnId : undefined;
+      const boundary = externalBoundaryHookEvent(input.event);
+      const history = memory.get();
       const parts: string[] = [];
       for (const hint of hints) {
         if (!hint.text.trim()) continue;
         const id = `${preparing ? 'prepared:' : ''}${hint.origin}:${createHash('sha256').update(hint.text).digest('hex')}`;
         if (delivered.has(id)) continue;
-        if (input.harness === 'grok' && promptText.includes(`[Kiki ${hint.origin}]\n${hint.text}`)) { delivered.add(id); continue; }
+        const formatted = `[Kiki ${hint.origin}]\n${hint.text.trim()}`;
+        if (!recovering && (externalHintAlreadyRecorded(history, hint.text, runningTurnId) || externalHintAlreadyRecorded(history, formatted, runningTurnId))) {
+          delivered.add(id);
+          continue;
+        }
         delivered.add(id);
-        parts.push(`[Kiki ${hint.origin}]\n${hint.text.trim()}`);
+        parts.push(formatted);
       }
       const content = parts.join('\n\n');
-      if (content.length > 0) memory.appendObservable({
-        role: 'user', content: [{ type: 'text', text: preparing ? `[Handoff prepared; not injected by this hook]\n${content}` : content }], toolCalls: [],
-        origin: { kind: 'hook_result', event: `kiki:${input.harness}:${input.event}`, blocked: false },
-      });
+      if (content.length > 0) {
+        const text = preparing ? `[Handoff prepared; not injected by this hook]\n${content}` : content;
+        const origin = { kind: 'hook_result' as const, event: `kiki:${input.harness}:${input.event}`, blocked: false };
+        if (!preparing && boundary && runningTurnId !== undefined) {
+          const messageId = newMessageId();
+          memory.appendManaged({
+            role: 'user', content: [{ type: 'text', text }], toolCalls: [], id: messageId, origin,
+          }, {
+            deliveryId: newDeliveryId(),
+            messageId,
+            turnId: runningTurnId,
+            deliveredAt: new Date().toISOString(),
+            origin: 'queue',
+            placement: 'safety_boundary',
+          });
+        } else {
+          memory.appendObservable({ role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin });
+        }
+      }
       return { content: preparing ? '' : content };
     });
   }

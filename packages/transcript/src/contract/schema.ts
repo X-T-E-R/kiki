@@ -676,6 +676,7 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     stepId: stepIdSchema,
     stepIndex: z.number().int().nonnegative().optional(),
     frameIndex: z.number().int().nonnegative().optional(),
+    place: z.enum(['safety_boundary']).optional(),
     frame: transcriptFrameSchema,
   }),
   z.object({

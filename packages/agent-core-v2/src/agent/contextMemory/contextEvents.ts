@@ -17,6 +17,7 @@ const messageDeliverySchema = z.object({
   step: z.number().int().nonnegative().optional(),
   deliveredAt: z.string().min(1),
   origin: z.enum(['user', 'queue', 'mailbox', 'recovery', 'injection']),
+  placement: z.enum(['safety_boundary']).optional(),
 });
 
 const contextAppendMessageSchema = z.object({
