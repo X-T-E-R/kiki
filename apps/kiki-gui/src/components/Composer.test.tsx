@@ -195,6 +195,7 @@ beforeEach(() => {
       {
         name: 'grok-only',
         source: 'user',
+        source_file: '/fixture/profiles/grok-only.md',
         main: true,
         disabled: false,
         routes: [],
@@ -205,6 +206,7 @@ beforeEach(() => {
         // engine only, never under the native one.
         name: 'reviewer',
         source: 'workspace',
+        source_file: '/fixture/profiles/reviewer.md',
         main: true,
         disabled: false,
         routes: [],
@@ -1107,7 +1109,7 @@ describe('Composer execution control', () => {
     });
     catalog.resolve({
       items: [
-        { name: 'workspace-main', source: 'workspace', main: true, disabled: false, routes: [] },
+        { name: 'workspace-main', source: 'workspace', source_file: '/workspace/.kiki/profiles/workspace-main.md', main: true, disabled: false, routes: [] },
       ],
     });
     const trigger = await waitForProfileTrigger(rendered.container);
@@ -3432,8 +3434,31 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
+    await click(container.querySelector('[data-execution-apply]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: 'vendor/model-id', thinking: undefined } });
     expect(container.querySelector('[data-option-value="vendor/model-id"]')).toBeNull();
+  });
+
+  it('keeps selections in draft state and does not apply them when closing via Escape without clicking apply', async () => {
+    listModels.mockResolvedValue({ items: [] });
+    const onChangeExecution = vi.fn();
+    getExecutorModels.mockResolvedValue({ executor_id: 'claude-acp', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: '1', apply_state: 'ready', observed_at: Date.now(), effective: {
+      models: { state: 'ready', values: ['vendor/model-id', 'vendor/model-other'] }, thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+      controls: { model_switch: { applicability: 'fresh_binding', apply_state: 'applied' }, thinking_switch: { applicability: 'unknown', apply_state: 'unknown' }, manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' } },
+    } });
+    const choice = { executor: 'claude-acp', profile: undefined, profile_file: undefined, overrides: undefined };
+    const { container } = await renderComposer({ execution: choice, onChangeExecution });
+    // Open panel
+    const trigger = (container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!;
+    await click(trigger);
+    // Click option - this updates draft state only
+    await click(container.querySelector('[data-option-value="vendor/model-id"]')!);
+    expect(onChangeExecution).not.toHaveBeenCalled();
+    // Press Escape to cancel/close panel
+    container.querySelector('[data-execution-select]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+    // Assert onChangeExecution was NOT called
+    expect(onChangeExecution).not.toHaveBeenCalled();
   });
 
   it('offers only the external engine models, never native catalog aliases', async () => {
@@ -3769,6 +3794,7 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ execution: choice, onChangeExecution });
     await click((container.querySelector('#composer-engine-model-select') ?? container.querySelector('#composer-execution-select'))!);
     await click(container.querySelector('[data-option-value=""]')!);
+    await click(container.querySelector('[data-execution-apply]')!);
     expect(onChangeExecution).toHaveBeenCalledWith({ ...choice, overrides: { model: null, thinking: null } });
   });
   it.each([
@@ -4110,7 +4136,7 @@ describe('Composer queue edit mode', () => {
 
 describe('Composer projected profile model menu', () => {
   const menuProfile: NamedAgentProfile = {
-    name: 'agent', source: 'user', main: true, disabled: false, routes: [],
+    name: 'agent', source: 'user', source_file: '/fixture/profiles/agent.md', main: true, disabled: false, routes: [],
     restrict_models_to_menu: true, pinned_model_alias: 'fixture/kiki-pro',
     declared_model_menu: { aliases: ['fixture/kiki-pro'], default_alias: 'fixture/kiki-pro', identities: ['fixture/kiki-pro'] },
     effective_model_aliases: ['fixture/kiki-pro'],
@@ -4121,7 +4147,7 @@ describe('Composer projected profile model menu', () => {
       { id: 'fixture/outside', provider_id: 'fixture', remote_id: 'outside' },
     ] });
     listNamedAgentProfiles.mockResolvedValue({ items: [menuProfile,
-      { ...menuProfile, name: 'outside-profile', pinned_model_alias: 'fixture/outside', effective_model_aliases: ['fixture/outside'] },
+      { ...menuProfile, name: 'outside-profile', source_file: '/fixture/profiles/outside.md', pinned_model_alias: 'fixture/outside', effective_model_aliases: ['fixture/outside'] },
     ] });
   });
   it('warns for hard-menu exclusions but lets main users select and send without hiding profiles', async () => {
@@ -4136,6 +4162,8 @@ describe('Composer projected profile model menu', () => {
     expect(outside.getAttribute('aria-disabled')).not.toBe('true');
     expect(outside.textContent).toContain('profile:agent.restrict_models_to_menu');
     await act(async () => outside.click());
+    const applyBtn = document.body.querySelector<HTMLButtonElement>('[data-execution-apply]');
+    if (applyBtn) await act(async () => applyBtn.click());
     expect(onChangeModel).toHaveBeenCalledWith('fixture/outside');
     await rerender({ ...props, model: 'fixture/outside' });
     expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent.restrict_models_to_menu');

@@ -22,9 +22,9 @@ import {
 } from '../settings/profileEditor/engines';
 
 import type {
-  CatalogModelItem,
   ExecutorCatalogItem,
   ExecutorModelCatalogResponse,
+  ModelCatalogItem,
   NamedAgentProfile,
 } from '@kiki/protocol';
 import {
@@ -37,6 +37,7 @@ import {
   composerDefaultsForProfile,
   resolveCatalogModel,
   sortThinkingEffortsForDisplay,
+  type ComposerModelSource,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
@@ -74,11 +75,12 @@ export interface ExecutionSelectProps {
   readonly catalog: readonly ExecutorCatalogItem[];
   readonly profiles: readonly NamedAgentProfile[];
   readonly nativeLabel: string;
-  readonly models?: readonly CatalogModelItem[];
+  readonly models?: readonly ModelCatalogItem[];
   readonly modelOptions?: readonly SearchableSelectOption[];
   readonly currentModel?: string;
   readonly effectiveModel?: string;
   readonly modelShortLabel?: string;
+  readonly modelSource?: ComposerModelSource;
   readonly currentEffort?: string;
   readonly efforts?: readonly string[];
   readonly onChangeModel?: (model: string | undefined) => void | Promise<void>;
@@ -155,10 +157,10 @@ export function ExecutionSelect({
   // Draft state while the panel is open
   const [editingExecutor, setEditingExecutor] = useState(choice.executor);
   const [editingModel, setEditingModel] = useState<string | undefined>(
-    isNativeExecutor(choice.executor) ? currentModel : choice.overrides?.model
+    isNativeExecutor(choice.executor) ? currentModel : (choice.overrides?.model ?? undefined)
   );
   const [editingEffort, setEditingEffort] = useState<string | undefined>(
-    isNativeExecutor(choice.executor) ? currentEffort : choice.overrides?.thinking
+    isNativeExecutor(choice.executor) ? currentEffort : (choice.overrides?.thinking ?? undefined)
   );
   const [modelSearch, setModelSearch] = useState('');
   const [narrowPage, setNarrowPage] = useState<'models' | 'engines'>('models');
@@ -177,8 +179,8 @@ export function ExecutionSelect({
   useEffect(() => {
     if (open) {
       setEditingExecutor(choice.executor);
-      setEditingModel(isNativeExecutor(choice.executor) ? currentModel : choice.overrides?.model);
-      setEditingEffort(isNativeExecutor(choice.executor) ? currentEffort : choice.overrides?.thinking);
+      setEditingModel(isNativeExecutor(choice.executor) ? currentModel : (choice.overrides?.model ?? undefined));
+      setEditingEffort(isNativeExecutor(choice.executor) ? currentEffort : (choice.overrides?.thinking ?? undefined));
       setModelSearch('');
       setNarrowPage('models');
     }
@@ -223,11 +225,23 @@ export function ExecutionSelect({
   const retainedExternal = !isNativeExecutor(choice.executor) && choice.external_connection_id === undefined
     && !externalEngines.some((item) => item.id === choice.executor);
 
+  const editingExecutorModelsQuery = useQuery({
+    queryKey: ['executor-models', optConnection?.connectionId, optConnection?.scopeId, editingExecutor],
+    queryFn: () => optConnection?.client?.klient?.rest?.executors?.getModels(editingExecutor),
+    enabled: !isNativeExecutor(editingExecutor) && optConnection?.client?.klient?.rest?.executors !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const effectiveExecutorResponse = (editingExecutor === choice.executor && executorResponse)
+    ? executorResponse
+    : editingExecutorModelsQuery.data;
+
   // External capabilities for editingExecutor
   const executorCapabilities = useMemo(() => {
-    if (isNativeExecutor(editingExecutor) || !executorResponse) return undefined;
-    return mapExecutorCapabilities(executorResponse, now);
-  }, [editingExecutor, executorResponse, now]);
+    if (isNativeExecutor(editingExecutor) || !effectiveExecutorResponse) return undefined;
+    return mapExecutorCapabilities(effectiveExecutorResponse, now);
+  }, [editingExecutor, effectiveExecutorResponse, now]);
 
   const executorReportedModels = useMemo(() => {
     if (!executorCapabilities) return [];
@@ -237,7 +251,7 @@ export function ExecutionSelect({
 
   const executorEffortLevels = useMemo(() => {
     if (!executorCapabilities) return [];
-    return executorCapabilities.thinking_levels.levels ?? [];
+    return executorCapabilities.thinking_levels.values ?? [];
   }, [executorCapabilities]);
 
   // Handle switching executor inside the panel
@@ -245,8 +259,8 @@ export function ExecutionSelect({
     setEditingExecutor(newExecutor);
     setModelSearch('');
     if (newExecutor === choice.executor) {
-      setEditingModel(isNativeExecutor(newExecutor) ? currentModel : choice.overrides?.model);
-      setEditingEffort(isNativeExecutor(newExecutor) ? currentEffort : choice.overrides?.thinking);
+      setEditingModel(isNativeExecutor(newExecutor) ? currentModel : (choice.overrides?.model ?? undefined));
+      setEditingEffort(isNativeExecutor(newExecutor) ? currentEffort : (choice.overrides?.thinking ?? undefined));
     } else {
       // Switching to a different executor: default to undefined (engine/profile default)
       setEditingModel(undefined);
@@ -273,6 +287,11 @@ export function ExecutionSelect({
   }, [activeProfile, activeProfileDefaultExecutor, isNarrow]);
 
   // Handle apply selection
+  const isSwitchingExecutor = editingExecutor !== choice.executor;
+  const applyButtonLabel = (isSwitchingExecutor || onRequireSwitchConfirmation)
+    ? (locale === 'zh' ? '继续' : 'Continue')
+    : (locale === 'zh' ? '用于下一条' : 'Apply for next');
+
   const handleApply = useCallback(() => {
     const nextProfile = (editingExecutor !== choice.executor && choice.profile === 'agent')
       ? undefined
@@ -283,13 +302,14 @@ export function ExecutionSelect({
       executor: editingExecutor,
       profile: nextProfile,
       overrides: hasOverrides ? {
-        ...choice.overrides,
         model: editingModel ?? null,
-        thinking: editingEffort ?? null,
-      } : undefined,
-      external_connection_id: undefined,
-      external_connection_name: undefined,
+        thinking: editingEffort ?? undefined,
+      } : (choice.overrides !== undefined ? { model: null, thinking: null } : undefined),
     };
+    if (choice.external_connection_id !== undefined) {
+      delete (nextChoice as unknown as Record<string, unknown>)['external_connection_id'];
+      delete (nextChoice as unknown as Record<string, unknown>)['external_connection_name'];
+    }
     onChange(nextChoice);
     if (isNativeExecutor(editingExecutor)) {
       if (onChangeModel) void onChangeModel(editingModel);
@@ -304,7 +324,7 @@ export function ExecutionSelect({
       return choice.external_connection_name ?? t('st.section.connectionServices');
     }
     if (isNativeExecutor(choice.executor)) {
-      const resolvedModel = currentModel ? (resolveCatalogModel(models, currentModel)?.name ?? currentModel) : (effectiveModel ?? modelShortLabel ?? 'K3');
+      const resolvedModel = currentModel ? (resolveCatalogModel(models ?? [], currentModel)?.display_name ?? currentModel) : (effectiveModel ?? modelShortLabel ?? 'K3');
       const parts = [nativeLabel, resolvedModel, currentEffort].filter(Boolean);
       return parts.join(' · ');
     }
@@ -361,10 +381,11 @@ export function ExecutionSelect({
 
   // Filtered native models
   const filteredNativeModels = useMemo(() => {
+    const list = models ?? [];
     const q = modelSearch.trim().toLowerCase();
-    if (q === '') return models;
-    return models.filter((m) =>
-      `${m.id} ${m.name ?? ''} ${m.provider_id}`.toLowerCase().includes(q)
+    if (q === '') return list;
+    return list.filter((m) =>
+      `${m.id} ${m.display_name ?? ''} ${m.provider_id}`.toLowerCase().includes(q)
     );
   }, [models, modelSearch]);
 
@@ -397,13 +418,43 @@ export function ExecutionSelect({
 
   const isEditingDefaultSelected = editingModel === undefined || editingModel === '';
 
+  // Resolved catalog model for editingModel in native execution
+  const resolvedEditingModel = useMemo(() => {
+    if (!isNativeExecutor(editingExecutor)) return undefined;
+    const targetId = editingModel ?? currentModel ?? effectiveModel;
+    return targetId ? resolveCatalogModel(models ?? [], targetId) : undefined;
+  }, [editingExecutor, editingModel, currentModel, effectiveModel, models]);
+
   // Supported effort levels for current editing model/engine
-  const displayEfforts = useMemo(() => {
+  const displayEfforts = useMemo((): readonly string[] => {
     if (isNativeExecutor(editingExecutor)) {
+      const modelEfforts = resolvedEditingModel?.support_efforts;
+      if (modelEfforts !== undefined) {
+        return sortThinkingEffortsForDisplay(modelEfforts);
+      }
       return sortThinkingEffortsForDisplay(efforts ?? []);
     }
     return executorEffortLevels;
-  }, [editingExecutor, efforts, executorEffortLevels]);
+  }, [editingExecutor, resolvedEditingModel, efforts, executorEffortLevels]);
+
+  const handleSelectModel = useCallback((modelId: string | undefined) => {
+    setEditingModel(modelId);
+    if (modelId === undefined) {
+      setEditingEffort(undefined);
+      return;
+    }
+    if (isNativeExecutor(editingExecutor)) {
+      const nextCatalog = resolveCatalogModel(models ?? [], modelId);
+      const nextEfforts = nextCatalog?.support_efforts ?? [];
+      if (editingEffort && !nextEfforts.includes(editingEffort)) {
+        setEditingEffort(undefined);
+      }
+    } else {
+      if (editingEffort && !executorEffortLevels.includes(editingEffort)) {
+        setEditingEffort(undefined);
+      }
+    }
+  }, [editingExecutor, models, editingEffort, executorEffortLevels]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape' && open) {
@@ -500,6 +551,7 @@ export function ExecutionSelect({
                 <div className="flex items-center justify-between border-b border-hairline px-3 py-2 shrink-0">
                   <button
                     type="button"
+                    data-execution-narrow-back
                     onClick={() => { setNarrowPage('engines'); }}
                     className="flex items-center gap-1 text-[13px] font-medium text-ink hover:text-selected-ink"
                   >
@@ -544,16 +596,7 @@ export function ExecutionSelect({
                     data-execution-model-default
                     data-option-value=""
                     onClick={() => {
-                      setEditingModel(undefined);
-                      setEditingEffort(undefined);
-                      if (!isNativeExecutor(editingExecutor)) {
-                        onChange({
-                          ...choice,
-                          executor: editingExecutor,
-                          overrides: { model: null, thinking: null },
-                        });
-                        close(true);
-                      }
+                      handleSelectModel(undefined);
                     }}
                     className={`${MENU_ROW_CLASS} items-start min-h-[44px] ${isEditingDefaultSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                   >
@@ -565,9 +608,6 @@ export function ExecutionSelect({
                           <span className="text-[11.5px] text-ink-faint">{defaultOptionPreview}</span>
                         ) : null}
                       </span>
-                      <span className="mt-0.5 block text-[11px] text-ink-faint">
-                        {locale === 'zh' ? '跟随引擎自身设置与默认模型' : 'Follow engine settings and defaults'}
-                      </span>
                     </span>
                   </button>
 
@@ -577,6 +617,10 @@ export function ExecutionSelect({
                       filteredNativeModels.map((m) => {
                         const sel = editingModel === m.id;
                         const opt = modelOptions?.find((o) => o.value === m.id);
+                        const modelLabel = m.display_name ?? m.id;
+                        const showDistinctId = m.display_name && m.display_name !== m.id;
+                        const optText = opt?.description ?? opt?.hint;
+                        const showOptText = optText && optText !== m.id && optText !== m.display_name;
                         return (
                           <button
                             key={m.id}
@@ -587,18 +631,19 @@ export function ExecutionSelect({
                             disabled={opt?.disabled}
                             data-option-value={m.id}
                             onClick={() => {
-                              setEditingModel(m.id);
-                              if (onChangeModel) void onChangeModel(m.id);
+                              handleSelectModel(m.id);
                             }}
                             className={`${MENU_ROW_CLASS} items-start min-h-[44px] ${sel ? MENU_ROW_SELECTED_CLASS : ''}`}
                           >
                             <Check on={sel} />
                             <span className="min-w-0 flex-1">
-                              <span className="block truncate font-medium text-ink">{m.name ?? m.id}</span>
-                              <span className="block truncate font-mono text-[11px] text-ink-faint">{m.id}</span>
-                              {opt?.description || opt?.hint ? (
+                              <span className="block truncate font-medium text-ink">{modelLabel}</span>
+                              {showDistinctId ? (
+                                <span className="block truncate font-mono text-[11px] text-ink-faint">{m.id}</span>
+                              ) : null}
+                              {showOptText ? (
                                 <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
-                                  {opt.description ?? opt.hint}
+                                  {optText}
                                 </span>
                               ) : null}
                             </span>
@@ -616,17 +661,7 @@ export function ExecutionSelect({
                             aria-selected={sel}
                             data-option-value={val}
                             onClick={() => {
-                              setEditingModel(val);
-                              onChange({
-                                ...choice,
-                                executor: editingExecutor,
-                                overrides: {
-                                  ...choice.overrides,
-                                  model: val,
-                                  thinking: editingEffort ?? undefined,
-                                },
-                              });
-                              close(true);
+                              handleSelectModel(val);
                             }}
                             className={`${MENU_ROW_CLASS} items-start min-h-[44px] ${sel ? MENU_ROW_SELECTED_CLASS : ''}`}
                           >
@@ -660,7 +695,7 @@ export function ExecutionSelect({
                         >
                           {locale === 'zh' ? '默认' : 'Default'}
                         </button>
-                        {displayEfforts.map((level) => (
+                        {displayEfforts.map((level: string) => (
                           <button
                             key={level}
                             type="button"
@@ -698,7 +733,7 @@ export function ExecutionSelect({
                     onClick={handleApply}
                     className="rounded bg-ink px-3.5 py-1.5 text-[12.5px] font-medium text-paper hover:opacity-90"
                   >
-                    {locale === 'zh' ? '用于下一条' : 'Apply for next'}
+                    {applyButtonLabel}
                   </button>
                 </div>
               </>
@@ -756,7 +791,7 @@ export function ExecutionSelect({
             data-execution-panel
             role="dialog"
             aria-label={t('composer.execution.panelLabel')}
-            className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),32rem)] w-[620px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+            className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),32rem)] w-[620px] max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} !bg-paper`}
           >
             {/* Header */}
             <div className="flex items-center justify-between border-b border-hairline px-3 py-2 shrink-0">
@@ -926,16 +961,7 @@ export function ExecutionSelect({
                     data-execution-model-default
                     data-option-value=""
                     onClick={() => {
-                      setEditingModel(undefined);
-                      setEditingEffort(undefined);
-                      if (!isNativeExecutor(editingExecutor)) {
-                        onChange({
-                          ...choice,
-                          executor: editingExecutor,
-                          overrides: { model: null, thinking: null },
-                        });
-                        close(true);
-                      }
+                      handleSelectModel(undefined);
                     }}
                     className={`${MENU_ROW_CLASS} items-start ${isEditingDefaultSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
                   >
@@ -947,9 +973,6 @@ export function ExecutionSelect({
                           <span className="text-[11.5px] text-ink-faint">{defaultOptionPreview}</span>
                         ) : null}
                       </span>
-                      <span className="mt-0.5 block text-[11px] text-ink-faint">
-                        {locale === 'zh' ? '跟随引擎自身设置与默认模型' : 'Follow engine settings and defaults'}
-                      </span>
                     </span>
                   </button>
 
@@ -958,6 +981,10 @@ export function ExecutionSelect({
                     filteredNativeModels.map((m) => {
                       const sel = editingModel === m.id;
                       const opt = modelOptions?.find((o) => o.value === m.id);
+                      const modelLabel = m.display_name ?? m.id;
+                      const showDistinctId = m.display_name && m.display_name !== m.id;
+                      const optText = opt?.description ?? opt?.hint;
+                      const showOptText = optText && optText !== m.id && optText !== m.display_name;
                       return (
                         <button
                           key={m.id}
@@ -968,18 +995,19 @@ export function ExecutionSelect({
                           disabled={opt?.disabled}
                           data-option-value={m.id}
                           onClick={() => {
-                            setEditingModel(m.id);
-                            if (onChangeModel) void onChangeModel(m.id);
+                            handleSelectModel(m.id);
                           }}
                           className={`${MENU_ROW_CLASS} items-start ${sel ? MENU_ROW_SELECTED_CLASS : ''}`}
                         >
                           <Check on={sel} />
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate font-medium text-ink">{m.name ?? m.id}</span>
-                            <span className="block truncate font-mono text-[11px] text-ink-faint">{m.id}</span>
-                            {opt?.description || opt?.hint ? (
+                            <span className="block truncate font-medium text-ink">{modelLabel}</span>
+                            {showDistinctId ? (
+                              <span className="block truncate font-mono text-[11px] text-ink-faint">{m.id}</span>
+                            ) : null}
+                            {showOptText ? (
                               <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
-                                {opt.description ?? opt.hint}
+                                {optText}
                               </span>
                             ) : null}
                           </span>
@@ -997,17 +1025,7 @@ export function ExecutionSelect({
                           aria-selected={sel}
                           data-option-value={val}
                           onClick={() => {
-                            setEditingModel(val);
-                            onChange({
-                              ...choice,
-                              executor: editingExecutor,
-                              overrides: {
-                                ...choice.overrides,
-                                model: val,
-                                thinking: editingEffort ?? undefined,
-                              },
-                            });
-                            close(true);
+                            handleSelectModel(val);
                           }}
                           className={`${MENU_ROW_CLASS} items-start ${sel ? MENU_ROW_SELECTED_CLASS : ''}`}
                         >
@@ -1074,7 +1092,7 @@ export function ExecutionSelect({
                       >
                         {locale === 'zh' ? '默认' : 'Default'}
                       </button>
-                      {displayEfforts.map((level) => (
+                      {displayEfforts.map((level: string) => (
                         <button
                           key={level}
                           type="button"
@@ -1114,7 +1132,7 @@ export function ExecutionSelect({
                 onClick={handleApply}
                 className="rounded bg-ink px-3.5 py-1 text-[12px] font-medium text-paper hover:opacity-90 transition-opacity"
               >
-                {locale === 'zh' ? '用于下一条' : 'Apply for next'}
+                {applyButtonLabel}
               </button>
             </div>
           </div>

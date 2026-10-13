@@ -63,6 +63,7 @@ export interface ProfileSelectProps {
   readonly persona?: { readonly id: string; readonly name: string; readonly avatar: ReactNode };
   readonly onClearPersona?: () => void;
   readonly onCancelPending?: () => void;
+  readonly boundExecution?: ExecutionChoice;
 }
 
 export function ProfileSelect({
@@ -79,6 +80,7 @@ export function ProfileSelect({
   persona,
   onClearPersona,
   onCancelPending,
+  boundExecution,
 }: ProfileSelectProps) {
   const { t, locale } = useI18n();
   const host = useHost();
@@ -103,7 +105,7 @@ export function ProfileSelect({
   const clientRef = useRef(client);
   clientRef.current = client;
 
-  const serverId = meta?.server_id ?? client?.meta?.server_id ?? '';
+  const serverId = meta?.server_id ?? '';
   const serverIdRef = useRef(serverId);
   serverIdRef.current = serverId;
 
@@ -260,6 +262,7 @@ export function ProfileSelect({
       if (!pickableProfile(p)) return false;
       if (p.disabled === true) return false;
       if (p.main !== true) return false;
+      if (!p.source_file || p.source_file.trim() === '') return false;
       return true;
     });
   }, [profiles, pickableProfile]);
@@ -356,7 +359,7 @@ export function ProfileSelect({
           onClick={() => { onCancelPending(); }}
           className="absolute top-1/2 right-1.5 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-accent-ink transition-colors hover:bg-accent-ink/[0.08] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 pointer-coarse:w-8"
         >
-          <Icon name="close" size={10} />
+          <Icon name="close" size={12} />
         </button>
       ) : null}
 
@@ -380,7 +383,7 @@ export function ProfileSelect({
           data-execution-panel
           role="radiogroup"
           aria-label="Profile"
-          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-88 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS}`}
+          className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[min(var(--cp-max-h,none),28rem)] w-88 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden ${POPOVER_SURFACE_CLASS} !bg-paper`}
         >
           {fileForm.open ? (
             <div data-execution-file-form className="flex flex-col">
@@ -550,6 +553,46 @@ export function ProfileSelect({
                       </button>
                     </li>
                   ) : null}
+                  {/* Retained built-in profile from previous session / read-only */}
+                  {(() => {
+                    const retainedProfile = (boundExecution?.profile !== undefined && boundExecution.profile_file === undefined && !candidateProfiles.some((p) => p.name === boundExecution.profile))
+                      ? boundExecution.profile
+                      : (choice.profile !== undefined && choice.profile_file === undefined && !candidateProfiles.some((p) => p.name === choice.profile))
+                        ? choice.profile
+                        : undefined;
+                    if (!retainedProfile) return null;
+                    const isSelected = choice.profile === retainedProfile && choice.profile_file === undefined;
+                    return (
+                      <li key={retainedProfile} data-profile-retained={retainedProfile}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected ? 'true' : 'false'}
+                          data-execution-profile={retainedProfile}
+                          onClick={() => {
+                            onChange({
+                              ...choice,
+                              executor: boundExecution?.executor ?? choice.executor,
+                              profile: retainedProfile,
+                              profile_file: undefined,
+                            });
+                            close(true);
+                          }}
+                          className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                        >
+                          <Check on={isSelected} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block min-w-0 truncate font-medium text-ink">
+                              {retainedProfile === 'agent' && isNativeExecutor(boundExecution?.executor ?? choice.executor) ? nativeLabel : retainedProfile}
+                            </span>
+                            <span className="mt-0.5 block text-[11px] text-ink-faint">
+                              {locale === 'zh' ? '只读保留身份' : 'Read-only retained identity'}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })()}
 
                   {/* Catalog Profiles matching search */}
                   {filteredProfiles.map((p) => {

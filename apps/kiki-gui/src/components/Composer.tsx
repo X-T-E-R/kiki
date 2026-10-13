@@ -2382,6 +2382,7 @@ export function Composer({
             }}
             onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
             onCancelPending={executionPending ? onCancelExecution : undefined}
+            boundExecution={boundExecution}
           />
         </ComposerPanelOrigin>
       ),

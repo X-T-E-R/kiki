@@ -171,7 +171,7 @@ function profileCatalog() {
   listNamedAgentProfiles.mockResolvedValue({
     items: [
       { name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] },
-      { name: 'reviewer', source: 'workspace', main: true, disabled: false, routes: [] },
+      { name: 'reviewer', source: 'workspace', source_file: '/workspace/.kiki/profiles/reviewer.md', main: true, disabled: false, routes: [] },
     ],
   });
 }
