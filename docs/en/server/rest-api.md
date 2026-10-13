@@ -584,6 +584,7 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 | Method and path | Description |
 | --- | --- |
 | `POST /api/search` | Cross-session full-text search; `mode` is `terms` (default) or `literal` (exact substring); `page_token` pagination |
+| `POST /api/search/retry` | Restart a search indexer that stopped after memory pressure; keeps the published index |
 | `GET /api/connections` | List live WebSocket connections |
 | `GET /api/usage` | Aggregate usage across sessions with bounded filters and pagination |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | Inspect model price sources or patch user price overrides, see below |
@@ -597,6 +598,8 @@ Pages are sorted by score descending, then path; an empty query lists the root d
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
 
 `POST /api/search` accepts `query` and defaults to user/assistant text plus session titles. Set `include_tool_output: true` to include tool results and Shell output; thinking, tool names and tool inputs remain excluded. `role` can select `user`, `assistant`, `tool` or `title`, with `role: "tool"` explicitly selecting tool results. The same content scope applies to live sessions and existing indexes. Changing it invalidates the old `page_token`; start again without a token.
+
+`POST /api/search/retry` takes no body. When the indexer has stopped after repeated memory pressure, call it to clear the backoff and restart the stopped writer. This applies to the default SQLite backend and to MiniDB. Documents already in the published index stay searchable; the call does not delete or rebuild that index. Success uses the normal envelope with `data.retried` set to `true`. Klient exposes `rest.search.retry()`.
 
 ### Usage source grouping
 

@@ -1093,8 +1093,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   retryIndexer(): void {
-    if (this.sqliteHost === undefined || this.sqliteDisabled) return;
-    this.sqliteHost.retryIndexer();
+    if (this.workerRuntimeDisabled() || this.disposed) return;
+    if (this.sqliteHost !== undefined) this.sqliteHost.retryIndexer();
+    else if (this.backend instanceof SearchWorkerHost) this.backend.retryIndexer();
+    else return;
     this.requestSync();
   }
 

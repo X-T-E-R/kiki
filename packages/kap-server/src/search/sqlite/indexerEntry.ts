@@ -27,26 +27,34 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     report({ type: 'ready', pid: process.pid, writer: false });
     const elected = await new Promise<boolean>((resolve) => {
       const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
-      const election = setInterval(() => {
+      let election: NodeJS.Timeout | undefined;
+      let electionDelay = 2000;
+      const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
+      const onDisconnect = (): void => finish(false);
+      const finish = (won: boolean): void => {
+        clearInterval(heartbeat);
+        if (election) clearTimeout(election);
+        process.off('message', onMessage);
+        process.off('disconnect', onDisconnect);
+        resolve(won);
+      };
+      const attemptElection = (): void => {
         try { lease.exec('BEGIN IMMEDIATE'); finish(true); }
         catch (error) {
           if (!/SQLITE_BUSY|database is locked/i.test(String(error))) {
             report({ type: 'error', message: String(error) });
             finish(false);
+            return;
           }
+          electionDelay = Math.min(electionDelay * 2, 30_000);
+          election = setTimeout(attemptElection, electionDelay);
+          election.unref();
         }
-      }, 2000);
-      const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
-      const onDisconnect = (): void => finish(false);
-      const finish = (won: boolean): void => {
-        clearInterval(heartbeat);
-        clearInterval(election);
-        process.off('message', onMessage);
-        process.off('disconnect', onDisconnect);
-        resolve(won);
       };
       process.on('message', onMessage);
       process.on('disconnect', onDisconnect);
+      election = setTimeout(attemptElection, electionDelay);
+      election.unref();
     });
     if (!elected) { lease.close(); return; }
   }
@@ -56,7 +64,6 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   let rebuilding = false;
   let lastDrainError: string | undefined;
   let lastHeartbeat = Date.now();
-  let soft = false;
   let nearSoft = false;
   let stopped = false;
   let opened = false;
@@ -82,7 +89,6 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       process.stderr.write(`search indexer memory_budget rss=${memory.rss} limit=${hardMb * MiB}\n`);
       process.exit(MEMORY_BUDGET_EXIT);
     }
-    soft = memory.rss > softMb * MiB;
     nearSoft = memory.rss > (softMb - 32) * MiB;
   };
   const drain = async (): Promise<void> => {
@@ -106,8 +112,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         lastBatchMs = Date.now() - started;
         report({ type: 'synced', sessionId: id });
         status();
-        const elapsed = lastBatchMs;
-        if (pending.size && elapsed > 0) await new Promise((resolve) => setTimeout(resolve, elapsed));
+        if (pending.size) await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } catch (error) {
       lastDrainError = error instanceof Error ? error.message : String(error);
@@ -120,7 +125,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     afterBatch: async () => {
       status();
       if (nearSoft) index!.db.exec('PRAGMA shrink_memory');
-      if (soft) await new Promise((resolve) => setTimeout(resolve, 5000));
+      await new Promise<void>((resolve) => setImmediate(resolve));
     },
   };
   const recover = async (error: unknown): Promise<void> => {

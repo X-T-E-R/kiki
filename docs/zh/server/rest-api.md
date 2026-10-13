@@ -580,6 +580,7 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/search` | 跨会话全文搜索，`mode` 为 `terms`（默认）或 `literal`（精确子串），`page_token` 分页 |
+| `POST /api/search/retry` | 内存压力导致索引器停止后重新启动它，并保留已发布的索引 |
 | `GET /api/connections` | 列出当前在线的 WebSocket 连接 |
 | `GET /api/usage` | 按有界筛选与分页汇总各会话用量 |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | 查询模型价格来源或按键修改用户价格覆盖，见下节 |
@@ -593,6 +594,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 | `/api/debug/*` | 反射式调试 RPC，仅 `--debug-endpoints` 且 loopback 时挂载，不属于稳定协议 |
 
 `POST /api/search` 接受 `query`，默认搜索用户与 Assistant 正文及会话标题。设置 `include_tool_output: true` 才纳入工具结果和 Shell 输出，思考块、工具名称和工具输入始终排除。`role` 可选 `user`、`assistant`、`tool` 或 `title`，其中 `role: "tool"` 显式选择工具结果。相同内容范围适用于在线会话与已有索引；改变范围会使旧 `page_token` 失效，应去掉令牌重新查询。
+
+`POST /api/search/retry` 不需要请求体。索引器因连续内存压力停止后，调用它清除退避并重新启动已停止的索引写入。默认 SQLite 后端和 MiniDB 后端都适用。已发布索引中的文档仍可搜索；这次调用不删除、也不重建该索引。成功时沿用普通信封，`data.retried` 为 `true`。Klient 方法为 `rest.search.retry()`。
 
 ### 用量来源分组
 

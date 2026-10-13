@@ -48,8 +48,9 @@ export interface SqliteHostSnapshot {
 }
 
 const INDEXER_BACKOFF = [1000, 10_000, 60_000, 600_000];
-const MEMORY_BACKOFF = [60_000, 600_000, 3_600_000];
+const MEMORY_BACKOFF = [1000, 10_000, 60_000];
 const QUERY_ACTIVE_SLOTS = 8;
+const QUERY_WORKER_COUNT = 1;
 
 export function seaIndexerArgs(database: string, execArgv: readonly string[]): string[] {
   return [
@@ -61,7 +62,7 @@ export function seaIndexerArgs(database: string, execArgv: readonly string[]): s
 export class SqliteSearchHost {
   private child?: ChildProcess;
   private readonly readers: Worker[] = [];
-  private readonly readerLoads = [0, 0, 0];
+  private readonly readerLoads = [0];
   private readonly bootSalt = randomUUID();
   private readonly pending = new Map<string, SqliteSessionInput>();
   private readonly sent = new Set<string>();
@@ -114,7 +115,6 @@ export class SqliteSearchHost {
   async open(): Promise<void> {
     if (this.stopped) throw new GlobalSearchError('index_unavailable', 'search host is closed');
     this.startIndexer();
-    await this.openReader();
   }
 
   retryIndexer(): void {
@@ -376,9 +376,9 @@ export class SqliteSearchHost {
   }
 
   private async openReader(): Promise<void> {
-    if (this.readers.length === 3 || this.readerOpening) return this.readerOpening;
+    if (this.readers.length >= QUERY_WORKER_COUNT || this.readerOpening) return this.readerOpening;
     this.readerOpening = (async () => {
-      while (this.readers.length < 3) await this.spawnReader();
+      while (this.readers.length < QUERY_WORKER_COUNT) await this.spawnReader();
     })().finally(() => { this.readerOpening = undefined; });
     return this.readerOpening;
   }

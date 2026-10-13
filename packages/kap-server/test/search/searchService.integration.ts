@@ -3185,7 +3185,7 @@ describe('search worker host (stage 4)', () => {
     }
   });
 
-  it('backs off for hours after worker memory pressure instead of restarting the rebuild loop', async () => {
+  it('uses a bounded restart backoff after worker memory pressure', async () => {
     const host = new SearchWorkerHost({
       dir: join(home!, 'search-index'),
       log: noopLog,
@@ -3196,10 +3196,44 @@ describe('search worker host (stage 4)', () => {
     worker.emit('error', new Error('Worker terminated due to reaching memory limit: JS heap out of memory'));
     await worker.terminate();
     await expect(host.status()).rejects.toMatchObject({ code: 'backoff' });
+    const lifecycle = host.lifecycleSnapshot();
+    expect(lifecycle.state).toBe('degraded');
+    const waitMs = Number(lifecycle.detail?.match(/restart backing off for (\d+)ms/)?.[1]);
+    expect(waitMs).toBeGreaterThan(0);
+    expect(waitMs).toBeLessThanOrEqual(1_000);
+  });
+
+  it('stops repeated OOM restarts until manual retry and preserves the published index', { timeout: 30_000 }, async () => {
+    const s1 = summary('s1', 'memory recovery', T1);
+    await writeWire(home!, 's1', 'main', [userLine('苹果 retained', T1)]);
+    const service = track(makeService(home!, staticIndex([s1])));
+    await service.reindex();
+    const host = hostOf(service);
+    const state = host as unknown as { worker: Worker | null; nextRetryAfter: number };
+    for (const expectedWait of [1_000, 10_000, 60_000, 0]) {
+      const worker = state.worker!;
+      worker.emit('error', new Error('Worker terminated due to reaching memory limit: JS heap out of memory'));
+      await worker.terminate();
+      await expect(host.status()).rejects.toMatchObject({ code: 'backoff' });
+      if (expectedWait > 0) {
+        const waitMs = Number(host.lifecycleSnapshot().detail?.match(/restart backing off for (\d+)ms/)?.[1]);
+        expect(waitMs).toBeGreaterThan(expectedWait - 1_000);
+        expect(waitMs).toBeLessThanOrEqual(expectedWait);
+        state.nextRetryAfter = 0;
+        await host.ensureOpen();
+      }
+    }
     expect(host.lifecycleSnapshot()).toMatchObject({
-      state: 'degraded',
-      detail: expect.stringMatching(/restart backing off for 2\d{7}ms/),
+      state: 'degraded', detail: expect.stringContaining('retry required'),
     });
+    state.nextRetryAfter = 0;
+    await expect(host.ensureOpen()).rejects.toMatchObject({ code: 'backoff' });
+    expect(state.worker).toBeNull();
+    service.retryIndexer();
+    await settleSync(service);
+    expect((await service.search({ query: '苹果' })).items).toMatchObject([
+      { sessionId: 's1', snippet: expect.stringContaining('苹果 retained') },
+    ]);
   });
 
   it('restarts a killed worker, reaps its lock, and keeps serving', { timeout: 30_000 }, async () => {

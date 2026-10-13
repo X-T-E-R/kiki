@@ -83,8 +83,38 @@ it('queues bursts past eight worker slots with bounded backpressure', async () =
   await waitFor(() => host.snapshot().state === 'ready');
   const settled = await Promise.allSettled(Array.from({ length: 16 }, () => host.search(query)));
   expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(16);
-  expect(host.snapshot().queryWorkers).toBe(3);
+  expect(host.snapshot().queryWorkers).toBe(1);
   expect(host.snapshot().watchdogTimeouts).toBe(0);
+});
+
+it('routes overlapping searches through the single lazy reader', async () => {
+  const { host } = await fixture();
+  await waitFor(() => host.snapshot().state === 'ready');
+  expect(host.snapshot().queryWorkers).toBe(0);
+  const results = await Promise.all([host.search(query), host.search(query)]);
+  expect(results).toHaveLength(2);
+  expect(results.every((result) => result.rows.length === 0)).toBe(true);
+  expect(host.snapshot().queryWorkers).toBe(1);
+});
+
+it('yields between memory-pressure batches without a fixed multi-second pause', async () => {
+  const home = await mkdtemp(join(process.cwd(), '.tmp-search-s3-yield-'));
+  homes.push(home);
+  const dir = join(home, 's1');
+  await mkdir(join(dir, 'agents', 'main'), { recursive: true });
+  await writeFile(join(dir, 'agents', 'main', 'wire.jsonl'), Array.from({ length: 1000 }, (_, n) => JSON.stringify({
+    type: 'context.append_message', time,
+    message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: `needle ${n}` }] },
+  })).join('\n') + '\n');
+  const host = new SqliteSearchHost({ database: join(home, 'index.sqlite'), indexerSoftMb: 1 });
+  hosts.push(host);
+  await host.open();
+  await waitFor(() => host.snapshot().state === 'ready');
+  host.sync([{ id: 's1', dir, workspaceId: 'example', updatedAt: time }]);
+  await waitFor(() => host.snapshot().pendingSessions === 0, 5000);
+  await waitFor(() => host.snapshot().documents === 1000);
+  expect(host.snapshot().lastBatchMs).toBeLessThan(5000);
+  console.log('[sqlite-yield]', { documents: host.snapshot().documents, syncMs: host.snapshot().lastBatchMs });
 });
 
 it('paginates beyond the newest-first fast page without losing older matches', async () => {

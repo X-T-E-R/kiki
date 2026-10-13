@@ -86,7 +86,7 @@ const DEFAULT_MAX_OLD_SPACE_MB = 1024;
 const STABLE_SESSION_MS = 60_000;
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 10_000;
-const MEMORY_PRESSURE_BACKOFF_MS = 6 * 60 * 60_000;
+const MEMORY_PRESSURE_BACKOFF = [1_000, 10_000, 60_000];
 const DESKTOP_BUNDLED_ENV = 'KIKI_DESKTOP_BUNDLED';
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_TIMEOUT_MS = 30 * 60_000;
@@ -113,6 +113,8 @@ export class SearchWorkerHost {
   /** Token of the db.lock line the current/last worker published. */
   private lockToken: string | undefined;
   private failures = 0;
+  private memoryFailures = 0;
+  private memoryStopped = false;
   private nextRetryAfter = 0;
   private lastFailure: string | null = null;
   private readyAt = 0;
@@ -157,6 +159,9 @@ export class SearchWorkerHost {
     }
     if (this.spawnPromise !== null) return { state: 'opening' };
     if (this.worker === null) {
+      if (this.memoryStopped) {
+        return { state: 'degraded', detail: `search worker stopped after repeated memory pressure; retry required (last failure: ${this.lastFailure})` };
+      }
       if (this.lastFailure !== null) {
         const wait = this.nextRetryAfter - Date.now();
         return {
@@ -170,6 +175,15 @@ export class SearchWorkerHost {
       return { state: 'stopped' };
     }
     return this.lastCoreLifecycle ?? { state: 'opening' };
+  }
+
+  retryIndexer(): void {
+    if (this.exiting || this.worker !== null) return;
+    this.failures = 0;
+    this.memoryFailures = 0;
+    this.memoryStopped = false;
+    this.nextRetryAfter = 0;
+    this.lastFailure = null;
   }
 
   async ensureOpen(): Promise<SearchWorkerOpenResult> {
@@ -319,6 +333,9 @@ export class SearchWorkerHost {
       ));
     }
     if (this.spawnPromise !== null) return this.spawnPromise;
+    if (this.memoryStopped) {
+      return Promise.reject(new SearchWorkerError('backoff', this.lifecycleSnapshot().detail!));
+    }
     const wait = this.nextRetryAfter - Date.now();
     if (wait > 0) {
       return Promise.reject(
@@ -493,11 +510,15 @@ export class SearchWorkerHost {
     const memoryPressure = this.lastFailure?.includes('JS heap out of memory') === true ||
       this.lastFailure?.includes('reaching memory limit') === true;
     this.failures = sessionMs > STABLE_SESSION_MS ? Math.max(1, this.failures - 1) : this.failures + 1;
-    const backoff = memoryPressure
-      ? MEMORY_PRESSURE_BACKOFF_MS
+    this.memoryFailures = memoryPressure ? sessionMs > STABLE_SESSION_MS ? 1 : this.memoryFailures + 1 : 0;
+    this.memoryStopped = this.memoryFailures > MEMORY_PRESSURE_BACKOFF.length;
+    const backoff = this.memoryStopped ? 0 : memoryPressure
+      ? MEMORY_PRESSURE_BACKOFF[this.memoryFailures - 1]!
       : Math.min(BACKOFF_BASE_MS * 2 ** (this.failures - 1), BACKOFF_CAP_MS);
-    this.nextRetryAfter = Date.now() + backoff;
-    this.log.warn('global search: worker exited unexpectedly; restart backed off', {
+    this.nextRetryAfter = this.memoryStopped ? 0 : Date.now() + backoff;
+    this.log.warn(this.memoryStopped
+      ? 'global search: worker stopped after repeated memory pressure; retry required'
+      : 'global search: worker exited unexpectedly; restart backed off', {
       code,
       backoffMs: backoff,
       lastFailure: this.lastFailure ?? undefined,
