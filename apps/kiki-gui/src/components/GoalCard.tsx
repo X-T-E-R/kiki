@@ -488,9 +488,14 @@ export function GoalCard({
                 {t('goal.conflict')}
               </p>
             ) : null}
+            {actionError !== null ? (
+              <p role="alert" data-goal-error className="text-[12px] text-danger">
+                {t('goal.actionFailed', { detail: actionError })}
+              </p>
+            ) : null}
           </div>
         </InlineEditor>
-        {actionError !== null ? (
+        {!editing && actionError !== null ? (
           <p role="alert" data-goal-error className="mt-1 pb-1 pl-[15px] break-words text-[12px] text-danger">
             {t('goal.actionFailed', { detail: actionError })}
           </p>
