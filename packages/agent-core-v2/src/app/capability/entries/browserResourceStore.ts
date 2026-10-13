@@ -156,7 +156,7 @@ export async function updateBrowserChrome(home: string, report: BrowserResourceR
 
 export const CODEX_BRIDGE_DIRECTORY = 'codex-browser-bridge-1.11.1-kiki-no-resend-r1';
 export const CODEX_BRIDGE_VENDOR_DIR = 'apps/kimi-code/vendor/codex-browser-bridge/win32-x64';
-export const CODEX_BRIDGE_RELEASE_COMMIT: string | undefined = undefined;
+export const CODEX_BRIDGE_RELEASE_COMMIT = '0d160973e1421f34f3e50f16f690f22163b69352';
 export const CODEX_BRIDGE_FILE_NAMES = ['codex-browser-bridge.exe', 'LICENSE', 'build.json', 'kiki-no-resend-r1.patch'] as const;
 export const CODEX_BRIDGE_FILE_SHA256: Readonly<Record<(typeof CODEX_BRIDGE_FILE_NAMES)[number], string>> = {
   'codex-browser-bridge.exe': '677e62598e86e973419119811ca323ef85b6df46d593e8609d807d9b1695c87c',

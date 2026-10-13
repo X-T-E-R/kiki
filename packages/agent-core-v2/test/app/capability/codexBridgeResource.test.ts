@@ -68,20 +68,14 @@ describe('codex bridge release bytes', () => {
     expect(await installedCodexBridge(home)).toBe(binary);
   }, 30_000);
 
-  it('does not call the network for a release commit that is not public', async () => {
+  it('installs the vendor bytes from the pinned public commit URL', async () => {
     const home = await homeDir();
-    const fetchImpl = vi.fn();
-    if (CODEX_BRIDGE_RELEASE_COMMIT === undefined) {
-      await expect(installCodexBridge(home, () => {}, fetchImpl as never)).rejects.toThrow(/not public/);
-      expect(fetchImpl).not.toHaveBeenCalled();
-      expect(() => codexBridgeReleaseUrl('short', 'codex-browser-bridge.exe')).toThrow(/not public/);
-      return;
-    }
     const commit = CODEX_BRIDGE_RELEASE_COMMIT;
     expect(codexBridgeReleaseUrl(commit, 'codex-browser-bridge.exe')).toBe(
       `https://raw.githubusercontent.com/X-T-E-R/kiki/${commit}/apps/kimi-code/vendor/codex-browser-bridge/win32-x64/codex-browser-bridge.exe`,
     );
+    expect(() => codexBridgeReleaseUrl('short', 'codex-browser-bridge.exe')).toThrow(/not public/);
     await installCodexBridge(home, () => {}, fetchRelease(commit));
     expect(await installedCodexBridge(home)).toBe(codexBridgeResourcePaths(home).binary);
-  });
+  }, 30_000);
 });
