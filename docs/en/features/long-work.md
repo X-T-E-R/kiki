@@ -56,13 +56,13 @@ The context meter sits below the composer. Opening it gives you a detail card wi
 
 The card also holds the **renewal strategy** — a three-way choice for what happens at the compaction point:
 
-- **Summarize** — compress the history into a summary and keep going.
-- **Fresh** — do not carry the history. Restart from the agent's working notes alone.
-- **Auto** (the built-in main-agent default) — restart when the working notes safely cover the work; otherwise summarize.
+- **Summarize** — ask a model to summarize the history and keep going.
+- **Fresh** — build a handoff without a summarizing model, keeping selected user inputs, working notes, history references, recent exchanges and usable media.
+- **Auto** (the built-in default for native main agents and subagents) — use that handoff when the conversation can continue within the available window; otherwise summarize.
 
-The source label next to it says which layer the current value came from (session, profile, global, or inherited) and doubles as the control that saves it more broadly or resets it. A session choice takes precedence over its profile, then the global setting, then the built-in default. Subagents have a separate default, and external executors manage their own context; both are read-only here.
+The source label next to it says which layer the current value came from (session, profile, global, or inherited) and doubles as the control that saves it more broadly or resets it. A session choice takes precedence over its profile, then the global setting, then the built-in default. Subagents can have a separate configured default, and external executors manage their own context; both are read-only here.
 
-**Fresh has real conditions.** Restarting from notes throws away the conversation, so Kiki only does it when nothing would be lost — the history is available, the working notes exist and have been reviewed in the current window, and the restart will fit. When something arrived after the last handoff, or a result cannot be recovered from notes, Kiki compacts instead of clearing. Treat Fresh as "restart from notes when that is safe", not "clear the history at any moment".
+Fresh is a context handoff, not a deletion of the conversation. New input after the last handoff, a tool error, or unreviewed notes alone do not force a model summary. Kiki summarizes instead when required user text is neither retained nor recoverable through history, media cannot be carried forward, or the rebuilt context exceeds the available window. A custom compression instruction also uses the summarizing model unless the request explicitly selects a model-free handoff. If saving fails, retrying keeps the prepared result rather than silently changing strategy.
 
 For the manual side, `/compact` compresses on demand and accepts a hint about what to prioritize. See [Context compression](/en/guides/sessions#context-compression) and [`/autocompact`](/en/reference/slash-commands).
 
