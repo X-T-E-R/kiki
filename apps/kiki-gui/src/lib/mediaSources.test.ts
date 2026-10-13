@@ -48,7 +48,7 @@ import {
   type MediaSourceEntry,
   type MediaSourceSettings,
 } from './mediaSources';
-import { artifactFacts } from '../components/media/MediaArtifactList';
+import { artifactFacts, visibleArtifacts } from '../components/media/MediaArtifactList';
 
 const HEALTHY = { enabled: true, broken: false };
 
@@ -485,5 +485,28 @@ describe('subscriptions', () => {
       true,
     );
     expect(next.map((item) => item.id)).toEqual(['b']);
+  });
+});
+
+describe('visibleArtifacts deduplication', () => {
+  it('omits preview role when an original role is present to prevent thumbnail duplicates', () => {
+    const original = { id: 'art-1', file_id: 'f-1', name: 'image.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
+    const preview = { id: 'art-2', file_id: 'f-2', name: 'image_thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const result = visibleArtifacts([original, preview]);
+    expect(result).toEqual([original]);
+  });
+
+  it('keeps preview artifact if no original is available', () => {
+    const preview = { id: 'art-2', file_id: 'f-2', name: 'preview.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const result = visibleArtifacts([preview]);
+    expect(result).toEqual([preview]);
+  });
+
+  it('preserves multiple distinct originals', () => {
+    const original1 = { id: 'art-1', file_id: 'f-1', name: 'img1.png', mime: 'image/png', bytes: 1024, kind: 'image' as const, role: 'original' as const, complete: true };
+    const original2 = { id: 'art-2', file_id: 'f-2', name: 'img2.png', mime: 'image/png', bytes: 2048, kind: 'image' as const, role: 'original' as const, complete: true };
+    const preview = { id: 'art-3', file_id: 'f-3', name: 'thumb.png', mime: 'image/png', bytes: 256, kind: 'image' as const, role: 'preview' as const, complete: true };
+    const result = visibleArtifacts([original1, original2, preview]);
+    expect(result).toEqual([original1, original2]);
   });
 });

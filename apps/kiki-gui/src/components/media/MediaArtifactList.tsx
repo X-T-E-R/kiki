@@ -79,6 +79,13 @@ export function artifactFacts(artifact: MediaArtifact): string {
     .join(' · ');
 }
 
+export function visibleArtifacts(artifacts: readonly MediaArtifact[]): readonly MediaArtifact[] {
+  const hasOriginal = artifacts.some((artifact) => artifact.role === 'original');
+  return hasOriginal
+    ? artifacts.filter((artifact) => artifact.role !== 'preview')
+    : artifacts;
+}
+
 export function MediaArtifactList({
   artifacts,
   sessionId,
@@ -91,9 +98,11 @@ export function MediaArtifactList({
   readonly agentId?: string;
 }) {
   if (artifacts.length === 0) return null;
+  const visible = visibleArtifacts(artifacts);
+  if (visible.length === 0) return null;
   return (
-    <div className="mt-1.5 flex flex-col gap-1.5" data-media-artifacts={artifacts.length}>
-      {artifacts.map((artifact) => (
+    <div className="mt-1.5 flex flex-col gap-1.5" data-media-artifacts={visible.length}>
+      {visible.map((artifact) => (
         <MediaArtifactRow key={artifact.id} artifact={artifact} sessionId={sessionId} agentId={agentId} />
       ))}
     </div>

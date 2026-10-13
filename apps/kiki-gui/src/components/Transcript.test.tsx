@@ -90,6 +90,7 @@ import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
 import {
+  filterMediaNotRenderedInText,
   mergeSubagentRows,
   splitPrefixSegments,
   splitStreamingText,
@@ -804,6 +805,73 @@ describe('gallery order seam', () => {
   });
 });
 
+describe('media part deduplication', () => {
+  it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', () => {
+    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
+      { kind: 'image', url: 'https://example.test/rendered.png' },
+    ];
+    const text = 'Here is the diagram: ![diagram](https://example.test/rendered.png)';
+    const filtered = filterMediaNotRenderedInText(media, text);
+    expect(filtered).toBeUndefined();
+  });
+
+  it('keeps distinct duplicate parts when only one is referenced in markdown text', () => {
+    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
+      { kind: 'image', url: 'https://example.test/img.png' },
+      { kind: 'image', url: 'https://example.test/img.png' },
+    ];
+    const text = 'First instance: ![img](https://example.test/img.png)';
+    const filtered = filterMediaNotRenderedInText(media, text);
+    expect(filtered).toHaveLength(1);
+    expect(filtered?.[0]?.url).toBe('https://example.test/img.png');
+  });
+
+  it('preserves media parts across different messages independently', () => {
+    const part = { kind: 'image' as const, url: 'https://example.test/shared.png' };
+    const textWithImg = 'Inline: ![pic](https://example.test/shared.png)';
+    const textWithoutImg = 'Just text referring to something else';
+
+    const msg1Filtered = filterMediaNotRenderedInText([part], textWithImg);
+    const msg2Filtered = filterMediaNotRenderedInText([part], textWithoutImg);
+
+    expect(msg1Filtered).toBeUndefined();
+    expect(msg2Filtered).toHaveLength(1);
+    expect(msg2Filtered?.[0]?.url).toBe('https://example.test/shared.png');
+  });
+
+  it('preserves non-image media parts even if path/name matches text', () => {
+    const filePart = { kind: 'file' as const, path: '/workspace/doc.pdf', name: 'doc.pdf' };
+    const text = 'See [document](/workspace/doc.pdf)';
+    const filtered = filterMediaNotRenderedInText([filePart], text);
+    expect(filtered).toEqual([filePart]);
+  });
+
+  it('renders inline image without duplicate MediaPartList thumbnail in assistant message', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-1', 'Chart: ![chart](https://example.test/chart.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/chart.png' }],
+      }),
+    ]);
+    const markdownImg = container.querySelector('img[src="https://example.test/chart.png"]');
+    expect(markdownImg).not.toBeNull();
+    const thumbContainers = container.querySelectorAll('[data-assistant-prose] > div.flex.flex-wrap');
+    expect(thumbContainers).toHaveLength(0);
+  });
+
+  it('renders remaining thumbnail when assistant message has multiple parts and only one is in markdown', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-2', 'Chart: ![chart](https://example.test/chart.png)', {
+        media: [
+          { kind: 'image', url: 'https://example.test/chart.png' },
+          { kind: 'image', url: 'https://example.test/extra.png' },
+        ],
+      }),
+    ]);
+    expect(container.querySelector('img[src="https://example.test/chart.png"]')).not.toBeNull();
+    expect(container.querySelector('img[src="https://example.test/extra.png"]')).not.toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Message-closure row actions + collapsible user messages. These render the
 // full Transcript; the ResizeObserver stub from beforeAll covers both the
@@ -852,8 +920,12 @@ function userBlock(
   return { kind: 'user', createdAt: '2026-01-01T00:00:00.000Z', ...overrides };
 }
 
-function assistantBlock(id: string, text: string): Extract<Block, { kind: 'assistant' }> {
-  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z' };
+function assistantBlock(
+  id: string,
+  text: string,
+  overrides?: Partial<Extract<Block, { kind: 'assistant' }>>,
+): Extract<Block, { kind: 'assistant' }> {
+  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z', ...overrides };
 }
 
 /**
@@ -3614,7 +3686,6 @@ function transcriptDistanceFromEnd(scroll: HTMLElement): number {
 }
 
 describe('virtualized transcript scrolling', () => {
-  beforeAll(startEditFixture);
   it('keeps unverified coverage quiet while older pages remain to load', async () => {
     const container = await renderTranscript([userBlock({ id: 'known-turn', text: 'known message' })], undefined, {
       historyCoverageKind: 'unknown', hasMoreHistory: true, oldestMessageId: 'known-turn', fetchedOlder: false,

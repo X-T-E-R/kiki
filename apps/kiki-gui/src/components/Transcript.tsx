@@ -171,6 +171,7 @@ import {
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { MediaPartList } from './mediaParts';
+import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
 import { MediaGalleryOrder } from './mediaPreviewContext';
 import { RelativeTime } from './RelativeTime';
 import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
@@ -616,6 +617,71 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
+function extractInlineImageTargets(text: string): string[] {
+  const targets: string[] = [];
+  for (const match of text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)/g)) {
+    if (match[1]) targets.push(match[1]);
+  }
+  for (const match of text.matchAll(/<img\b[^>]*?\bsrc=["']([^"']+)["']/gi)) {
+    if (match[1]) targets.push(match[1]);
+  }
+  for (const match of text.matchAll(/<image\b[^>]*?\bpath=["']([^"']+)["']/gi)) {
+    if (match[1]) targets.push(match[1]);
+  }
+  return targets;
+}
+
+function matchesMediaRef(item: MediaRef, rawTarget: string): boolean {
+  const unwrapped = unwrapFileLinkTarget(rawTarget) ?? rawTarget;
+  const target = unwrapped.split(/[?#]/, 1)[0]!.trim();
+  if (target === '') return false;
+  if (item.fileId !== undefined && (target === item.fileId || target === `kimi-file://${item.fileId}` || target.endsWith(item.fileId))) {
+    return true;
+  }
+  if (item.url !== undefined) {
+    const normUrl = item.url.split(/[?#]/, 1)[0]!;
+    if (target === normUrl || target === item.url) return true;
+  }
+  if (item.path !== undefined) {
+    const normPath = item.path.replaceAll('\\', '/');
+    const normTarget = target.replaceAll('\\', '/');
+    if (normTarget === normPath || normTarget.endsWith(normPath) || (item.name !== undefined && (normTarget.endsWith(`/${item.name}`) || normTarget === item.name))) {
+      return true;
+    }
+  }
+  if (item.blobHash !== undefined && target.includes(item.blobHash)) {
+    return true;
+  }
+  if (item.detail?.attachmentId !== undefined && (target.includes(item.detail.attachmentId) || target === `attachment://${item.detail.attachmentId}`)) {
+    return true;
+  }
+  return false;
+}
+
+export function filterMediaNotRenderedInText(
+  media: readonly MediaRef[] | undefined,
+  text: string,
+): readonly MediaRef[] | undefined {
+  if (media === undefined || media.length === 0 || text === '') return media;
+  const targets = extractInlineImageTargets(text);
+  if (targets.length === 0) return media;
+  const remainingTargets = [...targets];
+  const filtered: MediaRef[] = [];
+  for (const item of media) {
+    if (item.kind !== 'image' && item.kind !== 'video') {
+      filtered.push(item);
+      continue;
+    }
+    const matchIndex = remainingTargets.findIndex((target) => matchesMediaRef(item, target));
+    if (matchIndex >= 0) {
+      remainingTargets.splice(matchIndex, 1);
+    } else {
+      filtered.push(item);
+    }
+  }
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 const AssistantMessage = memo(function AssistantMessage({
   block,
   rowActions,
@@ -639,6 +705,10 @@ const AssistantMessage = memo(function AssistantMessage({
   const incomplete = useContentContinuation(source, MESSAGE_TEXT_ROOTS).pending.length > 0;
   const internalProse = useMessageViewContext().internalProse && block.text !== '';
   const streaming = block.streaming && block.text !== '';
+  const media = useMemo(
+    () => filterMediaNotRenderedInText(block.media, block.text),
+    [block.media, block.text],
+  );
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
     [streaming, block.text],
@@ -691,7 +761,7 @@ const AssistantMessage = memo(function AssistantMessage({
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
-        {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
+        {media !== undefined ? <MediaPartList media={media} /> : null}
         {/* The turn tail's "Stopped by you" divider already states the stop
             of the latest turn; the inline mark stays for older stopped turns. */}
         {block.stopped === true && !stopShownByTail ? (
