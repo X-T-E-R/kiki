@@ -85,6 +85,7 @@ import { browserHost, HostProvider } from '../host';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
+import { readTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { Markdown } from './Markdown';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
@@ -3158,10 +3159,9 @@ describe('message row actions', () => {
     });
     const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
     expect(textarea?.value).toBe('original text');
-    // The attachment note explains the full-replacement semantics.
-    expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
-      'Keep or change attachments',
-    );
+    // This message has no attachments. The composer is the attachment surface,
+    // so the editor does not add a second sentence under the prefilled text.
+    expect(container.querySelector('[data-edit-editor]')?.textContent).not.toContain('Keep or change attachments');
     expect(container.querySelector('[data-edit-editor] [data-composer-card]')).not.toBeNull();
     await act(async () => {
       flushSync(() => {
@@ -4992,10 +4992,8 @@ describe('external executor badge', () => {
     expect(fold).not.toBeNull();
     await act(async () => { click(fold!); });
 
-    const usage = container.querySelector('[data-executor-note="usage"]');
-    // The number is labelled as the engine's, so it is never read as Kiki's
-    // own context meter.
-    expect(usage?.textContent).toContain('Engine context: 61.7k of 200.0k tokens');
+    // The engine's context reading is the ContextMeter, not a second timeline line.
+    expect(container.querySelector('[data-executor-note="usage"]')).toBeNull();
 
     const dropped = container.querySelector('[data-executor-note="session"]');
     expect(dropped?.textContent).toContain('dropped an image you sent: image exceeds the engine limit');
@@ -7006,9 +7004,11 @@ describe('semantic tool cards', () => {
   ): Promise<{ container: HTMLDivElement; path: () => string }> {
     const { root, container } = makeRoot();
     let location = '';
+    let navState: unknown;
     function Probe() {
       const current = useLocation();
       location = `${current.pathname}${current.search}`;
+      navState = current.state;
       return null;
     }
     await act(async () => {
@@ -7025,7 +7025,7 @@ describe('semantic tool cards', () => {
         );
       });
     });
-    return { container, path: () => location };
+    return { container, path: () => location, navState: () => navState };
   }
 
   async function expand(container: HTMLElement): Promise<void> {
@@ -7077,7 +7077,7 @@ describe('semantic tool cards', () => {
   });
 
   it('shows what a thread wait returned, per thread, with the turn to open', async () => {
-    const { container, path } = await renderCard(semanticTool(
+    const { container, path, navState } = await renderCard(semanticTool(
       'ThreadWait',
       { threads: [{ thread: THREAD_REF }], timeout_ms: 30_000 },
       JSON.stringify({
@@ -7095,7 +7095,11 @@ describe('semantic tool cards', () => {
     const item = container.querySelector('[data-tool-semantic-items] [data-tool-semantic-link="session"]')!;
     expect(item.textContent).toContain('turn ended · Completed');
     await act(async () => { click(item); });
-    expect(path()).toBe('/s/session_peer?turn=3');
+    // The session route stays bare. The turn rides the visit locator (`t3`), not `?turn=`.
+    expect(path()).toBe('/s/session_peer');
+    expect(readTimelineVisitLocator(navState())).toMatchObject({
+      sessionId: 'session_peer', agentId: 'main', target: { kind: 'turn', turnId: 't3' },
+    });
   });
 
   it('reads an AgentRun result as the agent, its profile and outcome, with a way to open it', async () => {
@@ -7159,12 +7163,7 @@ describe('semantic tool cards', () => {
 
   it('shows a history search as its query and hit count, and jumps back to a hit turn in this session', async () => {
     resetTimelineLocatorsForTests();
-    const targets: unknown[] = [];
-    const unregister = registerTimelineLocator('session_here', 'main', {
-      isVisible: () => true,
-      locate: (target) => { targets.push(target); return Promise.resolve({ status: 'found' as const }); },
-    });
-    const { container } = await renderCard(semanticTool(
+    const { container, navState } = await renderCard(semanticTool(
       'HistorySearch',
       { query: 'rate limit', scope: 'session' },
       JSON.stringify({
@@ -7189,8 +7188,10 @@ describe('semantic tool cards', () => {
     expect(hits).toHaveLength(2);
     expect(hits[0]!.textContent).toContain('Turn 12');
     await act(async () => { click(hits[0]!); });
-    expect(targets).toEqual([{ kind: 'turn', turnId: 't12' }]);
-    unregister();
+    // Same-session hits push a visit locator. The card does not call the mounted timeline locator itself.
+    expect(readTimelineVisitLocator(navState())).toMatchObject({
+      sessionId: 'session_here', agentId: 'main', target: { kind: 'turn', turnId: 't12' },
+    });
   });
 
   it('names the board card a write touched without opening a core board route', async () => {
@@ -7623,15 +7624,12 @@ describe('Kiki hook injections', () => {
 });
 
 
-it('strips a stored SSH host block from an old message and draws no per-message host row', async () => {
-  const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z',
-    text: 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>',
-  }]);
-  // The hosts live on the session's control in the composer now; the message
-  // reads exactly as it was typed, with no marker and no raw XML.
-  expect(container.querySelector('.bg-bubble-user')?.textContent).toBe('Inspect the host');
-  expect(container.textContent).not.toContain('ssh_host_refs');
-  expect(container.textContent).not.toContain('Example host');
+it('keeps a legacy SSH host block as stored text and draws no per-message host row', async () => {
+  const stored = 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>';
+  const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z', text: stored }]);
+  // Host membership is session state. A block already stored in an old message
+  // stays literal text and does not grow a per-message host row.
+  expect(container.querySelector('.bg-bubble-user')?.textContent).toBe(stored);
   expect(container.querySelector('[data-user-ssh-hosts]')).toBeNull();
   expect(container.querySelector('[data-user-ssh-host]')).toBeNull();
 });
